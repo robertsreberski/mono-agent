@@ -111,6 +111,28 @@ describe('buildAgentContext', () => {
     expect(context.metadata.sources).toEqual(['/skills/research/SKILL.md', '/skills/writing/SKILL.md']);
   });
 
+  it('renders selected skill instructions in a separate section', () => {
+    const context = buildAgentContext({
+      identity: 'Identity text',
+      userMessage: 'Use a skill if needed.',
+      skillInstructions: [
+        { kind: 'markdown', content: '# Research\n\nFind sources.', source: '/skills/research/SKILL.md' },
+        { kind: 'markdown', content: '# Writing\n\nWrite clearly.', source: '/skills/writing/SKILL.md' },
+      ],
+    });
+
+    expect(context.sections.map((section) => section.id)).toEqual([
+      'core',
+      'identity',
+      'skill-instructions',
+      'user-message',
+    ]);
+    const instructions = context.sections.find((section) => section.id === 'skill-instructions');
+    expect(instructions?.content).toContain('### Skill Instruction 1 (/skills/research/SKILL.md)\n\n# Research');
+    expect(instructions?.content).toContain('### Skill Instruction 2 (/skills/writing/SKILL.md)\n\n# Writing');
+    expect(context.metadata.sources).toEqual(['/skills/research/SKILL.md', '/skills/writing/SKILL.md']);
+  });
+
   it('rejects duplicate skill names', () => {
     expectValidationCode(
       () =>

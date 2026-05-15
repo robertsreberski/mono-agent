@@ -23,6 +23,7 @@ export async function loadContextFromFiles(input: FileContextInput): Promise<Bui
     ...(input.memory === undefined ? {} : { memory: input.memory }),
     ...(input.history === undefined ? {} : { history: input.history }),
     ...(skills.length === 0 ? {} : { skills }),
+    ...(input.skillInstructions === undefined ? {} : { skillInstructions: input.skillInstructions }),
   };
 
   return buildAgentContext(buildInput);
