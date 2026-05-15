@@ -2,7 +2,11 @@
   "name": "mono-agent",
   "version": "0.0.0",
   "private": true,
+  "description": "Small agent framework building blocks under the @worklab-ai scope.",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "workspaces": [
     "packages/*"
   ],
