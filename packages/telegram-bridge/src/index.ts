@@ -28,3 +28,15 @@ export type {
   TelegramMessageStreamLogger,
   TelegramMessageStreamOptions,
 } from "./message-stream.js";
+export { TelegramBridge } from "./bridge.js";
+export type {
+  AgentRequest,
+  AgentResponder,
+  AgentResponse,
+  TelegramBridgeLogger,
+  TelegramBridgeMessages,
+  TelegramBridgeOptions,
+  TelegramBridgeStreamOptions,
+  TelegramRequestMetadata,
+  TelegramUpdateHandlingResult,
+} from "./bridge.js";
