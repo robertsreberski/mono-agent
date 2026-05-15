@@ -11,9 +11,9 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "build": "node scripts/build-workspaces.mjs --script build",
+    "typecheck": "node scripts/build-workspaces.mjs --script typecheck",
+    "test": "node scripts/build-workspaces.mjs --script test"
   },
   "devDependencies": {
     "@types/node": "^22.15.18",
