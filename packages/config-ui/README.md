@@ -4,9 +4,10 @@ Small browser configuration UI for Mono Agent hosts plus a loopback HTTP bridge 
 
 ## What you get
 
-- A React 19 single-page form whose tabs are driven by a `FieldGroup` registry — five core groups (identity, runtime, memory, tools, telegram) ship in-box and hosts can register more.
+- A React 19 single-page form built on **Tailwind v4 + shadcn/ui** primitives (radix-nova preset, neutral baseColor) — the same design system as the standalone Worklab `design-system` reference. Form-essentials subset only: `button`, `input`, `label`, `card`, `tabs`, `badge`, `separator`, `select`, `switch`.
+- Tabs driven by a `FieldGroup` registry — five core groups (identity, runtime, memory, tools, telegram) ship in-box and hosts can register more.
 - A tiny Node HTTP server (`startConfigUiBridge`) that serves the SPA, exposes `/api/schema`, `/api/config`, and `/api/health`, and persists edits atomically.
-- Per-boot bearer-token auth, refusal to bind non-loopback hosts, secret redaction on GET, and `expectedVersion` concurrency control on PUT.
+- Per-boot bearer-token auth, refusal to bind non-loopback hosts, secret redaction on GET, **schema-validated PUT** (unregistered field paths are rejected with 400 before disk is touched), and `expectedVersion` concurrency control on PUT.
 
 ## Install
 
@@ -89,6 +90,19 @@ PUT  /api/config              { ok: true, version: string }               (beare
   expectedVersion: string;
 }
 ```
+
+The bridge validates the `patch` against the registered `FieldGroup` schema **before** touching disk. Every leaf path must correspond to a declared `FieldDefinition.path`; unknown leaves return:
+
+```json
+{
+  "error": "unregistered_fields",
+  "message": "Unregistered fields rejected: notRegistered.arbitrary.",
+  "unregistered": ["notRegistered.arbitrary"],
+  "invalid": []
+}
+```
+
+Per-leaf coercion runs the value through the field's declared kind so out-of-range integers, unknown `select` options, and mistyped scalars are surfaced the same way. Hosts cannot smuggle arbitrary keys into `mono-agent.config.json` via the UI, even with a valid bearer token.
 
 ## Safety
 

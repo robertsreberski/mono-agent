@@ -1,4 +1,9 @@
 import type { FieldDefinition } from "../../schema/types.js";
+import { Badge } from "./ui/badge.js";
+import { Input } from "./ui/input.js";
+import { Label } from "./ui/label.js";
+import { Select } from "./ui/select.js";
+import { Switch } from "./ui/switch.js";
 
 interface SecretMarker {
   readonly __secret: true;
@@ -7,7 +12,9 @@ interface SecretMarker {
 
 function isSecretMarker(value: unknown): value is SecretMarker {
   return (
-    typeof value === "object" && value !== null && (value as Record<string, unknown>).__secret === true
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).__secret === true
   );
 }
 
@@ -20,10 +27,16 @@ export interface FieldInputProps {
   readonly onChange: (next: string) => void;
 }
 
-export function FieldInput({ field, currentValue, draftValue, onChange }: FieldInputProps): React.JSX.Element {
+export function FieldInput({
+  field,
+  currentValue,
+  draftValue,
+  onChange,
+}: FieldInputProps): React.JSX.Element {
   const labelId = `field-${field.id}`;
   const isSecret = field.kind === "secret";
-  const secretMarker = isSecret && isSecretMarker(currentValue) ? currentValue : null;
+  const secretMarker =
+    isSecret && isSecretMarker(currentValue) ? currentValue : null;
   const displayValue = (() => {
     if (draftValue !== undefined) {
       return draftValue;
@@ -41,15 +54,23 @@ export function FieldInput({ field, currentValue, draftValue, onChange }: FieldI
   })();
 
   return (
-    <div className="field">
-      <label htmlFor={labelId} className="field__label">
-        {field.label}
-        {field.required ? <span className="field__required" aria-label="required"> *</span> : null}
-        {isSecret && secretMarker?.set ? (
-          <span className="field__badge" aria-label="secret is set">SET</span>
+    <div className="grid gap-1.5">
+      <Label htmlFor={labelId} className="flex items-center gap-2">
+        <span>{field.label}</span>
+        {field.required ? (
+          <span aria-label="required" className="text-destructive">
+            *
+          </span>
         ) : null}
-      </label>
-      {field.description ? <p className="field__description">{field.description}</p> : null}
+        {isSecret && secretMarker?.set ? (
+          <Badge variant="secondary" aria-label="secret is set">
+            SET
+          </Badge>
+        ) : null}
+      </Label>
+      {field.description ? (
+        <p className="text-xs text-muted-foreground">{field.description}</p>
+      ) : null}
       {renderControl(field, labelId, displayValue, onChange)}
     </div>
   );
@@ -64,48 +85,47 @@ function renderControl(
   switch (field.kind) {
     case "select":
       return (
-        <select
+        <Select
           id={id}
-          className="field__select"
           value={value}
+          placeholder="— unset —"
           onChange={(e) => onChange(e.target.value)}
         >
-          <option value="">— unset —</option>
           {(field.options ?? []).map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
           ))}
-        </select>
+        </Select>
       );
     case "switch":
       return (
-        <input
+        <Switch
           id={id}
-          type="checkbox"
-          className="field__switch"
           checked={value === "true"}
-          onChange={(e) => onChange(e.target.checked ? "true" : "false")}
+          onCheckedChange={(next) => onChange(next ? "true" : "false")}
         />
       );
     case "integer":
       return (
-        <input
+        <Input
           id={id}
           type="number"
-          className="field__input"
           inputMode="numeric"
           {...(field.min !== undefined ? { min: field.min } : {})}
           {...(field.max !== undefined ? { max: field.max } : {})}
-          {...(field.placeholder !== undefined ? { placeholder: field.placeholder } : {})}
+          {...(field.placeholder !== undefined
+            ? { placeholder: field.placeholder }
+            : {})}
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />
       );
     case "secret":
       return (
-        <input
+        <Input
           id={id}
           type="password"
-          className="field__input"
           autoComplete="new-password"
           placeholder="Set new value to replace"
           value={value}
@@ -117,11 +137,12 @@ function renderControl(
     case "path":
     default:
       return (
-        <input
+        <Input
           id={id}
           type="text"
-          className="field__input"
-          {...(field.placeholder !== undefined ? { placeholder: field.placeholder } : {})}
+          {...(field.placeholder !== undefined
+            ? { placeholder: field.placeholder }
+            : {})}
           value={value}
           onChange={(e) => onChange(e.target.value)}
         />

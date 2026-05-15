@@ -1,6 +1,13 @@
 import type { MonoAgentConfigJson } from "@worklab-ai/config";
 
 import type { FieldDefinition, FieldGroup } from "../../schema/types.js";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./ui/card.js";
 import { FieldInput } from "./FieldInput.js";
 
 export interface FieldGroupCardProps {
@@ -10,14 +17,21 @@ export interface FieldGroupCardProps {
   readonly onChange: (field: FieldDefinition, next: string) => void;
 }
 
-export function FieldGroupCard({ group, config, drafts, onChange }: FieldGroupCardProps): React.JSX.Element {
+export function FieldGroupCard({
+  group,
+  config,
+  drafts,
+  onChange,
+}: FieldGroupCardProps): React.JSX.Element {
   return (
-    <section className="card" aria-labelledby={`group-${group.id}`}>
-      <header className="card__header">
-        <h2 id={`group-${group.id}`} className="card__title">{group.label}</h2>
-        {group.description ? <p className="card__description">{group.description}</p> : null}
-      </header>
-      <div className="card__body">
+    <Card aria-labelledby={`group-${group.id}`}>
+      <CardHeader>
+        <CardTitle id={`group-${group.id}`}>{group.label}</CardTitle>
+        {group.description ? (
+          <CardDescription>{group.description}</CardDescription>
+        ) : null}
+      </CardHeader>
+      <CardContent className="grid gap-5">
         {group.fields.map((field) => (
           <FieldInput
             key={field.id}
@@ -27,8 +41,8 @@ export function FieldGroupCard({ group, config, drafts, onChange }: FieldGroupCa
             onChange={(next) => onChange(field, next)}
           />
         ))}
-      </div>
-    </section>
+      </CardContent>
+    </Card>
   );
 }
 

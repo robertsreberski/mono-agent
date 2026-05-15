@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { MonoAgentConfigJson } from "@worklab-ai/config";
 
 import {
@@ -9,7 +9,7 @@ import type { FieldDefinition, FieldGroup } from "../../schema/types.js";
 import type { ConfigUiClient, PutError } from "../api.js";
 import { FieldGroupCard } from "./FieldGroupCard.js";
 import { SaveBar, type SaveBarStatus } from "./SaveBar.js";
-import { Tabs } from "./Tabs.js";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs.js";
 
 export interface ConfigFormProps {
   readonly client: ConfigUiClient;
@@ -27,7 +27,6 @@ export function ConfigForm({ client, initial }: ConfigFormProps): React.JSX.Elem
   const [version, setVersion] = useState<string>(initial?.version ?? "");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<SaveBarStatus>({ kind: "idle" });
-  const [activeTab, setActiveTab] = useState<string>(initial?.fieldGroups[0]?.id ?? "");
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
 
   useEffect(() => {
@@ -47,7 +46,6 @@ export function ConfigForm({ client, initial }: ConfigFormProps): React.JSX.Elem
         setFieldGroups(schema.fieldGroups);
         setConfig(current.config);
         setVersion(current.version);
-        setActiveTab(schema.fieldGroups[0]?.id ?? "");
       } catch (error) {
         if (!cancelled) {
           setLoadError(error instanceof Error ? error.message : String(error));
@@ -131,35 +129,44 @@ export function ConfigForm({ client, initial }: ConfigFormProps): React.JSX.Elem
     }
   }, [client, drafts, fieldGroups, version]);
 
-  const tabs = useMemo(() => fieldGroups.map((g) => ({ id: g.id, label: g.label })), [fieldGroups]);
-  const activeGroup = fieldGroups.find((g) => g.id === activeTab);
-
   if (loadError !== undefined) {
     return (
-      <div className="form form--error" role="alert">
-        <h2>Failed to load configuration</h2>
-        <p>{loadError}</p>
+      <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
+        <h2 className="font-medium text-destructive">Failed to load configuration</h2>
+        <p className="mt-1 text-muted-foreground">{loadError}</p>
       </div>
     );
   }
 
   if (fieldGroups.length === 0) {
-    return <div className="form form--loading">Loading…</div>;
+    return (
+      <div role="status" className="text-sm text-muted-foreground">
+        Loading…
+      </div>
+    );
   }
 
   return (
-    <div className="form">
-      <Tabs tabs={tabs} activeId={activeTab} onSelect={setActiveTab} />
-      <div className="form__panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`}>
-        {activeGroup ? (
-          <FieldGroupCard
-            group={activeGroup}
-            config={config}
-            drafts={drafts}
-            onChange={handleChange}
-          />
-        ) : null}
-      </div>
+    <div className="grid gap-4">
+      <Tabs defaultValue={fieldGroups[0]?.id ?? ""}>
+        <TabsList aria-label="Configuration sections">
+          {fieldGroups.map((group) => (
+            <TabsTrigger key={group.id} value={group.id}>
+              {group.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+        {fieldGroups.map((group) => (
+          <TabsContent key={group.id} value={group.id} className="pt-2">
+            <FieldGroupCard
+              group={group}
+              config={config}
+              drafts={drafts}
+              onChange={handleChange}
+            />
+          </TabsContent>
+        ))}
+      </Tabs>
       <SaveBar status={status} onSave={handleSave} onReset={handleReset} />
     </div>
   );
