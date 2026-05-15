@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  AgentResponderCancelledError,
   TelegramBridge,
   type AgentRequest,
   type AgentResponder,
@@ -206,6 +207,25 @@ describe("TelegramBridge", () => {
 
     deferred.resolve({ text: "done" });
     await expect(firstResultPromise).resolves.toMatchObject({ kind: "handled" });
+  });
+
+  it("finishes with cancelled text when the responder reports cancellation", async () => {
+    const api = new FakeTelegramApi();
+    const bridge = new TelegramBridge({
+      api,
+      allowAllChats: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async () => {
+        throw new AgentResponderCancelledError();
+      }),
+    });
+
+    await expect(bridge.handleUpdate(textUpdate("please stop"))).resolves.toEqual({
+      kind: "cancelled",
+      updateId: 1,
+      chatId: 42,
+    });
+    expect(api.editMessageTextCalls.at(-1)?.text).toBe("Cancelled.");
   });
 
   it("aborts the active run when /cancel is received", async () => {

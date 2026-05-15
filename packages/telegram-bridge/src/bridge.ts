@@ -61,6 +61,29 @@ export interface AgentResponder {
   ): Promise<AgentResponse>;
 }
 
+export interface AgentResponderCancelledErrorOptions {
+  reason?: unknown;
+}
+
+export class AgentResponderCancelledError extends Error {
+  readonly reason?: unknown;
+
+  constructor(
+    message = "Agent response was cancelled.",
+    options: AgentResponderCancelledErrorOptions = {},
+  ) {
+    super(message);
+    this.name = "AgentResponderCancelledError";
+    if (options.reason !== undefined) {
+      this.reason = options.reason;
+    }
+  }
+}
+
+export function isAgentResponderCancelledError(error: unknown): boolean {
+  return error instanceof AgentResponderCancelledError;
+}
+
 export interface TelegramBridgeMessages {
   welcomeText?: string;
   helpText?: string;
@@ -323,7 +346,7 @@ export class TelegramBridge {
       }
       return result;
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || isAgentResponderCancelledError(error)) {
         await finishSafely(stream, this.messages.cancelledText, this.logger);
         return { kind: "cancelled", updateId: update.update_id, chatId };
       }

@@ -28,10 +28,15 @@ export type {
   TelegramMessageStreamLogger,
   TelegramMessageStreamOptions,
 } from "./message-stream.js";
-export { TelegramBridge } from "./bridge.js";
+export {
+  AgentResponderCancelledError,
+  isAgentResponderCancelledError,
+  TelegramBridge,
+} from "./bridge.js";
 export type {
   AgentRequest,
   AgentResponder,
+  AgentResponderCancelledErrorOptions,
   AgentResponse,
   TelegramBridgeLogger,
   TelegramBridgeMessages,
@@ -40,3 +45,30 @@ export type {
   TelegramRequestMetadata,
   TelegramUpdateHandlingResult,
 } from "./bridge.js";
+export {
+  assistantTextFromRuntimeEvent,
+  createRuntimeResponder,
+  defaultRuntimeMessages,
+  RuntimeResponderError,
+} from "./runtime-responder.js";
+export type {
+  AgentRuntimeLike,
+  RuntimeEventLike,
+  RuntimeExecutionMode,
+  RuntimeMessage,
+  RuntimeMessageBuilder,
+  RuntimeModelReference,
+  RuntimeResponderErrorDetails,
+  RuntimeResponderOptions,
+  RuntimeResultLike,
+  RuntimeRunOptions,
+} from "./runtime-responder.js";
+export { TelegramLongPoller } from "./long-poller.js";
+export type {
+  TelegramLongPollerBackoffOptions,
+  TelegramLongPollerLogger,
+  TelegramLongPollerOptions,
+  TelegramLongPollerPollOptions,
+  TelegramLongPollerStartOptions,
+  TelegramUpdateHandler,
+} from "./long-poller.js";
