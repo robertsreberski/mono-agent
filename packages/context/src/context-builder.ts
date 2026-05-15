@@ -32,6 +32,7 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
   const memory = normalizeMemory(input.memory);
   const history = normalizeHistory(input.history);
   const skills = input.skills === undefined ? [] : buildSkillIndex(input.skills);
+  const skillInstructions = normalizeSkillInstructions(input.skillInstructions);
   const userMessage = normalizeRequiredMarkdown(input.userMessage, 'userMessage');
 
   const sections: ContextSection[] = [
@@ -51,6 +52,10 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
     sections.push(makeSection('skills', 'Skill Index', { content: renderSkillIndex(skills) }));
   }
 
+  if (skillInstructions.length > 0) {
+    sections.push(makeSection('skill-instructions', 'Selected Skill Instructions', renderSkillInstructions(skillInstructions)));
+  }
+
   sections.push(makeSection('user-message', 'Current User Message', { content: userMessage }));
 
   return {
@@ -60,7 +65,7 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
       usedDefaultCore,
       skillCount: skills.length,
       historyCount: history.length,
-      sources: collectSources(core, identity, memory, skills),
+      sources: collectSources(core, identity, memory, skills, skillInstructions),
     },
   };
 }
@@ -72,6 +77,15 @@ function normalizeMemory(memory: BuildContextInput['memory']): readonly Normaliz
 
   const blocks = Array.isArray(memory) ? memory : [memory];
   return blocks.map((block, index) => normalizeContextBlock(block, `memory[${index}]`));
+}
+
+function normalizeSkillInstructions(skillInstructions: BuildContextInput['skillInstructions']): readonly NormalizedBlock[] {
+  if (skillInstructions === undefined) {
+    return [];
+  }
+
+  const blocks = Array.isArray(skillInstructions) ? skillInstructions : [skillInstructions];
+  return blocks.map((block, index) => normalizeContextBlock(block, `skillInstructions[${index}]`));
 }
 
 function normalizeHistory(history: BuildContextInput['history']): readonly HistoryMessage[] {
@@ -267,11 +281,31 @@ function renderHistory(history: readonly HistoryMessage[]): NormalizedBlock {
   };
 }
 
+function renderSkillInstructions(skillInstructions: readonly NormalizedBlock[]): NormalizedBlock {
+  if (skillInstructions.length === 1) {
+    const onlyBlock = skillInstructions[0];
+    if (onlyBlock === undefined) {
+      throw new ContextValidationError('invalid_context_block', 'Skill instruction block is unexpectedly missing.');
+    }
+    return onlyBlock;
+  }
+
+  return {
+    content: skillInstructions
+      .map((block, index) => {
+        const sourceSuffix = block.source === undefined ? '' : ` (${block.source})`;
+        return `### Skill Instruction ${index + 1}${sourceSuffix}\n\n${block.content}`;
+      })
+      .join('\n\n'),
+  };
+}
+
 function collectSources(
   core: NormalizedBlock,
   identity: NormalizedBlock,
   memory: readonly NormalizedBlock[],
   skills: readonly SkillIndexEntry[],
+  skillInstructions: readonly NormalizedBlock[],
 ): readonly string[] {
   const sources: string[] = [];
   addSource(sources, core.source);
@@ -281,6 +315,9 @@ function collectSources(
   }
   for (const skill of skills) {
     addSource(sources, skill.mainFile);
+  }
+  for (const block of skillInstructions) {
+    addSource(sources, block.source);
   }
   return sources;
 }

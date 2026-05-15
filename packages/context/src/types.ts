@@ -36,9 +36,17 @@ export interface BuildContextInput {
   readonly memory?: ContextBlockInput | readonly ContextBlockInput[];
   readonly history?: readonly HistoryMessage[];
   readonly skills?: readonly SkillIndexEntry[];
+  readonly skillInstructions?: ContextBlockInput | readonly ContextBlockInput[];
 }
 
-export type ContextSectionId = 'core' | 'identity' | 'memory' | 'history' | 'skills' | 'user-message';
+export type ContextSectionId =
+  | 'core'
+  | 'identity'
+  | 'memory'
+  | 'history'
+  | 'skills'
+  | 'skill-instructions'
+  | 'user-message';
 
 export interface ContextSection {
   readonly id: ContextSectionId;
@@ -66,4 +74,5 @@ export interface FileContextInput {
   readonly history?: readonly HistoryMessage[];
   readonly skills?: readonly SkillIndexEntry[];
   readonly skillsRoot?: string;
+  readonly skillInstructions?: ContextBlockInput | readonly ContextBlockInput[];
 }
