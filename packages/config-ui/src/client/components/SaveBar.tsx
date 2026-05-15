@@ -1,3 +1,6 @@
+import { Badge } from "./ui/badge.js";
+import { Button } from "./ui/button.js";
+
 export type SaveBarStatus =
   | { readonly kind: "idle" }
   | { readonly kind: "dirty"; readonly count: number }
@@ -14,22 +17,23 @@ export interface SaveBarProps {
 
 export function SaveBar({ status, onSave, onReset }: SaveBarProps): React.JSX.Element {
   return (
-    <div className="savebar" role="status" aria-live="polite">
-      <div className="savebar__message">
-        {renderMessage(status)}
-      </div>
-      <div className="savebar__actions">
-        <button
-          type="button"
-          className="button button--ghost"
+    <div
+      role="status"
+      aria-live="polite"
+      className="sticky bottom-0 z-10 -mx-1 mt-2 flex items-center justify-between gap-3 rounded-lg border border-border bg-card/80 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/60"
+    >
+      <div className="text-sm text-muted-foreground">{renderMessage(status)}</div>
+      <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={onReset}
           disabled={status.kind === "saving" || status.kind === "idle"}
         >
           Discard
-        </button>
-        <button
-          type="button"
-          className="button button--primary"
+        </Button>
+        <Button
+          size="sm"
           onClick={onSave}
           disabled={
             status.kind === "saving" ||
@@ -38,7 +42,7 @@ export function SaveBar({ status, onSave, onReset }: SaveBarProps): React.JSX.El
           }
         >
           {status.kind === "saving" ? "Saving…" : "Save"}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -53,13 +57,23 @@ function renderMessage(status: SaveBarStatus): React.JSX.Element | string {
     case "saving":
       return "Saving…";
     case "saved":
-      return "Saved.";
+      return (
+        <Badge variant="success" aria-label="saved">
+          Saved
+        </Badge>
+      );
     case "stale":
       return (
-        <span className="savebar__stale">Config was changed elsewhere. {status.message}</span>
+        <Badge variant="warning" aria-label="stale">
+          Config changed elsewhere — {status.message}
+        </Badge>
       );
     case "error":
-      return <span className="savebar__error">{status.message}</span>;
+      return (
+        <Badge variant="destructive" aria-label="error">
+          {status.message}
+        </Badge>
+      );
     default:
       return "";
   }

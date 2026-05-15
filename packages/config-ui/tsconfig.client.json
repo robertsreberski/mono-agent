@@ -7,7 +7,11 @@
     "jsx": "react-jsx",
     "noEmit": true,
     "verbatimModuleSyntax": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/client/*"]
+    }
   },
   "include": ["src/client/**/*.ts", "src/client/**/*.tsx"]
 }

@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { CORE_FIELD_GROUPS } from "../../schema/field-group.js";
 import { ConfigUiClient, type PutResponse } from "../api.js";
@@ -9,6 +10,16 @@ import { ConfigForm } from "./ConfigForm.js";
 function makeStubClient(overrides: Partial<ConfigUiClient> = {}): ConfigUiClient {
   const stub = new ConfigUiClient("", "test-token");
   return Object.assign(stub, overrides);
+}
+
+/**
+ * Radix tabs respond to pointerdown rather than the synthetic click that
+ * fireEvent.click dispatches in happy-dom. user-event simulates the full
+ * pointer sequence so the controlled state actually toggles.
+ */
+async function clickTab(name: string): Promise<void> {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("tab", { name }));
 }
 
 describe("<ConfigForm/>", () => {
@@ -42,7 +53,7 @@ describe("<ConfigForm/>", () => {
     expect(screen.getByLabelText(/Identity document/)).toBeInTheDocument();
   });
 
-  it("switches tabs when clicking the Runtime tab", () => {
+  it("switches tabs when clicking the Runtime tab", async () => {
     render(
       <ConfigForm
         client={makeStubClient()}
@@ -53,11 +64,11 @@ describe("<ConfigForm/>", () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Runtime" }));
-    expect(screen.getByLabelText(/^Model/u)).toBeInTheDocument();
+    await clickTab("Runtime");
+    expect(await screen.findByLabelText(/^Model/u)).toBeInTheDocument();
   });
 
-  it("shows a SET badge for secrets that are already set", () => {
+  it("shows a SET badge for secrets that are already set", async () => {
     render(
       <ConfigForm
         client={makeStubClient()}
@@ -73,9 +84,13 @@ describe("<ConfigForm/>", () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Telegram" }));
-    const label = screen.getByText(/Bot token/);
-    expect(within(label).getByLabelText("secret is set")).toHaveTextContent("SET");
+    await clickTab("Telegram");
+    // Wait for the panel to render, then find the SET badge by its
+    // accessible label. The badge sits inside the field's <Label>
+    // alongside the field title text.
+    await screen.findByText(/Bot token/);
+    const badge = await screen.findByLabelText("secret is set");
+    expect(badge).toHaveTextContent("SET");
   });
 
   it("edits a field, saves, and sends the patch with expectedVersion", async () => {
@@ -99,14 +114,14 @@ describe("<ConfigForm/>", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "Runtime" }));
-    const input = screen.getByLabelText(/Max turns/u) as HTMLInputElement;
+    await clickTab("Runtime");
+    const input = (await screen.findByLabelText(/Max turns/u)) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "20" } });
 
     expect(screen.getByText(/1 unsaved change/u)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    // wait one microtask tick
+    // wait microtasks so the await chain in handleSave resolves
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
@@ -117,7 +132,7 @@ describe("<ConfigForm/>", () => {
     expect(args?.patch).toEqual({ runtime: { maxTurns: 20 } });
   });
 
-  it("masks the secret input so typed values don't echo on screen", () => {
+  it("masks the secret input so typed values don't echo on screen", async () => {
     render(
       <ConfigForm
         client={makeStubClient()}
@@ -128,8 +143,8 @@ describe("<ConfigForm/>", () => {
         }}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Telegram" }));
-    const input = screen.getByLabelText(/Bot token/u) as HTMLInputElement;
+    await clickTab("Telegram");
+    const input = (await screen.findByLabelText(/Bot token/u)) as HTMLInputElement;
     expect(input.type).toBe("password");
   });
 });

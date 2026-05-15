@@ -8,6 +8,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 // vitest config (separate from vite build config because the test root is the
 // whole package, not the SPA root).
 export default defineConfig({
+  resolve: {
+    alias: {
+      "@": resolve(here, "src/client"),
+    },
+  },
   plugins: [react()],
   test: {
     // Default to node; .tsx tests opt into happy-dom via the
