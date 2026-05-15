@@ -1,0 +1,11 @@
+.worklab-tmp/
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.DS_Store
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
