@@ -14,10 +14,4 @@ export default defineConfig({
     target: "es2022",
   },
   plugins: [react()],
-  test: {
-    environment: "happy-dom",
-    globals: true,
-    setupFiles: [resolve(here, "src/client/test-setup.ts")],
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-  },
 });
