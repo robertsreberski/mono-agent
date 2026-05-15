@@ -1,0 +1,135 @@
+// @vitest-environment happy-dom
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+
+import { CORE_FIELD_GROUPS } from "../../schema/field-group.js";
+import { ConfigUiClient, type PutResponse } from "../api.js";
+import { ConfigForm } from "./ConfigForm.js";
+
+function makeStubClient(overrides: Partial<ConfigUiClient> = {}): ConfigUiClient {
+  const stub = new ConfigUiClient("", "test-token");
+  return Object.assign(stub, overrides);
+}
+
+describe("<ConfigForm/>", () => {
+  it("renders every tab from the registry", () => {
+    render(
+      <ConfigForm
+        client={makeStubClient()}
+        initial={{
+          fieldGroups: CORE_FIELD_GROUPS,
+          config: {},
+          version: "v0",
+        }}
+      />,
+    );
+    for (const group of CORE_FIELD_GROUPS) {
+      expect(screen.getByRole("tab", { name: group.label })).toBeInTheDocument();
+    }
+  });
+
+  it("renders the first group's fields by default", () => {
+    render(
+      <ConfigForm
+        client={makeStubClient()}
+        initial={{
+          fieldGroups: CORE_FIELD_GROUPS,
+          config: {},
+          version: "v0",
+        }}
+      />,
+    );
+    expect(screen.getByLabelText(/Identity document/)).toBeInTheDocument();
+  });
+
+  it("switches tabs when clicking the Runtime tab", () => {
+    render(
+      <ConfigForm
+        client={makeStubClient()}
+        initial={{
+          fieldGroups: CORE_FIELD_GROUPS,
+          config: {},
+          version: "v0",
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Runtime" }));
+    expect(screen.getByLabelText(/^Model/u)).toBeInTheDocument();
+  });
+
+  it("shows a SET badge for secrets that are already set", () => {
+    render(
+      <ConfigForm
+        client={makeStubClient()}
+        initial={{
+          fieldGroups: CORE_FIELD_GROUPS,
+          config: {
+            telegram: {
+              // bridge sends the marker shape; the form treats it as a hint
+              botToken: { __secret: true, set: true } as unknown as string,
+            },
+          },
+          version: "v0",
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Telegram" }));
+    const label = screen.getByText(/Bot token/);
+    expect(within(label).getByLabelText("secret is set")).toHaveTextContent("SET");
+  });
+
+  it("edits a field, saves, and sends the patch with expectedVersion", async () => {
+    const writeConfig = vi.fn<ConfigUiClient["writeConfig"]>().mockResolvedValue({
+      ok: true,
+      version: "v1",
+    } satisfies PutResponse);
+    const fetchConfig = vi.fn<ConfigUiClient["fetchConfig"]>().mockResolvedValue({
+      config: { runtime: { maxTurns: 20 } },
+      version: "v1",
+    });
+    const client = makeStubClient({ writeConfig, fetchConfig });
+    render(
+      <ConfigForm
+        client={client}
+        initial={{
+          fieldGroups: CORE_FIELD_GROUPS,
+          config: { runtime: { maxTurns: 8 } },
+          version: "v0",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Runtime" }));
+    const input = screen.getByLabelText(/Max turns/u) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "20" } });
+
+    expect(screen.getByText(/1 unsaved change/u)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    // wait one microtask tick
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(writeConfig).toHaveBeenCalledTimes(1);
+    const args = writeConfig.mock.calls[0]?.[0];
+    expect(args?.expectedVersion).toBe("v0");
+    expect(args?.patch).toEqual({ runtime: { maxTurns: 20 } });
+  });
+
+  it("masks the secret input so typed values don't echo on screen", () => {
+    render(
+      <ConfigForm
+        client={makeStubClient()}
+        initial={{
+          fieldGroups: CORE_FIELD_GROUPS,
+          config: {},
+          version: "v0",
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Telegram" }));
+    const input = screen.getByLabelText(/Bot token/u) as HTMLInputElement;
+    expect(input.type).toBe("password");
+  });
+});
