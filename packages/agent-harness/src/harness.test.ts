@@ -1,0 +1,225 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@worklab-ai/observability";
+
+import {
+  AgentHarnessFailureError,
+  createAgentHarness,
+  createAgentResponder,
+  createInMemoryHistoryStore,
+} from "./index.js";
+
+const tempDirs: string[] = [];
+const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "agent-harness-test-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+class FakeRecorder implements RunRecorder {
+  readonly events: RuntimeEventLike[] = [];
+  summaryStatus?: string;
+
+  constructor(private readonly runId: string, private readonly conversationId: string) {}
+
+  onEvent(event: RuntimeEventLike): void {
+    this.events.push(event);
+  }
+
+  async finish(result: RuntimeResultLike): Promise<RunSummary> {
+    const status = result.cancelled === true ? "cancelled" : result.failureKind !== undefined || result.error !== undefined ? "failed" : "succeeded";
+    this.summaryStatus = status;
+    return {
+      runId: this.runId,
+      conversationId: this.conversationId,
+      status,
+      ...(result.failureKind === undefined || result.failureKind === null ? {} : { failureKind: result.failureKind }),
+      durationMs: 1,
+      eventCount: this.events.length,
+      artifactPaths: [],
+    };
+  }
+
+  async fail(error: unknown): Promise<RunSummary> {
+    this.summaryStatus = "failed";
+    return {
+      runId: this.runId,
+      conversationId: this.conversationId,
+      status: "failed",
+      failureKind: error instanceof Error ? error.name : "exception",
+      durationMs: 1,
+      eventCount: this.events.length,
+      artifactPaths: [],
+    };
+  }
+}
+
+function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>) {
+  const calls: Array<{ prompt: string; options: RuntimeRunOptions }> = [];
+  return {
+    calls,
+    runtime: {
+      async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push({ prompt, options });
+        return await run(prompt, options);
+      },
+    },
+  };
+}
+
+describe("AgentHarness", () => {
+  it("assembles context, memory, history, selected skills, tool policy, and runtime metadata", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const skillsRoot = join(dir, "skills");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(join(skillsRoot, "research"), { recursive: true });
+    await writeFile(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nFind evidence.", "utf8");
+    const recorder = new FakeRecorder("run-1", "telegram:1");
+    const memory = {
+      async load() {
+        return { kind: "markdown" as const, content: "Remember: terse.", source: join(dir, "memory.md"), truncated: false };
+      },
+      async appendHostSummary() {
+        throw new Error("memory writes should be disabled by default");
+      },
+    };
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 4 });
+    await historyStore.append("telegram:1", [{ role: "assistant", content: "Earlier answer", timestamp: "2026-05-15T18:00:00Z" }]);
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "delta" }] } });
+      return { text: "Final answer", providerSessionId: "session-1", usage: { inputTokens: 1 } };
+    });
+
+    const harness = createAgentHarness({
+      identityPath,
+      skillsRoot,
+      selectedSkills: ["research"],
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      cwd: dir,
+      maxTurns: 3,
+      memory,
+      historyStore,
+      toolPolicy: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
+      recorderFactory: () => recorder,
+      createRunId: () => "run-1",
+    });
+
+    const response = await harness.run({
+      conversationId: "telegram:1",
+      userMessage: "What changed?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("Final answer");
+    expect(response.failure).toBeUndefined();
+    expect(response.metadata.summary).toMatchObject({ status: "succeeded", eventCount: 1 });
+    expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "memory", "history", "skills", "skill-instructions", "user-message"]);
+    expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(dir, "memory.md"), join(skillsRoot, "research", "SKILL.md")]);
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.prompt).toContain("Remember: terse.");
+    expect(fake.calls[0]?.prompt).toContain("Earlier answer");
+    expect(fake.calls[0]?.prompt).toContain("# Skill: research");
+    expect(fake.calls[0]?.options).toMatchObject({ allowedTools: ["Read"], disallowedTools: ["Bash"], maxTurns: 3 });
+    await expect(historyStore.load("telegram:1")).resolves.toHaveLength(3);
+  });
+
+  it("propagates runtime failure results without success text", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ error: "Provider limit", failureKind: "usage_limit" }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      createRunId: () => "run-fail",
+    }).run({ conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(response.text).toBeUndefined();
+    expect(response.failure).toMatchObject({ kind: "usage_limit", message: "Provider limit" });
+    expect(response.metadata.summary).toMatchObject({ status: "failed", failureKind: "usage_limit" });
+  });
+
+  it("handles cancellation before runtime execution", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const controller = new AbortController();
+    controller.abort();
+    const fake = createFakeRuntime(async () => {
+      throw new Error("runtime should not run");
+    });
+
+    const response = await createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk" }).run({
+      conversationId: "c",
+      userMessage: "hi",
+      abortSignal: controller.signal,
+    });
+
+    expect(fake.calls).toHaveLength(0);
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(response.metadata.summary).toMatchObject({ status: "cancelled" });
+  });
+
+  it("exposes harness failures through the structural responder and streams runtime deltas", async () => {
+    const harness = {
+      async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "hello " }] } });
+        return {
+          text: "done",
+          metadata: {
+            runId: "run",
+            conversationId: "c",
+            contextSources: [],
+            contextSectionIds: [],
+          },
+        };
+      },
+    };
+    const streamText: string[] = [];
+    const response = await createAgentResponder({ harness }).respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async (delta) => { streamText.push(delta); } },
+    );
+
+    expect(streamText).toEqual(["hello "]);
+    expect(response.text).toBe("done");
+  });
+
+  it("throws AgentHarnessFailureError from the structural responder", async () => {
+    const harness = {
+      async run() {
+        return {
+          metadata: {
+            runId: "run",
+            conversationId: "c",
+            contextSources: [],
+            contextSectionIds: [],
+          },
+          failure: { kind: "usage_limit", message: "No quota" },
+        };
+      },
+    };
+
+    await expect(createAgentResponder({ harness }).respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => undefined },
+    )).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  });
+});
