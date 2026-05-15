@@ -1,0 +1,54 @@
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { describe, expect, it } from 'vitest';
+
+import { DEFAULT_SOUL_TEXT } from './default-soul.js';
+import { ContextValidationError } from './errors.js';
+import { loadContextFromFiles } from './file-loader.js';
+
+const fixturesRoot = fileURLToPath(new URL('./__fixtures__/', import.meta.url));
+const filesRoot = join(fixturesRoot, 'files');
+const skillsRoot = join(fixturesRoot, 'skills-valid');
+
+describe('loadContextFromFiles', () => {
+  it('reads IDENTITY.md, optional SOUL.md, and a skills root through the filesystem', async () => {
+    const context = await loadContextFromFiles({
+      identityPath: join(filesRoot, 'IDENTITY.md'),
+      soulPath: join(filesRoot, 'SOUL.md'),
+      skillsRoot,
+      userMessage: 'Load fixture context.',
+    });
+
+    expect(context.metadata.usedDefaultCore).toBe(false);
+    expect(context.metadata.skillCount).toBe(1);
+    expect(context.prompt).toContain('You are the fixture context agent.');
+    expect(context.prompt).toContain('Use fixture guardrails and verify real outcomes.');
+    expect(context.prompt).toContain('- **research** — Find source-grounded evidence before making claims.');
+    expect(context.metadata.sources).toEqual([
+      join(filesRoot, 'SOUL.md'),
+      join(filesRoot, 'IDENTITY.md'),
+      join(skillsRoot, 'research', 'SKILL.md'),
+    ]);
+  });
+
+  it('uses the default SOUL text only when SOUL.md is omitted', async () => {
+    const context = await loadContextFromFiles({
+      identityPath: join(filesRoot, 'IDENTITY.md'),
+      userMessage: 'Load fixture context.',
+    });
+
+    expect(context.metadata.usedDefaultCore).toBe(true);
+    expect(context.sections[0]?.content).toBe(DEFAULT_SOUL_TEXT);
+  });
+
+  it('throws a typed error when an explicit file cannot be read', async () => {
+    await expect(
+      loadContextFromFiles({
+        identityPath: join(filesRoot, 'IDENTITY.md'),
+        soulPath: join(filesRoot, 'MISSING-SOUL.md'),
+        userMessage: 'Load fixture context.',
+      }),
+    ).rejects.toThrow(ContextValidationError);
+  });
+});
