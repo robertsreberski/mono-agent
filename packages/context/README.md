@@ -2,7 +2,7 @@
 
 Deterministic context assembly for small Worklab-style agents.
 
-This package turns agent inputs into both structured sections and a Markdown prompt. It accepts an identity, a current user message, optional memory, optional conversation history, optional core/SOUL guardrails, and an optional skill index. It does not run models, persist memory, load full skills into prompts, or hide missing file/configuration errors.
+This package turns agent inputs into both structured sections and a Markdown prompt. It accepts an identity, a current user message, optional memory, optional conversation history, optional core/SOUL guardrails, an optional skill index, and optional selected skill instruction blocks. It does not run models, persist memory, scan full skill bodies itself, or hide missing file/configuration errors.
 
 ## Install/use in this monorepo
 
@@ -37,6 +37,11 @@ const context = buildAgentContext({
       mainFile: '/agent/skills/research/SKILL.md',
     },
   ],
+  skillInstructions: {
+    kind: 'markdown',
+    content: '# Skill: research\n\nFind source-backed evidence before making claims.',
+    source: '/agent/skills/research/SKILL.md',
+  },
   userMessage: 'Summarize the package changes for handoff.',
 });
 
@@ -86,7 +91,8 @@ Sections render in this stable order:
 3. Memory, only when provided
 4. Conversation history, only when provided
 5. Skill index, only when provided
-6. Current user message
+6. Selected skill instructions, only when provided
+7. Current user message
 
 ## Default SOUL/core fallback
 
