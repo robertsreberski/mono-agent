@@ -7,6 +7,8 @@ export type {
 export {
   defineFieldGroup,
   CORE_FIELD_GROUPS,
+  readFieldValue,
+  writeFieldValue,
 } from "./schema/field-group.js";
 export type {
   FieldGroup,
