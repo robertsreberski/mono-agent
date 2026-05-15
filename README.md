@@ -16,6 +16,8 @@ Mono Agent is a small npm monorepo of reusable building blocks around `@worklab-
 | `@worklab-ai/skills` | Deterministic configured-skill activation that loads only selected `SKILL.md` bodies with byte caps. |
 | `@worklab-ai/agent-harness` | Main composition spine: communication request → context assembly → runtime run → explicit success/failure response, with memory/history/skills/tool policy/observability hooks. |
 | `@worklab-ai/telegram-agent-demo` | Private local demo host that wires the real Telegram bridge, harness, and runtime adapter. Tests use fakes; product use requires real Telegram/runtime credentials. |
+| `@worklab-ai/config-ui` | Small browser UI + loopback HTTP bridge that reads/writes `mono-agent.config.json`. Hosts register additional `FieldGroup`s on top of the built-in identity/runtime/memory/tools/telegram groups. |
+| `@worklab-ai/config-ui-demo` | Standalone `mono-agent-config-ui` bin that boots the config UI bridge against the current working directory's `mono-agent.config.json`. |
 
 ## Dependency direction
 
@@ -72,6 +74,63 @@ node packages/telegram-agent-demo/dist/cli.js
 ```
 
 The demo uses the real Telegram Bot API client, real long poller, and real runtime adapter by default. If Telegram or provider credentials are wrong, the harness and bridge surface honest failure states and observability artifacts rather than fake success.
+
+## Configuration UI
+
+`@worklab-ai/config-ui` ships a small browser settings surface for an agent's runtime configuration plus a loopback-only HTTP bridge that reads/writes `mono-agent.config.json`.
+
+Boot the standalone demo against the current directory:
+
+```bash
+npm install
+npm run build
+node packages/config-ui-demo/dist/cli.js
+# config-ui: http://127.0.0.1:<port>/?t=<token>
+# config:    <cwd>/mono-agent.config.json
+```
+
+Open the printed URL in a browser. The form renders one tab per registered `FieldGroup`. The built-in registry (`CORE_FIELD_GROUPS`) covers identity, runtime, memory, tools, and Telegram.
+
+Hosts can register custom groups when they call the bridge directly:
+
+```ts
+import {
+  startConfigUiBridge,
+  CORE_FIELD_GROUPS,
+  defineFieldGroup,
+} from "@worklab-ai/config-ui";
+
+const bridge = await startConfigUiBridge({
+  configPath: "/path/to/mono-agent.config.json",
+  cwd: process.cwd(),
+  fieldGroups: [
+    ...CORE_FIELD_GROUPS,
+    defineFieldGroup({
+      id: "telemetry",
+      label: "Telemetry",
+      fields: [
+        {
+          id: "telemetry.endpoint",
+          label: "OTLP endpoint",
+          kind: "string",
+          path: ["telemetry", "endpoint"],
+        },
+      ],
+    }),
+  ],
+});
+console.log(bridge.url, bridge.token);
+```
+
+`@worklab-ai/config` ships a layered loader (`loadMonoAgentConfigWithSources`) that consumes both env and `mono-agent.config.json`. Env wins for overlapping fields. The Telegram demo still uses the env-only `loadMonoAgentConfig` by default; opt the demo into the file layer by switching its loader call when you need it.
+
+### Safety model
+
+- The bridge binds to `127.0.0.1` only and refuses non-loopback hosts.
+- Every `/api/*` request requires a per-boot bearer token; `?t=` is accepted on first load and the SPA keeps it in memory for subsequent calls.
+- Secrets declared with `kind: "secret"` (the Telegram bot token) are write-only over the wire. GET responses replace the value with `{ __secret: true, set: <boolean> }` so the SPA never receives the actual token.
+- `mono-agent.config.json` is written with mode `0o600` and is `.gitignore`-d.
+- `expectedVersion` on PUT prevents two browser tabs from silently overwriting each other; a stale write returns `409` with the current version.
 
 ## Development verification
 
