@@ -169,6 +169,110 @@ describe("startConfigUiBridge", () => {
     }
   });
 
+  it("rejects PUT with unregistered top-level keys (does not persist)", async () => {
+    const configPath = join(dir, "config.json");
+    const bridge = await startConfigUiBridge({
+      configPath,
+      cwd: dir,
+      token: "test-token",
+    });
+    try {
+      const first = await fetch(`${bridge.url}/api/config`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      const firstBody = (await first.json()) as { version: string };
+      const put = await fetch(`${bridge.url}/api/config`, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expectedVersion: firstBody.version,
+          patch: { notRegistered: { arbitrary: "persisted" } },
+        }),
+      });
+      expect(put.status).toBe(400);
+      const body = (await put.json()) as {
+        error: string;
+        unregistered: readonly string[];
+      };
+      expect(body.error).toBe("unregistered_fields");
+      expect(body.unregistered).toEqual(["notRegistered.arbitrary"]);
+
+      // File on disk MUST NOT contain the unregistered key — bridge
+      // refused to write before touching mono-agent.config.json.
+      const onDiskExists = await readFile(configPath, "utf8").catch(() => "");
+      expect(onDiskExists).not.toContain("notRegistered");
+      expect(onDiskExists).not.toContain("arbitrary");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("rejects PUT with unregistered nested keys inside a registered group", async () => {
+    const bridge = await startConfigUiBridge({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+    });
+    try {
+      const first = await fetch(`${bridge.url}/api/config`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      const firstBody = (await first.json()) as { version: string };
+      const put = await fetch(`${bridge.url}/api/config`, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expectedVersion: firstBody.version,
+          patch: { runtime: { sneaky: "value" } },
+        }),
+      });
+      expect(put.status).toBe(400);
+      const body = (await put.json()) as { error: string; unregistered: readonly string[] };
+      expect(body.unregistered).toEqual(["runtime.sneaky"]);
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("rejects PUT when an integer field is out of declared range", async () => {
+    const bridge = await startConfigUiBridge({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+    });
+    try {
+      const first = await fetch(`${bridge.url}/api/config`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      const firstBody = (await first.json()) as { version: string };
+      const put = await fetch(`${bridge.url}/api/config`, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expectedVersion: firstBody.version,
+          patch: { runtime: { maxTurns: 9999 } },
+        }),
+      });
+      expect(put.status).toBe(400);
+      const body = (await put.json()) as {
+        error: string;
+        invalid: readonly { path: string; reason: string }[];
+      };
+      expect(body.invalid[0]?.path).toBe("runtime.maxTurns");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
   it("responds to /api/health without the bearer", async () => {
     const bridge = await startConfigUiBridge({
       configPath: join(dir, "config.json"),

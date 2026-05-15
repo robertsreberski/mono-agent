@@ -12,6 +12,7 @@ import type { MonoAgentConfigJson } from "@worklab-ai/config";
 import { CONFIG_UI_STATIC_DIR } from "../static.js";
 import type { FieldGroup } from "../schema/types.js";
 import { readBearerToken, tokensEqual } from "./auth.js";
+import { validatePatch } from "./patch-validator.js";
 import { redactSecrets } from "./redact.js";
 import type { ConfigUiBridgeEvent } from "./types.js";
 
@@ -112,6 +113,25 @@ async function handlePut(
     return json(res, 400, { error: "missing_version" });
   }
 
+  // Reject unregistered paths and per-leaf coercion failures BEFORE we touch
+  // disk. The bridge only persists keys that map to a registered FieldGroup
+  // FieldDefinition; anything else is dropped with a 400 so hosts cannot
+  // smuggle arbitrary state into mono-agent.config.json via the UI.
+  const validated = validatePatch(parsed.patch, deps.fieldGroups);
+  if (!validated.ok) {
+    deps.log?.({
+      kind: "validation_failed",
+      path: deps.configPath,
+      reason: summarizeValidationError(validated),
+    });
+    return json(res, 400, {
+      error: "unregistered_fields",
+      message: summarizeValidationError(validated),
+      unregistered: validated.unregistered,
+      invalid: validated.invalid,
+    });
+  }
+
   let current;
   try {
     current = await readMonoAgentConfigJson(deps.configPath);
@@ -128,7 +148,7 @@ async function handlePut(
   try {
     const result = await writeMonoAgentConfigJson({
       path: deps.configPath,
-      patch: parsed.patch,
+      patch: validated.patch,
     });
     deps.log?.({ kind: "write", path: deps.configPath, version: result.version });
     return json(res, 200, { ok: true, version: result.version });
@@ -250,6 +270,19 @@ async function readBody(req: IncomingMessage): Promise<string> {
 function errorBody(error: unknown): { error: string; reason?: string } {
   const reason = error instanceof Error ? error.message : String(error);
   return { error: "internal_error", reason };
+}
+
+function summarizeValidationError(
+  result: { unregistered: readonly string[]; invalid: readonly { path: string; reason: string }[] },
+): string {
+  const parts: string[] = [];
+  if (result.unregistered.length > 0) {
+    parts.push(`Unregistered fields rejected: ${result.unregistered.join(", ")}.`);
+  }
+  for (const entry of result.invalid) {
+    parts.push(entry.reason);
+  }
+  return parts.join(" ");
 }
 
 export const __test = { MIME_TYPES, CONFIG_UI_STATIC_DIR_FOR_TESTS: resolve(CONFIG_UI_STATIC_DIR) };
