@@ -1,10 +1,75 @@
-import type { ConfigUiBridgeOptions, ConfigUiBridgeStartResult } from "./types.js";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { CORE_FIELD_GROUPS } from "../schema/field-group.js";
+import { CONFIG_UI_STATIC_DIR } from "../static.js";
+import { generateToken } from "./auth.js";
+import { handleRequest } from "./handlers.js";
+import type {
+  ConfigUiBridgeOptions,
+  ConfigUiBridgeStartResult,
+} from "./types.js";
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
 /**
- * Stub. Real implementation lands in commit C4.
+ * Start a small loopback HTTP server that reads/writes mono-agent.config.json
+ * and serves the SPA. Refuses non-loopback hosts as a defense in depth.
  */
 export async function startConfigUiBridge(
-  _options: ConfigUiBridgeOptions,
+  options: ConfigUiBridgeOptions,
 ): Promise<ConfigUiBridgeStartResult> {
-  throw new Error("startConfigUiBridge: not yet implemented (see commit C4).");
+  const host = options.host ?? "127.0.0.1";
+  if (!LOOPBACK_HOSTS.has(host)) {
+    throw new Error(
+      `startConfigUiBridge refuses non-loopback host "${host}"; the bridge is local-only.`,
+    );
+  }
+
+  const token = options.token ?? generateToken();
+  const fieldGroups = options.fieldGroups ?? CORE_FIELD_GROUPS;
+  const staticDir = CONFIG_UI_STATIC_DIR;
+  const port = options.port ?? 0;
+
+  const server = createServer((req, res) => {
+    handleRequest(req, res, {
+      token,
+      configPath: options.configPath,
+      fieldGroups,
+      staticDir,
+      ...(options.log === undefined ? {} : { log: options.log }),
+    }).catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify({ error: "handler_threw", reason }));
+    });
+  });
+
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen({ host, port }, () => {
+      server.off("error", rejectListen);
+      resolveListen();
+    });
+  });
+
+  const address = server.address() as AddressInfo;
+  const url = `http://${host}:${address.port}`;
+  options.log?.({ kind: "listening", url });
+
+  const stop = async (): Promise<void> => {
+    await new Promise<void>((resolveStop, rejectStop) => {
+      server.close((error) => {
+        if (error) {
+          rejectStop(error);
+          return;
+        }
+        options.log?.({ kind: "stopped" });
+        resolveStop();
+      });
+    });
+  };
+
+  return { url, token, stop };
 }
