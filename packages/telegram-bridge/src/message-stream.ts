@@ -74,8 +74,11 @@ export class TelegramMessageStream implements AgentMessageStream {
     this.assertOpen();
     await this.throwIfAsyncError();
     this.statusText = normalizeTelegramText(text);
+    const hadMessage = this.sentMessage !== undefined;
     await this.ensureMessage();
-    await this.flushEdit(this.statusText);
+    if (hadMessage) {
+      await this.flushEdit(this.statusText);
+    }
   }
 
   async append(delta: string): Promise<void> {
