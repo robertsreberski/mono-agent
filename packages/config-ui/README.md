@@ -1,0 +1,126 @@
+# @worklab-ai/config-ui
+
+Small browser configuration UI for Mono Agent hosts plus a loopback HTTP bridge that reads/writes `mono-agent.config.json`.
+
+## What you get
+
+- A React 19 single-page form whose tabs are driven by a `FieldGroup` registry — five core groups (identity, runtime, memory, tools, telegram) ship in-box and hosts can register more.
+- A tiny Node HTTP server (`startConfigUiBridge`) that serves the SPA, exposes `/api/schema`, `/api/config`, and `/api/health`, and persists edits atomically.
+- Per-boot bearer-token auth, refusal to bind non-loopback hosts, secret redaction on GET, and `expectedVersion` concurrency control on PUT.
+
+## Install
+
+```bash
+npm install @worklab-ai/config-ui
+```
+
+This package is a workspace member of the Mono Agent monorepo; consumers outside this monorepo install it from npm.
+
+## Usage
+
+```ts
+import {
+  startConfigUiBridge,
+  CORE_FIELD_GROUPS,
+  defineFieldGroup,
+} from "@worklab-ai/config-ui";
+
+const bridge = await startConfigUiBridge({
+  configPath: "/path/to/mono-agent.config.json",
+  cwd: process.cwd(),
+  fieldGroups: [
+    ...CORE_FIELD_GROUPS,
+    defineFieldGroup({
+      id: "telemetry",
+      label: "Telemetry",
+      fields: [
+        {
+          id: "telemetry.endpoint",
+          label: "OTLP endpoint",
+          kind: "string",
+          path: ["telemetry", "endpoint"],
+        },
+      ],
+    }),
+  ],
+});
+
+console.log(bridge.url);   // http://127.0.0.1:<random-port>
+console.log(bridge.token); // 64-char hex, paste as ?t= when opening URL
+
+// Later
+await bridge.stop();
+```
+
+Open `${bridge.url}/?t=${bridge.token}` in your browser. The SPA picks up the token, strips it from the URL bar, and uses an Authorization header for subsequent API calls.
+
+## Field kinds
+
+| Kind | Renders as | Persisted as |
+| --- | --- | --- |
+| `string` | text input | string |
+| `path` | text input (hint: relative to `cwd`) | string |
+| `csv` | text input | string\[\] (split on commas) |
+| `integer` | number input with min/max | number |
+| `select` | `<select>` with the field's `options` | string |
+| `switch` | checkbox | boolean |
+| `secret` | password input | string (write-only over the wire) |
+
+`secret` values are never echoed in GET responses. The SPA shows a `SET` badge when the bridge reports `{ __secret: true, set: true }`. Submitting an empty `secret` clears the value on disk.
+
+## HTTP contract
+
+```
+GET  /                        SPA shell (HTML + injected window.__CONFIG_UI__)
+GET  /api/health              { ok: true }                                (no auth)
+GET  /api/schema              { fieldGroups: FieldGroup[] }               (bearer)
+GET  /api/config              { config: RedactedJson, version: string }   (bearer)
+PUT  /api/config              { ok: true, version: string }               (bearer)
+                              409 { error: "stale", currentVersion }
+                              400 { error, message?, details? }
+                              401 unauthorized
+```
+
+`PUT` body:
+
+```ts
+{
+  patch: Partial<MonoAgentConfigJson>;
+  expectedVersion: string;
+}
+```
+
+## Safety
+
+- Bind host is `127.0.0.1` by default; non-loopback values throw at start.
+- Bearer token is 32 random bytes (hex), generated per boot.
+- The on-disk JSON file is written with mode `0o600` via temp-file + rename, so a half-written file never overwrites a good one.
+- Provider API keys stay outside this package; the existing env-based runtime configuration owns them.
+
+## Public surface
+
+```ts
+import {
+  startConfigUiBridge,
+  defineFieldGroup,
+  CORE_FIELD_GROUPS,
+  readFieldValue,
+  writeFieldValue,
+} from "@worklab-ai/config-ui";
+
+import type {
+  ConfigUiBridgeOptions,
+  ConfigUiBridgeStartResult,
+  ConfigUiBridgeEvent,
+  FieldGroup,
+  FieldDefinition,
+  FieldKind,
+  FieldGroupRegistry,
+} from "@worklab-ai/config-ui";
+
+import { CONFIG_UI_STATIC_DIR } from "@worklab-ai/config-ui/static";
+```
+
+## License
+
+UNLICENSED (private to the Mono Agent workspace).
