@@ -1,0 +1,31 @@
+{
+  "name": "@worklab-ai/config-ui-demo",
+  "version": "0.1.0",
+  "description": "Private local demo host for the Mono Agent config UI bridge.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "mono-agent-config-ui": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@worklab-ai/config-ui": "^0.1.0"
+  }
+}
