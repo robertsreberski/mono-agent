@@ -1,0 +1,182 @@
+import type { Dirent } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+
+import { ContextValidationError } from './errors.js';
+import type { SkillIndexEntry } from './types.js';
+
+export function buildSkillIndex(entries: readonly SkillIndexEntry[]): readonly SkillIndexEntry[] {
+  const normalized = entries.map((entry, index) => normalizeSkillEntry(entry, index));
+  const seen = new Map<string, SkillIndexEntry>();
+
+  for (const entry of normalized) {
+    const key = entry.name.toLowerCase();
+    const existing = seen.get(key);
+    if (existing !== undefined) {
+      throw new ContextValidationError('invalid_skill_index', 'Duplicate skill names are not allowed.', {
+        name: entry.name,
+        existing: existing.mainFile,
+        duplicate: entry.mainFile,
+      });
+    }
+    seen.set(key, entry);
+  }
+
+  return [...normalized].sort(compareSkillEntries);
+}
+
+export async function loadSkillIndexFromDirectory(root: string): Promise<readonly SkillIndexEntry[]> {
+  const rootPath = resolveRequiredPath(root, 'skillsRoot');
+  let entries: Dirent[];
+  try {
+    entries = await readdir(rootPath, { withFileTypes: true });
+  } catch (error) {
+    throw fileReadError('Unable to read skills directory.', rootPath, error);
+  }
+
+  const discovered: SkillIndexEntry[] = [];
+  const childDirectories = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+
+  for (const childName of childDirectories) {
+    const skillFile = join(rootPath, childName, 'SKILL.md');
+    let markdown: string;
+    try {
+      markdown = await readFile(skillFile, 'utf8');
+    } catch (error) {
+      if (isErrorWithCode(error, 'ENOENT')) {
+        continue;
+      }
+      throw fileReadError('Unable to read skill file.', skillFile, error);
+    }
+
+    const description = deriveSkillDescription(markdown);
+    if (description.length === 0) {
+      throw new ContextValidationError('invalid_skill_index', 'Skill file must contain a non-heading description paragraph.', {
+        mainFile: skillFile,
+        name: childName,
+      });
+    }
+
+    discovered.push({
+      name: childName,
+      description,
+      mainFile: skillFile,
+    });
+  }
+
+  return buildSkillIndex(discovered);
+}
+
+export function renderSkillIndex(entries: readonly SkillIndexEntry[]): string {
+  const normalized = buildSkillIndex(entries);
+  return normalized
+    .map((entry) => `- **${entry.name}** — ${entry.description}\n  - Main file: \`${entry.mainFile}\``)
+    .join('\n');
+}
+
+function normalizeSkillEntry(entry: SkillIndexEntry, index: number): SkillIndexEntry {
+  const raw = entry as unknown as Record<string, unknown> | null;
+  if (raw === null || typeof raw !== 'object') {
+    throw new ContextValidationError('invalid_skill_index', 'Skill entries must be objects.', {
+      index,
+    });
+  }
+
+  return {
+    name: normalizeRequiredInlineString(raw.name, 'name', index),
+    description: normalizeRequiredInlineString(raw.description, 'description', index),
+    mainFile: normalizeRequiredInlineString(raw.mainFile, 'mainFile', index),
+  };
+}
+
+function normalizeRequiredInlineString(value: unknown, field: string, index: number): string {
+  if (typeof value !== 'string') {
+    throw new ContextValidationError('invalid_skill_index', `Skill ${field} must be a string.`, {
+      field,
+      index,
+    });
+  }
+
+  const normalized = normalizeInlineText(value);
+  if (normalized.length === 0) {
+    throw new ContextValidationError('invalid_skill_index', `Skill ${field} must not be empty.`, {
+      field,
+      index,
+    });
+  }
+
+  return normalized;
+}
+
+function normalizeInlineText(value: string): string {
+  return value.replace(/\r\n?/g, '\n').split('\n').map((line) => line.trim()).filter(Boolean).join(' ');
+}
+
+function compareSkillEntries(left: SkillIndexEntry, right: SkillIndexEntry): number {
+  const leftKey = left.name.toLowerCase();
+  const rightKey = right.name.toLowerCase();
+  if (leftKey < rightKey) {
+    return -1;
+  }
+  if (leftKey > rightKey) {
+    return 1;
+  }
+  if (left.name < right.name) {
+    return -1;
+  }
+  if (left.name > right.name) {
+    return 1;
+  }
+  return 0;
+}
+
+function deriveSkillDescription(markdown: string): string {
+  const paragraphs: string[] = [];
+  let currentParagraph: string[] = [];
+
+  const flush = (): void => {
+    if (currentParagraph.length > 0) {
+      paragraphs.push(normalizeInlineText(currentParagraph.join(' ')));
+      currentParagraph = [];
+    }
+  };
+
+  for (const rawLine of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+    const line = rawLine.trim();
+    if (line.length === 0) {
+      flush();
+      continue;
+    }
+    if (/^#{1,6}\s+/.test(line)) {
+      flush();
+      continue;
+    }
+    currentParagraph.push(line);
+  }
+  flush();
+
+  return paragraphs.find((paragraph) => paragraph.length > 0) ?? '';
+}
+
+function resolveRequiredPath(value: string, field: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new ContextValidationError('file_read_failed', `${field} must be a non-empty path.`, {
+      field,
+    });
+  }
+  return resolve(value);
+}
+
+function fileReadError(message: string, filePath: string, error: unknown): ContextValidationError {
+  return new ContextValidationError('file_read_failed', message, {
+    path: filePath,
+    cause: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function isErrorWithCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { readonly code?: unknown }).code === code;
+}
