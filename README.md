@@ -65,6 +65,28 @@ The demo composes:
 
 See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
 
+### Local Providers
+
+Mono Agent can pass local OpenAI-compatible providers into `@worklab-ai/agent-runtime` through the Pi adapter. Ollama is the primary supported local path:
+
+```json
+{
+  "runtime": {
+    "model": "pi:ollama:qwen3:8b",
+    "executionMode": "sdk",
+    "maxTurns": 8,
+    "workspace": "."
+  },
+  "providers": {
+    "local": [
+      { "id": "ollama", "type": "ollama", "baseUrl": "http://localhost:11434", "enabled": true }
+    ]
+  }
+}
+```
+
+Run Ollama locally and pull the model first, for example `ollama pull qwen3:8b`. Standard local Ollama needs no provider API key. LM Studio and other OpenAI-compatible local gateways use the same `providers.local` shape with `type: "lmstudio"` or `type: "openai_compat"`; public URLs must be explicitly trusted and use HTTPS.
+
 ## Development Verification
 
 ```bash

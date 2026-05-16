@@ -73,6 +73,41 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
 
 Environment variables override the JSON file. Keep provider credentials in the provider/runtime environment expected by `@worklab-ai/agent-runtime`; the operator console JSON is not a secret manager.
 
+## Ollama Local Provider
+
+To run the demo through a local Ollama model, start Ollama, pull a chat model, and point the Pi runtime reference at the local provider id:
+
+```bash
+ollama pull qwen3:8b
+pnpm run demo:final
+```
+
+```json
+{
+  "runtime": {
+    "model": "pi:ollama:qwen3:8b",
+    "executionMode": "sdk",
+    "maxTurns": 8,
+    "workspace": "."
+  },
+  "providers": {
+    "local": [
+      {
+        "id": "ollama",
+        "type": "ollama",
+        "baseUrl": "http://localhost:11434",
+        "enabled": true,
+        "models": [
+          { "name": "qwen3:8b", "capabilities": { "context_window": 32768 } }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Standard local Ollama needs no API key. The demo validates local-provider URLs before Telegram starts: private/local HTTP(S) URLs are allowed, while public URLs must use `https://` and set `trustPublicUrl: true`.
+
 For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `mono-agent.config.json`, then the built-in `./.mono-agent/artifacts` default. This lets the Observability view show existing default artifacts even while the rest of the demo config is incomplete.
 
 Useful env overrides:
@@ -83,6 +118,9 @@ MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS=...
 MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS=false
 MONO_AGENT_MODEL=pi:openai-codex:gpt-5.5
 MONO_AGENT_IDENTITY_PATH=./IDENTITY.md
+MONO_AGENT_LOCAL_PROVIDER_ID=ollama
+MONO_AGENT_LOCAL_PROVIDER_TYPE=ollama
+MONO_AGENT_LOCAL_PROVIDER_BASE_URL=http://localhost:11434
 ```
 
 ## CLI options
