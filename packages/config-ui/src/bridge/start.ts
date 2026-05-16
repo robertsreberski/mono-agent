@@ -37,6 +37,7 @@ export async function startConfigUiBridge(
       configPath: options.configPath,
       fieldGroups,
       staticDir,
+      ...(options.observability === undefined ? {} : { observability: options.observability }),
       ...(options.log === undefined ? {} : { log: options.log }),
     }).catch((error: unknown) => {
       const reason = error instanceof Error ? error.message : String(error);

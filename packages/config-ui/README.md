@@ -6,7 +6,7 @@ Small browser configuration UI for Mono Agent hosts plus a loopback HTTP bridge 
 
 - A React 19 single-page form built on **Tailwind v4 + shadcn/ui** primitives (radix-nova preset, neutral baseColor) — the same design system as the standalone Worklab `design-system` reference. Form-essentials subset only: `button`, `input`, `label`, `card`, `tabs`, `badge`, `separator`, `select`, `switch`.
 - Tabs driven by a `FieldGroup` registry — five core groups (identity, runtime, memory, tools, telegram) ship in-box and hosts can register more.
-- A tiny Node HTTP server (`startConfigUiBridge`) that serves the SPA, exposes `/api/schema`, `/api/config`, and `/api/health`, and persists edits atomically.
+- A tiny Node HTTP server (`startConfigUiBridge`) that serves the SPA, exposes `/api/schema`, `/api/config`, optional `/api/observability/*`, and `/api/health`, and persists edits atomically.
 - Per-boot bearer-token auth, refusal to bind non-loopback hosts, secret redaction on GET, **schema-validated PUT** (unregistered field paths are rejected with 400 before disk is touched), and `expectedVersion` concurrency control on PUT.
 
 ## Install
@@ -29,6 +29,11 @@ import {
 const bridge = await startConfigUiBridge({
   configPath: "/path/to/mono-agent.config.json",
   cwd: process.cwd(),
+  observability: {
+    artifactDir: "/path/to/.mono-agent/artifacts",
+    maxRuns: 50,
+    maxEventsPerRun: 500,
+  },
   fieldGroups: [
     ...CORE_FIELD_GROUPS,
     defineFieldGroup({
@@ -76,6 +81,11 @@ GET  /                        SPA shell (HTML + injected window.__CONFIG_UI__)
 GET  /api/health              { ok: true }                                (no auth)
 GET  /api/schema              { fieldGroups: FieldGroup[] }               (bearer)
 GET  /api/config              { config: RedactedJson, version: string }   (bearer)
+GET  /api/observability/runs  { enabled, artifactDir?, runs, warnings? }   (bearer)
+GET  /api/observability/runs/:runId
+                              { enabled, artifactDir?, run?, warnings? }   (bearer)
+                              404 { error: "not_found" }
+                              400 { error: "invalid_run_id" }
 PUT  /api/config              { ok: true, version: string }               (bearer)
                               409 { error: "stale", currentVersion }
                               400 { error, message?, details? }
@@ -104,6 +114,12 @@ The bridge validates the `patch` against the registered `FieldGroup` schema **be
 
 Per-leaf coercion runs the value through the field's declared kind so out-of-range integers, unknown `select` options, and mistyped scalars are surfaced the same way. Hosts cannot smuggle arbitrary keys into `mono-agent.config.json` via the UI, even with a valid bearer token.
 
+## Observability
+
+When `observability` is provided, the bridge reads persisted `@worklab-ai/observability` JSON artifacts from that directory. The view is refresh-based: it lists recorded requests/runs and loads one selected run's redacted JSONL event timeline on demand. If observability is omitted, the endpoint returns a clear disabled state instead of demo data. If the artifact directory does not exist yet, the enabled response contains an empty run list.
+
+Run ids are URL-decoded, must be non-empty, and cannot contain `/`, `\\`, or `..`; the server derives artifact file paths inside the configured directory rather than accepting request-provided paths.
+
 ## Safety
 
 - Bind host is `127.0.0.1` by default; non-loopback values throw at start.
@@ -126,6 +142,7 @@ import type {
   ConfigUiBridgeOptions,
   ConfigUiBridgeStartResult,
   ConfigUiBridgeEvent,
+  ConfigUiObservabilityOptions,
   FieldGroup,
   FieldDefinition,
   FieldKind,

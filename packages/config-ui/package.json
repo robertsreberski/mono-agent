@@ -28,7 +28,8 @@
     "test": "vitest run --config vitest.config.ts --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/config": "workspace:^0.1.0"
+    "@worklab-ai/config": "workspace:^0.1.0",
+    "@worklab-ai/observability": "workspace:^0.1.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",

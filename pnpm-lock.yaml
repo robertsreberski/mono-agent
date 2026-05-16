@@ -77,6 +77,9 @@ importers:
       '@worklab-ai/config':
         specifier: workspace:^0.1.0
         version: link:../config
+      '@worklab-ai/observability':
+        specifier: workspace:^0.1.0
+        version: link:../observability
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.3.0
