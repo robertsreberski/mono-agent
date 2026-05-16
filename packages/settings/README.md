@@ -1,5 +1,9 @@
 # @worklab-ai/settings
 
+## Category
+
+Category: `core`
+
 ## Responsibility
 
 Generic settings primitives for Mono Agent hosts: field-group schemas, field read/write helpers, sparse patch validation, secret redaction, and atomic JSON settings storage. This package is adapter-neutral and can preserve unknown top-level JSON sections for future hosts or adapters.

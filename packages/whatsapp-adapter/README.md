@@ -1,5 +1,9 @@
 # @worklab-ai/whatsapp-adapter
 
+## Category
+
+Category: `communication`
+
 ## Responsibility
 
 WhatsApp communication adapter for Mono Agent hosts using Baileys-compatible sockets. It normalizes WhatsApp messages, handles direct and group mention triggers, streams replies, supports cancellation, and enforces explicit chat allowlists or allow-all mode.

@@ -1,5 +1,9 @@
 # @worklab-ai/operator-console
 
+## Category
+
+Category: `operator-surface`
+
 ## Responsibility
 
 Local loopback operator surface for Mono Agent hosts. It serves a React settings UI, validates registered field-group patches, writes a JSON settings file atomically, and optionally reads recorded-run artifacts for a Runs view.

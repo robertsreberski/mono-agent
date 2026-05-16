@@ -1,5 +1,9 @@
 # @worklab-ai/memory-md
 
+## Category
+
+Category: `context`
+
 ## Responsibility
 
 Optional Markdown memory store for Mono Agent hosts. It reads capped memory blocks and appends host-owned summaries to either one shared file or safe per-conversation files.

@@ -1,5 +1,9 @@
 # @worklab-ai/observability
 
+## Category
+
+Category: `observability`
+
 ## Responsibility
 
 Local JSONL run observability. It records runtime events and compact summaries, redacts sensitive payload fields by default, lists recorded runs, and reads a selected run detail for local operator surfaces.

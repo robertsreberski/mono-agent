@@ -1,5 +1,9 @@
 # @worklab-ai/runtime-adapter
 
+## Category
+
+Category: `runtime`
+
 ## Responsibility
 
 Typed Mono Agent facade over `@worklab-ai/agent-runtime`. It parses runtime model references, selects or validates execution mode, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.

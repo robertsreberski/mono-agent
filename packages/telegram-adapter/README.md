@@ -1,5 +1,9 @@
 # @worklab-ai/telegram-adapter
 
+## Category
+
+Category: `communication`
+
 ## Responsibility
 
 Telegram communication adapter for Mono Agent hosts. It provides a Bot API client, long poller, update handler, streamed message edits, cancellation, allowlist enforcement, and Telegram-owned settings helpers.

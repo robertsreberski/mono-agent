@@ -1,5 +1,9 @@
 # @worklab-ai/agent-harness
 
+## Category
+
+Category: `execution`
+
 ## Responsibility
 
 Composition spine for a Mono Agent request. It turns a communication request into context, calls a runtime, records structured run events, updates optional memory, and returns explicit success or failure responses.

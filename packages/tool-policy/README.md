@@ -1,5 +1,9 @@
 # @worklab-ai/tool-policy
 
+## Category
+
+Category: `core`
+
 ## Responsibility
 
 Fail-closed tool and MCP policy normalization. It accepts host policy input, loads optional JSON policy files, and converts allowed/disallowed tools plus MCP config paths into runtime options.
