@@ -30,8 +30,10 @@ const backends = listMonoRuntimeBackends();
 - `parseMonoRuntimeModelReference`, `assertParsedRuntimeModelReference`
 - `defaultExecutionModeForModel`, `assertExecutionModeCompatible`, `isRuntimeExecutionMode`
 - `listMonoRuntimeBackends`, `runtimeBackendForModel`, `describeMonoRuntimeSupport`
+- `runtimeOptionsForLocalProvider`, `validateLocalProviderDefinition`, `isPrivateBaseUrl`
 - `RuntimeAdapterError`
 - Runtime backend, model, execution mode, message, event, tool, and result types
+- Local provider types for Ollama, LM Studio, and OpenAI-compatible gateways
 
 Supported backend seams are exposed as data:
 
@@ -41,6 +43,34 @@ Supported backend seams are exposed as data:
 | Claude Code CLI | `claude:<model>` | `cli` | Claude Code CLI bridge through `@worklab-ai/agent-runtime` |
 | Codex app CLI | `codex:<model>` | `cli` | Codex app-server bridge through `@worklab-ai/agent-runtime` |
 | Pi SDK provider | `pi:<provider>:<model>` | `sdk` | Pi SDK gateway, including provider ids such as `openai-codex` or Copilot-style provider ids |
+
+## Local Pi Providers
+
+`runtimeOptionsForLocalProvider()` converts host config into the custom-provider context expected by `@worklab-ai/agent-runtime`'s Pi adapter. It only returns options when the parsed model is `pi:<provider>:<model>` and `<provider>` matches a configured local provider. Built-in Pi providers such as `pi:openai-codex:gpt-5.5` return `{}`.
+
+Ollama example:
+
+```ts
+import {
+  parseMonoRuntimeModelReference,
+  runtimeOptionsForLocalProvider,
+} from "@worklab-ai/runtime-adapter";
+
+const model = parseMonoRuntimeModelReference("pi:ollama:qwen3:8b");
+const runtimeOptions = runtimeOptionsForLocalProvider(model, [
+  {
+    id: "ollama",
+    type: "ollama",
+    baseUrl: "http://localhost:11434",
+    enabled: true,
+    models: [
+      { name: "qwen3:8b", capabilities: { context_window: 32768 } },
+    ],
+  },
+]);
+```
+
+Private HTTP(S) URLs such as `localhost`, RFC1918 addresses, and Tailscale CGNAT addresses are allowed. Public hosts require `https://` plus `trustPublicUrl: true`; invalid local-provider config throws `RuntimeAdapterError` instead of falling back to a hosted provider.
 
 ## Dependency Boundary
 

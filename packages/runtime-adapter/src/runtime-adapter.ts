@@ -21,7 +21,8 @@ export type RuntimeAdapterErrorCode =
   | "invalid_execution_mode"
   | "incompatible_execution_mode"
   | "runtime_backend_unavailable"
-  | "invalid_runtime_options";
+  | "invalid_runtime_options"
+  | "invalid_local_provider";
 
 export interface RuntimeAdapterErrorDetails {
   readonly code?: RuntimeAdapterErrorCode;

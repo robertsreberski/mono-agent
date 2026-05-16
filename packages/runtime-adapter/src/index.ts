@@ -11,6 +11,21 @@ export {
   RuntimeAdapterError,
 } from "./runtime-adapter.js";
 export type { RuntimeAdapterErrorCode, RuntimeAdapterErrorDetails } from "./runtime-adapter.js";
+export {
+  isPrivateBaseUrl,
+  runtimeOptionsForLocalProvider,
+  validateLocalProviderDefinition,
+} from "./local-providers.js";
+export type {
+  AgentRuntimeCustomModel,
+  AgentRuntimeCustomProvider,
+  LocalProviderCapabilities,
+  LocalProviderDefinition,
+  LocalProviderModelDefinition,
+  LocalProviderPricing,
+  LocalProviderRuntimeOptions,
+  LocalProviderType,
+} from "./local-providers.js";
 export type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeBackendDescriptor,
