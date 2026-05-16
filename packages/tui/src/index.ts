@@ -27,3 +27,6 @@ export { TuiInkMessageStream } from "./agent/message-stream.js";
 
 export type { ChatPaneProps } from "./components/ChatPane.js";
 export { ChatPane } from "./components/ChatPane.js";
+
+export type { HistoryPaneProps } from "./components/HistoryPane.js";
+export { HistoryPane } from "./components/HistoryPane.js";
