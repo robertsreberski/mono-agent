@@ -1,5 +1,5 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,6 +14,7 @@ import type {
 
 import {
   resolveFinalDemoArtifactDir,
+  resolveFinalDemoTraceRegistryDir,
   startFinalAgentDemo,
 } from "./final-demo.js";
 
@@ -35,7 +36,7 @@ describe("final agent demo", () => {
     let pollerConstructed = false;
     const demo = await startFinalAgentDemo({
       cwd: dir,
-      env: {},
+      env: testTraceEnv(),
       runtime: createFakeRuntime().runtime,
       telegramApi: createFakeTelegramApi().api,
       pollerFactory: () => {
@@ -65,6 +66,14 @@ describe("final agent demo", () => {
       expect(observability.enabled).toBe(true);
       expect(observability.artifactDir).toBe(resolve(dir, ".mono-agent", "artifacts"));
       expect(observability.runs).toEqual([]);
+      expect(demo.traceabilityStatus).toMatchObject({
+        kind: "running",
+        registryDir: resolve(dir, "trace-registry"),
+        artifactDir: resolve(dir, ".mono-agent", "artifacts"),
+      });
+      const traceability = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
+      expect(traceability.enabled).toBe(true);
+      expect(traceability.sources[0]).toMatchObject({ label: "Final Agent Demo", health: "running" });
     } finally {
       await demo.stop();
     }
@@ -84,7 +93,7 @@ describe("final agent demo", () => {
 
     const demo = await startFinalAgentDemo({
       cwd: dir,
-      env: {},
+      env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
       telegramApi: fakeApi.api,
       pollerFactory: (options) => {
@@ -136,6 +145,21 @@ describe("final agent demo", () => {
       .resolves.toBe(resolve(dir, "from-config"));
   });
 
+  it("resolves traceability settings without requiring a valid full config", async () => {
+    const dir = await tempDir();
+    const configPath = join(dir, "mono-agent.config.json");
+
+    await writeFile(configPath, "{ this is not valid json", "utf8");
+    await expect(resolveFinalDemoTraceRegistryDir({ env: { MONO_AGENT_TRACE_REGISTRY_DIR: "./from-env" }, cwd: dir, configPath }))
+      .resolves.toBe(resolve(dir, "from-env"));
+    await expect(resolveFinalDemoTraceRegistryDir({ env: {}, cwd: dir, configPath }))
+      .resolves.toBe(resolve(homedir(), ".mono-agent", "trace-sources"));
+
+    await writeFile(configPath, `${JSON.stringify({ traceability: { registryDir: "./from-config" } })}\n`, "utf8");
+    await expect(resolveFinalDemoTraceRegistryDir({ env: {}, cwd: dir, configPath }))
+      .resolves.toBe(resolve(dir, "from-config"));
+  });
+
   it("starts an A2A provider independently when Telegram is not configured", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono over A2A.", "utf8");
@@ -149,7 +173,7 @@ describe("final agent demo", () => {
     const fakeRuntime = createFakeRuntime();
     const demo = await startFinalAgentDemo({
       cwd: dir,
-      env: {},
+      env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
       telegramApi: createFakeTelegramApi().api,
       pollerFactory: () => {
@@ -201,7 +225,7 @@ describe("final agent demo", () => {
     let pollerOptions: TelegramLongPollerOptions | undefined;
     const demo = await startFinalAgentDemo({
       cwd: dir,
-      env: {},
+      env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
       telegramApi: fakeApi.api,
       pollerFactory: (options) => {
@@ -251,6 +275,18 @@ describe("final agent demo", () => {
       const observedDetail = await getObservedRun(demo.operatorConsole.url, demo.operatorConsole.token, observedRuns.runs[0]?.runId ?? "");
       expect(observedDetail.run?.events[0]).toMatchObject({ category: "runtime", type: "fake-event" });
       expect(JSON.stringify(observedDetail)).not.toContain("should-redact");
+      const traceability = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
+      expect(traceability.runs[0]).toMatchObject({
+        conversationId: "telegram:987654321",
+        source: { label: "Final Agent Demo" },
+      });
+      const traceDetail = await getTraceabilityRun(
+        demo.operatorConsole.url,
+        demo.operatorConsole.token,
+        traceability.runs[0]?.source.sourceId ?? "",
+        traceability.runs[0]?.runId ?? "",
+      );
+      expect(traceDetail.detail?.run.events[0]).toMatchObject({ category: "runtime", type: "fake-event" });
       expect(fakeApi.sentTexts.join("\n")).toContain("runtime ok");
     } finally {
       await demo.stop();
@@ -293,7 +329,7 @@ describe("final agent demo", () => {
     let pollerOptions: TelegramLongPollerOptions | undefined;
     const demo = await startFinalAgentDemo({
       cwd: dir,
-      env: {},
+      env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
       telegramApi: createFakeTelegramApi().api,
       pollerFactory: (options) => {
@@ -368,7 +404,7 @@ describe("final agent demo", () => {
 
     const demo = await startFinalAgentDemo({
       cwd: dir,
-      env: {},
+      env: testTraceEnv(),
       runtime: createFakeRuntime().runtime,
       telegramApi: createFakeTelegramApi().api,
       pollerFactory: () => {
@@ -420,6 +456,15 @@ function validConfigPatch() {
     artifacts: {
       dir: "./artifacts",
     },
+    traceability: {
+      registryDir: "./trace-registry",
+    },
+  };
+}
+
+function testTraceEnv(): Record<string, string> {
+  return {
+    MONO_AGENT_TRACE_REGISTRY_DIR: "./trace-registry",
   };
 }
 
@@ -473,6 +518,38 @@ async function getObservabilityRuns(
     artifactDir?: string;
     runs: Array<{ runId: string; conversationId: string; status: string }>;
   };
+}
+
+async function getTraceabilityRuns(
+  url: string,
+  token: string,
+): Promise<{
+  enabled: boolean;
+  sources: Array<{ sourceId: string; label: string; health: string }>;
+  runs: Array<{ runId: string; conversationId: string; source: { sourceId: string; label: string } }>;
+}> {
+  const response = await fetch(`${url}/api/traceability/runs`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(response.status).toBe(200);
+  return await response.json() as {
+    enabled: boolean;
+    sources: Array<{ sourceId: string; label: string; health: string }>;
+    runs: Array<{ runId: string; conversationId: string; source: { sourceId: string; label: string } }>;
+  };
+}
+
+async function getTraceabilityRun(
+  url: string,
+  token: string,
+  sourceId: string,
+  runId: string,
+): Promise<{ detail?: { run: { events: Array<{ category: string; type?: string }> } } }> {
+  const response = await fetch(`${url}/api/traceability/runs/${encodeURIComponent(sourceId)}/${encodeURIComponent(runId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(response.status).toBe(200);
+  return await response.json() as { detail?: { run: { events: Array<{ category: string; type?: string }> } } };
 }
 
 async function getObservedRun(
