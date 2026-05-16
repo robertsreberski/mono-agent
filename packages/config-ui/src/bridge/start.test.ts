@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { createJsonlRunRecorder } from "@worklab-ai/observability";
+
 import { startConfigUiBridge } from "./start.js";
 
 let dir: string;
@@ -268,6 +270,94 @@ describe("startConfigUiBridge", () => {
         invalid: readonly { path: string; reason: string }[];
       };
       expect(body.invalid[0]?.path).toBe("runtime.maxTurns");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("returns disabled observability when no artifact reader is configured", async () => {
+    const bridge = await startConfigUiBridge({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+    });
+    try {
+      const unauthorized = await fetch(`${bridge.url}/api/observability/runs`);
+      expect(unauthorized.status).toBe(401);
+
+      const response = await fetch(`${bridge.url}/api/observability/runs`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { enabled: boolean; runs: unknown[]; warnings: string[] };
+      expect(body.enabled).toBe(false);
+      expect(body.runs).toEqual([]);
+      expect(body.warnings[0]).toMatch(/not configured/u);
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("lists recorded runs and reads event details through bearer-protected observability endpoints", async () => {
+    const artifactDir = join(dir, "artifacts");
+    const recorder = createJsonlRunRecorder({ runId: "run-api", conversationId: "chat-api", artifactDir });
+    recorder.onEvent({ type: "tool.call", toolName: "Read", status: "started", apiKey: "should-redact" });
+    recorder.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "done" }] } });
+    await recorder.finish({ usage: { inputTokens: 3 }, capabilitiesUsed: ["tools"] });
+
+    const bridge = await startConfigUiBridge({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+      observability: { artifactDir, maxRuns: 10, maxEventsPerRun: 10 },
+    });
+    try {
+      const listResponse = await fetch(`${bridge.url}/api/observability/runs`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(listResponse.status).toBe(200);
+      const listBody = (await listResponse.json()) as {
+        enabled: boolean;
+        artifactDir: string;
+        runs: { runId: string; conversationId: string; status: string; eventCount: number; capabilitiesUsed?: unknown }[];
+      };
+      expect(listBody.enabled).toBe(true);
+      expect(listBody.artifactDir).toBe(artifactDir);
+      expect(listBody.runs[0]).toMatchObject({ runId: "run-api", conversationId: "chat-api", status: "succeeded", eventCount: 2 });
+      expect(JSON.stringify(listBody)).not.toContain("should-redact");
+
+      const detailResponse = await fetch(`${bridge.url}/api/observability/runs/${encodeURIComponent("run-api")}`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(detailResponse.status).toBe(200);
+      const detailBody = (await detailResponse.json()) as {
+        enabled: boolean;
+        run: { events: { category: string; label: string; summary: string }[] };
+      };
+      expect(detailBody.enabled).toBe(true);
+      expect(detailBody.run.events.map((event) => event.category)).toEqual(["tool", "message"]);
+      expect(detailBody.run.events[0]?.label).toBe("Tool: Read");
+      expect(detailBody.run.events[1]?.summary).toBe("done");
+      expect(JSON.stringify(detailBody)).not.toContain("should-redact");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("rejects path traversal in observability run ids", async () => {
+    const bridge = await startConfigUiBridge({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+      observability: { artifactDir: join(dir, "artifacts") },
+    });
+    try {
+      const response = await fetch(`${bridge.url}/api/observability/runs/${encodeURIComponent("../secret")}`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(response.status).toBe(400);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toBe("invalid_run_id");
     } finally {
       await bridge.stop();
     }

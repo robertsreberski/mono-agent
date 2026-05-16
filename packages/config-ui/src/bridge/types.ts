@@ -1,5 +1,16 @@
 import type { FieldGroup } from "../schema/types.js";
 
+export interface ConfigUiObservabilityOptions {
+  /** Artifact directory containing *.summary.json and *.events.jsonl files. */
+  readonly artifactDir: string | (() => string | undefined | Promise<string | undefined>);
+  /** Maximum number of runs returned by the list endpoint. */
+  readonly maxRuns?: number;
+  /** Maximum events returned for a single run detail. */
+  readonly maxEventsPerRun?: number;
+  /** Maximum string bytes retained per payload field. */
+  readonly maxStringBytes?: number;
+}
+
 export interface ConfigUiBridgeOptions {
   /** Absolute path to the JSON config file the bridge reads/writes. */
   readonly configPath: string;
@@ -13,6 +24,8 @@ export interface ConfigUiBridgeOptions {
   readonly port?: number;
   /** Override the per-boot bearer token (testing only). */
   readonly token?: string;
+  /** Optional recorded-run artifact reader configuration for the Observability view. */
+  readonly observability?: ConfigUiObservabilityOptions;
   /** Optional logger for bridge events. */
   readonly log?: (event: ConfigUiBridgeEvent) => void;
 }

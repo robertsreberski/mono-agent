@@ -3,6 +3,7 @@ export type {
   ConfigUiBridgeEvent,
   ConfigUiBridgeOptions,
   ConfigUiBridgeStartResult,
+  ConfigUiObservabilityOptions,
 } from "./bridge/types.js";
 export {
   defineFieldGroup,

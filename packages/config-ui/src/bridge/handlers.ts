@@ -12,9 +12,13 @@ import type { MonoAgentConfigJson } from "@worklab-ai/config";
 import { CONFIG_UI_STATIC_DIR } from "../static.js";
 import type { FieldGroup } from "../schema/types.js";
 import { readBearerToken, tokensEqual } from "./auth.js";
+import {
+  observabilityRunResponse,
+  observabilityRunsResponse,
+} from "./observability.js";
 import { validatePatch } from "./patch-validator.js";
 import { redactSecrets } from "./redact.js";
-import type { ConfigUiBridgeEvent } from "./types.js";
+import type { ConfigUiBridgeEvent, ConfigUiObservabilityOptions } from "./types.js";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -33,6 +37,7 @@ export interface HandlerDeps {
   readonly configPath: string;
   readonly fieldGroups: readonly FieldGroup[];
   readonly staticDir: string;
+  readonly observability?: ConfigUiObservabilityOptions;
   readonly log?: (event: ConfigUiBridgeEvent) => void;
 }
 
@@ -86,6 +91,14 @@ async function routeApi(
     } catch (error) {
       return json(res, 500, errorBody(error));
     }
+  }
+  if (method === "GET" && path === "/api/observability/runs") {
+    const result = await observabilityRunsResponse(deps.observability);
+    return json(res, result.status, result.body);
+  }
+  if (method === "GET" && path.startsWith("/api/observability/runs/")) {
+    const result = await observabilityRunResponse(deps.observability, path);
+    return json(res, result.status, result.body);
   }
   if (method === "PUT" && path === "/api/config") {
     return handlePut(req, res, deps);
