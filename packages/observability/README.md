@@ -1,35 +1,43 @@
 # @worklab-ai/observability
 
-Run event recording and artifact summaries for Mono Agent hosts.
+## Responsibility
 
-`createJsonlRunRecorder()` records runtime-like events, redacts obvious secrets, and writes JSONL event artifacts plus compact JSON summaries containing status, duration, usage, cost, provider session id, failure kind, warnings, diagnostics, and capabilities used.
+Local JSONL run observability. It records runtime events and compact summaries, redacts sensitive payload fields by default, lists recorded runs, and reads a selected run detail for local operator surfaces.
 
-## Recorded run reader
+## Install / Usage
 
-`listRecordedRuns()` and `readRecordedRun()` provide the read-side contract used by the config UI Observability view. They read only from a configured artifact directory, never from request-provided paths.
-
-```ts
-import { listRecordedRuns, readRecordedRun } from "@worklab-ai/observability";
-
-const list = await listRecordedRuns({
-  artifactDir: "/path/to/.mono-agent/artifacts",
-  maxRuns: 50,
-});
-
-const detail = await readRecordedRun(
-  { artifactDir: "/path/to/.mono-agent/artifacts", maxEventsPerRun: 500 },
-  list.runs[0]?.runId ?? "",
-);
+```bash
+pnpm --filter @worklab-ai/observability run build
 ```
 
-The reader:
+```ts
+import {
+  createJsonlRunRecorder,
+  listRecordedRuns,
+  readRecordedRun,
+} from "@worklab-ai/observability";
+```
 
-- lists `*.summary.json` files newest first and returns an empty list if the artifact directory does not exist yet;
-- validates the minimal recorded-run shape instead of treating arbitrary JSON as a run;
-- reads matching `*.events.jsonl` files by sanitized run id;
-- caps list/event sizes and string payload sizes;
-- redacts sensitive keys again on read so older artifacts do not leak obvious secrets;
-- skips malformed individual JSONL lines with warnings rather than failing the whole run detail; and
-- classifies visible runtime events into `tool`, `thinking`, `message`, `runtime`, or `error` buckets from explicit event types/keys only.
+## Public API
 
-The `thinking` bucket means a runtime emitted a visible reasoning/thinking-process event. This package does not infer or expose private model chain-of-thought.
+- `createJsonlRunRecorder`, `JsonlRunRecorder`
+- `listRecordedRuns`, `readRecordedRun`, `classifyRecordedRunEvent`
+- `redactJsonValue`
+- `ObservabilityError`, `ObservabilityReadError`
+- Recorder, summary, list, detail, and event types
+
+## Dependency Boundary
+
+This package writes and reads local artifact files only. It has no runtime, adapter, UI, database, queue, or network dependency.
+
+## What This Package Does Not Own
+
+It does not provide a hosted trace backend, metrics service, durable database, UI, or model-specific telemetry collector.
+
+## Verification
+
+```bash
+pnpm --filter @worklab-ai/observability run build
+pnpm --filter @worklab-ai/observability run typecheck
+pnpm --filter @worklab-ai/observability run test
+```

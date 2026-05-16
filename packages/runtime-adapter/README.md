@@ -1,24 +1,42 @@
 # @worklab-ai/runtime-adapter
 
-Typed Mono Agent facade over `@worklab-ai/agent-runtime`.
+## Responsibility
 
-This package centralizes the JavaScript-first runtime boundary so other Mono Agent packages can depend on explicit TypeScript contracts instead of importing runtime internals directly. It parses model references, validates execution-mode compatibility, and delegates provider/tool execution to `@worklab-ai/agent-runtime` without replacing it.
+Typed Mono Agent facade over `@worklab-ai/agent-runtime`. It parses runtime model references, selects or validates execution mode, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
+
+## Install / Usage
+
+```bash
+pnpm --filter @worklab-ai/runtime-adapter run build
+```
 
 ```ts
 import {
   createMonoRuntime,
   parseMonoRuntimeModelReference,
 } from "@worklab-ai/runtime-adapter";
-
-const runtime = createMonoRuntime({ workspace: process.cwd() });
-const model = parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5");
-
-const result = await runtime.run("You are concise.", {
-  model,
-  executionMode: "sdk",
-  messages: [{ role: "user", content: "Hello" }],
-  abortSignal: new AbortController().signal,
-});
 ```
 
-Runtime failures are not swallowed. If the underlying runtime returns `error`, `failureKind`, or `cancelled`, callers receive that result and must handle it explicitly.
+## Public API
+
+- `createMonoRuntime`
+- `parseMonoRuntimeModelReference`, `assertParsedRuntimeModelReference`
+- `defaultExecutionModeForModel`, `assertExecutionModeCompatible`, `isRuntimeExecutionMode`
+- `RuntimeAdapterError`
+- Runtime model, execution mode, message, event, tool, and result types
+
+## Dependency Boundary
+
+This is the only package that depends on `@worklab-ai/agent-runtime`. Other packages consume its small `MonoRuntimeLike` interface instead of importing provider/runtime internals.
+
+## What This Package Does Not Own
+
+It does not build prompts, manage memory, expose UI, poll communication channels, or persist observability artifacts.
+
+## Verification
+
+```bash
+pnpm --filter @worklab-ai/runtime-adapter run build
+pnpm --filter @worklab-ai/runtime-adapter run typecheck
+pnpm --filter @worklab-ai/runtime-adapter run test
+```
