@@ -51,6 +51,20 @@ export {
   RuntimeResponderError,
 } from "./runtime-responder.js";
 
+export {
+  loadWhatsAppAdapterConfig,
+  redactWhatsAppAdapterConfig,
+  WhatsAppAdapterConfigError,
+  whatsappFieldGroup,
+} from "./config.js";
+export type {
+  LoadWhatsAppAdapterConfigInput,
+  RedactedWhatsAppAdapterConfig,
+  WhatsAppAdapterConfig,
+  WhatsAppAdapterConfigErrorCode,
+  WhatsAppAdapterConfigErrorDetails,
+} from "./config.js";
+
 export type {
   LongLike,
   WhatsAppChatKind,
