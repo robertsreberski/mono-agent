@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   RecordedRunEvent,
   RecordedRunEventCategory,
+  RecordedRunTimelineItem,
   RunSummaryStatus,
   TraceRunDetail,
   TraceRunListItem,
   TraceSourceHealth,
   TraceSourceListItem,
 } from "@worklab-ai/observability";
+import { combineRecordedRunEvents } from "@worklab-ai/observability/event-timeline";
 
 import type {
   OperatorConsoleClient,
@@ -421,17 +423,21 @@ function RunDetail({
 }
 
 function EventTimeline({ events }: { readonly events: readonly RecordedRunEvent[] }): React.JSX.Element {
+  const timelineItems = useMemo(() => combineRecordedRunEvents(events), [events]);
   if (events.length === 0) {
     return <StatusBox label="This run has no recorded events." />;
   }
+  const countLabel = timelineItems.length === events.length
+    ? `${events.length} loaded`
+    : `${timelineItems.length} rows from ${events.length} events`;
   return (
     <div className="space-y-3" aria-label="Run event timeline">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-medium">Timeline</h3>
-        <span className="text-xs text-muted-foreground">{events.length} loaded</span>
+        <span className="text-xs text-muted-foreground">{countLabel}</span>
       </div>
       <ol className="space-y-3">
-        {events.map((event) => (
+        {timelineItems.map((event) => (
           <EventRow key={`${event.index}-${event.type ?? event.category}`} event={event} />
         ))}
       </ol>
@@ -439,7 +445,11 @@ function EventTimeline({ events }: { readonly events: readonly RecordedRunEvent[
   );
 }
 
-function EventRow({ event }: { readonly event: RecordedRunEvent }): React.JSX.Element {
+function EventRow({ event }: { readonly event: RecordedRunTimelineItem }): React.JSX.Element {
+  const isGrouped = event.sourceEventCount > 1;
+  const sourceRange = isGrouped
+    ? `#${event.sourceEventStartIndex + 1}-#${event.sourceEventEndIndex + 1} · ${event.sourceEventCount} events`
+    : `#${event.index + 1}`;
   return (
     <li className="min-w-0 rounded-lg border border-border bg-background p-3">
       <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -452,11 +462,11 @@ function EventRow({ event }: { readonly event: RecordedRunEvent }): React.JSX.El
           <p className="break-words text-sm text-muted-foreground">{event.summary}</p>
         </div>
         <div className="shrink-0 text-xs text-muted-foreground">
-          #{event.index + 1}{event.timestamp !== undefined ? ` - ${formatDate(event.timestamp)}` : ""}
+          {sourceRange}{event.timestamp !== undefined ? ` - ${formatDate(event.timestamp)}` : ""}
         </div>
       </div>
       <details className="mt-3 min-w-0 rounded-md bg-muted/40 p-3">
-        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Raw JSON payload</summary>
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">{isGrouped ? "Combined payload preview" : "Raw JSON payload"}</summary>
         <div className="mt-2">
           <JsonPreview value={event.payload} />
         </div>
