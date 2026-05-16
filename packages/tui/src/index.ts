@@ -18,3 +18,9 @@ export type {
   TuiHistoryStore,
 } from "./agent/history.js";
 export { createInMemoryTuiHistory } from "./agent/history.js";
+
+export type {
+  TuiInkMessageStreamOptions,
+  TuiStreamState,
+} from "./agent/message-stream.js";
+export { TuiInkMessageStream } from "./agent/message-stream.js";
