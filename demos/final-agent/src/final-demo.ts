@@ -4,6 +4,7 @@ import {
   startOperatorConsole,
 } from "@worklab-ai/operator-console";
 import type {
+  ConfigApplyResult,
   OperatorConsoleEvent,
   OperatorConsoleOptions,
   OperatorConsoleStartResult,
@@ -58,8 +59,10 @@ import {
   redactFinalAgentDemoConfig,
   resolveFinalDemoArtifactDir,
   resolveFinalDemoTraceRegistryDir,
+  resolveFinalDemoTraceHeartbeatMs,
   resolveFinalDemoTraceSourceId,
   resolveFinalDemoTraceSourceLabel,
+  resolveFinalDemoTraceStaleAfterMs,
   type RedactedFinalAgentDemoConfig,
 } from "./configuration.js";
 
@@ -132,6 +135,7 @@ export interface FinalAgentDemo {
   readonly telegramStatus: TelegramStatus;
   readonly a2aStatus: A2AStatus;
   readonly traceabilityStatus: TraceabilityStatus;
+  applyConfigChange(reason: string): Promise<ConfigApplyResult>;
   startTelegramIfConfigured(reason: string): Promise<TelegramStatus>;
   startA2AIfConfigured(reason: string): Promise<A2AStatus>;
   stop(): Promise<void>;
@@ -174,16 +178,23 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
     },
     traceability: {
       registryDir: () => resolveFinalDemoTraceRegistryDir({ env, cwd, configPath }),
+      staleAfterMs: () => resolveFinalDemoTraceStaleAfterMs({ env, cwd, configPath }),
       maxRuns: 100,
       maxEventsPerRun: 750,
+    },
+    applyConfigWrite: async () => {
+      if (controller === undefined) {
+        return {
+          kind: "failed",
+          message: "Final demo lifecycle is not ready to apply config changes.",
+          transports: [],
+        };
+      }
+      return await controller.applyConfigChange("operator-console-write");
     },
     ...(options.operatorConsolePort === undefined ? {} : { port: options.operatorConsolePort }),
     log: (event) => {
       logOperatorConsoleEvent(options.logger, event);
-      if (event.kind === "write") {
-        void controller?.startTelegramIfConfigured("operator-console-write");
-        void controller?.startA2AIfConfigured("operator-console-write");
-      }
     },
   });
 
@@ -233,6 +244,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
   };
   private telegramStartInFlight: Promise<TelegramStatus> | undefined;
   private a2aStartInFlight: Promise<A2AStatus> | undefined;
+  private configApplyTail: Promise<void> = Promise.resolve();
   private runningTelegram: RunningTelegram | undefined;
   private runningA2A: RunningA2A | undefined;
   private traceSource: TraceSourceHandle | undefined;
@@ -278,17 +290,47 @@ class FinalAgentDemoController implements FinalAgentDemo {
     return this.traceabilityStatusValue;
   }
 
+  async applyConfigChange(reason: string): Promise<ConfigApplyResult> {
+    const run = async (): Promise<ConfigApplyResult> => {
+      if (this.stopped) {
+        return {
+          kind: "failed",
+          message: "Final demo has already stopped.",
+          transports: [],
+        };
+      }
+      await this.stopTelegram(`${reason}:reload`);
+      await this.stopA2A(`${reason}:reload`);
+      await this.stopTraceSource(`${reason}:reload`);
+      await this.startTraceability(reason);
+      await Promise.all([
+        this.startTelegramIfConfigured(reason),
+        this.startA2AIfConfigured(reason),
+      ]);
+      await this.refreshTraceSource(`${reason}:complete`);
+      return this.applyResult(reason);
+    };
+
+    const next = this.configApplyTail.then(run, run);
+    this.configApplyTail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return await next;
+  }
+
   async startTraceability(reason: string): Promise<TraceabilityStatus> {
     if (this.stopped) {
       return this.traceabilityStatusValue;
     }
     try {
       const input = { env: this.env, cwd: this.cwd, configPath: this.configPath };
-      const [registryDir, artifactDir, sourceId, label] = await Promise.all([
+      const [registryDir, artifactDir, sourceId, label, heartbeatMs] = await Promise.all([
         resolveFinalDemoTraceRegistryDir(input),
         resolveFinalDemoArtifactDir(input),
         resolveFinalDemoTraceSourceId(input),
         resolveFinalDemoTraceSourceLabel(input),
+        resolveFinalDemoTraceHeartbeatMs(input),
       ]);
       this.traceSource = await registerTraceSource({
         registryDir,
@@ -299,7 +341,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
         transports: this.activeTransports(),
         configPath: this.configPath,
         metadata: this.traceMetadata(reason),
-        heartbeatMs: 10_000,
+        heartbeatMs,
       });
       this.traceabilityStatusValue = { kind: "running", sourceId, registryDir, artifactDir };
       this.logger?.info?.("Traceability source registered.", { reason, sourceId, registryDir, artifactDir });
@@ -383,16 +425,86 @@ class FinalAgentDemoController implements FinalAgentDemo {
       return;
     }
     this.stopped = true;
-    this.runningTelegram?.controller.abort();
-    await this.runningTelegram?.promise.catch(() => undefined);
-    await this.runningA2A?.provider.stop().catch(() => undefined);
-    await this.traceSource?.stop({
-      metadata: this.traceMetadata("stop"),
+    await this.stopTelegram("stop");
+    await this.stopA2A("stop");
+    await this.stopTraceSource("stop");
+    await this.consoleServer.stop();
+  }
+
+  private async stopTelegram(reason: string): Promise<void> {
+    const running = this.runningTelegram;
+    if (running === undefined) {
+      return;
+    }
+    this.runningTelegram = undefined;
+    running.controller.abort();
+    await running.promise.catch((error: unknown) => {
+      this.logger?.warn?.("Telegram polling did not stop cleanly.", { reason, error: reasonOf(error) });
+    });
+    if (!this.stopped) {
+      this.telegramStatusValue = {
+        kind: "waiting_for_config",
+        reason: "Telegram stopped while applying config.",
+      };
+    }
+  }
+
+  private async stopA2A(reason: string): Promise<void> {
+    const running = this.runningA2A;
+    if (running === undefined) {
+      return;
+    }
+    this.runningA2A = undefined;
+    await running.provider.stop().catch((error: unknown) => {
+      this.logger?.warn?.("A2A provider did not stop cleanly.", { reason, error: reasonOf(error) });
+    });
+    if (!this.stopped) {
+      this.a2aStatusValue = { kind: "disabled", reason: "A2A provider stopped while applying config." };
+    }
+  }
+
+  private async stopTraceSource(reason: string): Promise<void> {
+    const traceSource = this.traceSource;
+    if (traceSource === undefined) {
+      return;
+    }
+    this.traceSource = undefined;
+    await traceSource.stop({
+      metadata: this.traceMetadata(reason),
       transports: this.activeTransports(),
     }).catch((error: unknown) => {
       this.logger?.warn?.("Traceability source stop update failed.", { reason: reasonOf(error) });
     });
-    await this.consoleServer.stop();
+    if (!this.stopped) {
+      this.traceabilityStatusValue = { kind: "disabled", reason: "Traceability source stopped while applying config." };
+    }
+  }
+
+  private applyResult(reason: string): ConfigApplyResult {
+    const transports = this.activeTransports();
+    const failure = firstFailureReason(this.telegramStatusValue, this.a2aStatusValue, this.traceabilityStatusValue);
+    if (failure !== undefined) {
+      return {
+        kind: "failed",
+        message: `Saved config, but live apply failed: ${failure}`,
+        transports,
+      };
+    }
+
+    const hasRunningAgentTransport = this.telegramStatusValue.kind === "running" || this.a2aStatusValue.kind === "running";
+    if (!hasRunningAgentTransport && (this.telegramStatusValue.kind === "waiting_for_config" || this.a2aStatusValue.kind === "waiting_for_config")) {
+      return {
+        kind: "waiting_for_config",
+        message: "Saved config, but no agent transport is running yet.",
+        transports,
+      };
+    }
+
+    return {
+      kind: "applied",
+      message: `Saved config and reloaded ${transports.join(", ")}.`,
+      transports,
+    };
   }
 
   private async startTelegram(reason: string): Promise<TelegramStatus> {
@@ -701,6 +813,23 @@ function summarizeA2AStatus(status: A2AStatus): Record<string, unknown> {
     return { kind: "running", agentCardUrl: status.agentCardUrl };
   }
   return { kind: status.kind, reason: status.reason };
+}
+
+function firstFailureReason(
+  telegram: TelegramStatus,
+  a2a: A2AStatus,
+  traceability: TraceabilityStatus,
+): string | undefined {
+  if (telegram.kind === "failed") {
+    return telegram.reason;
+  }
+  if (a2a.kind === "failed") {
+    return a2a.reason;
+  }
+  if (traceability.kind === "failed") {
+    return traceability.reason;
+  }
+  return undefined;
 }
 
 function reasonOf(error: unknown): string {
