@@ -24,3 +24,6 @@ export type {
   TuiStreamState,
 } from "./agent/message-stream.js";
 export { TuiInkMessageStream } from "./agent/message-stream.js";
+
+export type { ChatPaneProps } from "./components/ChatPane.js";
+export { ChatPane } from "./components/ChatPane.js";
