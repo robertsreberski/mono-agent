@@ -37,7 +37,7 @@ import {
 
 ## Timeline Display
 
-Raw `.events.jsonl` artifacts stay append-only and one event per line. UI surfaces that need readable timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant `thinking` or visible `text` stream chunks into bounded display rows while preserving raw source index ranges and event counts.
+Raw `.events.jsonl` artifacts stay append-only and one event per line. UI surfaces that need readable timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant `thinking` or visible `text` stream chunks into bounded display rows while preserving raw source index ranges and event counts. Browser bundles can import the helper from `@worklab-ai/observability/event-timeline` without pulling in the Node-backed artifact readers.
 
 ## Trace Registry
 

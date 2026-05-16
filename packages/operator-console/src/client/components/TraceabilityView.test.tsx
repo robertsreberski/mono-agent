@@ -46,7 +46,7 @@ const runA = {
   conversationId: "telegram:123",
   status: "succeeded" as const,
   durationMs: 1432,
-  eventCount: 2,
+  eventCount: 6,
   updatedAt: "2026-05-16T08:00:00.000Z",
   usage: { inputTokens: 12 },
   capabilitiesUsed: ["tools"],
@@ -71,6 +71,30 @@ const runDetail = {
     events: [
       {
         index: 0,
+        type: "assistant",
+        category: "thinking" as const,
+        label: "assistant",
+        summary: "I should",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: "I should" }] } },
+      },
+      {
+        index: 1,
+        type: "assistant",
+        category: "thinking" as const,
+        label: "assistant",
+        summary: " inspect",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: " inspect" }] } },
+      },
+      {
+        index: 2,
+        type: "assistant",
+        category: "thinking" as const,
+        label: "assistant",
+        summary: " files.",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: " files." }] } },
+      },
+      {
+        index: 3,
         type: "tool.call",
         category: "tool" as const,
         label: "Tool: Read",
@@ -78,12 +102,20 @@ const runDetail = {
         payload: { type: "tool.call", toolName: "Read", status: "started" },
       },
       {
-        index: 1,
+        index: 4,
         type: "assistant",
         category: "message" as const,
         label: "assistant",
-        summary: "Visible response",
-        payload: { type: "assistant", message: { content: [{ type: "text", text: "Visible response" }] } },
+        summary: "Visible",
+        payload: { type: "assistant", message: { content: [{ type: "text", text: "Visible" }] } },
+      },
+      {
+        index: 5,
+        type: "assistant",
+        category: "message" as const,
+        label: "assistant",
+        summary: " response",
+        payload: { type: "assistant", message: { content: [{ type: "text", text: " response" }] } },
       },
     ],
   },
@@ -125,8 +157,15 @@ describe("<TraceabilityView/>", () => {
     expect((await screen.findAllByText("Agent A"))[0]).toBeInTheDocument();
     expect(screen.getAllByText("stale")[0]).toBeInTheDocument();
     await waitFor(() => expect(fetchTraceabilityRun).toHaveBeenCalledWith("agent-a", "run-a"));
+    expect(await screen.findByText("Assistant thoughts")).toBeInTheDocument();
+    expect(screen.getByText("I should inspect files.")).toBeInTheDocument();
+    expect(screen.getByText("#1-#3 · 3 events")).toBeInTheDocument();
     expect(await screen.findByText("Tool: Read")).toBeInTheDocument();
+    expect(screen.getByText("#4")).toBeInTheDocument();
+    expect(screen.getByText("Assistant message")).toBeInTheDocument();
     expect(screen.getByText("Visible response")).toBeInTheDocument();
+    expect(screen.getByText("#5-#6 · 2 events")).toBeInTheDocument();
+    expect(screen.getByText("3 rows from 6 events")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Source"), { target: { value: "agent-b" } });
     await waitFor(() => expect(fetchTraceabilityRun).toHaveBeenCalledWith("agent-b", "run-b"));
