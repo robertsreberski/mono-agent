@@ -1,10 +1,11 @@
+import type { AgentMessageStream as AgentMessageStreamBase } from "@worklab-ai/agent-contracts";
 import type {
   WhatsAppJid,
   WhatsAppRawMessage,
   WhatsAppSocketLike,
 } from "./types.js";
 
-export interface AgentMessageStream {
+export interface AgentMessageStream extends AgentMessageStreamBase {
   status(text: string): Promise<void>;
   append(delta: string): Promise<void>;
   replace(text: string): Promise<void>;

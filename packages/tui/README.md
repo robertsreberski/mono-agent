@@ -19,19 +19,19 @@ mono-agent-tui --help
 import { startTui } from "@worklab-ai/tui";
 ```
 
-Hosts supply a structural responder compatible with the adapter responder contracts and decide how config files are loaded.
+Hosts supply a structural responder compatible with `@worklab-ai/agent-contracts` and decide how config files are loaded.
 
 ## Public API
 
 - `startTui`
 - TUI app/component types and message-stream helpers
-- Structural `AgentResponder` and cancellation helpers
+- Structural `AgentResponder` aliases and cancellation helpers backed by `@worklab-ai/agent-contracts`
 - Read-only config summary helpers
 - Bin: `mono-agent-tui`
 
 ## Dependency Boundary
 
-The TUI depends on React/Ink and `@worklab-ai/config` for core config summaries. It remains a terminal operator surface, not a communication adapter, runtime host, or settings editor.
+The TUI depends on React/Ink, shared contracts, and `@worklab-ai/config` for core config summaries. It remains a terminal operator surface, not a communication adapter, runtime host, or settings editor.
 
 ## What This Package Does Not Own
 

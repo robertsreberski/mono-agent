@@ -1,4 +1,11 @@
 import {
+  isAgentResponseCancelledError,
+  type AgentRequestBase,
+  type AgentResponder as SharedAgentResponder,
+  type AgentResponse,
+} from "@worklab-ai/agent-contracts";
+
+import {
   TelegramMessageStream,
   type AgentMessageStream,
   type TelegramMessageStreamLogger,
@@ -12,7 +19,15 @@ import type {
   TelegramUser,
 } from "./types.js";
 
-export interface AgentRequest {
+export {
+  AgentResponseCancelledError as AgentResponderCancelledError,
+  isAgentResponseCancelledError as isAgentResponderCancelledError,
+} from "@worklab-ai/agent-contracts";
+export type {
+  AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
+} from "@worklab-ai/agent-contracts";
+
+export interface AgentRequest extends AgentRequestBase {
   conversationId: string;
   chatId: TelegramChatId;
   messageId: number;
@@ -49,40 +64,8 @@ export interface TelegramRequestMetadata {
   };
 }
 
-export interface AgentResponse {
-  text?: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface AgentResponder {
-  respond(
-    request: AgentRequest,
-    stream: AgentMessageStream,
-  ): Promise<AgentResponse>;
-}
-
-export interface AgentResponderCancelledErrorOptions {
-  reason?: unknown;
-}
-
-export class AgentResponderCancelledError extends Error {
-  readonly reason?: unknown;
-
-  constructor(
-    message = "Agent response was cancelled.",
-    options: AgentResponderCancelledErrorOptions = {},
-  ) {
-    super(message);
-    this.name = "AgentResponderCancelledError";
-    if (options.reason !== undefined) {
-      this.reason = options.reason;
-    }
-  }
-}
-
-export function isAgentResponderCancelledError(error: unknown): boolean {
-  return error instanceof AgentResponderCancelledError;
-}
+export type { AgentResponse };
+export type AgentResponder = SharedAgentResponder<AgentRequest, AgentMessageStream, AgentResponse>;
 
 export interface TelegramAdapterMessages {
   welcomeText?: string;
@@ -346,7 +329,7 @@ export class TelegramAdapter {
       }
       return result;
     } catch (error) {
-      if (controller.signal.aborted || isAgentResponderCancelledError(error)) {
+      if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
         await finishSafely(stream, this.messages.cancelledText, this.logger);
         return { kind: "cancelled", updateId: update.update_id, chatId };
       }

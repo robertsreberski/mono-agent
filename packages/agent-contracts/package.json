@@ -1,7 +1,7 @@
 {
-  "name": "@worklab-ai/whatsapp-adapter",
+  "name": "@worklab-ai/agent-contracts",
   "version": "0.1.0",
-  "description": "WhatsApp communication adapter for Worklab-style agent runtimes using Baileys.",
+  "description": "Shared structural request, response, stream, responder, and cancellation contracts for Mono Agent packages.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
@@ -21,10 +21,5 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
-  },
-  "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/settings": "workspace:^0.1.0",
-    "@whiskeysockets/baileys": "^7.0.0-rc11"
   }
 }

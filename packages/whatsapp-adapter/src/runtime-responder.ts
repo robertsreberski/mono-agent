@@ -172,14 +172,10 @@ export function createRuntimeResponder(
         throw runtimeError;
       }
 
-      const response: AgentResponse = {};
-      if (typeof result.text === "string") {
-        response.text = result.text;
-      }
-      if (includeResultMetadata) {
-        response.metadata = { runtime: runtimeMetadataFromResult(result) };
-      }
-      return response;
+      return {
+        ...(typeof result.text === "string" ? { text: result.text } : {}),
+        ...(includeResultMetadata ? { metadata: { runtime: runtimeMetadataFromResult(result) } } : {}),
+      } satisfies AgentResponse;
     },
   };
 }

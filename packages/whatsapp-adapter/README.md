@@ -22,7 +22,7 @@ import {
 } from "@worklab-ai/whatsapp-adapter";
 ```
 
-Hosts provide a Baileys socket, adapter options, and a structural `AgentResponder`.
+Hosts provide a Baileys socket, adapter options, and a structural `AgentResponder`. The base responder, stream, response, and cancellation contracts come from `@worklab-ai/agent-contracts`.
 
 ## Public API
 
@@ -36,7 +36,7 @@ Hosts provide a Baileys socket, adapter options, and a structural `AgentResponde
 
 ## Dependency Boundary
 
-This adapter can depend on Baileys but must not depend on the harness, operator console, core config, Telegram adapter, memory, or runtime package. It communicates through structural responder and socket interfaces.
+This adapter depends on Baileys plus shared contracts/settings primitives, but must not depend on the harness, operator console, core config, another communication adapter, memory, or runtime package. It communicates through structural responder and socket interfaces.
 
 ## What This Package Does Not Own
 

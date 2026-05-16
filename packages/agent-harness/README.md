@@ -26,11 +26,11 @@ Hosts wire identity/context paths, runtime, model, execution mode, tool policy, 
 - `createAgentResponder`, `AgentHarnessFailureError`
 - `createInMemoryHistoryStore`, `InMemoryConversationHistoryStore`
 - `NoopRunRecorder`
-- Harness, responder, runtime, memory, and history types from `types.ts`
+- Harness, shared responder, runtime, memory, and history types from `types.ts`
 
 ## Dependency Boundary
 
-The harness may depend on core building blocks: context, memory-md, observability, runtime-adapter, skills, and tool-policy. It must not depend on Telegram, WhatsApp, the operator console, or host/demo code.
+The harness may depend on core building blocks: agent-contracts, context, memory-md, observability, runtime-adapter, skills, and tool-policy. It must not depend on communication adapters, the operator console, or host/demo code.
 
 ## What This Package Does Not Own
 
