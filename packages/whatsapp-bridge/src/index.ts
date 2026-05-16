@@ -66,3 +66,17 @@ export type {
   WhatsAppSocketLike,
   WhatsAppTextMessage,
 } from "./types.js";
+
+export type {
+  BaileysWhatsAppSocket,
+  BaileysWhatsAppSocketOptions,
+} from "./baileys-socket.js";
+export { createBaileysWhatsAppSocket } from "./baileys-socket.js";
+
+export type {
+  WhatsAppConnectionUpdate,
+  WhatsAppEventRunnerLogger,
+  WhatsAppEventRunnerOptions,
+  WhatsAppEventRunnerStartOptions,
+} from "./event-runner.js";
+export { WhatsAppEventRunner } from "./event-runner.js";
