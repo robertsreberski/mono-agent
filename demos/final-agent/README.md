@@ -13,6 +13,8 @@ This is the Mono Agent final demo. It is intentionally **not** an npm package: t
 - `@worklab-ai/observability` writes JSONL events and run summaries.
 - `@worklab-ai/telegram-adapter` owns Telegram settings, Bot API handling, and long polling.
 
+`src/configuration.ts` is the only demo-local place that registers field groups, loads core plus Telegram config, redacts runtime status, and resolves the artifact directory. `src/final-demo.ts` handles lifecycle: start the operator console, start Telegram when config is valid, build the harness/runtime responder, and stop cleanly.
+
 ## Run it
 
 ```bash

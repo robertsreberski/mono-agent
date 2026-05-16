@@ -8,17 +8,7 @@ import type {
   OperatorConsoleOptions,
   OperatorConsoleStartResult,
 } from "@worklab-ai/operator-console";
-import {
-  CORE_AGENT_FIELD_GROUPS,
-  loadMonoAgentConfigWithSources,
-  MonoAgentConfigError,
-  readMonoAgentConfigJson,
-  redactMonoAgentConfig,
-} from "@worklab-ai/config";
-import type {
-  MonoAgentConfig,
-  RedactedMonoAgentConfig,
-} from "@worklab-ai/config";
+import type { MonoAgentConfig } from "@worklab-ai/config";
 import {
   createAgentHarness,
   createAgentResponder,
@@ -34,14 +24,9 @@ import {
   TelegramBotApiClient,
   TelegramAdapter,
   TelegramLongPoller,
-  loadTelegramAdapterConfig,
-  redactTelegramAdapterConfig,
-  telegramFieldGroup,
-  TelegramAdapterConfigError,
 } from "@worklab-ai/telegram-adapter";
 import type {
   AgentResponder,
-  RedactedTelegramAdapterConfig,
   TelegramBotApi,
   TelegramAdapterConfig,
   TelegramAdapterOptions,
@@ -51,11 +36,17 @@ import type {
 import type { FieldGroup } from "@worklab-ai/settings";
 import { createToolPolicy } from "@worklab-ai/tool-policy";
 import type { ToolPolicyInput } from "@worklab-ai/tool-policy";
+import {
+  FINAL_DEMO_FIELD_GROUPS,
+  isFinalAgentDemoConfigError,
+  loadFinalAgentDemoConfig,
+  redactFinalAgentDemoConfig,
+  resolveFinalDemoArtifactDir,
+  type LoadedFinalAgentDemoConfig,
+  type RedactedFinalAgentDemoConfig,
+} from "./configuration.js";
 
-const FINAL_DEMO_FIELD_GROUPS: readonly FieldGroup[] = [
-  ...CORE_AGENT_FIELD_GROUPS,
-  telegramFieldGroup,
-];
+export { resolveFinalDemoArtifactDir } from "./configuration.js";
 
 export interface FinalAgentDemoLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -94,11 +85,6 @@ export type TelegramStatus =
   | { readonly kind: "waiting_for_config"; readonly reason: string }
   | { readonly kind: "running"; readonly config: RedactedFinalAgentDemoConfig }
   | { readonly kind: "failed"; readonly reason: string };
-
-export interface RedactedFinalAgentDemoConfig {
-  readonly core: RedactedMonoAgentConfig;
-  readonly telegram: RedactedTelegramAdapterConfig;
-}
 
 export interface FinalAgentDemo {
   readonly operatorConsole: FinalAgentDemoOperatorConsole;
@@ -159,30 +145,6 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
 
   await controller.startTelegramIfConfigured("startup");
   return controller;
-}
-
-export async function resolveFinalDemoArtifactDir(input: {
-  readonly env: Record<string, string | undefined>;
-  readonly cwd: string;
-  readonly configPath: string;
-}): Promise<string> {
-  const envDir = input.env.MONO_AGENT_ARTIFACT_DIR?.trim();
-  if (envDir !== undefined && envDir.length > 0) {
-    return resolve(input.cwd, envDir);
-  }
-
-  try {
-    const { json } = await readMonoAgentConfigJson(input.configPath);
-    const configDir = typeof json.artifacts?.dir === "string" ? json.artifacts.dir.trim() : "";
-    if (configDir.length > 0) {
-      return resolve(input.cwd, configDir);
-    }
-  } catch {
-    // Keep Observability usable for already-written default artifacts even while
-    // the user is fixing an incomplete or invalid demo config.
-  }
-
-  return resolve(input.cwd, ".mono-agent", "artifacts");
 }
 
 class FinalAgentDemoController implements FinalAgentDemo {
@@ -274,10 +236,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     const { coreConfig, telegramConfig } = loaded;
 
     try {
-      const redacted: RedactedFinalAgentDemoConfig = {
-        core: redactMonoAgentConfig(coreConfig),
-        telegram: redactTelegramAdapterConfig(telegramConfig),
-      };
+      const redacted = redactFinalAgentDemoConfig(loaded);
       const api = this.telegramApi ?? new TelegramBotApiClient({ token: telegramConfig.botToken });
       const runtime = this.runtime ?? createMonoRuntime({
         workspace: coreConfig.runtime.workspace,
@@ -319,23 +278,15 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
-  private async loadConfigOrWait(): Promise<{
-    readonly coreConfig: MonoAgentConfig;
-    readonly telegramConfig: TelegramAdapterConfig;
-  } | undefined> {
+  private async loadConfigOrWait(): Promise<LoadedFinalAgentDemoConfig | undefined> {
     try {
-      const coreConfig = await loadMonoAgentConfigWithSources({
+      return await loadFinalAgentDemoConfig({
         env: this.env,
         cwd: this.cwd,
-        jsonPath: this.configPath,
+        configPath: this.configPath,
       });
-      const telegramConfig = await loadTelegramAdapterConfig({
-        env: this.env,
-        jsonPath: this.configPath,
-      });
-      return { coreConfig, telegramConfig };
     } catch (error) {
-      if (error instanceof MonoAgentConfigError || error instanceof TelegramAdapterConfigError) {
+      if (isFinalAgentDemoConfigError(error)) {
         this.status = { kind: "waiting_for_config", reason: error.message };
         this.logger?.info?.("Waiting for a valid Mono Agent config.", { reason: error.message });
         return undefined;
