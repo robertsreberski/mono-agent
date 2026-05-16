@@ -1,17 +1,10 @@
 #!/usr/bin/env node
-import { resolve } from "node:path";
-
+import { parseCliArgs } from "./cli-args.js";
 import { startFinalAgentDemo } from "./final-demo.js";
 import type { TelegramStatus } from "./final-demo.js";
 
-interface CliArgs {
-  readonly configPath?: string;
-  readonly port?: number;
-  readonly help: boolean;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseCliArgs(process.argv.slice(2));
   if (args.help) {
     printHelp();
     return;
@@ -44,48 +37,6 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", (signal) => void shutdown(signal));
   process.on("SIGTERM", (signal) => void shutdown(signal));
-}
-
-function parseArgs(argv: readonly string[]): CliArgs {
-  let configPath: string | undefined;
-  let port: number | undefined;
-  let help = false;
-
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === "--help" || arg === "-h") {
-      help = true;
-      continue;
-    }
-    if (arg === "--config") {
-      const value = argv[i + 1];
-      if (value === undefined || value.trim().length === 0) {
-        throw new Error("--config requires a path.");
-      }
-      configPath = resolve(process.cwd(), value);
-      i += 1;
-      continue;
-    }
-    if (arg === "--port") {
-      const value = argv[i + 1];
-      if (value === undefined || !/^\d+$/u.test(value)) {
-        throw new Error("--port requires a numeric port.");
-      }
-      port = Number.parseInt(value, 10);
-      if (!Number.isInteger(port) || port < 0 || port > 65_535) {
-        throw new Error("--port must be between 0 and 65535.");
-      }
-      i += 1;
-      continue;
-    }
-    throw new Error(`Unknown argument: ${arg}`);
-  }
-
-  return {
-    help,
-    ...(configPath === undefined ? {} : { configPath }),
-    ...(port === undefined ? {} : { port }),
-  };
 }
 
 function printTelegramStatus(status: TelegramStatus): void {
