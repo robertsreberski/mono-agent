@@ -1,5 +1,9 @@
 # @worklab-ai/config
 
+## Category
+
+Category: `core`
+
 ## Responsibility
 
 Adapter-neutral Mono Agent core configuration. It loads runtime, context, memory, tool/MCP, and artifact settings from environment variables plus optional JSON, validates runtime model/execution-mode compatibility through `@worklab-ai/runtime-adapter`, and exposes core field groups for settings UIs.

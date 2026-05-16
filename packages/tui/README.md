@@ -1,5 +1,9 @@
 # @worklab-ai/tui
 
+## Category
+
+Category: `operator-surface`
+
 ## Responsibility
 
 Terminal operator surface built with Ink. It provides local chat, in-memory transcript display, cancellation handling, and a redacted read-only core config pane for hosts that want a terminal console.

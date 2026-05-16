@@ -1,5 +1,9 @@
 # @worklab-ai/skills
 
+## Category
+
+Category: `context`
+
 ## Responsibility
 
 Deterministic selected-skill activation. It loads only explicitly selected skill bodies, enforces byte caps, and converts skill instructions into context blocks for prompt assembly.
