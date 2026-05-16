@@ -213,6 +213,15 @@ async function resolveTraceability(
       return { enabled: false, warnings: ["Traceability registry directory is not configured."] };
     }
     const registryDir = resolve(registryDirValue);
+    let staleAfterMsValue: number | undefined;
+    try {
+      staleAfterMsValue = typeof options.staleAfterMs === "function" ? await options.staleAfterMs() : options.staleAfterMs;
+    } catch (error) {
+      return {
+        enabled: false,
+        warnings: [`Traceability stale interval could not be resolved: ${errorMessage(error)}.`],
+      };
+    }
     return {
       enabled: true,
       registryDir,
@@ -221,7 +230,7 @@ async function resolveTraceability(
         ...(options.maxRuns === undefined ? {} : { maxRuns: options.maxRuns }),
         ...(options.maxEventsPerRun === undefined ? {} : { maxEventsPerRun: options.maxEventsPerRun }),
         ...(options.maxStringBytes === undefined ? {} : { maxStringBytes: options.maxStringBytes }),
-        ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
+        ...(staleAfterMsValue === undefined ? {} : { staleAfterMs: staleAfterMsValue }),
       },
       warnings: [],
     };
