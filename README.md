@@ -13,7 +13,7 @@ Package categories are catalog metadata, documentation, and architecture-guard i
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
 | `execution` | `@worklab-ai/agent-harness` | `core`, `context`, `runtime`, `observability` | Composes context, runtime, memory, history, tool policy, skills, and observability for one request. |
 | `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder and local artifact reader. |
-| `communication` | `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. |
+| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. They do not own runtime hosting or communication transport. |
 | `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition that wires config, surface, communication, harness, runtime, memory, policy, and artifacts in one small host layer. |
 
@@ -22,6 +22,7 @@ Package categories are catalog metadata, documentation, and architecture-guard i
 ```text
 demos/final-agent (not a workspace package)
   ├─ operator-console ── settings, observability
+  ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
   ├─ telegram-adapter ── agent-contracts, settings
   ├─ agent-harness
   │   ├─ agent-contracts
@@ -47,7 +48,7 @@ Rules for future packages:
 
 ## Final Demo
 
-The final demo lives at `demos/final-agent/`. It starts the local operator console first, then starts Telegram only after both core config and Telegram adapter config are valid.
+The final demo lives at `demos/final-agent/`. It starts the local operator console first, then starts Telegram and/or the A2A provider independently when their own adapter config plus core runtime config are valid.
 
 ```bash
 corepack enable
@@ -59,11 +60,18 @@ pnpm run demo:final
 The demo composes:
 
 - `CORE_AGENT_FIELD_GROUPS` from `@worklab-ai/config`
+- `a2aFieldGroup`, `loadA2AAdapterConfig`, and `startA2AProvider` from `@worklab-ai/a2a-adapter`
 - `telegramFieldGroup` and `loadTelegramAdapterConfig` from `@worklab-ai/telegram-adapter`
 - `startOperatorConsole` from `@worklab-ai/operator-console`
 - the harness, runtime adapter, memory, tool policy, and observability packages
 
 See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
+
+### A2A Inter-Agent Discovery
+
+`@worklab-ai/a2a-adapter` exposes a Mono responder over the A2A v1 protocol using the pinned `@a2a-js/sdk@1.0.0-alpha.0`. Provider mode serves the public Agent Card at `/.well-known/agent-card.json` and message/task endpoints under `/a2a/json-rpc` and `/a2a/rest`. Consumer mode discovers direct Agent Card URLs and sends text messages to remote agents.
+
+The first pass is deliberately text/task only: no central registry, gRPC hosting, push notifications, signed cards, file exchange, or autonomous tool-selected delegation. Provider binds to loopback by default; non-loopback bind or advertised public URLs require explicit config and should be deployed behind HTTPS with bearer auth.
 
 ### Local Providers
 
@@ -132,6 +140,7 @@ flowchart TB
   subgraph Communication["Communication adapter choices"]
     Telegram["`@worklab-ai/telegram-adapter`\nBot API + long polling"]
     WhatsApp["`@worklab-ai/whatsapp-adapter`\nBaileys socket + group trigger policy"]
+    A2A["`@worklab-ai/a2a-adapter`\nAgent Card discovery + text tasks"]
     FutureAdapter["Future Slack/webhook adapter\nsame shared responder seam"]
   end
 
@@ -165,6 +174,7 @@ flowchart TB
   Host --> Console
   Host -. optional .-> Tui
   Host --> Telegram
+  Host --> A2A
   Host -. optional package .-> WhatsApp
   Host -. future package .-> FutureAdapter
   Host --> Config
@@ -176,6 +186,8 @@ flowchart TB
   Tui --> Config
   Telegram --> Contracts
   Telegram --> Settings
+  A2A --> Contracts
+  A2A --> Settings
   WhatsApp --> Contracts
   WhatsApp --> Settings
   FutureAdapter --> Contracts
