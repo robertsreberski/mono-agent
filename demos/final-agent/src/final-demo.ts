@@ -14,6 +14,7 @@ import type {
 import {
   loadMonoAgentConfigWithSources,
   MonoAgentConfigError,
+  readMonoAgentConfigJson,
   redactMonoAgentConfig,
 } from "@worklab-ai/config";
 import type {
@@ -135,6 +136,11 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
     configPath,
     cwd,
     fieldGroups,
+    observability: {
+      artifactDir: () => resolveFinalDemoArtifactDir({ env, cwd, configPath }),
+      maxRuns: 100,
+      maxEventsPerRun: 750,
+    },
     ...(options.configUiPort === undefined ? {} : { port: options.configUiPort }),
     log: (event) => {
       logConfigUiEvent(options.logger, event);
@@ -157,6 +163,30 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
 
   await controller.startTelegramIfConfigured("startup");
   return controller;
+}
+
+export async function resolveFinalDemoArtifactDir(input: {
+  readonly env: Record<string, string | undefined>;
+  readonly cwd: string;
+  readonly configPath: string;
+}): Promise<string> {
+  const envDir = input.env.MONO_AGENT_ARTIFACT_DIR?.trim();
+  if (envDir !== undefined && envDir.length > 0) {
+    return resolve(input.cwd, envDir);
+  }
+
+  try {
+    const { json } = await readMonoAgentConfigJson(input.configPath);
+    const configDir = typeof json.artifacts?.dir === "string" ? json.artifacts.dir.trim() : "";
+    if (configDir.length > 0) {
+      return resolve(input.cwd, configDir);
+    }
+  } catch {
+    // Keep Observability usable for already-written default artifacts even while
+    // the user is fixing an incomplete or invalid demo config.
+  }
+
+  return resolve(input.cwd, ".mono-agent", "artifacts");
 }
 
 class FinalAgentDemoController implements FinalAgentDemo {

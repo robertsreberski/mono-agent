@@ -4,7 +4,7 @@ This is the Mono Agent final demo. It is intentionally **not** an npm package: t
 
 ## What it wires together
 
-- `@worklab-ai/config-ui` starts a loopback settings UI for `mono-agent.config.json` using the core field groups plus a tiny demo-only Artifacts tab.
+- `@worklab-ai/config-ui` starts a loopback settings UI for `mono-agent.config.json`, plus a separate Observability view over recorded run artifacts.
 - `@worklab-ai/config` loads JSON plus environment overrides into a typed config.
 - `@worklab-ai/runtime-adapter` creates the runtime backed by `@worklab-ai/agent-runtime`.
 - `@worklab-ai/agent-harness` assembles context, history, memory, skills, tools, runtime calls, and responses.
@@ -29,6 +29,8 @@ The CLI prints:
 - whether Telegram is `running`, `waiting_for_config`, or `failed`.
 
 Open the config UI, save a valid config, and Telegram starts once. Later config edits are written to disk but do not hot-reload a running Telegram poller; restart the demo to apply runtime/token/allowlist changes.
+
+The top navigation includes **Config** and **Observability**. Observability is refresh-based and reads persisted `*.summary.json` / `*.events.jsonl` files from the same artifact directory used by the request recorder. It shows recorded requests, summary metadata, and expandable visible runtime/tool/message events. It does not infer or expose private model chain-of-thought; the timeline depends on what the configured runtime emits.
 
 ## Minimal `mono-agent.config.json`
 
@@ -68,6 +70,8 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
 ```
 
 Environment variables override the JSON file. Keep provider credentials in the provider/runtime environment expected by `@worklab-ai/agent-runtime`; the config UI JSON is not a secret manager.
+
+For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `mono-agent.config.json`, then the built-in `./.mono-agent/artifacts` default. This lets the Observability view show existing default artifacts even while the rest of the demo config is incomplete.
 
 Useful env overrides:
 
