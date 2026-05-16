@@ -83,6 +83,12 @@ export interface RecordedRunEvent {
   readonly payload: unknown;
 }
 
+export interface RecordedRunTimelineItem extends RecordedRunEvent {
+  readonly sourceEventCount: number;
+  readonly sourceEventStartIndex: number;
+  readonly sourceEventEndIndex: number;
+}
+
 export interface RecordedRunDetail {
   readonly summary: RecordedRunListItem;
   readonly events: readonly RecordedRunEvent[];
