@@ -7,6 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
 import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
 import type {
+  A2AProviderOptions,
+  A2AProviderStartResult,
+} from "@worklab-ai/a2a-adapter";
+import type {
   TelegramBotApi,
   TelegramLongPollerOptions,
   TelegramLongPollerStartOptions,
@@ -81,7 +85,7 @@ describe("final agent demo", () => {
     await expect(fetch(`${demo.operatorConsole.url}/api/health`)).rejects.toThrow();
   });
 
-  it("starts Telegram exactly once after a valid operator console write", async () => {
+  it("restarts Telegram after operator console writes and uses the updated runtime config", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono from operator console.", "utf8");
 
@@ -117,17 +121,34 @@ describe("final agent demo", () => {
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("secret-token");
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("987654321");
 
+      const firstSignal = started[0]?.signal;
       const second = await putConfig(demo.operatorConsole.url, demo.operatorConsole.token, put.body.version, {
         runtime: { maxTurns: 9 },
+        tools: { allowedTools: ["Read"] },
       });
       expect(second.status).toBe(200);
-      await delay(25);
-      expect(started).toHaveLength(1);
+      expect(second.body.apply?.kind).toBe("applied");
+      await waitFor(() => started.length === 2);
+      expect(firstSignal?.aborted).toBe(true);
+      expect(factoryCalls).toBe(2);
+
+      const result = await pollerOptions?.adapter.handleUpdate({
+        update_id: 2,
+        message: {
+          message_id: 20,
+          chat: { id: 987654321, type: "private" },
+          from: { id: 77, username: "tester" },
+          text: "Use the reloaded config",
+        },
+      });
+      expect(result).toMatchObject({ kind: "handled", action: "responded" });
+      expect(fakeRuntime.calls[0]?.options.maxTurns).toBe(9);
+      expect(fakeRuntime.calls[0]?.options.allowedTools).toEqual(["Read"]);
     } finally {
       await demo.stop();
     }
 
-    expect(started[0]?.signal?.aborted).toBe(true);
+    expect(started[1]?.signal?.aborted).toBe(true);
   });
 
   it("resolves the observability artifact directory without requiring a valid full config", async () => {
@@ -211,6 +232,116 @@ describe("final agent demo", () => {
       if (agentCardUrl !== undefined) {
         await expect(fetch(agentCardUrl)).rejects.toThrow();
       }
+    }
+  });
+
+  it("restarts the A2A provider after an operator console write", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono over a reloaded A2A provider.", "utf8");
+    await writeFile(
+      join(dir, "mono-agent.config.json"),
+      `${JSON.stringify(validA2AOnlyConfigPatch(), null, 2)}\n`,
+      "utf8",
+    );
+
+    const providers: Array<{ options: A2AProviderOptions; stopped: boolean }> = [];
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: testTraceEnv(),
+      runtime: createFakeRuntime().runtime,
+      telegramApi: createFakeTelegramApi().api,
+      a2aProviderFactory: async (options) => createFakeA2AProvider(options, providers),
+    });
+
+    try {
+      expect(providers).toHaveLength(1);
+      expect(providers[0]?.options.agent.name).toBe("Final Demo A2A");
+      const initial = await getConfig(demo.operatorConsole.url, demo.operatorConsole.token);
+      const put = await putConfig(demo.operatorConsole.url, demo.operatorConsole.token, initial.version, {
+        a2a: {
+          agent: { name: "Reloaded Final Demo A2A" },
+        },
+      });
+
+      expect(put.status).toBe(200);
+      expect(put.body.apply?.kind).toBe("applied");
+      await waitFor(() => providers.length === 2);
+      expect(providers[0]?.stopped).toBe(true);
+      expect(providers[1]?.options.agent.name).toBe("Reloaded Final Demo A2A");
+      expect(demo.a2aStatus).toMatchObject({
+        kind: "running",
+        agentCardUrl: "http://127.0.0.1:4201/.well-known/agent-card.json",
+      });
+    } finally {
+      await demo.stop();
+    }
+
+    expect(providers[1]?.stopped).toBe(true);
+  });
+
+  it("re-registers traceability after trace source config changes", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono with reloaded traceability.", "utf8");
+    await writeFile(
+      join(dir, "mono-agent.config.json"),
+      `${JSON.stringify({
+        ...validConfigPatch(),
+        traceability: {
+          registryDir: "./trace-registry-a",
+          sourceId: "source-a",
+          sourceLabel: "Source A",
+          heartbeatMs: 500,
+          staleAfterMs: 1500,
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const started: TelegramLongPollerStartOptions[] = [];
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: {},
+      runtime: createFakeRuntime().runtime,
+      telegramApi: createFakeTelegramApi().api,
+      pollerFactory: () => createAbortableFakePoller(started).poller,
+    });
+
+    try {
+      await waitFor(() => started.length === 1);
+      expect(demo.traceabilityStatus).toMatchObject({
+        kind: "running",
+        sourceId: "source-a",
+        registryDir: resolve(dir, "trace-registry-a"),
+      });
+      const initial = await getConfig(demo.operatorConsole.url, demo.operatorConsole.token);
+      const put = await putConfig(demo.operatorConsole.url, demo.operatorConsole.token, initial.version, {
+        artifacts: { dir: "./artifacts-b" },
+        traceability: {
+          registryDir: "./trace-registry-b",
+          sourceId: "source-b",
+          sourceLabel: "Source B",
+          heartbeatMs: 750,
+          staleAfterMs: 2500,
+        },
+      });
+
+      expect(put.status).toBe(200);
+      expect(put.body.apply?.kind).toBe("applied");
+      await waitFor(() => demo.traceabilityStatus.kind === "running" && demo.traceabilityStatus.sourceId === "source-b");
+      expect(demo.traceabilityStatus).toMatchObject({
+        kind: "running",
+        sourceId: "source-b",
+        registryDir: resolve(dir, "trace-registry-b"),
+        artifactDir: resolve(dir, "artifacts-b"),
+      });
+
+      const oldManifest = JSON.parse(await readFile(join(dir, "trace-registry-a", "source-a.json"), "utf8")) as { status: string };
+      expect(oldManifest.status).toBe("stopped");
+      const traceability = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
+      expect(traceability.sources.map((source) => [source.sourceId, source.label, source.health])).toEqual([
+        ["source-b", "Source B", "running"],
+      ]);
+    } finally {
+      await demo.stop();
     }
   });
 
@@ -569,7 +700,13 @@ async function putConfig(
   token: string,
   expectedVersion: string,
   patch: unknown,
-): Promise<{ status: number; body: { version: string } }> {
+): Promise<{
+  status: number;
+  body: {
+    version: string;
+    apply?: { kind: string; message: string; transports: readonly string[] };
+  };
+}> {
   const response = await fetch(`${url}/api/config`, {
     method: "PUT",
     headers: {
@@ -580,7 +717,10 @@ async function putConfig(
   });
   return {
     status: response.status,
-    body: await response.json() as { version: string },
+    body: await response.json() as {
+      version: string;
+      apply?: { kind: string; message: string; transports: readonly string[] };
+    },
   };
 }
 
@@ -644,6 +784,34 @@ function createAbortableFakePoller(started: TelegramLongPollerStartOptions[] = [
           options.signal?.addEventListener("abort", () => resolvePromise(), { once: true });
         });
       },
+    },
+  };
+}
+
+function createFakeA2AProvider(
+  options: A2AProviderOptions,
+  providers: Array<{ options: A2AProviderOptions; stopped: boolean }>,
+): A2AProviderStartResult {
+  const index = providers.length;
+  const entry = { options, stopped: false };
+  providers.push(entry);
+  const port = 4200 + index;
+  const url = `http://127.0.0.1:${port}`;
+  return {
+    url,
+    agentCardUrl: `${url}/.well-known/agent-card.json`,
+    jsonRpcUrl: `${url}/a2a/json-rpc`,
+    restUrl: `${url}/a2a/rest`,
+    host: options.host ?? "127.0.0.1",
+    port,
+    agentCard: {
+      name: options.agent.name,
+      description: options.agent.description,
+      version: options.agent.version,
+      skills: [options.skill],
+    } as A2AProviderStartResult["agentCard"],
+    async stop() {
+      entry.stopped = true;
     },
   };
 }
