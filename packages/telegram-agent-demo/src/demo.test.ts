@@ -102,7 +102,7 @@ describe("telegram agent demo", () => {
     thisCalls.splice(0);
 
     const demo = await createTelegramAgentDemo({
-      env: envFor(dir),
+      env: { ...envFor(dir), MONO_AGENT_MCP_CONFIG_PATH: join(dir, "mcp.json") },
       cwd: dir,
       api: fakeApi,
       runtime: fakeRuntime().runtime,
@@ -123,5 +123,6 @@ describe("telegram agent demo", () => {
     expect(thisCalls).toHaveLength(1);
     expect(thisCalls[0]?.prompt).toContain("You are Mono.");
     expect(thisCalls[0]?.options.allowedTools).toEqual([]);
+    expect(thisCalls[0]?.options.mcpConfigPath).toBe(join(dir, "mcp.json"));
   });
 });

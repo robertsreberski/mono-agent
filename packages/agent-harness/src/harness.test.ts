@@ -46,8 +46,10 @@ class FakeRecorder implements RunRecorder {
       status,
       ...(result.failureKind === undefined || result.failureKind === null ? {} : { failureKind: result.failureKind }),
       durationMs: 1,
+      ...(result.cost === undefined ? {} : { cost: result.cost }),
       eventCount: this.events.length,
       artifactPaths: [],
+      ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: result.capabilitiesUsed }),
     };
   }
 
@@ -99,7 +101,13 @@ describe("AgentHarness", () => {
     await historyStore.append("telegram:1", [{ role: "assistant", content: "Earlier answer", timestamp: "2026-05-15T18:00:00Z" }]);
     const fake = createFakeRuntime(async (_prompt, options) => {
       options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "delta" }] } });
-      return { text: "Final answer", providerSessionId: "session-1", usage: { inputTokens: 1 } };
+      return {
+        text: "Final answer",
+        providerSessionId: "session-1",
+        usage: { inputTokens: 1 },
+        cost: { totalUsd: 0.01 },
+        capabilitiesUsed: ["tools:read"],
+      };
     });
 
     const harness = createAgentHarness({
@@ -126,7 +134,13 @@ describe("AgentHarness", () => {
 
     expect(response.text).toBe("Final answer");
     expect(response.failure).toBeUndefined();
-    expect(response.metadata.summary).toMatchObject({ status: "succeeded", eventCount: 1 });
+    expect(response.metadata.summary).toMatchObject({
+      status: "succeeded",
+      eventCount: 1,
+      cost: { totalUsd: 0.01 },
+      capabilitiesUsed: ["tools:read"],
+    });
+    expect(response.metadata.runtime).toMatchObject({ cost: { totalUsd: 0.01 }, capabilitiesUsed: ["tools:read"] });
     expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "memory", "history", "skills", "skill-instructions", "user-message"]);
     expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(dir, "memory.md"), join(skillsRoot, "research", "SKILL.md")]);
     expect(fake.calls).toHaveLength(1);
