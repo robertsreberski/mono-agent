@@ -5,6 +5,7 @@ export interface ToolPolicyInput {
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly mcpServers?: Record<string, unknown>;
+  readonly mcpConfigPath?: string;
   readonly approvalDefaultRiskTier?: string;
   readonly approvalAlwaysAllowTools?: readonly string[];
   readonly approvalTimeoutMs?: number;
@@ -15,6 +16,7 @@ export interface ToolPolicy {
   readonly allowedTools: readonly string[];
   readonly disallowedTools: readonly string[];
   readonly mcpServers?: Record<string, unknown>;
+  readonly mcpConfigPath?: string;
   readonly approvalDefaultRiskTier?: string;
   readonly approvalAlwaysAllowTools?: readonly string[];
   readonly approvalTimeoutMs?: number;
@@ -45,6 +47,7 @@ export function createToolPolicy(input: ToolPolicyInput = {}): ToolPolicy {
     allowedTools,
     disallowedTools,
     ...(input.mcpServers === undefined ? {} : { mcpServers: normalizeMcpServers(input.mcpServers) }),
+    ...(input.mcpConfigPath === undefined ? {} : { mcpConfigPath: normalizeInlineString(input.mcpConfigPath, "mcpConfigPath") }),
     ...(input.approvalDefaultRiskTier === undefined ? {} : { approvalDefaultRiskTier: normalizeInlineString(input.approvalDefaultRiskTier, "approvalDefaultRiskTier") }),
     ...(input.approvalAlwaysAllowTools === undefined ? {} : { approvalAlwaysAllowTools: normalizeToolList(input.approvalAlwaysAllowTools, "approvalAlwaysAllowTools") }),
     ...(input.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: normalizePositiveInteger(input.approvalTimeoutMs, "approvalTimeoutMs") }),
@@ -82,6 +85,9 @@ export function toolPolicyToRuntimeOptions(policy: ToolPolicy): Record<string, u
   if (policy.mcpServers !== undefined) {
     options.mcpServers = policy.mcpServers;
   }
+  if (policy.mcpConfigPath !== undefined) {
+    options.mcpConfigPath = policy.mcpConfigPath;
+  }
   if (policy.approvalDefaultRiskTier !== undefined) {
     options.approvalDefaultRiskTier = policy.approvalDefaultRiskTier;
   }
@@ -102,6 +108,7 @@ function parsedToPolicyInput(parsed: Record<string, unknown>): ToolPolicyInput {
     ...(parsed.allowedTools === undefined ? {} : { allowedTools: asStringArray(parsed.allowedTools, "allowedTools") }),
     ...(parsed.disallowedTools === undefined ? {} : { disallowedTools: asStringArray(parsed.disallowedTools, "disallowedTools") }),
     ...(parsed.mcpServers === undefined ? {} : { mcpServers: asRecord(parsed.mcpServers, "mcpServers") }),
+    ...(parsed.mcpConfigPath === undefined ? {} : { mcpConfigPath: asUnknownString(parsed.mcpConfigPath, "mcpConfigPath") }),
     ...(parsed.approvalDefaultRiskTier === undefined ? {} : { approvalDefaultRiskTier: asUnknownString(parsed.approvalDefaultRiskTier, "approvalDefaultRiskTier") }),
     ...(parsed.approvalAlwaysAllowTools === undefined ? {} : { approvalAlwaysAllowTools: asStringArray(parsed.approvalAlwaysAllowTools, "approvalAlwaysAllowTools") }),
     ...(parsed.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: asUnknownNumber(parsed.approvalTimeoutMs, "approvalTimeoutMs") }),

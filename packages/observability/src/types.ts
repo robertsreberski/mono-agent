@@ -8,10 +8,12 @@ export interface RuntimeResultLike {
   readonly error?: string | null;
   readonly failureKind?: string | null;
   readonly usage?: unknown;
+  readonly cost?: unknown;
   readonly durationMs?: number;
   readonly providerSessionId?: string | null;
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
+  readonly capabilitiesUsed?: unknown;
   readonly [key: string]: unknown;
 }
 
@@ -24,11 +26,13 @@ export interface RunSummary {
   readonly failureKind?: string;
   readonly durationMs: number;
   readonly usage?: unknown;
+  readonly cost?: unknown;
   readonly providerSessionId?: string | null;
   readonly eventCount: number;
   readonly artifactPaths: readonly string[];
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
+  readonly capabilitiesUsed?: unknown;
 }
 
 export interface RunRecorder {

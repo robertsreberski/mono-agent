@@ -25,6 +25,7 @@ export interface RuntimeResult {
   readonly structuredResultSource?: string | null;
   readonly events?: readonly RuntimeEventLike[];
   readonly usage?: unknown;
+  readonly cost?: unknown;
   readonly durationMs?: number;
   readonly numTurns?: number;
   readonly model?: string;
@@ -37,6 +38,7 @@ export interface RuntimeResult {
   readonly providerSessionId?: string | null;
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
+  readonly capabilitiesUsed?: unknown;
   readonly [key: string]: unknown;
 }
 
