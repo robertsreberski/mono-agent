@@ -48,3 +48,49 @@ export interface JsonlRunRecorderOptions {
   readonly clock?: () => number;
   readonly maxStringBytes?: number;
 }
+
+export type RecordedRunEventCategory = "tool" | "thinking" | "message" | "runtime" | "error";
+
+export interface RecordedRunListItem {
+  readonly runId: string;
+  readonly conversationId: string;
+  readonly status: RunSummaryStatus;
+  readonly failureKind?: string;
+  readonly durationMs: number;
+  readonly eventCount: number;
+  readonly updatedAt: string;
+  readonly usage?: unknown;
+  readonly cost?: unknown;
+  readonly providerSessionId?: string | null;
+  readonly runtimeWarnings?: unknown;
+  readonly diagnostics?: unknown;
+  readonly capabilitiesUsed?: unknown;
+}
+
+export interface RecordedRunEvent {
+  readonly index: number;
+  readonly type?: string;
+  readonly category: RecordedRunEventCategory;
+  readonly timestamp?: string;
+  readonly label: string;
+  readonly summary: string;
+  readonly payload: unknown;
+}
+
+export interface RecordedRunDetail {
+  readonly summary: RecordedRunListItem;
+  readonly events: readonly RecordedRunEvent[];
+  readonly warnings: readonly string[];
+}
+
+export interface RecordedRunListResult {
+  readonly runs: readonly RecordedRunListItem[];
+  readonly warnings: readonly string[];
+}
+
+export interface JsonlRunReaderOptions {
+  readonly artifactDir: string;
+  readonly maxRuns?: number;
+  readonly maxEventsPerRun?: number;
+  readonly maxStringBytes?: number;
+}
