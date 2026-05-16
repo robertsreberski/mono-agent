@@ -4,13 +4,13 @@ This is the Mono Agent final demo. It is intentionally **not** an npm package: t
 
 ## What it wires together
 
-- `@worklab-ai/operator-console` starts a loopback settings UI for `mono-agent.config.json`, plus a separate Observability view over recorded run artifacts.
+- `@worklab-ai/operator-console` starts a loopback settings UI for `mono-agent.config.json`, plus a Traceability view over registered agent sources and recorded run artifacts.
 - `@worklab-ai/config` loads adapter-neutral core JSON plus environment overrides.
 - `@worklab-ai/runtime-adapter` creates the runtime backed by `@worklab-ai/agent-runtime`.
 - `@worklab-ai/agent-harness` assembles context, history, memory, skills, tools, runtime calls, and responses.
 - `@worklab-ai/memory-md` provides optional Markdown memory.
 - `@worklab-ai/tool-policy` converts configured tool/MCP policy into runtime options.
-- `@worklab-ai/observability` writes JSONL events and run summaries.
+- `@worklab-ai/observability` writes JSONL events/run summaries and registers this host in the local trace source registry.
 - `@worklab-ai/telegram-adapter` owns Telegram settings, Bot API handling, and long polling.
 - `@worklab-ai/a2a-adapter` owns A2A Agent Card discovery, loopback provider hosting, bearer auth, and remote text-task calls.
 
@@ -31,10 +31,11 @@ The CLI prints:
 - the config file path,
 - whether Telegram is `running`, `waiting_for_config`, or `failed`,
 - whether A2A is `disabled`, `running`, `waiting_for_config`, or `failed`.
+- whether traceability source registration is `running`, `disabled`, or `failed`.
 
 Open the operator console and save a valid config. Telegram and A2A start independently: missing Telegram credentials do not block A2A, and missing A2A config does not block Telegram. Later config edits are written to disk but do not hot-reload a running Telegram poller or A2A server; restart the demo to apply runtime/token/allowlist changes.
 
-The top navigation includes **Settings** and **Runs**. Runs are refresh-based and read persisted `*.summary.json` / `*.events.jsonl` files from the same artifact directory used by the request recorder. The timeline shows visible runtime/tool/message events and does not infer or expose private model chain-of-thought.
+The top navigation includes **Settings** and **Traceability**. Traceability is refresh-based: the registry discovers running/stale/stopped/failed Mono Agent sources, and each source points at persisted `*.summary.json` / `*.events.jsonl` files. The timeline shows visible runtime/tool/message events and does not infer or expose private model chain-of-thought. The old `#observability` hash remains an alias for the traceability surface.
 
 ## Minimal `mono-agent.config.json`
 
@@ -91,6 +92,13 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
   },
   "artifacts": {
     "dir": "./.mono-agent/artifacts"
+  },
+  "traceability": {
+    "registryDir": "~/.mono-agent/trace-sources",
+    "sourceId": "final-agent",
+    "sourceLabel": "Final Agent Demo",
+    "heartbeatMs": 10000,
+    "staleAfterMs": 30000
   }
 }
 ```
@@ -182,7 +190,9 @@ pnpm run demo:final
 
 Standard local Ollama needs no API key. The demo validates local-provider URLs before Telegram starts: private/local HTTP(S) URLs are allowed, while public URLs must use `https://` and set `trustPublicUrl: true`.
 
-For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `mono-agent.config.json`, then the built-in `./.mono-agent/artifacts` default. This lets the Observability view show existing default artifacts even while the rest of the demo config is incomplete.
+For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `mono-agent.config.json`, then the built-in `./.mono-agent/artifacts` default. This lets the traceability view show existing default artifacts even while the rest of the demo config is incomplete.
+
+For source discovery, `MONO_AGENT_TRACE_REGISTRY_DIR` wins, then `traceability.registryDir`, then `~/.mono-agent/trace-sources`. The default is intentionally host-shared so multiple Mono Agent processes from different working directories appear in one local dashboard. Source id and label can be set with `MONO_AGENT_TRACE_SOURCE_ID` / `MONO_AGENT_TRACE_SOURCE_LABEL` or `traceability.sourceId` / `traceability.sourceLabel`; otherwise the demo uses a deterministic path-derived id and the label `Final Agent Demo`.
 
 Useful env overrides:
 
@@ -205,6 +215,9 @@ MONO_AGENT_A2A_SKILL_ID=mono-agent
 MONO_AGENT_A2A_SKILL_NAME="Mono Agent"
 MONO_AGENT_A2A_SKILL_DESCRIPTION="Runs the configured Mono Agent runtime over text."
 MONO_AGENT_A2A_REMOTE_AGENT_URLS=http://127.0.0.1:4300/.well-known/agent-card.json
+MONO_AGENT_TRACE_REGISTRY_DIR=~/.mono-agent/trace-sources
+MONO_AGENT_TRACE_SOURCE_ID=final-agent
+MONO_AGENT_TRACE_SOURCE_LABEL="Final Agent Demo"
 ```
 
 ## CLI options
@@ -219,8 +232,11 @@ pnpm run demo:final -- --config ./mono-agent.config.json --port 3007
 ## Safety notes
 
 - The operator console binds to loopback and requires its per-boot bearer token for API calls.
+- Traceability is local-only. The registry stores source manifests; run details stay in each source's local artifact directory.
 - Telegram bot tokens are write-only in the operator console; GET responses redact them.
 - Telegram chat ids are redacted in demo diagnostics.
 - The A2A provider binds to loopback by default. Non-loopback bind or advertised public URLs require explicit opt-in and should be deployed only behind HTTPS plus bearer auth.
 - A2A bearer tokens are write-only in the operator console and redacted from statuses.
+- Trace event payloads are bounded and sensitive keys such as tokens, authorization headers, passwords, cookies, and API keys are redacted. Redaction is defensive, not a guarantee for arbitrary user-provided secret text.
 - The demo uses fake runtime/Telegram only in tests. The CLI path uses the real adapters, poller/server, and runtime adapter.
+- LangSmith/OpenTelemetry export is not part of this MVP. The current trace registry captures enough source/run timestamps to support a future export sink without adding external credentials to `mono-agent.config.json`.
