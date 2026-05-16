@@ -1,0 +1,39 @@
+{
+  "name": "@worklab-ai/tui",
+  "version": "0.1.0",
+  "description": "Ink-based React TUI console adapter for Mono Agent: chat, history, redacted config view.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "mono-agent-tui": "./dist/bin/mono-agent-tui.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@worklab-ai/config": "workspace:^0.1.0",
+    "ink": "^7.0.3",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "ink-testing-library": "^4.0.0"
+  }
+}
