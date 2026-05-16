@@ -1,9 +1,14 @@
 import { createRuntime } from "@worklab-ai/agent-runtime";
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@worklab-ai/agent-runtime/ai/runtime/model-refs.js";
+import { listRuntimeBridges } from "@worklab-ai/agent-runtime/ai/runtime/registry.js";
 
 import type {
+  MonoRuntimeBackendCapabilities,
+  MonoRuntimeBackendDescriptor,
+  MonoRuntimeBackendId,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
+  MonoRuntimeSupportDescription,
   RuntimeExecutionMode,
   RuntimeModelReference,
   RuntimeResult,
@@ -15,6 +20,7 @@ export type RuntimeAdapterErrorCode =
   | "invalid_model_reference"
   | "invalid_execution_mode"
   | "incompatible_execution_mode"
+  | "runtime_backend_unavailable"
   | "invalid_runtime_options";
 
 export interface RuntimeAdapterErrorDetails {
@@ -55,6 +61,53 @@ export function isRuntimeExecutionMode(value: unknown): value is RuntimeExecutio
 export function defaultExecutionModeForModel(model: RuntimeModelReference): RuntimeExecutionMode {
   assertParsedRuntimeModelReference(model);
   return model.sdk === "codex" ? "cli" : "sdk";
+}
+
+export function listMonoRuntimeBackends(): readonly MonoRuntimeBackendDescriptor[] {
+  return RUNTIME_BACKEND_DEFINITIONS.map((definition) => buildBackendDescriptor(definition));
+}
+
+export function runtimeBackendForModel(
+  model: RuntimeModelReference,
+  executionMode?: RuntimeExecutionMode,
+): MonoRuntimeBackendDescriptor {
+  assertParsedRuntimeModelReference(model);
+  const resolvedExecutionMode = executionMode ?? defaultExecutionModeForModel(model);
+  assertExecutionModeCompatible(model, resolvedExecutionMode);
+  return backendById(backendIdForModel(model, resolvedExecutionMode));
+}
+
+export function describeMonoRuntimeSupport(
+  model: RuntimeModelReference,
+  executionMode?: RuntimeExecutionMode,
+): MonoRuntimeSupportDescription {
+  assertParsedRuntimeModelReference(model);
+  const resolvedExecutionMode = executionMode ?? defaultExecutionModeForModel(model);
+  if (!isRuntimeExecutionMode(resolvedExecutionMode)) {
+    return {
+      model,
+      executionMode: resolvedExecutionMode,
+      compatible: false,
+      incompatibilityReason: "Execution mode must be sdk or cli.",
+    };
+  }
+
+  const incompatibilityReason = executionModeIncompatibilityReason(model, resolvedExecutionMode);
+  if (typeof incompatibilityReason === "string" && incompatibilityReason.length > 0) {
+    return {
+      model,
+      executionMode: resolvedExecutionMode,
+      compatible: false,
+      incompatibilityReason,
+    };
+  }
+
+  return {
+    model,
+    executionMode: resolvedExecutionMode,
+    compatible: true,
+    backend: runtimeBackendForModel(model, resolvedExecutionMode),
+  };
 }
 
 export function assertExecutionModeCompatible(
@@ -129,6 +182,122 @@ function normalizeRuntimeModelReference(value: unknown): RuntimeModelReference {
   }
 
   return normalized;
+}
+
+interface RuntimeBackendDefinition {
+  readonly id: MonoRuntimeBackendId;
+  readonly runtimeBridgeId: string;
+  readonly label: string;
+  readonly sdk: RuntimeModelReference["sdk"];
+  readonly executionMode: RuntimeExecutionMode;
+  readonly transport: "sdk" | "cli";
+  readonly providerBoundary: string;
+  readonly modelReferenceExamples: readonly string[];
+  readonly acceptsProviderIds: boolean;
+}
+
+const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
+  {
+    id: "claude-sdk",
+    runtimeBridgeId: "claude",
+    label: "Claude SDK",
+    sdk: "claude",
+    executionMode: "sdk",
+    transport: "sdk",
+    providerBoundary: "@anthropic-ai/claude-agent-sdk via @worklab-ai/agent-runtime",
+    modelReferenceExamples: ["claude:claude-sonnet-4-6"],
+    acceptsProviderIds: false,
+  },
+  {
+    id: "claude-code-cli",
+    runtimeBridgeId: "claude-code",
+    label: "Claude Code CLI",
+    sdk: "claude",
+    executionMode: "cli",
+    transport: "cli",
+    providerBoundary: "Claude Code CLI bridge via @worklab-ai/agent-runtime",
+    modelReferenceExamples: ["claude:claude-sonnet-4-6"],
+    acceptsProviderIds: false,
+  },
+  {
+    id: "codex-app-cli",
+    runtimeBridgeId: "codex-app",
+    label: "Codex app CLI",
+    sdk: "codex",
+    executionMode: "cli",
+    transport: "cli",
+    providerBoundary: "Codex app-server bridge via @worklab-ai/agent-runtime",
+    modelReferenceExamples: ["codex:gpt-5.5"],
+    acceptsProviderIds: false,
+  },
+  {
+    id: "pi-sdk",
+    runtimeBridgeId: "pi",
+    label: "Pi SDK provider",
+    sdk: "pi",
+    executionMode: "sdk",
+    transport: "sdk",
+    providerBoundary: "Pi SDK provider gateway via @worklab-ai/agent-runtime",
+    modelReferenceExamples: ["pi:openai-codex:gpt-5.5", "pi:github-copilot:gpt-4.1"],
+    acceptsProviderIds: true,
+  },
+];
+
+function buildBackendDescriptor(
+  definition: RuntimeBackendDefinition,
+): MonoRuntimeBackendDescriptor {
+  return {
+    ...definition,
+    capabilities: capabilitiesForRuntimeBridge(definition.runtimeBridgeId),
+  };
+}
+
+function backendById(id: MonoRuntimeBackendId): MonoRuntimeBackendDescriptor {
+  const definition = RUNTIME_BACKEND_DEFINITIONS.find((candidate) => candidate.id === id);
+  if (definition === undefined) {
+    throw new RuntimeAdapterError("runtime_backend_unavailable", "Runtime backend is not registered.", { id });
+  }
+  return buildBackendDescriptor(definition);
+}
+
+function backendIdForModel(
+  model: RuntimeModelReference,
+  executionMode: RuntimeExecutionMode,
+): MonoRuntimeBackendId {
+  if (model.sdk === "claude" && executionMode === "cli") {
+    return "claude-code-cli";
+  }
+  if (model.sdk === "claude" && executionMode === "sdk") {
+    return "claude-sdk";
+  }
+  if (model.sdk === "codex" && executionMode === "cli") {
+    return "codex-app-cli";
+  }
+  if (model.sdk === "pi" && executionMode === "sdk") {
+    return "pi-sdk";
+  }
+  throw new RuntimeAdapterError("runtime_backend_unavailable", "No runtime backend matches this model and execution mode.", {
+    model: redactedModelReference(model),
+    executionMode,
+  });
+}
+
+function capabilitiesForRuntimeBridge(
+  runtimeBridgeId: string,
+): MonoRuntimeBackendCapabilities {
+  const bridge = listRuntimeBridges().find((candidate) => candidate.id === runtimeBridgeId);
+  if (bridge === undefined) {
+    throw new RuntimeAdapterError("runtime_backend_unavailable", "Agent runtime bridge is not registered.", {
+      runtimeBridgeId,
+    });
+  }
+  const capabilities = bridge.capabilities();
+  if (!isRecord(capabilities) || Array.isArray(capabilities)) {
+    throw new RuntimeAdapterError("runtime_backend_unavailable", "Agent runtime bridge returned invalid capabilities.", {
+      runtimeBridgeId,
+    });
+  }
+  return { ...capabilities };
 }
 
 function normalizedRequiredString(value: unknown, field: string): string {
