@@ -147,9 +147,9 @@ export function ConfigForm({ client, initial }: ConfigFormProps): React.JSX.Elem
   }
 
   return (
-    <div className="grid gap-4">
-      <Tabs defaultValue={fieldGroups[0]?.id ?? ""}>
-        <TabsList aria-label="Configuration sections">
+    <div className="grid w-full max-w-3xl gap-4">
+      <Tabs defaultValue={fieldGroups[0]?.id ?? ""} className="min-w-0">
+        <TabsList aria-label="Configuration sections" className="max-w-full">
           {fieldGroups.map((group) => (
             <TabsTrigger key={group.id} value={group.id}>
               {group.label}

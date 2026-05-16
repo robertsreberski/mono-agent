@@ -147,4 +147,27 @@ describe("<ConfigForm/>", () => {
     const input = (await screen.findByLabelText(/Bot token/u)) as HTMLInputElement;
     expect(input.type).toBe("password");
   });
+
+  it("uses mobile-safe layout classes for overflowing tabs and the sticky save bar", () => {
+    const { container } = render(
+      <ConfigForm
+        client={makeStubClient()}
+        initial={{
+          fieldGroups: CORE_FIELD_GROUPS,
+          config: {},
+          version: "v0",
+        }}
+      />,
+    );
+
+    const root = container.firstElementChild;
+    expect(root?.className).toContain("max-w-3xl");
+    const tabs = screen.getByLabelText("Configuration sections");
+    expect(tabs.className).toContain("overflow-x-auto");
+    expect(tabs.className).toContain("max-w-full");
+    const saveBar = screen.getByRole("status");
+    expect(saveBar.className).toContain("flex-col");
+    expect(saveBar.className).toContain("env(safe-area-inset-bottom)");
+    expect(screen.getByRole("button", { name: "Save" }).className).toContain("w-full");
+  });
 });

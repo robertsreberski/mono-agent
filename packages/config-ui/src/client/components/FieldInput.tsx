@@ -54,8 +54,8 @@ export function FieldInput({
   })();
 
   return (
-    <div className="grid gap-1.5">
-      <Label htmlFor={labelId} className="flex items-center gap-2">
+    <div className="grid min-w-0 gap-1.5">
+      <Label htmlFor={labelId} className="flex flex-wrap items-center gap-2">
         <span>{field.label}</span>
         {field.required ? (
           <span aria-label="required" className="text-destructive">

@@ -24,14 +24,14 @@ export function FieldGroupCard({
   onChange,
 }: FieldGroupCardProps): React.JSX.Element {
   return (
-    <Card aria-labelledby={`group-${group.id}`}>
+    <Card aria-labelledby={`group-${group.id}`} className="min-w-0">
       <CardHeader>
         <CardTitle id={`group-${group.id}`}>{group.label}</CardTitle>
         {group.description ? (
           <CardDescription>{group.description}</CardDescription>
         ) : null}
       </CardHeader>
-      <CardContent className="grid gap-5">
+      <CardContent className="grid min-w-0 gap-5">
         {group.fields.map((field) => (
           <FieldInput
             key={field.id}
