@@ -37,6 +37,53 @@ Open the operator console and save a valid config. Telegram and A2A start indepe
 
 The top navigation includes **Settings** and **Traceability**. Traceability is refresh-based: the registry discovers running/stale/stopped/failed Mono Agent sources, and each source points at persisted `*.summary.json` / `*.events.jsonl` files. The timeline shows visible runtime/tool/message events and does not infer or expose private model chain-of-thought. The old `#observability` hash remains an alias for the traceability surface.
 
+## Deploy with Ollama Gemma 4
+
+Use the deployment command when you want the final demo to start with a real local runtime and traceability already wired:
+
+```bash
+ollama list
+ollama pull gemma4:31b
+curl http://localhost:11434/api/tags
+pnpm run deploy:final
+```
+
+The command builds the repo, verifies `gemma4:31b` is installed in Ollama, writes `.mono-agent/deploy/final-agent-gemma4.config.json`, and starts the operator console plus loopback A2A provider. It does not write secrets. Generated deployment state is ignored by git:
+
+```text
+.mono-agent/deploy/final-agent-gemma4.config.json
+.mono-agent/deploy/MEMORY.md
+.mono-agent/deploy/workspace/
+.mono-agent/deploy/artifacts/
+.mono-agent/trace-sources/
+```
+
+Useful options:
+
+```bash
+pnpm run deploy:final -- --port 5317
+pnpm run deploy:final -- --a2a-port 4317
+pnpm run deploy:final -- --config ./.mono-agent/deploy/custom.config.json
+pnpm run deploy:final -- --no-start
+```
+
+The CLI prints the operator console URL/token, trace source id `final-agent-gemma4`, trace registry, artifact directory, model reference `pi:ollama:gemma4:31b`, and the A2A Agent Card URL. Send a no-secret local smoke request to the printed Agent Card URL:
+
+```bash
+node --input-type=module - <<'EOF'
+import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
+
+const response = await sendA2AMessage({
+  agentUrl: "http://127.0.0.1:4317/.well-known/agent-card.json",
+  text: "Reply with one sentence from the deployed final demo."
+});
+
+console.log(response.text);
+EOF
+```
+
+Then open the operator console Traceability view. It should list source `final-agent-gemma4` and show the new A2A run with runtime events loaded from `.mono-agent/deploy/artifacts/`. Stop the deployment with `Ctrl-C`; the trace source is marked stopped during shutdown. Telegram remains optional and is not required for this deployment smoke.
+
 ## Minimal `mono-agent.config.json`
 
 Use fake placeholders here only as shape examples. Do not commit real bot tokens or provider credentials.
@@ -224,10 +271,12 @@ MONO_AGENT_TRACE_SOURCE_LABEL="Final Agent Demo"
 
 ```bash
 pnpm run demo:final -- --config ./mono-agent.config.json --port 3007
+pnpm run deploy:final -- --model gemma4:31b --ollama-url http://localhost:11434 --port 3007 --a2a-port 4300
 ```
 
 - `--config <path>` changes the config file path.
 - `--port <port>` pins the operator console port; omit it to choose a free loopback port.
+- `deploy:final` also accepts `--model <ollama-tag>`, `--ollama-url <url>`, `--a2a-port <port>`, and `--no-start`.
 
 ## Safety notes
 
