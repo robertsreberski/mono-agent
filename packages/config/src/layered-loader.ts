@@ -96,6 +96,21 @@ export function layerJsonOntoEnv(
   if (json.artifacts?.dir !== undefined) {
     fromJson.MONO_AGENT_ARTIFACT_DIR = json.artifacts.dir;
   }
+  if (json.traceability?.registryDir !== undefined) {
+    fromJson.MONO_AGENT_TRACE_REGISTRY_DIR = json.traceability.registryDir;
+  }
+  if (json.traceability?.sourceId !== undefined) {
+    fromJson.MONO_AGENT_TRACE_SOURCE_ID = json.traceability.sourceId;
+  }
+  if (json.traceability?.sourceLabel !== undefined) {
+    fromJson.MONO_AGENT_TRACE_SOURCE_LABEL = json.traceability.sourceLabel;
+  }
+  if (json.traceability?.heartbeatMs !== undefined) {
+    fromJson.MONO_AGENT_TRACE_HEARTBEAT_MS = String(json.traceability.heartbeatMs);
+  }
+  if (json.traceability?.staleAfterMs !== undefined) {
+    fromJson.MONO_AGENT_TRACE_STALE_AFTER_MS = String(json.traceability.staleAfterMs);
+  }
   if (json.providers?.local !== undefined && !hasLocalProviderEnv(env)) {
     fromJson.MONO_AGENT_LOCAL_PROVIDERS_JSON = JSON.stringify(json.providers.local);
   }

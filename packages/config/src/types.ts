@@ -31,6 +31,13 @@ export interface MonoAgentConfig {
   readonly artifacts: {
     readonly dir: string;
   };
+  readonly traceability: {
+    readonly registryDir: string;
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly heartbeatMs?: number;
+    readonly staleAfterMs?: number;
+  };
   readonly providers?: {
     readonly local: readonly LocalProviderDefinition[];
   };
@@ -46,6 +53,7 @@ export interface RedactedMonoAgentConfig {
   readonly memory?: MonoAgentConfig["memory"];
   readonly tools: MonoAgentConfig["tools"];
   readonly artifacts: MonoAgentConfig["artifacts"];
+  readonly traceability: MonoAgentConfig["traceability"];
   readonly providers?: {
     readonly local: readonly RedactedLocalProviderDefinition[];
   };
