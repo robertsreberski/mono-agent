@@ -1,0 +1,310 @@
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+import type {
+  TelegramBotApi,
+  TelegramLongPollerOptions,
+  TelegramLongPollerStartOptions,
+} from "@worklab-ai/telegram-bridge";
+
+import { startFinalAgentDemo } from "./final-demo.js";
+
+const tempDirs: string[] = [];
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "mono-agent-final-demo-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe("final agent demo", () => {
+  it("starts a loopback config UI and waits honestly when config is missing", async () => {
+    const dir = await tempDir();
+    let pollerConstructed = false;
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: {},
+      runtime: createFakeRuntime().runtime,
+      telegramApi: createFakeTelegramApi().api,
+      pollerFactory: () => {
+        pollerConstructed = true;
+        return createAbortableFakePoller().poller;
+      },
+    });
+
+    try {
+      expect(demo.configUi.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(demo.configUi.appUrl).toBe(`${demo.configUi.url}/?t=${demo.configUi.token}`);
+      expect(demo.configUi.token).toMatch(/^[0-9a-f]{64}$/u);
+      expect(demo.configUi.configPath).toBe(resolve(dir, "mono-agent.config.json"));
+      const missingConfigStatus = demo.telegramStatus;
+      if (missingConfigStatus.kind !== "waiting_for_config") {
+        throw new Error(`Expected waiting_for_config, got ${missingConfigStatus.kind}.`);
+      }
+      expect(missingConfigStatus.reason).toMatch(/MONO_AGENT_TELEGRAM_BOT_TOKEN/u);
+      expect(pollerConstructed).toBe(false);
+
+      const health = await fetch(`${demo.configUi.url}/api/health`);
+      expect(health.status).toBe(200);
+      expect(await health.json()).toEqual({ ok: true });
+    } finally {
+      await demo.stop();
+    }
+
+    await expect(fetch(`${demo.configUi.url}/api/health`)).rejects.toThrow();
+  });
+
+  it("starts Telegram exactly once after a valid config UI write", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono from config UI.", "utf8");
+
+    const fakeRuntime = createFakeRuntime();
+    const fakeApi = createFakeTelegramApi();
+    const started: TelegramLongPollerStartOptions[] = [];
+    let factoryCalls = 0;
+    let pollerOptions: TelegramLongPollerOptions | undefined;
+
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: {},
+      runtime: fakeRuntime.runtime,
+      telegramApi: fakeApi.api,
+      pollerFactory: (options) => {
+        factoryCalls += 1;
+        pollerOptions = options;
+        return createAbortableFakePoller(started).poller;
+      },
+    });
+
+    try {
+      expect(demo.telegramStatus.kind).toBe("waiting_for_config");
+      const initial = await getConfig(demo.configUi.url, demo.configUi.token);
+      const put = await putConfig(demo.configUi.url, demo.configUi.token, initial.version, validConfigPatch());
+      expect(put.status).toBe(200);
+
+      await waitFor(() => started.length === 1);
+      expect(factoryCalls).toBe(1);
+      expect(pollerOptions).toMatchObject({ deleteWebhookOnStart: true, allowedUpdates: ["message"] });
+      expect(demo.telegramStatus.kind).toBe("running");
+      expect(JSON.stringify(demo.telegramStatus)).not.toContain("secret-token");
+      expect(JSON.stringify(demo.telegramStatus)).not.toContain("987654321");
+
+      const second = await putConfig(demo.configUi.url, demo.configUi.token, put.body.version, {
+        runtime: { maxTurns: 9 },
+      });
+      expect(second.status).toBe(200);
+      await delay(25);
+      expect(started).toHaveLength(1);
+    } finally {
+      await demo.stop();
+    }
+
+    expect(started[0]?.signal?.aborted).toBe(true);
+  });
+
+  it("composes config UI, Telegram, harness, runtime, memory, tools, and artifacts", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono and you love small LEGO blocks.", "utf8");
+    await writeFile(join(dir, "MEMORY.md"), "Remember: prefer small package boundaries.", "utf8");
+    await writeFile(join(dir, "mono-agent.config.json"), `${JSON.stringify(validConfigPatch(), null, 2)}\n`, "utf8");
+
+    const fakeRuntime = createFakeRuntime();
+    const fakeApi = createFakeTelegramApi();
+    let pollerOptions: TelegramLongPollerOptions | undefined;
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: {},
+      runtime: fakeRuntime.runtime,
+      telegramApi: fakeApi.api,
+      pollerFactory: (options) => {
+        pollerOptions = options;
+        return createAbortableFakePoller().poller;
+      },
+    });
+
+    try {
+      expect(demo.telegramStatus.kind).toBe("running");
+      expect(pollerOptions).toBeDefined();
+      const result = await pollerOptions?.bridge.handleUpdate({
+        update_id: 1,
+        message: {
+          message_id: 10,
+          chat: { id: 987654321, type: "private" },
+          from: { id: 77, username: "tester" },
+          text: "Hello demo",
+        },
+      });
+
+      expect(result).toMatchObject({ kind: "handled", action: "responded" });
+      expect(fakeRuntime.calls).toHaveLength(1);
+      const call = fakeRuntime.calls[0];
+      expect(call?.prompt).toContain("You are Mono and you love small LEGO blocks.");
+      expect(call?.prompt).toContain("Remember: prefer small package boundaries.");
+      expect(call?.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
+      expect(call?.options.executionMode).toBe("sdk");
+      expect(call?.options.cwd).toBe(resolve(dir, "workspace"));
+      expect(call?.options.maxTurns).toBe(4);
+      expect(call?.options.allowedTools).toEqual(["Read", "Grep"]);
+      expect(call?.options.disallowedTools).toEqual(["Bash"]);
+      expect(call?.options.mcpConfigPath).toBe(resolve(dir, "mcp.json"));
+
+      const memory = await readFile(join(dir, "MEMORY.md"), "utf8");
+      expect(memory).toContain("Host-observed completed turn.");
+      expect(memory).toContain("Hello demo");
+      const artifactFiles = await readdir(join(dir, "artifacts"));
+      const summaryFile = artifactFiles.find((file) => file.endsWith(".summary.json"));
+      expect(summaryFile).toBeDefined();
+      expect(await readFile(join(dir, "artifacts", summaryFile as string), "utf8")).toContain("capabilitiesUsed");
+      expect(fakeApi.sentTexts.join("\n")).toContain("runtime ok");
+    } finally {
+      await demo.stop();
+    }
+  });
+});
+
+function validConfigPatch() {
+  return {
+    telegram: {
+      botToken: "123456:secret-token",
+      allowedChatIds: ["987654321"],
+    },
+    runtime: {
+      model: "pi:openai-codex:gpt-5.5",
+      executionMode: "sdk",
+      maxTurns: 4,
+      workspace: "./workspace",
+    },
+    context: {
+      identityPath: "./IDENTITY.md",
+      selectedSkills: [],
+    },
+    memory: {
+      path: "./MEMORY.md",
+      maxBytes: 64_000,
+      scope: "single-file" as const,
+      writeMode: "append-host-summary" as const,
+    },
+    tools: {
+      allowedTools: ["Read", "Grep"],
+      disallowedTools: ["Bash"],
+      mcpConfigPath: "./mcp.json",
+    },
+    artifacts: {
+      dir: "./artifacts",
+    },
+  };
+}
+
+async function getConfig(url: string, token: string): Promise<{ version: string; config: unknown }> {
+  const response = await fetch(`${url}/api/config`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(response.status).toBe(200);
+  return await response.json() as { version: string; config: unknown };
+}
+
+async function putConfig(
+  url: string,
+  token: string,
+  expectedVersion: string,
+  patch: unknown,
+): Promise<{ status: number; body: { version: string } }> {
+  const response = await fetch(`${url}/api/config`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ expectedVersion, patch }),
+  });
+  return {
+    status: response.status,
+    body: await response.json() as { version: string },
+  };
+}
+
+function createFakeRuntime(): {
+  readonly calls: Array<{ prompt: string; options: RuntimeRunOptions; metadataRunId?: string }>;
+  readonly runtime: { run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> };
+} {
+  const calls: Array<{ prompt: string; options: RuntimeRunOptions; metadataRunId?: string }> = [];
+  return {
+    calls,
+    runtime: {
+      async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        options.onEvent?.({ type: "fake-event", token: "should-redact" });
+        calls.push({ prompt, options });
+        return {
+          text: "runtime ok",
+          model: options.model.model,
+          sdk: options.model.sdk,
+          cost: { totalUsd: 0 },
+          capabilitiesUsed: ["telegram", "config-ui"],
+        };
+      },
+    },
+  };
+}
+
+function createFakeTelegramApi(): { readonly api: TelegramBotApi; readonly sentTexts: string[] } {
+  const sentTexts: string[] = [];
+  return {
+    sentTexts,
+    api: {
+      async sendMessage(params) {
+        sentTexts.push(params.text);
+        return { message_id: sentTexts.length, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText(params) {
+        sentTexts.push(params.text);
+        return { message_id: params.message_id ?? sentTexts.length, chat: { id: params.chat_id ?? 987654321 }, text: params.text };
+      },
+      async getUpdates() {
+        return [];
+      },
+      async deleteWebhook() {
+        return true;
+      },
+    },
+  };
+}
+
+function createAbortableFakePoller(started: TelegramLongPollerStartOptions[] = []): {
+  readonly poller: { start(options?: TelegramLongPollerStartOptions): Promise<void> };
+} {
+  return {
+    poller: {
+      async start(options: TelegramLongPollerStartOptions = {}): Promise<void> {
+        started.push(options);
+        if (options.signal?.aborted === true) {
+          return;
+        }
+        await new Promise<void>((resolvePromise) => {
+          options.signal?.addEventListener("abort", () => resolvePromise(), { once: true });
+        });
+      },
+    },
+  };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error("Timed out waiting for condition.");
+    }
+    await delay(10);
+  }
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
