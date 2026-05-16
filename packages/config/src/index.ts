@@ -37,5 +37,6 @@ export {
   identityFieldGroup,
   memoryFieldGroup,
   runtimeFieldGroup,
+  traceabilityFieldGroup,
   toolsFieldGroup,
 } from "./field-groups.js";

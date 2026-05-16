@@ -201,10 +201,63 @@ export const artifactsFieldGroup = defineFieldGroup({
   ],
 });
 
+export const traceabilityFieldGroup = defineFieldGroup({
+  id: "traceability",
+  label: "Traceability",
+  description: "How this host registers run artifacts with the local dashboard.",
+  fields: [
+    {
+      id: "traceability.registryDir",
+      label: "Trace registry",
+      description: "Host-shared directory where running agents publish source manifests.",
+      kind: "path",
+      placeholder: "~/.mono-agent/trace-sources",
+      path: ["traceability", "registryDir"],
+    },
+    {
+      id: "traceability.sourceId",
+      label: "Source ID",
+      description: "Stable path-safe id for this agent process in the trace registry.",
+      kind: "string",
+      placeholder: "final-agent",
+      path: ["traceability", "sourceId"],
+    },
+    {
+      id: "traceability.sourceLabel",
+      label: "Source label",
+      description: "Human-readable name shown in the traceability dashboard.",
+      kind: "string",
+      placeholder: "Final Agent Demo",
+      path: ["traceability", "sourceLabel"],
+    },
+    {
+      id: "traceability.heartbeatMs",
+      label: "Heartbeat ms",
+      description: "How often this host refreshes its registry manifest.",
+      kind: "integer",
+      min: 250,
+      max: 86_400_000,
+      placeholder: "10000",
+      path: ["traceability", "heartbeatMs"],
+    },
+    {
+      id: "traceability.staleAfterMs",
+      label: "Stale after ms",
+      description: "How old a running heartbeat can be before the dashboard marks it stale.",
+      kind: "integer",
+      min: 1_000,
+      max: 604_800_000,
+      placeholder: "30000",
+      path: ["traceability", "staleAfterMs"],
+    },
+  ],
+});
+
 export const CORE_AGENT_FIELD_GROUPS: FieldGroupRegistry = [
   identityFieldGroup,
   runtimeFieldGroup,
   memoryFieldGroup,
   toolsFieldGroup,
   artifactsFieldGroup,
+  traceabilityFieldGroup,
 ];

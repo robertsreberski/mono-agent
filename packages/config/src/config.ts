@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import {
@@ -44,6 +45,8 @@ export interface LoadMonoAgentConfigInput {
 
 const DEFAULT_MAX_TURNS = 8;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
+const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
+const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
 
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
   const cwd = normalizeCwd(input.cwd);
@@ -58,6 +61,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const memory = readMemoryConfig(input.env, cwd);
   const mcpConfigPath = readOptionalPath(input.env.MONO_AGENT_MCP_CONFIG_PATH, cwd);
   const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
+  const traceability = readTraceabilityConfig(input.env, cwd);
   const localProviders = readLocalProviders(input.env);
 
   assertModeCompatibility(model, executionMode);
@@ -91,6 +95,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     artifacts: {
       dir: artifactDir,
     },
+    traceability,
     ...(localProviders.length === 0 ? {} : { providers: { local: localProviders } }),
   };
 
@@ -110,6 +115,7 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
       disallowedTools: [...config.tools.disallowedTools],
     },
     artifacts: { ...config.artifacts },
+    traceability: { ...config.traceability },
   };
   if (config.memory !== undefined) {
     return withRedactedProviders({ ...redacted, memory: { ...config.memory } }, config);
@@ -176,6 +182,31 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     maxBytes: readInteger(env, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, { min: 1, max: 1_000_000 }),
     scope,
     writeMode,
+  };
+}
+
+function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["traceability"] {
+  const registryDir = readPath(
+    env.MONO_AGENT_TRACE_REGISTRY_DIR,
+    cwd,
+    resolve(homedir(), ".mono-agent", "trace-sources"),
+  );
+  const sourceId = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_ID);
+  const sourceLabel = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_LABEL);
+  const heartbeatMs = readInteger(env, "MONO_AGENT_TRACE_HEARTBEAT_MS", DEFAULT_TRACE_HEARTBEAT_MS, {
+    min: 250,
+    max: 86_400_000,
+  });
+  const staleAfterMs = readInteger(env, "MONO_AGENT_TRACE_STALE_AFTER_MS", DEFAULT_TRACE_STALE_AFTER_MS, {
+    min: 1_000,
+    max: 604_800_000,
+  });
+  return {
+    registryDir,
+    ...(sourceId === undefined ? {} : { sourceId }),
+    ...(sourceLabel === undefined ? {} : { sourceLabel }),
+    heartbeatMs,
+    staleAfterMs,
   };
 }
 

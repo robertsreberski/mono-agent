@@ -69,6 +69,13 @@ export interface MonoAgentConfigJson extends SettingsJson {
   readonly artifacts?: {
     readonly dir?: string;
   };
+  readonly traceability?: {
+    readonly registryDir?: string;
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly heartbeatMs?: number;
+    readonly staleAfterMs?: number;
+  };
   readonly providers?: MonoAgentProvidersJson;
 }
 

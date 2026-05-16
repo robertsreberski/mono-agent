@@ -109,6 +109,7 @@ describe("buildTuiConfigSummary", () => {
         },
         tools: { allowedTools: [], disallowedTools: [] },
         artifacts: { dir: "/tmp/artifacts" },
+        traceability: { registryDir: "/tmp/trace-sources" },
       },
       json: {
         runtime: { model: "codex:gpt-5.5" },

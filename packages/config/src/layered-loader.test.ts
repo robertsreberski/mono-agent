@@ -28,6 +28,7 @@ describe("layerJsonOntoEnv", () => {
         runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 12 },
         context: { identityPath: "IDENTITY.md", selectedSkills: ["a", "b"] },
         tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
+        traceability: { registryDir: ".mono-agent/traces", sourceId: "json-source", staleAfterMs: 60000 },
         providers: {
           local: [
             {
@@ -47,6 +48,9 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_SELECTED_SKILLS).toBe("a,b");
     expect(layered.MONO_AGENT_ALLOWED_TOOLS).toBe("Read");
     expect(layered.MONO_AGENT_DISALLOWED_TOOLS).toBe("Bash");
+    expect(layered.MONO_AGENT_TRACE_REGISTRY_DIR).toBe(".mono-agent/traces");
+    expect(layered.MONO_AGENT_TRACE_SOURCE_ID).toBe("json-source");
+    expect(layered.MONO_AGENT_TRACE_STALE_AFTER_MS).toBe("60000");
     expect(JSON.parse(layered.MONO_AGENT_LOCAL_PROVIDERS_JSON ?? "[]")).toEqual([
       {
         id: "ollama",

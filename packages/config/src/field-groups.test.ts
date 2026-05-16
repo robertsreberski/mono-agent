@@ -10,6 +10,7 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
       "memory",
       "tools",
       "artifacts",
+      "traceability",
     ]);
     expect(CORE_AGENT_FIELD_GROUPS.some((group) => group.id === "telegram")).toBe(false);
   });

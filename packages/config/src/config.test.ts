@@ -27,6 +27,11 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_MEMORY_SCOPE: "single-file",
         MONO_AGENT_MEMORY_MAX_BYTES: "2048",
         MONO_AGENT_ARTIFACT_DIR: "artifacts",
+        MONO_AGENT_TRACE_REGISTRY_DIR: "trace-registry",
+        MONO_AGENT_TRACE_SOURCE_ID: "agent-one",
+        MONO_AGENT_TRACE_SOURCE_LABEL: "Agent One",
+        MONO_AGENT_TRACE_HEARTBEAT_MS: "5000",
+        MONO_AGENT_TRACE_STALE_AFTER_MS: "15000",
       },
     });
 
@@ -50,6 +55,13 @@ describe("loadMonoAgentConfig", () => {
       mcpConfigPath: "/repo/mcp.json",
     });
     expect(config.artifacts.dir).toBe("/repo/artifacts");
+    expect(config.traceability).toEqual({
+      registryDir: "/repo/trace-registry",
+      sourceId: "agent-one",
+      sourceLabel: "Agent One",
+      heartbeatMs: 5000,
+      staleAfterMs: 15000,
+    });
   });
 
   it("defaults Codex model references to CLI execution mode", () => {
@@ -88,6 +100,15 @@ describe("loadMonoAgentConfig", () => {
       apiKeyPresent: true,
     });
     expect(JSON.stringify(redacted)).not.toContain("local-secret");
+  });
+
+  it("defaults traceability to a host-shared registry path", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: baseEnv,
+    });
+
+    expect(config.traceability.registryDir).toMatch(/\.mono-agent\/trace-sources$/u);
   });
 
   it("loads a local Ollama provider from the one-provider env shape", () => {
