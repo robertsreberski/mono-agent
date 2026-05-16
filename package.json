@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.18",
+    "@worklab-ai/a2a-adapter": "workspace:^0.1.0",
     "@worklab-ai/agent-contracts": "workspace:^0.1.0",
     "@worklab-ai/agent-harness": "workspace:^0.1.0",
     "@worklab-ai/config": "workspace:^0.1.0",

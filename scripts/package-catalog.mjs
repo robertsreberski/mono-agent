@@ -10,6 +10,14 @@ export const PACKAGE_CATEGORIES = [
 
 export const packageCatalog = [
   {
+    dir: "a2a-adapter",
+    name: "@worklab-ai/a2a-adapter",
+    category: "communication",
+    responsibility: "Exposes Mono Agent responders over A2A and consumes remote A2A agents through direct discovery.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
     dir: "agent-contracts",
     name: "@worklab-ai/agent-contracts",
     category: "core",
