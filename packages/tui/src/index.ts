@@ -41,3 +41,19 @@ export type {
   TuiConfigSummarySection,
 } from "./config/pane.js";
 export { buildTuiConfigSummary } from "./config/pane.js";
+
+export type {
+  TuiAppConfigPaneOptions,
+  TuiAppLogger,
+  TuiAppProps,
+  TuiPaneId,
+} from "./components/TuiApp.js";
+export { TuiApp } from "./components/TuiApp.js";
+
+export type {
+  StartMonoAgentTuiHandle,
+  StartMonoAgentTuiOptions,
+} from "./runtime/start.js";
+export { startMonoAgentTui } from "./runtime/start.js";
+
+export { TUI_PACKAGE_VERSION } from "./runtime/version.js";
