@@ -60,6 +60,9 @@ export interface RedactedFinalAgentDemoConfig {
   readonly a2a?: RedactedA2AAdapterConfig;
 }
 
+const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
+const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
+
 export type FinalAgentDemoConfigError =
   | MonoAgentConfigError
   | TelegramAdapterConfigError
@@ -202,6 +205,70 @@ export async function resolveFinalDemoTraceSourceLabel(
   }
 
   return "Final Agent Demo";
+}
+
+export async function resolveFinalDemoTraceHeartbeatMs(
+  input: FinalAgentDemoConfigInput,
+): Promise<number> {
+  return await resolveTraceInteger({
+    input,
+    envName: "MONO_AGENT_TRACE_HEARTBEAT_MS",
+    jsonKey: "heartbeatMs",
+    defaultValue: DEFAULT_TRACE_HEARTBEAT_MS,
+    min: 250,
+    max: 86_400_000,
+  });
+}
+
+export async function resolveFinalDemoTraceStaleAfterMs(
+  input: FinalAgentDemoConfigInput,
+): Promise<number> {
+  return await resolveTraceInteger({
+    input,
+    envName: "MONO_AGENT_TRACE_STALE_AFTER_MS",
+    jsonKey: "staleAfterMs",
+    defaultValue: DEFAULT_TRACE_STALE_AFTER_MS,
+    min: 1_000,
+    max: 604_800_000,
+  });
+}
+
+async function resolveTraceInteger(options: {
+  readonly input: FinalAgentDemoConfigInput;
+  readonly envName: string;
+  readonly jsonKey: "heartbeatMs" | "staleAfterMs";
+  readonly defaultValue: number;
+  readonly min: number;
+  readonly max: number;
+}): Promise<number> {
+  const envValue = options.input.env[options.envName]?.trim();
+  if (envValue !== undefined && envValue.length > 0) {
+    return parseTraceInteger(envValue, options.envName, options.min, options.max);
+  }
+
+  try {
+    const { json } = await readMonoAgentConfigJson(options.input.configPath);
+    const value = json.traceability?.[options.jsonKey];
+    if (value !== undefined) {
+      return parseTraceInteger(value, `traceability.${options.jsonKey}`, options.min, options.max);
+    }
+  } catch {
+    // Use the default while the user is fixing an incomplete or invalid config.
+  }
+
+  return options.defaultValue;
+}
+
+function parseTraceInteger(value: unknown, name: string, min: number, max: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${name} must be an integer between ${min} and ${max}.`,
+      { env: name, reason: "integer_range" },
+    );
+  }
+  return parsed;
 }
 
 export function isFinalAgentDemoConfigError(
