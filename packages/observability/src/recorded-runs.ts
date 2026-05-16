@@ -108,6 +108,9 @@ export function classifyRecordedRunEvent(event: unknown): RecordedRunEventCatego
   if (type.includes("thinking") || type.includes("reasoning") || type.includes("thought")) {
     return "thinking";
   }
+  if (assistantMessageContentKind(event) === "thinking") {
+    return "thinking";
+  }
   if (type === "assistant" || type === "user" || type.includes("message") || event.message !== undefined) {
     return "message";
   }
@@ -388,6 +391,29 @@ function textFromMessage(value: unknown): string | undefined {
     })
     .join("");
   return text.length > 0 ? text : undefined;
+}
+
+function assistantMessageContentKind(event: Record<string, unknown>): "thinking" | "text" | undefined {
+  if (stringField(event, "type") !== "assistant" || !isRecord(event.message)) {
+    return undefined;
+  }
+  const content = event.message.content;
+  if (!Array.isArray(content) || content.length === 0) {
+    return undefined;
+  }
+
+  let kind: "thinking" | "text" | undefined;
+  for (const block of content) {
+    if (!isRecord(block) || (block.type !== "thinking" && block.type !== "text")) {
+      return undefined;
+    }
+    if (kind === undefined) {
+      kind = block.type;
+    } else if (kind !== block.type) {
+      return undefined;
+    }
+  }
+  return kind;
 }
 
 function normalizeReaderOptions(options: JsonlRunReaderOptions): NormalizedReaderOptions {

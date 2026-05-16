@@ -18,6 +18,7 @@ pnpm --filter @worklab-ai/observability run build
 import {
   createJsonlRunRecorder,
   registerTraceSource,
+  combineRecordedRunEvents,
   listRecordedRuns,
   listTraceRuns,
   readRecordedRun,
@@ -28,10 +29,15 @@ import {
 
 - `createJsonlRunRecorder`, `JsonlRunRecorder`
 - `listRecordedRuns`, `readRecordedRun`, `classifyRecordedRunEvent`
+- `combineRecordedRunEvents`
 - `registerTraceSource`, `listTraceSources`, `listTraceRuns`, `readTraceRun`
 - `redactJsonValue`
 - `ObservabilityError`, `ObservabilityReadError`
 - Recorder, summary, list, detail, event, trace source, and trace run types
+
+## Timeline Display
+
+Raw `.events.jsonl` artifacts stay append-only and one event per line. UI surfaces that need readable timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant `thinking` or visible `text` stream chunks into bounded display rows while preserving raw source index ranges and event counts.
 
 ## Trace Registry
 

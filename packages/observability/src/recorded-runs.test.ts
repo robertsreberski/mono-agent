@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  classifyRecordedRunEvent,
   createJsonlRunRecorder,
   listRecordedRuns,
   readRecordedRun,
@@ -68,6 +69,25 @@ describe("recorded run reader", () => {
     expect(detail?.events[1]?.label).toBe("Tool: Read");
     expect(JSON.stringify(detail?.events)).not.toContain("hide-me");
     expect(detail?.warnings).toEqual(["Event list was capped at 2 events."]);
+  });
+
+  it("classifies assistant thinking content blocks as thinking events", () => {
+    expect(classifyRecordedRunEvent({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "thinking", thinking: "I need to inspect the trace." },
+          { type: "thinking", text: "Then group adjacent chunks." },
+        ],
+      },
+    })).toBe("thinking");
+
+    expect(classifyRecordedRunEvent({
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "Visible answer." }],
+      },
+    })).toBe("message");
   });
 
   it("continues past invalid summary files with warnings", async () => {

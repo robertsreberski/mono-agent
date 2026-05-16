@@ -5,6 +5,9 @@ export {
   redactJsonValue,
 } from "./recorder.js";
 export {
+  combineRecordedRunEvents,
+} from "./event-timeline.js";
+export {
   classifyRecordedRunEvent,
   listRecordedRuns,
   ObservabilityReadError,
@@ -25,6 +28,7 @@ export type {
   RecordedRunEventCategory,
   RecordedRunListItem,
   RecordedRunListResult,
+  RecordedRunTimelineItem,
   RunRecorder,
   RunSummary,
   RunSummaryStatus,
