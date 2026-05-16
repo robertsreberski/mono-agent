@@ -23,6 +23,6 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/context": "^0.1.0"
+    "@worklab-ai/context": "workspace:^0.1.0"
   }
 }
