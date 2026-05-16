@@ -12,9 +12,9 @@ Package categories are catalog metadata, documentation, and architecture-guard i
 | `core` | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
 | `execution` | `@worklab-ai/agent-harness` | `core`, `context`, `runtime`, `observability` | Composes context, runtime, memory, history, tool policy, skills, and observability for one request. |
-| `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder and local artifact reader. |
+| `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
 | `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
-| `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. They do not own runtime hosting or communication transport. |
+| `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
 | `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition that wires config, surface, communication, harness, runtime, memory, policy, and artifacts in one small host layer. |
 
 ## Dependency Direction
@@ -64,6 +64,12 @@ The demo composes:
 - `telegramFieldGroup` and `loadTelegramAdapterConfig` from `@worklab-ai/telegram-adapter`
 - `startOperatorConsole` from `@worklab-ai/operator-console`
 - the harness, runtime adapter, memory, tool policy, and observability packages
+
+### Host Traceability
+
+Mono Agent now has a local host traceability path. Each running host registers a `worklab.trace-source.v1` manifest in a registry directory such as `~/.mono-agent/trace-sources`; each manifest points at that source's artifact directory, where run summaries and event JSONL files remain. The operator console Traceability view reads the registry, marks stale sources when their heartbeat ages out, aggregates recent runs across sources, and loads details by `(sourceId, runId)` so duplicate run ids do not collide.
+
+This is local-first and bearer-protected through the loopback console. It is not a LangSmith dependency, database, or cloud collector. LangSmith/OpenTelemetry export remains a later sink option.
 
 See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
 
@@ -159,7 +165,7 @@ flowchart TB
 
   subgraph Execution["Execution layer"]
     Harness["`@worklab-ai/agent-harness`\nrequest to runtime run"]
-    Observability["`@worklab-ai/observability`\nJSONL events + summaries"]
+    Observability["`@worklab-ai/observability`\nJSONL events + summaries + trace registry"]
   end
 
   subgraph Runtime["Runtime backend choices"]
