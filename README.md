@@ -50,6 +50,26 @@ Rules for future packages:
 
 The final demo lives at `demos/final-agent/`. It starts the local operator console first, then starts Telegram and/or the A2A provider independently when their own adapter config plus core runtime config are valid.
 
+The preferred local deployment path generates an ignored config under `.mono-agent/deploy/`, verifies Ollama has Gemma 4 installed, then starts the operator console, traceability source, and loopback A2A provider:
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm run deploy:final
+```
+
+By default this uses `pi:ollama:gemma4:31b`. Check readiness with:
+
+```bash
+ollama list
+ollama pull gemma4:31b
+curl http://localhost:11434/api/tags
+```
+
+The operator console Traceability view should show source `final-agent-gemma4`. After a loopback A2A request to the printed Agent Card URL, the same view should show the recorded run from that source.
+
+The generic manual demo command remains available when you want to provide your own config:
+
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
