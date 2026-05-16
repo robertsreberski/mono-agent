@@ -1,17 +1,15 @@
 import { resolve } from "node:path";
 
 import {
-  CORE_FIELD_GROUPS,
-  defineFieldGroup,
-  startConfigUiBridge,
-} from "@worklab-ai/config-ui";
+  startOperatorConsole,
+} from "@worklab-ai/operator-console";
 import type {
-  ConfigUiBridgeEvent,
-  ConfigUiBridgeOptions,
-  ConfigUiBridgeStartResult,
-  FieldGroup,
-} from "@worklab-ai/config-ui";
+  OperatorConsoleEvent,
+  OperatorConsoleOptions,
+  OperatorConsoleStartResult,
+} from "@worklab-ai/operator-console";
 import {
+  CORE_AGENT_FIELD_GROUPS,
   loadMonoAgentConfigWithSources,
   MonoAgentConfigError,
   readMonoAgentConfigJson,
@@ -34,36 +32,29 @@ import {
 import type { MonoRuntimeLike } from "@worklab-ai/runtime-adapter";
 import {
   TelegramBotApiClient,
-  TelegramBridge,
+  TelegramAdapter,
   TelegramLongPoller,
-} from "@worklab-ai/telegram-bridge";
+  loadTelegramAdapterConfig,
+  redactTelegramAdapterConfig,
+  telegramFieldGroup,
+  TelegramAdapterConfigError,
+} from "@worklab-ai/telegram-adapter";
 import type {
   AgentResponder,
+  RedactedTelegramAdapterConfig,
   TelegramBotApi,
-  TelegramBridgeOptions,
+  TelegramAdapterConfig,
+  TelegramAdapterOptions,
   TelegramLongPollerOptions,
   TelegramLongPollerStartOptions,
-} from "@worklab-ai/telegram-bridge";
+} from "@worklab-ai/telegram-adapter";
+import type { FieldGroup } from "@worklab-ai/settings";
 import { createToolPolicy } from "@worklab-ai/tool-policy";
 import type { ToolPolicyInput } from "@worklab-ai/tool-policy";
 
 const FINAL_DEMO_FIELD_GROUPS: readonly FieldGroup[] = [
-  ...CORE_FIELD_GROUPS,
-  defineFieldGroup({
-    id: "artifacts",
-    label: "Artifacts",
-    description: "Where run event JSONL files and summaries are written.",
-    fields: [
-      {
-        id: "artifacts.dir",
-        label: "Artifact directory",
-        description: "Directory for observability events and run summaries.",
-        kind: "path",
-        placeholder: "./.mono-agent/artifacts",
-        path: ["artifacts", "dir"],
-      },
-    ],
-  }),
+  ...CORE_AGENT_FIELD_GROUPS,
+  telegramFieldGroup,
 ];
 
 export interface FinalAgentDemoLogger {
@@ -81,19 +72,19 @@ export interface FinalAgentDemoOptions {
   readonly env?: Record<string, string | undefined>;
   readonly cwd?: string;
   readonly configPath?: string;
-  readonly configUiPort?: number;
+  readonly operatorConsolePort?: number;
   readonly logger?: FinalAgentDemoLogger;
   readonly runtime?: MonoRuntimeLike;
   readonly telegramApi?: TelegramBotApi;
   readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
-  readonly configUiBridgeFactory?: (options: ConfigUiBridgeOptions) => Promise<ConfigUiBridgeStartResult>;
+  readonly operatorConsoleFactory?: (options: OperatorConsoleOptions) => Promise<OperatorConsoleStartResult>;
   readonly fieldGroups?: readonly FieldGroup[];
 }
 
-export interface FinalAgentDemoConfigUi {
+export interface FinalAgentDemoOperatorConsole {
   /** Base loopback URL for API calls, without the token query string. */
   readonly url: string;
-  /** Browser URL that includes the per-boot config UI token. */
+  /** Browser URL that includes the per-boot operator console token. */
   readonly appUrl: string;
   readonly token: string;
   readonly configPath: string;
@@ -101,11 +92,16 @@ export interface FinalAgentDemoConfigUi {
 
 export type TelegramStatus =
   | { readonly kind: "waiting_for_config"; readonly reason: string }
-  | { readonly kind: "running"; readonly config: RedactedMonoAgentConfig }
+  | { readonly kind: "running"; readonly config: RedactedFinalAgentDemoConfig }
   | { readonly kind: "failed"; readonly reason: string };
 
+export interface RedactedFinalAgentDemoConfig {
+  readonly core: RedactedMonoAgentConfig;
+  readonly telegram: RedactedTelegramAdapterConfig;
+}
+
 export interface FinalAgentDemo {
-  readonly configUi: FinalAgentDemoConfigUi;
+  readonly operatorConsole: FinalAgentDemoOperatorConsole;
   readonly telegramStatus: TelegramStatus;
   startTelegramIfConfigured(reason: string): Promise<TelegramStatus>;
   stop(): Promise<void>;
@@ -128,11 +124,11 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
   const cwd = resolve(options.cwd ?? process.cwd());
   const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
   const env = options.env ?? process.env;
-  const bridgeFactory = options.configUiBridgeFactory ?? startConfigUiBridge;
+  const consoleFactory = options.operatorConsoleFactory ?? startOperatorConsole;
   const fieldGroups = options.fieldGroups ?? FINAL_DEMO_FIELD_GROUPS;
   let controller: FinalAgentDemoController | undefined;
 
-  const bridge = await bridgeFactory({
+  const consoleServer = await consoleFactory({
     configPath,
     cwd,
     fieldGroups,
@@ -141,17 +137,17 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
       maxRuns: 100,
       maxEventsPerRun: 750,
     },
-    ...(options.configUiPort === undefined ? {} : { port: options.configUiPort }),
+    ...(options.operatorConsolePort === undefined ? {} : { port: options.operatorConsolePort }),
     log: (event) => {
-      logConfigUiEvent(options.logger, event);
+      logOperatorConsoleEvent(options.logger, event);
       if (event.kind === "write") {
-        void controller?.startTelegramIfConfigured("config-ui-write");
+        void controller?.startTelegramIfConfigured("operator-console-write");
       }
     },
   });
 
   controller = new FinalAgentDemoController({
-    bridge,
+    consoleServer,
     cwd,
     configPath,
     env,
@@ -190,8 +186,8 @@ export async function resolveFinalDemoArtifactDir(input: {
 }
 
 class FinalAgentDemoController implements FinalAgentDemo {
-  readonly configUi: FinalAgentDemoConfigUi;
-  private readonly bridge: ConfigUiBridgeStartResult;
+  readonly operatorConsole: FinalAgentDemoOperatorConsole;
+  private readonly consoleServer: OperatorConsoleStartResult;
   private readonly cwd: string;
   private readonly configPath: string;
   private readonly env: Record<string, string | undefined>;
@@ -208,7 +204,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
   private stopped = false;
 
   constructor(input: {
-    readonly bridge: ConfigUiBridgeStartResult;
+    readonly consoleServer: OperatorConsoleStartResult;
     readonly cwd: string;
     readonly configPath: string;
     readonly env: Record<string, string | undefined>;
@@ -217,7 +213,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     readonly telegramApi?: TelegramBotApi;
     readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
   }) {
-    this.bridge = input.bridge;
+    this.consoleServer = input.consoleServer;
     this.cwd = input.cwd;
     this.configPath = input.configPath;
     this.env = input.env;
@@ -225,10 +221,10 @@ class FinalAgentDemoController implements FinalAgentDemo {
     this.runtime = input.runtime;
     this.telegramApi = input.telegramApi;
     this.pollerFactory = input.pollerFactory;
-    this.configUi = {
-      url: input.bridge.url,
-      appUrl: `${input.bridge.url}/?t=${input.bridge.token}`,
-      token: input.bridge.token,
+    this.operatorConsole = {
+      url: input.consoleServer.url,
+      appUrl: `${input.consoleServer.url}/?t=${input.consoleServer.token}`,
+      token: input.consoleServer.token,
       configPath: input.configPath,
     };
   }
@@ -242,7 +238,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
       return this.status;
     }
     if (this.running !== undefined) {
-      if (reason === "config-ui-write") {
+      if (reason === "operator-console-write") {
         this.logger?.info?.("Telegram is already running; restart the demo to apply later config changes.", {
           status: "running",
         });
@@ -267,33 +263,37 @@ class FinalAgentDemoController implements FinalAgentDemo {
     this.stopped = true;
     this.running?.controller.abort();
     await this.running?.promise.catch(() => undefined);
-    await this.bridge.stop();
+    await this.consoleServer.stop();
   }
 
   private async startTelegram(reason: string): Promise<TelegramStatus> {
-    const config = await this.loadConfigOrWait();
-    if (config === undefined) {
+    const loaded = await this.loadConfigOrWait();
+    if (loaded === undefined) {
       return this.status;
     }
+    const { coreConfig, telegramConfig } = loaded;
 
     try {
-      const redacted = redactMonoAgentConfig(config);
-      const api = this.telegramApi ?? new TelegramBotApiClient({ token: config.telegram.botToken });
+      const redacted: RedactedFinalAgentDemoConfig = {
+        core: redactMonoAgentConfig(coreConfig),
+        telegram: redactTelegramAdapterConfig(telegramConfig),
+      };
+      const api = this.telegramApi ?? new TelegramBotApiClient({ token: telegramConfig.botToken });
       const runtime = this.runtime ?? createMonoRuntime({
-        workspace: config.runtime.workspace,
-        qaOutputDir: config.artifacts.dir,
+        workspace: coreConfig.runtime.workspace,
+        qaOutputDir: coreConfig.artifacts.dir,
       });
-      const responder = createConfiguredResponder(config, runtime);
-      const bridgeOptions = buildBridgeOptions({
+      const responder = createConfiguredResponder(coreConfig, runtime);
+      const adapterOptions = buildAdapterOptions({
         api,
         responder,
-        config,
+        telegramConfig,
         ...(this.logger === undefined ? {} : { logger: this.logger }),
       });
-      const bridge = new TelegramBridge(bridgeOptions);
+      const adapter = new TelegramAdapter(adapterOptions);
       const pollerOptions = buildPollerOptions({
         api,
-        bridge,
+        adapter,
         ...(this.logger === undefined ? {} : { logger: this.logger }),
       });
       const poller = this.pollerFactory?.(pollerOptions) ?? new TelegramLongPoller(pollerOptions);
@@ -319,15 +319,23 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
-  private async loadConfigOrWait(): Promise<MonoAgentConfig | undefined> {
+  private async loadConfigOrWait(): Promise<{
+    readonly coreConfig: MonoAgentConfig;
+    readonly telegramConfig: TelegramAdapterConfig;
+  } | undefined> {
     try {
-      return await loadMonoAgentConfigWithSources({
+      const coreConfig = await loadMonoAgentConfigWithSources({
         env: this.env,
         cwd: this.cwd,
         jsonPath: this.configPath,
       });
+      const telegramConfig = await loadTelegramAdapterConfig({
+        env: this.env,
+        jsonPath: this.configPath,
+      });
+      return { coreConfig, telegramConfig };
     } catch (error) {
-      if (error instanceof MonoAgentConfigError) {
+      if (error instanceof MonoAgentConfigError || error instanceof TelegramAdapterConfigError) {
         this.status = { kind: "waiting_for_config", reason: error.message };
         this.logger?.info?.("Waiting for a valid Mono Agent config.", { reason: error.message });
         return undefined;
@@ -378,16 +386,17 @@ function loadToolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
   };
 }
 
-function buildBridgeOptions(input: {
+function buildAdapterOptions(input: {
   readonly api: TelegramBotApi;
   readonly responder: AgentResponder;
-  readonly config: MonoAgentConfig;
+  readonly telegramConfig: TelegramAdapterConfig;
   readonly logger?: FinalAgentDemoLogger;
-}): TelegramBridgeOptions {
+}): TelegramAdapterOptions {
   return {
     api: input.api,
     responder: input.responder,
-    allowedChatIds: [...input.config.telegram.allowedChatIds],
+    allowedChatIds: [...input.telegramConfig.allowedChatIds],
+    allowAllChats: input.telegramConfig.allowAllChats,
     stream: {
       initialStatusText: "Mono Agent is thinking…",
       editDebounceMs: 350,
@@ -404,24 +413,24 @@ function buildBridgeOptions(input: {
 
 function buildPollerOptions(input: {
   readonly api: TelegramBotApi;
-  readonly bridge: TelegramBridge;
+  readonly adapter: TelegramAdapter;
   readonly logger?: FinalAgentDemoLogger;
 }): TelegramLongPollerOptions {
   return {
     api: input.api,
-    bridge: input.bridge,
+    adapter: input.adapter,
     deleteWebhookOnStart: true,
     allowedUpdates: ["message"],
     ...(input.logger === undefined ? {} : { logger: input.logger }),
   };
 }
 
-function logConfigUiEvent(logger: FinalAgentDemoLogger | undefined, event: ConfigUiBridgeEvent): void {
+function logOperatorConsoleEvent(logger: FinalAgentDemoLogger | undefined, event: OperatorConsoleEvent): void {
   if (event.kind === "validation_failed" || event.kind === "unauthorized") {
-    logger?.warn?.("Config UI event.", { event });
+    logger?.warn?.("Operator Console event.", { event });
     return;
   }
-  logger?.debug?.("Config UI event.", { event });
+  logger?.debug?.("Operator Console event.", { event });
 }
 
 function reasonOf(error: unknown): string {

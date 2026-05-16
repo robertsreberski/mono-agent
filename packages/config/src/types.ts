@@ -4,10 +4,6 @@ export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
 
 export interface MonoAgentConfig {
-  readonly telegram: {
-    readonly botToken: string;
-    readonly allowedChatIds: readonly string[];
-  };
   readonly runtime: {
     readonly model: RuntimeModelReference;
     readonly executionMode: RuntimeExecutionMode;
@@ -38,10 +34,6 @@ export interface MonoAgentConfig {
 }
 
 export interface RedactedMonoAgentConfig {
-  readonly telegram: {
-    readonly botToken: { readonly present: boolean; readonly redacted: true };
-    readonly allowedChatIds: { readonly count: number };
-  };
   readonly runtime: MonoAgentConfig["runtime"];
   readonly context: MonoAgentConfig["context"];
   readonly memory?: MonoAgentConfig["memory"];

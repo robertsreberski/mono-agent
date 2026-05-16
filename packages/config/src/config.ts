@@ -46,8 +46,6 @@ const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
   const cwd = normalizeCwd(input.cwd);
-  const botToken = readRequired(input.env, "MONO_AGENT_TELEGRAM_BOT_TOKEN");
-  const allowedChatIds = readRequiredCsv(input.env, "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS");
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readInteger(input.env, "MONO_AGENT_MAX_TURNS", DEFAULT_MAX_TURNS, { min: 1, max: 100 });
@@ -85,10 +83,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   };
 
   const config: MonoAgentConfig = {
-    telegram: {
-      botToken,
-      allowedChatIds,
-    },
     runtime,
     context,
     tools,
@@ -105,10 +99,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
 
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
   const redacted: RedactedMonoAgentConfig = {
-    telegram: {
-      botToken: { present: config.telegram.botToken.length > 0, redacted: true },
-      allowedChatIds: { count: config.telegram.allowedChatIds.length },
-    },
     runtime: { ...config.runtime },
     context: { ...config.context, selectedSkills: [...config.context.selectedSkills] },
     tools: {
@@ -192,14 +182,6 @@ function readRequired(env: Record<string, string | undefined>, name: string): st
     throw new MonoAgentConfigError("missing_required_env", `${name} is required.`, { env: name });
   }
   return value;
-}
-
-function readRequiredCsv(env: Record<string, string | undefined>, name: string): readonly string[] {
-  const values = readCsv(readRequired(env, name));
-  if (values.length === 0) {
-    throw new MonoAgentConfigError("missing_required_env", `${name} must contain at least one value.`, { env: name });
-  }
-  return values;
 }
 
 function readCsv(raw: string | undefined): readonly string[] {

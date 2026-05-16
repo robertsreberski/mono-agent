@@ -1,6 +1,9 @@
-import { readFile, writeFile, rename, chmod, mkdir, unlink } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+  readSettingsJson,
+  SettingsJsonError,
+  writeSettingsJson,
+} from "@worklab-ai/settings";
+import type { SettingsJson } from "@worklab-ai/settings";
 
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryScope, MemoryWriteMode } from "./types.js";
@@ -14,11 +17,7 @@ import type { MemoryScope, MemoryWriteMode } from "./types.js";
  * Paths inside this file are relative to the file's containing directory (or
  * the loader's `cwd`); they are resolved by the loader, not at write time.
  */
-export interface MonoAgentConfigJson {
-  readonly telegram?: {
-    readonly botToken?: string;
-    readonly allowedChatIds?: readonly string[];
-  };
+export interface MonoAgentConfigJson extends SettingsJson {
   readonly runtime?: {
     readonly model?: string;
     readonly executionMode?: string;
@@ -63,28 +62,15 @@ export interface ReadMonoAgentConfigJsonResult {
  * throwing; that lets hosts ship a blank config and fall back to env defaults.
  */
 export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAgentConfigJsonResult> {
-  if (!existsSync(path)) {
-    return { json: {}, version: "", path, missing: true };
-  }
-  let raw: string;
   try {
-    raw = await readFile(path, "utf8");
+    const result = await readSettingsJson(path);
+    return {
+      ...result,
+      json: result.json as MonoAgentConfigJson,
+    };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new MonoAgentConfigError("invalid_env", `Cannot read ${path}: ${reason}.`, { path, reason });
+    throw toConfigError(error, path);
   }
-  let parsed: unknown;
-  try {
-    parsed = raw.trim().length === 0 ? {} : JSON.parse(raw);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new MonoAgentConfigError("invalid_env", `Cannot parse ${path}: ${reason}.`, { path, reason });
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new MonoAgentConfigError("invalid_env", `${path} must contain a JSON object.`, { path });
-  }
-  const version = await sha256(raw);
-  return { json: parsed as MonoAgentConfigJson, version, path, missing: false };
 }
 
 /**
@@ -96,52 +82,23 @@ export async function writeMonoAgentConfigJson(input: {
   readonly path: string;
   readonly patch: MonoAgentConfigJson;
 }): Promise<{ readonly version: string }> {
-  const { path, patch } = input;
-  const dir = dirname(path);
-  if (!existsSync(dir)) {
-    await mkdir(dir, { recursive: true });
-  }
-  const merged = await mergePatch(path, patch);
-  const serialized = `${JSON.stringify(merged, null, 2)}\n`;
-  const tmp = `${path}.tmp`;
   try {
-    await writeFile(tmp, serialized, { encoding: "utf8", mode: 0o600 });
-    await rename(tmp, path);
-    await chmod(path, 0o600).catch(() => undefined);
+    return await writeSettingsJson({
+      path: input.path,
+      patch: input.patch,
+    });
   } catch (error) {
-    await unlink(tmp).catch(() => undefined);
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new MonoAgentConfigError("invalid_env", `Cannot write ${path}: ${reason}.`, { path, reason });
+    throw toConfigError(error, input.path);
   }
-  return { version: await sha256(serialized) };
 }
 
-async function mergePatch(path: string, patch: MonoAgentConfigJson): Promise<MonoAgentConfigJson> {
-  const existing = (await readMonoAgentConfigJson(path)).json;
-  const merged: Record<string, unknown> = { ...existing, ...patch };
-  const sections = ["telegram", "runtime", "context", "memory", "tools", "artifacts"] as const;
-  for (const key of sections) {
-    const section = mergeSection(existing[key], patch[key]);
-    if (section === undefined) {
-      delete merged[key];
-    } else {
-      merged[key] = section;
-    }
+function toConfigError(error: unknown, path: string): MonoAgentConfigError {
+  if (error instanceof SettingsJsonError) {
+    return new MonoAgentConfigError("invalid_env", error.message, {
+      path,
+      reason: error.message,
+    });
   }
-  return merged as MonoAgentConfigJson;
-}
-
-function mergeSection<T extends Record<string, unknown> | undefined>(existing: T, patch: T): T {
-  if (patch === undefined) {
-    return existing;
-  }
-  if (existing === undefined) {
-    return patch;
-  }
-  return { ...existing, ...patch } as T;
-}
-
-async function sha256(text: string): Promise<string> {
-  const { createHash } = await import("node:crypto");
-  return createHash("sha256").update(text).digest("hex");
+  const reason = error instanceof Error ? error.message : String(error);
+  return new MonoAgentConfigError("invalid_env", reason, { path, reason });
 }

@@ -14,12 +14,12 @@ async function main(): Promise<void> {
     env: process.env,
     cwd: process.cwd(),
     ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-    ...(args.port === undefined ? {} : { configUiPort: args.port }),
+    ...(args.port === undefined ? {} : { operatorConsolePort: args.port }),
     logger: console,
   });
 
-  console.log(`config-ui: ${demo.configUi.appUrl}`);
-  console.log(`config:    ${demo.configUi.configPath}`);
+  console.log(`operator-console: ${demo.operatorConsole.appUrl}`);
+  console.log(`config:    ${demo.operatorConsole.configPath}`);
   printTelegramStatus(demo.telegramStatus);
 
   let stopping = false;
@@ -52,7 +52,7 @@ function printTelegramStatus(status: TelegramStatus): void {
 }
 
 function printHelp(): void {
-  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the non-package Mono Agent final demo: config UI first, then Telegram once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Config UI port (default: 0, choose a free port)\n  -h, --help       Show this help`);
+  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the non-package Mono Agent final demo: operator console first, then Telegram once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Operator Console port (default: 0, choose a free port)\n  -h, --help       Show this help`);
 }
 
 void main().catch((error: unknown) => {

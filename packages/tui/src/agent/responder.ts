@@ -1,7 +1,7 @@
 /**
  * Structural agent contract for the TUI.
  *
- * Mirrors the shape exported by @worklab-ai/telegram-bridge so any
+ * Mirrors the shape exported by @worklab-ai/telegram-adapter so any
  * AgentResponder produced by createAgentResponder({ harness }) from
  * @worklab-ai/agent-harness can be wired in without an additional dep.
  *
@@ -48,7 +48,7 @@ export interface TuiAgentCancelledErrorOptions {
 
 /**
  * Thrown by the TUI host when the user cancels an in-flight response (esc
- * key, or programmatic stop). Mirrors @worklab-ai/telegram-bridge's
+ * key, or programmatic stop). Mirrors @worklab-ai/telegram-adapter's
  * AgentResponderCancelledError so existing harness responders can rethrow
  * either type and the TUI will render the same `cancelled` badge.
  */
@@ -69,8 +69,8 @@ export class TuiAgentCancelledError extends Error {
 
 /**
  * Recognises both the local TuiAgentCancelledError and the duck-typed
- * AgentResponderCancelledError from @worklab-ai/telegram-bridge so hosts
- * can throw either without coupling the TUI to telegram-bridge.
+ * AgentResponderCancelledError from @worklab-ai/telegram-adapter so hosts
+ * can throw either without coupling the TUI to telegram-adapter.
  */
 export function isTuiAgentCancelledError(error: unknown): boolean {
   if (error instanceof TuiAgentCancelledError) {

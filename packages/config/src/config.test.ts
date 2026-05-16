@@ -3,14 +3,12 @@ import { describe, expect, it } from "vitest";
 import { loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig } from "./index.js";
 
 const baseEnv = {
-  MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:super-secret-token",
-  MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS: "111, 222",
   MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
   MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
 };
 
 describe("loadMonoAgentConfig", () => {
-  it("loads required Telegram, runtime, context, tools, and artifact config", () => {
+  it("loads required runtime, context, tools, memory, and artifact config", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
@@ -32,7 +30,6 @@ describe("loadMonoAgentConfig", () => {
       },
     });
 
-    expect(config.telegram.allowedChatIds).toEqual(["111", "222"]);
     expect(config.runtime).toMatchObject({ executionMode: "sdk", effort: "high", maxTurns: 12, workspace: "/repo/workspace" });
     expect(config.runtime.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
     expect(config.context).toEqual({
@@ -63,13 +60,6 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.executionMode).toBe("cli");
   });
 
-  it("fails closed when the chat allowlist is missing", () => {
-    expect(() => loadMonoAgentConfig({
-      cwd: "/repo",
-      env: { ...baseEnv, MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS: "" },
-    })).toThrow(MonoAgentConfigError);
-  });
-
   it("rejects incompatible model/execution-mode combinations", () => {
     expect(() => loadMonoAgentConfig({
       cwd: "/repo",
@@ -77,23 +67,23 @@ describe("loadMonoAgentConfig", () => {
     })).toThrow(/incompatible/u);
   });
 
-  it("redacts Telegram secrets and chat ids from exports", () => {
+  it("redacts core config without adapter-specific sections", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
     const redacted = redactMonoAgentConfig(config);
 
-    expect(JSON.stringify(redacted)).not.toContain("super-secret-token");
-    expect(JSON.stringify(redacted)).not.toContain("111");
-    expect(redacted.telegram).toEqual({
-      botToken: { present: true, redacted: true },
-      allowedChatIds: { count: 2 },
-    });
+    expect("telegram" in redacted).toBe(false);
+    expect(redacted.runtime.model).toMatchObject({ sdk: "pi" });
   });
 
-  it("does not echo raw token values in validation errors", () => {
+  it("does not include adapter env values in validation errors", () => {
     try {
       loadMonoAgentConfig({
         cwd: "/repo",
-        env: { ...baseEnv, MONO_AGENT_MAX_TURNS: "not-a-number" },
+        env: {
+          ...baseEnv,
+          MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:super-secret-token",
+          MONO_AGENT_MAX_TURNS: "not-a-number",
+        },
       });
     } catch (error) {
       expect(JSON.stringify(error)).not.toContain("super-secret-token");

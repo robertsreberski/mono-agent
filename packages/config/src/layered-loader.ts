@@ -45,12 +45,6 @@ export function layerJsonOntoEnv(
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
   const fromJson: Record<string, string | undefined> = {};
-  if (json.telegram?.botToken !== undefined) {
-    fromJson.MONO_AGENT_TELEGRAM_BOT_TOKEN = json.telegram.botToken;
-  }
-  if (json.telegram?.allowedChatIds !== undefined) {
-    fromJson.MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS = csv(json.telegram.allowedChatIds);
-  }
   if (json.runtime?.model !== undefined) {
     fromJson.MONO_AGENT_MODEL = json.runtime.model;
   }

@@ -26,7 +26,7 @@ describe("isTuiAgentCancelledError", () => {
     expect(isTuiAgentCancelledError(new TuiAgentCancelledError())).toBe(true);
   });
 
-  it("recognises duck-typed AgentResponderCancelledError from telegram-bridge", () => {
+  it("recognises duck-typed AgentResponderCancelledError from telegram-adapter", () => {
     class AgentResponderCancelledError extends Error {
       constructor() {
         super("cancelled");

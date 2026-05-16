@@ -61,7 +61,7 @@ describe("writeMonoAgentConfigJson", () => {
     const path = join(dir, "config.json");
     await writeMonoAgentConfigJson({
       path,
-      patch: { runtime: { maxTurns: 12 }, telegram: { botToken: "abc" } },
+      patch: { runtime: { maxTurns: 12 }, futureAdapter: { enabled: true } },
     });
     const text = await readFile(path, "utf8");
     expect(text).toContain("\"maxTurns\": 12");
@@ -88,6 +88,23 @@ describe("writeMonoAgentConfigJson", () => {
     expect(json.runtime?.maxTurns).toBe(16);
     expect(json.runtime?.model).toBe("pi:openai-codex:gpt-5.5");
     expect(json.tools?.allowedTools).toEqual(["Read"]);
+  });
+
+  it("preserves and merges unknown object sections for adapter-owned settings", async () => {
+    const path = join(dir, "config.json");
+    await writeMonoAgentConfigJson({
+      path,
+      patch: {
+        runtime: { maxTurns: 8 },
+        telegram: { botToken: "abc", allowedChatIds: ["111"] },
+      },
+    });
+    await writeMonoAgentConfigJson({
+      path,
+      patch: { telegram: { allowedChatIds: ["222"] } },
+    });
+    const { json } = await readMonoAgentConfigJson(path);
+    expect(json.telegram).toEqual({ botToken: "abc", allowedChatIds: ["222"] });
   });
 
   it("does not leave a .tmp file behind on success", async () => {

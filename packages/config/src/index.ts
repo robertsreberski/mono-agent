@@ -27,3 +27,11 @@ export type {
   MonoAgentConfigJson,
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
+export {
+  artifactsFieldGroup,
+  CORE_AGENT_FIELD_GROUPS,
+  identityFieldGroup,
+  memoryFieldGroup,
+  runtimeFieldGroup,
+  toolsFieldGroup,
+} from "./field-groups.js";
