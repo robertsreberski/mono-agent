@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseCliArgs } from "./cli-args.js";
 import { startFinalAgentDemo } from "./final-demo.js";
-import type { A2AStatus, TelegramStatus } from "./final-demo.js";
+import type { A2AStatus, TelegramStatus, TraceabilityStatus } from "./final-demo.js";
 
 async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
@@ -20,6 +20,7 @@ async function main(): Promise<void> {
 
   console.log(`operator-console: ${demo.operatorConsole.appUrl}`);
   console.log(`config:    ${demo.operatorConsole.configPath}`);
+  printTraceabilityStatus(demo.traceabilityStatus);
   printTelegramStatus(demo.telegramStatus);
   printA2AStatus(demo.a2aStatus);
 
@@ -38,6 +39,18 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", (signal) => void shutdown(signal));
   process.on("SIGTERM", (signal) => void shutdown(signal));
+}
+
+function printTraceabilityStatus(status: TraceabilityStatus): void {
+  if (status.kind === "running") {
+    console.log(`trace:     running - ${status.sourceId}`);
+    return;
+  }
+  if (status.kind === "disabled") {
+    console.log(`trace:     disabled - ${status.reason}`);
+    return;
+  }
+  console.log(`trace:     failed - ${status.reason}`);
 }
 
 function printTelegramStatus(status: TelegramStatus): void {

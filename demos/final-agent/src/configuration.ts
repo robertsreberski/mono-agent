@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import {
@@ -131,6 +133,75 @@ export async function resolveFinalDemoArtifactDir(
   }
 
   return resolve(input.cwd, ".mono-agent", "artifacts");
+}
+
+export async function resolveFinalDemoTraceRegistryDir(
+  input: FinalAgentDemoConfigInput,
+): Promise<string> {
+  const envDir = input.env.MONO_AGENT_TRACE_REGISTRY_DIR?.trim();
+  if (envDir !== undefined && envDir.length > 0) {
+    return resolve(input.cwd, envDir);
+  }
+
+  try {
+    const { json } = await readMonoAgentConfigJson(input.configPath);
+    const registryDir = typeof json.traceability?.registryDir === "string" ? json.traceability.registryDir.trim() : "";
+    if (registryDir.length > 0) {
+      return resolve(input.cwd, registryDir);
+    }
+  } catch {
+    // Keep the operator console usable while the user fixes config JSON.
+  }
+
+  return resolve(homedir(), ".mono-agent", "trace-sources");
+}
+
+export async function resolveFinalDemoTraceSourceId(
+  input: FinalAgentDemoConfigInput,
+): Promise<string> {
+  const envSourceId = input.env.MONO_AGENT_TRACE_SOURCE_ID?.trim();
+  if (envSourceId !== undefined && envSourceId.length > 0) {
+    return envSourceId;
+  }
+
+  try {
+    const { json } = await readMonoAgentConfigJson(input.configPath);
+    const sourceId = typeof json.traceability?.sourceId === "string" ? json.traceability.sourceId.trim() : "";
+    if (sourceId.length > 0) {
+      return sourceId;
+    }
+  } catch {
+    // Use the deterministic cwd/config fallback below.
+  }
+
+  const hash = createHash("sha256")
+    .update(resolve(input.cwd))
+    .update("\0")
+    .update(resolve(input.configPath))
+    .digest("hex")
+    .slice(0, 12);
+  return `final-agent-${hash}`;
+}
+
+export async function resolveFinalDemoTraceSourceLabel(
+  input: FinalAgentDemoConfigInput,
+): Promise<string> {
+  const envLabel = input.env.MONO_AGENT_TRACE_SOURCE_LABEL?.trim();
+  if (envLabel !== undefined && envLabel.length > 0) {
+    return envLabel;
+  }
+
+  try {
+    const { json } = await readMonoAgentConfigJson(input.configPath);
+    const label = typeof json.traceability?.sourceLabel === "string" ? json.traceability.sourceLabel.trim() : "";
+    if (label.length > 0) {
+      return label;
+    }
+  } catch {
+    // Keep the default label below.
+  }
+
+  return "Final Agent Demo";
 }
 
 export function isFinalAgentDemoConfigError(

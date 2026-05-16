@@ -24,7 +24,11 @@ import {
 } from "@worklab-ai/agent-harness";
 import type { AgentResponder } from "@worklab-ai/agent-contracts";
 import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
-import { createJsonlRunRecorder } from "@worklab-ai/observability";
+import {
+  createJsonlRunRecorder,
+  registerTraceSource,
+} from "@worklab-ai/observability";
+import type { TraceSourceHandle } from "@worklab-ai/observability";
 import {
   createMonoRuntime,
   runtimeOptionsForLocalProvider,
@@ -53,10 +57,16 @@ import {
   loadFinalAgentTelegramConfig,
   redactFinalAgentDemoConfig,
   resolveFinalDemoArtifactDir,
+  resolveFinalDemoTraceRegistryDir,
+  resolveFinalDemoTraceSourceId,
+  resolveFinalDemoTraceSourceLabel,
   type RedactedFinalAgentDemoConfig,
 } from "./configuration.js";
 
-export { resolveFinalDemoArtifactDir } from "./configuration.js";
+export {
+  resolveFinalDemoArtifactDir,
+  resolveFinalDemoTraceRegistryDir,
+} from "./configuration.js";
 
 export interface FinalAgentDemoLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -107,10 +117,21 @@ export type A2AStatus =
     }
   | { readonly kind: "failed"; readonly reason: string };
 
+export type TraceabilityStatus =
+  | {
+      readonly kind: "running";
+      readonly sourceId: string;
+      readonly registryDir: string;
+      readonly artifactDir: string;
+    }
+  | { readonly kind: "disabled"; readonly reason: string }
+  | { readonly kind: "failed"; readonly reason: string; readonly registryDir?: string; readonly artifactDir?: string };
+
 export interface FinalAgentDemo {
   readonly operatorConsole: FinalAgentDemoOperatorConsole;
   readonly telegramStatus: TelegramStatus;
   readonly a2aStatus: A2AStatus;
+  readonly traceabilityStatus: TraceabilityStatus;
   startTelegramIfConfigured(reason: string): Promise<TelegramStatus>;
   startA2AIfConfigured(reason: string): Promise<A2AStatus>;
   stop(): Promise<void>;
@@ -151,6 +172,11 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
       maxRuns: 100,
       maxEventsPerRun: 750,
     },
+    traceability: {
+      registryDir: () => resolveFinalDemoTraceRegistryDir({ env, cwd, configPath }),
+      maxRuns: 100,
+      maxEventsPerRun: 750,
+    },
     ...(options.operatorConsolePort === undefined ? {} : { port: options.operatorConsolePort }),
     log: (event) => {
       logOperatorConsoleEvent(options.logger, event);
@@ -173,10 +199,12 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
     ...(options.a2aProviderFactory === undefined ? {} : { a2aProviderFactory: options.a2aProviderFactory }),
   });
 
+  await controller.startTraceability("startup");
   await Promise.all([
     controller.startTelegramIfConfigured("startup"),
     controller.startA2AIfConfigured("startup"),
   ]);
+  await controller.refreshTraceSource("startup-complete");
   return controller;
 }
 
@@ -199,10 +227,15 @@ class FinalAgentDemoController implements FinalAgentDemo {
     kind: "disabled",
     reason: "A2A provider is disabled.",
   };
+  private traceabilityStatusValue: TraceabilityStatus = {
+    kind: "disabled",
+    reason: "Traceability has not started yet.",
+  };
   private telegramStartInFlight: Promise<TelegramStatus> | undefined;
   private a2aStartInFlight: Promise<A2AStatus> | undefined;
   private runningTelegram: RunningTelegram | undefined;
   private runningA2A: RunningA2A | undefined;
+  private traceSource: TraceSourceHandle | undefined;
   private stopped = false;
 
   constructor(input: {
@@ -241,6 +274,58 @@ class FinalAgentDemoController implements FinalAgentDemo {
     return this.a2aStatusValue;
   }
 
+  get traceabilityStatus(): TraceabilityStatus {
+    return this.traceabilityStatusValue;
+  }
+
+  async startTraceability(reason: string): Promise<TraceabilityStatus> {
+    if (this.stopped) {
+      return this.traceabilityStatusValue;
+    }
+    try {
+      const input = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      const [registryDir, artifactDir, sourceId, label] = await Promise.all([
+        resolveFinalDemoTraceRegistryDir(input),
+        resolveFinalDemoArtifactDir(input),
+        resolveFinalDemoTraceSourceId(input),
+        resolveFinalDemoTraceSourceLabel(input),
+      ]);
+      this.traceSource = await registerTraceSource({
+        registryDir,
+        sourceId,
+        label,
+        artifactDir,
+        pid: process.pid,
+        transports: this.activeTransports(),
+        configPath: this.configPath,
+        metadata: this.traceMetadata(reason),
+        heartbeatMs: 10_000,
+      });
+      this.traceabilityStatusValue = { kind: "running", sourceId, registryDir, artifactDir };
+      this.logger?.info?.("Traceability source registered.", { reason, sourceId, registryDir, artifactDir });
+      return this.traceabilityStatusValue;
+    } catch (error) {
+      const failure = reasonOf(error);
+      this.traceabilityStatusValue = { kind: "failed", reason: failure };
+      this.logger?.error?.("Traceability source registration failed.", { reason: failure });
+      return this.traceabilityStatusValue;
+    }
+  }
+
+  async refreshTraceSource(reason: string): Promise<void> {
+    if (this.traceSource === undefined) {
+      return;
+    }
+    try {
+      await this.traceSource.update({
+        transports: this.activeTransports(),
+        metadata: this.traceMetadata(reason),
+      });
+    } catch (error) {
+      this.logger?.warn?.("Traceability source update failed.", { reason: reasonOf(error) });
+    }
+  }
+
   async startTelegramIfConfigured(reason: string): Promise<TelegramStatus> {
     if (this.stopped) {
       return this.telegramStatusValue;
@@ -251,6 +336,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
           status: "running",
         });
       }
+      await this.refreshTraceSource(reason);
       return this.telegramStatusValue;
     }
     if (this.telegramStartInFlight !== undefined) {
@@ -261,7 +347,9 @@ class FinalAgentDemoController implements FinalAgentDemo {
       .finally(() => {
         this.telegramStartInFlight = undefined;
       });
-    return await this.telegramStartInFlight;
+    const status = await this.telegramStartInFlight;
+    await this.refreshTraceSource(reason);
+    return status;
   }
 
   async startA2AIfConfigured(reason: string): Promise<A2AStatus> {
@@ -274,6 +362,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
           status: "running",
         });
       }
+      await this.refreshTraceSource(reason);
       return this.a2aStatusValue;
     }
     if (this.a2aStartInFlight !== undefined) {
@@ -284,7 +373,9 @@ class FinalAgentDemoController implements FinalAgentDemo {
       .finally(() => {
         this.a2aStartInFlight = undefined;
       });
-    return await this.a2aStartInFlight;
+    const status = await this.a2aStartInFlight;
+    await this.refreshTraceSource(reason);
+    return status;
   }
 
   async stop(): Promise<void> {
@@ -295,6 +386,12 @@ class FinalAgentDemoController implements FinalAgentDemo {
     this.runningTelegram?.controller.abort();
     await this.runningTelegram?.promise.catch(() => undefined);
     await this.runningA2A?.provider.stop().catch(() => undefined);
+    await this.traceSource?.stop({
+      metadata: this.traceMetadata("stop"),
+      transports: this.activeTransports(),
+    }).catch((error: unknown) => {
+      this.logger?.warn?.("Traceability source stop update failed.", { reason: reasonOf(error) });
+    });
     await this.consoleServer.stop();
   }
 
@@ -478,6 +575,29 @@ class FinalAgentDemoController implements FinalAgentDemo {
       throw error;
     }
   }
+
+  private activeTransports(): readonly string[] {
+    const transports = ["operator-console"];
+    if (this.telegramStatusValue.kind === "running") {
+      transports.push("telegram");
+    }
+    if (this.a2aStatusValue.kind === "running") {
+      transports.push("a2a");
+    }
+    return transports;
+  }
+
+  private traceMetadata(reason: string): Record<string, unknown> {
+    return {
+      reason,
+      operatorConsole: {
+        url: this.operatorConsole.url,
+        configPath: this.operatorConsole.configPath,
+      },
+      telegram: summarizeTelegramStatus(this.telegramStatusValue),
+      a2a: summarizeA2AStatus(this.a2aStatusValue),
+    };
+  }
 }
 
 function createConfiguredResponder(config: MonoAgentConfig, runtime: MonoRuntimeLike): AgentResponder {
@@ -567,6 +687,20 @@ function logOperatorConsoleEvent(logger: FinalAgentDemoLogger | undefined, event
     return;
   }
   logger?.debug?.("Operator Console event.", { event });
+}
+
+function summarizeTelegramStatus(status: TelegramStatus): Record<string, unknown> {
+  if (status.kind === "running") {
+    return { kind: "running" };
+  }
+  return { kind: status.kind, reason: status.reason };
+}
+
+function summarizeA2AStatus(status: A2AStatus): Record<string, unknown> {
+  if (status.kind === "running") {
+    return { kind: "running", agentCardUrl: status.agentCardUrl };
+  }
+  return { kind: status.kind, reason: status.reason };
 }
 
 function reasonOf(error: unknown): string {
