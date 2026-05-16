@@ -1,4 +1,11 @@
 import {
+  isAgentResponseCancelledError,
+  type AgentRequestBase,
+  type AgentResponder as SharedAgentResponder,
+  type AgentResponse,
+} from "@worklab-ai/agent-contracts";
+
+import {
   normalizeWhatsAppMessage,
   type WhatsAppMessageIgnoredReason,
 } from "./message-normalizer.js";
@@ -16,6 +23,14 @@ import type {
   WhatsAppTextMessage,
 } from "./types.js";
 
+export {
+  AgentResponseCancelledError as AgentResponderCancelledError,
+  isAgentResponseCancelledError as isAgentResponderCancelledError,
+} from "@worklab-ai/agent-contracts";
+export type {
+  AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
+} from "@worklab-ai/agent-contracts";
+
 export type WhatsAppGroupTriggerMode = "mention" | "any";
 
 export type WhatsAppTriggerKind = "direct" | "group_mention" | "group_any";
@@ -27,7 +42,7 @@ export interface WhatsAppTriggerOptions {
   stripMentionText?: boolean;
 }
 
-export interface AgentRequest {
+export interface AgentRequest extends AgentRequestBase {
   conversationId: string;
   chatJid: WhatsAppJid;
   remoteJid: WhatsAppJid;
@@ -62,40 +77,8 @@ export interface WhatsAppRequestMetadata {
   trigger: WhatsAppTriggerKind;
 }
 
-export interface AgentResponse {
-  text?: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface AgentResponder {
-  respond(
-    request: AgentRequest,
-    stream: AgentMessageStream,
-  ): Promise<AgentResponse>;
-}
-
-export interface AgentResponderCancelledErrorOptions {
-  reason?: unknown;
-}
-
-export class AgentResponderCancelledError extends Error {
-  readonly reason?: unknown;
-
-  constructor(
-    message = "Agent response was cancelled.",
-    options: AgentResponderCancelledErrorOptions = {},
-  ) {
-    super(message);
-    this.name = "AgentResponderCancelledError";
-    if (options.reason !== undefined) {
-      this.reason = options.reason;
-    }
-  }
-}
-
-export function isAgentResponderCancelledError(error: unknown): boolean {
-  return error instanceof AgentResponderCancelledError;
-}
+export type { AgentResponse };
+export type AgentResponder = SharedAgentResponder<AgentRequest, AgentMessageStream, AgentResponse>;
 
 export interface WhatsAppAdapterMessages {
   welcomeText?: string;
@@ -412,7 +395,7 @@ export class WhatsAppAdapter {
       }
       return result;
     } catch (error) {
-      if (controller.signal.aborted || isAgentResponderCancelledError(error)) {
+      if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
         await finishSafely(stream, this.messages.cancelledText, this.logger);
         return withMessageId(
           { kind: "cancelled", chatJid: message.chatJid },

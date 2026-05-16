@@ -11,6 +11,9 @@ importers:
       '@types/node':
         specifier: ^22.15.18
         version: 22.19.19
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:packages/agent-contracts
       '@worklab-ai/agent-harness':
         specifier: workspace:^0.1.0
         version: link:packages/agent-harness
@@ -54,8 +57,13 @@ importers:
         specifier: ^3.1.4
         version: 3.2.4(@types/node@22.19.19)(happy-dom@15.11.7)(jiti@2.7.0)(lightningcss@1.32.0)
 
+  packages/agent-contracts: {}
+
   packages/agent-harness:
     dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
       '@worklab-ai/context':
         specifier: workspace:^0.1.0
         version: link:../context
@@ -167,6 +175,9 @@ importers:
 
   packages/telegram-adapter:
     dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
       '@worklab-ai/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
@@ -175,6 +186,9 @@ importers:
 
   packages/tui:
     dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
       '@worklab-ai/config':
         specifier: workspace:^0.1.0
         version: link:../config
@@ -203,6 +217,12 @@ importers:
       '@whiskeysockets/baileys':
         specifier: ^7.0.0-rc11
         version: 7.0.0-rc11(sharp@0.34.5)
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
 
 packages:
 

@@ -1,3 +1,9 @@
+import type {
+  AgentMessageStream,
+  AgentRequestBase,
+  AgentResponder,
+  AgentResponse,
+} from "@worklab-ai/agent-contracts";
 import type { HistoryMessage } from "@worklab-ai/context";
 import type { MemoryStore } from "@worklab-ai/memory-md";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@worklab-ai/observability";
@@ -73,20 +79,9 @@ export interface AgentHarnessOptions {
   readonly now?: () => Date;
 }
 
-export interface AgentRequestLike {
-  readonly conversationId: string;
-  readonly text: string;
-  readonly abortSignal: AbortSignal;
-  readonly metadata?: Record<string, unknown>;
-}
-
-export interface AgentMessageStreamLike {
-  append(delta: string): Promise<void>;
-}
-
-export interface AgentResponseLike {
-  readonly text?: string;
-  readonly metadata?: Record<string, unknown>;
-}
+export type AgentRequestLike = AgentRequestBase;
+export type AgentMessageStreamLike = AgentMessageStream;
+export type AgentResponseLike = AgentResponse;
+export type AgentResponderLike = AgentResponder;
 
 export type RuntimeFailureResult = Pick<RuntimeResult, "cancelled" | "error" | "failureKind" | "errorDetails">;

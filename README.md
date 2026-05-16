@@ -7,7 +7,7 @@ Mono Agent is a small pnpm workspace of reusable npm packages under the `@workla
 | Layer | Packages | Responsibility |
 | --- | --- | --- |
 | Runtime | `@worklab-ai/runtime-adapter` | The only package that wraps `@worklab-ai/agent-runtime`; parses model refs and validates execution modes. |
-| Core host contracts | `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` | Adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
+| Core host contracts | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
 | Prompt/context | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
 | Execution spine | `@worklab-ai/agent-harness` | Composes context, runtime, memory, history, tool policy, skills, and observability for one request. |
 | Local evidence | `@worklab-ai/observability` | JSONL run recorder and local artifact reader. |
@@ -19,8 +19,9 @@ Mono Agent is a small pnpm workspace of reusable npm packages under the `@workla
 ```text
 demos/final-agent (not a workspace package)
   ├─ operator-console ── settings, observability
-  ├─ telegram-adapter ── settings
+  ├─ telegram-adapter ── agent-contracts, settings
   ├─ agent-harness
+  │   ├─ agent-contracts
   │   ├─ context
   │   ├─ memory-md
   │   ├─ observability

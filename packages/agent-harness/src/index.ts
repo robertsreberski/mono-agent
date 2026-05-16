@@ -15,6 +15,7 @@ export type {
   AgentHarnessResponse,
   AgentMessageStreamLike,
   AgentRequestLike,
+  AgentResponderLike,
   AgentResponseLike,
   ConversationHistoryStore,
   InMemoryHistoryStoreOptions,

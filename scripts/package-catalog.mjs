@@ -10,6 +10,14 @@ export const PACKAGE_CATEGORIES = [
 
 export const packageCatalog = [
   {
+    dir: "agent-contracts",
+    name: "@worklab-ai/agent-contracts",
+    category: "core",
+    responsibility: "Defines shared structural request, response, stream, responder, and cancellation contracts.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
     dir: "agent-harness",
     name: "@worklab-ai/agent-harness",
     category: "execution",

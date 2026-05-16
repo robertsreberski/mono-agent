@@ -3,6 +3,7 @@ import type {
   AgentHarnessFailure,
   AgentMessageStreamLike,
   AgentRequestLike,
+  AgentResponderLike,
   AgentResponseLike,
 } from "./types.js";
 
@@ -17,7 +18,7 @@ export class AgentHarnessFailureError extends Error {
 }
 
 export function createAgentResponder(options: { readonly harness: AgentHarness }): {
-  respond(request: AgentRequestLike, stream: AgentMessageStreamLike): Promise<AgentResponseLike>;
+  respond: AgentResponderLike["respond"];
 } {
   if (typeof options.harness?.run !== "function") {
     throw new TypeError("createAgentResponder requires a harness with run().");

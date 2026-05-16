@@ -24,7 +24,7 @@ import {
 } from "@worklab-ai/telegram-adapter";
 ```
 
-Load adapter settings separately from core config, then pass a structural `AgentResponder` from the host or harness.
+Load adapter settings separately from core config, then pass a structural `AgentResponder` from the host or harness. The base responder, stream, response, and cancellation contracts come from `@worklab-ai/agent-contracts`.
 
 ## Public API
 
@@ -38,7 +38,7 @@ Load adapter settings separately from core config, then pass a structural `Agent
 
 ## Dependency Boundary
 
-This adapter does not depend on the harness, operator console, core config, memory, or other adapters. It accepts a structural responder and adapter-owned config so hosts can compose it flexibly.
+This adapter depends only on shared contracts and settings primitives inside the workspace. It does not depend on the harness, operator console, core config, memory, runtime package, or other adapters. Hosts compose those pieces outside the adapter.
 
 ## What This Package Does Not Own
 
