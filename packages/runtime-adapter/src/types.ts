@@ -7,6 +7,50 @@ export interface RuntimeModelReference {
   readonly reference?: string;
 }
 
+export type MonoRuntimeBackendId =
+  | "claude-sdk"
+  | "claude-code-cli"
+  | "codex-app-cli"
+  | "pi-sdk";
+
+export type MonoRuntimeBackendTransport = "sdk" | "cli";
+
+export interface MonoRuntimeBackendCapabilities {
+  readonly kind?: string;
+  readonly runtime?: string;
+  readonly streaming?: boolean;
+  readonly structured_output?: boolean;
+  readonly supports_session_resume?: boolean;
+  readonly native_runtime_config?: unknown;
+  readonly supports_mcp?: boolean;
+  readonly supports_skills?: boolean;
+  readonly supports_builtin_tools?: boolean;
+  readonly supports_live_input?: boolean;
+  readonly supports_native_subagents?: boolean;
+  readonly [key: string]: unknown;
+}
+
+export interface MonoRuntimeBackendDescriptor {
+  readonly id: MonoRuntimeBackendId;
+  readonly runtimeBridgeId: string;
+  readonly label: string;
+  readonly sdk: RuntimeModelReference["sdk"];
+  readonly executionMode: RuntimeExecutionMode;
+  readonly transport: MonoRuntimeBackendTransport;
+  readonly providerBoundary: string;
+  readonly modelReferenceExamples: readonly string[];
+  readonly acceptsProviderIds: boolean;
+  readonly capabilities: MonoRuntimeBackendCapabilities;
+}
+
+export interface MonoRuntimeSupportDescription {
+  readonly model: RuntimeModelReference;
+  readonly executionMode: RuntimeExecutionMode;
+  readonly compatible: boolean;
+  readonly backend?: MonoRuntimeBackendDescriptor;
+  readonly incompatibilityReason?: string;
+}
+
 export interface RuntimeMessage {
   readonly role: string;
   readonly content: unknown;

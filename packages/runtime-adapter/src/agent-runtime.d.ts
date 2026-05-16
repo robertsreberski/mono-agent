@@ -32,3 +32,14 @@ declare module "@worklab-ai/agent-runtime/ai/runtime/model-refs.js" {
   export function executionModeIncompatibilityReason(modelRefOrParsed: unknown, executionMode: string): string | null;
   export function isModelCompatibleWithExecutionMode(modelRefOrParsed: unknown, executionMode: string): boolean;
 }
+
+declare module "@worklab-ai/agent-runtime/ai/runtime/registry.js" {
+  export interface RuntimeBridgeDescriptor {
+    readonly id: string;
+    readonly supports: (modelRef: unknown, options?: Record<string, unknown>) => boolean;
+    readonly capabilities: () => Record<string, unknown>;
+  }
+
+  export function listRuntimeBridges(): RuntimeBridgeDescriptor[];
+  export function runtimeCapabilities(sdkOrModel: unknown): Record<string, unknown>;
+}
