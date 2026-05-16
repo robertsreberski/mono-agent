@@ -16,6 +16,7 @@ Mono Agent is a small pnpm workspace monorepo of reusable npm packages around `@
 | `@worklab-ai/skills` | Deterministic configured-skill activation that loads only selected `SKILL.md` bodies with byte caps. |
 | `@worklab-ai/agent-harness` | Main composition spine: communication request → context assembly → runtime run → explicit success/failure response, with memory/history/skills/tool policy/observability hooks. |
 | `@worklab-ai/config-ui` | Browser UI + loopback HTTP bridge that reads/writes `mono-agent.config.json`. Hosts register `FieldGroup`s on top of the built-in identity/runtime/memory/tools/telegram groups. |
+| `@worklab-ai/tui` | Ink-based React TUI console adapter: chat, in-memory history, and a redacted, read-only Config pane sourced from `@worklab-ai/config`. Communication adapter; depends only on `@worklab-ai/config`. |
 
 ## Dependency direction
 
@@ -23,6 +24,7 @@ Mono Agent is a small pnpm workspace monorepo of reusable npm packages around `@
 demos/final-agent (not a package)
   ├─ config-ui
   ├─ telegram-bridge
+  ├─ tui ── config            (leaf-ish, parallel to telegram-bridge)
   ├─ agent-harness
   │   ├─ context
   │   ├─ memory-md
