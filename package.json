@@ -4,18 +4,19 @@
   "private": true,
   "description": "Small agent framework building blocks under the @worklab-ai scope.",
   "type": "module",
+  "packageManager": "pnpm@10.28.2",
   "engines": {
     "node": ">=20"
   },
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
-    "build": "node scripts/build-workspaces.mjs --script build",
-    "typecheck": "node scripts/build-workspaces.mjs --script typecheck",
-    "test": "node scripts/build-workspaces.mjs --script test"
+    "build": "pnpm -r --sort run build",
+    "typecheck": "pnpm -r --sort run typecheck",
+    "test": "pnpm -r --sort run test"
   },
   "devDependencies": {
+    "@worklab-ai/agent-harness": "workspace:^0.1.0",
+    "@worklab-ai/config-ui": "workspace:^0.1.0",
+    "@worklab-ai/context": "workspace:^0.1.0",
     "@types/node": "^22.15.18",
     "typescript": "^5.8.3",
     "vitest": "^3.1.4"

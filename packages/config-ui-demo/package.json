@@ -26,6 +26,6 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/config-ui": "^0.1.0"
+    "@worklab-ai/config-ui": "workspace:^0.1.0"
   }
 }

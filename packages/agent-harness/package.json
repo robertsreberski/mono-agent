@@ -23,11 +23,11 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/context": "^0.1.0",
-    "@worklab-ai/memory-md": "^0.1.0",
-    "@worklab-ai/observability": "^0.1.0",
-    "@worklab-ai/runtime-adapter": "^0.1.0",
-    "@worklab-ai/skills": "^0.1.0",
-    "@worklab-ai/tool-policy": "^0.1.0"
+    "@worklab-ai/context": "workspace:^0.1.0",
+    "@worklab-ai/memory-md": "workspace:^0.1.0",
+    "@worklab-ai/observability": "workspace:^0.1.0",
+    "@worklab-ai/runtime-adapter": "workspace:^0.1.0",
+    "@worklab-ai/skills": "workspace:^0.1.0",
+    "@worklab-ai/tool-policy": "workspace:^0.1.0"
   }
 }
