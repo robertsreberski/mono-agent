@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseCliArgs } from "./cli-args.js";
 import { startFinalAgentDemo } from "./final-demo.js";
-import type { TelegramStatus } from "./final-demo.js";
+import type { A2AStatus, TelegramStatus } from "./final-demo.js";
 
 async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
@@ -21,6 +21,7 @@ async function main(): Promise<void> {
   console.log(`operator-console: ${demo.operatorConsole.appUrl}`);
   console.log(`config:    ${demo.operatorConsole.configPath}`);
   printTelegramStatus(demo.telegramStatus);
+  printA2AStatus(demo.a2aStatus);
 
   let stopping = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -51,8 +52,24 @@ function printTelegramStatus(status: TelegramStatus): void {
   console.log(`telegram:  failed — ${status.reason}`);
 }
 
+function printA2AStatus(status: A2AStatus): void {
+  if (status.kind === "running") {
+    console.log(`a2a:       running — ${status.agentCardUrl}`);
+    return;
+  }
+  if (status.kind === "disabled") {
+    console.log("a2a:       disabled");
+    return;
+  }
+  if (status.kind === "waiting_for_config") {
+    console.log(`a2a:       waiting_for_config — ${status.reason}`);
+    return;
+  }
+  console.log(`a2a:       failed — ${status.reason}`);
+}
+
 function printHelp(): void {
-  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the non-package Mono Agent final demo: operator console first, then Telegram once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Operator Console port (default: 0, choose a free port)\n  -h, --help       Show this help`);
+  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the non-package Mono Agent final demo: operator console first, then optional Telegram and A2A providers once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Operator Console port (default: 0, choose a free port)\n  -h, --help       Show this help`);
 }
 
 void main().catch((error: unknown) => {

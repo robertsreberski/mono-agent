@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
 import type {
   TelegramBotApi,
   TelegramLongPollerOptions,
@@ -53,6 +54,7 @@ describe("final agent demo", () => {
         throw new Error(`Expected waiting_for_config, got ${missingConfigStatus.kind}.`);
       }
       expect(missingConfigStatus.reason).toMatch(/MONO_AGENT_MODEL/u);
+      expect(demo.a2aStatus).toMatchObject({ kind: "disabled" });
       expect(pollerConstructed).toBe(false);
 
       const health = await fetch(`${demo.operatorConsole.url}/api/health`);
@@ -102,6 +104,7 @@ describe("final agent demo", () => {
       expect(factoryCalls).toBe(1);
       expect(pollerOptions).toMatchObject({ deleteWebhookOnStart: true, allowedUpdates: ["message"] });
       expect(demo.telegramStatus.kind).toBe("running");
+      expect(demo.a2aStatus.kind).toBe("disabled");
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("secret-token");
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("987654321");
 
@@ -131,6 +134,60 @@ describe("final agent demo", () => {
     await writeFile(configPath, `${JSON.stringify({ artifacts: { dir: "./from-config" } })}\n`, "utf8");
     await expect(resolveFinalDemoArtifactDir({ env: {}, cwd: dir, configPath }))
       .resolves.toBe(resolve(dir, "from-config"));
+  });
+
+  it("starts an A2A provider independently when Telegram is not configured", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono over A2A.", "utf8");
+    await writeFile(
+      join(dir, "mono-agent.config.json"),
+      `${JSON.stringify(validA2AOnlyConfigPatch(), null, 2)}\n`,
+      "utf8",
+    );
+
+    let pollerConstructed = false;
+    const fakeRuntime = createFakeRuntime();
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: {},
+      runtime: fakeRuntime.runtime,
+      telegramApi: createFakeTelegramApi().api,
+      pollerFactory: () => {
+        pollerConstructed = true;
+        return createAbortableFakePoller().poller;
+      },
+    });
+
+    try {
+      expect(demo.telegramStatus.kind).toBe("waiting_for_config");
+      expect(pollerConstructed).toBe(false);
+      const a2aStatus = demo.a2aStatus;
+      if (a2aStatus.kind !== "running") {
+        throw new Error(`Expected A2A running, got ${a2aStatus.kind}.`);
+      }
+      expect(a2aStatus.agentCardUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\.well-known\/agent-card\.json$/u);
+      expect(JSON.stringify(a2aStatus)).not.toContain("a2a-secret");
+
+      const cardResponse = await fetch(a2aStatus.agentCardUrl);
+      expect(cardResponse.status).toBe(200);
+      expect(await cardResponse.json()).toMatchObject({
+        name: "Final Demo A2A",
+      });
+
+      const response = await sendA2AMessage({
+        agentUrl: a2aStatus.agentCardUrl,
+        text: "Hello from another Mono agent",
+      });
+      expect(response.text).toBe("runtime ok");
+      expect(fakeRuntime.calls).toHaveLength(1);
+      expect(fakeRuntime.calls[0]?.prompt).toContain("You are Mono over A2A.");
+    } finally {
+      const agentCardUrl = demo.a2aStatus.kind === "running" ? demo.a2aStatus.agentCardUrl : undefined;
+      await demo.stop();
+      if (agentCardUrl !== undefined) {
+        await expect(fetch(agentCardUrl)).rejects.toThrow();
+      }
+    }
   });
 
   it("composes operator console, Telegram, harness, runtime, memory, tools, and artifacts", async () => {
@@ -362,6 +419,31 @@ function validConfigPatch() {
     },
     artifacts: {
       dir: "./artifacts",
+    },
+  };
+}
+
+function validA2AOnlyConfigPatch() {
+  const { telegram: _telegram, memory: _memory, ...patch } = validConfigPatch();
+  return {
+    ...patch,
+    a2a: {
+      provider: {
+        enabled: true,
+        host: "127.0.0.1",
+        port: 0,
+      },
+      agent: {
+        name: "Final Demo A2A",
+        description: "Final demo A2A provider.",
+        version: "0.1.0",
+      },
+      skill: {
+        id: "final-demo",
+        name: "Final Demo",
+        description: "Runs the configured final demo runtime over A2A.",
+        tags: ["mono-agent", "a2a"],
+      },
     },
   };
 }

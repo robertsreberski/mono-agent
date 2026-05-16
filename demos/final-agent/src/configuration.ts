@@ -13,6 +13,17 @@ import type {
 } from "@worklab-ai/config";
 import type { FieldGroup } from "@worklab-ai/settings";
 import {
+  a2aFieldGroup,
+  A2AConsumerError,
+  A2AProviderError,
+  loadA2AAdapterConfig,
+  redactA2AAdapterConfig,
+} from "@worklab-ai/a2a-adapter";
+import type {
+  A2AAdapterConfig,
+  RedactedA2AAdapterConfig,
+} from "@worklab-ai/a2a-adapter";
+import {
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,
   telegramFieldGroup,
@@ -26,6 +37,7 @@ import type {
 export const FINAL_DEMO_FIELD_GROUPS: readonly FieldGroup[] = [
   ...CORE_AGENT_FIELD_GROUPS,
   telegramFieldGroup,
+  a2aFieldGroup,
 ];
 
 export interface FinalAgentDemoConfigInput {
@@ -36,31 +48,57 @@ export interface FinalAgentDemoConfigInput {
 
 export interface LoadedFinalAgentDemoConfig {
   readonly coreConfig: MonoAgentConfig;
-  readonly telegramConfig: TelegramAdapterConfig;
+  readonly telegramConfig?: TelegramAdapterConfig;
+  readonly a2aConfig?: A2AAdapterConfig;
 }
 
 export interface RedactedFinalAgentDemoConfig {
   readonly core: RedactedMonoAgentConfig;
-  readonly telegram: RedactedTelegramAdapterConfig;
+  readonly telegram?: RedactedTelegramAdapterConfig;
+  readonly a2a?: RedactedA2AAdapterConfig;
 }
 
 export type FinalAgentDemoConfigError =
   | MonoAgentConfigError
-  | TelegramAdapterConfigError;
+  | TelegramAdapterConfigError
+  | A2AProviderError
+  | A2AConsumerError;
 
-export async function loadFinalAgentDemoConfig(
+export async function loadFinalAgentCoreConfig(
   input: FinalAgentDemoConfigInput,
-): Promise<LoadedFinalAgentDemoConfig> {
-  const coreConfig = await loadMonoAgentConfigWithSources({
+): Promise<MonoAgentConfig> {
+  return await loadMonoAgentConfigWithSources({
     env: input.env,
     cwd: input.cwd,
     jsonPath: input.configPath,
   });
-  const telegramConfig = await loadTelegramAdapterConfig({
+}
+
+export async function loadFinalAgentTelegramConfig(
+  input: FinalAgentDemoConfigInput,
+): Promise<TelegramAdapterConfig> {
+  return await loadTelegramAdapterConfig({
     env: input.env,
     jsonPath: input.configPath,
   });
-  return { coreConfig, telegramConfig };
+}
+
+export async function loadFinalAgentA2AConfig(
+  input: FinalAgentDemoConfigInput,
+): Promise<A2AAdapterConfig> {
+  return await loadA2AAdapterConfig({
+    env: input.env,
+    jsonPath: input.configPath,
+  });
+}
+
+export async function loadFinalAgentDemoConfig(
+  input: FinalAgentDemoConfigInput,
+): Promise<LoadedFinalAgentDemoConfig> {
+  const coreConfig = await loadFinalAgentCoreConfig(input);
+  const telegramConfig = await loadFinalAgentTelegramConfig(input);
+  const a2aConfig = await loadFinalAgentA2AConfig(input);
+  return { coreConfig, telegramConfig, a2aConfig };
 }
 
 export function redactFinalAgentDemoConfig(
@@ -68,7 +106,8 @@ export function redactFinalAgentDemoConfig(
 ): RedactedFinalAgentDemoConfig {
   return {
     core: redactMonoAgentConfig(config.coreConfig),
-    telegram: redactTelegramAdapterConfig(config.telegramConfig),
+    ...(config.telegramConfig === undefined ? {} : { telegram: redactTelegramAdapterConfig(config.telegramConfig) }),
+    ...(config.a2aConfig === undefined ? {} : { a2a: redactA2AAdapterConfig(config.a2aConfig) }),
   };
 }
 
@@ -98,5 +137,7 @@ export function isFinalAgentDemoConfigError(
   error: unknown,
 ): error is FinalAgentDemoConfigError {
   return error instanceof MonoAgentConfigError ||
-    error instanceof TelegramAdapterConfigError;
+    error instanceof TelegramAdapterConfigError ||
+    error instanceof A2AProviderError ||
+    error instanceof A2AConsumerError;
 }
