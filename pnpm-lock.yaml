@@ -14,12 +14,30 @@ importers:
       '@worklab-ai/agent-harness':
         specifier: workspace:^0.1.0
         version: link:packages/agent-harness
+      '@worklab-ai/config':
+        specifier: workspace:^0.1.0
+        version: link:packages/config
       '@worklab-ai/config-ui':
         specifier: workspace:^0.1.0
         version: link:packages/config-ui
       '@worklab-ai/context':
         specifier: workspace:^0.1.0
         version: link:packages/context
+      '@worklab-ai/memory-md':
+        specifier: workspace:^0.1.0
+        version: link:packages/memory-md
+      '@worklab-ai/observability':
+        specifier: workspace:^0.1.0
+        version: link:packages/observability
+      '@worklab-ai/runtime-adapter':
+        specifier: workspace:^0.1.0
+        version: link:packages/runtime-adapter
+      '@worklab-ai/telegram-bridge':
+        specifier: workspace:^0.1.0
+        version: link:packages/telegram-bridge
+      '@worklab-ai/tool-policy':
+        specifier: workspace:^0.1.0
+        version: link:packages/tool-policy
       typescript:
         specifier: ^5.8.3
         version: 5.9.3
@@ -112,12 +130,6 @@ importers:
         specifier: ^8.0.0
         version: 8.0.13(@types/node@22.19.19)(esbuild@0.27.7)(jiti@2.7.0)
 
-  packages/config-ui-demo:
-    dependencies:
-      '@worklab-ai/config-ui':
-        specifier: workspace:^0.1.0
-        version: link:../config-ui
-
   packages/context: {}
 
   packages/memory-md: {}
@@ -135,30 +147,6 @@ importers:
       '@worklab-ai/context':
         specifier: workspace:^0.1.0
         version: link:../context
-
-  packages/telegram-agent-demo:
-    dependencies:
-      '@worklab-ai/agent-harness':
-        specifier: workspace:^0.1.0
-        version: link:../agent-harness
-      '@worklab-ai/config':
-        specifier: workspace:^0.1.0
-        version: link:../config
-      '@worklab-ai/memory-md':
-        specifier: workspace:^0.1.0
-        version: link:../memory-md
-      '@worklab-ai/observability':
-        specifier: workspace:^0.1.0
-        version: link:../observability
-      '@worklab-ai/runtime-adapter':
-        specifier: workspace:^0.1.0
-        version: link:../runtime-adapter
-      '@worklab-ai/telegram-bridge':
-        specifier: workspace:^0.1.0
-        version: link:../telegram-bridge
-      '@worklab-ai/tool-policy':
-        specifier: workspace:^0.1.0
-        version: link:../tool-policy
 
   packages/telegram-bridge: {}
 
