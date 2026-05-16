@@ -4,6 +4,7 @@ export type {
   OperatorConsoleOptions,
   OperatorConsoleStartResult,
   OperatorConsoleObservabilityOptions,
+  OperatorConsoleTraceabilityOptions,
 } from "./server/types.js";
 export type {
   FieldGroup,

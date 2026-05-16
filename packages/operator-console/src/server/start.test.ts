@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createJsonlRunRecorder } from "@worklab-ai/observability";
+import { createJsonlRunRecorder, registerTraceSource } from "@worklab-ai/observability";
 import { defineFieldGroup } from "@worklab-ai/settings";
 import type { FieldGroup } from "@worklab-ai/settings";
 
@@ -364,6 +364,129 @@ describe("startOperatorConsole", () => {
       expect(detailBody.run.events[0]?.label).toBe("Tool: Read");
       expect(detailBody.run.events[1]?.summary).toBe("done");
       expect(JSON.stringify(detailBody)).not.toContain("should-redact");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("lists traceability sources and disambiguates duplicate run ids by source", async () => {
+    const registryDir = join(dir, "trace-registry");
+    const artifactDirA = join(dir, "agent-a-artifacts");
+    const artifactDirB = join(dir, "agent-b-artifacts");
+    await registerTraceSource({
+      registryDir,
+      sourceId: "agent-a",
+      label: "Agent A",
+      artifactDir: artifactDirA,
+      transports: ["telegram"],
+    });
+    await registerTraceSource({
+      registryDir,
+      sourceId: "agent-b",
+      label: "Agent B",
+      artifactDir: artifactDirB,
+      status: "failed",
+      metadata: { token: "should-redact-source" },
+    });
+    const recorderA = createJsonlRunRecorder({ runId: "duplicate", conversationId: "chat-a", artifactDir: artifactDirA });
+    recorderA.onEvent({ type: "assistant", text: "A", authorization: "should-redact-event" });
+    await recorderA.finish({});
+    const recorderB = createJsonlRunRecorder({ runId: "duplicate", conversationId: "chat-b", artifactDir: artifactDirB });
+    await recorderB.finish({ failureKind: "provider_error" });
+
+    const bridge = await startTestConsole({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+      traceability: { registryDir, maxRuns: 10, maxEventsPerRun: 10 },
+    });
+    try {
+      const sourcesResponse = await fetch(`${bridge.url}/api/traceability/sources`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(sourcesResponse.status).toBe(200);
+      const sourcesBody = await sourcesResponse.json() as {
+        enabled: boolean;
+        sources: Array<{ sourceId: string; health: string; transports?: string[] }>;
+      };
+      expect(sourcesBody.enabled).toBe(true);
+      expect(sourcesBody.sources.map((source) => [source.sourceId, source.health]).sort()).toEqual([
+        ["agent-a", "running"],
+        ["agent-b", "failed"],
+      ]);
+      expect(JSON.stringify(sourcesBody)).not.toContain("should-redact-source");
+
+      const runsResponse = await fetch(`${bridge.url}/api/traceability/runs`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(runsResponse.status).toBe(200);
+      const runsBody = await runsResponse.json() as {
+        enabled: boolean;
+        runs: Array<{ runId: string; conversationId: string; source: { sourceId: string } }>;
+      };
+      expect(runsBody.runs.map((run) => [run.source.sourceId, run.runId, run.conversationId])).toEqual([
+        ["agent-b", "duplicate", "chat-b"],
+        ["agent-a", "duplicate", "chat-a"],
+      ]);
+
+      const detailResponse = await fetch(`${bridge.url}/api/traceability/runs/agent-a/${encodeURIComponent("duplicate")}`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(detailResponse.status).toBe(200);
+      const detailBody = await detailResponse.json() as {
+        detail?: { source: { sourceId: string }; run: { summary: { conversationId: string } } };
+      };
+      expect(detailBody.detail?.source.sourceId).toBe("agent-a");
+      expect(detailBody.detail?.run.summary.conversationId).toBe("chat-a");
+      expect(JSON.stringify(detailBody)).not.toContain("should-redact-event");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("serves traceability through a fallback local source when only observability is configured", async () => {
+    const artifactDir = join(dir, "artifacts");
+    const recorder = createJsonlRunRecorder({ runId: "local-run", conversationId: "local-chat", artifactDir });
+    await recorder.finish({});
+
+    const bridge = await startTestConsole({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+      observability: { artifactDir },
+    });
+    try {
+      const response = await fetch(`${bridge.url}/api/traceability/runs`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as {
+        enabled: boolean;
+        sources: Array<{ sourceId: string }>;
+        runs: Array<{ source: { sourceId: string }; runId: string }>;
+      };
+      expect(body.enabled).toBe(true);
+      expect(body.sources[0]?.sourceId).toBe("local");
+      expect(body.runs[0]).toMatchObject({ source: { sourceId: "local" }, runId: "local-run" });
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("rejects path traversal in traceability source and run ids", async () => {
+    const bridge = await startTestConsole({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+      traceability: { registryDir: join(dir, "trace-registry") },
+    });
+    try {
+      const response = await fetch(`${bridge.url}/api/traceability/runs/${encodeURIComponent("../source")}/run`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      expect(response.status).toBe(400);
+      const body = await response.json() as { error: string };
+      expect(body.error).toBe("invalid_traceability_id");
     } finally {
       await bridge.stop();
     }

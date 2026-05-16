@@ -11,6 +11,19 @@ export interface OperatorConsoleObservabilityOptions {
   readonly maxStringBytes?: number;
 }
 
+export interface OperatorConsoleTraceabilityOptions {
+  /** Registry directory containing trace source manifests. */
+  readonly registryDir: string | (() => string | undefined | Promise<string | undefined>);
+  /** Maximum number of runs returned by the aggregate endpoint. */
+  readonly maxRuns?: number;
+  /** Maximum events returned for a single run detail. */
+  readonly maxEventsPerRun?: number;
+  /** Maximum string bytes retained per payload field. */
+  readonly maxStringBytes?: number;
+  /** Milliseconds before a running source heartbeat is reported as stale. */
+  readonly staleAfterMs?: number;
+}
+
 export interface OperatorConsoleOptions {
   /** Absolute path to the JSON settings file the console reads/writes. */
   readonly configPath: string;
@@ -26,6 +39,8 @@ export interface OperatorConsoleOptions {
   readonly token?: string;
   /** Optional recorded-run artifact reader configuration for the Observability view. */
   readonly observability?: OperatorConsoleObservabilityOptions;
+  /** Optional host-level trace source registry configuration for the Traceability view. */
+  readonly traceability?: OperatorConsoleTraceabilityOptions;
   /** Optional logger for operator console server events. */
   readonly log?: (event: OperatorConsoleEvent) => void;
 }
