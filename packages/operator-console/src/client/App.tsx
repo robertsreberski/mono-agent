@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 
 import { OperatorConsoleClient } from "./api.js";
 import { ConfigForm } from "./components/ConfigForm.js";
-import { ObservabilityView } from "./components/ObservabilityView.js";
+import { TraceabilityView } from "./components/TraceabilityView.js";
 import { Button } from "./components/ui/button.js";
 import { Separator } from "./components/ui/separator.js";
 import { readRuntime } from "./runtime.js";
 
-type ViewName = "settings" | "observability";
+type ViewName = "settings" | "traceability";
 
 export default function App() {
   const runtime = readRuntime();
@@ -33,12 +33,12 @@ export default function App() {
         </div>
         <nav className="flex min-w-0 gap-2 overflow-x-auto rounded-xl bg-muted/60 p-1" aria-label="Primary views">
           <NavButton active={view === "settings"} onClick={() => setView("settings")}>Settings</NavButton>
-          <NavButton active={view === "observability"} onClick={() => setView("observability")}>Runs</NavButton>
+          <NavButton active={view === "traceability"} onClick={() => setView("traceability")}>Traceability</NavButton>
         </nav>
       </header>
       <Separator />
       <div className="min-w-0">
-        {view === "settings" ? <ConfigForm client={client} /> : <ObservabilityView client={client} />}
+        {view === "settings" ? <ConfigForm client={client} /> : <TraceabilityView client={client} />}
       </div>
     </main>
   );
@@ -90,5 +90,5 @@ function useHashView(): readonly [ViewName, (next: ViewName) => void] {
 }
 
 function viewFromHash(hash: string): ViewName {
-  return hash === "#observability" ? "observability" : "settings";
+  return hash === "#traceability" || hash === "#observability" ? "traceability" : "settings";
 }

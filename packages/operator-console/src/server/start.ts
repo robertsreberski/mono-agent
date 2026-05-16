@@ -37,6 +37,7 @@ export async function startOperatorConsole(
       fieldGroups,
       staticDir,
       ...(options.observability === undefined ? {} : { observability: options.observability }),
+      ...(options.traceability === undefined ? {} : { traceability: options.traceability }),
       ...(options.log === undefined ? {} : { log: options.log }),
     }).catch((error: unknown) => {
       const reason = error instanceof Error ? error.message : String(error);

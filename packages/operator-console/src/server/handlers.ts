@@ -17,7 +17,16 @@ import {
   observabilityRunResponse,
   observabilityRunsResponse,
 } from "./observability.js";
-import type { OperatorConsoleEvent, OperatorConsoleObservabilityOptions } from "./types.js";
+import {
+  traceabilityRunResponse,
+  traceabilityRunsResponse,
+  traceabilitySourcesResponse,
+} from "./traceability.js";
+import type {
+  OperatorConsoleEvent,
+  OperatorConsoleObservabilityOptions,
+  OperatorConsoleTraceabilityOptions,
+} from "./types.js";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -37,6 +46,7 @@ export interface HandlerDeps {
   readonly fieldGroups: readonly FieldGroup[];
   readonly staticDir: string;
   readonly observability?: OperatorConsoleObservabilityOptions;
+  readonly traceability?: OperatorConsoleTraceabilityOptions;
   readonly log?: (event: OperatorConsoleEvent) => void;
 }
 
@@ -97,6 +107,18 @@ async function routeApi(
   }
   if (method === "GET" && path.startsWith("/api/observability/runs/")) {
     const result = await observabilityRunResponse(deps.observability, path);
+    return json(res, result.status, result.body);
+  }
+  if (method === "GET" && path === "/api/traceability/sources") {
+    const result = await traceabilitySourcesResponse(deps.traceability, deps.observability);
+    return json(res, result.status, result.body);
+  }
+  if (method === "GET" && path === "/api/traceability/runs") {
+    const result = await traceabilityRunsResponse(deps.traceability, deps.observability);
+    return json(res, result.status, result.body);
+  }
+  if (method === "GET" && path.startsWith("/api/traceability/runs/")) {
+    const result = await traceabilityRunResponse(deps.traceability, deps.observability, path);
     return json(res, result.status, result.body);
   }
   if (method === "PUT" && path === "/api/config") {
@@ -244,6 +266,7 @@ function injectRuntime(html: string, deps: HandlerDeps): string {
     baseUrl: "",
     token: deps.token,
     fieldGroupIds: deps.fieldGroups.map((g) => g.id),
+    traceabilityEnabled: deps.traceability !== undefined || deps.observability !== undefined,
   };
   const tag = `<script>window.__OPERATOR_CONSOLE__ = ${JSON.stringify(runtime)};</script>`;
   if (html.includes("</head>")) {
