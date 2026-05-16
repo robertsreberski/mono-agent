@@ -70,11 +70,13 @@ export class JsonlRunRecorder implements RunRecorder {
       ...(failureKind === undefined ? {} : { failureKind }),
       durationMs: Math.max(0, this.clock() - this.startedAt),
       ...(result.usage === undefined ? {} : { usage: redactJsonValue(result.usage, this.maxStringBytes) }),
+      ...(result.cost === undefined ? {} : { cost: redactJsonValue(result.cost, this.maxStringBytes) }),
       ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
       eventCount: this.events.length,
       artifactPaths: this.artifactPaths(),
       ...(result.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(result.runtimeWarnings, this.maxStringBytes) }),
       ...(result.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(result.diagnostics, this.maxStringBytes) }),
+      ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(result.capabilitiesUsed, this.maxStringBytes) }),
     };
     return summary;
   }

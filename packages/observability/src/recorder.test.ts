@@ -25,9 +25,21 @@ describe("JsonlRunRecorder", () => {
 
     recorder.onEvent({ type: "request", apiKey: "secret-value", nested: { token: "abc" } });
     now = 1250;
-    const summary = await recorder.finish({ usage: { inputTokens: 3 }, providerSessionId: "session-1" });
+    const summary = await recorder.finish({
+      usage: { inputTokens: 3 },
+      cost: { totalUsd: 0.01 },
+      providerSessionId: "session-1",
+      capabilitiesUsed: ["tools:read"],
+    });
 
-    expect(summary).toMatchObject({ status: "succeeded", durationMs: 250, eventCount: 1, providerSessionId: "session-1" });
+    expect(summary).toMatchObject({
+      status: "succeeded",
+      durationMs: 250,
+      eventCount: 1,
+      providerSessionId: "session-1",
+      cost: { totalUsd: 0.01 },
+      capabilitiesUsed: ["tools:read"],
+    });
     const events = await readFile(summary.artifactPaths[0] ?? "", "utf8");
     expect(events).toContain('"apiKey":"[redacted]"');
     expect(events).toContain('"token":"[redacted]"');

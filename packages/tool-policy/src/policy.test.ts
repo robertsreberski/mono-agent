@@ -32,6 +32,7 @@ describe("tool policy", () => {
       allowedTools: ["Read"],
       disallowedTools: ["Bash"],
       mcpServers: { filesystem: { command: "mcp-server" } },
+      mcpConfigPath: "/repo/mcp.json",
       approvalDefaultRiskTier: "high",
       approvalAlwaysAllowTools: ["Read"],
       approvalTimeoutMs: 5000,
@@ -42,6 +43,7 @@ describe("tool policy", () => {
       allowedTools: ["Read"],
       disallowedTools: ["Bash"],
       mcpServers: { filesystem: { command: "mcp-server" } },
+      mcpConfigPath: "/repo/mcp.json",
       approvalDefaultRiskTier: "high",
       approvalAlwaysAllowTools: ["Read"],
       approvalTimeoutMs: 5000,
@@ -52,12 +54,13 @@ describe("tool policy", () => {
   it("loads JSON policy files", async () => {
     const dir = await tempDir();
     const file = join(dir, "policy.json");
-    await writeFile(file, JSON.stringify({ allowedTools: ["Read"], mcpServers: { fs: { command: "server" } } }), "utf8");
+    await writeFile(file, JSON.stringify({ allowedTools: ["Read"], mcpServers: { fs: { command: "server" } }, mcpConfigPath: "/repo/mcp.json" }), "utf8");
 
     await expect(loadToolPolicyFromJsonFile(file)).resolves.toMatchObject({
       allowedTools: ["Read"],
       disallowedTools: [],
       mcpServers: { fs: { command: "server" } },
+      mcpConfigPath: "/repo/mcp.json",
     });
   });
 });
