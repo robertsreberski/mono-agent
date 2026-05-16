@@ -74,7 +74,7 @@ interface TelegramErrorEnvelope {
 type TelegramEnvelope<T> = TelegramOkEnvelope<T> | TelegramErrorEnvelope;
 
 const DEFAULT_API_BASE_URL = "https://api.telegram.org";
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
 
 export class TelegramBotApiClient implements TelegramBotApi {
   private readonly token: string;

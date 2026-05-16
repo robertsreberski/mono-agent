@@ -61,6 +61,35 @@ describe("TelegramBotApiClient", () => {
     await expect(client.getUpdates({ offset: 100 })).resolves.toEqual(updates);
   });
 
+  it("allows the default request timeout to cover Telegram 30s long polls", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const signal = init?.signal;
+        return await new Promise<Response>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            resolve(jsonResponse({ ok: true, result: [] }));
+          }, 30_100);
+          signal?.addEventListener("abort", () => {
+            clearTimeout(timeout);
+            reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+          }, { once: true });
+        });
+      }) as unknown as typeof fetch;
+      const client = new TelegramBotApiClient({
+        token: TOKEN,
+        fetchImpl,
+      });
+
+      const updates = client.getUpdates({ timeout: 30 });
+      await vi.advanceTimersByTimeAsync(30_100);
+
+      await expect(updates).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("throws sanitized errors for HTTP failures", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(`body mentions ${TOKEN}`, { status: 502 }),
