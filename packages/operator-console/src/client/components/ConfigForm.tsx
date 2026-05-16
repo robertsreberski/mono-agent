@@ -115,7 +115,7 @@ export function ConfigForm({ client, initial }: ConfigFormProps): React.JSX.Elem
         // best-effort; keep saved state visible
       }
       setDrafts({});
-      setStatus({ kind: "saved" });
+      setStatus({ kind: "saved", ...(result.apply === undefined ? {} : { apply: result.apply }) });
     } catch (error) {
       const err = error as PutError;
       if (err.kind === "stale") {

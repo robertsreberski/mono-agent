@@ -1,4 +1,5 @@
 import type { FieldGroup } from "@worklab-ai/settings";
+import type { SettingsJson } from "@worklab-ai/settings";
 
 export interface OperatorConsoleObservabilityOptions {
   /** Artifact directory containing *.summary.json and *.events.jsonl files. */
@@ -21,8 +22,19 @@ export interface OperatorConsoleTraceabilityOptions {
   /** Maximum string bytes retained per payload field. */
   readonly maxStringBytes?: number;
   /** Milliseconds before a running source heartbeat is reported as stale. */
-  readonly staleAfterMs?: number;
+  readonly staleAfterMs?: number | (() => number | undefined | Promise<number | undefined>);
 }
+
+export interface OperatorConsoleConfigWriteContext {
+  readonly configPath: string;
+  readonly version: string;
+  readonly patch: SettingsJson;
+}
+
+export type ConfigApplyResult =
+  | { readonly kind: "applied"; readonly message: string; readonly transports: readonly string[] }
+  | { readonly kind: "waiting_for_config"; readonly message: string; readonly transports: readonly string[] }
+  | { readonly kind: "failed"; readonly message: string; readonly transports: readonly string[] };
 
 export interface OperatorConsoleOptions {
   /** Absolute path to the JSON settings file the console reads/writes. */
@@ -41,6 +53,8 @@ export interface OperatorConsoleOptions {
   readonly observability?: OperatorConsoleObservabilityOptions;
   /** Optional host-level trace source registry configuration for the Traceability view. */
   readonly traceability?: OperatorConsoleTraceabilityOptions;
+  /** Optional host callback invoked after a successful config write. */
+  readonly applyConfigWrite?: (context: OperatorConsoleConfigWriteContext) => Promise<ConfigApplyResult>;
   /** Optional logger for operator console server events. */
   readonly log?: (event: OperatorConsoleEvent) => void;
 }

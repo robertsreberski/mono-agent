@@ -157,6 +157,67 @@ describe("<ConfigForm/>", () => {
     expect(args?.patch).toEqual({ runtime: { maxTurns: 20 } });
   });
 
+  it.each([
+    [
+      "applied",
+      {
+        kind: "applied",
+        message: "Reloaded running transports.",
+        transports: ["telegram"],
+      },
+      "saved and applied",
+      /Saved and applied/u,
+    ],
+    [
+      "waiting",
+      {
+        kind: "waiting_for_config",
+        message: "Waiting for valid Telegram config.",
+        transports: ["operator-console"],
+      },
+      "saved waiting for config",
+      /Saved; waiting for valid config/u,
+    ],
+    [
+      "failed",
+      {
+        kind: "failed",
+        message: "A2A port is already in use.",
+        transports: ["operator-console"],
+      },
+      "saved apply failed",
+      /Saved; apply failed/u,
+    ],
+  ] as const)("shows %s apply status after save", async (_name, apply, label, text) => {
+    const writeConfig = vi.fn<OperatorConsoleClient["writeConfig"]>().mockResolvedValue({
+      ok: true,
+      version: "v1",
+      apply,
+    } satisfies PutResponse);
+    const fetchConfig = vi.fn<OperatorConsoleClient["fetchConfig"]>().mockResolvedValue({
+      config: { runtime: { maxTurns: 21 } },
+      version: "v1",
+    });
+    const client = makeStubClient({ writeConfig, fetchConfig });
+    render(
+      <ConfigForm
+        client={client}
+        initial={{
+          fieldGroups: TEST_FIELD_GROUPS,
+          config: { runtime: { maxTurns: 8 } },
+          version: "v0",
+        }}
+      />,
+    );
+
+    await clickTab("Runtime");
+    const input = (await screen.findByLabelText(/Max turns/u)) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "21" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByLabelText(label)).toHaveTextContent(text);
+  });
+
   it("masks the secret input so typed values don't echo on screen", async () => {
     render(
       <ConfigForm

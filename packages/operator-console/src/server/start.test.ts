@@ -155,6 +155,153 @@ describe("startOperatorConsole", () => {
     }
   });
 
+  it("invokes the apply hook after a successful PUT and returns its status", async () => {
+    const configPath = join(dir, "config.json");
+    const calls: Array<{ version: string; patch: unknown; disk: string }> = [];
+    const bridge = await startTestConsole({
+      configPath,
+      cwd: dir,
+      token: "test-token",
+      applyConfigWrite: async (context) => {
+        calls.push({
+          version: context.version,
+          patch: context.patch,
+          disk: await readFile(configPath, "utf8"),
+        });
+        return {
+          kind: "applied",
+          message: "Reloaded running transports.",
+          transports: ["telegram"],
+        };
+      },
+    });
+    try {
+      const first = await fetch(`${bridge.url}/api/config`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      const firstBody = (await first.json()) as { version: string };
+
+      const put = await fetch(`${bridge.url}/api/config`, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expectedVersion: firstBody.version,
+          patch: { runtime: { maxTurns: "16" } },
+        }),
+      });
+
+      expect(put.status).toBe(200);
+      const body = (await put.json()) as {
+        ok: boolean;
+        version: string;
+        apply?: { kind: string; message: string; transports: readonly string[] };
+      };
+      expect(body.ok).toBe(true);
+      expect(body.apply).toEqual({
+        kind: "applied",
+        message: "Reloaded running transports.",
+        transports: ["telegram"],
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.version).toBe(body.version);
+      expect(calls[0]?.patch).toEqual({ runtime: { maxTurns: 16 } });
+      expect(calls[0]?.disk).toContain("\"maxTurns\": 16");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("returns apply failure status without rolling back the persisted config", async () => {
+    const configPath = join(dir, "config.json");
+    const bridge = await startTestConsole({
+      configPath,
+      cwd: dir,
+      token: "test-token",
+      applyConfigWrite: async () => {
+        throw new Error("reload exploded");
+      },
+    });
+    try {
+      const first = await fetch(`${bridge.url}/api/config`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      const firstBody = (await first.json()) as { version: string };
+      const put = await fetch(`${bridge.url}/api/config`, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expectedVersion: firstBody.version,
+          patch: { runtime: { maxTurns: 6 } },
+        }),
+      });
+
+      expect(put.status).toBe(200);
+      const body = (await put.json()) as {
+        ok: boolean;
+        apply?: { kind: string; message: string; transports: readonly string[] };
+      };
+      expect(body.ok).toBe(true);
+      expect(body.apply).toEqual({
+        kind: "failed",
+        message: "reload exploded",
+        transports: [],
+      });
+      expect(await readFile(configPath, "utf8")).toContain("\"maxTurns\": 6");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("skips the apply hook for stale writes and validation failures", async () => {
+    let applyCalls = 0;
+    const bridge = await startTestConsole({
+      configPath: join(dir, "config.json"),
+      cwd: dir,
+      token: "test-token",
+      applyConfigWrite: async () => {
+        applyCalls += 1;
+        return { kind: "applied", message: "applied", transports: [] };
+      },
+    });
+    try {
+      const stale = await fetch(`${bridge.url}/api/config`, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ expectedVersion: "stale", patch: { runtime: { maxTurns: 4 } } }),
+      });
+      expect(stale.status).toBe(409);
+
+      const first = await fetch(`${bridge.url}/api/config`, {
+        headers: { Authorization: "Bearer test-token" },
+      });
+      const firstBody = (await first.json()) as { version: string };
+      const invalid = await fetch(`${bridge.url}/api/config`, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer test-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expectedVersion: firstBody.version,
+          patch: { runtime: { sneaky: "value" } },
+        }),
+      });
+      expect(invalid.status).toBe(400);
+      expect(applyCalls).toBe(0);
+    } finally {
+      await bridge.stop();
+    }
+  });
+
   it("returns 409 when PUT is sent with a stale expectedVersion", async () => {
     const bridge = await startTestConsole({
       configPath: join(dir, "config.json"),
