@@ -48,7 +48,7 @@ Rules for future packages:
 
 ## Final Demo
 
-The final demo lives at `demos/final-agent/`. It starts the local operator console first, then starts Telegram and/or the A2A provider independently when their own adapter config plus core runtime config are valid.
+The final demo lives at `demos/final-agent/`. It starts the local operator console first, then starts Telegram and/or the A2A provider independently when their own adapter config plus core runtime config are valid. Config saves through the operator console are applied in-process: the demo stops and rebuilds Telegram, A2A, and traceability with the freshly saved settings while keeping the operator console URL, token, and port stable.
 
 The preferred local deployment path generates an ignored config under `.mono-agent/deploy/`, verifies Ollama has Gemma 4 installed, then starts the operator console, traceability source, and loopback A2A provider:
 
