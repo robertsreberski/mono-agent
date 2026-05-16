@@ -4,15 +4,18 @@ Mono Agent is a small pnpm workspace of reusable npm packages under the `@workla
 
 ## Package Architecture
 
-| Layer | Packages | Responsibility |
-| --- | --- | --- |
-| Runtime | `@worklab-ai/runtime-adapter` | The only package that wraps `@worklab-ai/agent-runtime`; parses model refs and validates execution modes. |
-| Core host contracts | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
-| Prompt/context | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
-| Execution spine | `@worklab-ai/agent-harness` | Composes context, runtime, memory, history, tool policy, skills, and observability for one request. |
-| Local evidence | `@worklab-ai/observability` | JSONL run recorder and local artifact reader. |
-| Communication adapters | `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | Leaf-ish transport adapters that accept structural responders and own adapter-specific safety/config. |
-| Operator surfaces | `@worklab-ai/operator-console`, `@worklab-ai/tui` | Local browser and terminal operator surfaces. They do not own runtime hosting or communication transport. |
+Package categories are catalog metadata, documentation, and architecture-guard inputs. The physical layout intentionally stays `packages/<package-name>` and published names stay `@worklab-ai/<package-name>`; a future physical move to `packages/<category>/<package-name>` would be a separate mechanical release-tooling task.
+
+| Category | Packages | Allowed workspace dependency categories | Responsibility |
+| --- | --- | --- | --- |
+| `runtime` | `@worklab-ai/runtime-adapter` | `core` | The only package that wraps `@worklab-ai/agent-runtime`; parses model refs, validates execution modes, and exposes backend descriptors. |
+| `core` | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
+| `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
+| `execution` | `@worklab-ai/agent-harness` | `core`, `context`, `runtime`, `observability` | Composes context, runtime, memory, history, tool policy, skills, and observability for one request. |
+| `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder and local artifact reader. |
+| `communication` | `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. |
+| `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. They do not own runtime hosting or communication transport. |
+| `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition that wires config, surface, communication, harness, runtime, memory, policy, and artifacts in one small host layer. |
 
 ## Dependency Direction
 
@@ -36,6 +39,7 @@ demos/final-agent (not a workspace package)
 Rules for future packages:
 
 - New packages live under `packages/<package-name>` and publish as `@worklab-ai/<package-name>`.
+- Add every workspace package to `scripts/package-catalog.mjs` with category, responsibility, and allowed dependency categories.
 - Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
 - Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.
 - Operator surfaces register field groups from other packages; they do not hardcode adapter settings.
@@ -91,3 +95,82 @@ pnpm --filter @worklab-ai/<package> run test
 - Tool policy is explicit and fail-closed.
 - Memory writes are host-owned and optional.
 - Fixtures and fake runtimes are for tests only, not product-runtime substitutes.
+
+## Layered Workflow
+
+```mermaid
+flowchart TB
+  Host["Host composition layer\n`demos/final-agent`"]
+
+  subgraph Surfaces["Operator-surface choices"]
+    Console["`@worklab-ai/operator-console`\nBrowser settings + runs"]
+    Tui["`@worklab-ai/tui`\nTerminal chat + read-only config"]
+  end
+
+  subgraph Communication["Communication adapter choices"]
+    Telegram["`@worklab-ai/telegram-adapter`\nBot API + long polling"]
+    WhatsApp["`@worklab-ai/whatsapp-adapter`\nBaileys socket + group trigger policy"]
+    FutureAdapter["Future Slack/webhook adapter\nsame shared responder seam"]
+  end
+
+  subgraph Core["Core contracts and settings"]
+    Contracts["`@worklab-ai/agent-contracts`\nrequest/response/stream/cancel"]
+    Settings["`@worklab-ai/settings`\nfield groups + redaction"]
+    Config["`@worklab-ai/config`\ncore runtime/context settings"]
+    Policy["`@worklab-ai/tool-policy`\nfail-closed tools + MCP"]
+  end
+
+  subgraph PromptContext["Context layer"]
+    Context["`@worklab-ai/context`\nprompt assembly"]
+    Skills["`@worklab-ai/skills`\nselected skill blocks"]
+    Memory["`@worklab-ai/memory-md`\noptional memory file"]
+  end
+
+  subgraph Execution["Execution layer"]
+    Harness["`@worklab-ai/agent-harness`\nrequest to runtime run"]
+    Observability["`@worklab-ai/observability`\nJSONL events + summaries"]
+  end
+
+  subgraph Runtime["Runtime backend choices"]
+    RuntimeAdapter["`@worklab-ai/runtime-adapter`\nmodel refs + backend support"]
+    AgentRuntime["`@worklab-ai/agent-runtime`\nprovider/CLI implementation"]
+    ClaudeSdk["Claude SDK\n`claude:<model>` + `sdk`"]
+    ClaudeCli["Claude Code CLI\n`claude:<model>` + `cli`"]
+    CodexCli["Codex app CLI\n`codex:<model>` + `cli`"]
+    PiSdk["Pi SDK providers\n`pi:<provider>:<model>` + `sdk`"]
+  end
+
+  Host --> Console
+  Host -. optional .-> Tui
+  Host --> Telegram
+  Host -. optional package .-> WhatsApp
+  Host -. future package .-> FutureAdapter
+  Host --> Config
+  Host --> Harness
+
+  Console --> Settings
+  Console --> Observability
+  Tui --> Contracts
+  Tui --> Config
+  Telegram --> Contracts
+  Telegram --> Settings
+  WhatsApp --> Contracts
+  WhatsApp --> Settings
+  FutureAdapter --> Contracts
+
+  Config --> Settings
+  Config --> RuntimeAdapter
+  Harness --> Contracts
+  Harness --> Context
+  Harness --> Skills
+  Harness --> Memory
+  Harness --> Policy
+  Harness --> RuntimeAdapter
+  Harness --> Observability
+
+  RuntimeAdapter --> AgentRuntime
+  AgentRuntime --> ClaudeSdk
+  AgentRuntime --> ClaudeCli
+  AgentRuntime --> CodexCli
+  AgentRuntime --> PiSdk
+```
