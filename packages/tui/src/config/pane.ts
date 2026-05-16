@@ -32,8 +32,6 @@ interface FieldSpec {
 }
 
 const ENV_KEYS = {
-  telegramToken: "MONO_AGENT_TELEGRAM_BOT_TOKEN",
-  telegramAllowed: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS",
   runtimeModel: "MONO_AGENT_MODEL",
   runtimeExecutionMode: "MONO_AGENT_EXECUTION_MODE",
   runtimeEffort: "MONO_AGENT_EFFORT",
@@ -105,7 +103,7 @@ function toField(
 /**
  * Build a compact, redacted view of the resolved configuration suitable for
  * the TUI's Config pane. The pane is read-only — any edits should go through
- * `@worklab-ai/config-ui` so the bridge enforces the same registered-field
+ * `@worklab-ai/operator-console` so the console enforces the same registered-field
  * patch validator and atomic writes.
  */
 export function buildTuiConfigSummary(
@@ -259,31 +257,6 @@ export function buildTuiConfigSummary(
         envKey: ENV_KEYS.artifactsDir,
         jsonPresent: json.artifacts?.dir !== undefined,
         value: redacted.artifacts.dir,
-      }),
-    ],
-  });
-
-  sections.push({
-    heading: "telegram",
-    fields: [
-      {
-        label: "botToken",
-        value: redacted.telegram.botToken.present
-          ? "redacted"
-          : "not set",
-        source: resolveSource(env, {
-          label: "botToken",
-          envKey: ENV_KEYS.telegramToken,
-          jsonPresent: json.telegram?.botToken !== undefined,
-          value: "",
-        }),
-        ...(redacted.telegram.botToken.present ? { redacted: true } : {}),
-      },
-      toField(env, {
-        label: "allowedChatIds",
-        envKey: ENV_KEYS.telegramAllowed,
-        jsonPresent: json.telegram?.allowedChatIds !== undefined,
-        value: String(redacted.telegram.allowedChatIds.count),
       }),
     ],
   });

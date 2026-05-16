@@ -26,7 +26,6 @@ describe("layerJsonOntoEnv", () => {
     const layered = layerJsonOntoEnv(
       {
         runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 12 },
-        telegram: { botToken: "abc", allowedChatIds: ["111", "222"] },
         context: { identityPath: "IDENTITY.md", selectedSkills: ["a", "b"] },
         tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
       },
@@ -34,8 +33,6 @@ describe("layerJsonOntoEnv", () => {
     );
     expect(layered.MONO_AGENT_MODEL).toBe("pi:openai-codex:gpt-5.5");
     expect(layered.MONO_AGENT_MAX_TURNS).toBe("12");
-    expect(layered.MONO_AGENT_TELEGRAM_BOT_TOKEN).toBe("abc");
-    expect(layered.MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS).toBe("111,222");
     expect(layered.MONO_AGENT_IDENTITY_PATH).toBe("IDENTITY.md");
     expect(layered.MONO_AGENT_SELECTED_SKILLS).toBe("a,b");
     expect(layered.MONO_AGENT_ALLOWED_TOOLS).toBe("Read");
@@ -66,7 +63,6 @@ describe("loadMonoAgentConfigWithSources", () => {
       path,
       JSON.stringify({
         runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 12 },
-        telegram: { botToken: "json-token", allowedChatIds: ["111"] },
         context: { identityPath: "IDENTITY.md" },
       }),
       "utf8",
@@ -76,7 +72,6 @@ describe("loadMonoAgentConfigWithSources", () => {
       cwd: dir,
       jsonPath: path,
     });
-    expect(config.telegram.botToken).toBe("json-token");
     expect(config.runtime.maxTurns).toBe(12);
     expect(config.runtime.model).toMatchObject({ sdk: "pi" });
   });
@@ -87,39 +82,33 @@ describe("loadMonoAgentConfigWithSources", () => {
       path,
       JSON.stringify({
         runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 4 },
-        telegram: { botToken: "json-token", allowedChatIds: ["111"] },
         context: { identityPath: "IDENTITY.md" },
       }),
       "utf8",
     );
     const config = await loadMonoAgentConfigWithSources({
-      env: { MONO_AGENT_MAX_TURNS: "20", MONO_AGENT_TELEGRAM_BOT_TOKEN: "env-token" },
+      env: { MONO_AGENT_MAX_TURNS: "20" },
       cwd: dir,
       jsonPath: path,
     });
     expect(config.runtime.maxTurns).toBe(20);
-    expect(config.telegram.botToken).toBe("env-token");
   });
 
   it("works without a jsonPath (pure env loader behavior)", async () => {
     const config = await loadMonoAgentConfigWithSources({
       env: {
         MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
-        MONO_AGENT_TELEGRAM_BOT_TOKEN: "abc",
-        MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS: "111",
         MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
       },
       cwd: dir,
     });
-    expect(config.telegram.botToken).toBe("abc");
+    expect(config.runtime.model).toMatchObject({ sdk: "pi" });
   });
 
   it("treats a missing JSON file as an empty layer", async () => {
     const config = await loadMonoAgentConfigWithSources({
       env: {
         MONO_AGENT_MODEL: "pi:openai-codex:gpt-5.5",
-        MONO_AGENT_TELEGRAM_BOT_TOKEN: "abc",
-        MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS: "111",
         MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
       },
       cwd: dir,

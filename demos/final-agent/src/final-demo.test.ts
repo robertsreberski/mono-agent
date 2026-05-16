@@ -9,7 +9,7 @@ import type {
   TelegramBotApi,
   TelegramLongPollerOptions,
   TelegramLongPollerStartOptions,
-} from "@worklab-ai/telegram-bridge";
+} from "@worklab-ai/telegram-adapter";
 
 import {
   resolveFinalDemoArtifactDir,
@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 describe("final agent demo", () => {
-  it("starts a loopback config UI and waits honestly when config is missing", async () => {
+  it("starts a loopback operator console and waits honestly when config is missing", async () => {
     const dir = await tempDir();
     let pollerConstructed = false;
     const demo = await startFinalAgentDemo({
@@ -44,22 +44,22 @@ describe("final agent demo", () => {
     });
 
     try {
-      expect(demo.configUi.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
-      expect(demo.configUi.appUrl).toBe(`${demo.configUi.url}/?t=${demo.configUi.token}`);
-      expect(demo.configUi.token).toMatch(/^[0-9a-f]{64}$/u);
-      expect(demo.configUi.configPath).toBe(resolve(dir, "mono-agent.config.json"));
+      expect(demo.operatorConsole.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+      expect(demo.operatorConsole.appUrl).toBe(`${demo.operatorConsole.url}/?t=${demo.operatorConsole.token}`);
+      expect(demo.operatorConsole.token).toMatch(/^[0-9a-f]{64}$/u);
+      expect(demo.operatorConsole.configPath).toBe(resolve(dir, "mono-agent.config.json"));
       const missingConfigStatus = demo.telegramStatus;
       if (missingConfigStatus.kind !== "waiting_for_config") {
         throw new Error(`Expected waiting_for_config, got ${missingConfigStatus.kind}.`);
       }
-      expect(missingConfigStatus.reason).toMatch(/MONO_AGENT_TELEGRAM_BOT_TOKEN/u);
+      expect(missingConfigStatus.reason).toMatch(/MONO_AGENT_MODEL/u);
       expect(pollerConstructed).toBe(false);
 
-      const health = await fetch(`${demo.configUi.url}/api/health`);
+      const health = await fetch(`${demo.operatorConsole.url}/api/health`);
       expect(health.status).toBe(200);
       expect(await health.json()).toEqual({ ok: true });
 
-      const observability = await getObservabilityRuns(demo.configUi.url, demo.configUi.token);
+      const observability = await getObservabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
       expect(observability.enabled).toBe(true);
       expect(observability.artifactDir).toBe(resolve(dir, ".mono-agent", "artifacts"));
       expect(observability.runs).toEqual([]);
@@ -67,12 +67,12 @@ describe("final agent demo", () => {
       await demo.stop();
     }
 
-    await expect(fetch(`${demo.configUi.url}/api/health`)).rejects.toThrow();
+    await expect(fetch(`${demo.operatorConsole.url}/api/health`)).rejects.toThrow();
   });
 
-  it("starts Telegram exactly once after a valid config UI write", async () => {
+  it("starts Telegram exactly once after a valid operator console write", async () => {
     const dir = await tempDir();
-    await writeFile(join(dir, "IDENTITY.md"), "You are Mono from config UI.", "utf8");
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono from operator console.", "utf8");
 
     const fakeRuntime = createFakeRuntime();
     const fakeApi = createFakeTelegramApi();
@@ -94,8 +94,8 @@ describe("final agent demo", () => {
 
     try {
       expect(demo.telegramStatus.kind).toBe("waiting_for_config");
-      const initial = await getConfig(demo.configUi.url, demo.configUi.token);
-      const put = await putConfig(demo.configUi.url, demo.configUi.token, initial.version, validConfigPatch());
+      const initial = await getConfig(demo.operatorConsole.url, demo.operatorConsole.token);
+      const put = await putConfig(demo.operatorConsole.url, demo.operatorConsole.token, initial.version, validConfigPatch());
       expect(put.status).toBe(200);
 
       await waitFor(() => started.length === 1);
@@ -105,7 +105,7 @@ describe("final agent demo", () => {
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("secret-token");
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("987654321");
 
-      const second = await putConfig(demo.configUi.url, demo.configUi.token, put.body.version, {
+      const second = await putConfig(demo.operatorConsole.url, demo.operatorConsole.token, put.body.version, {
         runtime: { maxTurns: 9 },
       });
       expect(second.status).toBe(200);
@@ -133,7 +133,7 @@ describe("final agent demo", () => {
       .resolves.toBe(resolve(dir, "from-config"));
   });
 
-  it("composes config UI, Telegram, harness, runtime, memory, tools, and artifacts", async () => {
+  it("composes operator console, Telegram, harness, runtime, memory, tools, and artifacts", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono and you love small LEGO blocks.", "utf8");
     await writeFile(join(dir, "MEMORY.md"), "Remember: prefer small package boundaries.", "utf8");
@@ -156,7 +156,7 @@ describe("final agent demo", () => {
     try {
       expect(demo.telegramStatus.kind).toBe("running");
       expect(pollerOptions).toBeDefined();
-      const result = await pollerOptions?.bridge.handleUpdate({
+      const result = await pollerOptions?.adapter.handleUpdate({
         update_id: 1,
         message: {
           message_id: 10,
@@ -187,11 +187,11 @@ describe("final agent demo", () => {
       expect(summaryFile).toBeDefined();
       expect(await readFile(join(dir, "artifacts", summaryFile as string), "utf8")).toContain("capabilitiesUsed");
 
-      const observedRuns = await getObservabilityRuns(demo.configUi.url, demo.configUi.token);
+      const observedRuns = await getObservabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
       expect(observedRuns.enabled).toBe(true);
       expect(observedRuns.artifactDir).toBe(resolve(dir, "artifacts"));
       expect(observedRuns.runs[0]).toMatchObject({ conversationId: "telegram:987654321", status: "succeeded" });
-      const observedDetail = await getObservedRun(demo.configUi.url, demo.configUi.token, observedRuns.runs[0]?.runId ?? "");
+      const observedDetail = await getObservedRun(demo.operatorConsole.url, demo.operatorConsole.token, observedRuns.runs[0]?.runId ?? "");
       expect(observedDetail.run?.events[0]).toMatchObject({ category: "runtime", type: "fake-event" });
       expect(JSON.stringify(observedDetail)).not.toContain("should-redact");
       expect(fakeApi.sentTexts.join("\n")).toContain("runtime ok");
@@ -309,7 +309,7 @@ function createFakeRuntime(): {
           model: options.model.model,
           sdk: options.model.sdk,
           cost: { totalUsd: 0 },
-          capabilitiesUsed: ["telegram", "config-ui"],
+          capabilitiesUsed: ["telegram", "operator-console"],
         };
       },
     },

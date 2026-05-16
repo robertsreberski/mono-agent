@@ -29,7 +29,7 @@ async function writeJson(path: string, body: unknown): Promise<void> {
 }
 
 describe("ConfigPane", () => {
-  it("renders a redacted summary that never leaks the raw bot token", async () => {
+  it("renders core config and never leaks adapter-owned raw secrets", async () => {
     const configPath = join(tmpRoot, "mono-agent.config.json");
     await writeJson(configPath, {
       telegram: {
@@ -65,11 +65,8 @@ describe("ConfigPane", () => {
     const frame = lastFrame() ?? "";
     expect(frame).toMatch(/codex:gpt-5\.5/);
     expect(frame).toMatch(/cli/);
-    expect(frame).toMatch(/redacted/);
-    expect(frame).toMatch(/allowedChatIds/);
-    // Two registered chat ids — surfaced as a count, never as raw values.
-    expect(frame).toContain("2");
-    // The raw token must never appear in the rendered frame.
+    expect(frame).not.toMatch(/allowedChatIds/);
+    expect(frame).not.toMatch(/botToken/);
     expect(frame).not.toContain(SECRET_TOKEN);
     expect(frame).not.toContain("THIS_IS_THE_RAW_SECRET_TOKEN_NEVER_LEAK");
   });
@@ -99,10 +96,6 @@ describe("buildTuiConfigSummary", () => {
   it("tags fields with the layer that supplied them (env > json > default)", () => {
     const sections = buildTuiConfigSummary({
       redacted: {
-        telegram: {
-          botToken: { present: true, redacted: true },
-          allowedChatIds: { count: 1 },
-        },
         runtime: {
           model: { sdk: "codex", model: "gpt-5.5", reference: "codex:gpt-5.5" },
           executionMode: "cli",

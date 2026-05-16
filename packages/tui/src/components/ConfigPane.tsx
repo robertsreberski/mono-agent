@@ -135,7 +135,7 @@ export function ConfigPane({
       <Box>
         <Text color="gray">
           {configPath} · loaded {loadedLabel} · press r to reload · edits via
-          mono-agent-config-ui
+          mono-agent-operator-console
         </Text>
       </Box>
       {state.sections?.map((section) => (

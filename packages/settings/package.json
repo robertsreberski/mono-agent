@@ -1,0 +1,29 @@
+{
+  "name": "@worklab-ai/settings",
+  "version": "0.1.0",
+  "description": "Generic field schema, patch validation, redaction, and JSON settings storage for Mono Agent hosts.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./field-groups": {
+      "types": "./dist/field-groups.d.ts",
+      "import": "./dist/field-groups.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  }
+}

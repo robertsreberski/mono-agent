@@ -17,9 +17,6 @@ importers:
       '@worklab-ai/config':
         specifier: workspace:^0.1.0
         version: link:packages/config
-      '@worklab-ai/config-ui':
-        specifier: workspace:^0.1.0
-        version: link:packages/config-ui
       '@worklab-ai/context':
         specifier: workspace:^0.1.0
         version: link:packages/context
@@ -29,18 +26,27 @@ importers:
       '@worklab-ai/observability':
         specifier: workspace:^0.1.0
         version: link:packages/observability
+      '@worklab-ai/operator-console':
+        specifier: workspace:^0.1.0
+        version: link:packages/operator-console
       '@worklab-ai/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/runtime-adapter
-      '@worklab-ai/telegram-bridge':
+      '@worklab-ai/settings':
         specifier: workspace:^0.1.0
-        version: link:packages/telegram-bridge
+        version: link:packages/settings
+      '@worklab-ai/telegram-adapter':
+        specifier: workspace:^0.1.0
+        version: link:packages/telegram-adapter
       '@worklab-ai/tool-policy':
         specifier: workspace:^0.1.0
         version: link:packages/tool-policy
       '@worklab-ai/tui':
         specifier: workspace:^0.1.0
         version: link:packages/tui
+      '@worklab-ai/whatsapp-adapter':
+        specifier: workspace:^0.1.0
+        version: link:packages/whatsapp-adapter
       typescript:
         specifier: ^5.8.3
         version: 5.9.3
@@ -74,15 +80,24 @@ importers:
       '@worklab-ai/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:../runtime-adapter
-
-  packages/config-ui:
-    dependencies:
-      '@worklab-ai/config':
+      '@worklab-ai/settings':
         specifier: workspace:^0.1.0
-        version: link:../config
+        version: link:../settings
+
+  packages/context: {}
+
+  packages/memory-md: {}
+
+  packages/observability: {}
+
+  packages/operator-console:
+    dependencies:
       '@worklab-ai/observability':
         specifier: workspace:^0.1.0
         version: link:../observability
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.3.0
@@ -136,17 +151,13 @@ importers:
         specifier: ^8.0.0
         version: 8.0.13(@types/node@22.19.19)(esbuild@0.27.7)(jiti@2.7.0)
 
-  packages/context: {}
-
-  packages/memory-md: {}
-
-  packages/observability: {}
-
   packages/runtime-adapter:
     dependencies:
       '@worklab-ai/agent-runtime':
         specifier: ^0.1.7
         version: 0.1.7(ws@8.20.1)
+
+  packages/settings: {}
 
   packages/skills:
     dependencies:
@@ -154,7 +165,11 @@ importers:
         specifier: workspace:^0.1.0
         version: link:../context
 
-  packages/telegram-bridge: {}
+  packages/telegram-adapter:
+    dependencies:
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
 
   packages/tool-policy: {}
 
@@ -183,7 +198,7 @@ importers:
         specifier: ^4.0.0
         version: 4.0.0(@types/react@19.2.14)
 
-  packages/whatsapp-bridge:
+  packages/whatsapp-adapter:
     dependencies:
       '@whiskeysockets/baileys':
         specifier: ^7.0.0-rc11
