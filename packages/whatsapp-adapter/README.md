@@ -19,6 +19,8 @@ import {
   WhatsAppAdapter,
   WhatsAppEventRunner,
   createBaileysWhatsAppSocket,
+  loadWhatsAppAdapterConfig,
+  whatsappFieldGroup,
 } from "@worklab-ai/whatsapp-adapter";
 ```
 
@@ -32,7 +34,8 @@ Hosts provide a Baileys socket, adapter options, and a structural `AgentResponde
 - `normalizeWhatsAppMessage`, `isGroupJid`
 - `WhatsAppMessageStream`, `splitWhatsAppText`
 - `createRuntimeResponder`
-- WhatsApp socket, message, trigger, runtime-responder, and event-runner types
+- `loadWhatsAppAdapterConfig`, `redactWhatsAppAdapterConfig`, `whatsappFieldGroup`
+- WhatsApp socket, message, trigger, config, runtime-responder, and event-runner types
 
 ## Dependency Boundary
 
