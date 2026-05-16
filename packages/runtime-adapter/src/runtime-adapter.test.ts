@@ -6,6 +6,7 @@ import {
   describeMonoRuntimeSupport,
   listMonoRuntimeBackends,
   parseMonoRuntimeModelReference,
+  runtimeOptionsForLocalProvider,
   runtimeBackendForModel,
   RuntimeAdapterError,
 } from "./index.js";
@@ -84,5 +85,142 @@ describe("runtime adapter model references", () => {
     });
     expect(() => runtimeBackendForModel(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"), "cli"))
       .toThrow(RuntimeAdapterError);
+  });
+});
+
+describe("runtime adapter local providers", () => {
+  it("maps Ollama provider config to agent-runtime custom Pi options", () => {
+    const options = runtimeOptionsForLocalProvider(
+      parseMonoRuntimeModelReference("pi:ollama:qwen3:8b"),
+      [
+        {
+          id: "ollama",
+          type: "ollama",
+          baseUrl: "http://localhost:11434",
+          enabled: true,
+          models: [
+            {
+              name: "qwen3:8b",
+              capabilities: { context_window: 32768 },
+            },
+          ],
+        },
+      ],
+    );
+
+    expect(options.customProvider).toMatchObject({
+      id: "ollama",
+      provider_type: "ollama",
+      base_url: "http://localhost:11434",
+      enabled: true,
+    });
+    expect(options.customModel).toMatchObject({
+      model_name: "qwen3:8b",
+      display_name: "qwen3:8b",
+      enabled: true,
+      pricing: {},
+    });
+    expect(options.modelCapabilities).toMatchObject({
+      context_window: 32768,
+      json_mode: true,
+      reasoning: true,
+      reasoning_mode: "toggle",
+    });
+    expect(options.isPrivateProvider).toBe(true);
+  });
+
+  it("preserves disabled local providers so agent-runtime can fail honestly", () => {
+    const options = runtimeOptionsForLocalProvider(
+      parseMonoRuntimeModelReference("pi:ollama:llama3"),
+      [
+        {
+          id: "ollama",
+          type: "ollama",
+          baseUrl: "http://localhost:11434",
+          enabled: false,
+        },
+      ],
+    );
+
+    expect(options.customProvider).toMatchObject({
+      id: "ollama",
+      provider_type: "ollama",
+      enabled: false,
+    });
+  });
+
+  it("does nothing for built-in Pi providers and non-Pi model references", () => {
+    const localProviders = [
+      {
+        id: "ollama",
+        type: "ollama" as const,
+        baseUrl: "http://localhost:11434",
+        enabled: true,
+      },
+    ];
+
+    expect(runtimeOptionsForLocalProvider(
+      parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
+      localProviders,
+    )).toEqual({});
+    expect(runtimeOptionsForLocalProvider(
+      parseMonoRuntimeModelReference("codex:gpt-5.5"),
+      localProviders,
+    )).toEqual({});
+  });
+
+  it("rejects untrusted public HTTP local-provider URLs", () => {
+    expect(() => runtimeOptionsForLocalProvider(
+      parseMonoRuntimeModelReference("pi:gateway:gpt-oss"),
+      [
+        {
+          id: "gateway",
+          type: "openai_compat",
+          baseUrl: "http://api.example.com",
+          enabled: true,
+        },
+      ],
+    )).toThrow(RuntimeAdapterError);
+  });
+
+  it("maps LM Studio and trusted OpenAI-compatible providers through the same custom-provider contract", () => {
+    const lmStudio = runtimeOptionsForLocalProvider(
+      parseMonoRuntimeModelReference("pi:lmstudio:local-model"),
+      [
+        {
+          id: "lmstudio",
+          type: "lmstudio",
+          baseUrl: "http://localhost:1234",
+          enabled: true,
+        },
+      ],
+    );
+    expect(lmStudio.customProvider).toMatchObject({
+      id: "lmstudio",
+      provider_type: "lmstudio",
+      base_url: "http://localhost:1234",
+    });
+    expect(lmStudio.isPrivateProvider).toBe(true);
+
+    const gateway = runtimeOptionsForLocalProvider(
+      parseMonoRuntimeModelReference("pi:local-gateway:gpt-oss"),
+      [
+        {
+          id: "local-gateway",
+          type: "openai_compat",
+          baseUrl: "https://api.example.com/openai",
+          trustPublicUrl: true,
+          enabled: true,
+          apiKey: "secret-from-env",
+        },
+      ],
+    );
+    expect(gateway.customProvider).toMatchObject({
+      id: "local-gateway",
+      provider_type: "openai_compat",
+      base_url: "https://api.example.com/openai",
+      api_key: "secret-from-env",
+    });
+    expect(gateway.isPrivateProvider).toBe(false);
   });
 });
