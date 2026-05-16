@@ -95,7 +95,24 @@ function mergeTopLevel(existing: SettingsJson, patch: SettingsJson): Record<stri
     }
     const previous = merged[key];
     if (isPlainObject(previous) && isPlainObject(value)) {
-      merged[key] = { ...previous, ...value };
+      merged[key] = mergeObject(previous, value);
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
+function mergeObject(existing: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) {
+      delete merged[key];
+      continue;
+    }
+    const previous = merged[key];
+    if (isPlainObject(previous) && isPlainObject(value)) {
+      merged[key] = mergeObject(previous, value);
       continue;
     }
     merged[key] = value;
