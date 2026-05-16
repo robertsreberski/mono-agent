@@ -1,15 +1,41 @@
 # @worklab-ai/agent-harness
 
-Composable request-to-runtime harness for Mono Agent hosts.
+## Responsibility
 
-The harness owns the framework spine that should not live in communication adapters or demos:
+Composition spine for a Mono Agent request. It turns a communication request into context, calls a runtime, records structured run events, updates optional memory, and returns explicit success or failure responses.
 
-- loads identity/SOUL files through `@worklab-ai/context`;
-- optionally loads Markdown memory and recent conversation history;
-- activates configured skills with full `SKILL.md` bodies;
-- applies fail-closed tool policy to runtime run options;
-- passes parsed runtime model references to a `@worklab-ai/runtime-adapter` compatible runtime;
-- records runtime events through an observability recorder; and
-- returns explicit failure objects instead of converting runtime/provider failures into success text.
+## Install / Usage
 
-`createAgentResponder()` adapts the harness to the structural responder shape used by `@worklab-ai/telegram-bridge` without making Telegram a core dependency.
+```bash
+pnpm --filter @worklab-ai/agent-harness run build
+```
+
+```ts
+import { createAgentHarness, createAgentResponder } from "@worklab-ai/agent-harness";
+```
+
+Hosts wire identity/context paths, runtime, model, execution mode, tool policy, history, memory, skills, and recorder factory explicitly.
+
+## Public API
+
+- `createAgentHarness`, `MonoAgentHarness`, `AgentHarnessError`
+- `createAgentResponder`, `AgentHarnessFailureError`
+- `createInMemoryHistoryStore`, `InMemoryConversationHistoryStore`
+- `NoopRunRecorder`
+- Harness, responder, runtime, memory, and history types from `types.ts`
+
+## Dependency Boundary
+
+The harness may depend on core building blocks: context, memory-md, observability, runtime-adapter, skills, and tool-policy. It must not depend on Telegram, WhatsApp, the operator console, or host/demo code.
+
+## What This Package Does Not Own
+
+It does not poll chats, serve UI, parse host settings files, own provider credentials, or choose communication-specific message formatting.
+
+## Verification
+
+```bash
+pnpm --filter @worklab-ai/agent-harness run build
+pnpm --filter @worklab-ai/agent-harness run typecheck
+pnpm --filter @worklab-ai/agent-harness run test
+```

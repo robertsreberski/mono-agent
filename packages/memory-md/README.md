@@ -1,5 +1,38 @@
 # @worklab-ai/memory-md
 
-Optional Markdown memory store for Mono Agent hosts.
+## Responsibility
 
-The package can read a single `memory.md` file or per-conversation Markdown files with capped reads. It only writes through the explicit `appendHostSummary()` host API; it does not let model output silently rewrite durable memory.
+Optional Markdown memory store for Mono Agent hosts. It reads capped memory blocks and appends host-owned summaries to either one shared file or safe per-conversation files.
+
+## Install / Usage
+
+```bash
+pnpm --filter @worklab-ai/memory-md run build
+```
+
+```ts
+import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
+```
+
+## Public API
+
+- `createMarkdownMemoryStore`, `MarkdownMemoryStore`
+- `safeConversationFileName`
+- `MarkdownMemoryError`
+- `MemoryStore`, `MemoryBlock`, `MemoryWriteResult`, `MarkdownMemoryStoreOptions`
+
+## Dependency Boundary
+
+This package depends only on local filesystem behavior. It is optional and host-wired; the harness can run without memory.
+
+## What This Package Does Not Own
+
+It does not summarize conversations, decide what should be remembered, call a model, expose a database, or rewrite memory autonomously.
+
+## Verification
+
+```bash
+pnpm --filter @worklab-ai/memory-md run build
+pnpm --filter @worklab-ai/memory-md run typecheck
+pnpm --filter @worklab-ai/memory-md run test
+```
