@@ -11,3 +11,4 @@ pnpm-debug.log*
 yarn-error.log*
 mono-agent.config.json
 packages/*/dist/
+demos/*/dist/
