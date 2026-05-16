@@ -199,6 +199,138 @@ describe("final agent demo", () => {
       await demo.stop();
     }
   });
+
+  it("passes configured local Pi provider context into runtime calls", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono with local runtime support.", "utf8");
+    const patch = validConfigPatch();
+    await writeFile(
+      join(dir, "mono-agent.config.json"),
+      `${JSON.stringify({
+        ...patch,
+        runtime: {
+          ...patch.runtime,
+          model: "pi:ollama:qwen3:8b",
+        },
+        providers: {
+          local: [
+            {
+              id: "ollama",
+              type: "ollama",
+              baseUrl: "http://localhost:11434",
+              enabled: true,
+              models: [
+                {
+                  name: "qwen3:8b",
+                  capabilities: { context_window: 32768 },
+                },
+              ],
+            },
+          ],
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const fakeRuntime = createFakeRuntime();
+    let pollerOptions: TelegramLongPollerOptions | undefined;
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: {},
+      runtime: fakeRuntime.runtime,
+      telegramApi: createFakeTelegramApi().api,
+      pollerFactory: (options) => {
+        pollerOptions = options;
+        return createAbortableFakePoller().poller;
+      },
+    });
+
+    try {
+      expect(demo.telegramStatus.kind).toBe("running");
+      const result = await pollerOptions?.adapter.handleUpdate({
+        update_id: 2,
+        message: {
+          message_id: 20,
+          chat: { id: 987654321, type: "private" },
+          from: { id: 77, username: "tester" },
+          text: "Use local model",
+        },
+      });
+
+      expect(result).toMatchObject({ kind: "handled", action: "responded" });
+      expect(fakeRuntime.calls).toHaveLength(1);
+      const call = fakeRuntime.calls[0];
+      expect(call?.options.model).toMatchObject({ sdk: "pi", provider: "ollama", model: "qwen3:8b" });
+      expect(call?.options.customProvider).toMatchObject({
+        id: "ollama",
+        provider_type: "ollama",
+        base_url: "http://localhost:11434",
+        enabled: true,
+      });
+      expect(call?.options.customModel).toMatchObject({
+        model_name: "qwen3:8b",
+        display_name: "qwen3:8b",
+        enabled: true,
+      });
+      expect(call?.options.modelCapabilities).toMatchObject({
+        context_window: 32768,
+        reasoning: true,
+      });
+      expect(call?.options.isPrivateProvider).toBe(true);
+    } finally {
+      await demo.stop();
+    }
+  });
+
+  it("waits for config instead of starting Telegram when a local provider URL is unsafe", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono with local runtime support.", "utf8");
+    const patch = validConfigPatch();
+    await writeFile(
+      join(dir, "mono-agent.config.json"),
+      `${JSON.stringify({
+        ...patch,
+        runtime: {
+          ...patch.runtime,
+          model: "pi:ollama:qwen3:8b",
+        },
+        providers: {
+          local: [
+            {
+              id: "ollama",
+              type: "ollama",
+              baseUrl: "http://api.example.com",
+              enabled: true,
+            },
+          ],
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    let pollerConstructed = false;
+
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: {},
+      runtime: createFakeRuntime().runtime,
+      telegramApi: createFakeTelegramApi().api,
+      pollerFactory: () => {
+        pollerConstructed = true;
+        return createAbortableFakePoller().poller;
+      },
+    });
+
+    try {
+      const status = demo.telegramStatus;
+      if (status.kind !== "waiting_for_config") {
+        throw new Error(`Expected waiting_for_config, got ${status.kind}.`);
+      }
+      expect(status.reason).toMatch(/public host/u);
+      expect(pollerConstructed).toBe(false);
+    } finally {
+      await demo.stop();
+    }
+  });
 });
 
 function validConfigPatch() {

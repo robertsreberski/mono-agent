@@ -18,6 +18,7 @@ import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
 import { createJsonlRunRecorder } from "@worklab-ai/observability";
 import {
   createMonoRuntime,
+  runtimeOptionsForLocalProvider,
 } from "@worklab-ai/runtime-adapter";
 import type { MonoRuntimeLike } from "@worklab-ai/runtime-adapter";
 import {
@@ -316,6 +317,7 @@ function createConfiguredResponder(config: MonoAgentConfig, runtime: MonoRuntime
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     maxTurns: config.runtime.maxTurns,
+    runtimeOptions: runtimeOptionsForLocalProvider(config.runtime.model, config.providers?.local),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     historyStore,
