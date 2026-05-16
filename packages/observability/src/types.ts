@@ -17,13 +17,16 @@ export interface RuntimeResultLike {
   readonly [key: string]: unknown;
 }
 
-export type RunSummaryStatus = "succeeded" | "failed" | "cancelled";
+export type RunSummaryStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export interface RunSummary {
   readonly runId: string;
   readonly conversationId: string;
   readonly status: RunSummaryStatus;
   readonly failureKind?: string;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly updatedAt?: string;
   readonly durationMs: number;
   readonly usage?: unknown;
   readonly cost?: unknown;
@@ -36,6 +39,7 @@ export interface RunSummary {
 }
 
 export interface RunRecorder {
+  start?(): Promise<RunSummary>;
   onEvent(event: RuntimeEventLike): void;
   finish(result: RuntimeResultLike): Promise<RunSummary>;
   fail(error: unknown): Promise<RunSummary>;
@@ -56,6 +60,8 @@ export interface RecordedRunListItem {
   readonly conversationId: string;
   readonly status: RunSummaryStatus;
   readonly failureKind?: string;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
   readonly durationMs: number;
   readonly eventCount: number;
   readonly updatedAt: string;
@@ -93,4 +99,88 @@ export interface JsonlRunReaderOptions {
   readonly maxRuns?: number;
   readonly maxEventsPerRun?: number;
   readonly maxStringBytes?: number;
+}
+
+export type TraceSourceStatus = "running" | "stopped" | "failed";
+export type TraceSourceHealth = "running" | "stale" | "stopped" | "failed";
+
+export interface TraceSourceManifest {
+  readonly schema: "worklab.trace-source.v1";
+  readonly sourceId: string;
+  readonly label: string;
+  readonly artifactDir: string;
+  readonly pid?: number;
+  readonly status: TraceSourceStatus;
+  readonly startedAt: string;
+  readonly updatedAt: string;
+  readonly transports?: readonly string[];
+  readonly configPath?: string;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface TraceSourceListItem extends TraceSourceManifest {
+  readonly health: TraceSourceHealth;
+  readonly warnings: readonly string[];
+}
+
+export interface TraceRunListItem extends RecordedRunListItem {
+  readonly source: TraceSourceListItem;
+}
+
+export interface TraceRunDetail {
+  readonly source: TraceSourceListItem;
+  readonly run: RecordedRunDetail;
+}
+
+export interface TraceSourceRegistryOptions {
+  readonly registryDir: string;
+  readonly staleAfterMs?: number;
+  readonly clock?: () => number;
+}
+
+export interface RegisterTraceSourceOptions extends TraceSourceRegistryOptions {
+  readonly sourceId?: string;
+  readonly label: string;
+  readonly artifactDir: string;
+  readonly pid?: number;
+  readonly status?: TraceSourceStatus;
+  readonly startedAt?: string;
+  readonly heartbeatMs?: number;
+  readonly transports?: readonly string[];
+  readonly configPath?: string;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface UpdateTraceSourceOptions {
+  readonly status?: TraceSourceStatus;
+  readonly artifactDir?: string;
+  readonly transports?: readonly string[];
+  readonly configPath?: string;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface TraceSourceHandle {
+  readonly manifest: TraceSourceManifest;
+  update(patch: UpdateTraceSourceOptions): Promise<TraceSourceManifest>;
+  heartbeat(): Promise<TraceSourceManifest>;
+  stop(patch?: Omit<UpdateTraceSourceOptions, "status"> & { readonly status?: "stopped" | "failed" }): Promise<TraceSourceManifest>;
+}
+
+export interface TraceSourceListResult {
+  readonly registryDir: string;
+  readonly sources: readonly TraceSourceListItem[];
+  readonly warnings: readonly string[];
+}
+
+export interface TraceRunListOptions extends TraceSourceRegistryOptions {
+  readonly maxRuns?: number;
+  readonly maxEventsPerRun?: number;
+  readonly maxStringBytes?: number;
+}
+
+export interface TraceRunListResult {
+  readonly registryDir: string;
+  readonly sources: readonly TraceSourceListItem[];
+  readonly runs: readonly TraceRunListItem[];
+  readonly warnings: readonly string[];
 }

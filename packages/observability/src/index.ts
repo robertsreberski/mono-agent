@@ -10,6 +10,13 @@ export {
   ObservabilityReadError,
   readRecordedRun,
 } from "./recorded-runs.js";
+export {
+  listTraceRuns,
+  listTraceSources,
+  readTraceRun,
+  registerTraceSource,
+  TraceSourceRegistryError,
+} from "./trace-sources.js";
 export type {
   JsonlRunReaderOptions,
   JsonlRunRecorderOptions,
@@ -23,4 +30,17 @@ export type {
   RunSummaryStatus,
   RuntimeEventLike,
   RuntimeResultLike,
+  RegisterTraceSourceOptions,
+  TraceRunDetail,
+  TraceRunListItem,
+  TraceRunListOptions,
+  TraceRunListResult,
+  TraceSourceHandle,
+  TraceSourceHealth,
+  TraceSourceListItem,
+  TraceSourceListResult,
+  TraceSourceManifest,
+  TraceSourceRegistryOptions,
+  TraceSourceStatus,
+  UpdateTraceSourceOptions,
 } from "./types.js";

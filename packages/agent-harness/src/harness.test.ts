@@ -29,12 +29,25 @@ afterEach(async () => {
 
 class FakeRecorder implements RunRecorder {
   readonly events: RuntimeEventLike[] = [];
+  startCount = 0;
   summaryStatus?: string;
 
   constructor(private readonly runId: string, private readonly conversationId: string) {}
 
   onEvent(event: RuntimeEventLike): void {
     this.events.push(event);
+  }
+
+  async start(): Promise<RunSummary> {
+    this.startCount += 1;
+    return {
+      runId: this.runId,
+      conversationId: this.conversationId,
+      status: "running",
+      durationMs: 0,
+      eventCount: this.events.length,
+      artifactPaths: [],
+    };
   }
 
   async finish(result: RuntimeResultLike): Promise<RunSummary> {
@@ -140,6 +153,7 @@ describe("AgentHarness", () => {
       cost: { totalUsd: 0.01 },
       capabilitiesUsed: ["tools:read"],
     });
+    expect(recorder.startCount).toBe(1);
     expect(response.metadata.runtime).toMatchObject({ cost: { totalUsd: 0.01 }, capabilitiesUsed: ["tools:read"] });
     expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "memory", "history", "skills", "skill-instructions", "user-message"]);
     expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(dir, "memory.md"), join(skillsRoot, "research", "SKILL.md")]);
