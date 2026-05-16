@@ -47,6 +47,43 @@ describe("JsonlRunRecorder", () => {
     expect(summaryJson).toContain('"status": "succeeded"');
   });
 
+  it("can write a running summary before the final result", async () => {
+    const dir = await tempDir();
+    let now = Date.parse("2026-05-16T08:00:00.000Z");
+    const recorder = createJsonlRunRecorder({
+      runId: "live-run",
+      conversationId: "telegram:live",
+      artifactDir: dir,
+      clock: () => now,
+    });
+
+    const running = await recorder.start();
+
+    expect(running).toMatchObject({
+      runId: "live-run",
+      status: "running",
+      startedAt: "2026-05-16T08:00:00.000Z",
+      updatedAt: "2026-05-16T08:00:00.000Z",
+      durationMs: 0,
+      eventCount: 0,
+    });
+    expect(await readFile(running.artifactPaths[1] ?? "", "utf8")).toContain('"status": "running"');
+
+    recorder.onEvent({ type: "assistant", message: "visible" });
+    now = Date.parse("2026-05-16T08:00:02.500Z");
+    const final = await recorder.finish({});
+
+    expect(final).toMatchObject({
+      status: "succeeded",
+      startedAt: "2026-05-16T08:00:00.000Z",
+      endedAt: "2026-05-16T08:00:02.500Z",
+      updatedAt: "2026-05-16T08:00:02.500Z",
+      durationMs: 2500,
+      eventCount: 1,
+    });
+    expect(await readFile(final.artifactPaths[1] ?? "", "utf8")).toContain('"status": "succeeded"');
+  });
+
   it("marks runtime failures and cancellations honestly", async () => {
     const dir = await tempDir();
     const failed = createJsonlRunRecorder({ runId: "failed", conversationId: "c", artifactDir: dir });

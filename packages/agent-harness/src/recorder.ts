@@ -15,6 +15,10 @@ export class NoopRunRecorder implements RunRecorder {
     this.eventCount += 1;
   }
 
+  async start(): Promise<RunSummary> {
+    return this.summary("running", undefined, {});
+  }
+
   async finish(result: RuntimeResultLike): Promise<RunSummary> {
     return this.summary(result.cancelled === true ? "cancelled" : result.failureKind !== undefined || result.error !== undefined ? "failed" : "succeeded", result.failureKind ?? undefined, result);
   }

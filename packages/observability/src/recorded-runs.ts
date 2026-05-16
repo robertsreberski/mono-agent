@@ -50,7 +50,7 @@ export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<
   const { summaries, warnings } = await loadSummaryFiles(normalized);
   return {
     runs: [...summaries]
-      .sort((a: ParsedSummaryFile, b: ParsedSummaryFile) => b.mtimeMs - a.mtimeMs)
+      .sort((a: ParsedSummaryFile, b: ParsedSummaryFile) => summaryUpdatedAtMs(b) - summaryUpdatedAtMs(a))
       .slice(0, normalized.maxRuns)
       .map((entry) => summaryToListItem(entry.summary, entry.updatedAt, normalized.maxStringBytes)),
     warnings,
@@ -251,6 +251,9 @@ function coerceRunSummary(
   }
 
   const failureKind = stringField(value, "failureKind");
+  const startedAt = stringField(value, "startedAt");
+  const endedAt = stringField(value, "endedAt");
+  const updatedAt = stringField(value, "updatedAt");
   const providerSessionId = providerSessionIdField(value.providerSessionId);
   const artifactPaths = Array.isArray(value.artifactPaths) ? value.artifactPaths.filter((entry): entry is string => typeof entry === "string") : [];
   const summary: RunSummary = {
@@ -258,6 +261,9 @@ function coerceRunSummary(
     conversationId,
     status,
     ...(failureKind === undefined ? {} : { failureKind }),
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(endedAt === undefined ? {} : { endedAt }),
+    ...(updatedAt === undefined ? {} : { updatedAt }),
     durationMs,
     ...(value.usage === undefined ? {} : { usage: redactJsonValue(value.usage, maxStringBytes) }),
     ...(value.cost === undefined ? {} : { cost: redactJsonValue(value.cost, maxStringBytes) }),
@@ -277,9 +283,11 @@ function summaryToListItem(summary: RunSummary, updatedAt: string, maxStringByte
     conversationId: summary.conversationId,
     status: summary.status,
     ...(summary.failureKind === undefined ? {} : { failureKind: summary.failureKind }),
+    ...(summary.startedAt === undefined ? {} : { startedAt: summary.startedAt }),
+    ...(summary.endedAt === undefined ? {} : { endedAt: summary.endedAt }),
     durationMs: summary.durationMs,
     eventCount: summary.eventCount,
-    updatedAt,
+    updatedAt: summary.updatedAt ?? updatedAt,
     ...(summary.usage === undefined ? {} : { usage: redactJsonValue(summary.usage, maxStringBytes) }),
     ...(summary.cost === undefined ? {} : { cost: redactJsonValue(summary.cost, maxStringBytes) }),
     ...(summary.providerSessionId === undefined ? {} : { providerSessionId: summary.providerSessionId }),
@@ -439,7 +447,12 @@ function safeArtifactName(value: string): string {
 }
 
 function runSummaryStatus(value: unknown): RunSummaryStatus | undefined {
-  return value === "succeeded" || value === "failed" || value === "cancelled" ? value : undefined;
+  return value === "running" || value === "succeeded" || value === "failed" || value === "cancelled" ? value : undefined;
+}
+
+function summaryUpdatedAtMs(entry: ParsedSummaryFile): number {
+  const parsed = entry.summary.updatedAt === undefined ? Number.NaN : Date.parse(entry.summary.updatedAt);
+  return Number.isFinite(parsed) ? parsed : entry.mtimeMs;
 }
 
 function providerSessionIdField(value: unknown): string | null | undefined {

@@ -25,6 +25,7 @@ export class JsonlRunRecorder implements RunRecorder {
   private readonly clock: () => number;
   private readonly maxStringBytes: number;
   private readonly startedAt: number;
+  private readonly startedAtIso: string;
   private readonly events: RuntimeEventLike[] = [];
 
   constructor(options: JsonlRunRecorderOptions) {
@@ -40,6 +41,11 @@ export class JsonlRunRecorder implements RunRecorder {
     this.clock = options.clock ?? (() => Date.now());
     this.maxStringBytes = options.maxStringBytes ?? DEFAULT_MAX_STRING_BYTES;
     this.startedAt = this.clock();
+    this.startedAtIso = new Date(this.startedAt).toISOString();
+  }
+
+  async start(): Promise<RunSummary> {
+    return await this.writeArtifacts(this.buildSummary("running", undefined, {}));
   }
 
   onEvent(event: RuntimeEventLike): void {
@@ -63,12 +69,17 @@ export class JsonlRunRecorder implements RunRecorder {
   }
 
   private buildSummary(status: RunSummary["status"], failureKind: string | undefined, result: RuntimeResultLike): RunSummary {
+    const now = this.clock();
+    const nowIso = new Date(now).toISOString();
     const summary: RunSummary = {
       runId: this.runId,
       conversationId: this.conversationId,
       status,
       ...(failureKind === undefined ? {} : { failureKind }),
-      durationMs: Math.max(0, this.clock() - this.startedAt),
+      startedAt: this.startedAtIso,
+      ...(status === "running" ? {} : { endedAt: nowIso }),
+      updatedAt: nowIso,
+      durationMs: Math.max(0, now - this.startedAt),
       ...(result.usage === undefined ? {} : { usage: redactJsonValue(result.usage, this.maxStringBytes) }),
       ...(result.cost === undefined ? {} : { cost: redactJsonValue(result.cost, this.maxStringBytes) }),
       ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
