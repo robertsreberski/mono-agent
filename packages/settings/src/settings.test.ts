@@ -132,6 +132,7 @@ describe("settings JSON store", () => {
       `${JSON.stringify({
         runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 8 },
         telegram: { botToken: "abc" },
+        a2a: { agent: { name: "Before", description: "Keep me", version: "0.1.0" } },
         futureAdapter: { enabled: true, mode: "alpha" },
       })}\n`,
       "utf8",
@@ -141,6 +142,7 @@ describe("settings JSON store", () => {
       path,
       patch: {
         runtime: { maxTurns: 12 },
+        a2a: { agent: { name: "After" } },
         futureAdapter: { mode: "beta" },
       },
     });
@@ -149,6 +151,7 @@ describe("settings JSON store", () => {
     expect(json).toEqual({
       runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 12 },
       telegram: { botToken: "abc" },
+      a2a: { agent: { name: "After", description: "Keep me", version: "0.1.0" } },
       futureAdapter: { enabled: true, mode: "beta" },
     });
     expect(await readFile(path, "utf8")).toContain("\"futureAdapter\"");
