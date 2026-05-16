@@ -30,3 +30,14 @@ export { ChatPane } from "./components/ChatPane.js";
 
 export type { HistoryPaneProps } from "./components/HistoryPane.js";
 export { HistoryPane } from "./components/HistoryPane.js";
+
+export type { ConfigPaneProps } from "./components/ConfigPane.js";
+export { ConfigPane } from "./components/ConfigPane.js";
+
+export type {
+  BuildTuiConfigSummaryInput,
+  TuiConfigFieldSource,
+  TuiConfigFieldSummary,
+  TuiConfigSummarySection,
+} from "./config/pane.js";
+export { buildTuiConfigSummary } from "./config/pane.js";
