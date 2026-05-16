@@ -13,7 +13,7 @@ MONO_AGENT_MODEL=pi:openai-codex:gpt-5.5
 MONO_AGENT_IDENTITY_PATH=./IDENTITY.md
 ```
 
-Optional environment is documented in `@worklab-ai/config`.
+Optional environment is documented in `@worklab-ai/config`. `MONO_AGENT_MCP_CONFIG_PATH` is forwarded to the runtime as an MCP configuration path; it is not treated as a fixture or fake policy file by the demo host.
 
 ## Run locally
 

@@ -18,7 +18,7 @@ import type {
   TelegramLongPollerOptions,
   TelegramLongPollerStartOptions,
 } from "@worklab-ai/telegram-bridge";
-import { createToolPolicy, loadToolPolicyFromJsonFile } from "@worklab-ai/tool-policy";
+import { createToolPolicy } from "@worklab-ai/tool-policy";
 import type { ToolPolicy, ToolPolicyInput } from "@worklab-ai/tool-policy";
 
 export interface TelegramAgentDemoPollerLike {
@@ -48,7 +48,7 @@ export async function createTelegramAgentDemo(options: TelegramAgentDemoOptions 
     env: options.env ?? process.env,
     cwd: options.cwd ?? process.cwd(),
   });
-  const toolPolicy = await loadDemoToolPolicy(rawConfig);
+  const toolPolicy = loadDemoToolPolicy(rawConfig);
   const runtime = options.runtime ?? createMonoRuntime({
     workspace: rawConfig.runtime.workspace,
     qaOutputDir: rawConfig.artifacts.dir,
@@ -123,12 +123,11 @@ export async function startTelegramAgentDemo(options: TelegramAgentDemoOptions =
   }
 }
 
-async function loadDemoToolPolicy(config: MonoAgentConfig): Promise<ToolPolicy> {
-  const filePolicy = config.tools.mcpConfigPath === undefined ? undefined : await loadToolPolicyFromJsonFile(config.tools.mcpConfigPath);
+function loadDemoToolPolicy(config: MonoAgentConfig): ToolPolicy {
   const input: ToolPolicyInput = {
-    ...(filePolicy === undefined ? {} : filePolicy),
     allowedTools: config.tools.allowedTools,
     disallowedTools: config.tools.disallowedTools,
+    ...(config.tools.mcpConfigPath === undefined ? {} : { mcpConfigPath: config.tools.mcpConfigPath }),
   };
   return createToolPolicy(input);
 }

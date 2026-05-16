@@ -31,11 +31,13 @@ export class NoopRunRecorder implements RunRecorder {
       ...(failureKind === undefined || failureKind === null || failureKind === "" ? {} : { failureKind }),
       durationMs: Math.max(0, Date.now() - this.startedAt),
       ...(result.usage === undefined ? {} : { usage: result.usage }),
+      ...(result.cost === undefined ? {} : { cost: result.cost }),
       ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
       eventCount: this.eventCount,
       artifactPaths: [],
       ...(result.runtimeWarnings === undefined ? {} : { runtimeWarnings: result.runtimeWarnings }),
       ...(result.diagnostics === undefined ? {} : { diagnostics: result.diagnostics }),
+      ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: result.capabilitiesUsed }),
     };
   }
 }
