@@ -1,4 +1,4 @@
-import type { RuntimeExecutionMode, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
+import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
@@ -31,7 +31,14 @@ export interface MonoAgentConfig {
   readonly artifacts: {
     readonly dir: string;
   };
+  readonly providers?: {
+    readonly local: readonly LocalProviderDefinition[];
+  };
 }
+
+export type RedactedLocalProviderDefinition = Omit<LocalProviderDefinition, "apiKey"> & {
+  readonly apiKeyPresent?: boolean;
+};
 
 export interface RedactedMonoAgentConfig {
   readonly runtime: MonoAgentConfig["runtime"];
@@ -39,4 +46,7 @@ export interface RedactedMonoAgentConfig {
   readonly memory?: MonoAgentConfig["memory"];
   readonly tools: MonoAgentConfig["tools"];
   readonly artifacts: MonoAgentConfig["artifacts"];
+  readonly providers?: {
+    readonly local: readonly RedactedLocalProviderDefinition[];
+  };
 }

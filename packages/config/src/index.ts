@@ -13,6 +13,7 @@ export type {
   MemoryWriteMode,
   MonoAgentConfig,
   RedactedMonoAgentConfig,
+  RedactedLocalProviderDefinition,
 } from "./types.js";
 export {
   loadMonoAgentConfigWithSources,
@@ -24,6 +25,9 @@ export {
   writeMonoAgentConfigJson,
 } from "./json-source.js";
 export type {
+  MonoAgentLocalProviderJson,
+  MonoAgentLocalProviderModelJson,
+  MonoAgentProvidersJson,
   MonoAgentConfigJson,
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";

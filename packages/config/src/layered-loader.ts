@@ -96,6 +96,9 @@ export function layerJsonOntoEnv(
   if (json.artifacts?.dir !== undefined) {
     fromJson.MONO_AGENT_ARTIFACT_DIR = json.artifacts.dir;
   }
+  if (json.providers?.local !== undefined && !hasLocalProviderEnv(env)) {
+    fromJson.MONO_AGENT_LOCAL_PROVIDERS_JSON = JSON.stringify(json.providers.local);
+  }
 
   // env wins: spread env last
   const layered: Record<string, string | undefined> = { ...fromJson };
@@ -109,4 +112,19 @@ export function layerJsonOntoEnv(
 
 function csv(values: readonly string[]): string {
   return values.join(",");
+}
+
+function hasLocalProviderEnv(env: Record<string, string | undefined>): boolean {
+  return [
+    "MONO_AGENT_LOCAL_PROVIDERS_JSON",
+    "MONO_AGENT_LOCAL_PROVIDER_ID",
+    "MONO_AGENT_LOCAL_PROVIDER_TYPE",
+    "MONO_AGENT_LOCAL_PROVIDER_BASE_URL",
+    "MONO_AGENT_LOCAL_PROVIDER_ENABLED",
+    "MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL",
+    "MONO_AGENT_LOCAL_PROVIDER_API_KEY",
+  ].some((name) => {
+    const value = env[name];
+    return value !== undefined && value.trim().length > 0;
+  });
 }
