@@ -11,7 +11,10 @@ import type {
   TelegramLongPollerStartOptions,
 } from "@worklab-ai/telegram-bridge";
 
-import { startFinalAgentDemo } from "./final-demo.js";
+import {
+  resolveFinalDemoArtifactDir,
+  startFinalAgentDemo,
+} from "./final-demo.js";
 
 const tempDirs: string[] = [];
 
@@ -55,6 +58,11 @@ describe("final agent demo", () => {
       const health = await fetch(`${demo.configUi.url}/api/health`);
       expect(health.status).toBe(200);
       expect(await health.json()).toEqual({ ok: true });
+
+      const observability = await getObservabilityRuns(demo.configUi.url, demo.configUi.token);
+      expect(observability.enabled).toBe(true);
+      expect(observability.artifactDir).toBe(resolve(dir, ".mono-agent", "artifacts"));
+      expect(observability.runs).toEqual([]);
     } finally {
       await demo.stop();
     }
@@ -110,6 +118,21 @@ describe("final agent demo", () => {
     expect(started[0]?.signal?.aborted).toBe(true);
   });
 
+  it("resolves the observability artifact directory without requiring a valid full config", async () => {
+    const dir = await tempDir();
+    const configPath = join(dir, "mono-agent.config.json");
+
+    await writeFile(configPath, "{ this is not valid json", "utf8");
+    await expect(resolveFinalDemoArtifactDir({ env: { MONO_AGENT_ARTIFACT_DIR: "./from-env" }, cwd: dir, configPath }))
+      .resolves.toBe(resolve(dir, "from-env"));
+    await expect(resolveFinalDemoArtifactDir({ env: {}, cwd: dir, configPath }))
+      .resolves.toBe(resolve(dir, ".mono-agent", "artifacts"));
+
+    await writeFile(configPath, `${JSON.stringify({ artifacts: { dir: "./from-config" } })}\n`, "utf8");
+    await expect(resolveFinalDemoArtifactDir({ env: {}, cwd: dir, configPath }))
+      .resolves.toBe(resolve(dir, "from-config"));
+  });
+
   it("composes config UI, Telegram, harness, runtime, memory, tools, and artifacts", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono and you love small LEGO blocks.", "utf8");
@@ -163,6 +186,14 @@ describe("final agent demo", () => {
       const summaryFile = artifactFiles.find((file) => file.endsWith(".summary.json"));
       expect(summaryFile).toBeDefined();
       expect(await readFile(join(dir, "artifacts", summaryFile as string), "utf8")).toContain("capabilitiesUsed");
+
+      const observedRuns = await getObservabilityRuns(demo.configUi.url, demo.configUi.token);
+      expect(observedRuns.enabled).toBe(true);
+      expect(observedRuns.artifactDir).toBe(resolve(dir, "artifacts"));
+      expect(observedRuns.runs[0]).toMatchObject({ conversationId: "telegram:987654321", status: "succeeded" });
+      const observedDetail = await getObservedRun(demo.configUi.url, demo.configUi.token, observedRuns.runs[0]?.runId ?? "");
+      expect(observedDetail.run?.events[0]).toMatchObject({ category: "runtime", type: "fake-event" });
+      expect(JSON.stringify(observedDetail)).not.toContain("should-redact");
       expect(fakeApi.sentTexts.join("\n")).toContain("runtime ok");
     } finally {
       await demo.stop();
@@ -209,6 +240,37 @@ async function getConfig(url: string, token: string): Promise<{ version: string;
   });
   expect(response.status).toBe(200);
   return await response.json() as { version: string; config: unknown };
+}
+
+async function getObservabilityRuns(
+  url: string,
+  token: string,
+): Promise<{
+  enabled: boolean;
+  artifactDir?: string;
+  runs: Array<{ runId: string; conversationId: string; status: string }>;
+}> {
+  const response = await fetch(`${url}/api/observability/runs`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(response.status).toBe(200);
+  return await response.json() as {
+    enabled: boolean;
+    artifactDir?: string;
+    runs: Array<{ runId: string; conversationId: string; status: string }>;
+  };
+}
+
+async function getObservedRun(
+  url: string,
+  token: string,
+  runId: string,
+): Promise<{ run?: { events: Array<{ category: string; type?: string }> } }> {
+  const response = await fetch(`${url}/api/observability/runs/${encodeURIComponent(runId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(response.status).toBe(200);
+  return await response.json() as { run?: { events: Array<{ category: string; type?: string }> } };
 }
 
 async function putConfig(
