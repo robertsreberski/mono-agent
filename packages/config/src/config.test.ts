@@ -68,11 +68,96 @@ describe("loadMonoAgentConfig", () => {
   });
 
   it("redacts core config without adapter-specific sections", () => {
-    const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_BASE_URL: "http://localhost:11434",
+        MONO_AGENT_LOCAL_PROVIDER_API_KEY: "local-secret",
+      },
+    });
     const redacted = redactMonoAgentConfig(config);
 
     expect("telegram" in redacted).toBe(false);
     expect(redacted.runtime.model).toMatchObject({ sdk: "pi" });
+    expect(redacted.providers?.local[0]).toMatchObject({
+      id: "ollama",
+      type: "ollama",
+      apiKeyPresent: true,
+    });
+    expect(JSON.stringify(redacted)).not.toContain("local-secret");
+  });
+
+  it("loads a local Ollama provider from the one-provider env shape", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "pi:ollama:qwen3:8b",
+        MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_BASE_URL: "http://localhost:11434",
+        MONO_AGENT_LOCAL_PROVIDER_ENABLED: "true",
+        MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL: "false",
+        MONO_AGENT_LOCAL_PROVIDER_API_KEY: "local-secret",
+      },
+    });
+
+    expect(config.providers?.local[0]).toMatchObject({
+      id: "ollama",
+      type: "ollama",
+      baseUrl: "http://localhost:11434",
+      enabled: true,
+      trustPublicUrl: false,
+      apiKey: "local-secret",
+    });
+  });
+
+  it("loads a local provider registry from env JSON", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "pi:ollama:qwen3:8b",
+        MONO_AGENT_LOCAL_PROVIDERS_JSON: JSON.stringify([
+          {
+            id: "ollama",
+            type: "ollama",
+            baseUrl: "http://localhost:11434",
+            enabled: true,
+            models: [{ name: "qwen3:8b", capabilities: { context_window: 32768 } }],
+          },
+        ]),
+      },
+    });
+
+    expect(config.providers?.local[0]?.models?.[0]).toMatchObject({
+      name: "qwen3:8b",
+      capabilities: { context_window: 32768 },
+    });
+  });
+
+  it("rejects invalid local-provider JSON and URLs", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_LOCAL_PROVIDERS_JSON: "{not-json",
+      },
+    })).toThrow(MonoAgentConfigError);
+
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MODEL: "pi:ollama:qwen3:8b",
+        MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
+        MONO_AGENT_LOCAL_PROVIDER_BASE_URL: "http://api.example.com",
+      },
+    })).toThrow(/public host/u);
   });
 
   it("does not include adapter env values in validation errors", () => {

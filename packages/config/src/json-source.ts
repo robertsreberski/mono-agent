@@ -3,10 +3,34 @@ import {
   SettingsJsonError,
   writeSettingsJson,
 } from "@worklab-ai/settings";
-import type { SettingsJson } from "@worklab-ai/settings";
+import type { SettingsJson, SettingsJsonValue } from "@worklab-ai/settings";
 
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryScope, MemoryWriteMode } from "./types.js";
+
+export type MonoAgentLocalProviderModelJson = {
+  readonly name?: string;
+  readonly alias?: string;
+  readonly displayName?: string;
+  readonly enabled?: boolean;
+  readonly capabilities?: { readonly [key: string]: SettingsJsonValue };
+  readonly pricing?: { readonly [key: string]: SettingsJsonValue };
+};
+
+export type MonoAgentLocalProviderJson = {
+  readonly id?: string;
+  readonly type?: string;
+  readonly baseUrl?: string;
+  readonly enabled?: boolean;
+  readonly trustPublicUrl?: boolean;
+  readonly apiKey?: string;
+  readonly apiKeyEnv?: string;
+  readonly models?: readonly MonoAgentLocalProviderModelJson[];
+};
+
+export type MonoAgentProvidersJson = {
+  readonly local?: readonly MonoAgentLocalProviderJson[];
+};
 
 /**
  * Serializable shape of MonoAgentConfig persisted as `mono-agent.config.json`.
@@ -45,6 +69,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
   readonly artifacts?: {
     readonly dir?: string;
   };
+  readonly providers?: MonoAgentProvidersJson;
 }
 
 export interface ReadMonoAgentConfigJsonResult {

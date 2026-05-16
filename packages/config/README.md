@@ -29,6 +29,46 @@ const config = await loadMonoAgentConfigWithSources({
 
 Environment variables win over JSON values. Missing or empty JSON is treated as an empty layer.
 
+## Local Providers
+
+Core config can define local Pi providers under `providers.local`. The primary supported path is Ollama:
+
+```json
+{
+  "runtime": {
+    "model": "pi:ollama:qwen3:8b",
+    "executionMode": "sdk",
+    "maxTurns": 8,
+    "workspace": "."
+  },
+  "providers": {
+    "local": [
+      {
+        "id": "ollama",
+        "type": "ollama",
+        "baseUrl": "http://localhost:11434",
+        "enabled": true,
+        "models": [
+          { "name": "qwen3:8b", "capabilities": { "context_window": 32768 } }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Environment overrides for the common one-provider case:
+
+```bash
+MONO_AGENT_LOCAL_PROVIDER_ID=ollama
+MONO_AGENT_LOCAL_PROVIDER_TYPE=ollama
+MONO_AGENT_LOCAL_PROVIDER_BASE_URL=http://localhost:11434
+MONO_AGENT_LOCAL_PROVIDER_ENABLED=true
+MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL=false
+```
+
+`MONO_AGENT_LOCAL_PROVIDERS_JSON` can hold the full local-provider array. Env values win over JSON; empty env values are ignored. `MONO_AGENT_LOCAL_PROVIDER_API_KEY` and provider `apiKeyEnv` are passed only to the runtime path and are redacted from `redactMonoAgentConfig()`.
+
 ## Public API
 
 - `loadMonoAgentConfig`, `loadMonoAgentConfigWithSources`
