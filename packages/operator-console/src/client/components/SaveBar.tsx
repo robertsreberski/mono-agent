@@ -1,11 +1,12 @@
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
+import type { ConfigApplyResult } from "../api.js";
 
 export type SaveBarStatus =
   | { readonly kind: "idle" }
   | { readonly kind: "dirty"; readonly count: number }
   | { readonly kind: "saving" }
-  | { readonly kind: "saved" }
+  | { readonly kind: "saved"; readonly apply?: ConfigApplyResult }
   | { readonly kind: "error"; readonly message: string }
   | { readonly kind: "stale"; readonly message: string };
 
@@ -59,11 +60,7 @@ function renderMessage(status: SaveBarStatus): React.JSX.Element | string {
     case "saving":
       return "Saving…";
     case "saved":
-      return (
-        <Badge variant="success" aria-label="saved">
-          Saved
-        </Badge>
-      );
+      return renderSavedMessage(status.apply);
     case "stale":
       return (
         <Badge variant="warning" aria-label="stale" className="whitespace-normal text-left">
@@ -79,4 +76,33 @@ function renderMessage(status: SaveBarStatus): React.JSX.Element | string {
     default:
       return "";
   }
+}
+
+function renderSavedMessage(apply: ConfigApplyResult | undefined): React.JSX.Element {
+  if (apply === undefined) {
+    return (
+      <Badge variant="success" aria-label="saved">
+        Saved
+      </Badge>
+    );
+  }
+  if (apply.kind === "applied") {
+    return (
+      <Badge variant="success" aria-label="saved and applied" className="whitespace-normal text-left">
+        Saved and applied
+      </Badge>
+    );
+  }
+  if (apply.kind === "waiting_for_config") {
+    return (
+      <Badge variant="warning" aria-label="saved waiting for config" className="whitespace-normal text-left">
+        Saved; waiting for valid config — {apply.message}
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="destructive" aria-label="saved apply failed" className="whitespace-normal text-left">
+      Saved; apply failed — {apply.message}
+    </Badge>
+  );
 }

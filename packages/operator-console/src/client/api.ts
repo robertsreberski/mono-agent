@@ -18,9 +18,15 @@ export interface SchemaResponse {
   readonly fieldGroups: readonly FieldGroup[];
 }
 
+export type ConfigApplyResult =
+  | { readonly kind: "applied"; readonly message: string; readonly transports: readonly string[] }
+  | { readonly kind: "waiting_for_config"; readonly message: string; readonly transports: readonly string[] }
+  | { readonly kind: "failed"; readonly message: string; readonly transports: readonly string[] };
+
 export interface PutResponse {
   readonly ok: boolean;
   readonly version: string;
+  readonly apply?: ConfigApplyResult;
 }
 
 export interface ObservabilityRunsResponse {

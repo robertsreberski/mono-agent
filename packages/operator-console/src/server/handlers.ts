@@ -23,7 +23,9 @@ import {
   traceabilitySourcesResponse,
 } from "./traceability.js";
 import type {
+  ConfigApplyResult,
   OperatorConsoleEvent,
+  OperatorConsoleConfigWriteContext,
   OperatorConsoleObservabilityOptions,
   OperatorConsoleTraceabilityOptions,
 } from "./types.js";
@@ -47,6 +49,7 @@ export interface HandlerDeps {
   readonly staticDir: string;
   readonly observability?: OperatorConsoleObservabilityOptions;
   readonly traceability?: OperatorConsoleTraceabilityOptions;
+  readonly applyConfigWrite?: (context: OperatorConsoleConfigWriteContext) => Promise<ConfigApplyResult>;
   readonly log?: (event: OperatorConsoleEvent) => void;
 }
 
@@ -185,7 +188,16 @@ async function handlePut(
       patch: validated.patch,
     });
     deps.log?.({ kind: "write", path: deps.configPath, version: result.version });
-    return json(res, 200, { ok: true, version: result.version });
+    const apply = await applyConfigWrite(deps, {
+      configPath: deps.configPath,
+      version: result.version,
+      patch: validated.patch,
+    });
+    return json(res, 200, {
+      ok: true,
+      version: result.version,
+      ...(apply === undefined ? {} : { apply }),
+    });
   } catch (error) {
     if (error instanceof SettingsJsonError) {
       deps.log?.({
@@ -196,6 +208,24 @@ async function handlePut(
       return json(res, 400, { error: error.code, message: error.message, details: error.details });
     }
     return json(res, 500, errorBody(error));
+  }
+}
+
+async function applyConfigWrite(
+  deps: HandlerDeps,
+  context: OperatorConsoleConfigWriteContext,
+): Promise<ConfigApplyResult | undefined> {
+  if (deps.applyConfigWrite === undefined) {
+    return undefined;
+  }
+  try {
+    return await deps.applyConfigWrite(context);
+  } catch (error) {
+    return {
+      kind: "failed",
+      message: error instanceof Error ? error.message : String(error),
+      transports: [],
+    };
   }
 }
 
