@@ -9,8 +9,9 @@ Boots `@worklab-ai/config-ui` against `<cwd>/mono-agent.config.json` on a free l
 ## Run
 
 ```bash
-npm install
-npm run build
+corepack enable
+pnpm install
+pnpm run build
 node packages/config-ui-demo/dist/cli.js
 # config-ui: http://127.0.0.1:<port>/?t=<token>
 # config:    /path/to/cwd/mono-agent.config.json

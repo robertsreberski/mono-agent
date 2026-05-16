@@ -13,11 +13,12 @@ Do not commit bot tokens, chat transcripts, `.env` files, provider API keys, or 
 
 ## Install and environment
 
-This repository package is built from the npm workspace:
+This repository package is built from the pnpm workspace:
 
 ```bash
-npm install
-npm run build --workspace @worklab-ai/telegram-bridge
+corepack enable
+pnpm install
+pnpm --filter @worklab-ai/telegram-bridge run build
 ```
 
 A host app commonly reads these environment variables without committing them:

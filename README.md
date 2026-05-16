@@ -1,6 +1,6 @@
 # Mono Agent
 
-Mono Agent is a small npm monorepo of reusable building blocks around `@worklab-ai/agent-runtime`. The packages are intentionally modular: communication adapters stay independent, runtime/provider details stay in the runtime adapter, and the final Telegram demo composes modules instead of carrying framework logic itself.
+Mono Agent is a small pnpm workspace monorepo of reusable npm packages around `@worklab-ai/agent-runtime`. The packages are intentionally modular: communication adapters stay independent, runtime/provider details stay in the runtime adapter, and the final Telegram demo composes modules instead of carrying framework logic itself.
 
 ## Packages
 
@@ -68,8 +68,9 @@ The chat allowlist is required. Provider credentials stay outside config exports
 ## Run the demo locally
 
 ```bash
-npm install
-npm run build
+corepack enable
+pnpm install
+pnpm run build
 node packages/telegram-agent-demo/dist/cli.js
 ```
 
@@ -82,8 +83,9 @@ The demo uses the real Telegram Bot API client, real long poller, and real runti
 Boot the standalone demo against the current directory:
 
 ```bash
-npm install
-npm run build
+corepack enable
+pnpm install
+pnpm run build
 node packages/config-ui-demo/dist/cli.js
 # config-ui: http://127.0.0.1:<port>/?t=<token>
 # config:    <cwd>/mono-agent.config.json
@@ -135,13 +137,13 @@ console.log(bridge.url, bridge.token);
 ## Development verification
 
 ```bash
-npm run typecheck
-npm test
-npm run build
+pnpm run typecheck
+pnpm test
+pnpm run build
 git diff --check
 ```
 
-For package-level work, run the same scripts with `--workspace @worklab-ai/<package>`. Cross-workspace packages expose built `dist` types, so run `npm run build` before typechecking dependents from a fresh checkout if necessary.
+For package-level work, run the same scripts with `pnpm --filter @worklab-ai/<package> run <script>`. Cross-workspace packages expose built `dist` types, so run `pnpm run build` before typechecking dependents from a fresh checkout if necessary.
 
 ## Safety model
 
