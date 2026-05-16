@@ -1,4 +1,5 @@
 .worklab-tmp/
+.mono-agent/
 node_modules/
 dist/
 coverage/

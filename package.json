@@ -15,8 +15,9 @@
     "typecheck": "pnpm -r --sort run typecheck && pnpm run typecheck:demo",
     "typecheck:demo": "tsc -p demos/final-agent/tsconfig.json --noEmit",
     "test": "pnpm -r --sort run test && pnpm run test:demo",
-    "test:demo": "vitest run --passWithNoTests demos/final-agent/src/final-demo.test.ts demos/final-agent/src/cli-args.test.ts",
-    "demo:final": "node demos/final-agent/dist/cli.js"
+    "test:demo": "vitest run --passWithNoTests demos/final-agent/src/final-demo.test.ts demos/final-agent/src/cli-args.test.ts demos/final-agent/src/deployment.test.ts",
+    "demo:final": "node demos/final-agent/dist/cli.js",
+    "deploy:final": "pnpm run build && node demos/final-agent/dist/deploy-cli.js"
   },
   "devDependencies": {
     "@types/node": "^22.15.18",
