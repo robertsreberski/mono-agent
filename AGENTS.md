@@ -6,11 +6,11 @@ Mono Agent is intended to become a small, single-purpose agent framework built f
 
 ## Repository shape
 
-- Treat this repository as an npm monorepo.
+- Treat this repository as a pnpm workspace monorepo.
 - Future packages should live under `packages/<package-name>/`.
 - Published package names should use the `@worklab-ai/<package-name>` scope.
 - Root instructions apply to every package unless a package-local `AGENTS.md` narrows them.
-- Do not add root workspace/package-manager scaffolding until a task explicitly asks for the first package or build setup.
+- Keep root workspace/package-manager scaffolding limited to the checked-in pnpm workspace setup unless a task explicitly asks to broaden it.
 
 ## Engineering discipline
 
@@ -26,7 +26,7 @@ Mono Agent is intended to become a small, single-purpose agent framework built f
 - Each package should have one clear responsibility and a focused public API.
 - Use `@worklab-ai/*` package names consistently.
 - Add or update focused tests with behavior changes.
-- Use package-local scripts once package manifests exist; do not invent global scripts without root workspace configuration.
+- Use package-local scripts once package manifests exist; route repo-wide commands through the root pnpm recursive scripts.
 - Keep runtime-facing artifacts structured and machine-validated where practical.
 
 ## Framework boundaries

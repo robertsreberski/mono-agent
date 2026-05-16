@@ -18,7 +18,7 @@ Optional environment is documented in `@worklab-ai/config`. `MONO_AGENT_MCP_CONF
 ## Run locally
 
 ```bash
-npm run build --workspace @worklab-ai/telegram-agent-demo
+pnpm --filter @worklab-ai/telegram-agent-demo run build
 node packages/telegram-agent-demo/dist/cli.js
 ```
 
