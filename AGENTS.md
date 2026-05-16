@@ -9,6 +9,7 @@ Mono Agent is intended to become a small, single-purpose agent framework built f
 - Treat this repository as a pnpm workspace monorepo.
 - Future packages should live under `packages/<package-name>/`.
 - Published package names should use the `@worklab-ai/<package-name>` scope.
+- Package categories live in `scripts/package-catalog.mjs` and README docs; keep the physical workspace layout flat unless a task explicitly asks for a mechanical migration.
 - Root instructions apply to every package unless a package-local `AGENTS.md` narrows them.
 - Keep root workspace/package-manager scaffolding limited to the checked-in pnpm workspace setup unless a task explicitly asks to broaden it.
 
