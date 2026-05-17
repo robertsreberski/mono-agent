@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentMessageStream, AgentResponder } from "@worklab-ai/agent-contracts";
+import { startA2AProvider } from "@worklab-ai/a2a-adapter";
 
 import {
   buildSynthesisPrompt,
+  createA2ACollaboratorClient,
   createCollaborativeOrchestratorResponder,
   type CollaboratorClient,
   type CollaboratorResult,
@@ -76,6 +78,61 @@ describe("collaborative orchestrator responder", () => {
     expect(prompt).toContain("Web search failed.");
     expect(prompt).toContain("Do not hide collaborator failures.");
   });
+
+  it("reports collaborator timeouts with actionable error metadata", async () => {
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond() {
+          await delay(100);
+          return { text: "late collaborator report" };
+        },
+      },
+      agent: {
+        name: "Slow Collaborator",
+        description: "Responds too slowly",
+        version: "0.1.0",
+      },
+      skill: {
+        id: "slow-collaborator",
+        name: "Slow Collaborator",
+        description: "Slow collaborator",
+        tags: ["slow"],
+      },
+    });
+
+    try {
+      const collaborator = createA2ACollaboratorClient({
+        id: "researcher",
+        label: "Researcher",
+        agentUrl: provider.agentCardUrl,
+        timeoutMs: 10,
+      });
+
+      const result = await collaborator.ask({
+        userMessage: "Research M5 Max memory options.",
+        conversationId: "timeout-test",
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(result).toMatchObject({
+        agentId: "researcher",
+        label: "Researcher",
+        status: "failed",
+        text: "A2A collaborator timed out after 10ms.",
+        metadata: {
+          error: {
+            code: "timeout",
+            timeoutMs: 10,
+          },
+        },
+      });
+      expect(JSON.stringify(result.metadata)).not.toContain("Bearer");
+    } finally {
+      await provider.stop();
+    }
+  });
 });
 
 function fakeCollaborator(result: CollaboratorResult, calls: string[]): CollaboratorClient {
@@ -98,4 +155,8 @@ function fakeStream(statuses: string[]): AgentMessageStream {
       return undefined;
     },
   };
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }

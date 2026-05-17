@@ -10,6 +10,8 @@ export const DEFAULT_MULTI_AGENT_DEPLOY_MODEL = "gemma4:31b";
 export const DEFAULT_MULTI_AGENT_MODEL_REFERENCE = "pi:ollama:gemma4:31b";
 export const DEFAULT_MULTI_AGENT_OLLAMA_BASE_URL = "http://localhost:11434";
 export const DEFAULT_MULTI_AGENT_CONFIG_DIR = ".mono-agent/multi-agent";
+export const DEFAULT_MULTI_AGENT_ROLE_TIMEOUT_MS = 60_000;
+export const DEFAULT_MULTI_AGENT_COLLABORATOR_TIMEOUT_MS = 300_000;
 
 export const MULTI_AGENT_ROLES = ["orchestrator", "researcher", "worker"] as const satisfies readonly MultiAgentRole[];
 
@@ -301,10 +303,16 @@ function buildRoleConfig(input: {
       },
       consumer: {
         remoteAgentUrls: [],
-        timeoutMs: 60_000,
+        timeoutMs: consumerTimeoutForRole(input.role),
       },
     },
   };
+}
+
+function consumerTimeoutForRole(role: MultiAgentRole): number {
+  return role === "orchestrator"
+    ? DEFAULT_MULTI_AGENT_COLLABORATOR_TIMEOUT_MS
+    : DEFAULT_MULTI_AGENT_ROLE_TIMEOUT_MS;
 }
 
 function resolveRoleModels(
