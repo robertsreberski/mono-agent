@@ -52,8 +52,12 @@ describe("multi-agent deployment files", () => {
       a2a: { provider: { port: number } };
       telegram?: unknown;
     };
+    const orchestrator = JSON.parse(await readFile(files.roles.orchestrator.configPath, "utf8")) as {
+      a2a: { consumer: { timeoutMs: number } };
+    };
     const orchestratorRaw = await readFile(files.roles.orchestrator.configPath, "utf8");
 
+    expect(orchestrator.a2a.consumer.timeoutMs).toBe(300_000);
     expect(researcher.tools.allowedTools).toEqual(["WebSearch", "WebFetch"]);
     expect(researcher.tools.disallowedTools).toContain("Bash");
     expect(researcher.a2a.provider.port).toBe(5119);

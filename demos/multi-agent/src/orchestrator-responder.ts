@@ -6,7 +6,7 @@ import {
   type AgentResponder,
   type AgentResponse,
 } from "@worklab-ai/agent-contracts";
-import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
+import { A2AConsumerError, sendA2AMessage } from "@worklab-ai/a2a-adapter";
 import type { A2AConsumerResponseMetadata } from "@worklab-ai/a2a-adapter";
 
 export type MultiAgentRole = "orchestrator" | "researcher" | "worker";
@@ -88,11 +88,13 @@ export function createA2ACollaboratorClient(
           metadata: sanitizeMetadata(response.metadata),
         };
       } catch (error) {
+        const formatted = formatCollaboratorError(error);
         return {
           agentId: options.id,
           label: options.label,
           status: isCancelled(error, input.abortSignal) ? "cancelled" : "failed",
-          text: reasonOf(error),
+          text: formatted.text,
+          ...(formatted.metadata === undefined ? {} : { metadata: formatted.metadata }),
         };
       }
     },
@@ -240,6 +242,66 @@ function sanitizeMetadata(metadata: A2AConsumerResponseMetadata): Record<string,
 function isCancelled(error: unknown, signal: AbortSignal): boolean {
   return signal.aborted || isAgentResponseCancelledError(error) ||
     (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"));
+}
+
+function formatCollaboratorError(error: unknown): {
+  readonly text: string;
+  readonly metadata?: Record<string, unknown>;
+} {
+  if (error instanceof A2AConsumerError) {
+    const metadata = sanitizeConsumerError(error);
+    if (error.code === "timeout") {
+      const timeoutMs = numberDetail(error, "timeoutMs");
+      return {
+        text: timeoutMs === undefined
+          ? "A2A collaborator timed out."
+          : `A2A collaborator timed out after ${timeoutMs}ms.`,
+        metadata: { error: metadata },
+      };
+    }
+    if (error.code === "send_failed") {
+      const reason = stringDetail(error, "reason");
+      return {
+        text: reason === undefined
+          ? "A2A collaborator send failed."
+          : `A2A collaborator send failed: ${reason}`,
+        metadata: { error: metadata },
+      };
+    }
+    return {
+      text: error.message,
+      metadata: { error: metadata },
+    };
+  }
+  return { text: reasonOf(error) };
+}
+
+function sanitizeConsumerError(error: A2AConsumerError): Record<string, unknown> {
+  return {
+    code: error.code,
+    ...(stringDetail(error, "reason") === undefined ? {} : { reason: stringDetail(error, "reason") }),
+    ...(numberDetail(error, "timeoutMs") === undefined ? {} : { timeoutMs: numberDetail(error, "timeoutMs") }),
+    ...(numberDetail(error, "status") === undefined ? {} : { status: numberDetail(error, "status") }),
+  };
+}
+
+function stringDetail(error: A2AConsumerError, key: string): string | undefined {
+  const value = error.details[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  return redactSensitiveText(value);
+}
+
+function numberDetail(error: A2AConsumerError, key: string): number | undefined {
+  const value = error.details[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, "Bearer [redacted]")
+    .replace(/([?&](?:access_token|bearerToken|botToken|token)=)[^&\s]+/giu, "$1[redacted]");
 }
 
 function reasonOf(error: unknown): string {
