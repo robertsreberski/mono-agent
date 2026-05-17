@@ -36,7 +36,8 @@ export type A2AConsumerErrorCode =
   | "remote_failed"
   | "remote_input_required"
   | "remote_rejected"
-  | "send_failed";
+  | "send_failed"
+  | "timeout";
 
 export interface A2AConsumerErrorDetails {
   readonly code?: A2AConsumerErrorCode;
