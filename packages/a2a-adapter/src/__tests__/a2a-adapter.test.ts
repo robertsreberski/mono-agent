@@ -271,6 +271,47 @@ describe("A2A adapter contract", () => {
     }
   });
 
+  it("returns a typed timeout error when a remote agent exceeds the consumer timeout", async () => {
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond() {
+          await delay(100);
+          return { text: "late response" };
+        },
+      },
+      agent: {
+        name: "Slow Mono",
+        description: "Responds too slowly",
+        version: "0.1.0",
+      },
+      skill: {
+        id: "slow",
+        name: "Slow",
+        description: "Slow response",
+        tags: ["slow"],
+      },
+    });
+
+    try {
+      await expect(sendA2AMessage({
+        agentUrl: provider.agentCardUrl,
+        text: "hello",
+        timeoutMs: 10,
+      })).rejects.toMatchObject({
+        code: "timeout",
+        message: "A2A request timed out after 10ms.",
+        details: {
+          timeoutMs: 10,
+          agentUrl: provider.agentCardUrl,
+        },
+      });
+    } finally {
+      await provider.stop();
+    }
+  });
+
   it("adapts a remote A2A agent as an AgentResponder", async () => {
     const provider = await startA2AProvider({
       host: "127.0.0.1",
@@ -399,4 +440,8 @@ function echoResponder(): AgentResponder {
       return { text: `echo: ${request.text}` };
     },
   };
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }

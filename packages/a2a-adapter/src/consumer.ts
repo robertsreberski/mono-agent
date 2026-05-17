@@ -84,8 +84,10 @@ export class A2AConsumer {
 
   async sendMessage(input: A2AConsumerSendMessageInput): Promise<A2AConsumerResponse> {
     const request = buildSendMessageRequest(input);
-    const signal = signalWithTimeout(input.signal, input.timeoutMs ?? this.timeoutMs);
-    const options = signal === undefined ? undefined : { signal } satisfies RequestOptions;
+    const timeoutContext = signalWithTimeout(input.signal, input.timeoutMs ?? this.timeoutMs);
+    const options = timeoutContext.signal === undefined
+      ? undefined
+      : { signal: timeoutContext.signal } satisfies RequestOptions;
 
     try {
       if (input.stream === true && this.agentCard.capabilities?.streaming === true) {
@@ -98,7 +100,12 @@ export class A2AConsumer {
         allowPending: input.returnImmediately === true,
       });
     } catch (error) {
-      throw normalizeConsumerError(error);
+      throw normalizeConsumerError(error, {
+        agentUrl: this.agentUrl,
+        timeoutContext,
+      });
+    } finally {
+      timeoutContext.cleanup();
     }
   }
 
@@ -423,7 +430,21 @@ function isTask(result: SendMessageResult): result is Task {
   return "status" in result;
 }
 
-function normalizeConsumerError(error: unknown): A2AConsumerError {
+function normalizeConsumerError(
+  error: unknown,
+  context: {
+    readonly agentUrl?: string;
+    readonly timeoutContext?: TimeoutSignalContext;
+  } = {},
+): A2AConsumerError {
+  if (context.timeoutContext?.timedOut() === true) {
+    const timeoutMs = context.timeoutContext.timeoutMs;
+    return new A2AConsumerError("timeout", timeoutMessage(timeoutMs), {
+      timeoutMs,
+      ...(context.agentUrl === undefined ? {} : { agentUrl: context.agentUrl }),
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
   if (error instanceof A2AConsumerError) {
     return error;
   }
@@ -470,25 +491,60 @@ function bearerFetch(fetchImpl: typeof fetch, bearerToken: string | undefined): 
   };
 }
 
-function signalWithTimeout(signal: AbortSignal | undefined, timeoutMs: number | undefined): AbortSignal | undefined {
+interface TimeoutSignalContext {
+  readonly signal: AbortSignal | undefined;
+  readonly timeoutMs: number | undefined;
+  timedOut(): boolean;
+  cleanup(): void;
+}
+
+function signalWithTimeout(signal: AbortSignal | undefined, timeoutMs: number | undefined): TimeoutSignalContext {
   if (timeoutMs === undefined) {
-    return signal;
+    return {
+      signal,
+      timeoutMs,
+      timedOut: () => false,
+      cleanup: () => undefined,
+    };
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => {
+  let didTimeOut = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+    timeout = undefined;
+    didTimeOut = true;
     controller.abort(new Error(`A2A request timed out after ${timeoutMs}ms.`));
   }, timeoutMs);
-  const abort = (): void => {
-    clearTimeout(timeout);
+
+  const clear = (): void => {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+      timeout = undefined;
+    }
+  };
+  const abortFromInput = (): void => {
+    clear();
     controller.abort(signal?.reason);
   };
   if (signal?.aborted === true) {
-    abort();
-    return controller.signal;
+    abortFromInput();
+  } else {
+    signal?.addEventListener("abort", abortFromInput, { once: true });
   }
-  signal?.addEventListener("abort", abort, { once: true });
-  controller.signal.addEventListener("abort", () => clearTimeout(timeout), { once: true });
-  return controller.signal;
+  return {
+    signal: controller.signal,
+    timeoutMs,
+    timedOut: () => didTimeOut,
+    cleanup: () => {
+      clear();
+      signal?.removeEventListener("abort", abortFromInput);
+    },
+  };
+}
+
+function timeoutMessage(timeoutMs: number | undefined): string {
+  return timeoutMs === undefined
+    ? "A2A request timed out."
+    : `A2A request timed out after ${timeoutMs}ms.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
