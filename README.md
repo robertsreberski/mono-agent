@@ -15,12 +15,12 @@ Package categories are catalog metadata, documentation, and architecture-guard i
 | `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
 | `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
-| `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition that wires config, surface, communication, harness, runtime, memory, policy, and artifacts in one small host layer. |
+| `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition that wire config, surface, communication, harness, runtime, memory, policy, and artifacts in small host layers. |
 
 ## Dependency Direction
 
 ```text
-demos/final-agent (not a workspace package)
+demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ operator-console ── settings, observability
   ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
   ├─ telegram-adapter ── agent-contracts, settings
@@ -92,6 +92,24 @@ Mono Agent now has a local host traceability path. Each running host registers a
 This is local-first and bearer-protected through the loopback console. It is not a LangSmith dependency, database, or cloud collector. LangSmith/OpenTelemetry export remains a later sink option.
 
 See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
+
+## Multi-Agent Demo
+
+The multi-agent demo lives at `demos/multi-agent/`. It starts a Telegram-connected orchestrator plus three loopback A2A providers: the orchestrator itself for smoke tests, a researcher with web-oriented tools, and a worker with read-only local inspection tools. The orchestrator uses a deterministic collaborate-then-synthesize flow so the demo proves the real seams without adding an autonomous delegation protocol yet.
+
+The preferred deployment path writes ignored role configs and local state under `.mono-agent/multi-agent/`, checks the configured Ollama model, starts traceability, and starts the role A2A providers:
+
+```bash
+pnpm run deploy:multi -- \
+  --port 5417 \
+  --orchestrator-a2a-port 5418 \
+  --researcher-a2a-port 5419 \
+  --worker-a2a-port 5420
+```
+
+Stop the older final demo before enabling Telegram here so only one process owns the bot token. Telegram credentials stay outside git and are read from the orchestrator config or `MONO_AGENT_TELEGRAM_BOT_TOKEN` plus `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS`.
+
+See [`demos/multi-agent/README.md`](./demos/multi-agent/README.md) for topology, safe tool policies, Telegram ownership, and smoke checks.
 
 ### A2A Inter-Agent Discovery
 
