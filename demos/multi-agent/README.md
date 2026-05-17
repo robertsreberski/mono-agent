@@ -37,6 +37,8 @@ pnpm run deploy:multi -- \
 
 Defaults use local Ollama model `gemma4:31b`. Override all roles with `--model <tag>`, or set role-specific tags with `--orchestrator-model`, `--researcher-model`, and `--worker-model`.
 
+Generated orchestrator configs use a 300s collaborator timeout. Local Gemma/Ollama calls can take more than 60s, especially when the researcher uses web tools and the worker runs local inspection before the orchestrator synthesizes. Researcher and worker configs keep the regular 60s consumer default because they are not the caller in the demo collaboration path.
+
 ## Telegram
 
 Telegram credentials are read from the orchestrator config or environment:
@@ -48,6 +50,8 @@ MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS=123456789
 
 Use `--no-telegram` when you only want the A2A smoke path. The generated configs intentionally contain no Telegram secrets.
 
+Operator-console config saves persist changes to disk, but this demo reports a restart-required apply status. Restart the multi-agent process before expecting changed role, model, tool, A2A, or collaborator timeout settings to affect running Telegram or A2A responders.
+
 ## A2A Smoke
 
 The deploy command prints the orchestrator Agent Card URL. Send a text request to that URL with `sendA2AMessage` from `@worklab-ai/a2a-adapter` or any A2A client. A successful request should record three runs in the operator console Traceability view:
@@ -57,6 +61,8 @@ The deploy command prints the orchestrator Agent Card URL. Send a text request t
 - `multi-agent-worker`
 
 Direct calls to the researcher and worker Agent Card URLs verify their distinct tool policies independently.
+
+If the final answer says a collaborator timed out, check the role traces before assuming the researcher or worker runtime failed. The timeout means the orchestrator stopped waiting for the A2A response; the collaborator may still have completed later and recorded its own trace.
 
 ## Manual Start
 
