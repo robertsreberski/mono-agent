@@ -11,13 +11,15 @@
   "scripts": {
     "build": "pnpm -r --sort run build && pnpm run build:demo",
     "check:architecture": "node scripts/check-package-architecture.mjs",
-    "build:demo": "tsc -p demos/final-agent/tsconfig.build.json",
+    "build:demo": "tsc -p demos/final-agent/tsconfig.build.json && tsc -p demos/multi-agent/tsconfig.build.json",
     "typecheck": "pnpm -r --sort run typecheck && pnpm run typecheck:demo",
-    "typecheck:demo": "tsc -p demos/final-agent/tsconfig.json --noEmit",
+    "typecheck:demo": "tsc -p demos/final-agent/tsconfig.json --noEmit && tsc -p demos/multi-agent/tsconfig.json --noEmit",
     "test": "pnpm -r --sort run test && pnpm run test:demo",
-    "test:demo": "vitest run --passWithNoTests demos/final-agent/src/final-demo.test.ts demos/final-agent/src/cli-args.test.ts demos/final-agent/src/deployment.test.ts",
+    "test:demo": "vitest run --passWithNoTests demos/final-agent/src/final-demo.test.ts demos/final-agent/src/cli-args.test.ts demos/final-agent/src/deployment.test.ts demos/multi-agent/src/orchestrator-responder.test.ts demos/multi-agent/src/cli-args.test.ts demos/multi-agent/src/deployment.test.ts demos/multi-agent/src/multi-agent-demo.test.ts",
     "demo:final": "node demos/final-agent/dist/cli.js",
-    "deploy:final": "pnpm run build && node demos/final-agent/dist/deploy-cli.js"
+    "deploy:final": "pnpm run build && node demos/final-agent/dist/deploy-cli.js",
+    "demo:multi": "node demos/multi-agent/dist/cli.js",
+    "deploy:multi": "pnpm run build && node demos/multi-agent/dist/deploy-cli.js"
   },
   "devDependencies": {
     "@types/node": "^22.15.18",
