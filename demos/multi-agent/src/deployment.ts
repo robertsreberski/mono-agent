@@ -427,7 +427,7 @@ function descriptionForRole(role: MultiAgentRole): string {
 
 function skillDescriptionForRole(role: MultiAgentRole): string {
   if (role === "orchestrator") {
-    return "Runs the deterministic collaborate-then-synthesize multi-agent flow.";
+    return "Runs the tool-directed multi-agent flow.";
   }
   if (role === "researcher") {
     return "Provides one concise web-aware research contribution.";

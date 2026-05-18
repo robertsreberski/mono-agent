@@ -1,14 +1,14 @@
 # Multi-Agent Demo
 
-This non-package demo proves a three-agent Mono Agent topology without adding a reusable multi-agent package yet.
+This non-package demo proves a three-agent Mono Agent topology using reusable orchestration and communication packages.
 
 ## Topology
 
-- Orchestrator: connected to Telegram when credentials are configured, exposed over loopback A2A for smoke tests, and responsible for final synthesis.
+- Orchestrator: connected to Telegram when credentials are configured, exposed over loopback A2A for smoke tests, and responsible for deciding which collaborator to ask before final synthesis.
 - Researcher: loopback A2A provider with `WebSearch` and `WebFetch` allowed.
 - Worker: loopback A2A provider with `Read`, `Grep`, and `Bash` allowed, and `Write`/`Edit` disallowed.
 
-The orchestration is deterministic. Every user request asks the researcher for one concise contribution, asks the worker for one concise contribution, then asks the orchestrator runtime to synthesize a final answer from the original request and both collaborator reports. Collaborator failures are included in the synthesis prompt instead of hidden.
+The orchestration is model-directed through a bounded tool. Every user request gives the orchestrator runtime an `ask_collaborator` MCP tool backed by `@worklab-ai/agent-orchestrator`; the model may ask the researcher, the worker, both, or either one multiple times before producing the final answer. Collaborator failures return visible tool errors instead of hidden fallback success.
 
 ## Stop The Final Demo First
 
@@ -54,13 +54,13 @@ Operator-console config saves persist changes to disk, but this demo reports a r
 
 ## A2A Smoke
 
-The deploy command prints the orchestrator Agent Card URL. Send a text request to that URL with `sendA2AMessage` from `@worklab-ai/a2a-adapter` or any A2A client. A successful request should record three runs in the operator console Traceability view:
+The deploy command prints the orchestrator Agent Card URL. Send a text request to that URL with `sendA2AMessage` from `@worklab-ai/a2a-adapter` or any A2A client. A successful request that calls both collaborator agents should record three runs in the operator console Traceability view:
 
 - `multi-agent-orchestrator`
 - `multi-agent-researcher`
 - `multi-agent-worker`
 
-Direct calls to the researcher and worker Agent Card URLs verify their distinct tool policies independently.
+Direct calls to the researcher and worker Agent Card URLs verify their distinct tool policies independently. If a request does not need one collaborator, a successful orchestrator answer may record only the collaborator runs the model actually asked for.
 
 If the final answer says a collaborator timed out, check the role traces before assuming the researcher or worker runtime failed. The timeout means the orchestrator stopped waiting for the A2A response; the collaborator may still have completed later and recorded its own trace.
 

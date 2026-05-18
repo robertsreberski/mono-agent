@@ -13,6 +13,8 @@ export type {
   AgentHarnessRecorderFactoryInput,
   AgentHarnessRequest,
   AgentHarnessResponse,
+  AgentHarnessRuntimeOptionsExtension,
+  AgentHarnessRuntimeOptionsInput,
   AgentMessageStreamLike,
   AgentRequestLike,
   AgentResponderLike,

@@ -12,6 +12,7 @@ import type {
   AgentHarnessOptions,
   AgentHarnessRequest,
   AgentHarnessResponse,
+  AgentHarnessRuntimeOptionsExtension,
 } from "./types.js";
 
 export class AgentHarnessError extends Error {
@@ -49,7 +50,7 @@ export class MonoAgentHarness implements AgentHarness {
     try {
       const prepared = await this.prepareContext(request);
       context = prepared.context;
-      const runtimeResult = await this.runRuntime(request, recorder, context);
+      const runtimeResult = await this.runRuntime(request, recorder, context, runId);
       const failure = failureFromRuntimeResult(runtimeResult);
       const summary = await recorder.finish(failure === undefined ? runtimeResult : { ...runtimeResult, failureKind: failure.kind, error: failure.message });
       const baseMetadata = responseMetadata(runId, request, context, summary, runtimeResult);
@@ -131,12 +132,21 @@ export class MonoAgentHarness implements AgentHarness {
     });
   }
 
-  private async runRuntime(request: AgentHarnessRequest, recorder: RunRecorder, context: BuiltAgentContext): Promise<RuntimeResult> {
+  private async runRuntime(
+    request: AgentHarnessRequest,
+    recorder: RunRecorder,
+    context: BuiltAgentContext,
+    runId: string,
+  ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
     const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
+    const requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
     const runtimeOptions: RuntimeRunOptions = {
-      ...policyOptions,
-      ...(this.options.runtimeOptions ?? {}),
+      ...mergeRuntimeOptions(
+        policyOptions,
+        this.options.runtimeOptions,
+        requestExtension?.runtimeOptions,
+      ),
       model: this.options.model,
       executionMode: this.options.executionMode,
       messages: [{ role: "user", content: request.userMessage }],
@@ -149,7 +159,11 @@ export class MonoAgentHarness implements AgentHarness {
         hostOnEvent?.(event);
       },
     };
-    return await this.options.runtime.run(context.prompt, runtimeOptions);
+    try {
+      return await this.options.runtime.run(context.prompt, runtimeOptions);
+    } finally {
+      await requestExtension?.cleanup?.();
+    }
   }
 
   private async persistSuccessfulTurn(request: AgentHarnessRequest, assistantText: string): Promise<void> {
@@ -194,6 +208,49 @@ function validateRequest(request: AgentHarnessRequest): void {
   if (!(request.abortSignal instanceof AbortSignal)) {
     throw new TypeError("abortSignal is required.");
   }
+}
+
+function mergeRuntimeOptions(
+  ...optionsList: readonly (AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined)[]
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = {};
+  for (const options of optionsList) {
+    if (options === undefined) {
+      continue;
+    }
+    for (const [key, value] of Object.entries(options)) {
+      if (value === undefined) {
+        continue;
+      }
+      if (key === "allowedTools" || key === "disallowedTools") {
+        merged[key] = mergeStringLists(merged[key], value);
+        continue;
+      }
+      if (key === "mcpServers") {
+        merged[key] = {
+          ...(isRecord(merged[key]) ? merged[key] : {}),
+          ...(isRecord(value) ? value : {}),
+        };
+        continue;
+      }
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function mergeStringLists(current: unknown, next: unknown): readonly string[] {
+  const out: string[] = [];
+  for (const value of [...stringList(current), ...stringList(next)]) {
+    if (!out.includes(value)) {
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+function stringList(value: unknown): readonly string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
 function failureFromRuntimeResult(result: RuntimeResult): AgentHarnessFailure | undefined {
@@ -320,4 +377,8 @@ function errorToDetails(error: unknown): unknown {
 
 function createDefaultRunId(): string {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

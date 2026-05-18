@@ -16,6 +16,7 @@ import {
 import type { MonoAgentConfig } from "@worklab-ai/config";
 import {
   loadA2AAdapterConfig,
+  createA2AConsumerResponder,
   startA2AProvider,
   a2aFieldGroup,
 } from "@worklab-ai/a2a-adapter";
@@ -29,7 +30,15 @@ import {
   createAgentResponder,
   createInMemoryHistoryStore,
 } from "@worklab-ai/agent-harness";
+import type {
+  AgentHarnessRuntimeOptionsExtension,
+  AgentHarnessRuntimeOptionsInput,
+} from "@worklab-ai/agent-harness";
 import type { AgentResponder } from "@worklab-ai/agent-contracts";
+import {
+  createCollaboratorToolRuntimeExtension,
+} from "@worklab-ai/agent-orchestrator";
+import type { OrchestratorCollaborator } from "@worklab-ai/agent-orchestrator";
 import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
 import {
   createJsonlRunRecorder,
@@ -65,8 +74,6 @@ import {
   roleConfigPath,
 } from "./deployment.js";
 import {
-  createA2ACollaboratorClient,
-  createCollaborativeOrchestratorResponder,
   type MultiAgentRole,
 } from "./orchestrator-responder.js";
 
@@ -325,20 +332,9 @@ class MultiAgentDemoController implements MultiAgentDemo {
         return;
       }
 
-      const collaborative = createCollaborativeOrchestratorResponder({
-        orchestrator: this.loaded.orchestrator.responder,
-        researcher: createA2ACollaboratorClient({
-          id: "researcher",
-          label: "Researcher",
-          agentUrl: researcher.status.agentCardUrl,
-          timeoutMs: this.loaded.orchestrator.a2aConfig.consumer.timeoutMs,
-        }),
-        worker: createA2ACollaboratorClient({
-          id: "worker",
-          label: "Worker",
-          agentUrl: worker.status.agentCardUrl,
-          timeoutMs: this.loaded.orchestrator.a2aConfig.consumer.timeoutMs,
-        }),
+      const collaborative = this.createCollaborativeOrchestratorResponder({
+        researcherAgentUrl: researcher.status.agentCardUrl,
+        workerAgentUrl: worker.status.agentCardUrl,
       });
 
       this.running.orchestrator = await this.startRole("orchestrator", collaborative);
@@ -465,6 +461,57 @@ class MultiAgentDemoController implements MultiAgentDemo {
       traceSource,
       traceabilityStatus: this.traceabilityStatusFor(loaded),
     };
+  }
+
+  private createCollaborativeOrchestratorResponder(input: {
+    readonly researcherAgentUrl: string;
+    readonly workerAgentUrl: string;
+  }): AgentResponder {
+    const timeoutMs = this.loaded.orchestrator.a2aConfig.consumer.timeoutMs;
+    const collaborators: readonly OrchestratorCollaborator[] = [
+      {
+        id: "researcher",
+        label: "Researcher",
+        description: "Find current external context when it materially helps.",
+        responder: createA2AConsumerResponder({
+          agentUrl: input.researcherAgentUrl,
+          timeoutMs,
+          streamRemote: true,
+        }),
+        timeoutMs,
+      },
+      {
+        id: "worker",
+        label: "Worker",
+        description: "Inspect the dedicated local workspace with read-only tools.",
+        responder: createA2AConsumerResponder({
+          agentUrl: input.workerAgentUrl,
+          timeoutMs,
+          streamRemote: true,
+        }),
+        timeoutMs,
+      },
+    ];
+    return createConfiguredResponder(
+      this.loaded.orchestrator.coreConfig,
+      this.loaded.orchestrator.runtime,
+      {
+        runtimeOptionsForRequest: async (
+          input: AgentHarnessRuntimeOptionsInput,
+        ): Promise<AgentHarnessRuntimeOptionsExtension> => {
+          const extension = await createCollaboratorToolRuntimeExtension({
+            conversationId: input.request.conversationId,
+            originalUserMessage: input.request.userMessage,
+            abortSignal: input.request.abortSignal,
+            collaborators,
+          });
+          return {
+            runtimeOptions: extension.runtimeOptions,
+            cleanup: extension.cleanup,
+          };
+        },
+      },
+    );
   }
 
   private async startTelegram(responder: AgentResponder): Promise<MultiAgentTelegramStatus> {
@@ -648,7 +695,15 @@ async function loadRoles(input: {
   return Object.fromEntries(entries) as Record<MultiAgentRole, LoadedRole>;
 }
 
-function createConfiguredResponder(config: MonoAgentConfig, runtime: MonoRuntimeLike): AgentResponder {
+function createConfiguredResponder(
+  config: MonoAgentConfig,
+  runtime: MonoRuntimeLike,
+  options: {
+    readonly runtimeOptionsForRequest?: (
+      input: AgentHarnessRuntimeOptionsInput,
+    ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  } = {},
+): AgentResponder {
   const memory = config.memory === undefined
     ? undefined
     : createMarkdownMemoryStore({
@@ -669,6 +724,9 @@ function createConfiguredResponder(config: MonoAgentConfig, runtime: MonoRuntime
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     maxTurns: config.runtime.maxTurns,
     runtimeOptions: runtimeOptionsForLocalProvider(config.runtime.model, config.providers?.local),
+    ...(options.runtimeOptionsForRequest === undefined
+      ? {}
+      : { runtimeOptionsForRequest: options.runtimeOptionsForRequest }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     historyStore,

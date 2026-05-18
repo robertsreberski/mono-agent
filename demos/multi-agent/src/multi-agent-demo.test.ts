@@ -4,6 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
 import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
 
@@ -49,10 +52,13 @@ describe("multi-agent demo", () => {
         agentUrl: demo.orchestratorStatus.agentCardUrl,
         text: "Research current context and inspect the workspace.",
       });
-      expect(response.text).toBe("Final synthesis used collaborator reports.");
-      expect(fakeRuntime.calls.map((call) => call.role)).toEqual(["researcher", "worker", "orchestrator"]);
-      expect(String(fakeRuntime.calls[2]?.options.messages[0]?.content)).toContain("Research report with source https://example.com.");
-      expect(String(fakeRuntime.calls[2]?.options.messages[0]?.content)).toContain("Worker read the dedicated workspace.");
+      expect(response.text).toBe("Final synthesis used collaborator tool reports.");
+      expect(fakeRuntime.calls.map((call) => call.role)).toEqual(["orchestrator", "researcher", "worker"]);
+      const orchestratorCall = fakeRuntime.calls.find((call) => call.role === "orchestrator");
+      expect(orchestratorCall?.options.allowedTools).toEqual(["ask_collaborator"]);
+      expect(orchestratorCall?.options.mcpServers).toMatchObject({
+        collaborators: { type: "http" },
+      });
       expect(fakeRuntime.calls.find((call) => call.role === "researcher")?.options.allowedTools).toEqual(["WebSearch", "WebFetch"]);
       expect(fakeRuntime.calls.find((call) => call.role === "worker")?.options.allowedTools).toEqual(["Read", "Grep", "Bash"]);
 
@@ -92,6 +98,9 @@ function createFakeRuntime(): {
         async run(prompt, options) {
           calls.push({ role, prompt, options });
           options.onEvent?.({ type: "fake-event", role });
+          if (role === "orchestrator") {
+            return await runFakeOrchestrator(options);
+          }
           return {
             text: textForRole(role),
             model: options.model.model,
@@ -105,6 +114,52 @@ function createFakeRuntime(): {
   };
 }
 
+async function runFakeOrchestrator(options: RuntimeRunOptions): Promise<RuntimeResult> {
+  const serverConfig = isRecord(options.mcpServers?.collaborators)
+    ? options.mcpServers.collaborators
+    : undefined;
+  if (typeof serverConfig?.url !== "string") {
+    return {
+      text: "Missing collaborator tool.",
+      model: options.model.model,
+      sdk: options.model.sdk,
+      capabilitiesUsed: ["orchestrator"],
+      cost: { totalUsd: 0 },
+      error: "Missing collaborator tool.",
+      failureKind: "missing_collaborator_tool",
+    };
+  }
+  const client = new Client({ name: "multi-agent-demo-test", version: "0.1.0" }, { capabilities: {} });
+  await client.connect(new StreamableHTTPClientTransport(new URL(serverConfig.url)) as unknown as Transport);
+  try {
+    const researcher = await client.callTool({
+      name: "ask_collaborator",
+      arguments: {
+        id: "researcher",
+        message: "Research current context.",
+      },
+    });
+    const worker = await client.callTool({
+      name: "ask_collaborator",
+      arguments: {
+        id: "worker",
+        message: "Inspect the workspace.",
+      },
+    });
+    expect(textFromToolResult(researcher)).toContain("Research report with source https://example.com.");
+    expect(textFromToolResult(worker)).toContain("Worker read the dedicated workspace.");
+  } finally {
+    await client.close();
+  }
+  return {
+    text: "Final synthesis used collaborator tool reports.",
+    model: options.model.model,
+    sdk: options.model.sdk,
+    capabilitiesUsed: ["orchestrator", "mcp:collaborators"],
+    cost: { totalUsd: 0 },
+  };
+}
+
 function textForRole(role: MultiAgentRole): string {
   if (role === "researcher") {
     return "Research report with source https://example.com.";
@@ -113,6 +168,18 @@ function textForRole(role: MultiAgentRole): string {
     return "Worker read the dedicated workspace.";
   }
   return "Final synthesis used collaborator reports.";
+}
+
+function textFromToolResult(result: Awaited<ReturnType<Client["callTool"]>>): string {
+  const content = isRecord(result) && Array.isArray(result.content) ? result.content : [];
+  const part = content.find((entry): entry is { type: "text"; text: string } => {
+    return isRecord(entry) && entry.type === "text" && typeof entry.text === "string";
+  });
+  return part?.text ?? "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function getTraceabilityRuns(

@@ -34,6 +34,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "agent-orchestrator",
+    name: "@worklab-ai/agent-orchestrator",
+    category: "execution",
+    responsibility: "Exposes named collaborator responders to an orchestrator runtime through a bounded MCP tool.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
     dir: "config",
     name: "@worklab-ai/config",
     category: "core",

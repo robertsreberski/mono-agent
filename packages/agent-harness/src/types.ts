@@ -4,7 +4,7 @@ import type {
   AgentResponder,
   AgentResponse,
 } from "@worklab-ai/agent-contracts";
-import type { HistoryMessage } from "@worklab-ai/context";
+import type { BuiltAgentContext, HistoryMessage } from "@worklab-ai/context";
 import type { MemoryStore } from "@worklab-ai/memory-md";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@worklab-ai/observability";
 import type { MonoRuntimeLike, RuntimeExecutionMode, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
@@ -70,6 +70,9 @@ export interface AgentHarnessOptions {
   readonly effort?: string;
   readonly maxTurns?: number;
   readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent">;
+  readonly runtimeOptionsForRequest?: (
+    input: AgentHarnessRuntimeOptionsInput,
+  ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
   readonly memory?: MemoryStore;
   readonly memoryWriteMode?: MemoryWriteMode;
   readonly historyStore?: ConversationHistoryStore;
@@ -77,6 +80,17 @@ export interface AgentHarnessOptions {
   readonly recorderFactory?: (input: AgentHarnessRecorderFactoryInput) => RunRecorder;
   readonly createRunId?: () => string;
   readonly now?: () => Date;
+}
+
+export interface AgentHarnessRuntimeOptionsInput {
+  readonly request: AgentHarnessRequest;
+  readonly runId: string;
+  readonly context: BuiltAgentContext;
+}
+
+export interface AgentHarnessRuntimeOptionsExtension {
+  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent">;
+  readonly cleanup?: () => void | Promise<void>;
 }
 
 export type AgentRequestLike = AgentRequestBase;

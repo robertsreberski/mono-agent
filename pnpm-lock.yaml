@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
       '@types/node':
         specifier: ^22.15.18
         version: 22.19.19
@@ -20,6 +23,9 @@ importers:
       '@worklab-ai/agent-harness':
         specifier: workspace:^0.1.0
         version: link:packages/agent-harness
+      '@worklab-ai/agent-orchestrator':
+        specifier: workspace:^0.1.0
+        version: link:packages/agent-orchestrator
       '@worklab-ai/config':
         specifier: workspace:^0.1.0
         version: link:packages/config
@@ -107,6 +113,18 @@ importers:
       '@worklab-ai/tool-policy':
         specifier: workspace:^0.1.0
         version: link:../tool-policy
+
+  packages/agent-orchestrator:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@4.4.3)
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   packages/config:
     dependencies:
