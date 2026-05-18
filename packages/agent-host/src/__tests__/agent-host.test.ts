@@ -1,0 +1,200 @@
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
+
+import type { MonoAgentConfig } from "@worklab-ai/config";
+import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+
+import {
+  createConfiguredAgentHarness,
+  createConfiguredAgentResponder,
+  createConfiguredAgentRuntime,
+} from "../index.js";
+
+const tempDirs: string[] = [];
+
+async function tempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "agent-host-test-"));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe("agent host composition helpers", () => {
+  it("creates a responder from MonoAgentConfig with runtime, memory, tools, local providers, request extensions, and recording", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryPath = join(dir, "MEMORY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await writeFile(memoryPath, "Remember: answer briefly.", "utf8");
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "streamed " }] } });
+      return {
+        text: "Final answer",
+        model: options.model.model,
+        sdk: options.model.sdk,
+        capabilitiesUsed: ["agent-host"],
+        cost: { totalUsd: 0 },
+      };
+    });
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, memoryPath, artifactDir }),
+      runtime: fake.runtime,
+      createRunId: () => "run-host",
+      runtimeOptionsForRequest: ({ request, runId }) => {
+        expect(request.conversationId).toBe("conversation-host");
+        expect(runId).toBe("run-host");
+        return {
+          runtimeOptions: {
+            allowedTools: ["ask_collaborator"],
+            mcpServers: {
+              collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+            },
+          },
+        };
+      },
+    });
+
+    const streamText: string[] = [];
+    const response = await responder.respond(
+      { conversationId: "conversation-host", text: "What changed?", abortSignal: new AbortController().signal },
+      { append: async (delta) => { streamText.push(delta); } },
+    );
+
+    expect(response.text).toBe("Final answer");
+    expect(streamText).toEqual(["streamed "]);
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.prompt).toContain("You are Mono.");
+    expect(fake.calls[0]?.prompt).toContain("Remember: answer briefly.");
+    expect(fake.calls[0]?.options).toMatchObject({
+      cwd: dir,
+      maxTurns: 4,
+      allowedTools: ["Read", "ask_collaborator"],
+      disallowedTools: ["Write"],
+      customProvider: {
+        id: "ollama",
+        provider_type: "ollama",
+        base_url: "http://localhost:11434",
+      },
+      customModel: {
+        provider_id: "ollama",
+        model_name: "qwen3:8b",
+      },
+      mcpServers: {
+        collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+      },
+    });
+
+    const artifactFiles = await readdir(artifactDir);
+    const summaryFile = artifactFiles.find((file) => file.endsWith(".summary.json"));
+    expect(summaryFile).toBeDefined();
+    expect(await readFile(join(artifactDir, summaryFile as string), "utf8")).toContain("run-host");
+  });
+
+  it("creates a configured harness when a host wants to wrap the responder itself", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Harness answer" }));
+
+    const harness = createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: fake.runtime,
+      createRunId: () => "run-harness",
+    });
+
+    const response = await harness.run({
+      conversationId: "conversation-harness",
+      userMessage: "Hello",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("Harness answer");
+    expect(fake.calls[0]?.options.maxTurns).toBe(4);
+  });
+
+  it("creates the default Mono runtime with config workspace and artifact directory", () => {
+    const config = monoConfig({
+      dir: "/tmp/mono-agent-host",
+      identityPath: "/tmp/mono-agent-host/IDENTITY.md",
+      artifactDir: "/tmp/mono-agent-host/artifacts",
+    });
+
+    const runtime = createConfiguredAgentRuntime(config);
+
+    expect(runtime.run).toEqual(expect.any(Function));
+    expect(runtime.configureTools).toEqual(expect.any(Function));
+  });
+});
+
+function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>) {
+  const calls: Array<{ prompt: string; options: RuntimeRunOptions }> = [];
+  return {
+    calls,
+    runtime: {
+      async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push({ prompt, options });
+        return await run(prompt, options);
+      },
+    },
+  };
+}
+
+function monoConfig(input: {
+  readonly dir: string;
+  readonly identityPath: string;
+  readonly memoryPath?: string;
+  readonly artifactDir: string;
+}): MonoAgentConfig {
+  return {
+    runtime: {
+      model: { sdk: "pi", provider: "ollama", model: "qwen3:8b", reference: "pi:ollama:qwen3:8b" },
+      executionMode: "sdk",
+      maxTurns: 4,
+      workspace: input.dir,
+    },
+    providers: {
+      local: [
+        {
+          id: "ollama",
+          type: "ollama",
+          baseUrl: "http://localhost:11434",
+          enabled: true,
+          models: [{ name: "qwen3:8b", capabilities: { context_window: 32768 } }],
+        },
+      ],
+    },
+    context: {
+      identityPath: input.identityPath,
+      selectedSkills: [],
+    },
+    ...(input.memoryPath === undefined
+      ? {}
+      : {
+          memory: {
+            path: input.memoryPath,
+            maxBytes: 64_000,
+            scope: "single-file",
+            writeMode: "disabled",
+          },
+        }),
+    tools: {
+      allowedTools: ["Read"],
+      disallowedTools: ["Write"],
+    },
+    artifacts: {
+      dir: input.artifactDir,
+    },
+    traceability: {
+      registryDir: join(input.dir, "trace-sources"),
+    },
+  };
+}

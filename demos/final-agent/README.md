@@ -6,15 +6,20 @@ This is the Mono Agent final demo. It is intentionally **not** an npm package: t
 
 - `@worklab-ai/operator-console` starts a loopback settings UI for `mono-agent.config.json`, plus a Traceability view over registered agent sources and recorded run artifacts.
 - `@worklab-ai/config` loads adapter-neutral core JSON plus environment overrides.
-- `@worklab-ai/runtime-adapter` creates the runtime backed by `@worklab-ai/agent-runtime`.
-- `@worklab-ai/agent-harness` assembles context, history, memory, skills, tools, runtime calls, and responses.
-- `@worklab-ai/memory-md` provides optional Markdown memory.
-- `@worklab-ai/tool-policy` converts configured tool/MCP policy into runtime options.
-- `@worklab-ai/observability` writes JSONL events/run summaries and registers this host in the local trace source registry.
+- `@worklab-ai/agent-host` turns the core config into a runtime-backed responder.
+- `@worklab-ai/observability` registers this host in the local trace source registry.
 - `@worklab-ai/telegram-adapter` owns Telegram settings, Bot API handling, and long polling.
 - `@worklab-ai/a2a-adapter` owns A2A Agent Card discovery, loopback provider hosting, bearer auth, and remote text-task calls.
 
-`src/configuration.ts` is the only demo-local place that registers field groups, loads core plus adapter config, redacts runtime status, and resolves the artifact directory. `src/final-demo.ts` handles lifecycle: start the operator console, start Telegram and A2A independently when config is valid, build the harness/runtime responder, and stop cleanly.
+The important package-composition code is deliberately small:
+
+```ts
+const coreConfig = await loadFinalAgentCoreConfig({ env, cwd, configPath });
+const runtime = createConfiguredAgentRuntime(coreConfig);
+const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
+```
+
+`src/configuration.ts` is the only demo-local place that registers field groups, loads core plus adapter config, redacts runtime status, and resolves the artifact directory. `src/final-demo.ts` handles lifecycle: start the operator console, start Telegram and A2A independently when config is valid, build the responder, and stop cleanly.
 
 ## Run it
 

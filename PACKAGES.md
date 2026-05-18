@@ -23,6 +23,7 @@ flowchart TB
 
   subgraph Execution["execution"]
     Harness["@worklab-ai/agent-harness"]
+    Host["@worklab-ai/agent-host"]
     Orchestrator["@worklab-ai/agent-orchestrator"]
   end
 
@@ -51,14 +52,14 @@ flowchart TB
   FinalDemo --> OperatorConsole
   FinalDemo --> A2A
   FinalDemo --> Telegram
-  FinalDemo --> Harness
+  FinalDemo --> Host
   FinalDemo --> Config
 
   MultiDemo --> OperatorConsole
   MultiDemo --> A2A
   MultiDemo --> Telegram
   MultiDemo --> Orchestrator
-  MultiDemo --> Harness
+  MultiDemo --> Host
   MultiDemo --> Config
 
   OperatorConsole --> Settings
@@ -75,6 +76,12 @@ flowchart TB
   WhatsApp --> Contracts
   WhatsApp --> Settings
 
+  Host --> Harness
+  Host --> Config
+  Host --> Memory
+  Host --> Observability
+  Host --> RuntimeAdapter
+  Host --> ToolPolicy
   Harness --> Contracts
   Harness --> Context
   Harness --> Memory
@@ -98,7 +105,7 @@ flowchart TB
 | `runtime` | `@worklab-ai/runtime-adapter` |
 | `core` | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` |
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` |
-| `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-orchestrator` |
+| `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` |
 | `observability` | `@worklab-ai/observability` |
 | `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` |

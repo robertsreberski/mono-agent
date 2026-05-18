@@ -34,6 +34,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "agent-host",
+    name: "@worklab-ai/agent-host",
+    category: "execution",
+    responsibility: "Builds configured Mono Agent harnesses and responders from adapter-neutral host config.",
+    allowedDependencyCategories: ["core", "context", "runtime", "observability", "execution"],
+    publishable: true,
+  },
+  {
     dir: "agent-orchestrator",
     name: "@worklab-ai/agent-orchestrator",
     category: "execution",

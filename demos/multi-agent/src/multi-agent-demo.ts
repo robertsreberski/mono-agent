@@ -26,29 +26,18 @@ import type {
   A2AProviderStartResult,
 } from "@worklab-ai/a2a-adapter";
 import {
-  createAgentHarness,
-  createAgentResponder,
-  createInMemoryHistoryStore,
-} from "@worklab-ai/agent-harness";
-import type {
-  AgentHarnessRuntimeOptionsExtension,
-  AgentHarnessRuntimeOptionsInput,
-} from "@worklab-ai/agent-harness";
+  createConfiguredAgentResponder,
+  createConfiguredAgentRuntime,
+} from "@worklab-ai/agent-host";
 import type { AgentResponder } from "@worklab-ai/agent-contracts";
 import {
   createCollaboratorToolRuntimeExtension,
 } from "@worklab-ai/agent-orchestrator";
 import type { OrchestratorCollaborator } from "@worklab-ai/agent-orchestrator";
-import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
 import {
-  createJsonlRunRecorder,
   registerTraceSource,
 } from "@worklab-ai/observability";
 import type { TraceSourceHandle } from "@worklab-ai/observability";
-import {
-  createMonoRuntime,
-  runtimeOptionsForLocalProvider,
-} from "@worklab-ai/runtime-adapter";
 import type { MonoRuntimeLike } from "@worklab-ai/runtime-adapter";
 import {
   TelegramAdapter,
@@ -65,8 +54,6 @@ import type {
   TelegramLongPollerStartOptions,
 } from "@worklab-ai/telegram-adapter";
 import type { FieldGroup } from "@worklab-ai/settings";
-import { createToolPolicy } from "@worklab-ai/tool-policy";
-import type { ToolPolicyInput } from "@worklab-ai/tool-policy";
 
 import {
   DEFAULT_MULTI_AGENT_CONFIG_DIR,
@@ -492,26 +479,22 @@ class MultiAgentDemoController implements MultiAgentDemo {
         timeoutMs,
       },
     ];
-    return createConfiguredResponder(
-      this.loaded.orchestrator.coreConfig,
-      this.loaded.orchestrator.runtime,
-      {
-        runtimeOptionsForRequest: async (
-          input: AgentHarnessRuntimeOptionsInput,
-        ): Promise<AgentHarnessRuntimeOptionsExtension> => {
-          const extension = await createCollaboratorToolRuntimeExtension({
-            conversationId: input.request.conversationId,
-            originalUserMessage: input.request.userMessage,
-            abortSignal: input.request.abortSignal,
-            collaborators,
-          });
-          return {
-            runtimeOptions: extension.runtimeOptions,
-            cleanup: extension.cleanup,
-          };
-        },
+    return createConfiguredAgentResponder({
+      config: this.loaded.orchestrator.coreConfig,
+      runtime: this.loaded.orchestrator.runtime,
+      runtimeOptionsForRequest: async (input) => {
+        const extension = await createCollaboratorToolRuntimeExtension({
+          conversationId: input.request.conversationId,
+          originalUserMessage: input.request.userMessage,
+          abortSignal: input.request.abortSignal,
+          collaborators,
+        });
+        return {
+          runtimeOptions: extension.runtimeOptions,
+          cleanup: extension.cleanup,
+        };
       },
-    );
+    });
   }
 
   private async startTelegram(responder: AgentResponder): Promise<MultiAgentTelegramStatus> {
@@ -678,74 +661,18 @@ async function loadRoles(input: {
     });
     const runtime = input.runtimeFactory?.(role, coreConfig) ??
       input.runtime ??
-      createMonoRuntime({
-        workspace: coreConfig.runtime.workspace,
-        qaOutputDir: coreConfig.artifacts.dir,
-      });
+      createConfiguredAgentRuntime(coreConfig);
     const loaded: LoadedRole = {
       role,
       configPath: input.configPaths[role],
       coreConfig,
       a2aConfig,
       runtime,
-      responder: createConfiguredResponder(coreConfig, runtime),
+      responder: createConfiguredAgentResponder({ config: coreConfig, runtime }),
     };
     return [role, loaded] as const;
   }));
   return Object.fromEntries(entries) as Record<MultiAgentRole, LoadedRole>;
-}
-
-function createConfiguredResponder(
-  config: MonoAgentConfig,
-  runtime: MonoRuntimeLike,
-  options: {
-    readonly runtimeOptionsForRequest?: (
-      input: AgentHarnessRuntimeOptionsInput,
-    ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
-  } = {},
-): AgentResponder {
-  const memory = config.memory === undefined
-    ? undefined
-    : createMarkdownMemoryStore({
-        path: config.memory.path,
-        maxBytes: config.memory.maxBytes,
-        scope: config.memory.scope,
-      });
-  const historyStore = createInMemoryHistoryStore({ maxMessages: config.runtime.maxTurns * 2 });
-  const harness = createAgentHarness({
-    identityPath: config.context.identityPath,
-    ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
-    ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
-    selectedSkills: config.context.selectedSkills,
-    runtime,
-    model: config.runtime.model,
-    executionMode: config.runtime.executionMode,
-    cwd: config.runtime.workspace,
-    ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
-    maxTurns: config.runtime.maxTurns,
-    runtimeOptions: runtimeOptionsForLocalProvider(config.runtime.model, config.providers?.local),
-    ...(options.runtimeOptionsForRequest === undefined
-      ? {}
-      : { runtimeOptionsForRequest: options.runtimeOptionsForRequest }),
-    ...(memory === undefined ? {} : { memory }),
-    memoryWriteMode: config.memory?.writeMode ?? "disabled",
-    historyStore,
-    toolPolicy: createToolPolicy(loadToolPolicyInput(config)),
-    recorderFactory: ({ runId, conversationId }) => createJsonlRunRecorder({
-      runId,
-      conversationId,
-      artifactDir: config.artifacts.dir,
-    }),
-  });
-  return createAgentResponder({ harness }) as AgentResponder;
-}
-
-function loadToolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
-  return {
-    allowedTools: config.tools.allowedTools,
-    disallowedTools: config.tools.disallowedTools,
-    ...(config.tools.mcpConfigPath === undefined ? {} : { mcpConfigPath: config.tools.mcpConfigPath }),
-  };
 }
 
 function multiAgentTelegramMessages(): NonNullable<TelegramAdapterOptions["messages"]> {
