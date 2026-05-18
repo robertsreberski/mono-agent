@@ -13,7 +13,7 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 | `runtime` | `@worklab-ai/runtime-adapter` | `core` | The only package that wraps `@worklab-ai/agent-runtime`; parses model refs, validates execution modes, and exposes backend descriptors. |
 | `core` | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
-| `execution` | `@worklab-ai/agent-harness` | `core`, `context`, `runtime`, `observability` | Composes context, runtime, memory, history, tool policy, skills, and observability for one request. |
+| `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, and `observability` | Request execution plus bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
 | `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
@@ -35,6 +35,7 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   │   ├─ runtime-adapter ── @worklab-ai/agent-runtime
   │   ├─ skills ── context
   │   └─ tool-policy
+  ├─ agent-orchestrator ── agent-contracts, MCP SDK
   ├─ config ── settings, runtime-adapter
   ├─ tui ── config
   └─ core leaf packages as needed
@@ -98,7 +99,7 @@ See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config sh
 
 ## Multi-Agent Demo
 
-The multi-agent demo lives at `demos/multi-agent/`. It starts a Telegram-connected orchestrator plus three loopback A2A providers: the orchestrator itself for smoke tests, a researcher with web-oriented tools, and a worker with read-only local inspection tools. The orchestrator uses a deterministic collaborate-then-synthesize flow so the demo proves the real seams without adding an autonomous delegation protocol yet.
+The multi-agent demo lives at `demos/multi-agent/`. It starts a Telegram-connected orchestrator plus three loopback A2A providers: the orchestrator itself for smoke tests, a researcher with web-oriented tools, and a worker with read-only local inspection tools. The orchestrator receives one `ask_collaborator` MCP tool from `@worklab-ai/agent-orchestrator`, so the model decides whether to ask the researcher, the worker, or both multiple times before producing the final answer.
 
 The preferred deployment path writes ignored role configs and local state under `.mono-agent/multi-agent/`, checks the configured Ollama model, starts traceability, and starts the role A2A providers:
 
@@ -118,7 +119,7 @@ See [`demos/multi-agent/README.md`](./demos/multi-agent/README.md) for topology,
 
 `@worklab-ai/a2a-adapter` exposes a Mono responder over the A2A v1 protocol using the pinned `@a2a-js/sdk@1.0.0-alpha.0`. Provider mode serves the public Agent Card at `/.well-known/agent-card.json` and message/task endpoints under `/a2a/json-rpc` and `/a2a/rest`. Consumer mode discovers direct Agent Card URLs and sends text messages to remote agents.
 
-The first pass is deliberately text/task only: no central registry, gRPC hosting, push notifications, signed cards, file exchange, or autonomous tool-selected delegation. Provider binds to loopback by default; non-loopback bind or advertised public URLs require explicit config and should be deployed behind HTTPS with bearer auth.
+The A2A adapter remains deliberately text/task only: no central registry, gRPC hosting, push notifications, signed cards, file exchange, or adapter-owned delegation policy. Dynamic collaborator selection is composed above A2A by `@worklab-ai/agent-orchestrator`. Provider binds to loopback by default; non-loopback bind or advertised public URLs require explicit config and should be deployed behind HTTPS with bearer auth.
 
 ### Local Providers
 

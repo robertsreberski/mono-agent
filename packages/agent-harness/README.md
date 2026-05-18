@@ -19,6 +19,7 @@ import { createAgentHarness, createAgentResponder } from "@worklab-ai/agent-harn
 ```
 
 Hosts wire identity/context paths, runtime, model, execution mode, tool policy, history, memory, skills, and recorder factory explicitly.
+Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call and runs the returned cleanup after execution.
 
 ## Public API
 
@@ -26,7 +27,7 @@ Hosts wire identity/context paths, runtime, model, execution mode, tool policy, 
 - `createAgentResponder`, `AgentHarnessFailureError`
 - `createInMemoryHistoryStore`, `InMemoryConversationHistoryStore`
 - `NoopRunRecorder`
-- Harness, shared responder, runtime, memory, and history types from `types.ts`
+- Harness, shared responder, runtime, request-scoped runtime option, memory, and history types from `types.ts`
 
 ## Dependency Boundary
 

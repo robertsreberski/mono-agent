@@ -184,6 +184,59 @@ describe("AgentHarness", () => {
     expect(response.metadata.summary).toMatchObject({ status: "failed", failureKind: "usage_limit" });
   });
 
+  it("merges request-scoped runtime options and cleans them up after runtime execution", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const cleanupCalls: string[] = [];
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      runtimeOptions: {
+        allowedTools: ["Read"],
+        mcpServers: {
+          static: { command: "static-mcp" },
+        },
+      },
+      toolPolicy: { allowedTools: ["Grep"], disallowedTools: ["Write"] },
+      createRunId: () => "run-extension",
+      runtimeOptionsForRequest: ({ request, runId, context }) => {
+        expect(request.conversationId).toBe("conversation-extension");
+        expect(runId).toBe("run-extension");
+        expect(context.sections.map((section) => section.id)).toContain("identity");
+        return {
+          runtimeOptions: {
+            allowedTools: ["ask_collaborator"],
+            mcpServers: {
+              collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+            },
+          },
+          cleanup: async () => {
+            cleanupCalls.push("cleaned");
+          },
+        };
+      },
+    }).run({
+      conversationId: "conversation-extension",
+      userMessage: "Who should help?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("Final answer");
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "ask_collaborator"]);
+    expect(fake.calls[0]?.options.disallowedTools).toEqual(["Write"]);
+    expect(fake.calls[0]?.options.mcpServers).toEqual({
+      static: { command: "static-mcp" },
+      collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+    });
+    expect(cleanupCalls).toEqual(["cleaned"]);
+  });
+
   it("handles cancellation before runtime execution", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
