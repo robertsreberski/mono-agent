@@ -41,6 +41,9 @@ importers:
       '@worklab-ai/settings':
         specifier: workspace:^0.1.0
         version: link:packages/settings
+      '@worklab-ai/slack-adapter':
+        specifier: workspace:^0.1.0
+        version: link:packages/slack-adapter
       '@worklab-ai/telegram-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/telegram-adapter
@@ -194,6 +197,22 @@ importers:
       '@worklab-ai/context':
         specifier: workspace:^0.1.0
         version: link:../context
+
+  packages/slack-adapter:
+    dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
+      ws:
+        specifier: ^8.20.1
+        version: 8.20.1
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
 
   packages/telegram-adapter:
     dependencies:
@@ -2227,6 +2246,9 @@ packages:
 
   '@types/serve-static@2.2.0':
     resolution: {integrity: sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@vitejs/plugin-react@5.2.0':
     resolution: {integrity: sha512-YmKkfhOAi3wsB1PhJq5Scj3GXMn3WvtQ/JC0xoopuHoXSdmtdStOpFrYaT1kie2YgFBcIe64ROzMYRjCrYOdYw==}
@@ -5782,6 +5804,10 @@ snapshots:
   '@types/serve-static@2.2.0':
     dependencies:
       '@types/http-errors': 2.0.5
+      '@types/node': 22.19.19
+
+  '@types/ws@8.18.1':
+    dependencies:
       '@types/node': 22.19.19
 
   '@vitejs/plugin-react@5.2.0(vite@8.0.13(@types/node@22.19.19)(esbuild@0.27.7)(jiti@2.7.0))':

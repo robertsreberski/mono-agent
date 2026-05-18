@@ -33,6 +33,7 @@
     "@worklab-ai/observability": "workspace:^0.1.0",
     "@worklab-ai/runtime-adapter": "workspace:^0.1.0",
     "@worklab-ai/settings": "workspace:^0.1.0",
+    "@worklab-ai/slack-adapter": "workspace:^0.1.0",
     "@worklab-ai/telegram-adapter": "workspace:^0.1.0",
     "@worklab-ai/tool-policy": "workspace:^0.1.0",
     "@worklab-ai/tui": "workspace:^0.1.0",
