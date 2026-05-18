@@ -6,6 +6,8 @@ Mono Agent is a small pnpm workspace of reusable npm packages under the `@workla
 
 Package categories are catalog metadata, documentation, and architecture-guard inputs. The physical layout intentionally stays `packages/<package-name>` and published names stay `@worklab-ai/<package-name>`; a future physical move to `packages/<category>/<package-name>` would be a separate mechanical release-tooling task.
 
+See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
+
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
 | `runtime` | `@worklab-ai/runtime-adapter` | `core` | The only package that wraps `@worklab-ai/agent-runtime`; parses model refs, validates execution modes, and exposes backend descriptors. |
@@ -13,7 +15,7 @@ Package categories are catalog metadata, documentation, and architecture-guard i
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
 | `execution` | `@worklab-ai/agent-harness` | `core`, `context`, `runtime`, `observability` | Composes context, runtime, memory, history, tool policy, skills, and observability for one request. |
 | `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
-| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
+| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
 | `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition that wire config, surface, communication, harness, runtime, memory, policy, and artifacts in small host layers. |
 
@@ -23,6 +25,7 @@ Package categories are catalog metadata, documentation, and architecture-guard i
 demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ operator-console ── settings, observability
   ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
+  ├─ slack-adapter ── agent-contracts, settings, ws
   ├─ telegram-adapter ── agent-contracts, settings
   ├─ agent-harness
   │   ├─ agent-contracts
@@ -182,10 +185,10 @@ flowchart TB
   end
 
   subgraph Communication["Communication adapter choices"]
+    A2A["`@worklab-ai/a2a-adapter`\nAgent Card discovery + text tasks"]
+    Slack["`@worklab-ai/slack-adapter`\nSocket Mode + Web API"]
     Telegram["`@worklab-ai/telegram-adapter`\nBot API + long polling"]
     WhatsApp["`@worklab-ai/whatsapp-adapter`\nBaileys socket + group trigger policy"]
-    A2A["`@worklab-ai/a2a-adapter`\nAgent Card discovery + text tasks"]
-    FutureAdapter["Future Slack/webhook adapter\nsame shared responder seam"]
   end
 
   subgraph Core["Core contracts and settings"]
@@ -203,6 +206,7 @@ flowchart TB
 
   subgraph Execution["Execution layer"]
     Harness["`@worklab-ai/agent-harness`\nrequest to runtime run"]
+    Orchestrator["`@worklab-ai/agent-orchestrator`\ncollaborator MCP tool"]
     Observability["`@worklab-ai/observability`\nJSONL events + summaries + trace registry"]
   end
 
@@ -219,8 +223,9 @@ flowchart TB
   Host -. optional .-> Tui
   Host --> Telegram
   Host --> A2A
+  Host -. optional package .-> Slack
   Host -. optional package .-> WhatsApp
-  Host -. future package .-> FutureAdapter
+  Host -. optional package .-> Orchestrator
   Host --> Config
   Host --> Harness
 
@@ -232,10 +237,13 @@ flowchart TB
   Telegram --> Settings
   A2A --> Contracts
   A2A --> Settings
+  Slack --> Contracts
+  Slack --> Settings
   WhatsApp --> Contracts
   WhatsApp --> Settings
-  FutureAdapter --> Contracts
 
+  Orchestrator --> Contracts
+  Orchestrator -.->|runtime extension| Harness
   Config --> Settings
   Config --> RuntimeAdapter
   Harness --> Contracts

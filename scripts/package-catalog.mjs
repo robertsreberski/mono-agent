@@ -98,6 +98,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "slack-adapter",
+    name: "@worklab-ai/slack-adapter",
+    category: "communication",
+    responsibility: "Adapts Slack Socket Mode events to structural agent requests and streamed replies.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
     dir: "telegram-adapter",
     name: "@worklab-ai/telegram-adapter",
     category: "communication",
