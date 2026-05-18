@@ -26,6 +26,9 @@ importers:
       '@worklab-ai/agent-harness':
         specifier: workspace:^0.1.0
         version: link:packages/agent-harness
+      '@worklab-ai/agent-host':
+        specifier: workspace:^0.1.0
+        version: link:packages/agent-host
       '@worklab-ai/agent-orchestrator':
         specifier: workspace:^0.1.0
         version: link:packages/agent-orchestrator
@@ -113,6 +116,30 @@ importers:
       '@worklab-ai/skills':
         specifier: workspace:^0.1.0
         version: link:../skills
+      '@worklab-ai/tool-policy':
+        specifier: workspace:^0.1.0
+        version: link:../tool-policy
+
+  packages/agent-host:
+    dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
+      '@worklab-ai/agent-harness':
+        specifier: workspace:^0.1.0
+        version: link:../agent-harness
+      '@worklab-ai/config':
+        specifier: workspace:^0.1.0
+        version: link:../config
+      '@worklab-ai/memory-md':
+        specifier: workspace:^0.1.0
+        version: link:../memory-md
+      '@worklab-ai/observability':
+        specifier: workspace:^0.1.0
+        version: link:../observability
+      '@worklab-ai/runtime-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../runtime-adapter
       '@worklab-ai/tool-policy':
         specifier: workspace:^0.1.0
         version: link:../tool-policy

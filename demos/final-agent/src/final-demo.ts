@@ -19,21 +19,14 @@ import type {
   A2AProviderStartResult,
 } from "@worklab-ai/a2a-adapter";
 import {
-  createAgentHarness,
-  createAgentResponder,
-  createInMemoryHistoryStore,
-} from "@worklab-ai/agent-harness";
+  createConfiguredAgentResponder,
+  createConfiguredAgentRuntime,
+} from "@worklab-ai/agent-host";
 import type { AgentResponder } from "@worklab-ai/agent-contracts";
-import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
 import {
-  createJsonlRunRecorder,
   registerTraceSource,
 } from "@worklab-ai/observability";
 import type { TraceSourceHandle } from "@worklab-ai/observability";
-import {
-  createMonoRuntime,
-  runtimeOptionsForLocalProvider,
-} from "@worklab-ai/runtime-adapter";
 import type { MonoRuntimeLike } from "@worklab-ai/runtime-adapter";
 import {
   TelegramBotApiClient,
@@ -48,8 +41,6 @@ import type {
   TelegramLongPollerStartOptions,
 } from "@worklab-ai/telegram-adapter";
 import type { FieldGroup } from "@worklab-ai/settings";
-import { createToolPolicy } from "@worklab-ai/tool-policy";
-import type { ToolPolicyInput } from "@worklab-ai/tool-policy";
 import {
   FINAL_DEMO_FIELD_GROUPS,
   isFinalAgentDemoConfigError,
@@ -520,11 +511,8 @@ class FinalAgentDemoController implements FinalAgentDemo {
     try {
       const redacted = redactFinalAgentDemoConfig({ coreConfig, telegramConfig });
       const api = this.telegramApi ?? new TelegramBotApiClient({ token: telegramConfig.botToken });
-      const runtime = this.runtime ?? createMonoRuntime({
-        workspace: coreConfig.runtime.workspace,
-        qaOutputDir: coreConfig.artifacts.dir,
-      });
-      const responder = createConfiguredResponder(coreConfig, runtime);
+      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterOptions = buildAdapterOptions({
         api,
         responder,
@@ -582,11 +570,8 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createMonoRuntime({
-        workspace: coreConfig.runtime.workspace,
-        qaOutputDir: coreConfig.artifacts.dir,
-      });
-      const responder = createConfiguredResponder(coreConfig, runtime);
+      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const providerFactory = this.a2aProviderFactory ?? startA2AProvider;
       const provider = await providerFactory({
         host: a2aConfig.provider.host,
@@ -710,48 +695,6 @@ class FinalAgentDemoController implements FinalAgentDemo {
       a2a: summarizeA2AStatus(this.a2aStatusValue),
     };
   }
-}
-
-function createConfiguredResponder(config: MonoAgentConfig, runtime: MonoRuntimeLike): AgentResponder {
-  const memory = config.memory === undefined
-    ? undefined
-    : createMarkdownMemoryStore({
-        path: config.memory.path,
-        maxBytes: config.memory.maxBytes,
-        scope: config.memory.scope,
-      });
-  const historyStore = createInMemoryHistoryStore({ maxMessages: config.runtime.maxTurns * 2 });
-  const harness = createAgentHarness({
-    identityPath: config.context.identityPath,
-    ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
-    ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
-    selectedSkills: config.context.selectedSkills,
-    runtime,
-    model: config.runtime.model,
-    executionMode: config.runtime.executionMode,
-    cwd: config.runtime.workspace,
-    ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
-    maxTurns: config.runtime.maxTurns,
-    runtimeOptions: runtimeOptionsForLocalProvider(config.runtime.model, config.providers?.local),
-    ...(memory === undefined ? {} : { memory }),
-    memoryWriteMode: config.memory?.writeMode ?? "disabled",
-    historyStore,
-    toolPolicy: createToolPolicy(loadToolPolicyInput(config)),
-    recorderFactory: ({ runId, conversationId }) => createJsonlRunRecorder({
-      runId,
-      conversationId,
-      artifactDir: config.artifacts.dir,
-    }),
-  });
-  return createAgentResponder({ harness }) as AgentResponder;
-}
-
-function loadToolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
-  return {
-    allowedTools: config.tools.allowedTools,
-    disallowedTools: config.tools.disallowedTools,
-    ...(config.tools.mcpConfigPath === undefined ? {} : { mcpConfigPath: config.tools.mcpConfigPath }),
-  };
 }
 
 function buildAdapterOptions(input: {

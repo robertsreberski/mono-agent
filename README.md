@@ -13,11 +13,11 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 | `runtime` | `@worklab-ai/runtime-adapter` | `core` | The only package that wraps `@worklab-ai/agent-runtime`; parses model refs, validates execution modes, and exposes backend descriptors. |
 | `core` | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
-| `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, and `observability` | Request execution plus bounded collaborator orchestration through runtime-visible tools. |
+| `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
 | `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
-| `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition that wire config, surface, communication, harness, runtime, memory, policy, and artifacts in small host layers. |
+| `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition that load config, build responders, start surfaces/transports, and register local traces. |
 
 ## Dependency Direction
 
@@ -27,13 +27,12 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
   ├─ slack-adapter ── agent-contracts, settings, ws
   ├─ telegram-adapter ── agent-contracts, settings
-  ├─ agent-harness
-  │   ├─ agent-contracts
-  │   ├─ context
+  ├─ agent-host
+  │   ├─ config
+  │   ├─ agent-harness ── agent-contracts, context, skills, memory-md, observability, runtime-adapter, tool-policy
+  │   ├─ runtime-adapter ── @worklab-ai/agent-runtime
   │   ├─ memory-md
   │   ├─ observability
-  │   ├─ runtime-adapter ── @worklab-ai/agent-runtime
-  │   ├─ skills ── context
   │   └─ tool-policy
   ├─ agent-orchestrator ── agent-contracts, MCP SDK
   ├─ config ── settings, runtime-adapter
@@ -81,13 +80,22 @@ pnpm run build
 pnpm run demo:final
 ```
 
-The demo composes:
+The readable package-composition path is:
+
+```ts
+const coreConfig = await loadFinalAgentCoreConfig({ env, cwd, configPath });
+const runtime = createConfiguredAgentRuntime(coreConfig);
+const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
+```
+
+The demo then passes that responder to whichever adapters are enabled:
 
 - `CORE_AGENT_FIELD_GROUPS` from `@worklab-ai/config`
+- `createConfiguredAgentRuntime` and `createConfiguredAgentResponder` from `@worklab-ai/agent-host`
 - `a2aFieldGroup`, `loadA2AAdapterConfig`, and `startA2AProvider` from `@worklab-ai/a2a-adapter`
 - `telegramFieldGroup` and `loadTelegramAdapterConfig` from `@worklab-ai/telegram-adapter`
 - `startOperatorConsole` from `@worklab-ai/operator-console`
-- the harness, runtime adapter, memory, tool policy, and observability packages
+- `registerTraceSource` from `@worklab-ai/observability`
 
 ### Host Traceability
 
@@ -206,6 +214,7 @@ flowchart TB
   end
 
   subgraph Execution["Execution layer"]
+    AgentHost["`@worklab-ai/agent-host`\nconfig to responder"]
     Harness["`@worklab-ai/agent-harness`\nrequest to runtime run"]
     Orchestrator["`@worklab-ai/agent-orchestrator`\ncollaborator MCP tool"]
     Observability["`@worklab-ai/observability`\nJSONL events + summaries + trace registry"]
@@ -228,7 +237,7 @@ flowchart TB
   Host -. optional package .-> WhatsApp
   Host -. optional package .-> Orchestrator
   Host --> Config
-  Host --> Harness
+  Host --> AgentHost
 
   Console --> Settings
   Console --> Observability
@@ -245,6 +254,12 @@ flowchart TB
 
   Orchestrator --> Contracts
   Orchestrator -.->|runtime extension| Harness
+  AgentHost --> Config
+  AgentHost --> Harness
+  AgentHost --> Memory
+  AgentHost --> Policy
+  AgentHost --> RuntimeAdapter
+  AgentHost --> Observability
   Config --> Settings
   Config --> RuntimeAdapter
   Harness --> Contracts

@@ -1,0 +1,34 @@
+{
+  "name": "@worklab-ai/agent-host",
+  "version": "0.1.0",
+  "description": "Host composition helpers for Mono Agent responders.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
+    "@worklab-ai/agent-harness": "workspace:^0.1.0",
+    "@worklab-ai/config": "workspace:^0.1.0",
+    "@worklab-ai/memory-md": "workspace:^0.1.0",
+    "@worklab-ai/observability": "workspace:^0.1.0",
+    "@worklab-ai/runtime-adapter": "workspace:^0.1.0",
+    "@worklab-ai/tool-policy": "workspace:^0.1.0"
+  }
+}

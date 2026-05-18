@@ -2,13 +2,22 @@
 
 This non-package demo proves a three-agent Mono Agent topology using reusable orchestration and communication packages.
 
+Each role uses `@worklab-ai/agent-host` for the core config-to-responder step:
+
+```ts
+const runtime = createConfiguredAgentRuntime(coreConfig);
+const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
+```
+
+The orchestrator keeps the same shape, but adds one request-scoped runtime extension from `@worklab-ai/agent-orchestrator` so the model can call collaborators through a bounded `ask_collaborator` MCP tool.
+
 ## Topology
 
 - Orchestrator: connected to Telegram when credentials are configured, exposed over loopback A2A for smoke tests, and responsible for deciding which collaborator to ask before final synthesis.
 - Researcher: loopback A2A provider with `WebSearch` and `WebFetch` allowed.
 - Worker: loopback A2A provider with `Read`, `Grep`, and `Bash` allowed, and `Write`/`Edit` disallowed.
 
-The orchestration is model-directed through a bounded tool. Every user request gives the orchestrator runtime an `ask_collaborator` MCP tool backed by `@worklab-ai/agent-orchestrator`; the model may ask the researcher, the worker, both, or either one multiple times before producing the final answer. Collaborator failures return visible tool errors instead of hidden fallback success.
+The orchestration is model-directed through that bounded tool. The model may ask the researcher, the worker, both, or either one multiple times before producing the final answer. Collaborator failures return visible tool errors instead of hidden fallback success.
 
 ## Stop The Final Demo First
 
