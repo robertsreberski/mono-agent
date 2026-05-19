@@ -19,6 +19,22 @@ import type {
   A2AProviderStartResult,
 } from "@worklab-ai/a2a-adapter";
 import {
+  startWebhookAdapter,
+} from "@worklab-ai/webhook-adapter";
+import type {
+  WebhookAdapterConfig,
+  WebhookAdapterOptions,
+  WebhookAdapterStartResult,
+} from "@worklab-ai/webhook-adapter";
+import {
+  startCronAdapter,
+} from "@worklab-ai/cron-adapter";
+import type {
+  CronAdapterConfig,
+  CronAdapterOptions,
+  CronAdapterStartResult,
+} from "@worklab-ai/cron-adapter";
+import {
   createConfiguredAgentResponder,
   createConfiguredAgentRuntime,
 } from "@worklab-ai/agent-host";
@@ -46,7 +62,9 @@ import {
   isFinalAgentDemoConfigError,
   loadFinalAgentA2AConfig,
   loadFinalAgentCoreConfig,
+  loadFinalAgentCronConfig,
   loadFinalAgentTelegramConfig,
+  loadFinalAgentWebhookConfig,
   redactFinalAgentDemoConfig,
   resolveFinalDemoArtifactDir,
   resolveFinalDemoTraceRegistryDir,
@@ -83,6 +101,8 @@ export interface FinalAgentDemoOptions {
   readonly telegramApi?: TelegramBotApi;
   readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
   readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
+  readonly webhookAdapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
+  readonly cronAdapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
   readonly operatorConsoleFactory?: (options: OperatorConsoleOptions) => Promise<OperatorConsoleStartResult>;
   readonly fieldGroups?: readonly FieldGroup[];
 }
@@ -111,6 +131,26 @@ export type A2AStatus =
     }
   | { readonly kind: "failed"; readonly reason: string };
 
+export type WebhookStatus =
+  | { readonly kind: "disabled"; readonly reason: string }
+  | { readonly kind: "waiting_for_config"; readonly reason: string }
+  | {
+      readonly kind: "running";
+      readonly invokeUrl: string;
+      readonly config: RedactedFinalAgentDemoConfig;
+    }
+  | { readonly kind: "failed"; readonly reason: string };
+
+export type CronStatus =
+  | { readonly kind: "disabled"; readonly reason: string }
+  | { readonly kind: "waiting_for_config"; readonly reason: string }
+  | {
+      readonly kind: "running";
+      readonly jobs: number;
+      readonly config: RedactedFinalAgentDemoConfig;
+    }
+  | { readonly kind: "failed"; readonly reason: string };
+
 export type TraceabilityStatus =
   | {
       readonly kind: "running";
@@ -125,10 +165,14 @@ export interface FinalAgentDemo {
   readonly operatorConsole: FinalAgentDemoOperatorConsole;
   readonly telegramStatus: TelegramStatus;
   readonly a2aStatus: A2AStatus;
+  readonly webhookStatus: WebhookStatus;
+  readonly cronStatus: CronStatus;
   readonly traceabilityStatus: TraceabilityStatus;
   applyConfigChange(reason: string): Promise<ConfigApplyResult>;
   startTelegramIfConfigured(reason: string): Promise<TelegramStatus>;
   startA2AIfConfigured(reason: string): Promise<A2AStatus>;
+  startWebhookIfConfigured(reason: string): Promise<WebhookStatus>;
+  startCronIfConfigured(reason: string): Promise<CronStatus>;
   stop(): Promise<void>;
 }
 
@@ -141,6 +185,14 @@ interface RunningA2A {
   readonly provider: A2AProviderStartResult;
 }
 
+interface RunningWebhook {
+  readonly adapter: WebhookAdapterStartResult;
+}
+
+interface RunningCron {
+  readonly adapter: CronAdapterStartResult;
+}
+
 interface FinalAgentDemoControllerOptions extends Required<Pick<FinalAgentDemoOptions, "cwd" | "configPath">> {
   readonly env: Record<string, string | undefined>;
   readonly logger?: FinalAgentDemoLogger;
@@ -148,6 +200,8 @@ interface FinalAgentDemoControllerOptions extends Required<Pick<FinalAgentDemoOp
   readonly telegramApi?: TelegramBotApi;
   readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
   readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
+  readonly webhookAdapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
+  readonly cronAdapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
 }
 
 export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): Promise<FinalAgentDemo> {
@@ -199,12 +253,16 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
     ...(options.telegramApi === undefined ? {} : { telegramApi: options.telegramApi }),
     ...(options.pollerFactory === undefined ? {} : { pollerFactory: options.pollerFactory }),
     ...(options.a2aProviderFactory === undefined ? {} : { a2aProviderFactory: options.a2aProviderFactory }),
+    ...(options.webhookAdapterFactory === undefined ? {} : { webhookAdapterFactory: options.webhookAdapterFactory }),
+    ...(options.cronAdapterFactory === undefined ? {} : { cronAdapterFactory: options.cronAdapterFactory }),
   });
 
   await controller.startTraceability("startup");
   await Promise.all([
     controller.startTelegramIfConfigured("startup"),
     controller.startA2AIfConfigured("startup"),
+    controller.startWebhookIfConfigured("startup"),
+    controller.startCronIfConfigured("startup"),
   ]);
   await controller.refreshTraceSource("startup-complete");
   return controller;
@@ -221,6 +279,8 @@ class FinalAgentDemoController implements FinalAgentDemo {
   private readonly telegramApi: TelegramBotApi | undefined;
   private readonly pollerFactory: ((options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike) | undefined;
   private readonly a2aProviderFactory: ((options: A2AProviderOptions) => Promise<A2AProviderStartResult>) | undefined;
+  private readonly webhookAdapterFactory: ((options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>) | undefined;
+  private readonly cronAdapterFactory: ((options: CronAdapterOptions) => CronAdapterStartResult) | undefined;
   private telegramStatusValue: TelegramStatus = {
     kind: "waiting_for_config",
     reason: "Telegram has not been configured yet.",
@@ -229,15 +289,27 @@ class FinalAgentDemoController implements FinalAgentDemo {
     kind: "disabled",
     reason: "A2A provider is disabled.",
   };
+  private webhookStatusValue: WebhookStatus = {
+    kind: "disabled",
+    reason: "Webhook adapter is disabled.",
+  };
+  private cronStatusValue: CronStatus = {
+    kind: "disabled",
+    reason: "Cron adapter is disabled.",
+  };
   private traceabilityStatusValue: TraceabilityStatus = {
     kind: "disabled",
     reason: "Traceability has not started yet.",
   };
   private telegramStartInFlight: Promise<TelegramStatus> | undefined;
   private a2aStartInFlight: Promise<A2AStatus> | undefined;
+  private webhookStartInFlight: Promise<WebhookStatus> | undefined;
+  private cronStartInFlight: Promise<CronStatus> | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
   private runningTelegram: RunningTelegram | undefined;
   private runningA2A: RunningA2A | undefined;
+  private runningWebhook: RunningWebhook | undefined;
+  private runningCron: RunningCron | undefined;
   private traceSource: TraceSourceHandle | undefined;
   private stopped = false;
 
@@ -251,6 +323,8 @@ class FinalAgentDemoController implements FinalAgentDemo {
     readonly telegramApi?: TelegramBotApi;
     readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
     readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
+    readonly webhookAdapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
+    readonly cronAdapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
   }) {
     this.consoleServer = input.consoleServer;
     this.cwd = input.cwd;
@@ -261,6 +335,8 @@ class FinalAgentDemoController implements FinalAgentDemo {
     this.telegramApi = input.telegramApi;
     this.pollerFactory = input.pollerFactory;
     this.a2aProviderFactory = input.a2aProviderFactory;
+    this.webhookAdapterFactory = input.webhookAdapterFactory;
+    this.cronAdapterFactory = input.cronAdapterFactory;
     this.operatorConsole = {
       url: input.consoleServer.url,
       appUrl: `${input.consoleServer.url}/?t=${input.consoleServer.token}`,
@@ -275,6 +351,14 @@ class FinalAgentDemoController implements FinalAgentDemo {
 
   get a2aStatus(): A2AStatus {
     return this.a2aStatusValue;
+  }
+
+  get webhookStatus(): WebhookStatus {
+    return this.webhookStatusValue;
+  }
+
+  get cronStatus(): CronStatus {
+    return this.cronStatusValue;
   }
 
   get traceabilityStatus(): TraceabilityStatus {
@@ -292,11 +376,15 @@ class FinalAgentDemoController implements FinalAgentDemo {
       }
       await this.stopTelegram(`${reason}:reload`);
       await this.stopA2A(`${reason}:reload`);
+      await this.stopWebhook(`${reason}:reload`);
+      await this.stopCron(`${reason}:reload`);
       await this.stopTraceSource(`${reason}:reload`);
       await this.startTraceability(reason);
       await Promise.all([
         this.startTelegramIfConfigured(reason),
         this.startA2AIfConfigured(reason),
+        this.startWebhookIfConfigured(reason),
+        this.startCronIfConfigured(reason),
       ]);
       await this.refreshTraceSource(`${reason}:complete`);
       return this.applyResult(reason);
@@ -411,6 +499,48 @@ class FinalAgentDemoController implements FinalAgentDemo {
     return status;
   }
 
+  async startWebhookIfConfigured(reason: string): Promise<WebhookStatus> {
+    if (this.stopped) {
+      return this.webhookStatusValue;
+    }
+    if (this.runningWebhook !== undefined) {
+      await this.refreshTraceSource(reason);
+      return this.webhookStatusValue;
+    }
+    if (this.webhookStartInFlight !== undefined) {
+      return await this.webhookStartInFlight;
+    }
+
+    this.webhookStartInFlight = this.startWebhook(reason)
+      .finally(() => {
+        this.webhookStartInFlight = undefined;
+      });
+    const status = await this.webhookStartInFlight;
+    await this.refreshTraceSource(reason);
+    return status;
+  }
+
+  async startCronIfConfigured(reason: string): Promise<CronStatus> {
+    if (this.stopped) {
+      return this.cronStatusValue;
+    }
+    if (this.runningCron !== undefined) {
+      await this.refreshTraceSource(reason);
+      return this.cronStatusValue;
+    }
+    if (this.cronStartInFlight !== undefined) {
+      return await this.cronStartInFlight;
+    }
+
+    this.cronStartInFlight = this.startCron(reason)
+      .finally(() => {
+        this.cronStartInFlight = undefined;
+      });
+    const status = await this.cronStartInFlight;
+    await this.refreshTraceSource(reason);
+    return status;
+  }
+
   async stop(): Promise<void> {
     if (this.stopped) {
       return;
@@ -418,6 +548,8 @@ class FinalAgentDemoController implements FinalAgentDemo {
     this.stopped = true;
     await this.stopTelegram("stop");
     await this.stopA2A("stop");
+    await this.stopWebhook("stop");
+    await this.stopCron("stop");
     await this.stopTraceSource("stop");
     await this.consoleServer.stop();
   }
@@ -454,6 +586,36 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
+  private async stopWebhook(reason: string): Promise<void> {
+    const running = this.runningWebhook;
+    if (running === undefined) {
+      return;
+    }
+    this.runningWebhook = undefined;
+    await running.adapter.stop().catch((error: unknown) => {
+      this.logger?.warn?.("Webhook adapter did not stop cleanly.", { reason, error: reasonOf(error) });
+    });
+    if (!this.stopped) {
+      this.webhookStatusValue = { kind: "disabled", reason: "Webhook adapter stopped while applying config." };
+    }
+  }
+
+  private async stopCron(reason: string): Promise<void> {
+    const running = this.runningCron;
+    if (running === undefined) {
+      return;
+    }
+    this.runningCron = undefined;
+    try {
+      running.adapter.stop();
+    } catch (error) {
+      this.logger?.warn?.("Cron adapter did not stop cleanly.", { reason, error: reasonOf(error) });
+    }
+    if (!this.stopped) {
+      this.cronStatusValue = { kind: "disabled", reason: "Cron adapter stopped while applying config." };
+    }
+  }
+
   private async stopTraceSource(reason: string): Promise<void> {
     const traceSource = this.traceSource;
     if (traceSource === undefined) {
@@ -473,7 +635,13 @@ class FinalAgentDemoController implements FinalAgentDemo {
 
   private applyResult(reason: string): ConfigApplyResult {
     const transports = this.activeTransports();
-    const failure = firstFailureReason(this.telegramStatusValue, this.a2aStatusValue, this.traceabilityStatusValue);
+    const failure = firstFailureReason(
+      this.telegramStatusValue,
+      this.a2aStatusValue,
+      this.webhookStatusValue,
+      this.cronStatusValue,
+      this.traceabilityStatusValue,
+    );
     if (failure !== undefined) {
       return {
         kind: "failed",
@@ -482,8 +650,16 @@ class FinalAgentDemoController implements FinalAgentDemo {
       };
     }
 
-    const hasRunningAgentTransport = this.telegramStatusValue.kind === "running" || this.a2aStatusValue.kind === "running";
-    if (!hasRunningAgentTransport && (this.telegramStatusValue.kind === "waiting_for_config" || this.a2aStatusValue.kind === "waiting_for_config")) {
+    const hasRunningAgentTransport = this.telegramStatusValue.kind === "running" ||
+      this.a2aStatusValue.kind === "running" ||
+      this.webhookStatusValue.kind === "running" ||
+      this.cronStatusValue.kind === "running";
+    if (!hasRunningAgentTransport && (
+      this.telegramStatusValue.kind === "waiting_for_config" ||
+      this.a2aStatusValue.kind === "waiting_for_config" ||
+      this.webhookStatusValue.kind === "waiting_for_config" ||
+      this.cronStatusValue.kind === "waiting_for_config"
+    )) {
       return {
         kind: "waiting_for_config",
         message: "Saved config, but no agent transport is running yet.",
@@ -618,7 +794,111 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
-  private async loadCoreConfigOrWait(adapter: "telegram" | "a2a"): Promise<MonoAgentConfig | undefined> {
+  private async startWebhook(reason: string): Promise<WebhookStatus> {
+    const webhookConfig = await this.loadWebhookConfigOrWait();
+    if (webhookConfig === undefined) {
+      return this.webhookStatusValue;
+    }
+    if (!webhookConfig.enabled) {
+      this.webhookStatusValue = { kind: "disabled", reason: "Webhook adapter is disabled." };
+      return this.webhookStatusValue;
+    }
+    const coreConfig = await this.loadCoreConfigOrWait("webhook");
+    if (coreConfig === undefined) {
+      return this.webhookStatusValue;
+    }
+
+    try {
+      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
+      const adapterFactory = this.webhookAdapterFactory ?? startWebhookAdapter;
+      const adapter = await adapterFactory({
+        host: webhookConfig.host,
+        port: webhookConfig.port,
+        path: webhookConfig.path,
+        allowNonLoopback: webhookConfig.allowNonLoopback,
+        defaultMode: webhookConfig.defaultMode,
+        retentionMs: webhookConfig.retentionMs,
+        maxStoredRequests: webhookConfig.maxStoredRequests,
+        responder,
+        ...(this.logger === undefined ? {} : { logger: this.logger }),
+      });
+      const redacted = redactFinalAgentDemoConfig({ coreConfig, webhookConfig });
+      this.runningWebhook = { adapter };
+      this.webhookStatusValue = {
+        kind: "running",
+        invokeUrl: adapter.invokeUrl,
+        config: redacted,
+      };
+      this.logger?.info?.("Webhook adapter is running.", {
+        reason,
+        invokeUrl: adapter.invokeUrl,
+        config: redacted,
+      });
+      return this.webhookStatusValue;
+    } catch (error) {
+      const failure = reasonOf(error);
+      this.webhookStatusValue = { kind: "failed", reason: failure };
+      this.logger?.error?.("Webhook adapter failed to start.", { reason: failure });
+      return this.webhookStatusValue;
+    }
+  }
+
+  private async startCron(reason: string): Promise<CronStatus> {
+    const cronConfig = await this.loadCronConfigOrWait();
+    if (cronConfig === undefined) {
+      return this.cronStatusValue;
+    }
+    const jobs = cronConfig.jobs.filter((job) => job.enabled);
+    if (jobs.length === 0) {
+      this.cronStatusValue = { kind: "disabled", reason: "Cron adapter has no enabled jobs." };
+      return this.cronStatusValue;
+    }
+    const coreConfig = await this.loadCoreConfigOrWait("cron");
+    if (coreConfig === undefined) {
+      return this.cronStatusValue;
+    }
+
+    try {
+      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
+      const adapterFactory = this.cronAdapterFactory ?? startCronAdapter;
+      const adapter = adapterFactory({
+        responder,
+        jobs: jobs.map((job) => ({
+          id: job.id,
+          expression: job.expression,
+          timezone: job.timezone,
+          prompt: job.prompt,
+          ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
+        })),
+        onResult: (result) => {
+          this.logger?.[result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info"]?.("Cron job finished.", { result });
+        },
+        ...(this.logger === undefined ? {} : { logger: this.logger }),
+      });
+      const redacted = redactFinalAgentDemoConfig({ coreConfig, cronConfig });
+      this.runningCron = { adapter };
+      this.cronStatusValue = {
+        kind: "running",
+        jobs: adapter.jobs.length,
+        config: redacted,
+      };
+      this.logger?.info?.("Cron adapter is running.", {
+        reason,
+        jobs: adapter.jobs.length,
+        config: redacted,
+      });
+      return this.cronStatusValue;
+    } catch (error) {
+      const failure = reasonOf(error);
+      this.cronStatusValue = { kind: "failed", reason: failure };
+      this.logger?.error?.("Cron adapter failed to start.", { reason: failure });
+      return this.cronStatusValue;
+    }
+  }
+
+  private async loadCoreConfigOrWait(adapter: "telegram" | "a2a" | "webhook" | "cron"): Promise<MonoAgentConfig | undefined> {
     try {
       return await loadFinalAgentCoreConfig({
         env: this.env,
@@ -629,8 +909,12 @@ class FinalAgentDemoController implements FinalAgentDemo {
       if (isFinalAgentDemoConfigError(error)) {
         if (adapter === "telegram") {
           this.telegramStatusValue = { kind: "waiting_for_config", reason: error.message };
-        } else {
+        } else if (adapter === "a2a") {
           this.a2aStatusValue = { kind: "waiting_for_config", reason: error.message };
+        } else if (adapter === "webhook") {
+          this.webhookStatusValue = { kind: "waiting_for_config", reason: error.message };
+        } else {
+          this.cronStatusValue = { kind: "waiting_for_config", reason: error.message };
         }
         this.logger?.info?.("Waiting for a valid Mono Agent config.", { reason: error.message });
         return undefined;
@@ -673,6 +957,40 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
+  private async loadWebhookConfigOrWait(): Promise<WebhookAdapterConfig | undefined> {
+    try {
+      return await loadFinalAgentWebhookConfig({
+        env: this.env,
+        cwd: this.cwd,
+        configPath: this.configPath,
+      });
+    } catch (error) {
+      if (isFinalAgentDemoConfigError(error)) {
+        this.webhookStatusValue = { kind: "waiting_for_config", reason: error.message };
+        this.logger?.info?.("Waiting for a valid Webhook config.", { reason: error.message });
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  private async loadCronConfigOrWait(): Promise<CronAdapterConfig | undefined> {
+    try {
+      return await loadFinalAgentCronConfig({
+        env: this.env,
+        cwd: this.cwd,
+        configPath: this.configPath,
+      });
+    } catch (error) {
+      if (isFinalAgentDemoConfigError(error)) {
+        this.cronStatusValue = { kind: "waiting_for_config", reason: error.message };
+        this.logger?.info?.("Waiting for a valid Cron config.", { reason: error.message });
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   private activeTransports(): readonly string[] {
     const transports = ["operator-console"];
     if (this.telegramStatusValue.kind === "running") {
@@ -680,6 +998,12 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
     if (this.a2aStatusValue.kind === "running") {
       transports.push("a2a");
+    }
+    if (this.webhookStatusValue.kind === "running") {
+      transports.push("webhook");
+    }
+    if (this.cronStatusValue.kind === "running") {
+      transports.push("cron");
     }
     return transports;
   }
@@ -693,6 +1017,8 @@ class FinalAgentDemoController implements FinalAgentDemo {
       },
       telegram: summarizeTelegramStatus(this.telegramStatusValue),
       a2a: summarizeA2AStatus(this.a2aStatusValue),
+      webhook: summarizeWebhookStatus(this.webhookStatusValue),
+      cron: summarizeCronStatus(this.cronStatusValue),
     };
   }
 }
@@ -758,9 +1084,25 @@ function summarizeA2AStatus(status: A2AStatus): Record<string, unknown> {
   return { kind: status.kind, reason: status.reason };
 }
 
+function summarizeWebhookStatus(status: WebhookStatus): Record<string, unknown> {
+  if (status.kind === "running") {
+    return { kind: "running", invokeUrl: status.invokeUrl };
+  }
+  return { kind: status.kind, reason: status.reason };
+}
+
+function summarizeCronStatus(status: CronStatus): Record<string, unknown> {
+  if (status.kind === "running") {
+    return { kind: "running", jobs: status.jobs };
+  }
+  return { kind: status.kind, reason: status.reason };
+}
+
 function firstFailureReason(
   telegram: TelegramStatus,
   a2a: A2AStatus,
+  webhook: WebhookStatus,
+  cron: CronStatus,
   traceability: TraceabilityStatus,
 ): string | undefined {
   if (telegram.kind === "failed") {
@@ -768,6 +1110,12 @@ function firstFailureReason(
   }
   if (a2a.kind === "failed") {
     return a2a.reason;
+  }
+  if (webhook.kind === "failed") {
+    return webhook.reason;
+  }
+  if (cron.kind === "failed") {
+    return cron.reason;
   }
   if (traceability.kind === "failed") {
     return traceability.reason;

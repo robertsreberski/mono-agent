@@ -35,6 +35,7 @@
     "@worklab-ai/agent-orchestrator": "workspace:^0.1.0",
     "@worklab-ai/config": "workspace:^0.1.0",
     "@worklab-ai/context": "workspace:^0.1.0",
+    "@worklab-ai/cron-adapter": "workspace:^0.1.0",
     "@worklab-ai/memory-md": "workspace:^0.1.0",
     "@worklab-ai/observability": "workspace:^0.1.0",
     "@worklab-ai/operator-console": "workspace:^0.1.0",
@@ -44,6 +45,7 @@
     "@worklab-ai/telegram-adapter": "workspace:^0.1.0",
     "@worklab-ai/tool-policy": "workspace:^0.1.0",
     "@worklab-ai/tui": "workspace:^0.1.0",
+    "@worklab-ai/webhook-adapter": "workspace:^0.1.0",
     "@worklab-ai/whatsapp-adapter": "workspace:^0.1.0",
     "typescript": "^5.8.3",
     "vitest": "^3.1.4"

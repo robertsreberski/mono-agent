@@ -16,9 +16,11 @@ flowchart TB
 
   subgraph Communication["communication"]
     A2A["@worklab-ai/a2a-adapter"]
+    Cron["@worklab-ai/cron-adapter"]
     Slack["@worklab-ai/slack-adapter"]
     Telegram["@worklab-ai/telegram-adapter"]
     WhatsApp["@worklab-ai/whatsapp-adapter"]
+    Webhook["@worklab-ai/webhook-adapter"]
   end
 
   subgraph Execution["execution"]
@@ -73,12 +75,16 @@ flowchart TB
 
   A2A --> Contracts
   A2A --> Settings
+  Cron --> Contracts
+  Cron --> Settings
   Slack --> Contracts
   Slack --> Settings
   Telegram --> Contracts
   Telegram --> Settings
   WhatsApp --> Contracts
   WhatsApp --> Settings
+  Webhook --> Contracts
+  Webhook --> Settings
 
   Host --> Harness
   Host --> Config
@@ -115,5 +121,5 @@ flowchart TB
 | `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` |
 | `observability` | `@worklab-ai/observability` |
 | `evaluation` | `@worklab-ai/agent-evals` |
-| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` |
+| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/cron-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/webhook-adapter`, `@worklab-ai/whatsapp-adapter` |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` |

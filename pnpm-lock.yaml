@@ -41,6 +41,9 @@ importers:
       '@worklab-ai/context':
         specifier: workspace:^0.1.0
         version: link:packages/context
+      '@worklab-ai/cron-adapter':
+        specifier: workspace:^0.1.0
+        version: link:packages/cron-adapter
       '@worklab-ai/memory-md':
         specifier: workspace:^0.1.0
         version: link:packages/memory-md
@@ -68,6 +71,9 @@ importers:
       '@worklab-ai/tui':
         specifier: workspace:^0.1.0
         version: link:packages/tui
+      '@worklab-ai/webhook-adapter':
+        specifier: workspace:^0.1.0
+        version: link:packages/webhook-adapter
       '@worklab-ai/whatsapp-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/whatsapp-adapter
@@ -184,6 +190,18 @@ importers:
         version: link:../settings
 
   packages/context: {}
+
+  packages/cron-adapter:
+    dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
+      cron-parser:
+        specifier: ^5.5.0
+        version: 5.5.0
 
   packages/memory-md: {}
 
@@ -318,6 +336,22 @@ importers:
       ink-testing-library:
         specifier: ^4.0.0
         version: 4.0.0(@types/react@19.2.14)
+
+  packages/webhook-adapter:
+    dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
 
   packages/whatsapp-adapter:
     dependencies:
@@ -2678,6 +2712,10 @@ packages:
     resolution: {integrity: sha512-tJtZBBHA6vjIAaF6EnIaq6laBBP9aq/Y3ouVJjEfoHbRBcHBAHYcMh/w8LDrk2PvIMMq8gmopa5D4V8RmbrxGw==}
     engines: {node: '>= 0.10'}
 
+  cron-parser@5.5.0:
+    resolution: {integrity: sha512-oML4lKUXxizYswqmxuOCpgFS8BNUJpIu6k/2HVHyaL8Ynnf3wdf9tkns0yRdJLSIjkJ+b0DXHMZEHGpMwjnPww==}
+    engines: {node: '>=18'}
+
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
@@ -3296,6 +3334,10 @@ packages:
 
   lru-cache@7.18.3:
     resolution: {integrity: sha512-jumlc0BIUrS3qJGgIkWZsyfAM7NCWiBcCDhnd+3NNM5KbBmLTgHVfWBcg6W+rLUsIpzpERPsvwUP7CckAQSOoA==}
+    engines: {node: '>=12'}
+
+  luxon@3.7.2:
+    resolution: {integrity: sha512-vtEhXh/gNjI9Yg1u4jX/0YVPMvxzHuGgCm6tC5kZyb08yjGWGnqAjGJvcXbqQR2P3MyMEFnRbpcdFS6PBcLqew==}
     engines: {node: '>=12'}
 
   lz-string@1.5.0:
@@ -6606,6 +6648,10 @@ snapshots:
       object-assign: 4.1.1
       vary: 1.1.2
 
+  cron-parser@5.5.0:
+    dependencies:
+      luxon: 3.7.2
+
   cross-spawn@7.0.6:
     dependencies:
       path-key: 3.1.1
@@ -7228,6 +7274,8 @@ snapshots:
       yallist: 3.1.1
 
   lru-cache@7.18.3: {}
+
+  luxon@3.7.2: {}
 
   lz-string@1.5.0: {}
 

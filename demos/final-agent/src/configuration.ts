@@ -35,11 +35,33 @@ import type {
   RedactedTelegramAdapterConfig,
   TelegramAdapterConfig,
 } from "@worklab-ai/telegram-adapter";
+import {
+  loadWebhookAdapterConfig,
+  redactWebhookAdapterConfig,
+  webhookFieldGroup,
+  WebhookAdapterError,
+} from "@worklab-ai/webhook-adapter";
+import type {
+  RedactedWebhookAdapterConfig,
+  WebhookAdapterConfig,
+} from "@worklab-ai/webhook-adapter";
+import {
+  cronFieldGroup,
+  CronAdapterError,
+  loadCronAdapterConfig,
+  redactCronAdapterConfig,
+} from "@worklab-ai/cron-adapter";
+import type {
+  CronAdapterConfig,
+  RedactedCronAdapterConfig,
+} from "@worklab-ai/cron-adapter";
 
 export const FINAL_DEMO_FIELD_GROUPS: readonly FieldGroup[] = [
   ...CORE_AGENT_FIELD_GROUPS,
   telegramFieldGroup,
   a2aFieldGroup,
+  webhookFieldGroup,
+  cronFieldGroup,
 ];
 
 export interface FinalAgentDemoConfigInput {
@@ -52,12 +74,16 @@ export interface LoadedFinalAgentDemoConfig {
   readonly coreConfig: MonoAgentConfig;
   readonly telegramConfig?: TelegramAdapterConfig;
   readonly a2aConfig?: A2AAdapterConfig;
+  readonly webhookConfig?: WebhookAdapterConfig;
+  readonly cronConfig?: CronAdapterConfig;
 }
 
 export interface RedactedFinalAgentDemoConfig {
   readonly core: RedactedMonoAgentConfig;
   readonly telegram?: RedactedTelegramAdapterConfig;
   readonly a2a?: RedactedA2AAdapterConfig;
+  readonly webhook?: RedactedWebhookAdapterConfig;
+  readonly cron?: RedactedCronAdapterConfig;
 }
 
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
@@ -67,7 +93,9 @@ export type FinalAgentDemoConfigError =
   | MonoAgentConfigError
   | TelegramAdapterConfigError
   | A2AProviderError
-  | A2AConsumerError;
+  | A2AConsumerError
+  | WebhookAdapterError
+  | CronAdapterError;
 
 export async function loadFinalAgentCoreConfig(
   input: FinalAgentDemoConfigInput,
@@ -97,13 +125,33 @@ export async function loadFinalAgentA2AConfig(
   });
 }
 
+export async function loadFinalAgentWebhookConfig(
+  input: FinalAgentDemoConfigInput,
+): Promise<WebhookAdapterConfig> {
+  return await loadWebhookAdapterConfig({
+    env: input.env,
+    jsonPath: input.configPath,
+  });
+}
+
+export async function loadFinalAgentCronConfig(
+  input: FinalAgentDemoConfigInput,
+): Promise<CronAdapterConfig> {
+  return await loadCronAdapterConfig({
+    env: input.env,
+    jsonPath: input.configPath,
+  });
+}
+
 export async function loadFinalAgentDemoConfig(
   input: FinalAgentDemoConfigInput,
 ): Promise<LoadedFinalAgentDemoConfig> {
   const coreConfig = await loadFinalAgentCoreConfig(input);
   const telegramConfig = await loadFinalAgentTelegramConfig(input);
   const a2aConfig = await loadFinalAgentA2AConfig(input);
-  return { coreConfig, telegramConfig, a2aConfig };
+  const webhookConfig = await loadFinalAgentWebhookConfig(input);
+  const cronConfig = await loadFinalAgentCronConfig(input);
+  return { coreConfig, telegramConfig, a2aConfig, webhookConfig, cronConfig };
 }
 
 export function redactFinalAgentDemoConfig(
@@ -113,6 +161,8 @@ export function redactFinalAgentDemoConfig(
     core: redactMonoAgentConfig(config.coreConfig),
     ...(config.telegramConfig === undefined ? {} : { telegram: redactTelegramAdapterConfig(config.telegramConfig) }),
     ...(config.a2aConfig === undefined ? {} : { a2a: redactA2AAdapterConfig(config.a2aConfig) }),
+    ...(config.webhookConfig === undefined ? {} : { webhook: redactWebhookAdapterConfig(config.webhookConfig) }),
+    ...(config.cronConfig === undefined ? {} : { cron: redactCronAdapterConfig(config.cronConfig) }),
   };
 }
 
@@ -277,5 +327,7 @@ export function isFinalAgentDemoConfigError(
   return error instanceof MonoAgentConfigError ||
     error instanceof TelegramAdapterConfigError ||
     error instanceof A2AProviderError ||
-    error instanceof A2AConsumerError;
+    error instanceof A2AConsumerError ||
+    error instanceof WebhookAdapterError ||
+    error instanceof CronAdapterError;
 }
