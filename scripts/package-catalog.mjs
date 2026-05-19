@@ -4,6 +4,7 @@ export const PACKAGE_CATEGORIES = [
   "context",
   "execution",
   "observability",
+  "evaluation",
   "communication",
   "operator-surface",
 ];
@@ -23,6 +24,14 @@ export const packageCatalog = [
     category: "core",
     responsibility: "Defines shared structural request, response, stream, responder, and cancellation contracts.",
     allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
+    dir: "agent-evals",
+    name: "@worklab-ai/agent-evals",
+    category: "evaluation",
+    responsibility: "Runs local-first end-to-end eval scenarios against Mono Agent responders and harnesses.",
+    allowedDependencyCategories: ["core", "execution", "observability", "evaluation"],
     publishable: true,
   },
   {

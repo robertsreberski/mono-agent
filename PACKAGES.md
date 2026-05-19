@@ -37,6 +37,10 @@ flowchart TB
     Observability["@worklab-ai/observability"]
   end
 
+  subgraph EvaluationLayer["evaluation"]
+    AgentEvals["@worklab-ai/agent-evals"]
+  end
+
   subgraph Core["core"]
     Contracts["@worklab-ai/agent-contracts"]
     Settings["@worklab-ai/settings"]
@@ -91,6 +95,9 @@ flowchart TB
   Harness --> ToolPolicy
   Orchestrator --> Contracts
   Orchestrator -.->|request-scoped MCP runtime options| Harness
+  AgentEvals --> Contracts
+  AgentEvals --> Harness
+  AgentEvals --> Observability
 
   Config --> Settings
   Config --> RuntimeAdapter
@@ -107,5 +114,6 @@ flowchart TB
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` |
 | `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` |
 | `observability` | `@worklab-ai/observability` |
+| `evaluation` | `@worklab-ai/agent-evals` |
 | `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` |
