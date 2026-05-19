@@ -15,6 +15,10 @@ import type {
   TelegramLongPollerOptions,
   TelegramLongPollerStartOptions,
 } from "@worklab-ai/telegram-adapter";
+import type {
+  CronAdapterOptions,
+  CronAdapterStartResult,
+} from "@worklab-ai/cron-adapter";
 
 import {
   resolveFinalDemoArtifactDir,
@@ -424,6 +428,94 @@ describe("final agent demo", () => {
     }
   });
 
+  it("starts webhook and cron adapters from demo config", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono from webhook and cron.", "utf8");
+    await writeFile(
+      join(dir, "mono-agent.config.json"),
+      `${JSON.stringify({
+        ...validConfigPatch(),
+        webhook: {
+          enabled: true,
+          host: "127.0.0.1",
+          port: 0,
+          path: "/hook",
+          defaultMode: "sync",
+        },
+        cron: {
+          enabled: true,
+          expression: "* * * * *",
+          timezone: "UTC",
+          prompt: "scheduled check",
+          conversationId: "cron:demo",
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const fakeRuntime = createFakeRuntime();
+    const cronStarts: CronAdapterOptions[] = [];
+    const stoppedCronAdapters: CronAdapterStartResult[] = [];
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: testTraceEnv(),
+      runtime: fakeRuntime.runtime,
+      telegramApi: createFakeTelegramApi().api,
+      pollerFactory: () => createAbortableFakePoller().poller,
+      cronAdapterFactory: (options) => createFakeCronAdapter(options, cronStarts, stoppedCronAdapters),
+    });
+
+    try {
+      const webhookStatus = demo.webhookStatus;
+      if (webhookStatus.kind !== "running") {
+        throw new Error(`Expected webhook running, got ${webhookStatus.kind}.`);
+      }
+      expect(webhookStatus.invokeUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/hook$/u);
+      expect(JSON.stringify(webhookStatus)).toContain("\"defaultMode\":\"sync\"");
+
+      const cronStatus = demo.cronStatus;
+      if (cronStatus.kind !== "running") {
+        throw new Error(`Expected cron running, got ${cronStatus.kind}.`);
+      }
+      expect(cronStatus.jobs).toBe(1);
+      expect(cronStarts[0]?.jobs).toEqual([
+        {
+          id: "default",
+          expression: "* * * * *",
+          timezone: "UTC",
+          prompt: "scheduled check",
+          conversationId: "cron:demo",
+        },
+      ]);
+
+      const response = await fetch(webhookStatus.invokeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "Hello webhook", conversationId: "webhook:test" }),
+      });
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        status: "succeeded",
+        conversationId: "webhook:test",
+        text: "runtime ok",
+      });
+      expect(fakeRuntime.calls[0]?.prompt).toContain("You are Mono from webhook and cron.");
+      expect(fakeRuntime.calls[0]?.options.model).toMatchObject({ sdk: "pi", model: "gpt-5.5" });
+
+      const traceability = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
+      expect(traceability.sources[0]).toMatchObject({
+        transports: expect.arrayContaining(["webhook", "cron"]),
+      });
+    } finally {
+      const invokeUrl = demo.webhookStatus.kind === "running" ? demo.webhookStatus.invokeUrl : undefined;
+      await demo.stop();
+      expect(stoppedCronAdapters).toHaveLength(1);
+      if (invokeUrl !== undefined) {
+        await expect(fetch(invokeUrl, { method: "POST" })).rejects.toThrow();
+      }
+    }
+  });
+
   it("passes configured local Pi provider context into runtime calls", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono with local runtime support.", "utf8");
@@ -656,7 +748,7 @@ async function getTraceabilityRuns(
   token: string,
 ): Promise<{
   enabled: boolean;
-  sources: Array<{ sourceId: string; label: string; health: string }>;
+  sources: Array<{ sourceId: string; label: string; health: string; transports?: readonly string[] }>;
   runs: Array<{ runId: string; conversationId: string; source: { sourceId: string; label: string } }>;
 }> {
   const response = await fetch(`${url}/api/traceability/runs`, {
@@ -665,7 +757,7 @@ async function getTraceabilityRuns(
   expect(response.status).toBe(200);
   return await response.json() as {
     enabled: boolean;
-    sources: Array<{ sourceId: string; label: string; health: string }>;
+    sources: Array<{ sourceId: string; label: string; health: string; transports?: readonly string[] }>;
     runs: Array<{ runId: string; conversationId: string; source: { sourceId: string; label: string } }>;
   };
 }
@@ -814,6 +906,22 @@ function createFakeA2AProvider(
       entry.stopped = true;
     },
   };
+}
+
+function createFakeCronAdapter(
+  options: CronAdapterOptions,
+  starts: CronAdapterOptions[],
+  stopped: CronAdapterStartResult[],
+): CronAdapterStartResult {
+  starts.push(options);
+  const adapter: CronAdapterStartResult = {
+    jobs: options.jobs.slice(),
+    activeJobCount: 0,
+    stop() {
+      stopped.push(adapter);
+    },
+  };
+  return adapter;
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
