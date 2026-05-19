@@ -29,6 +29,7 @@
     "@vitest/coverage-v8": "3.2.4",
     "@worklab-ai/a2a-adapter": "workspace:^0.1.0",
     "@worklab-ai/agent-contracts": "workspace:^0.1.0",
+    "@worklab-ai/agent-evals": "workspace:^0.1.0",
     "@worklab-ai/agent-harness": "workspace:^0.1.0",
     "@worklab-ai/agent-host": "workspace:^0.1.0",
     "@worklab-ai/agent-orchestrator": "workspace:^0.1.0",

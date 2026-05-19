@@ -1,6 +1,6 @@
 # Mono Agent
 
-Mono Agent is a small pnpm workspace of reusable npm packages under the `@worklab-ai` scope. The framework is built around `@worklab-ai/agent-runtime`, but keeps runtime access, communication adapters, settings, skills, memory, observability, and operator surfaces as separate packages.
+Mono Agent is a small pnpm workspace of reusable npm packages under the `@worklab-ai` scope. The framework is built around `@worklab-ai/agent-runtime`, but keeps runtime access, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
 
 ## Package Architecture
 
@@ -15,6 +15,7 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
 | `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
+| `evaluation` | `@worklab-ai/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
 | `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
 | `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition that load config, build responders, start surfaces/transports, and register local traces. |
@@ -35,6 +36,7 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   │   ├─ observability
   │   └─ tool-policy
   ├─ agent-orchestrator ── agent-contracts, MCP SDK
+  ├─ agent-evals ── agent-contracts, agent-harness, observability, agentevals
   ├─ config ── settings, runtime-adapter
   ├─ tui ── config
   └─ core leaf packages as needed
