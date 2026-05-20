@@ -53,6 +53,9 @@ flowchart TB
   subgraph Runtime["runtime"]
     RuntimeAdapter["@worklab-ai/runtime-adapter"]
     AgentRuntime["@worklab-ai/agent-runtime"]
+    ClaudeAgents["@worklab-ai/claude-agents-runtime"]
+    OpenAIAgents["@worklab-ai/openai-agents-runtime"]
+    CodexApp["@worklab-ai/codex-app-runtime"]
   end
 
   FinalDemo --> OperatorConsole
@@ -109,13 +112,16 @@ flowchart TB
   Config --> RuntimeAdapter
   Skills --> Context
   RuntimeAdapter --> AgentRuntime
+  ClaudeAgents --> RuntimeAdapter
+  OpenAIAgents --> RuntimeAdapter
+  CodexApp --> RuntimeAdapter
 ```
 
 ## Current Packages
 
 | Layer | Packages |
 | --- | --- |
-| `runtime` | `@worklab-ai/runtime-adapter` |
+| `runtime` | `@worklab-ai/runtime-adapter`, `@worklab-ai/claude-agents-runtime`, `@worklab-ai/openai-agents-runtime`, `@worklab-ai/codex-app-runtime` |
 | `core` | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` |
 | `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` |
 | `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` |
@@ -123,3 +129,5 @@ flowchart TB
 | `evaluation` | `@worklab-ai/agent-evals` |
 | `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/cron-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/webhook-adapter`, `@worklab-ai/whatsapp-adapter` |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` |
+
+The original `@worklab-ai/runtime-adapter` wraps the legacy `@worklab-ai/agent-runtime` external package (claude / claude-code-cli / codex-app-cli / pi-sdk backends). The three new runtime packages — `claude-agents-runtime`, `openai-agents-runtime`, `codex-app-runtime` — are first-class, in-repo adapters that wrap their respective SDKs directly. Hosts choose one runtime per responder at composition time via `createConfiguredAgentResponder({ runtime, model })`.

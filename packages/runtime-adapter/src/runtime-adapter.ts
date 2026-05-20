@@ -113,7 +113,7 @@ export function describeMonoRuntimeSupport(
 
 export function assertExecutionModeCompatible(
   model: RuntimeModelReference,
-  executionMode: RuntimeExecutionMode,
+  executionMode: string,
 ): void {
   assertParsedRuntimeModelReference(model);
   if (!isRuntimeExecutionMode(executionMode)) {

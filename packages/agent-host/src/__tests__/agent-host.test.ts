@@ -121,6 +121,52 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.maxTurns).toBe(4);
   });
 
+  it("overrides config model and executionMode when supplied at composition time", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async (_prompt, options) => ({ text: "ok", model: options.model.model }));
+
+    const harness = createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: fake.runtime,
+      model: { sdk: "anthropic", model: "claude-opus-4-7" },
+      executionMode: "stream",
+    });
+
+    await harness.run({
+      conversationId: "conversation-override",
+      userMessage: "Hello",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls[0]?.options.model).toEqual({ sdk: "anthropic", model: "claude-opus-4-7" });
+    expect(fake.calls[0]?.options.executionMode).toBe("stream");
+  });
+
+  it("falls back to config model and executionMode when no override is supplied", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async (_prompt, options) => ({ text: "ok", model: options.model.model }));
+
+    const harness = createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: fake.runtime,
+    });
+
+    await harness.run({
+      conversationId: "conversation-fallback",
+      userMessage: "Hello",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls[0]?.options.model.sdk).toBe("pi");
+    expect(fake.calls[0]?.options.executionMode).toBe("sdk");
+  });
+
   it("creates the default Mono runtime with config workspace and artifact directory", () => {
     const config = monoConfig({
       dir: "/tmp/mono-agent-host",
