@@ -19,7 +19,7 @@ import {
   createMonoRuntime,
   runtimeOptionsForLocalProvider,
 } from "@worklab-ai/runtime-adapter";
-import type { MonoRuntimeLike } from "@worklab-ai/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
 import { createToolPolicy } from "@worklab-ai/tool-policy";
 import type { ToolPolicyInput } from "@worklab-ai/tool-policy";
 
@@ -30,6 +30,8 @@ export interface ConfiguredAgentRuntimeOptions {
 export interface ConfiguredAgentHarnessOptions {
   readonly config: MonoAgentConfig;
   readonly runtime?: MonoRuntimeLike;
+  readonly model?: RuntimeModelReference;
+  readonly executionMode?: string;
   readonly memory?: MemoryStore;
   readonly historyStore?: ConversationHistoryStore;
   readonly createRunId?: AgentHarnessOptions["createRunId"];
@@ -57,8 +59,10 @@ export function createConfiguredAgentRuntime(
 export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): AgentHarness {
   const config = options.config;
   const memory = options.memory ?? createConfiguredMemory(config);
+  const model = options.model ?? config.runtime.model;
+  const executionMode = options.executionMode ?? config.runtime.executionMode;
   const runtimeOptions = {
-    ...runtimeOptionsForLocalProvider(config.runtime.model, config.providers?.local),
+    ...runtimeOptionsForLocalProvider(model, config.providers?.local),
     ...(options.runtimeOptions ?? {}),
   };
 
@@ -68,8 +72,8 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
     selectedSkills: config.context.selectedSkills,
     runtime: options.runtime ?? createConfiguredAgentRuntime(config),
-    model: config.runtime.model,
-    executionMode: config.runtime.executionMode,
+    model,
+    executionMode,
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     maxTurns: config.runtime.maxTurns,

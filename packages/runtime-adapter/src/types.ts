@@ -90,7 +90,7 @@ export interface RuntimeRunOptions {
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
-  readonly executionMode?: RuntimeExecutionMode;
+  readonly executionMode?: string;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   readonly effort?: string;
   readonly cwd?: string;

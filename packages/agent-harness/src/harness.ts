@@ -148,9 +148,9 @@ export class MonoAgentHarness implements AgentHarness {
         requestExtension?.runtimeOptions,
       ),
       model: this.options.model,
-      executionMode: this.options.executionMode,
       messages: [{ role: "user", content: request.userMessage }],
       abortSignal: request.abortSignal,
+      ...(this.options.executionMode === undefined ? {} : { executionMode: this.options.executionMode }),
       ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
       ...(this.options.effort === undefined ? {} : { effort: this.options.effort }),
       ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
@@ -193,8 +193,11 @@ function validateOptions(options: AgentHarnessOptions): void {
   if (typeof options.model !== "object" || options.model === null) {
     throw new TypeError("model must be a parsed runtime model reference.");
   }
-  if (options.executionMode !== "sdk" && options.executionMode !== "cli") {
-    throw new TypeError("executionMode must be sdk or cli.");
+  if (
+    options.executionMode !== undefined &&
+    (typeof options.executionMode !== "string" || options.executionMode.length === 0)
+  ) {
+    throw new TypeError("executionMode must be an optional non-empty string.");
   }
 }
 

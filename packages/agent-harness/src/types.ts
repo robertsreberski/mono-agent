@@ -7,7 +7,7 @@ import type {
 import type { BuiltAgentContext, HistoryMessage } from "@worklab-ai/context";
 import type { MemoryStore } from "@worklab-ai/memory-md";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@worklab-ai/observability";
-import type { MonoRuntimeLike, RuntimeExecutionMode, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
 import type { ToolPolicy } from "@worklab-ai/tool-policy";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
@@ -65,7 +65,7 @@ export interface AgentHarnessOptions {
   readonly skillMaxBytes?: number;
   readonly runtime: MonoRuntimeLike;
   readonly model: RuntimeModelReference;
-  readonly executionMode: RuntimeExecutionMode;
+  readonly executionMode?: string;
   readonly cwd?: string;
   readonly effort?: string;
   readonly maxTurns?: number;
