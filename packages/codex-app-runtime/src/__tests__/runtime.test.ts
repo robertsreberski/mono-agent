@@ -33,10 +33,11 @@ describe("createCodexAppRuntime", () => {
         return { thread: { id: "th_1" } };
       }
       if (request.method === "turn/start") {
-        expect(request.params).toMatchObject({
-          threadId: "th_1",
-          input: [{ type: "text", text: "Hi" }],
-        });
+        expect(request.params?.threadId).toBe("th_1");
+        const requestInput = request.params?.input;
+        expect(Array.isArray(requestInput) ? requestInput[0]?.type : undefined).toBe("text");
+        expect(Array.isArray(requestInput) ? requestInput[0]?.text : undefined).toContain("system");
+        expect(Array.isArray(requestInput) ? requestInput[0]?.text : undefined).toContain("Hi");
         input.onNotification("turn/started", { turn: { id: "t1" } });
         input.onNotification("item/completed", { item: { id: "i1", type: "agentMessage", text: "ok" } });
         input.onNotification("turn/completed", { turn: { id: "t1" } });
@@ -55,6 +56,35 @@ describe("createCodexAppRuntime", () => {
     expect(result.text).toBe("ok");
     expect(result.providerSessionId).toBe("th_1");
     expect(calls.map((call) => call.method)).toEqual(["initialize", "thread/start", "turn/start"]);
+  });
+
+  it("includes host context in the turn input so app-server turns see identity and skills", async () => {
+    let turnInputText = "";
+    const factory = stubClient((input) => async (request) => {
+      if (request.method === "thread/start") {
+        return { threadId: "th_1" };
+      }
+      if (request.method === "turn/start") {
+        const requestInput = request.params?.input;
+        if (Array.isArray(requestInput) && requestInput[0]?.type === "text") {
+          turnInputText = String(requestInput[0].text ?? "");
+        }
+        input.onNotification("turn/started", { turnId: "t1" });
+        input.onNotification("item/completed", { item: { id: "i1", type: "agentMessage", text: "ok" } });
+        input.onNotification("turn/completed", {});
+      }
+      return {};
+    });
+    const runtime = createCodexAppRuntime({ clientFactory: factory });
+
+    await runtime.run("host identity and selected skill instructions", {
+      model: { sdk: "codex", model: "gpt-5.5" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(turnInputText).toContain("host identity and selected skill instructions");
+    expect(turnInputText).toContain("Hi");
   });
 
   it("buffers agent message deltas per itemId and emits a single assistant event on item/completed", async () => {
