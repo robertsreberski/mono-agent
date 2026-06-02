@@ -3,6 +3,7 @@ import {
   createAgentResponder,
   createInMemoryHistoryStore,
 } from "@worklab-ai/agent-harness";
+import { createCodexAppRuntime } from "@worklab-ai/codex-app-runtime";
 import type {
   AgentHarness,
   AgentHarnessOptions,
@@ -25,6 +26,8 @@ import type { ToolPolicyInput } from "@worklab-ai/tool-policy";
 
 export interface ConfiguredAgentRuntimeOptions {
   readonly config: MonoAgentConfig;
+  readonly model?: RuntimeModelReference;
+  readonly executionMode?: string;
 }
 
 export interface ConfiguredAgentHarnessOptions {
@@ -50,6 +53,11 @@ export function createConfiguredAgentRuntime(
   input: MonoAgentConfig | ConfiguredAgentRuntimeOptions,
 ): MonoRuntimeLike {
   const config = isRuntimeOptions(input) ? input.config : input;
+  const model = isRuntimeOptions(input) ? input.model ?? config.runtime.model : config.runtime.model;
+  const executionMode = isRuntimeOptions(input) ? input.executionMode ?? config.runtime.executionMode : config.runtime.executionMode;
+  if (model.sdk === "codex" && executionMode === "cli") {
+    return createCodexAppRuntime();
+  }
   return createMonoRuntime({
     workspace: config.runtime.workspace,
     qaOutputDir: config.artifacts.dir,
@@ -71,7 +79,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
     selectedSkills: config.context.selectedSkills,
-    runtime: options.runtime ?? createConfiguredAgentRuntime(config),
+    runtime: options.runtime ?? createConfiguredAgentRuntime({ config, model, executionMode }),
     model,
     executionMode,
     cwd: config.runtime.workspace,

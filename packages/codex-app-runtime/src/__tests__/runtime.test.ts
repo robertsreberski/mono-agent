@@ -145,6 +145,114 @@ describe("createCodexAppRuntime", () => {
     });
   });
 
+  it("isolates Codex from user CODEX_HOME and disables project docs by default", async () => {
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = "/Users/example/.codex";
+    let receivedInput: CodexClientFactoryInput | undefined;
+    const factory = stubClient((input) => {
+      receivedInput = input;
+      return async (request) => {
+        if (request.method === "thread/start") {
+          return { threadId: "th_1" };
+        }
+        if (request.method === "turn/send") {
+          input.onNotification("turn/started", { turnId: "t1" });
+          input.onNotification("turn/completed", {});
+        }
+        return {};
+      };
+    });
+
+    try {
+      const runtime = createCodexAppRuntime({ clientFactory: factory });
+      await runtime.run("system", {
+        model: { sdk: "codex", model: "gpt-5.5" },
+        messages: [{ role: "user", content: "Hi" }],
+        abortSignal: new AbortController().signal,
+      });
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+    }
+
+    expect(receivedInput?.env.CODEX_HOME).toMatch(/mono-agent-codex-home-/u);
+    expect(receivedInput?.env.CODEX_HOME).not.toBe("/Users/example/.codex");
+    expect(receivedInput?.args).toContain("-c");
+    expect(receivedInput?.args).toContain("project_doc_max_bytes=0");
+  });
+
+  it("keeps explicit host-provided Codex env and API key values", async () => {
+    let receivedInput: CodexClientFactoryInput | undefined;
+    const factory = stubClient((input) => {
+      receivedInput = input;
+      return async (request) => {
+        if (request.method === "thread/start") {
+          return { threadId: "th_1" };
+        }
+        if (request.method === "turn/send") {
+          input.onNotification("turn/started", { turnId: "t1" });
+          input.onNotification("turn/completed", {});
+        }
+        return {};
+      };
+    });
+    const runtime = createCodexAppRuntime({
+      clientFactory: factory,
+      apiKey: "test-api-key",
+      apiKeyEnv: "TEST_OPENAI_API_KEY",
+      codexHome: "/tmp/host-provided-codex-home",
+      env: { MONO_AGENT_TEST_ENV: "kept" },
+    });
+
+    await runtime.run("system", {
+      model: { sdk: "codex", model: "gpt-5.5" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(receivedInput?.env.CODEX_HOME).toBe("/tmp/host-provided-codex-home");
+    expect(receivedInput?.env.TEST_OPENAI_API_KEY).toBe("test-api-key");
+    expect(receivedInput?.env.MONO_AGENT_TEST_ENV).toBe("kept");
+  });
+
+  it("sends only host-provided instructions and MCP config to thread/start", async () => {
+    let receivedParams: Record<string, unknown> | undefined;
+    const factory = stubClient(({ onNotification }) => async (request) => {
+      if (request.method === "thread/start") {
+        receivedParams = request.params;
+        return { threadId: "th_1" };
+      }
+      if (request.method === "turn/send") {
+        onNotification("turn/started", { turnId: "t1" });
+        onNotification("turn/completed", {});
+      }
+      return {};
+    });
+    const runtime = createCodexAppRuntime({ clientFactory: factory });
+
+    await runtime.run("provided system", {
+      model: { sdk: "codex", model: "gpt-5.5" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+      mcpServers: {
+        provided: { command: "node", args: ["server.js"] },
+      },
+    });
+
+    expect(receivedParams).toMatchObject({
+      model: "gpt-5.5",
+      instructions: "provided system",
+      mcp_servers: {
+        provided: { enabled: true, required: false, command: "node", args: ["server.js"] },
+      },
+    });
+    expect(receivedParams).not.toHaveProperty("skills");
+    expect(receivedParams).not.toHaveProperty("mcpServers");
+  });
+
   it("includes diagnostics with thread start attempts and stderr tail", async () => {
     const factory = stubClient(() => async () => undefined, "stderr line 1\nstderr line 2");
     const runtime = createCodexAppRuntime({

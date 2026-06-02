@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
 
 import { normalizeCodexItemEvent } from "./codex-events.js";
@@ -11,6 +15,7 @@ export interface CodexAppRuntimeOptions {
   readonly command?: string;
   readonly args?: readonly string[];
   readonly env?: Record<string, string>;
+  readonly codexHome?: string;
   readonly threadStartTimeoutMs?: number;
   readonly threadStartAttempts?: number;
   readonly threadStartBackoffMs?: number;
@@ -43,7 +48,7 @@ export class CodexAppRuntimeError extends Error {
 
 const DEFAULTS = {
   command: "codex",
-  args: ["app-server", "--listen", "stdio://"],
+  args: ["app-server", "--listen", "stdio://", "-c", "project_doc_max_bytes=0"],
   apiKeyEnv: "OPENAI_API_KEY",
   threadStartTimeoutMs: 60_000,
   threadStartAttempts: 2,
@@ -61,7 +66,7 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
 
       const command = options.command ?? DEFAULTS.command;
       const args = options.args ?? DEFAULTS.args;
-      const env = mergeEnv(options);
+      const { env, cleanup } = mergeEnv(options);
       const stderrTailBytes = options.stderrTailBytes ?? DEFAULTS.stderrTailBytes;
       const threadStartTimeoutMs = options.threadStartTimeoutMs ?? DEFAULTS.threadStartTimeoutMs;
       const threadStartAttempts = clamp(options.threadStartAttempts ?? DEFAULTS.threadStartAttempts, 1, 5);
@@ -202,7 +207,11 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
         } catch {
           // ignore
         }
-        await client.close();
+        try {
+          await client.close();
+        } finally {
+          cleanup();
+        }
       }
 
       const cancelled = runOptions.abortSignal.aborted;
@@ -265,17 +274,30 @@ function readUserMessage(runOptions: RuntimeRunOptions): string {
   return last.content;
 }
 
-function mergeEnv(options: CodexAppRuntimeOptions): Record<string, string | undefined> {
+function mergeEnv(options: CodexAppRuntimeOptions): {
+  readonly env: Record<string, string | undefined>;
+  readonly cleanup: () => void;
+} {
   const env: Record<string, string | undefined> = { ...process.env };
   if (options.env !== undefined) {
     for (const [key, value] of Object.entries(options.env)) {
       env[key] = value;
     }
   }
+  const tempCodexHome = options.codexHome === undefined ? mkdtempSync(join(tmpdir(), "mono-agent-codex-home-")) : undefined;
+  env.CODEX_HOME = options.codexHome ?? tempCodexHome;
   if (options.apiKey !== undefined) {
     env[options.apiKeyEnv ?? DEFAULTS.apiKeyEnv] = options.apiKey;
   }
-  return env;
+  return {
+    env,
+    cleanup: () => {
+      if (tempCodexHome === undefined) {
+        return;
+      }
+      rmSync(tempCodexHome, { recursive: true, force: true });
+    },
+  };
 }
 
 function buildThreadStartParams(
