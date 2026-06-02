@@ -1,7 +1,3 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
 
 import { normalizeCodexItemEvent } from "./codex-events.js";
@@ -57,6 +53,11 @@ const DEFAULTS = {
   stderrTailBytes: 8_192,
 } as const;
 
+const CLIENT_INFO = {
+  name: "worklab-ai-codex-app-runtime",
+  version: "0.1.0",
+} as const;
+
 export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): MonoRuntimeLike {
   return {
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {
@@ -96,8 +97,8 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
       };
 
       const handleNotification = (method: string, params: Record<string, unknown>): void => {
-        if (method === "turn/started" && typeof params.turnId === "string") {
-          activeTurnId = params.turnId;
+        if (method === "turn/started") {
+          activeTurnId = extractTurnId(params) ?? activeTurnId;
           emit({ type: "cli_event", raw: { type: "turn_started", ...params } });
           return;
         }
@@ -105,8 +106,17 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
           if (isObject(params.usage)) {
             turnUsage = params.usage;
           }
+          const turnError = failedTurnMessage(params);
+          if (turnError !== undefined) {
+            failureKind = failureKind ?? "runtime_error";
+            errorMessage = errorMessage ?? turnError;
+          }
           emit({ type: "cli_event", raw: { type: "turn_completed", ...params } });
           resolveTurnCompleted?.();
+          return;
+        }
+        if (method === "thread/tokenUsage/updated" && isObject(params.tokenUsage)) {
+          turnUsage = params.tokenUsage;
           return;
         }
         if (method === "item/agentMessage/delta" && typeof params.itemId === "string") {
@@ -174,6 +184,11 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
       try {
         const threadStartedAt = Date.now();
         const threadParams = buildThreadStartParams(systemPrompt, runOptions, options);
+        await client.request({
+          method: "initialize",
+          params: { clientInfo: CLIENT_INFO },
+          timeoutMs: requestTimeoutMs,
+        });
         const startResult = await callWithRetries(
           () => client.request({ method: "thread/start", params: threadParams, timeoutMs: threadStartTimeoutMs }),
           threadStartAttempts,
@@ -187,11 +202,12 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
         if (threadId === undefined) {
           throw new CodexAppRuntimeError("thread_start_failed", "Codex thread/start did not return a threadId.");
         }
-        await client.request({
-          method: "turn/send",
-          params: { threadId, message: { role: "user", content: userMessage } },
+        const turnStartResult = await client.request({
+          method: "turn/start",
+          params: { threadId, input: [{ type: "text", text: userMessage }] },
           timeoutMs: requestTimeoutMs,
         });
+        activeTurnId = extractTurnId(turnStartResult) ?? activeTurnId;
         await waitForTurnCompletion(turnCompleted, runOptions.abortSignal);
       } catch (error) {
         if (error instanceof CodexAppRuntimeError) {
@@ -284,19 +300,15 @@ function mergeEnv(options: CodexAppRuntimeOptions): {
       env[key] = value;
     }
   }
-  const tempCodexHome = options.codexHome === undefined ? mkdtempSync(join(tmpdir(), "mono-agent-codex-home-")) : undefined;
-  env.CODEX_HOME = options.codexHome ?? tempCodexHome;
+  if (options.codexHome !== undefined) {
+    env.CODEX_HOME = options.codexHome;
+  }
   if (options.apiKey !== undefined) {
     env[options.apiKeyEnv ?? DEFAULTS.apiKeyEnv] = options.apiKey;
   }
   return {
     env,
-    cleanup: () => {
-      if (tempCodexHome === undefined) {
-        return;
-      }
-      rmSync(tempCodexHome, { recursive: true, force: true });
-    },
+    cleanup: () => undefined,
   };
 }
 
@@ -367,6 +379,43 @@ function extractThreadId(value: unknown): string | undefined {
   }
   if (isObject(value) && typeof value.thread_id === "string") {
     return value.thread_id;
+  }
+  if (isObject(value) && isObject(value.thread) && typeof value.thread.id === "string") {
+    return value.thread.id;
+  }
+  if (isObject(value) && isObject(value.thread) && typeof value.thread.sessionId === "string") {
+    return value.thread.sessionId;
+  }
+  return undefined;
+}
+
+function extractTurnId(value: unknown): string | undefined {
+  if (isObject(value) && typeof value.turnId === "string") {
+    return value.turnId;
+  }
+  if (isObject(value) && typeof value.turn_id === "string") {
+    return value.turn_id;
+  }
+  if (isObject(value) && isObject(value.turn) && typeof value.turn.id === "string") {
+    return value.turn.id;
+  }
+  return undefined;
+}
+
+function failedTurnMessage(params: Record<string, unknown>): string | undefined {
+  const turn = isObject(params.turn) ? params.turn : params;
+  if (turn.status !== "failed") {
+    return undefined;
+  }
+  return errorMessageFromValue(turn.error) ?? errorMessageFromValue(params.error) ?? "Codex turn failed.";
+}
+
+function errorMessageFromValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value;
+  }
+  if (isObject(value) && typeof value.message === "string" && value.message.trim().length > 0) {
+    return value.message;
   }
   return undefined;
 }

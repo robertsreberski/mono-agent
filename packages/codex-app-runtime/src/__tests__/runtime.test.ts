@@ -10,13 +10,66 @@ import { normalizeCodexItemEvent, normalizeCodexItemType } from "../codex-events
 import { translateMcpServersForCodex } from "../translations.js";
 
 describe("createCodexAppRuntime", () => {
+  it("initializes the app-server before starting a thread and accepts nested thread ids", async () => {
+    const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    let initialized = false;
+    const factory = stubClient((input) => async (request) => {
+      calls.push({
+        method: request.method,
+        ...(request.params === undefined ? {} : { params: request.params }),
+      });
+      if (request.method === "initialize") {
+        initialized = true;
+        expect(request.params).toMatchObject({
+          clientInfo: {
+            name: "worklab-ai-codex-app-runtime",
+            version: "0.1.0",
+          },
+        });
+        return { userAgent: "codex-app-server-test" };
+      }
+      if (request.method === "thread/start") {
+        expect(initialized).toBe(true);
+        return { thread: { id: "th_1" } };
+      }
+      if (request.method === "turn/start") {
+        expect(request.params).toMatchObject({
+          threadId: "th_1",
+          input: [{ type: "text", text: "Hi" }],
+        });
+        input.onNotification("turn/started", { turn: { id: "t1" } });
+        input.onNotification("item/completed", { item: { id: "i1", type: "agentMessage", text: "ok" } });
+        input.onNotification("turn/completed", { turn: { id: "t1" } });
+        return {};
+      }
+      return {};
+    });
+    const runtime = createCodexAppRuntime({ clientFactory: factory, threadStartAttempts: 1 });
+
+    const result = await runtime.run("system", {
+      model: { sdk: "codex", model: "gpt-5.5" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.text).toBe("ok");
+    expect(result.providerSessionId).toBe("th_1");
+    expect(calls.map((call) => call.method)).toEqual(["initialize", "thread/start", "turn/start"]);
+  });
+
   it("buffers agent message deltas per itemId and emits a single assistant event on item/completed", async () => {
-    const factory = stubClient(({ onNotification }) => async () => {
-      onNotification("turn/started", { turnId: "t1" });
-      onNotification("item/agentMessage/delta", { itemId: "i1", delta: "Hello " });
-      onNotification("item/agentMessage/delta", { itemId: "i1", delta: "world." });
-      onNotification("item/completed", { item: { id: "i1", type: "agentMessage", text: "Hello world." } });
-      onNotification("turn/completed", { usage: { input_tokens: 5, output_tokens: 3 } });
+    const factory = stubClient(({ onNotification }) => async (request) => {
+      if (request.method === "thread/start") {
+        return { threadId: "th_1" };
+      }
+      if (request.method === "turn/start") {
+        onNotification("turn/started", { turnId: "t1" });
+        onNotification("item/agentMessage/delta", { itemId: "i1", delta: "Hello " });
+        onNotification("item/agentMessage/delta", { itemId: "i1", delta: "world." });
+        onNotification("item/completed", { item: { id: "i1", type: "agentMessage", text: "Hello world." } });
+        onNotification("turn/completed", { usage: { input_tokens: 5, output_tokens: 3 } });
+      }
+      return {};
     });
     const runtime = createCodexAppRuntime({ clientFactory: factory });
 
@@ -33,11 +86,17 @@ describe("createCodexAppRuntime", () => {
   });
 
   it("emits reasoning deltas immediately as thinking events", async () => {
-    const factory = stubClient(({ onNotification }) => async () => {
-      onNotification("turn/started", { turnId: "t1" });
-      onNotification("item/reasoning/summaryTextDelta", { delta: "step 1" });
-      onNotification("item/reasoning/textDelta", { delta: "step 2" });
-      onNotification("turn/completed", {});
+    const factory = stubClient(({ onNotification }) => async (request) => {
+      if (request.method === "thread/start") {
+        return { threadId: "th_1" };
+      }
+      if (request.method === "turn/start") {
+        onNotification("turn/started", { turnId: "t1" });
+        onNotification("item/reasoning/summaryTextDelta", { delta: "step 1" });
+        onNotification("item/reasoning/textDelta", { delta: "step 2" });
+        onNotification("turn/completed", {});
+      }
+      return {};
     });
     const events: Array<Record<string, unknown>> = [];
     const runtime = createCodexAppRuntime({ clientFactory: factory });
@@ -58,13 +117,19 @@ describe("createCodexAppRuntime", () => {
   });
 
   it("surfaces warning/error/configWarning notifications as runtime_warning events without halting", async () => {
-    const factory = stubClient(({ onNotification }) => async () => {
-      onNotification("turn/started", { turnId: "t1" });
-      onNotification("warning", { message: "things are weird" });
-      onNotification("configWarning", { message: "config drift" });
-      onNotification("error", { message: "minor error" });
-      onNotification("item/completed", { item: { id: "i1", type: "agentMessage", text: "fine" } });
-      onNotification("turn/completed", {});
+    const factory = stubClient(({ onNotification }) => async (request) => {
+      if (request.method === "thread/start") {
+        return { threadId: "th_1" };
+      }
+      if (request.method === "turn/start") {
+        onNotification("turn/started", { turnId: "t1" });
+        onNotification("warning", { message: "things are weird" });
+        onNotification("configWarning", { message: "config drift" });
+        onNotification("error", { message: "minor error" });
+        onNotification("item/completed", { item: { id: "i1", type: "agentMessage", text: "fine" } });
+        onNotification("turn/completed", {});
+      }
+      return {};
     });
     const runtime = createCodexAppRuntime({ clientFactory: factory });
 
@@ -79,6 +144,36 @@ describe("createCodexAppRuntime", () => {
     expect(warnings).toHaveLength(3);
   });
 
+  it("surfaces failed turn completion as a runtime error", async () => {
+    const factory = stubClient(({ onNotification }) => async (request) => {
+      if (request.method === "thread/start") {
+        return { threadId: "th_1" };
+      }
+      if (request.method === "turn/start") {
+        onNotification("turn/started", { turn: { id: "t1" } });
+        onNotification("turn/completed", {
+          turn: {
+            id: "t1",
+            status: "failed",
+            error: { message: "auth failed" },
+          },
+        });
+      }
+      return {};
+    });
+    const runtime = createCodexAppRuntime({ clientFactory: factory });
+
+    const result = await runtime.run("system", {
+      model: { sdk: "codex", model: "gpt-5.5" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.failureKind).toBe("runtime_error");
+    expect(result.error).toBe("auth failed");
+    expect(result.text).toBeUndefined();
+  });
+
   it("sends turn/interrupt when abortSignal aborts during a turn", async () => {
     const captured: Array<{ method: string; params?: Record<string, unknown> }> = [];
     const controller = new AbortController();
@@ -90,11 +185,11 @@ describe("createCodexAppRuntime", () => {
       if (request.method === "thread/start") {
         return { threadId: "th_1" };
       }
-      if (request.method === "turn/send") {
-        // Trigger abort after turn/send is acknowledged
+      if (request.method === "turn/start") {
+        // Trigger abort after turn/start is acknowledged
         setTimeout(() => controller.abort(), 0);
         // Don't emit turn/completed; abort will end the wait
-        onNotification("turn/started", { turnId: "t_xyz" });
+        onNotification("turn/started", { turn: { id: "t_xyz" } });
         return {};
       }
       return {};
@@ -120,7 +215,7 @@ describe("createCodexAppRuntime", () => {
         receivedParams = request.params;
         return { threadId: "th_1" };
       }
-      if (request.method === "turn/send") {
+      if (request.method === "turn/start") {
         onNotification("turn/started", { turnId: "t1" });
         onNotification("turn/completed", {});
         return {};
@@ -145,7 +240,7 @@ describe("createCodexAppRuntime", () => {
     });
   });
 
-  it("isolates Codex from user CODEX_HOME and disables project docs by default", async () => {
+  it("preserves host Codex auth home and disables project docs by default", async () => {
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = "/Users/example/.codex";
     let receivedInput: CodexClientFactoryInput | undefined;
@@ -155,7 +250,7 @@ describe("createCodexAppRuntime", () => {
         if (request.method === "thread/start") {
           return { threadId: "th_1" };
         }
-        if (request.method === "turn/send") {
+        if (request.method === "turn/start") {
           input.onNotification("turn/started", { turnId: "t1" });
           input.onNotification("turn/completed", {});
         }
@@ -178,8 +273,7 @@ describe("createCodexAppRuntime", () => {
       }
     }
 
-    expect(receivedInput?.env.CODEX_HOME).toMatch(/mono-agent-codex-home-/u);
-    expect(receivedInput?.env.CODEX_HOME).not.toBe("/Users/example/.codex");
+    expect(receivedInput?.env.CODEX_HOME).toBe("/Users/example/.codex");
     expect(receivedInput?.args).toContain("-c");
     expect(receivedInput?.args).toContain("project_doc_max_bytes=0");
   });
@@ -192,7 +286,7 @@ describe("createCodexAppRuntime", () => {
         if (request.method === "thread/start") {
           return { threadId: "th_1" };
         }
-        if (request.method === "turn/send") {
+        if (request.method === "turn/start") {
           input.onNotification("turn/started", { turnId: "t1" });
           input.onNotification("turn/completed", {});
         }
@@ -225,7 +319,7 @@ describe("createCodexAppRuntime", () => {
         receivedParams = request.params;
         return { threadId: "th_1" };
       }
-      if (request.method === "turn/send") {
+      if (request.method === "turn/start") {
         onNotification("turn/started", { turnId: "t1" });
         onNotification("turn/completed", {});
       }
