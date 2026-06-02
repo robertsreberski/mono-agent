@@ -161,6 +161,9 @@ importers:
       '@worklab-ai/agent-harness':
         specifier: workspace:^0.1.0
         version: link:../agent-harness
+      '@worklab-ai/codex-app-runtime':
+        specifier: workspace:^0.1.0
+        version: link:../codex-app-runtime
       '@worklab-ai/config':
         specifier: workspace:^0.1.0
         version: link:../config
