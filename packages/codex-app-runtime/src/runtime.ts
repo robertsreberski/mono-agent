@@ -204,7 +204,7 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
         }
         const turnStartResult = await client.request({
           method: "turn/start",
-          params: { threadId, input: [{ type: "text", text: userMessage }] },
+          params: { threadId, input: [{ type: "text", text: buildTurnInputText(systemPrompt, userMessage) }] },
           timeoutMs: requestTimeoutMs,
         });
         activeTurnId = extractTurnId(turnStartResult) ?? activeTurnId;
@@ -288,6 +288,16 @@ function readUserMessage(runOptions: RuntimeRunOptions): string {
     throw new CodexAppRuntimeError("invalid_options", "Codex app runtime only supports string message content.");
   }
   return last.content;
+}
+
+function buildTurnInputText(systemPrompt: string, userMessage: string): string {
+  return [
+    "Host context and instructions:",
+    systemPrompt,
+    "",
+    "Current user request:",
+    userMessage,
+  ].join("\n");
 }
 
 function mergeEnv(options: CodexAppRuntimeOptions): {
