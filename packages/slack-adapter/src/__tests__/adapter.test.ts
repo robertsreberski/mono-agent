@@ -146,8 +146,39 @@ describe("SlackAdapter", () => {
       channel: "D123",
       text: "Thinking...",
       thread_ts: "171.000001",
+      mrkdwn: true,
     });
     expect(api.updateCalls.map((call) => call.text)).toEqual(["partial", "final"]);
+  });
+
+  it("sends responder Markdown as Slack mrkdwn", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async () => ({
+        text: "**Done** [details](https://example.com/report)",
+      })),
+    });
+
+    await expect(adapter.handleEventCallback(directMessage("summarize"))).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+    });
+
+    expect(api.postMessageCalls[0]).toEqual({
+      channel: "D123",
+      text: "Thinking...",
+      thread_ts: "171.000001",
+      mrkdwn: true,
+    });
+    expect(api.updateCalls.at(-1)).toEqual({
+      channel: "D123",
+      ts: "200.000001",
+      text: "*Done* <https://example.com/report|details>",
+      mrkdwn: true,
+    });
   });
 
   it("handles app mentions and strips configured bot mentions and aliases", async () => {

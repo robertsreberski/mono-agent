@@ -6,6 +6,7 @@ import type {
   SlackMessageTs,
   SlackWebApi,
 } from "./types.js";
+import { formatMarkdownForSlack } from "./slack-markdown.js";
 
 export interface AgentMessageStream extends AgentMessageStreamBase {
   status(text: string): Promise<void>;
@@ -128,7 +129,8 @@ export class SlackMessageStream implements AgentMessageStream {
     for (const chunk of remainingChunks) {
       await this.api.chatPostMessage(this.withThread({
         channel: this.channelId,
-        text: chunk,
+        text: formatMarkdownForSlack(chunk),
+        mrkdwn: true,
       }));
     }
   }
@@ -141,7 +143,8 @@ export class SlackMessageStream implements AgentMessageStream {
     if (this.sendMessagePromise === undefined) {
       this.sendMessagePromise = this.api.chatPostMessage(this.withThread({
         channel: this.channelId,
-        text: this.statusText,
+        text: formatMarkdownForSlack(this.statusText),
+        mrkdwn: true,
       }));
     }
 
@@ -188,7 +191,8 @@ export class SlackMessageStream implements AgentMessageStream {
     await this.api.chatUpdate({
       channel: this.channelId,
       ts: message.ts,
-      text: normalizeSlackText(text),
+      text: formatMarkdownForSlack(normalizeSlackText(text)),
+      mrkdwn: true,
     });
   }
 
