@@ -63,14 +63,14 @@ describe("SlackMessageStream", () => {
     await stream.append("lo");
 
     expect(api.postMessageCalls).toEqual([
-      { channel: "C1", text: "Starting", thread_ts: "171.000001" },
+      { channel: "C1", text: "Starting", thread_ts: "171.000001", mrkdwn: true },
     ]);
     expect(api.updateCalls).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(50);
 
     expect(api.updateCalls).toEqual([
-      { channel: "C1", ts: "100.000001", text: "Hello" },
+      { channel: "C1", ts: "100.000001", text: "Hello", mrkdwn: true },
     ]);
   });
 
@@ -95,10 +95,49 @@ describe("SlackMessageStream", () => {
       channel: "D1",
       text: "Thinking...",
       thread_ts: "172.000001",
+      mrkdwn: true,
     });
     expect(api.postMessageCalls[1]?.text).toHaveLength(32);
     expect(api.postMessageCalls[1]?.thread_ts).toBe("172.000001");
+    expect(api.postMessageCalls[1]?.mrkdwn).toBe(true);
     expect(api.postMessageCalls[2]?.text).toHaveLength(6);
+    expect(api.postMessageCalls[2]?.mrkdwn).toBe(true);
+  });
+
+  it("translates Markdown output to Slack mrkdwn for posts and updates", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      threadTs: "171.000001",
+      editDebounceMs: 0,
+    });
+
+    await stream.status("Working on **the fix**");
+    await stream.append("## Result\n\n**Done** [details](https://example.com?a=1&b=2)");
+    await vi.runAllTimersAsync();
+    await stream.finish("__Final__ ~~ready~~");
+
+    expect(api.postMessageCalls[0]).toEqual({
+      channel: "C1",
+      text: "Working on *the fix*",
+      thread_ts: "171.000001",
+      mrkdwn: true,
+    });
+    expect(api.updateCalls).toEqual([
+      {
+        channel: "C1",
+        ts: "100.000001",
+        text: "*Result*\n\n*Done* <https://example.com?a=1&amp;b=2|details>",
+        mrkdwn: true,
+      },
+      {
+        channel: "C1",
+        ts: "100.000001",
+        text: "*Final* ~ready~",
+        mrkdwn: true,
+      },
+    ]);
   });
 
   it("uses a bounded preview for long in-progress content", async () => {
