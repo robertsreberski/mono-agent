@@ -140,6 +140,7 @@ export async function startOpenAIApiAdapter(
   const server = createServer(app);
   const modelsPath = `${basePath}/models`;
   const chatCompletionsPath = `${basePath}/chat/completions`;
+  const basePostPath = basePath.length === 0 ? "/" : basePath;
 
   app.use(express.json({ limit: "1mb" }));
   app.get(modelsPath, (req, res) => {
@@ -158,7 +159,7 @@ export async function startOpenAIApiAdapter(
       ],
     });
   });
-  app.post(chatCompletionsPath, (req, res) => {
+  const chatCompletionHandler = (req: Request, res: Response): void => {
     if (!authorize(req, res, apiKey)) {
       return;
     }
@@ -176,7 +177,9 @@ export async function startOpenAIApiAdapter(
         );
       }
     });
-  });
+  };
+  app.post(chatCompletionsPath, chatCompletionHandler);
+  app.post(basePostPath, chatCompletionHandler);
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
