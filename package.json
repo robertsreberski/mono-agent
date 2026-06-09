@@ -41,6 +41,7 @@
     "@worklab-ai/cron-adapter": "workspace:^0.1.0",
     "@worklab-ai/memory-md": "workspace:^0.1.0",
     "@worklab-ai/observability": "workspace:^0.1.0",
+    "@worklab-ai/openai-api-adapter": "workspace:^0.1.0",
     "@worklab-ai/openai-agents-runtime": "workspace:^0.1.0",
     "@worklab-ai/operator-console": "workspace:^0.1.0",
     "@worklab-ai/runtime-adapter": "workspace:^0.1.0",

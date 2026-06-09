@@ -59,6 +59,9 @@ importers:
       '@worklab-ai/openai-agents-runtime':
         specifier: workspace:^0.1.0
         version: link:packages/openai-agents-runtime
+      '@worklab-ai/openai-api-adapter':
+        specifier: workspace:^0.1.0
+        version: link:packages/openai-api-adapter
       '@worklab-ai/operator-console':
         specifier: workspace:^0.1.0
         version: link:packages/operator-console
@@ -258,6 +261,22 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@22.19.19)(happy-dom@15.11.7)(jiti@2.7.0)(lightningcss@1.32.0)
+
+  packages/openai-api-adapter:
+    dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
 
   packages/operator-console:
     dependencies:

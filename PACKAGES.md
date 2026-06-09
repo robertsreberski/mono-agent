@@ -17,6 +17,7 @@ flowchart TB
   subgraph Communication["communication"]
     A2A["@worklab-ai/a2a-adapter"]
     Cron["@worklab-ai/cron-adapter"]
+    OpenAIApi["@worklab-ai/openai-api-adapter"]
     Slack["@worklab-ai/slack-adapter"]
     Telegram["@worklab-ai/telegram-adapter"]
     WhatsApp["@worklab-ai/whatsapp-adapter"]
@@ -60,6 +61,7 @@ flowchart TB
 
   FinalDemo --> OperatorConsole
   FinalDemo --> A2A
+  FinalDemo --> OpenAIApi
   FinalDemo --> Telegram
   FinalDemo --> Host
   FinalDemo --> Config
@@ -80,6 +82,8 @@ flowchart TB
   A2A --> Settings
   Cron --> Contracts
   Cron --> Settings
+  OpenAIApi --> Contracts
+  OpenAIApi --> Settings
   Slack --> Contracts
   Slack --> Settings
   Telegram --> Contracts
@@ -127,7 +131,7 @@ flowchart TB
 | `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` |
 | `observability` | `@worklab-ai/observability` |
 | `evaluation` | `@worklab-ai/agent-evals` |
-| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/cron-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/webhook-adapter`, `@worklab-ai/whatsapp-adapter` |
+| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/cron-adapter`, `@worklab-ai/openai-api-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/webhook-adapter`, `@worklab-ai/whatsapp-adapter` |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` |
 
 The original `@worklab-ai/runtime-adapter` wraps the legacy `@worklab-ai/agent-runtime` external package (claude / claude-code-cli / codex-app-cli / pi-sdk backends). The three new runtime packages — `claude-agents-runtime`, `openai-agents-runtime`, `codex-app-runtime` — are first-class, in-repo adapters that wrap their respective SDKs directly. Hosts choose one runtime per responder at composition time via `createConfiguredAgentResponder({ runtime, model })`.

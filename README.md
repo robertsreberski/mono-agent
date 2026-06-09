@@ -16,7 +16,7 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 | `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
 | `evaluation` | `@worklab-ai/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
-| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/cron-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/webhook-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls. |
+| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/cron-adapter`, `@worklab-ai/openai-api-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/webhook-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
 | `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
 | `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition that load config, build responders, start surfaces/transports, and register local traces. |
 
@@ -27,6 +27,7 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ operator-console ── settings, observability
   ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
   ├─ cron-adapter ── agent-contracts, settings, cron-parser
+  ├─ openai-api-adapter ── agent-contracts, settings, express
   ├─ slack-adapter ── agent-contracts, settings, ws
   ├─ telegram-adapter ── agent-contracts, settings
   ├─ webhook-adapter ── agent-contracts, settings, express
@@ -55,7 +56,7 @@ Rules for future packages:
 
 ## Final Demo
 
-The final demo lives at `demos/final-agent/`. It starts the local operator console first, then starts Telegram, A2A, webhook, and/or cron independently when their own adapter config plus core runtime config are valid. Config saves through the operator console are applied in-process: the demo stops and rebuilds Telegram, A2A, webhook, cron, and traceability with the freshly saved settings while keeping the operator console URL, token, and port stable.
+The final demo lives at `demos/final-agent/`. It starts the local operator console first, then starts Telegram, A2A, webhook, OpenAI API, and/or cron independently when their own adapter config plus core runtime config are valid. Config saves through the operator console are applied in-process: the demo stops and rebuilds Telegram, A2A, webhook, OpenAI API, cron, and traceability with the freshly saved settings while keeping the operator console URL, token, and port stable.
 
 The preferred local deployment path generates an ignored config under `.mono-agent/deploy/`, verifies Ollama has Gemma 4 installed, then starts the operator console, traceability source, and loopback A2A provider:
 
@@ -99,6 +100,7 @@ The demo then passes that responder to whichever adapters are enabled:
 - `a2aFieldGroup`, `loadA2AAdapterConfig`, and `startA2AProvider` from `@worklab-ai/a2a-adapter`
 - `telegramFieldGroup` and `loadTelegramAdapterConfig` from `@worklab-ai/telegram-adapter`
 - `webhookFieldGroup`, `loadWebhookAdapterConfig`, and `startWebhookAdapter` from `@worklab-ai/webhook-adapter`
+- `openAIApiFieldGroup`, `loadOpenAIApiAdapterConfig`, and `startOpenAIApiAdapter` from `@worklab-ai/openai-api-adapter`
 - `cronFieldGroup`, `loadCronAdapterConfig`, and `startCronAdapter` from `@worklab-ai/cron-adapter`
 - `startOperatorConsole` from `@worklab-ai/operator-console`
 - `registerTraceSource` from `@worklab-ai/observability`
@@ -181,7 +183,7 @@ pnpm --filter @worklab-ai/<package> run test
 
 ## Safety Model
 
-- No secrets, `.env*`, OAuth files, provider keys, Telegram tokens, WhatsApp auth state, or transcripts are committed.
+- No secrets, `.env*`, OAuth files, provider keys, OpenAI API adapter keys, Telegram tokens, WhatsApp auth state, or transcripts are committed.
 - Settings JSON is local, schema-validated, and written with restrictive file permissions where the settings helper writes it.
 - Secret fields are write-only in the operator console and redacted in diagnostics.
 - Tool policy is explicit and fail-closed.
@@ -202,6 +204,7 @@ flowchart TB
   subgraph Communication["Communication adapter choices"]
     A2A["`@worklab-ai/a2a-adapter`\nAgent Card discovery + text tasks"]
     Cron["`@worklab-ai/cron-adapter`\nScheduled invocations"]
+    OpenAIApi["`@worklab-ai/openai-api-adapter`\nOpenAI Chat Completions"]
     Slack["`@worklab-ai/slack-adapter`\nSocket Mode + Web API"]
     Telegram["`@worklab-ai/telegram-adapter`\nBot API + long polling"]
     Webhook["`@worklab-ai/webhook-adapter`\nHTTP sync/async invocation"]
@@ -242,6 +245,7 @@ flowchart TB
   Host --> Telegram
   Host --> A2A
   Host --> Webhook
+  Host --> OpenAIApi
   Host --> Cron
   Host -. optional package .-> Slack
   Host -. optional package .-> WhatsApp
@@ -259,6 +263,8 @@ flowchart TB
   A2A --> Settings
   Cron --> Contracts
   Cron --> Settings
+  OpenAIApi --> Contracts
+  OpenAIApi --> Settings
   Slack --> Contracts
   Slack --> Settings
   Webhook --> Contracts

@@ -428,9 +428,9 @@ describe("final agent demo", () => {
     }
   });
 
-  it("starts webhook and cron adapters from demo config", async () => {
+  it("starts webhook, OpenAI API, and cron adapters from demo config", async () => {
     const dir = await tempDir();
-    await writeFile(join(dir, "IDENTITY.md"), "You are Mono from webhook and cron.", "utf8");
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono from webhook, OpenAI API, and cron.", "utf8");
     await writeFile(
       join(dir, "mono-agent.config.json"),
       `${JSON.stringify({
@@ -441,6 +441,12 @@ describe("final agent demo", () => {
           port: 0,
           path: "/hook",
           defaultMode: "sync",
+        },
+        openaiApi: {
+          enabled: true,
+          host: "127.0.0.1",
+          port: 0,
+          modelId: "mono-agent",
         },
         cron: {
           enabled: true,
@@ -473,6 +479,13 @@ describe("final agent demo", () => {
       expect(webhookStatus.invokeUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/hook$/u);
       expect(JSON.stringify(webhookStatus)).toContain("\"defaultMode\":\"sync\"");
 
+      const openAIApiStatus = demo.openAIApiStatus;
+      if (openAIApiStatus.kind !== "running") {
+        throw new Error(`Expected OpenAI API running, got ${openAIApiStatus.kind}.`);
+      }
+      expect(openAIApiStatus.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/u);
+      expect(JSON.stringify(openAIApiStatus)).toContain("\"modelId\":\"mono-agent\"");
+
       const cronStatus = demo.cronStatus;
       if (cronStatus.kind !== "running") {
         throw new Error(`Expected cron running, got ${cronStatus.kind}.`);
@@ -499,19 +512,45 @@ describe("final agent demo", () => {
         conversationId: "webhook:test",
         text: "runtime ok",
       });
-      expect(fakeRuntime.calls[0]?.prompt).toContain("You are Mono from webhook and cron.");
+      expect(fakeRuntime.calls[0]?.prompt).toContain("You are Mono from webhook, OpenAI API, and cron.");
       expect(fakeRuntime.calls[0]?.options.model).toMatchObject({ sdk: "pi", model: "gpt-5.5" });
+
+      const models = await fetch(`${openAIApiStatus.baseUrl}/models`);
+      expect(models.status).toBe(200);
+      await expect(models.json()).resolves.toMatchObject({
+        data: [expect.objectContaining({ id: "mono-agent" })],
+      });
+
+      const chat = await fetch(`${openAIApiStatus.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mono-agent",
+          metadata: { conversation_id: "openai-api:test" },
+          messages: [{ role: "user", content: "Hello from OpenWebUI" }],
+        }),
+      });
+      expect(chat.status).toBe(200);
+      await expect(chat.json()).resolves.toMatchObject({
+        choices: [{ message: { role: "assistant", content: "runtime ok" } }],
+      });
+      expect(fakeRuntime.calls[1]?.prompt).toContain("You are Mono from webhook, OpenAI API, and cron.");
+      expect(fakeRuntime.calls[1]?.prompt).toContain("user: Hello from OpenWebUI");
 
       const traceability = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
       expect(traceability.sources[0]).toMatchObject({
-        transports: expect.arrayContaining(["webhook", "cron"]),
+        transports: expect.arrayContaining(["webhook", "openai-api", "cron"]),
       });
     } finally {
       const invokeUrl = demo.webhookStatus.kind === "running" ? demo.webhookStatus.invokeUrl : undefined;
+      const openAIApiBaseUrl = demo.openAIApiStatus.kind === "running" ? demo.openAIApiStatus.baseUrl : undefined;
       await demo.stop();
       expect(stoppedCronAdapters).toHaveLength(1);
       if (invokeUrl !== undefined) {
         await expect(fetch(invokeUrl, { method: "POST" })).rejects.toThrow();
+      }
+      if (openAIApiBaseUrl !== undefined) {
+        await expect(fetch(`${openAIApiBaseUrl}/models`)).rejects.toThrow();
       }
     }
   });
