@@ -1,4 +1,5 @@
-import type { RuntimeEventLike } from "@worklab-ai/runtime-adapter";
+import { parseMcpServers } from "@worklab-ai/runtime-adapter";
+import type { NormalizedMcpServer, RuntimeEventLike } from "@worklab-ai/runtime-adapter";
 
 export interface OpenAIStreamEventLike {
   readonly type?: string;
@@ -18,71 +19,45 @@ export interface McpServerSpec {
   readonly options: Record<string, unknown>;
 }
 
+/**
+ * Projects the canonical MCP model onto the @openai/agents constructor specs.
+ * Thin projector over {@link parseMcpServers}: http -> MCPServerStreamableHttp,
+ * sse -> MCPServerSSE, stdio -> MCPServerStdio.
+ */
 export function translateMcpServers(input: Record<string, unknown> | undefined): readonly McpServerSpec[] {
-  if (input === undefined) {
-    return [];
-  }
-  const specs: McpServerSpec[] = [];
-  for (const [name, raw] of Object.entries(input)) {
-    if (!/^[A-Za-z0-9_-]+$/.test(name) || !isObject(raw)) {
-      continue;
-    }
-    const spec = specFromRecord(name, raw);
-    if (spec !== undefined) {
-      specs.push(spec);
-    }
-  }
-  return specs;
+  return parseMcpServers(input).map((server) => projectOpenAIMcpSpec(server));
 }
 
-function specFromRecord(name: string, value: Record<string, unknown>): McpServerSpec | undefined {
-  const type = typeof value.type === "string" ? value.type : undefined;
-  const command = typeof value.command === "string" ? value.command : undefined;
-  if (type === "http" || (type === undefined && typeof value.url === "string" && command === undefined)) {
-    if (typeof value.url !== "string") {
-      return undefined;
-    }
-    return {
-      kind: "streamable_http",
-      name,
-      options: stripUndefined({
-        url: value.url,
-        name,
-        ...(isObject(value.headers) ? { requestInit: { headers: value.headers } } : {}),
-      }),
-    };
-  }
-  if (type === "sse") {
-    if (typeof value.url !== "string") {
-      return undefined;
-    }
+function projectOpenAIMcpSpec(server: NormalizedMcpServer): McpServerSpec {
+  if (server.transport === "sse") {
     return {
       kind: "sse",
-      name,
-      options: stripUndefined({ url: value.url, name }),
+      name: server.name,
+      options: { name: server.name, ...(server.url === undefined ? {} : { url: server.url }) },
     };
   }
-  if (type === "stdio" || command !== undefined) {
-    if (command === undefined) {
-      return undefined;
-    }
+  if (server.transport === "stdio") {
     return {
       kind: "stdio",
-      name,
-      options: stripUndefined({
-        command,
-        ...(Array.isArray(value.args) ? { args: value.args } : {}),
-        ...(isObject(value.env) ? { env: value.env } : {}),
-        ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
-        name,
-      }),
+      name: server.name,
+      options: {
+        name: server.name,
+        ...(server.command === undefined ? {} : { command: server.command }),
+        ...(server.args === undefined ? {} : { args: [...server.args] }),
+        ...(server.env === undefined ? {} : { env: { ...server.env } }),
+        ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
+      },
     };
   }
-  return undefined;
-}
-
-function stripUndefined<T extends Record<string, unknown>>(value: T): T {
-  return value;
+  return {
+    kind: "streamable_http",
+    name: server.name,
+    options: {
+      name: server.name,
+      ...(server.url === undefined ? {} : { url: server.url }),
+      ...(server.headers === undefined ? {} : { requestInit: { headers: { ...server.headers } } }),
+    },
+  };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

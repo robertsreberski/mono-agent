@@ -86,7 +86,7 @@ describe("createClaudeAgentsRuntime", () => {
     expect(sdkOptions.cwd).toBe("/work");
     expect(sdkOptions.systemPrompt).toBe("system");
     expect(sdkOptions.model).toBe("claude-opus-4-7");
-    expect(sdkOptions.mcpServers).toEqual([{ github: { type: "http", url: "http://localhost:8000" } }]);
+    expect(sdkOptions.mcpServers).toEqual({ github: { type: "http", url: "http://localhost:8000" } });
     expect(sdkOptions.additionalDirectories).toEqual(["/extra"]);
   });
 
@@ -135,6 +135,55 @@ describe("createClaudeAgentsRuntime", () => {
     expect(result.error).toContain("network down");
   });
 
+  it("maps an SDK error result (subtype + errors[]) to failureKind / error", async () => {
+    const queryFactory = vi.fn(() => stubQuery([
+      {
+        type: "result",
+        subtype: "error_max_turns",
+        is_error: true,
+        num_turns: 5,
+        duration_ms: 200,
+        stop_reason: "max_turns",
+        errors: ["hit the turn ceiling", "  ", "and another"],
+      },
+    ]));
+    const runtime = createClaudeAgentsRuntime({ queryFactory });
+
+    const result = await runtime.run("system", {
+      model: { sdk: "anthropic", model: "claude-opus-4-7" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.failureKind).toBe("error_max_turns");
+    expect(result.error).toBe("hit the turn ceiling; and another");
+    expect(result.stopReason).toBe("max_turns");
+    expect(result.numTurns).toBe(5);
+  });
+
+  it("rejects an unexpected model.sdk fail-closed", async () => {
+    const runtime = createClaudeAgentsRuntime({ queryFactory: () => stubQuery([]) });
+    await expect(
+      runtime.run("system", {
+        model: { sdk: "openai", model: "gpt-5" },
+        messages: [{ role: "user", content: "Hi" }],
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ name: "ClaudeAgentsRuntimeError", code: "invalid_options" });
+  });
+
+  it("accepts the canonical claude sdk id as well as the anthropic alias", async () => {
+    const queryFactory = vi.fn(() => stubQuery([{ type: "result", subtype: "success", result: "ok", num_turns: 1, duration_ms: 1 }]));
+    const runtime = createClaudeAgentsRuntime({ queryFactory });
+    const result = await runtime.run("system", {
+      model: { sdk: "claude", model: "claude-opus-4-7" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+    });
+    expect(result.sdk).toBe("claude");
+    expect(result.text).toBe("ok");
+  });
+
   it("applies apiKey to env for the duration of the call and restores afterwards", async () => {
     const previous = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = "before";
@@ -174,21 +223,22 @@ describe("createClaudeAgentsRuntime", () => {
 });
 
 describe("translations", () => {
-  it("translateMcpServers wraps the record into the SDK array shape, skipping invalid names", () => {
+  it("translateMcpServers returns a name-keyed Record (not an array), skipping invalid names", () => {
     expect(translateMcpServers(undefined)).toBeUndefined();
     expect(translateMcpServers({})).toBeUndefined();
-    expect(
-      translateMcpServers({
-        github: { type: "http", url: "http://example.com" },
-        "bad name with spaces": { type: "http", url: "http://x.com" },
-        ok_one: { type: "stdio", command: "node" },
-      }),
-    ).toEqual([
-      {
-        github: { type: "http", url: "http://example.com" },
-        ok_one: { type: "stdio", command: "node" },
-      },
-    ]);
+    const result = translateMcpServers({
+      github: { type: "http", url: "http://example.com" },
+      "bad name with spaces": { type: "http", url: "http://x.com" },
+      ok_one: { type: "stdio", command: "node" },
+    });
+    // Must be a Record<name, config>, with each server under its OWN key — not
+    // an array wrapping a single record (Claude SDK sdk.d.ts:1498).
+    expect(Array.isArray(result)).toBe(false);
+    expect(result).toEqual({
+      github: { type: "http", url: "http://example.com" },
+      ok_one: { type: "stdio", command: "node" },
+    });
+    expect(result).not.toHaveProperty("bad name with spaces");
   });
 
   it("extractAssistantTextDelta concatenates text blocks", () => {

@@ -22,9 +22,11 @@ const runtime = createClaudeAgentsRuntime();
 const responder = createConfiguredAgentResponder({
   config,
   runtime,
-  model: { sdk: "anthropic", model: "claude-opus-4-7" },
+  model: { sdk: "claude", model: "claude-opus-4-7" },
 });
 ```
+
+The runtime serves the `claude-sdk` backend; its `model.sdk` guard accepts the canonical `"claude"` id and the legacy `"anthropic"` alias and rejects any other sdk fail-closed.
 
 `ANTHROPIC_API_KEY` must be set in the environment, or supplied via `createClaudeAgentsRuntime({ apiKey })`.
 

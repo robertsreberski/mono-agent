@@ -217,6 +217,19 @@ describe("createOpenAIAgentsRuntime", () => {
       }),
     ).rejects.toBeInstanceOf(OpenAIAgentsRuntimeError);
   });
+
+  it("rejects an unexpected model.sdk fail-closed", async () => {
+    const runtime = createOpenAIAgentsRuntime({
+      runFactory: async () => buildHandle([], { numTurns: 0 }),
+    });
+    await expect(
+      runtime.run("system", {
+        model: { sdk: "claude", model: "claude-opus-4-7" },
+        messages: [{ role: "user", content: "Hi" }],
+        abortSignal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ name: "OpenAIAgentsRuntimeError", code: "invalid_options" });
+  });
 });
 
 describe("translations", () => {

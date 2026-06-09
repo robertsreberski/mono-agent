@@ -1,4 +1,5 @@
-import type { RuntimeEventLike } from "@worklab-ai/runtime-adapter";
+import { parseMcpServers } from "@worklab-ai/runtime-adapter";
+import type { NormalizedMcpServer, RuntimeEventLike } from "@worklab-ai/runtime-adapter";
 
 export interface ClaudeSDKMessageLike {
   readonly type?: string;
@@ -34,24 +35,45 @@ export function extractAssistantTextDelta(message: ClaudeSDKMessageLike): string
   return text;
 }
 
+/**
+ * Projects the canonical MCP model onto the Claude Agent SDK shape:
+ * `mcpServers?: Record<string, McpServerConfig>` (see
+ * @anthropic-ai/claude-agent-sdk sdk.d.ts:1498). Each named server maps to its
+ * OWN key in a single record — NOT an array of records. Returns undefined when
+ * the projected record is empty so callers can omit the field entirely.
+ */
 export function translateMcpServers(
   mcpServers: Record<string, unknown> | undefined,
-): Array<Record<string, unknown>> | undefined {
-  if (mcpServers === undefined || Object.keys(mcpServers).length === 0) {
-    return undefined;
+): Record<string, Record<string, unknown>> | undefined {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const server of parseMcpServers(mcpServers)) {
+    out[server.name] = projectClaudeMcpConfig(server);
   }
-  return [normalizeMcpServerRecord(mcpServers)];
+  return Object.keys(out).length === 0 ? undefined : out;
 }
 
-function normalizeMcpServerRecord(input: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(input)) {
-    if (!/^[A-Za-z0-9_-]+$/.test(name) || !isObject(value)) {
-      continue;
-    }
-    out[name] = { ...value };
+function projectClaudeMcpConfig(server: NormalizedMcpServer): Record<string, unknown> {
+  if (server.transport === "stdio") {
+    return {
+      type: "stdio",
+      ...(server.command === undefined ? {} : { command: server.command }),
+      ...(server.args === undefined ? {} : { args: [...server.args] }),
+      ...(server.env === undefined ? {} : { env: { ...server.env } }),
+      ...(server.cwd === undefined ? {} : { cwd: server.cwd }),
+    };
   }
-  return out;
+  if (server.transport === "sse") {
+    return {
+      type: "sse",
+      ...(server.url === undefined ? {} : { url: server.url }),
+      ...(server.headers === undefined ? {} : { headers: { ...server.headers } }),
+    };
+  }
+  return {
+    type: "http",
+    ...(server.url === undefined ? {} : { url: server.url }),
+    ...(server.headers === undefined ? {} : { headers: { ...server.headers } }),
+  };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

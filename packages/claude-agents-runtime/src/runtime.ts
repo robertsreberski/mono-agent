@@ -1,4 +1,12 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  CodedError,
+  acceptedSdkIdsForBackend,
+  applyTemporaryEnv,
+  assertBaseRunOptions,
+  buildRuntimeResult,
+  readLastStringUserMessage,
+} from "@worklab-ai/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
 
 import {
@@ -20,17 +28,28 @@ export type ClaudeQueryFactory = (input: {
   readonly options: Record<string, unknown>;
 }) => AsyncIterable<ClaudeSDKMessageLike> & { interrupt?: () => Promise<void> };
 
-export class ClaudeAgentsRuntimeError extends Error {
-  readonly code: string;
+export type ClaudeAgentsRuntimeErrorCode = "invalid_options" | "runtime_error" | "cancelled";
 
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "ClaudeAgentsRuntimeError";
-    this.code = code;
+export interface ClaudeAgentsRuntimeErrorDetails {
+  /** Mapped from the SDK result `subtype` for error results. */
+  readonly failureKind?: string;
+  /** The SDK result `stop_reason`, when present. */
+  readonly stopReason?: string | null;
+  readonly [key: string]: unknown;
+}
+
+export class ClaudeAgentsRuntimeError extends CodedError<ClaudeAgentsRuntimeErrorCode> {
+  constructor(
+    code: ClaudeAgentsRuntimeErrorCode,
+    message: string,
+    details: ClaudeAgentsRuntimeErrorDetails = {},
+  ) {
+    super(code, message, details);
   }
 }
 
 const DEFAULT_API_KEY_ENV = "ANTHROPIC_API_KEY";
+const ACCEPTED_SDK_IDS = new Set(acceptedSdkIdsForBackend("claude-sdk"));
 
 export function createClaudeAgentsRuntime(options: ClaudeAgentsRuntimeOptions = {}): MonoRuntimeLike {
   const queryFactory = options.queryFactory ?? defaultQueryFactory;
@@ -38,7 +57,7 @@ export function createClaudeAgentsRuntime(options: ClaudeAgentsRuntimeOptions = 
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {
       assertRunOptions(systemPrompt, runOptions);
       const startedAt = Date.now();
-      const userMessage = readUserMessage(runOptions);
+      const userMessage = readLastStringUserMessage(runOptions, makeError, "Claude Agents runtime");
       const sdkOptions = buildSdkOptions(systemPrompt, runOptions, options);
       const restoreApiKey = applyApiKey(options);
 
@@ -83,7 +102,9 @@ export function createClaudeAgentsRuntime(options: ClaudeAgentsRuntimeOptions = 
               providerSessionId = summary.sessionId;
               stopReason = summary.stopReason;
               if (summary.isError) {
-                failureKind = "runtime_error";
+                // The SDK result `subtype` carries the failure kind for error
+                // results (error_during_execution, error_max_turns, ...).
+                failureKind = summary.failureKind ?? "runtime_error";
                 errorMessage = summary.errorMessage ?? "Claude SDK returned an error result.";
               }
             }
@@ -102,47 +123,38 @@ export function createClaudeAgentsRuntime(options: ClaudeAgentsRuntimeOptions = 
       const elapsed = durationMs > 0 ? durationMs : Date.now() - startedAt;
       const cancelled = runOptions.abortSignal.aborted;
 
-      const result: RuntimeResult = {
-        ...(finalText === undefined ? {} : { text: finalText }),
+      return buildRuntimeResult({
+        text: finalText,
         events,
-        sdk: runOptions.model.sdk,
-        model: runOptions.model.model,
+        model: runOptions.model,
         numTurns,
         durationMs: elapsed,
-        ...(usage === undefined ? {} : { usage }),
-        ...(totalCostUsd === undefined ? {} : { cost: { totalUsd: totalCostUsd } }),
-        ...(providerSessionId === undefined ? {} : { providerSessionId }),
-        ...(stopReason === null ? {} : { stopReason }),
-        ...(cancelled ? { cancelled: true } : {}),
-        ...(failureKind === undefined ? {} : { failureKind }),
-        ...(errorMessage === undefined ? {} : { error: errorMessage }),
-      };
-      return result;
+        usage,
+        cost: totalCostUsd === undefined ? undefined : { totalUsd: totalCostUsd },
+        providerSessionId,
+        stopReason,
+        cancelled,
+        failureKind,
+        error: errorMessage,
+      });
     },
   };
 }
 
-function assertRunOptions(systemPrompt: string, runOptions: RuntimeRunOptions): void {
-  if (typeof systemPrompt !== "string" || systemPrompt.trim().length === 0) {
-    throw new ClaudeAgentsRuntimeError("invalid_options", "Claude Agents runtime requires a non-empty system prompt.");
-  }
-  if (!runOptions || !runOptions.model || typeof runOptions.model.model !== "string" || runOptions.model.model.length === 0) {
-    throw new ClaudeAgentsRuntimeError("invalid_options", "Claude Agents runtime requires runOptions.model.model.");
-  }
-  if (!(runOptions.abortSignal instanceof AbortSignal)) {
-    throw new ClaudeAgentsRuntimeError("invalid_options", "Claude Agents runtime requires runOptions.abortSignal.");
-  }
+function makeError(code: "invalid_options", message: string): ClaudeAgentsRuntimeError {
+  return new ClaudeAgentsRuntimeError(code, message);
 }
 
-function readUserMessage(runOptions: RuntimeRunOptions): string {
-  const last = runOptions.messages[runOptions.messages.length - 1];
-  if (last === undefined) {
-    throw new ClaudeAgentsRuntimeError("invalid_options", "Claude Agents runtime requires at least one runtime message.");
+function assertRunOptions(systemPrompt: string, runOptions: RuntimeRunOptions): void {
+  assertBaseRunOptions(systemPrompt, runOptions, makeError, "Claude Agents runtime");
+  const sdk = runOptions.model.sdk;
+  if (typeof sdk !== "string" || !ACCEPTED_SDK_IDS.has(sdk)) {
+    throw new ClaudeAgentsRuntimeError(
+      "invalid_options",
+      `Claude Agents runtime only serves sdk ${[...ACCEPTED_SDK_IDS].join("/")}; received ${String(sdk)}.`,
+      { receivedSdk: sdk },
+    );
   }
-  if (typeof last.content === "string") {
-    return last.content;
-  }
-  throw new ClaudeAgentsRuntimeError("invalid_options", "Claude Agents runtime only supports string message content.");
 }
 
 function buildSdkOptions(
@@ -172,19 +184,10 @@ function buildSdkOptions(
 }
 
 function applyApiKey(options: ClaudeAgentsRuntimeOptions): () => void {
-  const envName = options.apiKeyEnv ?? DEFAULT_API_KEY_ENV;
   if (options.apiKey === undefined) {
     return (): void => undefined;
   }
-  const previous = process.env[envName];
-  process.env[envName] = options.apiKey;
-  return (): void => {
-    if (previous === undefined) {
-      delete process.env[envName];
-    } else {
-      process.env[envName] = previous;
-    }
-  };
+  return applyTemporaryEnv({ [options.apiKeyEnv ?? DEFAULT_API_KEY_ENV]: options.apiKey });
 }
 
 function defaultQueryFactory(input: { readonly prompt: string; readonly options: Record<string, unknown> }): AsyncIterable<ClaudeSDKMessageLike> & { interrupt?: () => Promise<void> } {
@@ -202,6 +205,7 @@ interface ResultSummary {
   readonly sessionId?: string;
   readonly stopReason: string | null;
   readonly isError: boolean;
+  readonly failureKind?: string;
   readonly errorMessage?: string;
 }
 
@@ -223,10 +227,16 @@ function extractResultSummary(message: ClaudeSDKMessageLike): ResultSummary {
   const stopReason = typeof (message as { stop_reason?: unknown }).stop_reason === "string"
     ? (message as { stop_reason: string }).stop_reason
     : null;
-  const isError = message.subtype !== "success";
-  const errorMessage = typeof (message as { error?: unknown }).error === "string"
-    ? (message as { error: string }).error
-    : undefined;
+  // SDKResultMessage carries `is_error: boolean` on both the success and error
+  // variants, and the error variant's `subtype` is the failure kind
+  // (error_during_execution / error_max_turns / error_max_budget_usd /
+  // error_max_structured_output_retries). There is no top-level `error` string;
+  // human-readable detail lives in `errors: string[]`.
+  // (Verified against @anthropic-ai/claude-agent-sdk@0.3.143 sdk.d.ts:3334-3378.)
+  const subtype = typeof message.subtype === "string" ? message.subtype : undefined;
+  const isError = (message as { is_error?: unknown }).is_error === true || (subtype !== undefined && subtype !== "success");
+  const failureKind = isError && subtype !== undefined && subtype !== "success" ? subtype : undefined;
+  const errorMessage = isError ? errorMessageFromResult(message) : undefined;
   return {
     ...(text === undefined ? {} : { text }),
     numTurns,
@@ -236,6 +246,18 @@ function extractResultSummary(message: ClaudeSDKMessageLike): ResultSummary {
     ...(sessionId === undefined ? {} : { sessionId }),
     stopReason,
     isError,
+    ...(failureKind === undefined ? {} : { failureKind }),
     ...(errorMessage === undefined ? {} : { errorMessage }),
   };
+}
+
+function errorMessageFromResult(message: ClaudeSDKMessageLike): string | undefined {
+  const errors = (message as { errors?: unknown }).errors;
+  if (Array.isArray(errors)) {
+    const joined = errors.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).join("; ");
+    if (joined.length > 0) {
+      return joined;
+    }
+  }
+  return undefined;
 }
