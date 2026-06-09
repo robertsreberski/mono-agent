@@ -110,9 +110,22 @@ export const memoryFieldGroup = defineFieldGroup({
   description: "Where the agent's persistent notes live (optional).",
   fields: [
     {
+      id: "memory.mode",
+      label: "Mode",
+      description:
+        "markdown = one capped file (or per-conversation files). journal = a global daily journal whose today note is always in context, with older notes searched via tools.",
+      kind: "select",
+      options: [
+        { value: "markdown", label: "markdown" },
+        { value: "journal", label: "journal" },
+      ],
+      path: ["memory", "mode"],
+    },
+    {
       id: "memory.path",
-      label: "Memory file",
-      description: "Markdown file the memory layer reads and writes. Leave empty to disable memory.",
+      label: "Memory path",
+      description:
+        "markdown mode: the Markdown file read/written. journal mode: the memory root directory holding daily/ notes. Leave empty to disable memory.",
       kind: "path",
       placeholder: "./MEMORY.md",
       path: ["memory", "path"],

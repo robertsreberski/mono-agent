@@ -1,7 +1,7 @@
 {
-  "name": "@worklab-ai/agent-host",
+  "name": "@worklab-ai/memory-mcp",
   "version": "0.1.0",
-  "description": "Host composition helpers for Mono Agent responders.",
+  "description": "MCP stdio server exposing Mono Agent memory tools: journaling, entity graph, and keyword search.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
@@ -23,15 +23,10 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/agent-harness": "workspace:^0.1.0",
-    "@worklab-ai/config": "workspace:^0.1.0",
-    "@worklab-ai/codex-app-runtime": "workspace:^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@worklab-ai/memory-graph": "workspace:^0.1.0",
     "@worklab-ai/memory-journal": "workspace:^0.1.0",
-    "@worklab-ai/memory-md": "workspace:^0.1.0",
-    "@worklab-ai/observability": "workspace:^0.1.0",
-    "@worklab-ai/runtime-adapter": "workspace:^0.1.0",
-    "@worklab-ai/tool-policy": "workspace:^0.1.0"
+    "@worklab-ai/memory-search": "workspace:^0.1.0",
+    "zod": "^4.4.3"
   }
 }

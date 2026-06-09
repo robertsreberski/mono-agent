@@ -21,7 +21,7 @@ import {
 import type { ConfigErrorFactory } from "@worklab-ai/settings";
 
 import { EFFORT_LEVELS } from "./field-groups.js";
-import type { EffortLevel, MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig } from "./types.js";
+import type { EffortLevel, MemoryMode, MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -187,6 +187,10 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     return undefined;
   }
 
+  const mode = readChoice<MemoryMode>(env.MONO_AGENT_MEMORY_MODE, "MONO_AGENT_MEMORY_MODE", [
+    "markdown",
+    "journal",
+  ], "markdown", invalidEnv);
   const writeMode = readChoice<MemoryWriteMode>(env.MONO_AGENT_MEMORY_WRITE_MODE, "MONO_AGENT_MEMORY_WRITE_MODE", [
     "disabled",
     "append-host-summary",
@@ -197,6 +201,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   ], "single-file", invalidEnv);
 
   return {
+    mode,
     path: readPath(rawPath, cwd),
     maxBytes: readInteger(env.MONO_AGENT_MEMORY_MAX_BYTES, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, invalidEnv, { min: 1, max: 1_000_000 }),
     scope,

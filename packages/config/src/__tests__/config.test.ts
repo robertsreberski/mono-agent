@@ -44,6 +44,7 @@ describe("loadMonoAgentConfig", () => {
       selectedSkills: ["research", "review"],
     });
     expect(config.memory).toEqual({
+      mode: "markdown",
       path: "/repo/memory.md",
       maxBytes: 2048,
       scope: "single-file",

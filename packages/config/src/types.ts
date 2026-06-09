@@ -5,6 +5,7 @@ import type { EFFORT_LEVELS } from "./field-groups.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
+export type MemoryMode = "markdown" | "journal";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export interface MonoAgentConfig {
@@ -22,6 +23,7 @@ export interface MonoAgentConfig {
     readonly selectedSkills: readonly string[];
   };
   readonly memory?: {
+    readonly mode: MemoryMode;
     readonly path: string;
     readonly maxBytes: number;
     readonly scope: MemoryScope;
