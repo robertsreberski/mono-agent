@@ -137,6 +137,14 @@ export class SlackSocketModeRunner {
           settle(resolve);
         }
       };
+      const failForBackoff = (error: Error): void => {
+        settle(() => reject(error));
+        try {
+          socket.close();
+        } catch {
+          // Already rejected; close errors do not change the reconnect decision.
+        }
+      };
 
       socket.on("open", () => {
         this.logger?.info?.("Slack Socket Mode connected.");
@@ -151,6 +159,10 @@ export class SlackSocketModeRunner {
           this.logger?.info?.("Slack Socket Mode disconnect requested.", {
             reason: envelope.reason,
           });
+          if (envelope.reason !== "refresh_requested") {
+            failForBackoff(new Error(`Slack Socket Mode disconnect requested: ${envelope.reason ?? "unknown"}`));
+            return;
+          }
           closeForReconnect();
           return;
         }
