@@ -1,13 +1,17 @@
 import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
+import type { RedactedSecretValue } from "@worklab-ai/settings";
+
+import type { EFFORT_LEVELS } from "./field-groups.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export interface MonoAgentConfig {
   readonly runtime: {
     readonly model: RuntimeModelReference;
     readonly executionMode: RuntimeExecutionMode;
-    readonly effort?: string;
+    readonly effort?: EffortLevel;
     readonly maxTurns: number;
     readonly workspace: string;
   };
@@ -44,7 +48,7 @@ export interface MonoAgentConfig {
 }
 
 export type RedactedLocalProviderDefinition = Omit<LocalProviderDefinition, "apiKey"> & {
-  readonly apiKeyPresent?: boolean;
+  readonly apiKey?: RedactedSecretValue;
 };
 
 export interface RedactedMonoAgentConfig {

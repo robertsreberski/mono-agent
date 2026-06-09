@@ -97,7 +97,7 @@ describe("loadMonoAgentConfig", () => {
     expect(redacted.providers?.local[0]).toMatchObject({
       id: "ollama",
       type: "ollama",
-      apiKeyPresent: true,
+      apiKey: { present: true, redacted: true },
     });
     expect(JSON.stringify(redacted)).not.toContain("local-secret");
   });

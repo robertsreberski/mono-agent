@@ -8,6 +8,7 @@ import {
   cronFieldGroup,
   loadCronAdapterConfig,
   redactCronAdapterConfig,
+  toCronJobs,
 } from "../index.js";
 
 let dir: string;
@@ -81,6 +82,22 @@ describe("redactCronAdapterConfig", () => {
     })).toEqual({
       jobs: [{ id: "default", enabled: true, expression: "* * * * *", timezone: "UTC", prompt: "run" }],
     });
+  });
+});
+
+describe("toCronJobs", () => {
+  it("drops disabled jobs and maps to the runtime CronJob shape", () => {
+    const jobs = toCronJobs({
+      jobs: [
+        { id: "on", enabled: true, expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1" },
+        { id: "off", enabled: false, expression: "0 0 * * *", timezone: "UTC", prompt: "skip" },
+      ],
+    });
+
+    expect(jobs).toEqual([
+      { id: "on", expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1" },
+    ]);
+    expect(jobs.some((job) => job.id === "off")).toBe(false);
   });
 });
 

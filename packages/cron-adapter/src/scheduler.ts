@@ -7,6 +7,7 @@ import {
   type AgentResponder,
   type AgentResponse,
 } from "@worklab-ai/agent-contracts";
+import { normalizeOptionalString } from "@worklab-ai/settings";
 
 export interface CronRequestMetadata {
   readonly jobId: string;
@@ -70,7 +71,7 @@ export interface CronAdapterStartResult {
   stop(): void;
 }
 
-export type CronAdapterErrorCode = "invalid_config";
+export type CronAdapterErrorCode = "invalid_config" | "stream_closed";
 
 export interface CronAdapterErrorDetails {
   readonly code?: CronAdapterErrorCode;
@@ -249,7 +250,7 @@ class InMemoryMessageStream implements AgentMessageStream {
 
   private assertOpen(): void {
     if (this.done) {
-      throw new CronAdapterError("invalid_config", "Cannot write to a finished cron stream.");
+      throw new CronAdapterError("stream_closed", "Cannot write to a finished cron stream.");
     }
   }
 }
@@ -309,12 +310,4 @@ function assertFiveFieldExpression(job: CronJob): void {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
 }

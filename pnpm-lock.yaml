@@ -191,6 +191,9 @@ importers:
       '@worklab-ai/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
       zod:
         specifier: ^4.4.3
         version: 4.4.3

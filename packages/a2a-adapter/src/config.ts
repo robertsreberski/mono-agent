@@ -1,8 +1,19 @@
 import {
   defineFieldGroup,
+  isLoopbackHost,
+  layerJsonOntoEnv,
+  normalizeOptionalString,
+  readBoolean,
+  readCsv,
+  readInteger,
+  readJsonSection,
+  readRecord,
+  readRequired,
   readSettingsJson,
+  readString,
+  redactedSecret,
 } from "@worklab-ai/settings";
-import type { FieldGroup, SettingsJson } from "@worklab-ai/settings";
+import type { FieldGroup, RedactedSecretValue, SettingsJson } from "@worklab-ai/settings";
 
 import type { A2AAgentSkillOptions } from "./card.js";
 import { A2AProviderError } from "./errors.js";
@@ -42,13 +53,13 @@ export interface A2AAdapterConfig {
 
 export interface RedactedA2AAdapterConfig {
   readonly provider: Omit<A2AAdapterProviderConfig, "bearerToken"> & {
-    readonly bearerToken: { readonly present: boolean; readonly redacted: true };
+    readonly bearerToken: RedactedSecretValue;
   };
   readonly agent?: A2AAdapterAgentConfig;
   readonly skill?: A2AAgentSkillOptions;
   readonly consumer: Omit<A2AAdapterConsumerConfig, "bearerToken" | "remoteAgentUrls"> & {
     readonly remoteAgentUrls: { readonly count: number };
-    readonly bearerToken: { readonly present: boolean; readonly redacted: true };
+    readonly bearerToken: RedactedSecretValue;
   };
 }
 
@@ -61,6 +72,9 @@ export interface LoadA2AAdapterConfigInput {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 0;
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+const invalidConfig = (message: string, details?: Record<string, unknown>): A2AProviderError =>
+  new A2AProviderError("invalid_config", message, details);
 
 export const a2aFieldGroup: FieldGroup = defineFieldGroup({
   id: "a2a",
@@ -224,28 +238,26 @@ export async function loadA2AAdapterConfig(
 ): Promise<A2AAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerA2AJsonOntoEnv(json, input.env);
-  const enabled = readBoolean(env.MONO_AGENT_A2A_PROVIDER_ENABLED, false, "MONO_AGENT_A2A_PROVIDER_ENABLED");
+  const enabled = readBoolean(env.MONO_AGENT_A2A_PROVIDER_ENABLED, "MONO_AGENT_A2A_PROVIDER_ENABLED", false, invalidConfig);
+  const publicBaseUrl = normalizeOptionalString(env.MONO_AGENT_A2A_PUBLIC_BASE_URL);
+  const providerBearerToken = normalizeOptionalString(env.MONO_AGENT_A2A_BEARER_TOKEN);
   const provider: A2AAdapterProviderConfig = {
     enabled,
     host: readString(env.MONO_AGENT_A2A_HOST, DEFAULT_HOST),
-    port: readInteger(env.MONO_AGENT_A2A_PORT, DEFAULT_PORT, "MONO_AGENT_A2A_PORT", { min: 0, max: 65535 }),
-    ...(readOptionalString(env.MONO_AGENT_A2A_PUBLIC_BASE_URL) === undefined
-      ? {}
-      : { publicBaseUrl: readOptionalString(env.MONO_AGENT_A2A_PUBLIC_BASE_URL) as string }),
-    allowNonLoopback: readBoolean(env.MONO_AGENT_A2A_ALLOW_NON_LOOPBACK, false, "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK"),
-    requireBearer: readBoolean(env.MONO_AGENT_A2A_REQUIRE_BEARER, false, "MONO_AGENT_A2A_REQUIRE_BEARER"),
-    ...(readOptionalString(env.MONO_AGENT_A2A_BEARER_TOKEN) === undefined
-      ? {}
-      : { bearerToken: readOptionalString(env.MONO_AGENT_A2A_BEARER_TOKEN) as string }),
+    port: readInteger(env.MONO_AGENT_A2A_PORT, "MONO_AGENT_A2A_PORT", DEFAULT_PORT, invalidConfig, { min: 0, max: 65535 }),
+    ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
+    allowNonLoopback: readBoolean(env.MONO_AGENT_A2A_ALLOW_NON_LOOPBACK, "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", false, invalidConfig),
+    requireBearer: readBoolean(env.MONO_AGENT_A2A_REQUIRE_BEARER, "MONO_AGENT_A2A_REQUIRE_BEARER", false, invalidConfig),
+    ...(providerBearerToken === undefined ? {} : { bearerToken: providerBearerToken }),
   };
 
-  const consumerBearerToken = readOptionalString(env.MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN);
-  const defaultRemoteAgentUrl = readOptionalString(env.MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL);
+  const consumerBearerToken = normalizeOptionalString(env.MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN);
+  const defaultRemoteAgentUrl = normalizeOptionalString(env.MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL);
   const consumer: A2AAdapterConsumerConfig = {
     remoteAgentUrls: readCsv(env.MONO_AGENT_A2A_REMOTE_AGENT_URLS),
     ...(defaultRemoteAgentUrl === undefined ? {} : { defaultRemoteAgentUrl }),
     ...(consumerBearerToken === undefined ? {} : { bearerToken: consumerBearerToken }),
-    timeoutMs: readInteger(env.MONO_AGENT_A2A_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, "MONO_AGENT_A2A_TIMEOUT_MS", {
+    timeoutMs: readInteger(env.MONO_AGENT_A2A_TIMEOUT_MS, "MONO_AGENT_A2A_TIMEOUT_MS", DEFAULT_TIMEOUT_MS, invalidConfig, {
       min: 1,
       max: 600_000,
     }),
@@ -273,10 +285,7 @@ export function redactA2AAdapterConfig(
   return {
     provider: {
       ...withoutBearer(config.provider),
-      bearerToken: {
-        present: config.provider.bearerToken !== undefined && config.provider.bearerToken.length > 0,
-        redacted: true,
-      },
+      bearerToken: redactedSecret(config.provider.bearerToken),
     },
     ...(config.agent === undefined ? {} : { agent: config.agent }),
     ...(config.skill === undefined ? {} : { skill: config.skill }),
@@ -286,21 +295,30 @@ export function redactA2AAdapterConfig(
         ? {}
         : { defaultRemoteAgentUrl: config.consumer.defaultRemoteAgentUrl }),
       timeoutMs: config.consumer.timeoutMs,
-      bearerToken: {
-        present: config.consumer.bearerToken !== undefined && config.consumer.bearerToken.length > 0,
-        redacted: true,
-      },
+      bearerToken: redactedSecret(config.consumer.bearerToken),
     },
   };
 }
 
+function readRequiredEnv(raw: string | undefined, envName: string): string {
+  return readRequired(
+    raw,
+    () =>
+      new A2AProviderError(
+        "missing_required_config",
+        `${envName} is required when A2A provider is enabled.`,
+        { env: envName },
+      ),
+  );
+}
+
 function readAgentConfig(env: Record<string, string | undefined>): A2AAdapterAgentConfig {
-  const providerOrganization = readOptionalString(env.MONO_AGENT_A2A_PROVIDER_ORGANIZATION);
-  const providerUrl = readOptionalString(env.MONO_AGENT_A2A_PROVIDER_URL);
+  const providerOrganization = normalizeOptionalString(env.MONO_AGENT_A2A_PROVIDER_ORGANIZATION);
+  const providerUrl = normalizeOptionalString(env.MONO_AGENT_A2A_PROVIDER_URL);
   return {
-    name: readRequired(env.MONO_AGENT_A2A_AGENT_NAME, "MONO_AGENT_A2A_AGENT_NAME"),
-    description: readRequired(env.MONO_AGENT_A2A_AGENT_DESCRIPTION, "MONO_AGENT_A2A_AGENT_DESCRIPTION"),
-    version: readRequired(env.MONO_AGENT_A2A_AGENT_VERSION, "MONO_AGENT_A2A_AGENT_VERSION"),
+    name: readRequiredEnv(env.MONO_AGENT_A2A_AGENT_NAME, "MONO_AGENT_A2A_AGENT_NAME"),
+    description: readRequiredEnv(env.MONO_AGENT_A2A_AGENT_DESCRIPTION, "MONO_AGENT_A2A_AGENT_DESCRIPTION"),
+    version: readRequiredEnv(env.MONO_AGENT_A2A_AGENT_VERSION, "MONO_AGENT_A2A_AGENT_VERSION"),
     ...(providerOrganization === undefined ? {} : { providerOrganization }),
     ...(providerUrl === undefined ? {} : { providerUrl }),
   };
@@ -308,9 +326,9 @@ function readAgentConfig(env: Record<string, string | undefined>): A2AAdapterAge
 
 function readSkillConfig(env: Record<string, string | undefined>): A2AAgentSkillOptions {
   return {
-    id: readRequired(env.MONO_AGENT_A2A_SKILL_ID, "MONO_AGENT_A2A_SKILL_ID"),
-    name: readRequired(env.MONO_AGENT_A2A_SKILL_NAME, "MONO_AGENT_A2A_SKILL_NAME"),
-    description: readRequired(env.MONO_AGENT_A2A_SKILL_DESCRIPTION, "MONO_AGENT_A2A_SKILL_DESCRIPTION"),
+    id: readRequiredEnv(env.MONO_AGENT_A2A_SKILL_ID, "MONO_AGENT_A2A_SKILL_ID"),
+    name: readRequiredEnv(env.MONO_AGENT_A2A_SKILL_NAME, "MONO_AGENT_A2A_SKILL_NAME"),
+    description: readRequiredEnv(env.MONO_AGENT_A2A_SKILL_DESCRIPTION, "MONO_AGENT_A2A_SKILL_DESCRIPTION"),
     tags: readCsv(env.MONO_AGENT_A2A_SKILL_TAGS),
   };
 }
@@ -370,149 +388,37 @@ function layerA2AJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readRecord(json.a2a);
+  const section = readJsonSection(json, "a2a");
   const provider = readRecord(section.provider);
   const agent = readRecord(section.agent);
   const skill = readRecord(section.skill);
   const consumer = readRecord(section.consumer);
-  const fromJson: Record<string, string | undefined> = {};
 
-  setBoolean(fromJson, "MONO_AGENT_A2A_PROVIDER_ENABLED", provider.enabled);
-  setString(fromJson, "MONO_AGENT_A2A_HOST", provider.host);
-  setInteger(fromJson, "MONO_AGENT_A2A_PORT", provider.port);
-  setString(fromJson, "MONO_AGENT_A2A_PUBLIC_BASE_URL", provider.publicBaseUrl);
-  setBoolean(fromJson, "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", provider.allowNonLoopback);
-  setBoolean(fromJson, "MONO_AGENT_A2A_REQUIRE_BEARER", provider.requireBearer);
-  setString(fromJson, "MONO_AGENT_A2A_BEARER_TOKEN", provider.bearerToken);
+  return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_A2A_PROVIDER_ENABLED", value: provider.enabled, kind: "boolean" },
+    { env: "MONO_AGENT_A2A_HOST", value: provider.host },
+    { env: "MONO_AGENT_A2A_PORT", value: provider.port, kind: "integer" },
+    { env: "MONO_AGENT_A2A_PUBLIC_BASE_URL", value: provider.publicBaseUrl },
+    { env: "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", value: provider.allowNonLoopback, kind: "boolean" },
+    { env: "MONO_AGENT_A2A_REQUIRE_BEARER", value: provider.requireBearer, kind: "boolean" },
+    { env: "MONO_AGENT_A2A_BEARER_TOKEN", value: provider.bearerToken },
 
-  setString(fromJson, "MONO_AGENT_A2A_AGENT_NAME", agent.name);
-  setString(fromJson, "MONO_AGENT_A2A_AGENT_DESCRIPTION", agent.description);
-  setString(fromJson, "MONO_AGENT_A2A_AGENT_VERSION", agent.version);
-  setString(fromJson, "MONO_AGENT_A2A_PROVIDER_ORGANIZATION", agent.providerOrganization);
-  setString(fromJson, "MONO_AGENT_A2A_PROVIDER_URL", agent.providerUrl);
+    { env: "MONO_AGENT_A2A_AGENT_NAME", value: agent.name },
+    { env: "MONO_AGENT_A2A_AGENT_DESCRIPTION", value: agent.description },
+    { env: "MONO_AGENT_A2A_AGENT_VERSION", value: agent.version },
+    { env: "MONO_AGENT_A2A_PROVIDER_ORGANIZATION", value: agent.providerOrganization },
+    { env: "MONO_AGENT_A2A_PROVIDER_URL", value: agent.providerUrl },
 
-  setString(fromJson, "MONO_AGENT_A2A_SKILL_ID", skill.id);
-  setString(fromJson, "MONO_AGENT_A2A_SKILL_NAME", skill.name);
-  setString(fromJson, "MONO_AGENT_A2A_SKILL_DESCRIPTION", skill.description);
-  setCsv(fromJson, "MONO_AGENT_A2A_SKILL_TAGS", skill.tags);
+    { env: "MONO_AGENT_A2A_SKILL_ID", value: skill.id },
+    { env: "MONO_AGENT_A2A_SKILL_NAME", value: skill.name },
+    { env: "MONO_AGENT_A2A_SKILL_DESCRIPTION", value: skill.description },
+    { env: "MONO_AGENT_A2A_SKILL_TAGS", value: skill.tags, kind: "csv" },
 
-  setCsv(fromJson, "MONO_AGENT_A2A_REMOTE_AGENT_URLS", consumer.remoteAgentUrls);
-  setString(fromJson, "MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL", consumer.defaultRemoteAgentUrl);
-  setString(fromJson, "MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN", consumer.bearerToken);
-  setInteger(fromJson, "MONO_AGENT_A2A_TIMEOUT_MS", consumer.timeoutMs);
-
-  const layered: Record<string, string | undefined> = { ...fromJson };
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) {
-      layered[key] = value;
-    }
-  }
-  return layered;
-}
-
-function readRecord(value: unknown): Record<string, unknown> {
-  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return {};
-}
-
-function readRequired(value: string | undefined, envName: string): string {
-  const normalized = readOptionalString(value);
-  if (normalized === undefined) {
-    throw new A2AProviderError("missing_required_config", `${envName} is required when A2A provider is enabled.`, {
-      env: envName,
-    });
-  }
-  return normalized;
-}
-
-function readString(raw: string | undefined, defaultValue: string): string {
-  return readOptionalString(raw) ?? defaultValue;
-}
-
-function readOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
-}
-
-function readCsv(raw: string | undefined): readonly string[] {
-  const normalized = readOptionalString(raw);
-  if (normalized === undefined) {
-    return [];
-  }
-  return normalized
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-function readBoolean(raw: string | undefined, defaultValue: boolean, envName: string): boolean {
-  const normalized = readOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new A2AProviderError("invalid_config", `${envName} must be true or false.`, { env: envName });
-}
-
-function readInteger(
-  raw: string | undefined,
-  defaultValue: number,
-  envName: string,
-  bounds: {
-    readonly min: number;
-    readonly max: number;
-  },
-): number {
-  const normalized = readOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (!/^\d+$/u.test(normalized)) {
-    throw new A2AProviderError("invalid_config", `${envName} must be an integer.`, { env: envName });
-  }
-  const value = Number.parseInt(normalized, 10);
-  if (value < bounds.min || value > bounds.max) {
-    throw new A2AProviderError(
-      "invalid_config",
-      `${envName} must be between ${bounds.min} and ${bounds.max}.`,
-      { env: envName },
-    );
-  }
-  return value;
-}
-
-function setString(target: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "string") {
-    target[key] = value;
-  }
-}
-
-function setBoolean(target: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "boolean") {
-    target[key] = value ? "true" : "false";
-  }
-}
-
-function setInteger(target: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "number" && Number.isInteger(value)) {
-    target[key] = String(value);
-  }
-}
-
-function setCsv(target: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (Array.isArray(value)) {
-    target[key] = value.filter((item): item is string => typeof item === "string").join(",");
-  }
+    { env: "MONO_AGENT_A2A_REMOTE_AGENT_URLS", value: consumer.remoteAgentUrls, kind: "csv" },
+    { env: "MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL", value: consumer.defaultRemoteAgentUrl },
+    { env: "MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN", value: consumer.bearerToken },
+    { env: "MONO_AGENT_A2A_TIMEOUT_MS", value: consumer.timeoutMs, kind: "integer" },
+  ]);
 }
 
 function withoutBearer(
@@ -520,12 +426,4 @@ function withoutBearer(
 ): Omit<A2AAdapterProviderConfig, "bearerToken"> {
   const { bearerToken: _bearerToken, ...safeProvider } = provider;
   return safeProvider;
-}
-
-function isLoopbackHost(host: string): boolean {
-  const normalized = host.toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
-  return normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized.startsWith("127.");
 }

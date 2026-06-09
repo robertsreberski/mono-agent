@@ -25,6 +25,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@worklab-ai/agent-contracts": "workspace:^0.1.0",
+    "@worklab-ai/settings": "workspace:^0.1.0",
     "zod": "^4.4.3"
   }
 }

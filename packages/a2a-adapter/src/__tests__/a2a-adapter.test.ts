@@ -183,7 +183,7 @@ describe("A2A adapter contract", () => {
           referenceTaskIds: [],
         },
       })).rejects.toMatchObject({
-        code: "remote_failed",
+        code: "remote_rejected",
       });
     } finally {
       await provider.stop();

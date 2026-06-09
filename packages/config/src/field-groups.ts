@@ -1,6 +1,13 @@
 import { defineFieldGroup } from "@worklab-ai/settings";
 import type { FieldGroupRegistry } from "@worklab-ai/settings";
 
+/**
+ * Closed set of reasoning-effort hints, shared by the runtime field group's
+ * select options and the loader's `MONO_AGENT_EFFORT` validation so the two
+ * surfaces never drift.
+ */
+export const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+
 export const identityFieldGroup = defineFieldGroup({
   id: "identity",
   label: "Identity",
@@ -73,14 +80,7 @@ export const runtimeFieldGroup = defineFieldGroup({
       label: "Effort",
       description: "Reasoning effort hint (none, low, medium, high, xhigh, max).",
       kind: "select",
-      options: [
-        { value: "none", label: "none" },
-        { value: "low", label: "low" },
-        { value: "medium", label: "medium" },
-        { value: "high", label: "high" },
-        { value: "xhigh", label: "xhigh" },
-        { value: "max", label: "max" },
-      ],
+      options: EFFORT_LEVELS.map((level) => ({ value: level, label: level })),
       path: ["runtime", "effort"],
     },
     {
