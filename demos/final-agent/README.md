@@ -200,7 +200,7 @@ Enable the OpenAI API adapter with a real runtime configuration:
 }
 ```
 
-Start the demo and use the printed OpenAI API base URL in OpenWebUI. If OpenWebUI runs in Docker while Mono Agent runs on the host, use `http://host.docker.internal:4311/v1` instead of `http://127.0.0.1:4311/v1`. Set OpenWebUI's API key to the same `apiKey` only when one is configured; otherwise leave the adapter key unset for loopback-only local use.
+Start the demo and use the printed OpenAI API base URL in OpenWebUI. If OpenWebUI runs in local Docker while Mono Agent runs on the host, keep the adapter bound to host loopback (`127.0.0.1`) and use `http://host.docker.internal:4311/v1` from OpenWebUI instead of `http://127.0.0.1:4311/v1`. Only bind a non-loopback/public host when `allowNonLoopback` is explicitly enabled; that setup should configure an `apiKey` and sit behind appropriate network protection such as a firewall, VPN, TLS-terminating reverse proxy, or private network. Set OpenWebUI's API key to the same `apiKey` only when one is configured; otherwise leave the adapter key unset for loopback-only local use.
 
 Terminal smoke:
 
