@@ -34,14 +34,11 @@ export type {
   SlackMessageStreamOptions,
 } from "./message-stream.js";
 export {
-  AgentResponderCancelledError,
-  isAgentResponderCancelledError,
   SlackAdapter,
 } from "./adapter.js";
 export type {
   AgentRequest,
   AgentResponder,
-  AgentResponderCancelledErrorOptions,
   AgentResponse,
   SlackAdapterLogger,
   SlackAdapterMessages,
@@ -64,24 +61,6 @@ export type {
   SlackWebSocketFactory,
   SlackWebSocketLike,
 } from "./socket-mode-runner.js";
-export {
-  assistantTextFromRuntimeEvent,
-  createRuntimeResponder,
-  defaultRuntimeMessages,
-  RuntimeResponderError,
-} from "./runtime-responder.js";
-export type {
-  AgentRuntimeLike,
-  RuntimeEventLike,
-  RuntimeExecutionMode,
-  RuntimeMessage,
-  RuntimeMessageBuilder,
-  RuntimeModelReference,
-  RuntimeResponderErrorDetails,
-  RuntimeResponderOptions,
-  RuntimeResultLike,
-  RuntimeRunOptions,
-} from "./runtime-responder.js";
 export {
   loadSlackAdapterConfig,
   redactSlackAdapterConfig,

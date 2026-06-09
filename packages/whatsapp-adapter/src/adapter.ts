@@ -23,14 +23,6 @@ import type {
   WhatsAppTextMessage,
 } from "./types.js";
 
-export {
-  AgentResponseCancelledError as AgentResponderCancelledError,
-  isAgentResponseCancelledError as isAgentResponderCancelledError,
-} from "@worklab-ai/agent-contracts";
-export type {
-  AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
-} from "@worklab-ai/agent-contracts";
-
 export type WhatsAppGroupTriggerMode = "mention" | "any";
 
 export type WhatsAppTriggerKind = "direct" | "group_mention" | "group_any";

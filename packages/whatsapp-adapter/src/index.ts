@@ -13,11 +13,7 @@ export type {
   WhatsAppTriggerKind,
   WhatsAppTriggerOptions,
 } from "./adapter.js";
-export {
-  AgentResponderCancelledError,
-  isAgentResponderCancelledError,
-  WhatsAppAdapter,
-} from "./adapter.js";
+export { WhatsAppAdapter } from "./adapter.js";
 
 export type {
   WhatsAppMessageIgnoredReason,
@@ -31,25 +27,6 @@ export type {
   WhatsAppMessageStreamOptions,
 } from "./message-stream.js";
 export { splitWhatsAppText, WhatsAppMessageStream } from "./message-stream.js";
-
-export type {
-  AgentRuntimeLike,
-  RuntimeEventLike,
-  RuntimeExecutionMode,
-  RuntimeMessage,
-  RuntimeMessageBuilder,
-  RuntimeModelReference,
-  RuntimeResponderErrorDetails,
-  RuntimeResponderOptions,
-  RuntimeResultLike,
-  RuntimeRunOptions,
-} from "./runtime-responder.js";
-export {
-  assistantTextFromRuntimeEvent,
-  createRuntimeResponder,
-  defaultRuntimeMessages,
-  RuntimeResponderError,
-} from "./runtime-responder.js";
 
 export {
   loadWhatsAppAdapterConfig,

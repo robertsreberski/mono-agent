@@ -19,14 +19,6 @@ import type {
   TelegramUser,
 } from "./types.js";
 
-export {
-  AgentResponseCancelledError as AgentResponderCancelledError,
-  isAgentResponseCancelledError as isAgentResponderCancelledError,
-} from "@worklab-ai/agent-contracts";
-export type {
-  AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
-} from "@worklab-ai/agent-contracts";
-
 export interface AgentRequest extends AgentRequestBase {
   conversationId: string;
   chatId: TelegramChatId;

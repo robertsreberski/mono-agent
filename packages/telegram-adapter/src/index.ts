@@ -28,15 +28,10 @@ export type {
   TelegramMessageStreamLogger,
   TelegramMessageStreamOptions,
 } from "./message-stream.js";
-export {
-  AgentResponderCancelledError,
-  isAgentResponderCancelledError,
-  TelegramAdapter,
-} from "./adapter.js";
+export { TelegramAdapter } from "./adapter.js";
 export type {
   AgentRequest,
   AgentResponder,
-  AgentResponderCancelledErrorOptions,
   AgentResponse,
   TelegramAdapterLogger,
   TelegramAdapterMessages,
@@ -45,24 +40,6 @@ export type {
   TelegramRequestMetadata,
   TelegramUpdateHandlingResult,
 } from "./adapter.js";
-export {
-  assistantTextFromRuntimeEvent,
-  createRuntimeResponder,
-  defaultRuntimeMessages,
-  RuntimeResponderError,
-} from "./runtime-responder.js";
-export type {
-  AgentRuntimeLike,
-  RuntimeEventLike,
-  RuntimeExecutionMode,
-  RuntimeMessage,
-  RuntimeMessageBuilder,
-  RuntimeModelReference,
-  RuntimeResponderErrorDetails,
-  RuntimeResponderOptions,
-  RuntimeResultLike,
-  RuntimeRunOptions,
-} from "./runtime-responder.js";
 export { TelegramLongPoller } from "./long-poller.js";
 export type {
   TelegramLongPollerBackoffOptions,
