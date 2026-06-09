@@ -8,6 +8,7 @@ import {
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
+  type AgentStreamEvent,
 } from "@worklab-ai/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
@@ -320,6 +321,8 @@ class InMemoryMessageStream implements AgentMessageStream {
 
   async status(_text: string): Promise<void> {}
 
+  async event(_event: AgentStreamEvent): Promise<void> {}
+
   async append(delta: string): Promise<void> {
     this.assertOpen();
     this.currentText += delta;
@@ -351,6 +354,10 @@ class SseChatMessageStream implements AgentMessageStream {
   private currentText = "";
   private done = false;
   private started = false;
+  private readonly activeTools = new Map<string, {
+    readonly name: string;
+    readonly arguments?: unknown;
+  }>();
 
   constructor(
     private readonly response: Response,
@@ -366,6 +373,42 @@ class SseChatMessageStream implements AgentMessageStream {
   }
 
   async status(_text: string): Promise<void> {}
+
+  async event(event: AgentStreamEvent): Promise<void> {
+    this.assertOpen();
+    if (event.type === "assistant_thought") {
+      if (event.text.length > 0) {
+        this.writeChunk({ reasoning_content: event.text }, null);
+      }
+      return;
+    }
+    if (event.type === "tool_call_started") {
+      this.activeTools.set(event.id, {
+        name: event.name,
+        ...(event.arguments === undefined ? {} : { arguments: event.arguments }),
+      });
+      return;
+    }
+    if (event.type === "tool_call_completed") {
+      const started = this.activeTools.get(event.id);
+      const name = event.name ?? started?.name ?? "tool";
+      const args = event.arguments ?? started?.arguments ?? {};
+      this.activeTools.delete(event.id);
+      this.writeChunk({
+        content: openWebUIToolDetails({
+          id: event.id,
+          name,
+          arguments: args,
+          result: event.content,
+          isError: event.isError === true,
+        }),
+      }, null);
+      return;
+    }
+    if (event.type === "runtime_warning") {
+      this.writeChunk({ reasoning_content: `Warning: ${event.message}` }, null);
+    }
+  }
 
   async append(delta: string): Promise<void> {
     this.assertOpen();
@@ -390,12 +433,25 @@ class SseChatMessageStream implements AgentMessageStream {
       return;
     }
     if (finalText !== undefined) {
-      await this.replace(finalText);
+      await this.finishFinalText(finalText);
     }
     this.done = true;
     this.writeChunk({}, "stop");
     this.response.write("data: [DONE]\n\n");
     this.response.end();
+  }
+
+  private async finishFinalText(finalText: string): Promise<void> {
+    if (finalText.length === 0 || finalText === this.currentText) {
+      return;
+    }
+    if (this.currentText.length === 0) {
+      await this.append(finalText);
+      return;
+    }
+    if (finalText.startsWith(this.currentText)) {
+      await this.append(finalText.slice(this.currentText.length));
+    }
   }
 
   error(message: string, code: string): void {
@@ -624,6 +680,47 @@ function openAIError(
     param: null,
     code,
   };
+}
+
+function openWebUIToolDetails(input: {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: unknown;
+  readonly result: unknown;
+  readonly isError: boolean;
+}): string {
+  const argumentsJson = stableJson(input.arguments);
+  const resultJson = stableJson(input.result ?? null);
+  const summary = input.isError ? "Tool Error" : "Tool Executed";
+  return [
+    `<details type="tool_calls" done="true" id="${escapeHtmlAttribute(input.id)}" name="${escapeHtmlAttribute(input.name)}" arguments="${escapeHtmlAttribute(argumentsJson)}">`,
+    `<summary>${summary}</summary>`,
+    escapeHtmlText(resultJson),
+    "</details>",
+    "",
+  ].join("\n");
+}
+
+function stableJson(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtmlText(value).replace(/"/gu, "&quot;");
+}
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/gu, "&amp;")
+    .replace(/</gu, "&lt;")
+    .replace(/>/gu, "&gt;");
 }
 
 function validateOptions(options: OpenAIApiAdapterOptions): void {

@@ -143,8 +143,27 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
             const text = typeof item.text === "string" && item.text.length > 0
               ? item.text
               : agentTextByItem.get(id) ?? "";
+            const phase = typeof item.phase === "string" && item.phase.length > 0 ? item.phase : undefined;
+            if (phase === "commentary") {
+              emit({
+                type: "assistant",
+                message: { content: [{ type: "thinking", text, phase }] },
+              });
+              return;
+            }
             assistantText = text;
-            emit({ type: "assistant", message: { content: [{ type: "text", text }] } });
+            emit({
+              type: "assistant",
+              message: {
+                content: [
+                  {
+                    type: "text",
+                    text,
+                    ...(phase === undefined ? {} : { phase }),
+                  },
+                ],
+              },
+            });
             return;
           }
           if (item === undefined) {

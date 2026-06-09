@@ -27,6 +27,8 @@ const adapter = await startOpenAIApiAdapter({
 
 Point OpenWebUI at the printed base URL, for example `http://127.0.0.1:4311/v1`. If OpenWebUI runs in Docker while Mono Agent runs on the host, use `http://host.docker.internal:4311/v1`. Configure an API key in OpenWebUI only when `openaiApi.apiKey` or `MONO_AGENT_OPENAI_API_KEY` is set.
 
+Streaming responders may send structured stream events through `AgentMessageStream.event()`. Assistant thoughts are emitted as `delta.reasoning_content` so OpenWebUI can render them separately from the final answer. Internally executed tools are rendered as OpenWebUI `<details type="tool_calls">` content blocks after completion. The adapter intentionally does not emit `delta.tool_calls` or `finish_reason: "tool_calls"` for host-owned tools because those fields ask the client to execute tools.
+
 ## Public API
 
 - `startOpenAIApiAdapter`

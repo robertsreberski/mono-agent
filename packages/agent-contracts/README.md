@@ -22,7 +22,7 @@ Adapter packages extend the base request with transport metadata while keeping t
 
 ## Public API
 
-- `AgentRequestBase`, `AgentResponse`, `AgentMessageStream`, `AgentResponder`
+- `AgentRequestBase`, `AgentResponse`, `AgentMessageStream`, `AgentStreamEvent`, `AgentResponder`
 - `AgentResponseCancelledError`, `isAgentResponseCancelledError`
 - `AgentRequestMetadata`, `AgentResponseMetadata`, `AgentMessageStreamResult`
 

@@ -13,10 +13,40 @@ export interface AgentResponse {
   readonly metadata?: AgentResponseMetadata;
 }
 
+export type AgentStreamEvent =
+  | {
+      readonly type: "assistant_thought";
+      readonly text: string;
+      readonly metadata?: AgentResponseMetadata;
+    }
+  | {
+      readonly type: "tool_call_started";
+      readonly id: string;
+      readonly name: string;
+      readonly arguments?: unknown;
+      readonly metadata?: AgentResponseMetadata;
+    }
+  | {
+      readonly type: "tool_call_completed";
+      readonly id: string;
+      readonly name?: string;
+      readonly arguments?: unknown;
+      readonly content?: unknown;
+      readonly isError?: boolean;
+      readonly metadata?: AgentResponseMetadata;
+    }
+  | {
+      readonly type: "runtime_warning";
+      readonly message: string;
+      readonly warningKind?: string;
+      readonly metadata?: AgentResponseMetadata;
+    };
+
 export interface AgentMessageStream {
   status?(text: string): Promise<void>;
   append(delta: string): Promise<void>;
   replace?(text: string): Promise<void>;
+  event?(event: AgentStreamEvent): Promise<void>;
   finish?(finalText?: string): Promise<void>;
 }
 

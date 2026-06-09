@@ -283,6 +283,83 @@ describe("AgentHarness", () => {
     expect(response.text).toBe("done");
   });
 
+  it("forwards thoughts and internal tool activity as stream events without appending them to answer text", async () => {
+    const harness = {
+      async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "thinking", text: "checking tools" }] } });
+        request.onEvent?.({
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-1",
+                name: "mcp__context_a8c__search",
+                input: { query: "release plan" },
+              },
+            ],
+          },
+        });
+        request.onEvent?.({
+          type: "user",
+          message: {
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool-1",
+                content: { matches: 2 },
+                is_error: false,
+              },
+            ],
+          },
+        });
+        request.onEvent?.({ type: "runtime_warning", warning_kind: "config_warning", message: "minor config warning" });
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "final " }] } });
+        return {
+          text: "final answer",
+          metadata: {
+            runId: "run",
+            conversationId: "c",
+            contextSources: [],
+            contextSectionIds: [],
+          },
+        };
+      },
+    };
+    const streamText: string[] = [];
+    const streamEvents: unknown[] = [];
+    const response = await createAgentResponder({ harness }).respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      {
+        append: async (delta) => { streamText.push(delta); },
+        event: async (event) => { streamEvents.push(event); },
+      },
+    );
+
+    expect(streamText).toEqual(["final "]);
+    expect(streamEvents).toEqual([
+      { type: "assistant_thought", text: "checking tools" },
+      {
+        type: "tool_call_started",
+        id: "tool-1",
+        name: "mcp__context_a8c__search",
+        arguments: { query: "release plan" },
+      },
+      {
+        type: "tool_call_completed",
+        id: "tool-1",
+        content: { matches: 2 },
+        isError: false,
+      },
+      {
+        type: "runtime_warning",
+        warningKind: "config_warning",
+        message: "minor config warning",
+      },
+    ]);
+    expect(response.text).toBe("final answer");
+  });
+
   it("throws AgentHarnessFailureError from the structural responder", async () => {
     const harness = {
       async run() {

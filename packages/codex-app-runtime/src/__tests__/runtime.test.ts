@@ -146,6 +146,62 @@ describe("createCodexAppRuntime", () => {
     expect(thinkingEvents).toHaveLength(2);
   });
 
+  it("treats commentary agent messages as thinking and keeps only final_answer as result text", async () => {
+    const factory = stubClient(({ onNotification }) => async (request) => {
+      if (request.method === "thread/start") {
+        return { threadId: "th_1" };
+      }
+      if (request.method === "turn/start") {
+        onNotification("turn/started", { turnId: "t1" });
+        onNotification("item/completed", {
+          item: {
+            id: "commentary-1",
+            type: "agentMessage",
+            phase: "commentary",
+            text: "I am checking the tool output.",
+          },
+        });
+        onNotification("item/completed", {
+          item: {
+            id: "final-1",
+            type: "agentMessage",
+            phase: "final_answer",
+            text: "Here is the final answer.",
+          },
+        });
+        onNotification("turn/completed", {});
+      }
+      return {};
+    });
+    const runtime = createCodexAppRuntime({ clientFactory: factory });
+
+    const result = await runtime.run("system", {
+      model: { sdk: "codex", model: "gpt-5.5" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.text).toBe("Here is the final answer.");
+    const assistantBlocks = (result.events ?? [])
+      .filter((event) => event.type === "assistant")
+      .map((event) => {
+        const content = (event as { message?: { content?: unknown[] } }).message?.content;
+        return Array.isArray(content) ? content[0] : undefined;
+      });
+    expect(assistantBlocks).toEqual([
+      {
+        type: "thinking",
+        text: "I am checking the tool output.",
+        phase: "commentary",
+      },
+      {
+        type: "text",
+        text: "Here is the final answer.",
+        phase: "final_answer",
+      },
+    ]);
+  });
+
   it("surfaces warning/error/configWarning notifications as runtime_warning events without halting", async () => {
     const factory = stubClient(({ onNotification }) => async (request) => {
       if (request.method === "thread/start") {
