@@ -71,3 +71,11 @@ export type {
   WhatsAppEventRunnerStartOptions,
 } from "./event-runner.js";
 export { WhatsAppEventRunner } from "./event-runner.js";
+
+export { startWhatsAppAdapter } from "./start.js";
+export type {
+  StartWhatsAppAdapterOptions,
+  WhatsAppAdapterStartLogger,
+  WhatsAppAdapterStartResult,
+  WhatsAppSocketFactory,
+} from "./start.js";

@@ -48,6 +48,12 @@ export type {
   TelegramLongPollerStartOptions,
   TelegramUpdateHandler,
 } from "./long-poller.js";
+export { startTelegramAdapter } from "./start.js";
+export type {
+  TelegramAdapterStartOptions,
+  TelegramAdapterStartResult,
+  TelegramPollerLike,
+} from "./start.js";
 export {
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,

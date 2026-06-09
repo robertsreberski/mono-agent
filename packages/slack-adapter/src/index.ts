@@ -61,6 +61,15 @@ export type {
   SlackWebSocketLike,
 } from "./socket-mode-runner.js";
 export {
+  startSlackAdapter,
+} from "./start.js";
+export type {
+  SlackAdapterStartLogger,
+  SlackAdapterStartOptions,
+  SlackAdapterStartResult,
+  SlackApiFactoryInput,
+} from "./start.js";
+export {
   loadSlackAdapterConfig,
   redactSlackAdapterConfig,
   SlackAdapterConfigError,
