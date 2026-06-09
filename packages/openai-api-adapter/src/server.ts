@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
 import {
+  BufferedMessageStream,
   isAgentResponseCancelledError,
   type AgentMessageStream,
   type AgentRequestBase,
@@ -244,7 +245,10 @@ async function runJsonResponder(input: {
   readonly model: string;
   readonly options: OpenAIApiAdapterOptions;
 }): Promise<void> {
-  const stream = new InMemoryMessageStream();
+  const stream = new BufferedMessageStream({
+    onClosed: () =>
+      new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream."),
+  });
   try {
     const response = await input.options.responder.respond(input.request, stream);
     await stream.finish(response.text);
@@ -301,45 +305,6 @@ async function runStreamingResponder(input: {
       error: errorToMessage(error),
     });
     stream.error(errorToMessage(error), cancelled ? "request_cancelled" : "server_error");
-  }
-}
-
-class InMemoryMessageStream implements AgentMessageStream {
-  private currentText = "";
-  private done = false;
-
-  get text(): string {
-    return this.currentText.trim();
-  }
-
-  async status(_text: string): Promise<void> {}
-
-  async event(_event: AgentStreamEvent): Promise<void> {}
-
-  async append(delta: string): Promise<void> {
-    this.assertOpen();
-    this.currentText += delta;
-  }
-
-  async replace(text: string): Promise<void> {
-    this.assertOpen();
-    this.currentText = text;
-  }
-
-  async finish(finalText?: string): Promise<void> {
-    if (this.done) {
-      return;
-    }
-    this.done = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
-    }
-  }
-
-  private assertOpen(): void {
-    if (this.done) {
-      throw new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream.");
-    }
   }
 }
 
@@ -447,7 +412,7 @@ class SseChatMessageStream implements AgentMessageStream {
     }
   }
 
-  error(message: string, code: string): void {
+  error(message: string, code: "request_cancelled" | "server_error"): void {
     if (this.done) {
       return;
     }

@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildAgentContext } from '../context-builder.js';
 import { DEFAULT_SOUL_TEXT } from '../default-soul.js';
 import { ContextValidationError } from '../errors.js';
 import type { JsonValue } from '../json.js';
+import * as skillIndex from '../skill-index.js';
 
 function expectValidationCode(callback: () => unknown, code: ContextValidationError['code']): void {
   try {
@@ -18,6 +19,10 @@ function expectValidationCode(callback: () => unknown, code: ContextValidationEr
 }
 
 describe('buildAgentContext', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('includes default core, identity, and current user message with minimal input', () => {
     const context = buildAgentContext({
       identity: 'You are Test Agent.',
@@ -131,6 +136,24 @@ describe('buildAgentContext', () => {
     expect(instructions?.content).toContain('### Skill Instruction 1 (/skills/research/SKILL.md)\n\n# Research');
     expect(instructions?.content).toContain('### Skill Instruction 2 (/skills/writing/SKILL.md)\n\n# Writing');
     expect(context.metadata.sources).toEqual(['/skills/research/SKILL.md', '/skills/writing/SKILL.md']);
+  });
+
+  it('builds the skill index exactly once when rendering skills', () => {
+    const buildSpy = vi.spyOn(skillIndex, 'buildSkillIndex');
+
+    const context = buildAgentContext({
+      identity: 'Identity text',
+      userMessage: 'Use a skill if needed.',
+      skills: [
+        { name: 'writing', description: 'Write plans', mainFile: '/skills/writing/SKILL.md' },
+        { name: 'research', description: 'Find sources', mainFile: '/skills/research/SKILL.md' },
+      ],
+    });
+
+    expect(buildSpy).toHaveBeenCalledTimes(1);
+    expect(context.sections.find((section) => section.id === 'skills')?.content).toBe(
+      '- **research** — Find sources\n  - Main file: `/skills/research/SKILL.md`\n- **writing** — Write plans\n  - Main file: `/skills/writing/SKILL.md`',
+    );
   });
 
   it('rejects duplicate skill names', () => {

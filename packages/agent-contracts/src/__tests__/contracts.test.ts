@@ -6,6 +6,7 @@ import {
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
+  type AgentStreamEvent,
 } from "../index.js";
 
 describe("shared agent contracts", () => {
@@ -59,5 +60,42 @@ describe("shared agent contracts", () => {
     nameOnly.name = "AgentResponderCancelledError";
     expect(isAgentResponseCancelledError(nameOnly)).toBe(false);
     expect(isAgentResponseCancelledError(new Error("boom"))).toBe(false);
+  });
+
+  it("rejects non-Error inputs without a cancellation brand", () => {
+    expect(isAgentResponseCancelledError(undefined)).toBe(false);
+    expect(isAgentResponseCancelledError(null)).toBe(false);
+    expect(isAgentResponseCancelledError("cancelled")).toBe(false);
+    expect(isAgentResponseCancelledError(42)).toBe(false);
+    // Plain objects only match when the brand is exactly `true`.
+    expect(isAgentResponseCancelledError({ agentResponseCancelled: false })).toBe(false);
+    expect(isAgentResponseCancelledError({ agentResponseCancelled: "yes" })).toBe(false);
+    expect(isAgentResponseCancelledError({})).toBe(false);
+  });
+
+  it("covers every AgentStreamEvent variant (compile-time exhaustiveness)", () => {
+    // A switch with a `never`-typed default fails to compile if a new variant is
+    // added to AgentStreamEvent.type without being handled here.
+    function describeEvent(event: AgentStreamEvent): string {
+      switch (event.type) {
+        case "assistant_thought":
+          return event.text;
+        case "tool_call_started":
+          return `${event.id}:${event.name}`;
+        case "tool_call_completed":
+          return event.id;
+        case "runtime_warning":
+          return event.message;
+        default: {
+          const exhaustive: never = event;
+          return exhaustive;
+        }
+      }
+    }
+
+    expect(describeEvent({ type: "assistant_thought", text: "thinking" })).toBe("thinking");
+    expect(describeEvent({ type: "tool_call_started", id: "t1", name: "search" })).toBe("t1:search");
+    expect(describeEvent({ type: "tool_call_completed", id: "t1" })).toBe("t1");
+    expect(describeEvent({ type: "runtime_warning", message: "warned" })).toBe("warned");
   });
 });

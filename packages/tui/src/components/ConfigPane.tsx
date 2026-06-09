@@ -5,10 +5,6 @@ import {
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
 } from "@worklab-ai/config";
-import type {
-  MonoAgentConfigJson,
-  RedactedMonoAgentConfig,
-} from "@worklab-ai/config";
 
 import {
   buildTuiConfigSummary,
@@ -34,8 +30,6 @@ interface ConfigLoadState {
   readonly sections?: readonly TuiConfigSummarySection[];
   readonly errorMessage?: string;
   readonly loadedAt?: number;
-  readonly redacted?: RedactedMonoAgentConfig;
-  readonly json?: MonoAgentConfigJson;
 }
 
 const SOURCE_LABEL: Record<TuiConfigFieldSource, string> = {
@@ -80,8 +74,6 @@ export function ConfigPane({
       setState({
         status: "ready",
         sections,
-        redacted,
-        json: jsonResult.json,
         loadedAt: Date.now(),
       });
     } catch (error) {
@@ -135,7 +127,7 @@ export function ConfigPane({
       <Box>
         <Text color="gray">
           {configPath} · loaded {loadedLabel} · press r to reload · edits via
-          mono-agent-operator-console
+          @worklab-ai/operator-console
         </Text>
       </Box>
       {state.sections?.map((section) => (

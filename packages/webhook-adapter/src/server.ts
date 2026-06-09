@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { dirname } from "node:path/posix";
 
 import {
+  BufferedMessageStream,
   isAgentResponseCancelledError,
   type AgentMessageStream,
   type AgentRequestBase,
@@ -337,7 +338,10 @@ async function runResponder(input: {
   readonly retentionMs: number;
   readonly maxStoredRequests: number;
 }): Promise<WebhookInvocationStatus> {
-  const stream = new InMemoryMessageStream();
+  const stream = new BufferedMessageStream({
+    onClosed: () =>
+      new WebhookAdapterError("invalid_config", "Cannot write to a finished webhook stream."),
+  });
   let status: WebhookInvocationStatus;
   try {
     const response = await input.options.responder.respond(input.request, stream);
@@ -377,43 +381,6 @@ async function runResponder(input: {
   }
   setStatus(input.statuses, status, input.retentionMs, input.maxStoredRequests);
   return status;
-}
-
-class InMemoryMessageStream implements AgentMessageStream {
-  private currentText = "";
-  private done = false;
-
-  get text(): string {
-    return this.currentText.trim();
-  }
-
-  async status(_text: string): Promise<void> {}
-
-  async append(delta: string): Promise<void> {
-    this.assertOpen();
-    this.currentText += delta;
-  }
-
-  async replace(text: string): Promise<void> {
-    this.assertOpen();
-    this.currentText = text;
-  }
-
-  async finish(finalText?: string): Promise<void> {
-    if (this.done) {
-      return;
-    }
-    this.done = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
-    }
-  }
-
-  private assertOpen(): void {
-    if (this.done) {
-      throw new WebhookAdapterError("invalid_config", "Cannot write to a finished webhook stream.");
-    }
-  }
 }
 
 function normalizeBody(body: unknown, input: { readonly requestId: string; readonly defaultMode: WebhookInvocationMode }): NormalizedBody {

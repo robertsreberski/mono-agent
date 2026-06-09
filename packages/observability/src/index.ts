@@ -1,17 +1,22 @@
 export {
   createJsonlRunRecorder,
-  JsonlRunRecorder,
   ObservabilityError,
-  redactJsonValue,
+} from "./recorder.js";
+export type {
+  ObservabilityErrorCode,
+  ObservabilityErrorDetails,
 } from "./recorder.js";
 export {
   combineRecordedRunEvents,
 } from "./event-timeline.js";
 export {
-  classifyRecordedRunEvent,
   listRecordedRuns,
   ObservabilityReadError,
   readRecordedRun,
+} from "./recorded-runs.js";
+export type {
+  ObservabilityReadErrorCode,
+  ObservabilityReadErrorDetails,
 } from "./recorded-runs.js";
 export {
   listTraceRuns,
@@ -19,6 +24,10 @@ export {
   readTraceRun,
   registerTraceSource,
   TraceSourceRegistryError,
+} from "./trace-sources.js";
+export type {
+  TraceSourceRegistryErrorCode,
+  TraceSourceRegistryErrorDetails,
 } from "./trace-sources.js";
 export type {
   JsonlRunReaderOptions,

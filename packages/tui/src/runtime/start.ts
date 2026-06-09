@@ -9,8 +9,9 @@ export interface StartMonoAgentTuiOptions extends TuiAppProps {
   readonly stderr?: NodeJS.WriteStream;
   readonly debug?: boolean;
   /**
-   * When true (default in tests), patchConsole is disabled. We default to
-   * true so the TUI does not silently swallow host console output.
+   * Forwarded to ink's `render({ patchConsole })`. Defaults to `false` so the
+   * TUI does not silently swallow host `console.*` output; set it to `true`
+   * to let Ink intercept and redraw console writes above the app.
    */
   readonly patchConsole?: boolean;
 }

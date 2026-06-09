@@ -16,14 +16,14 @@ mono-agent-tui --help
 ```
 
 ```ts
-import { startTui } from "@worklab-ai/tui";
+import { startMonoAgentTui } from "@worklab-ai/tui";
 ```
 
 Hosts supply a structural responder compatible with `@worklab-ai/agent-contracts` and decide how config files are loaded.
 
 ## Public API
 
-- `startTui`
+- `startMonoAgentTui`
 - TUI app/component types and message-stream helpers
 - Structural `AgentResponder` aliases and cancellation helpers backed by `@worklab-ai/agent-contracts`
 - Read-only config summary helpers

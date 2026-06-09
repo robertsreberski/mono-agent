@@ -6,10 +6,6 @@ export interface ToolPolicyInput {
   readonly disallowedTools?: readonly string[];
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
-  readonly approvalDefaultRiskTier?: string;
-  readonly approvalAlwaysAllowTools?: readonly string[];
-  readonly approvalTimeoutMs?: number;
-  readonly toolRiskTiers?: Record<string, string>;
 }
 
 export interface ToolPolicy {
@@ -17,22 +13,29 @@ export interface ToolPolicy {
   readonly disallowedTools: readonly string[];
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
-  readonly approvalDefaultRiskTier?: string;
-  readonly approvalAlwaysAllowTools?: readonly string[];
-  readonly approvalTimeoutMs?: number;
-  readonly toolRiskTiers?: Record<string, string>;
 }
 
-export class ToolPolicyError extends Error {
-  readonly code: "invalid_tool_policy" | "tool_policy_read_failed";
-  readonly details: Record<string, unknown>;
+export type ToolPolicyErrorCode = "invalid_tool_policy" | "tool_policy_read_failed";
 
-  constructor(code: ToolPolicyError["code"], message: string, details: Record<string, unknown> = {}) {
+export type ToolPolicyErrorDetails = Record<string, unknown>;
+
+export class ToolPolicyError extends Error {
+  readonly code: ToolPolicyErrorCode;
+  readonly details: ToolPolicyErrorDetails;
+
+  constructor(code: ToolPolicyErrorCode, message: string, details: ToolPolicyErrorDetails = {}) {
     super(message);
     this.name = "ToolPolicyError";
     this.code = code;
     this.details = { ...details, code };
   }
+}
+
+export interface ToolPolicyRuntimeOptions extends Record<string, unknown> {
+  allowedTools: string[];
+  disallowedTools: string[];
+  mcpServers?: Record<string, unknown>;
+  mcpConfigPath?: string;
 }
 
 export function createToolPolicy(input: ToolPolicyInput = {}): ToolPolicy {
@@ -48,16 +51,12 @@ export function createToolPolicy(input: ToolPolicyInput = {}): ToolPolicy {
     disallowedTools,
     ...(input.mcpServers === undefined ? {} : { mcpServers: normalizeMcpServers(input.mcpServers) }),
     ...(input.mcpConfigPath === undefined ? {} : { mcpConfigPath: normalizeInlineString(input.mcpConfigPath, "mcpConfigPath") }),
-    ...(input.approvalDefaultRiskTier === undefined ? {} : { approvalDefaultRiskTier: normalizeInlineString(input.approvalDefaultRiskTier, "approvalDefaultRiskTier") }),
-    ...(input.approvalAlwaysAllowTools === undefined ? {} : { approvalAlwaysAllowTools: normalizeToolList(input.approvalAlwaysAllowTools, "approvalAlwaysAllowTools") }),
-    ...(input.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: normalizePositiveInteger(input.approvalTimeoutMs, "approvalTimeoutMs") }),
-    ...(input.toolRiskTiers === undefined ? {} : { toolRiskTiers: normalizeStringRecord(input.toolRiskTiers, "toolRiskTiers") }),
   };
   return policy;
 }
 
 export function failClosedToolPolicy(): ToolPolicy {
-  return createToolPolicy({ allowedTools: [], disallowedTools: [] });
+  return { allowedTools: [], disallowedTools: [] };
 }
 
 export async function loadToolPolicyFromJsonFile(filePath: string): Promise<ToolPolicy> {
@@ -77,8 +76,8 @@ export async function loadToolPolicyFromJsonFile(filePath: string): Promise<Tool
   return createToolPolicy(parsedToPolicyInput(parsed));
 }
 
-export function toolPolicyToRuntimeOptions(policy: ToolPolicy): Record<string, unknown> {
-  const options: Record<string, unknown> = {
+export function toolPolicyToRuntimeOptions(policy: ToolPolicy): ToolPolicyRuntimeOptions {
+  const options: ToolPolicyRuntimeOptions = {
     allowedTools: [...policy.allowedTools],
     disallowedTools: [...policy.disallowedTools],
   };
@@ -88,31 +87,17 @@ export function toolPolicyToRuntimeOptions(policy: ToolPolicy): Record<string, u
   if (policy.mcpConfigPath !== undefined) {
     options.mcpConfigPath = policy.mcpConfigPath;
   }
-  if (policy.approvalDefaultRiskTier !== undefined) {
-    options.approvalDefaultRiskTier = policy.approvalDefaultRiskTier;
-  }
-  if (policy.approvalAlwaysAllowTools !== undefined) {
-    options.approvalAlwaysAllowTools = [...policy.approvalAlwaysAllowTools];
-  }
-  if (policy.approvalTimeoutMs !== undefined) {
-    options.approvalTimeoutMs = policy.approvalTimeoutMs;
-  }
-  if (policy.toolRiskTiers !== undefined) {
-    options.toolRiskTiers = policy.toolRiskTiers;
-  }
   return options;
 }
 
 function parsedToPolicyInput(parsed: Record<string, unknown>): ToolPolicyInput {
+  // Container-shape validation only; per-entry string validation is performed in
+  // a single downstream pass by createToolPolicy's normalize* helpers.
   return {
-    ...(parsed.allowedTools === undefined ? {} : { allowedTools: asStringArray(parsed.allowedTools, "allowedTools") }),
-    ...(parsed.disallowedTools === undefined ? {} : { disallowedTools: asStringArray(parsed.disallowedTools, "disallowedTools") }),
+    ...(parsed.allowedTools === undefined ? {} : { allowedTools: asToolList(parsed.allowedTools, "allowedTools") }),
+    ...(parsed.disallowedTools === undefined ? {} : { disallowedTools: asToolList(parsed.disallowedTools, "disallowedTools") }),
     ...(parsed.mcpServers === undefined ? {} : { mcpServers: asRecord(parsed.mcpServers, "mcpServers") }),
     ...(parsed.mcpConfigPath === undefined ? {} : { mcpConfigPath: asUnknownString(parsed.mcpConfigPath, "mcpConfigPath") }),
-    ...(parsed.approvalDefaultRiskTier === undefined ? {} : { approvalDefaultRiskTier: asUnknownString(parsed.approvalDefaultRiskTier, "approvalDefaultRiskTier") }),
-    ...(parsed.approvalAlwaysAllowTools === undefined ? {} : { approvalAlwaysAllowTools: asStringArray(parsed.approvalAlwaysAllowTools, "approvalAlwaysAllowTools") }),
-    ...(parsed.approvalTimeoutMs === undefined ? {} : { approvalTimeoutMs: asUnknownNumber(parsed.approvalTimeoutMs, "approvalTimeoutMs") }),
-    ...(parsed.toolRiskTiers === undefined ? {} : { toolRiskTiers: asStringRecord(parsed.toolRiskTiers, "toolRiskTiers") }),
   };
 }
 
@@ -142,24 +127,6 @@ function normalizeMcpServers(value: Record<string, unknown>): Record<string, unk
   return structuredClone(value);
 }
 
-function normalizeStringRecord(value: Record<string, string>, field: string): Record<string, string> {
-  if (!isRecord(value)) {
-    throw new ToolPolicyError("invalid_tool_policy", `${field} must be an object.`, { field });
-  }
-  const out: Record<string, string> = {};
-  for (const [key, entryValue] of Object.entries(value)) {
-    out[normalizeInlineString(key, `${field}.key`)] = normalizeInlineString(entryValue, `${field}.${key}`);
-  }
-  return out;
-}
-
-function normalizePositiveInteger(value: number, field: string): number {
-  if (!Number.isInteger(value) || value < 1) {
-    throw new ToolPolicyError("invalid_tool_policy", `${field} must be a positive integer.`, { field });
-  }
-  return value;
-}
-
 function normalizeInlineString(value: unknown, field: string): string {
   if (typeof value !== "string") {
     throw new ToolPolicyError("invalid_tool_policy", `${field} must be a string.`, { field });
@@ -178,16 +145,13 @@ function resolveRequiredPath(value: string): string {
   return resolve(value);
 }
 
-function asStringArray(value: unknown, field: string): readonly string[] {
+function asToolList(value: unknown, field: string): readonly string[] {
   if (!Array.isArray(value)) {
     throw new ToolPolicyError("invalid_tool_policy", `${field} must be an array.`, { field });
   }
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "string") {
-      throw new ToolPolicyError("invalid_tool_policy", `${field}[${index}] must be a string.`, { field });
-    }
-  }
-  return value;
+  // Entries are validated per-element by normalizeToolList; this layer only
+  // confirms the container is an array so the two validation passes don't diverge.
+  return value as readonly string[];
 }
 
 function asUnknownString(value: unknown, field: string): string {
@@ -197,28 +161,11 @@ function asUnknownString(value: unknown, field: string): string {
   return value;
 }
 
-function asUnknownNumber(value: unknown, field: string): number {
-  if (typeof value !== "number") {
-    throw new ToolPolicyError("invalid_tool_policy", `${field} must be a number.`, { field });
-  }
-  return value;
-}
-
 function asRecord(value: unknown, field: string): Record<string, unknown> {
   if (!isRecord(value) || Array.isArray(value)) {
     throw new ToolPolicyError("invalid_tool_policy", `${field} must be an object.`, { field });
   }
   return value;
-}
-
-function asStringRecord(value: unknown, field: string): Record<string, string> {
-  const record = asRecord(value, field);
-  for (const [key, entryValue] of Object.entries(record)) {
-    if (typeof entryValue !== "string") {
-      throw new ToolPolicyError("invalid_tool_policy", `${field}.${key} must be a string.`, { field });
-    }
-  }
-  return record as Record<string, string>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

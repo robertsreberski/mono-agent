@@ -1,6 +1,7 @@
 export {
   defineFieldGroup,
   readFieldValue,
+  readRawFieldValue,
   writeFieldValue,
 } from "./field-group.js";
 export type { FieldValue } from "./field-group.js";
@@ -52,8 +53,8 @@ export type {
   PatchValidationOk,
   PatchValidationResult,
 } from "./patch-validator.js";
-export { redactSettingsForFieldGroups } from "./redact.js";
-export type { RedactedSecret } from "./redact.js";
+export { isSecretMarker, redactSettingsForFieldGroups } from "./redact.js";
+export type { RedactedSecret, SecretMarker } from "./redact.js";
 export type {
   FieldDefinition,
   FieldGroup,

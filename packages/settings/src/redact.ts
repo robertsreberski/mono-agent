@@ -1,8 +1,25 @@
+import { clone, setPath } from "./path.js";
 import type { FieldGroup, SettingsJson } from "./types.js";
 
 export interface RedactedSecret {
   readonly __secret: true;
   readonly set: boolean;
+}
+
+/** Alias for {@link RedactedSecret} — the marker shape written in place of secrets. */
+export type SecretMarker = RedactedSecret;
+
+/**
+ * Narrow an unknown value to a {@link SecretMarker}. Operator surfaces use this
+ * to detect redacted secret fields instead of hand-rolling `__secret` checks.
+ */
+export function isSecretMarker(value: unknown): value is SecretMarker {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { readonly __secret?: unknown }).__secret === true &&
+    typeof (value as { readonly set?: unknown }).set === "boolean"
+  );
 }
 
 /**
@@ -41,24 +58,4 @@ function hasValue(obj: Record<string, unknown>, path: readonly string[]): boolea
     return cursor.length > 0;
   }
   return true;
-}
-
-function setPath(obj: Record<string, unknown>, path: readonly string[], value: unknown): void {
-  let cursor: Record<string, unknown> = obj;
-  for (let i = 0; i < path.length - 1; i += 1) {
-    const segment = path[i] as string;
-    const next = cursor[segment];
-    if (next === undefined || next === null || typeof next !== "object") {
-      const fresh: Record<string, unknown> = {};
-      cursor[segment] = fresh;
-      cursor = fresh;
-    } else {
-      cursor = next as Record<string, unknown>;
-    }
-  }
-  cursor[path[path.length - 1] as string] = value;
-}
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
 }

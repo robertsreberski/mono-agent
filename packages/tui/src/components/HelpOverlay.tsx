@@ -4,8 +4,8 @@ import { Box, Text } from "ink";
 import { TUI_PACKAGE_VERSION } from "../runtime/version.js";
 
 const KEYBINDINGS: ReadonlyArray<readonly [string, string]> = [
-  ["tab / shift+tab", "cycle panes"],
-  ["1 / 2 / 3", "jump to chat / history / config"],
+  ["tab / shift+tab", "cycle panes (works from any pane)"],
+  ["1 / 2 / 3", "jump to chat / history / config (tab off chat first)"],
   ["enter", "submit message (chat) · open detail (history)"],
   ["esc", "cancel in-flight response · close detail"],
   ["backspace / del", "remove highlighted history message"],
