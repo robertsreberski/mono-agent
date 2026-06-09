@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseCliArgs } from "./cli-args.js";
 import { startFinalAgentDemo } from "./final-demo.js";
-import type { A2AStatus, CronStatus, TelegramStatus, TraceabilityStatus, WebhookStatus } from "./final-demo.js";
+import type { A2AStatus, CronStatus, OpenAIApiStatus, TelegramStatus, TraceabilityStatus, WebhookStatus } from "./final-demo.js";
 
 async function main(): Promise<void> {
   const args = parseCliArgs(process.argv.slice(2));
@@ -24,6 +24,7 @@ async function main(): Promise<void> {
   printTelegramStatus(demo.telegramStatus);
   printA2AStatus(demo.a2aStatus);
   printWebhookStatus(demo.webhookStatus);
+  printOpenAIApiStatus(demo.openAIApiStatus);
   printCronStatus(demo.cronStatus);
 
   let stopping = false;
@@ -99,6 +100,22 @@ function printWebhookStatus(status: WebhookStatus): void {
   console.log(`webhook:   failed — ${status.reason}`);
 }
 
+function printOpenAIApiStatus(status: OpenAIApiStatus): void {
+  if (status.kind === "running") {
+    console.log(`openai:    running — ${status.baseUrl}`);
+    return;
+  }
+  if (status.kind === "disabled") {
+    console.log("openai:    disabled");
+    return;
+  }
+  if (status.kind === "waiting_for_config") {
+    console.log(`openai:    waiting_for_config — ${status.reason}`);
+    return;
+  }
+  console.log(`openai:    failed — ${status.reason}`);
+}
+
 function printCronStatus(status: CronStatus): void {
   if (status.kind === "running") {
     console.log(`cron:      running — ${status.jobs} job(s)`);
@@ -116,7 +133,7 @@ function printCronStatus(status: CronStatus): void {
 }
 
 function printHelp(): void {
-  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the non-package Mono Agent final demo: operator console first, then optional Telegram, A2A, webhook, and cron adapters once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Operator Console port (default: 0, choose a free port)\n  -h, --help       Show this help`);
+  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the non-package Mono Agent final demo: operator console first, then optional Telegram, A2A, webhook, OpenAI API, and cron adapters once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Operator Console port (default: 0, choose a free port)\n  -h, --help       Show this help`);
 }
 
 void main().catch((error: unknown) => {

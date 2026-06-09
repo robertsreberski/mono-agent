@@ -27,6 +27,14 @@ import type {
   WebhookAdapterStartResult,
 } from "@worklab-ai/webhook-adapter";
 import {
+  startOpenAIApiAdapter,
+} from "@worklab-ai/openai-api-adapter";
+import type {
+  OpenAIApiAdapterConfig,
+  OpenAIApiAdapterOptions,
+  OpenAIApiAdapterStartResult,
+} from "@worklab-ai/openai-api-adapter";
+import {
   startCronAdapter,
 } from "@worklab-ai/cron-adapter";
 import type {
@@ -63,6 +71,7 @@ import {
   loadFinalAgentA2AConfig,
   loadFinalAgentCoreConfig,
   loadFinalAgentCronConfig,
+  loadFinalAgentOpenAIApiConfig,
   loadFinalAgentTelegramConfig,
   loadFinalAgentWebhookConfig,
   redactFinalAgentDemoConfig,
@@ -102,6 +111,7 @@ export interface FinalAgentDemoOptions {
   readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
   readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
   readonly webhookAdapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
+  readonly openAIApiAdapterFactory?: (options: OpenAIApiAdapterOptions) => Promise<OpenAIApiAdapterStartResult>;
   readonly cronAdapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
   readonly operatorConsoleFactory?: (options: OperatorConsoleOptions) => Promise<OperatorConsoleStartResult>;
   readonly fieldGroups?: readonly FieldGroup[];
@@ -141,6 +151,16 @@ export type WebhookStatus =
     }
   | { readonly kind: "failed"; readonly reason: string };
 
+export type OpenAIApiStatus =
+  | { readonly kind: "disabled"; readonly reason: string }
+  | { readonly kind: "waiting_for_config"; readonly reason: string }
+  | {
+      readonly kind: "running";
+      readonly baseUrl: string;
+      readonly config: RedactedFinalAgentDemoConfig;
+    }
+  | { readonly kind: "failed"; readonly reason: string };
+
 export type CronStatus =
   | { readonly kind: "disabled"; readonly reason: string }
   | { readonly kind: "waiting_for_config"; readonly reason: string }
@@ -166,12 +186,14 @@ export interface FinalAgentDemo {
   readonly telegramStatus: TelegramStatus;
   readonly a2aStatus: A2AStatus;
   readonly webhookStatus: WebhookStatus;
+  readonly openAIApiStatus: OpenAIApiStatus;
   readonly cronStatus: CronStatus;
   readonly traceabilityStatus: TraceabilityStatus;
   applyConfigChange(reason: string): Promise<ConfigApplyResult>;
   startTelegramIfConfigured(reason: string): Promise<TelegramStatus>;
   startA2AIfConfigured(reason: string): Promise<A2AStatus>;
   startWebhookIfConfigured(reason: string): Promise<WebhookStatus>;
+  startOpenAIApiIfConfigured(reason: string): Promise<OpenAIApiStatus>;
   startCronIfConfigured(reason: string): Promise<CronStatus>;
   stop(): Promise<void>;
 }
@@ -189,6 +211,10 @@ interface RunningWebhook {
   readonly adapter: WebhookAdapterStartResult;
 }
 
+interface RunningOpenAIApi {
+  readonly adapter: OpenAIApiAdapterStartResult;
+}
+
 interface RunningCron {
   readonly adapter: CronAdapterStartResult;
 }
@@ -201,6 +227,7 @@ interface FinalAgentDemoControllerOptions extends Required<Pick<FinalAgentDemoOp
   readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
   readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
   readonly webhookAdapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
+  readonly openAIApiAdapterFactory?: (options: OpenAIApiAdapterOptions) => Promise<OpenAIApiAdapterStartResult>;
   readonly cronAdapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
 }
 
@@ -254,6 +281,7 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
     ...(options.pollerFactory === undefined ? {} : { pollerFactory: options.pollerFactory }),
     ...(options.a2aProviderFactory === undefined ? {} : { a2aProviderFactory: options.a2aProviderFactory }),
     ...(options.webhookAdapterFactory === undefined ? {} : { webhookAdapterFactory: options.webhookAdapterFactory }),
+    ...(options.openAIApiAdapterFactory === undefined ? {} : { openAIApiAdapterFactory: options.openAIApiAdapterFactory }),
     ...(options.cronAdapterFactory === undefined ? {} : { cronAdapterFactory: options.cronAdapterFactory }),
   });
 
@@ -262,6 +290,7 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
     controller.startTelegramIfConfigured("startup"),
     controller.startA2AIfConfigured("startup"),
     controller.startWebhookIfConfigured("startup"),
+    controller.startOpenAIApiIfConfigured("startup"),
     controller.startCronIfConfigured("startup"),
   ]);
   await controller.refreshTraceSource("startup-complete");
@@ -280,6 +309,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
   private readonly pollerFactory: ((options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike) | undefined;
   private readonly a2aProviderFactory: ((options: A2AProviderOptions) => Promise<A2AProviderStartResult>) | undefined;
   private readonly webhookAdapterFactory: ((options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>) | undefined;
+  private readonly openAIApiAdapterFactory: ((options: OpenAIApiAdapterOptions) => Promise<OpenAIApiAdapterStartResult>) | undefined;
   private readonly cronAdapterFactory: ((options: CronAdapterOptions) => CronAdapterStartResult) | undefined;
   private telegramStatusValue: TelegramStatus = {
     kind: "waiting_for_config",
@@ -293,6 +323,10 @@ class FinalAgentDemoController implements FinalAgentDemo {
     kind: "disabled",
     reason: "Webhook adapter is disabled.",
   };
+  private openAIApiStatusValue: OpenAIApiStatus = {
+    kind: "disabled",
+    reason: "OpenAI API adapter is disabled.",
+  };
   private cronStatusValue: CronStatus = {
     kind: "disabled",
     reason: "Cron adapter is disabled.",
@@ -304,11 +338,13 @@ class FinalAgentDemoController implements FinalAgentDemo {
   private telegramStartInFlight: Promise<TelegramStatus> | undefined;
   private a2aStartInFlight: Promise<A2AStatus> | undefined;
   private webhookStartInFlight: Promise<WebhookStatus> | undefined;
+  private openAIApiStartInFlight: Promise<OpenAIApiStatus> | undefined;
   private cronStartInFlight: Promise<CronStatus> | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
   private runningTelegram: RunningTelegram | undefined;
   private runningA2A: RunningA2A | undefined;
   private runningWebhook: RunningWebhook | undefined;
+  private runningOpenAIApi: RunningOpenAIApi | undefined;
   private runningCron: RunningCron | undefined;
   private traceSource: TraceSourceHandle | undefined;
   private stopped = false;
@@ -324,6 +360,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
     readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
     readonly webhookAdapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
+    readonly openAIApiAdapterFactory?: (options: OpenAIApiAdapterOptions) => Promise<OpenAIApiAdapterStartResult>;
     readonly cronAdapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
   }) {
     this.consoleServer = input.consoleServer;
@@ -336,6 +373,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     this.pollerFactory = input.pollerFactory;
     this.a2aProviderFactory = input.a2aProviderFactory;
     this.webhookAdapterFactory = input.webhookAdapterFactory;
+    this.openAIApiAdapterFactory = input.openAIApiAdapterFactory;
     this.cronAdapterFactory = input.cronAdapterFactory;
     this.operatorConsole = {
       url: input.consoleServer.url,
@@ -355,6 +393,10 @@ class FinalAgentDemoController implements FinalAgentDemo {
 
   get webhookStatus(): WebhookStatus {
     return this.webhookStatusValue;
+  }
+
+  get openAIApiStatus(): OpenAIApiStatus {
+    return this.openAIApiStatusValue;
   }
 
   get cronStatus(): CronStatus {
@@ -377,6 +419,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
       await this.stopTelegram(`${reason}:reload`);
       await this.stopA2A(`${reason}:reload`);
       await this.stopWebhook(`${reason}:reload`);
+      await this.stopOpenAIApi(`${reason}:reload`);
       await this.stopCron(`${reason}:reload`);
       await this.stopTraceSource(`${reason}:reload`);
       await this.startTraceability(reason);
@@ -384,6 +427,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
         this.startTelegramIfConfigured(reason),
         this.startA2AIfConfigured(reason),
         this.startWebhookIfConfigured(reason),
+        this.startOpenAIApiIfConfigured(reason),
         this.startCronIfConfigured(reason),
       ]);
       await this.refreshTraceSource(`${reason}:complete`);
@@ -520,6 +564,27 @@ class FinalAgentDemoController implements FinalAgentDemo {
     return status;
   }
 
+  async startOpenAIApiIfConfigured(reason: string): Promise<OpenAIApiStatus> {
+    if (this.stopped) {
+      return this.openAIApiStatusValue;
+    }
+    if (this.runningOpenAIApi !== undefined) {
+      await this.refreshTraceSource(reason);
+      return this.openAIApiStatusValue;
+    }
+    if (this.openAIApiStartInFlight !== undefined) {
+      return await this.openAIApiStartInFlight;
+    }
+
+    this.openAIApiStartInFlight = this.startOpenAIApi(reason)
+      .finally(() => {
+        this.openAIApiStartInFlight = undefined;
+      });
+    const status = await this.openAIApiStartInFlight;
+    await this.refreshTraceSource(reason);
+    return status;
+  }
+
   async startCronIfConfigured(reason: string): Promise<CronStatus> {
     if (this.stopped) {
       return this.cronStatusValue;
@@ -549,6 +614,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     await this.stopTelegram("stop");
     await this.stopA2A("stop");
     await this.stopWebhook("stop");
+    await this.stopOpenAIApi("stop");
     await this.stopCron("stop");
     await this.stopTraceSource("stop");
     await this.consoleServer.stop();
@@ -600,6 +666,20 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
+  private async stopOpenAIApi(reason: string): Promise<void> {
+    const running = this.runningOpenAIApi;
+    if (running === undefined) {
+      return;
+    }
+    this.runningOpenAIApi = undefined;
+    await running.adapter.stop().catch((error: unknown) => {
+      this.logger?.warn?.("OpenAI API adapter did not stop cleanly.", { reason, error: reasonOf(error) });
+    });
+    if (!this.stopped) {
+      this.openAIApiStatusValue = { kind: "disabled", reason: "OpenAI API adapter stopped while applying config." };
+    }
+  }
+
   private async stopCron(reason: string): Promise<void> {
     const running = this.runningCron;
     if (running === undefined) {
@@ -639,6 +719,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
       this.telegramStatusValue,
       this.a2aStatusValue,
       this.webhookStatusValue,
+      this.openAIApiStatusValue,
       this.cronStatusValue,
       this.traceabilityStatusValue,
     );
@@ -653,11 +734,13 @@ class FinalAgentDemoController implements FinalAgentDemo {
     const hasRunningAgentTransport = this.telegramStatusValue.kind === "running" ||
       this.a2aStatusValue.kind === "running" ||
       this.webhookStatusValue.kind === "running" ||
+      this.openAIApiStatusValue.kind === "running" ||
       this.cronStatusValue.kind === "running";
     if (!hasRunningAgentTransport && (
       this.telegramStatusValue.kind === "waiting_for_config" ||
       this.a2aStatusValue.kind === "waiting_for_config" ||
       this.webhookStatusValue.kind === "waiting_for_config" ||
+      this.openAIApiStatusValue.kind === "waiting_for_config" ||
       this.cronStatusValue.kind === "waiting_for_config"
     )) {
       return {
@@ -844,6 +927,55 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
+  private async startOpenAIApi(reason: string): Promise<OpenAIApiStatus> {
+    const openAIApiConfig = await this.loadOpenAIApiConfigOrWait();
+    if (openAIApiConfig === undefined) {
+      return this.openAIApiStatusValue;
+    }
+    if (!openAIApiConfig.enabled) {
+      this.openAIApiStatusValue = { kind: "disabled", reason: "OpenAI API adapter is disabled." };
+      return this.openAIApiStatusValue;
+    }
+    const coreConfig = await this.loadCoreConfigOrWait("openai-api");
+    if (coreConfig === undefined) {
+      return this.openAIApiStatusValue;
+    }
+
+    try {
+      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
+      const adapterFactory = this.openAIApiAdapterFactory ?? startOpenAIApiAdapter;
+      const adapter = await adapterFactory({
+        host: openAIApiConfig.host,
+        port: openAIApiConfig.port,
+        basePath: openAIApiConfig.basePath,
+        allowNonLoopback: openAIApiConfig.allowNonLoopback,
+        ...(openAIApiConfig.apiKey === undefined ? {} : { apiKey: openAIApiConfig.apiKey }),
+        modelId: openAIApiConfig.modelId,
+        responder,
+        ...(this.logger === undefined ? {} : { logger: this.logger }),
+      });
+      const redacted = redactFinalAgentDemoConfig({ coreConfig, openAIApiConfig });
+      this.runningOpenAIApi = { adapter };
+      this.openAIApiStatusValue = {
+        kind: "running",
+        baseUrl: adapter.baseUrl,
+        config: redacted,
+      };
+      this.logger?.info?.("OpenAI API adapter is running.", {
+        reason,
+        baseUrl: adapter.baseUrl,
+        config: redacted,
+      });
+      return this.openAIApiStatusValue;
+    } catch (error) {
+      const failure = reasonOf(error);
+      this.openAIApiStatusValue = { kind: "failed", reason: failure };
+      this.logger?.error?.("OpenAI API adapter failed to start.", { reason: failure });
+      return this.openAIApiStatusValue;
+    }
+  }
+
   private async startCron(reason: string): Promise<CronStatus> {
     const cronConfig = await this.loadCronConfigOrWait();
     if (cronConfig === undefined) {
@@ -898,7 +1030,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
-  private async loadCoreConfigOrWait(adapter: "telegram" | "a2a" | "webhook" | "cron"): Promise<MonoAgentConfig | undefined> {
+  private async loadCoreConfigOrWait(adapter: "telegram" | "a2a" | "webhook" | "openai-api" | "cron"): Promise<MonoAgentConfig | undefined> {
     try {
       return await loadFinalAgentCoreConfig({
         env: this.env,
@@ -913,6 +1045,8 @@ class FinalAgentDemoController implements FinalAgentDemo {
           this.a2aStatusValue = { kind: "waiting_for_config", reason: error.message };
         } else if (adapter === "webhook") {
           this.webhookStatusValue = { kind: "waiting_for_config", reason: error.message };
+        } else if (adapter === "openai-api") {
+          this.openAIApiStatusValue = { kind: "waiting_for_config", reason: error.message };
         } else {
           this.cronStatusValue = { kind: "waiting_for_config", reason: error.message };
         }
@@ -974,6 +1108,23 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
   }
 
+  private async loadOpenAIApiConfigOrWait(): Promise<OpenAIApiAdapterConfig | undefined> {
+    try {
+      return await loadFinalAgentOpenAIApiConfig({
+        env: this.env,
+        cwd: this.cwd,
+        configPath: this.configPath,
+      });
+    } catch (error) {
+      if (isFinalAgentDemoConfigError(error)) {
+        this.openAIApiStatusValue = { kind: "waiting_for_config", reason: error.message };
+        this.logger?.info?.("Waiting for a valid OpenAI API config.", { reason: error.message });
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   private async loadCronConfigOrWait(): Promise<CronAdapterConfig | undefined> {
     try {
       return await loadFinalAgentCronConfig({
@@ -1002,6 +1153,9 @@ class FinalAgentDemoController implements FinalAgentDemo {
     if (this.webhookStatusValue.kind === "running") {
       transports.push("webhook");
     }
+    if (this.openAIApiStatusValue.kind === "running") {
+      transports.push("openai-api");
+    }
     if (this.cronStatusValue.kind === "running") {
       transports.push("cron");
     }
@@ -1018,6 +1172,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
       telegram: summarizeTelegramStatus(this.telegramStatusValue),
       a2a: summarizeA2AStatus(this.a2aStatusValue),
       webhook: summarizeWebhookStatus(this.webhookStatusValue),
+      openaiApi: summarizeOpenAIApiStatus(this.openAIApiStatusValue),
       cron: summarizeCronStatus(this.cronStatusValue),
     };
   }
@@ -1091,6 +1246,13 @@ function summarizeWebhookStatus(status: WebhookStatus): Record<string, unknown> 
   return { kind: status.kind, reason: status.reason };
 }
 
+function summarizeOpenAIApiStatus(status: OpenAIApiStatus): Record<string, unknown> {
+  if (status.kind === "running") {
+    return { kind: "running", baseUrl: status.baseUrl };
+  }
+  return { kind: status.kind, reason: status.reason };
+}
+
 function summarizeCronStatus(status: CronStatus): Record<string, unknown> {
   if (status.kind === "running") {
     return { kind: "running", jobs: status.jobs };
@@ -1102,6 +1264,7 @@ function firstFailureReason(
   telegram: TelegramStatus,
   a2a: A2AStatus,
   webhook: WebhookStatus,
+  openAIApi: OpenAIApiStatus,
   cron: CronStatus,
   traceability: TraceabilityStatus,
 ): string | undefined {
@@ -1113,6 +1276,9 @@ function firstFailureReason(
   }
   if (webhook.kind === "failed") {
     return webhook.reason;
+  }
+  if (openAIApi.kind === "failed") {
+    return openAIApi.reason;
   }
   if (cron.kind === "failed") {
     return cron.reason;

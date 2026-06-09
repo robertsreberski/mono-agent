@@ -46,6 +46,16 @@ import type {
   WebhookAdapterConfig,
 } from "@worklab-ai/webhook-adapter";
 import {
+  loadOpenAIApiAdapterConfig,
+  openAIApiFieldGroup,
+  OpenAIApiAdapterError,
+  redactOpenAIApiAdapterConfig,
+} from "@worklab-ai/openai-api-adapter";
+import type {
+  OpenAIApiAdapterConfig,
+  RedactedOpenAIApiAdapterConfig,
+} from "@worklab-ai/openai-api-adapter";
+import {
   cronFieldGroup,
   CronAdapterError,
   loadCronAdapterConfig,
@@ -61,6 +71,7 @@ export const FINAL_DEMO_FIELD_GROUPS: readonly FieldGroup[] = [
   telegramFieldGroup,
   a2aFieldGroup,
   webhookFieldGroup,
+  openAIApiFieldGroup,
   cronFieldGroup,
 ];
 
@@ -75,6 +86,7 @@ export interface LoadedFinalAgentDemoConfig {
   readonly telegramConfig?: TelegramAdapterConfig;
   readonly a2aConfig?: A2AAdapterConfig;
   readonly webhookConfig?: WebhookAdapterConfig;
+  readonly openAIApiConfig?: OpenAIApiAdapterConfig;
   readonly cronConfig?: CronAdapterConfig;
 }
 
@@ -83,6 +95,7 @@ export interface RedactedFinalAgentDemoConfig {
   readonly telegram?: RedactedTelegramAdapterConfig;
   readonly a2a?: RedactedA2AAdapterConfig;
   readonly webhook?: RedactedWebhookAdapterConfig;
+  readonly openaiApi?: RedactedOpenAIApiAdapterConfig;
   readonly cron?: RedactedCronAdapterConfig;
 }
 
@@ -95,6 +108,7 @@ export type FinalAgentDemoConfigError =
   | A2AProviderError
   | A2AConsumerError
   | WebhookAdapterError
+  | OpenAIApiAdapterError
   | CronAdapterError;
 
 export async function loadFinalAgentCoreConfig(
@@ -134,6 +148,15 @@ export async function loadFinalAgentWebhookConfig(
   });
 }
 
+export async function loadFinalAgentOpenAIApiConfig(
+  input: FinalAgentDemoConfigInput,
+): Promise<OpenAIApiAdapterConfig> {
+  return await loadOpenAIApiAdapterConfig({
+    env: input.env,
+    jsonPath: input.configPath,
+  });
+}
+
 export async function loadFinalAgentCronConfig(
   input: FinalAgentDemoConfigInput,
 ): Promise<CronAdapterConfig> {
@@ -150,8 +173,9 @@ export async function loadFinalAgentDemoConfig(
   const telegramConfig = await loadFinalAgentTelegramConfig(input);
   const a2aConfig = await loadFinalAgentA2AConfig(input);
   const webhookConfig = await loadFinalAgentWebhookConfig(input);
+  const openAIApiConfig = await loadFinalAgentOpenAIApiConfig(input);
   const cronConfig = await loadFinalAgentCronConfig(input);
-  return { coreConfig, telegramConfig, a2aConfig, webhookConfig, cronConfig };
+  return { coreConfig, telegramConfig, a2aConfig, webhookConfig, openAIApiConfig, cronConfig };
 }
 
 export function redactFinalAgentDemoConfig(
@@ -162,6 +186,7 @@ export function redactFinalAgentDemoConfig(
     ...(config.telegramConfig === undefined ? {} : { telegram: redactTelegramAdapterConfig(config.telegramConfig) }),
     ...(config.a2aConfig === undefined ? {} : { a2a: redactA2AAdapterConfig(config.a2aConfig) }),
     ...(config.webhookConfig === undefined ? {} : { webhook: redactWebhookAdapterConfig(config.webhookConfig) }),
+    ...(config.openAIApiConfig === undefined ? {} : { openaiApi: redactOpenAIApiAdapterConfig(config.openAIApiConfig) }),
     ...(config.cronConfig === undefined ? {} : { cron: redactCronAdapterConfig(config.cronConfig) }),
   };
 }
@@ -329,5 +354,6 @@ export function isFinalAgentDemoConfigError(
     error instanceof A2AProviderError ||
     error instanceof A2AConsumerError ||
     error instanceof WebhookAdapterError ||
+    error instanceof OpenAIApiAdapterError ||
     error instanceof CronAdapterError;
 }

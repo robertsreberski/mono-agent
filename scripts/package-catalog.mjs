@@ -123,6 +123,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "openai-api-adapter",
+    name: "@worklab-ai/openai-api-adapter",
+    category: "communication",
+    responsibility: "Exposes Mono Agent responders through OpenAI-compatible model discovery and Chat Completions endpoints.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
     dir: "operator-console",
     name: "@worklab-ai/operator-console",
     category: "operator-surface",

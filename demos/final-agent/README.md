@@ -11,6 +11,7 @@ This is the Mono Agent final demo. It is intentionally **not** an npm package: t
 - `@worklab-ai/telegram-adapter` owns Telegram settings, Bot API handling, and long polling.
 - `@worklab-ai/a2a-adapter` owns A2A Agent Card discovery, loopback provider hosting, bearer auth, and remote text-task calls.
 - `@worklab-ai/webhook-adapter` owns loopback HTTP invocation and per-request status.
+- `@worklab-ai/openai-api-adapter` owns OpenAI-compatible model discovery and Chat Completions for OpenWebUI-style clients.
 - `@worklab-ai/cron-adapter` owns scheduled invocation from five-field cron jobs.
 
 The important package-composition code is deliberately small:
@@ -21,7 +22,7 @@ const runtime = createConfiguredAgentRuntime(coreConfig);
 const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
 ```
 
-`src/configuration.ts` is the only demo-local place that registers field groups, loads core plus adapter config, redacts runtime status, and resolves the artifact directory. `src/final-demo.ts` handles lifecycle: start the operator console, start Telegram, A2A, webhook, and cron independently when config is valid, build the responder, and stop cleanly.
+`src/configuration.ts` is the only demo-local place that registers field groups, loads core plus adapter config, redacts runtime status, and resolves the artifact directory. `src/final-demo.ts` handles lifecycle: start the operator console, start Telegram, A2A, webhook, OpenAI API, and cron independently when config is valid, build the responder, and stop cleanly.
 
 ## Run it
 
@@ -39,10 +40,11 @@ The CLI prints:
 - whether Telegram is `running`, `waiting_for_config`, or `failed`,
 - whether A2A is `disabled`, `running`, `waiting_for_config`, or `failed`,
 - whether webhook is `disabled`, `running`, `waiting_for_config`, or `failed`,
+- whether OpenAI API is `disabled`, `running`, `waiting_for_config`, or `failed`,
 - whether cron is `disabled`, `running`, `waiting_for_config`, or `failed`,
 - whether traceability source registration is `running`, `disabled`, or `failed`.
 
-Open the operator console and save a valid config. Telegram, A2A, webhook, and cron start independently: missing Telegram credentials do not block the HTTP or scheduled adapters, and disabled adapters do not block the rest of the host. Later operator-console saves are applied in-process: the demo stops and rebuilds Telegram, A2A, webhook, cron, and traceability from the freshly saved config while keeping the operator console URL, token, and port stable. Active Telegram polling, A2A requests, webhook requests, or cron jobs may be briefly interrupted; new requests after the save use the new runtime, tool policy, tokens, allowlists, Agent Card metadata, webhook settings, cron jobs, artifact directory, and trace source settings.
+Open the operator console and save a valid config. Telegram, A2A, webhook, OpenAI API, and cron start independently: missing Telegram credentials do not block the HTTP or scheduled adapters, and disabled adapters do not block the rest of the host. Later operator-console saves are applied in-process: the demo stops and rebuilds Telegram, A2A, webhook, OpenAI API, cron, and traceability from the freshly saved config while keeping the operator console URL, token, and port stable. Active Telegram polling, A2A requests, webhook requests, OpenAI API requests, or cron jobs may be briefly interrupted; new requests after the save use the new runtime, tool policy, tokens, allowlists, Agent Card metadata, webhook settings, OpenAI API settings, cron jobs, artifact directory, and trace source settings.
 
 The top navigation includes **Settings** and **Traceability**. Traceability is refresh-based: the registry discovers running/stale/stopped/failed Mono Agent sources, and each source points at persisted `*.summary.json` / `*.events.jsonl` files. The timeline shows visible runtime/tool/message events and does not infer or expose private model chain-of-thought. The old `#observability` hash remains an alias for the traceability surface.
 
@@ -132,6 +134,13 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
     "path": "/webhook/invoke",
     "defaultMode": "sync"
   },
+  "openaiApi": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 0,
+    "basePath": "/v1",
+    "modelId": "mono-agent"
+  },
   "cron": {
     "enabled": false,
     "expression": "0 * * * *",
@@ -173,6 +182,40 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
 ```
 
 Environment variables override the JSON file, including values saved through the operator console. Keep provider credentials in the provider/runtime environment expected by `@worklab-ai/agent-runtime`; the operator console JSON is not a secret manager.
+
+## OpenWebUI Smoke
+
+Enable the OpenAI API adapter with a real runtime configuration:
+
+```json
+{
+  "openaiApi": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 4311,
+    "basePath": "/v1",
+    "modelId": "mono-agent",
+    "apiKey": "local-openwebui-key"
+  }
+}
+```
+
+Start the demo and use the printed OpenAI API base URL in OpenWebUI. If OpenWebUI runs in Docker while Mono Agent runs on the host, use `http://host.docker.internal:4311/v1` instead of `http://127.0.0.1:4311/v1`. Set OpenWebUI's API key to the same `apiKey` only when one is configured; otherwise leave the adapter key unset for loopback-only local use.
+
+Terminal smoke:
+
+```bash
+curl http://127.0.0.1:4311/v1/models \
+  -H 'Authorization: Bearer local-openwebui-key'
+
+curl http://127.0.0.1:4311/v1/chat/completions \
+  -H 'Authorization: Bearer local-openwebui-key' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "mono-agent",
+    "messages": [{ "role": "user", "content": "Reply with one sentence." }]
+  }'
+```
 
 ## A2A Local Smoke
 
@@ -289,6 +332,12 @@ MONO_AGENT_WEBHOOK_HOST=127.0.0.1
 MONO_AGENT_WEBHOOK_PORT=4310
 MONO_AGENT_WEBHOOK_PATH=/webhook/invoke
 MONO_AGENT_WEBHOOK_DEFAULT_MODE=sync
+MONO_AGENT_OPENAI_API_ENABLED=true
+MONO_AGENT_OPENAI_API_HOST=127.0.0.1
+MONO_AGENT_OPENAI_API_PORT=4311
+MONO_AGENT_OPENAI_API_BASE_PATH=/v1
+MONO_AGENT_OPENAI_API_MODEL_ID=mono-agent
+MONO_AGENT_OPENAI_API_KEY=local-openwebui-key
 MONO_AGENT_CRON_ENABLED=true
 MONO_AGENT_CRON_EXPRESSION="0 * * * *"
 MONO_AGENT_CRON_TIMEZONE=UTC
@@ -318,6 +367,7 @@ pnpm run deploy:final -- --model gemma4:31b --ollama-url http://localhost:11434 
 - The A2A provider binds to loopback by default. Non-loopback bind or advertised public URLs require explicit opt-in and should be deployed only behind HTTPS plus bearer auth.
 - A2A bearer tokens are write-only in the operator console and redacted from statuses.
 - The webhook adapter binds to loopback by default and does not implement built-in authentication. Public exposure must be protected by the host or reverse proxy.
+- The OpenAI API adapter binds to loopback by default. Its API key is optional for local loopback use, write-only in the operator console, and required on every request when configured.
 - Cron jobs schedule future ticks only. Missed ticks are not persisted or replayed after restart, and overlapping ticks for the same job are skipped.
 - Trace event payloads are bounded and sensitive keys such as tokens, authorization headers, passwords, cookies, and API keys are redacted. Redaction is defensive, not a guarantee for arbitrary user-provided secret text.
 - The demo uses fake runtime/Telegram only in tests. The CLI path uses the real adapters, poller/server, and runtime adapter.

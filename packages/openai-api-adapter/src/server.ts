@@ -1,0 +1,663 @@
+import { randomUUID } from "node:crypto";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import {
+  isAgentResponseCancelledError,
+  type AgentMessageStream,
+  type AgentRequestBase,
+  type AgentResponder,
+  type AgentResponse,
+} from "@worklab-ai/agent-contracts";
+import express, { type NextFunction, type Request, type Response } from "express";
+
+export interface OpenAIApiRequestMetadata {
+  readonly requestId: string;
+  readonly model: string;
+  readonly stream: boolean;
+  readonly method: string;
+  readonly path: string;
+  readonly receivedAt: string;
+  readonly remoteAddress?: string;
+  readonly headers: Record<string, string | string[] | undefined>;
+  readonly parameters: Record<string, unknown>;
+}
+
+export interface OpenAIApiChatRequest extends AgentRequestBase {
+  readonly conversationId: string;
+  readonly text: string;
+  readonly abortSignal: AbortSignal;
+  readonly metadata: {
+    readonly openaiApi: OpenAIApiRequestMetadata;
+    readonly [key: string]: unknown;
+  };
+}
+
+export interface OpenAIApiAdapterLogger {
+  debug?(message: string, metadata?: Record<string, unknown>): void;
+  info?(message: string, metadata?: Record<string, unknown>): void;
+  warn?(message: string, metadata?: Record<string, unknown>): void;
+  error?(message: string, metadata?: Record<string, unknown>): void;
+}
+
+export interface OpenAIApiAdapterOptions {
+  readonly host?: string;
+  readonly port?: number;
+  readonly basePath?: string;
+  readonly allowNonLoopback?: boolean;
+  readonly apiKey?: string;
+  readonly modelId?: string;
+  readonly responder: AgentResponder<OpenAIApiChatRequest, AgentMessageStream, AgentResponse>;
+  readonly logger?: OpenAIApiAdapterLogger;
+}
+
+export interface OpenAIApiAdapterStartResult {
+  readonly url: string;
+  readonly baseUrl: string;
+  readonly modelsUrl: string;
+  readonly chatCompletionsUrl: string;
+  readonly host: string;
+  readonly port: number;
+  stop(): Promise<void>;
+}
+
+export type OpenAIApiAdapterErrorCode =
+  | "invalid_config"
+  | "missing_required_config"
+  | "unsafe_host"
+  | "start_failed";
+
+export interface OpenAIApiAdapterErrorDetails {
+  readonly code?: OpenAIApiAdapterErrorCode;
+  readonly reason?: string;
+  readonly [key: string]: unknown;
+}
+
+export class OpenAIApiAdapterError extends Error {
+  readonly code: OpenAIApiAdapterErrorCode;
+  readonly details: OpenAIApiAdapterErrorDetails;
+
+  constructor(
+    code: OpenAIApiAdapterErrorCode,
+    message: string,
+    details: OpenAIApiAdapterErrorDetails = {},
+  ) {
+    super(message);
+    this.name = "OpenAIApiAdapterError";
+    this.code = code;
+    this.details = { ...details, code };
+  }
+}
+
+interface NormalizedChatBody {
+  readonly model: string;
+  readonly text: string;
+  readonly stream: boolean;
+  readonly conversationId: string;
+  readonly parameters: Record<string, unknown>;
+}
+
+interface ChatCompletionChunkInput {
+  readonly id: string;
+  readonly created: number;
+  readonly model: string;
+}
+
+const DEFAULT_HOST = "127.0.0.1";
+const DEFAULT_PORT = 0;
+const DEFAULT_BASE_PATH = "/v1";
+const DEFAULT_MODEL_ID = "mono-agent";
+const OPENAI_OWNED_BY = "worklab-ai";
+
+export async function startOpenAIApiAdapter(
+  options: OpenAIApiAdapterOptions,
+): Promise<OpenAIApiAdapterStartResult> {
+  validateOptions(options);
+  const host = options.host ?? DEFAULT_HOST;
+  const port = options.port ?? DEFAULT_PORT;
+  const basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
+  const modelId = normalizeOptionalString(options.modelId) ?? DEFAULT_MODEL_ID;
+  const apiKey = normalizeOptionalString(options.apiKey);
+  assertSafeBind(host, options.allowNonLoopback === true);
+
+  const app = express();
+  const server = createServer(app);
+  const modelsPath = `${basePath}/models`;
+  const chatCompletionsPath = `${basePath}/chat/completions`;
+
+  app.use(express.json({ limit: "1mb" }));
+  app.get(modelsPath, (req, res) => {
+    if (!authorize(req, res, apiKey)) {
+      return;
+    }
+    res.status(200).json({
+      object: "list",
+      data: [
+        {
+          id: modelId,
+          object: "model",
+          created: 0,
+          owned_by: OPENAI_OWNED_BY,
+        },
+      ],
+    });
+  });
+  app.post(chatCompletionsPath, (req, res) => {
+    if (!authorize(req, res, apiKey)) {
+      return;
+    }
+    void handleChatCompletion(req, res).catch((error: unknown) => {
+      options.logger?.error?.("OpenAI API chat completion failed before response.", {
+        error: errorToMessage(error),
+      });
+      if (!res.headersSent) {
+        sendOpenAIError(res, 500, errorToMessage(error), "server_error");
+      }
+    });
+  });
+  app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) {
+      next(error);
+      return;
+    }
+    sendOpenAIError(res, 400, errorToMessage(error), "invalid_request_error");
+  });
+
+  const address = await listen(server, port, host);
+  const boundPort = address.port;
+  const url = `http://${hostForUrl(host)}:${boundPort}`;
+
+  async function handleChatCompletion(req: Request, res: Response): Promise<void> {
+    const requestId = randomUUID();
+    const receivedAt = new Date().toISOString();
+    const body = normalizeChatBody(req.body, requestId);
+    const controller = new AbortController();
+    const request: OpenAIApiChatRequest = {
+      conversationId: body.conversationId,
+      text: body.text,
+      abortSignal: controller.signal,
+      metadata: {
+        openaiApi: {
+          requestId,
+          model: body.model,
+          stream: body.stream,
+          method: req.method,
+          path: req.path,
+          receivedAt,
+          ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
+          headers: req.headers,
+          parameters: body.parameters,
+        },
+      },
+    };
+
+    res.once("close", () => {
+      if (!res.writableEnded) {
+        controller.abort(new Error("OpenAI API client disconnected."));
+      }
+    });
+
+    if (body.stream) {
+      await runStreamingResponder({ request, response: res, requestId, model: body.model, options });
+      return;
+    }
+
+    await runJsonResponder({ request, response: res, requestId, model: body.model, options });
+  }
+
+  return {
+    url,
+    baseUrl: `${url}${basePath}`,
+    modelsUrl: `${url}${modelsPath}`,
+    chatCompletionsUrl: `${url}${chatCompletionsPath}`,
+    host,
+    port: boundPort,
+    async stop() {
+      await close(server);
+    },
+  };
+}
+
+async function runJsonResponder(input: {
+  readonly request: OpenAIApiChatRequest;
+  readonly response: Response;
+  readonly requestId: string;
+  readonly model: string;
+  readonly options: OpenAIApiAdapterOptions;
+}): Promise<void> {
+  const stream = new InMemoryMessageStream();
+  try {
+    const response = await input.options.responder.respond(input.request, stream);
+    await stream.finish(response.text);
+    input.response.status(200).json(chatCompletion({
+      id: `chatcmpl-${input.requestId}`,
+      model: input.model,
+      content: stream.text,
+    }));
+  } catch (error) {
+    const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
+    input.options.logger?.[cancelled ? "warn" : "error"]?.("OpenAI API responder failed.", {
+      requestId: input.requestId,
+      conversationId: input.request.conversationId,
+      error: errorToMessage(error),
+    });
+    sendOpenAIError(
+      input.response,
+      cancelled ? 499 : 500,
+      errorToMessage(error),
+      cancelled ? "request_cancelled" : "server_error",
+    );
+  }
+}
+
+async function runStreamingResponder(input: {
+  readonly request: OpenAIApiChatRequest;
+  readonly response: Response;
+  readonly requestId: string;
+  readonly model: string;
+  readonly options: OpenAIApiAdapterOptions;
+}): Promise<void> {
+  input.response.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+
+  const chunkInput = {
+    id: `chatcmpl-${input.requestId}`,
+    created: Math.floor(Date.now() / 1000),
+    model: input.model,
+  };
+  const stream = new SseChatMessageStream(input.response, chunkInput);
+  stream.start();
+
+  try {
+    const response = await input.options.responder.respond(input.request, stream);
+    await stream.finish(response.text);
+  } catch (error) {
+    const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
+    input.options.logger?.[cancelled ? "warn" : "error"]?.("OpenAI API streaming responder failed.", {
+      requestId: input.requestId,
+      conversationId: input.request.conversationId,
+      error: errorToMessage(error),
+    });
+    stream.error(errorToMessage(error), cancelled ? "request_cancelled" : "server_error");
+  }
+}
+
+class InMemoryMessageStream implements AgentMessageStream {
+  private currentText = "";
+  private done = false;
+
+  get text(): string {
+    return this.currentText.trim();
+  }
+
+  async status(_text: string): Promise<void> {}
+
+  async append(delta: string): Promise<void> {
+    this.assertOpen();
+    this.currentText += delta;
+  }
+
+  async replace(text: string): Promise<void> {
+    this.assertOpen();
+    this.currentText = text;
+  }
+
+  async finish(finalText?: string): Promise<void> {
+    if (this.done) {
+      return;
+    }
+    this.done = true;
+    if (finalText !== undefined) {
+      this.currentText = finalText;
+    }
+  }
+
+  private assertOpen(): void {
+    if (this.done) {
+      throw new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream.");
+    }
+  }
+}
+
+class SseChatMessageStream implements AgentMessageStream {
+  private currentText = "";
+  private done = false;
+  private started = false;
+
+  constructor(
+    private readonly response: Response,
+    private readonly chunkInput: ChatCompletionChunkInput,
+  ) {}
+
+  start(): void {
+    if (this.started) {
+      return;
+    }
+    this.started = true;
+    this.writeChunk({ role: "assistant" }, null);
+  }
+
+  async status(_text: string): Promise<void> {}
+
+  async append(delta: string): Promise<void> {
+    this.assertOpen();
+    if (delta.length === 0) {
+      return;
+    }
+    this.currentText += delta;
+    this.writeChunk({ content: delta }, null);
+  }
+
+  async replace(text: string): Promise<void> {
+    this.assertOpen();
+    const delta = text.startsWith(this.currentText) ? text.slice(this.currentText.length) : text;
+    this.currentText = text;
+    if (delta.length > 0) {
+      this.writeChunk({ content: delta }, null);
+    }
+  }
+
+  async finish(finalText?: string): Promise<void> {
+    if (this.done) {
+      return;
+    }
+    if (finalText !== undefined) {
+      await this.replace(finalText);
+    }
+    this.done = true;
+    this.writeChunk({}, "stop");
+    this.response.write("data: [DONE]\n\n");
+    this.response.end();
+  }
+
+  error(message: string, code: string): void {
+    if (this.done) {
+      return;
+    }
+    this.done = true;
+    this.response.write(`data: ${JSON.stringify({ error: openAIError(message, code) })}\n\n`);
+    this.response.write("data: [DONE]\n\n");
+    this.response.end();
+  }
+
+  private writeChunk(
+    delta: Record<string, unknown>,
+    finishReason: "stop" | null,
+  ): void {
+    this.response.write(`data: ${JSON.stringify({
+      id: this.chunkInput.id,
+      object: "chat.completion.chunk",
+      created: this.chunkInput.created,
+      model: this.chunkInput.model,
+      choices: [
+        {
+          index: 0,
+          delta,
+          finish_reason: finishReason,
+        },
+      ],
+    })}\n\n`);
+  }
+
+  private assertOpen(): void {
+    if (this.done) {
+      throw new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream.");
+    }
+  }
+}
+
+function normalizeChatBody(body: unknown, requestId: string): NormalizedChatBody {
+  if (!isRecord(body)) {
+    throw new OpenAIApiAdapterError("invalid_config", "Chat completion body must be a JSON object.");
+  }
+  const model = normalizeOptionalString(body.model);
+  if (model === undefined) {
+    throw new OpenAIApiAdapterError("invalid_config", "Chat completion body requires a non-empty model.");
+  }
+  if (!Array.isArray(body.messages) || body.messages.length === 0) {
+    throw new OpenAIApiAdapterError("invalid_config", "Chat completion body requires at least one message.");
+  }
+  const text = body.messages
+    .map(normalizeMessage)
+    .filter((line) => line.length > 0)
+    .join("\n");
+  if (text.length === 0) {
+    throw new OpenAIApiAdapterError("invalid_config", "Chat completion messages must include text content.");
+  }
+  return {
+    model,
+    text,
+    stream: body.stream === true,
+    conversationId: readConversationId(body, requestId),
+    parameters: readParameters(body),
+  };
+}
+
+function normalizeMessage(value: unknown): string {
+  if (!isRecord(value)) {
+    throw new OpenAIApiAdapterError("invalid_config", "Chat completion messages must be JSON objects.");
+  }
+  const role = normalizeOptionalString(value.role);
+  if (role === undefined) {
+    throw new OpenAIApiAdapterError("invalid_config", "Chat completion messages require a role.");
+  }
+  const content = normalizeContent(value.content);
+  return content.length === 0 ? "" : `${role}: ${content}`;
+}
+
+function normalizeContent(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((part) => {
+        if (!isRecord(part) || part.type !== "text") {
+          return "";
+        }
+        return typeof part.text === "string" ? part.text : "";
+      })
+      .filter((text) => text.length > 0)
+      .join("\n");
+  }
+  return "";
+}
+
+function readConversationId(body: Record<string, unknown>, requestId: string): string {
+  const metadata = isRecord(body.metadata) ? body.metadata : {};
+  const candidates = [
+    metadata.conversation_id,
+    metadata.conversationId,
+    metadata.chat_id,
+    metadata.chatId,
+    body.conversation_id,
+    body.conversationId,
+    body.user,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeOptionalString(candidate);
+    if (normalized !== undefined) {
+      return normalized;
+    }
+  }
+  return `openai-api:${requestId}`;
+}
+
+function readParameters(body: Record<string, unknown>): Record<string, unknown> {
+  const parameterKeys = [
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "max_completion_tokens",
+    "stop",
+    "seed",
+    "logit_bias",
+    "presence_penalty",
+    "frequency_penalty",
+  ];
+  const parameters: Record<string, unknown> = {};
+  for (const key of parameterKeys) {
+    if (body[key] !== undefined) {
+      parameters[key] = body[key];
+    }
+  }
+  return parameters;
+}
+
+function chatCompletion(input: {
+  readonly id: string;
+  readonly model: string;
+  readonly content: string;
+}): Record<string, unknown> {
+  return {
+    id: input.id,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: input.model,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: input.content,
+        },
+        finish_reason: "stop",
+      },
+    ],
+    usage: {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+    },
+  };
+}
+
+function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
+  if (apiKey === undefined) {
+    return true;
+  }
+  if (req.header("authorization") === `Bearer ${apiKey}`) {
+    return true;
+  }
+  sendOpenAIError(res, 401, "Invalid API key.", "invalid_api_key");
+  return false;
+}
+
+function sendOpenAIError(
+  res: Response,
+  status: number,
+  message: string,
+  code: string,
+  type = "invalid_request_error",
+): void {
+  res.status(status).json({ error: openAIError(message, code, type) });
+}
+
+function openAIError(
+  message: string,
+  code: string,
+  type = "invalid_request_error",
+): Record<string, unknown> {
+  return {
+    message,
+    type,
+    param: null,
+    code,
+  };
+}
+
+function validateOptions(options: OpenAIApiAdapterOptions): void {
+  if (typeof options.responder?.respond !== "function") {
+    throw new OpenAIApiAdapterError("missing_required_config", "OpenAI API adapter requires a responder.");
+  }
+  if (!Number.isInteger(options.port ?? DEFAULT_PORT) || (options.port ?? DEFAULT_PORT) < 0 || (options.port ?? DEFAULT_PORT) > 65535) {
+    throw new OpenAIApiAdapterError("invalid_config", "OpenAI API adapter port must be an integer from 0 to 65535.");
+  }
+  normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
+  const modelId = normalizeOptionalString(options.modelId) ?? DEFAULT_MODEL_ID;
+  if (modelId.length === 0) {
+    throw new OpenAIApiAdapterError("invalid_config", "OpenAI API adapter modelId must be non-empty.");
+  }
+}
+
+function normalizeBasePath(path: string): string {
+  const normalized = path.trim();
+  if (!normalized.startsWith("/") || normalized.includes("?") || normalized.includes("#")) {
+    throw new OpenAIApiAdapterError("invalid_config", "OpenAI API basePath must be an absolute path without query or hash.");
+  }
+  return normalized.length === 1 ? "" : normalized.replace(/\/+$/u, "");
+}
+
+function assertSafeBind(host: string, allowNonLoopback: boolean): void {
+  if (allowNonLoopback || isLoopbackHost(host)) {
+    return;
+  }
+  throw new OpenAIApiAdapterError(
+    "unsafe_host",
+    "OpenAI API adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
+    { host },
+  );
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
+  return normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized.startsWith("127.");
+}
+
+function hostForUrl(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+function listen(server: Server, port: number, host: string): Promise<AddressInfo> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const onError = (error: Error): void => {
+      rejectPromise(new OpenAIApiAdapterError("start_failed", "OpenAI API adapter failed to listen.", {
+        reason: error.message,
+      }));
+    };
+    server.once("error", onError);
+    server.listen(port, host, () => {
+      server.off("error", onError);
+      const address = server.address();
+      if (typeof address !== "object" || address === null) {
+        rejectPromise(new OpenAIApiAdapterError("start_failed", "OpenAI API adapter did not receive a TCP address."));
+        return;
+      }
+      resolvePromise(address);
+    });
+  });
+}
+
+function close(server: Server): Promise<void> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.close((error) => {
+      if (error === undefined) {
+        resolvePromise();
+        return;
+      }
+      rejectPromise(error);
+    });
+  });
+}
+
+function errorToMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized.length === 0 ? undefined : normalized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
