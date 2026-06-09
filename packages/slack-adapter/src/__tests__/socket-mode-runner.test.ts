@@ -150,6 +150,43 @@ describe("SlackSocketModeRunner", () => {
 
     expect(api.opened).toEqual(["wss://slack.test/1", "wss://slack.test/2"]);
   });
+
+  it("backs off before reconnecting after too_many_websockets disconnects", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = new FakeSlackApi(["wss://slack.test/1", "wss://slack.test/2"]);
+      const sockets: FakeWebSocket[] = [];
+      const runner = new SlackSocketModeRunner({
+        api,
+        handler: { async handleEventCallback() {
+          return { kind: "ignored", reason: "unsupported_event" };
+        } },
+        webSocketFactory: () => {
+          const socket = new FakeWebSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        reconnect: { initialMs: 1000, maxMs: 1000 },
+      });
+      const controller = new AbortController();
+
+      const started = runner.start({ signal: controller.signal });
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      sockets[0]?.emitMessage({ type: "disconnect", reason: "too_many_websockets" });
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(sockets).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(sockets).toHaveLength(2));
+      controller.abort();
+      await started;
+
+      expect(api.opened).toEqual(["wss://slack.test/1", "wss://slack.test/2"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function socketEnvelope(
