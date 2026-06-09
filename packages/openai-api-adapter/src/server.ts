@@ -108,6 +108,22 @@ const DEFAULT_PORT = 0;
 const DEFAULT_BASE_PATH = "/v1";
 const DEFAULT_MODEL_ID = "mono-agent";
 const OPENAI_OWNED_BY = "worklab-ai";
+const SENSITIVE_REQUEST_HEADERS = new Set([
+  "authorization",
+  "cookie",
+  "set-cookie",
+  "proxy-authorization",
+  "x-api-key",
+]);
+const UNSUPPORTED_CHAT_REQUEST_FIELDS = [
+  "tools",
+  "tool_choice",
+  "functions",
+  "function_call",
+  "response_format",
+  "audio",
+  "modalities",
+] as const;
 
 export async function startOpenAIApiAdapter(
   options: OpenAIApiAdapterOptions,
@@ -147,11 +163,17 @@ export async function startOpenAIApiAdapter(
       return;
     }
     void handleChatCompletion(req, res).catch((error: unknown) => {
-      options.logger?.error?.("OpenAI API chat completion failed before response.", {
+      const isClientError = error instanceof OpenAIApiAdapterError && error.code === "invalid_config";
+      options.logger?.[isClientError ? "warn" : "error"]?.("OpenAI API chat completion failed before response.", {
         error: errorToMessage(error),
       });
       if (!res.headersSent) {
-        sendOpenAIError(res, 500, errorToMessage(error), "server_error");
+        sendOpenAIError(
+          res,
+          isClientError ? 400 : 500,
+          errorToMessage(error),
+          isClientError ? "invalid_request" : "server_error",
+        );
       }
     });
   });
@@ -170,7 +192,7 @@ export async function startOpenAIApiAdapter(
   async function handleChatCompletion(req: Request, res: Response): Promise<void> {
     const requestId = randomUUID();
     const receivedAt = new Date().toISOString();
-    const body = normalizeChatBody(req.body, requestId);
+    const body = normalizeChatBody(req.body, requestId, modelId);
     const controller = new AbortController();
     const request: OpenAIApiChatRequest = {
       conversationId: body.conversationId,
@@ -185,7 +207,7 @@ export async function startOpenAIApiAdapter(
           path: req.path,
           receivedAt,
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
-          headers: req.headers,
+          headers: sanitizeRequestHeaders(req.headers),
           parameters: body.parameters,
         },
       },
@@ -409,7 +431,7 @@ class SseChatMessageStream implements AgentMessageStream {
   }
 }
 
-function normalizeChatBody(body: unknown, requestId: string): NormalizedChatBody {
+function normalizeChatBody(body: unknown, requestId: string, expectedModel: string): NormalizedChatBody {
   if (!isRecord(body)) {
     throw new OpenAIApiAdapterError("invalid_config", "Chat completion body must be a JSON object.");
   }
@@ -417,6 +439,10 @@ function normalizeChatBody(body: unknown, requestId: string): NormalizedChatBody
   if (model === undefined) {
     throw new OpenAIApiAdapterError("invalid_config", "Chat completion body requires a non-empty model.");
   }
+  if (model !== expectedModel) {
+    throw new OpenAIApiAdapterError("invalid_config", `Chat completion model must be ${expectedModel}.`);
+  }
+  assertNoUnsupportedChatRequestFields(body);
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new OpenAIApiAdapterError("invalid_config", "Chat completion body requires at least one message.");
   }
@@ -444,6 +470,9 @@ function normalizeMessage(value: unknown): string {
   if (role === undefined) {
     throw new OpenAIApiAdapterError("invalid_config", "Chat completion messages require a role.");
   }
+  if (hasOwn(value, "tool_calls") || hasOwn(value, "function_call")) {
+    throw new OpenAIApiAdapterError("invalid_config", "Chat completion message tool/function calls are not supported.");
+  }
   const content = normalizeContent(value.content);
   return content.length === 0 ? "" : `${role}: ${content}`;
 }
@@ -452,18 +481,36 @@ function normalizeContent(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
+  if (value === null || value === undefined) {
+    return "";
+  }
   if (Array.isArray(value)) {
     return value
       .map((part) => {
-        if (!isRecord(part) || part.type !== "text") {
-          return "";
+        if (!isRecord(part)) {
+          throw new OpenAIApiAdapterError("invalid_config", "Chat completion message content parts must be JSON objects.");
         }
-        return typeof part.text === "string" ? part.text : "";
+        const type = normalizeOptionalString(part.type);
+        if (type !== "text") {
+          throw new OpenAIApiAdapterError("invalid_config", `Chat completion message content part type ${String(part.type)} is not supported.`);
+        }
+        if (typeof part.text !== "string") {
+          throw new OpenAIApiAdapterError("invalid_config", "Chat completion text content parts require string text.");
+        }
+        return part.text;
       })
       .filter((text) => text.length > 0)
       .join("\n");
   }
-  return "";
+  throw new OpenAIApiAdapterError("invalid_config", "Chat completion message content must be a string or text content parts.");
+}
+
+function assertNoUnsupportedChatRequestFields(body: Record<string, unknown>): void {
+  for (const field of UNSUPPORTED_CHAT_REQUEST_FIELDS) {
+    if (hasOwn(body, field)) {
+      throw new OpenAIApiAdapterError("invalid_config", `Chat completion request field ${field} is not supported.`);
+    }
+  }
 }
 
 function readConversationId(body: Record<string, unknown>, requestId: string): string {
@@ -527,12 +574,19 @@ function chatCompletion(input: {
         finish_reason: "stop",
       },
     ],
-    usage: {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-    },
   };
+}
+
+function sanitizeRequestHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): Record<string, string | string[] | undefined> {
+  const sanitized: Record<string, string | string[] | undefined> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (!SENSITIVE_REQUEST_HEADERS.has(name.toLowerCase())) {
+      sanitized[name] = value;
+    }
+  }
+  return sanitized;
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
@@ -660,4 +714,8 @@ function normalizeOptionalString(value: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
