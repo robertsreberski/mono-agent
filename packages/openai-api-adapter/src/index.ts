@@ -1,10 +1,10 @@
-export {
-  OpenAIApiAdapterError,
-  startOpenAIApiAdapter,
-} from "./server.js";
+export { OpenAIApiAdapterError } from "./errors.js";
 export type {
   OpenAIApiAdapterErrorCode,
   OpenAIApiAdapterErrorDetails,
+} from "./errors.js";
+export { startOpenAIApiAdapter } from "./server.js";
+export type {
   OpenAIApiAdapterLogger,
   OpenAIApiAdapterOptions,
   OpenAIApiAdapterStartResult,
