@@ -387,6 +387,61 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("streams thoughts and internally executed tools without client tool calls or duplicate final text", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({ type: "assistant_thought", text: "checking available context" });
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-1",
+          name: "mcp__context_a8c__search",
+          arguments: { query: "OpenWebUI tool rendering" },
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-1",
+          content: { matches: 2 },
+          isError: false,
+        });
+        await stream.append("Final answer.");
+        return { text: "Final answer." };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "mono-agent",
+      responder,
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mono-agent",
+          stream: true,
+          messages: [{ role: "user", content: "Show progress" }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain("\"reasoning_content\":\"checking available context\"");
+      expect(body).toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
+      expect(body).toContain("id=\\\"call-1\\\"");
+      expect(body).toContain("name=\\\"mcp__context_a8c__search\\\"");
+      expect(body).toContain("OpenWebUI tool rendering");
+      expect(body).toContain("{\\\"matches\\\":2}");
+      expect(body).not.toContain("\"tool_calls\"");
+      expect(body).not.toContain("\"finish_reason\":\"tool_calls\"");
+      expect(body.match(/"content":"Final answer\."/gu)).toHaveLength(1);
+      expect(body.trim().endsWith("data: [DONE]")).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("requires bearer auth when an API key is configured", async () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
