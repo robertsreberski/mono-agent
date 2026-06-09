@@ -101,6 +101,64 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("accepts chat completion requests posted directly to the configured base URL", async () => {
+    const seen: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        seen.push({
+          conversationId: request.conversationId,
+          text: request.text,
+          metadata: request.metadata?.openaiApi,
+        });
+        await stream.append("base url ok");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "mono-agent",
+      responder,
+    });
+
+    try {
+      const response = await fetch(server.baseUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mono-agent",
+          metadata: { conversation_id: "chat-base" },
+          messages: [{ role: "user", content: "Hello base URL" }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        object: "chat.completion",
+        model: "mono-agent",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: "base url ok",
+            },
+          },
+        ],
+      });
+      expect(seen).toEqual([
+        expect.objectContaining({
+          conversationId: "chat-base",
+          text: "user: Hello base URL",
+          metadata: expect.objectContaining({
+            path: "/v1",
+          }),
+        }),
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("omits authorization metadata when API key auth is configured", async () => {
     const seen: unknown[] = [];
     const responder: AgentResponder = {
