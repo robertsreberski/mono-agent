@@ -21,12 +21,12 @@ export type {
 } from "./message-normalizer.js";
 export { isGroupJid, normalizeWhatsAppMessage } from "./message-normalizer.js";
 
+export type { AgentMessageStream } from "@worklab-ai/agent-contracts";
 export type {
-  AgentMessageStream,
   WhatsAppMessageStreamLogger,
   WhatsAppMessageStreamOptions,
 } from "./message-stream.js";
-export { splitWhatsAppText, WhatsAppMessageStream } from "./message-stream.js";
+export { WhatsAppMessageStream } from "./message-stream.js";
 
 export {
   loadWhatsAppAdapterConfig,

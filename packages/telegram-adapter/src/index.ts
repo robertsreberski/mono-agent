@@ -22,9 +22,8 @@ export type {
   TelegramApiErrorKind,
   TelegramBotApiClientOptions,
 } from "./telegram-client.js";
-export { splitTelegramText, TelegramMessageStream } from "./message-stream.js";
+export { TelegramMessageStream } from "./message-stream.js";
 export type {
-  AgentMessageStream,
   TelegramMessageStreamLogger,
   TelegramMessageStreamOptions,
 } from "./message-stream.js";

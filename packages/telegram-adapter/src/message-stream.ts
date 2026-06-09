@@ -1,4 +1,11 @@
 import type { AgentMessageStream as AgentMessageStreamBase } from "@worklab-ai/agent-contracts";
+import {
+  DEFAULT_EMPTY_FINAL_TEXT,
+  DEFAULT_MAX_MESSAGE_CHARS,
+  buildStreamingTailPreview,
+  normalizeTrailing,
+  splitTextByCodePoints,
+} from "@worklab-ai/agent-contracts";
 import type {
   TelegramBotApi,
   TelegramChatId,
@@ -30,8 +37,7 @@ export interface TelegramMessageStreamLogger {
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
 const DEFAULT_EDIT_DEBOUNCE_MS = 750;
-const DEFAULT_MAX_MESSAGE_CHARS = 3_800;
-const EMPTY_FINAL_TEXT = "No response text was returned.";
+const EMPTY_FINAL_TEXT = DEFAULT_EMPTY_FINAL_TEXT;
 
 export class TelegramMessageStream implements AgentMessageStream {
   private readonly api: TelegramBotApi;
@@ -117,10 +123,7 @@ export class TelegramMessageStream implements AgentMessageStream {
     await this.awaitInFlightEdit();
     await this.throwIfAsyncError();
 
-    const finalMessageText = normalizeTelegramText(
-      this.currentText.length > 0 ? this.currentText : EMPTY_FINAL_TEXT,
-    );
-    const chunks = splitTelegramText(finalMessageText, this.maxMessageChars);
+    const chunks = splitTelegramText(this.currentText, this.maxMessageChars);
     const [firstChunk, ...remainingChunks] = chunks;
 
     await this.ensureMessage();
@@ -224,37 +227,20 @@ export class TelegramMessageStream implements AgentMessageStream {
 }
 
 export function splitTelegramText(text: string, maxChars: number): string[] {
-  if (!Number.isInteger(maxChars) || maxChars < 1) {
-    throw new RangeError("maxChars must be a positive integer.");
-  }
-
-  const normalized = normalizeTelegramText(text);
-  const characters = Array.from(normalized);
-  if (characters.length <= maxChars) {
-    return [normalized];
-  }
-
-  const chunks: string[] = [];
-  for (let index = 0; index < characters.length; index += maxChars) {
-    chunks.push(characters.slice(index, index + maxChars).join(""));
-  }
-
-  return chunks;
+  return splitTextByCodePoints(
+    normalizeTrailing(text, EMPTY_FINAL_TEXT),
+    maxChars,
+  );
 }
 
 function buildStreamingPreview(text: string, maxChars: number): string {
-  const normalized = normalizeTelegramText(text);
-  const characters = Array.from(normalized);
-  if (characters.length <= maxChars) {
-    return normalized;
-  }
-
-  const prefix = "…\n";
-  const available = Math.max(1, maxChars - Array.from(prefix).length);
-  return `${prefix}${characters.slice(-available).join("")}`;
+  return buildStreamingTailPreview(
+    normalizeTrailing(text, EMPTY_FINAL_TEXT),
+    maxChars,
+    "…\n",
+  );
 }
 
 function normalizeTelegramText(text: string): string {
-  const trimmed = text.trimEnd();
-  return trimmed.length > 0 ? trimmed : EMPTY_FINAL_TEXT;
+  return text.trimEnd();
 }

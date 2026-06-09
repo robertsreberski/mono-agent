@@ -41,9 +41,9 @@ describe("readString / readRequired", () => {
     expect(readString("  v ", "d")).toBe("v");
   });
 
-  it("readRequired throws the caller's typed error when absent", () => {
-    expect(() => readRequired(" ", onInvalid)).toThrow(TestConfigError);
-    expect(readRequired(" v ", onInvalid)).toBe("v");
+  it("readRequired throws the caller's typed error with a named message when absent", () => {
+    expect(() => readRequired(" ", "MONO_X", onInvalid)).toThrow("MONO_X is required.");
+    expect(readRequired(" v ", "MONO_X", onInvalid)).toBe("v");
   });
 });
 

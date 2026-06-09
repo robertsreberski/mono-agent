@@ -26,7 +26,6 @@ export type {
 } from "./slack-client.js";
 export {
   SlackMessageStream,
-  splitSlackText,
 } from "./message-stream.js";
 export type {
   AgentMessageStream,

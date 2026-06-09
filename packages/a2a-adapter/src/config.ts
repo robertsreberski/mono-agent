@@ -303,6 +303,7 @@ export function redactA2AAdapterConfig(
 function readRequiredEnv(raw: string | undefined, envName: string): string {
   return readRequired(
     raw,
+    envName,
     () =>
       new A2AProviderError(
         "missing_required_config",

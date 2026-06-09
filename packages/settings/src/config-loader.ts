@@ -36,15 +36,19 @@ export function readString(
   return normalizeOptionalString(raw) ?? defaultValue;
 }
 
-/** Read a required string, raising the caller's typed error when absent. */
+/**
+ * Read a required string, raising the caller's typed error when absent. The
+ * `${name} is required.` message is passed to the factory (callers that build
+ * their own message can ignore it); `{ env: name }` is always in the details.
+ */
 export function readRequired(
   raw: string | undefined,
+  name: string,
   onMissing: ConfigErrorFactory,
-  details?: Record<string, unknown>,
 ): string {
   const normalized = normalizeOptionalString(raw);
   if (normalized === undefined) {
-    throw onMissing("Required value is missing.", details);
+    throw onMissing(`${name} is required.`, { env: name });
   }
   return normalized;
 }
