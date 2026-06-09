@@ -33,29 +33,31 @@ describe("shared agent contracts", () => {
     expect(response).toEqual({ text: "hello", metadata: { ok: true } });
   });
 
-  it("recognizes canonical and compatibility cancellation errors", () => {
+  it("recognizes cancellation via instanceof, subclass, and cross-realm brand", () => {
     const reason = { code: "cancelled" };
     const error = new AgentResponseCancelledError("stop", { reason });
     expect(error.name).toBe("AgentResponseCancelledError");
     expect(error.reason).toBe(reason);
     expect(isAgentResponseCancelledError(error)).toBe(true);
 
-    class AgentResponderCancelledError extends Error {
-      constructor() {
-        super("legacy");
-        this.name = "AgentResponderCancelledError";
-      }
-    }
-
-    class TuiAgentCancelledError extends Error {
+    // Real subclasses (e.g. tui's TuiAgentCancelledError) extend the base, so
+    // instanceof + the inherited brand recognizes them without naming them.
+    class TuiAgentCancelledError extends AgentResponseCancelledError {
       constructor() {
         super("legacy");
         this.name = "TuiAgentCancelledError";
       }
     }
-
-    expect(isAgentResponseCancelledError(new AgentResponderCancelledError())).toBe(true);
     expect(isAgentResponseCancelledError(new TuiAgentCancelledError())).toBe(true);
+
+    // A duplicate class identity is still recognized via the stable brand.
+    const crossRealm = { name: "AgentResponseCancelledError", agentResponseCancelled: true };
+    expect(isAgentResponseCancelledError(crossRealm)).toBe(true);
+
+    // Arbitrary errors that merely share a name are no longer matched.
+    const nameOnly = new Error("legacy");
+    nameOnly.name = "AgentResponderCancelledError";
+    expect(isAgentResponseCancelledError(nameOnly)).toBe(false);
     expect(isAgentResponseCancelledError(new Error("boom"))).toBe(false);
   });
 });
