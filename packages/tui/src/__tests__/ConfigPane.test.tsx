@@ -8,7 +8,7 @@ import { cleanup, render } from "ink-testing-library";
 import { ConfigPane } from "../components/ConfigPane.js";
 import { buildTuiConfigSummary } from "../config/pane.js";
 
-const SECRET_TOKEN = "1234567890:THIS_IS_THE_RAW_SECRET_TOKEN_NEVER_LEAK";
+const REDACTED_TOKEN_SAMPLE = "1234567890:REDACTED_TEST_TOKEN_VALUE";
 
 let tmpRoot: string;
 
@@ -33,7 +33,7 @@ describe("ConfigPane", () => {
     const configPath = join(tmpRoot, "mono-agent.config.json");
     await writeJson(configPath, {
       telegram: {
-        botToken: SECRET_TOKEN,
+        botToken: REDACTED_TOKEN_SAMPLE,
         allowedChatIds: ["111", "222"],
       },
       runtime: {
@@ -67,8 +67,8 @@ describe("ConfigPane", () => {
     expect(frame).toMatch(/cli/);
     expect(frame).not.toMatch(/allowedChatIds/);
     expect(frame).not.toMatch(/botToken/);
-    expect(frame).not.toContain(SECRET_TOKEN);
-    expect(frame).not.toContain("THIS_IS_THE_RAW_SECRET_TOKEN_NEVER_LEAK");
+    expect(frame).not.toContain(REDACTED_TOKEN_SAMPLE);
+    expect(frame).not.toContain("REDACTED_TEST_TOKEN_VALUE");
   });
 
   it("shows an error message and a retry hint when the file cannot be read", async () => {

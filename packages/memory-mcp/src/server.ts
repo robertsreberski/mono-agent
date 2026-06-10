@@ -148,7 +148,7 @@ export function createMemoryTools(deps: MemoryMcpDependencies): MemoryTools {
 
 export function createMemoryMcpServer(deps: MemoryMcpDependencies): McpServer {
   const tools = createMemoryTools(deps);
-  const server = new McpServer({ name: "mono-agent-memory", version: "0.1.0" });
+  const server = new McpServer({ name: "agent-memory", version: "0.1.0" });
 
   server.registerTool(
     "journal_append",

@@ -6,7 +6,7 @@ Category: `execution`
 
 ## Responsibility
 
-Adapter-neutral host composition helpers for Mono Agent. This package turns a loaded `MonoAgentConfig` into a runtime-backed harness or structural responder without owning any communication adapter, operator surface, or host lifecycle.
+Adapter-neutral host composition helpers for reusable agent hosts. This package turns a loaded `MonoAgentConfig` into a runtime-backed harness or structural responder without owning any communication adapter, operator surface, or host lifecycle.
 
 ## Install / Usage
 

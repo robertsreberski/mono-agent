@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/agent-evals",
   "version": "0.1.0",
-  "description": "Local-first end-to-end eval runner for Mono Agent responders and harnesses.",
+  "description": "Local-first end-to-end eval runner for agent responders and harnesses.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

@@ -282,7 +282,7 @@ function sendFallbackShell(res: ServerResponse, deps: HandlerDeps): void {
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Mono Agent Console</title>
+    <title>Agent Console</title>
   </head>
   <body>
     <div id="root">Operator console is running. SPA bundle not built.</div>

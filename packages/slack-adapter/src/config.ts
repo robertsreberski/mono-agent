@@ -114,7 +114,7 @@ export const slackFieldGroup: FieldGroup = defineFieldGroup({
       label: "Mention aliases",
       description: "Comma-separated mention text aliases to strip before runtime calls.",
       kind: "csv",
-      placeholder: "@mono, Mono Agent",
+      placeholder: "@agent, Assistant",
       path: ["slack", "mentionTextAliases"],
     },
     {

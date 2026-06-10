@@ -6,7 +6,7 @@ Category: `runtime`
 
 ## Responsibility
 
-Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind Mono Agent runtime contracts.
+Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts.
 
 ## Public API
 
@@ -22,7 +22,7 @@ Depends only on external provider SDKs (`@anthropic-ai/claude-agent-sdk`, `@eare
 
 ## What This Package Does Not Own
 
-- Mono Agent runtime contracts and backend descriptors (`@mono-agent/runtime-adapter`)
+- runtime contracts and backend descriptors (`@mono-agent/runtime-adapter`)
 - Conversation history, context building, or host-side session TTL policy (`@mono-agent/agent-harness`)
 - Host configuration (`@mono-agent/config`, `@mono-agent/agent-host`)
 
@@ -41,7 +41,7 @@ Generic agent runtime that supports four backends out of the box:
 - **Pi SDK** (`@earendil-works/pi-agent-core`, used for OpenAI / Codex / Gemini / OpenRouter / Ollama / etc. via Pi providers)
 - **Codex CLI** (the `codex` app-server)
 
-Hosts wire in their own pricing, persistence, credential, and compaction-recording callbacks. The runtime returns raw text + raw structured output; hosts that want a domain-specific contract (e.g. `worklab_result`) parse it on their end.
+Hosts wire in their own pricing, persistence, credential, and compaction-recording callbacks. The runtime returns raw text + raw structured output; hosts that want a domain-specific contract parse it on their end.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the package boundary, runtime
 selection flow, lifecycle diagrams, and host responsibilities.
@@ -167,20 +167,20 @@ createRuntime({
 
   // -- host-customisable identity strings (all optional, defaults shown) --
   runtimeBrand: {
-    schemaPrefix: "worklab",       // prefix for snapshot/result schema ids
-    mcpClientName: "worklab",      // MCP client name reported to MCP servers
+    schemaPrefix: "agent_runtime", // prefix for snapshot/result schema ids
+    mcpClientName: "agent-runtime", // MCP client name reported to MCP servers
     mcpClientVersion: "0.1.0",     // MCP client version
-    tempdirPrefix: "worklab-cli-", // mkdtemp prefix for CLI provider scratch dirs
-    providerModelPrefix: "worklab",// id prefix for custom Pi providers
-    doctorCommand: "worklab doctor", // command suggested in tool error messages
-    serviceName: "worklab",        // Codex app-server serviceName
-    clientInfoName: "worklab",     // Codex app-server clientInfo.name
-    clientInfoTitle: "Worklab",    // Codex app-server clientInfo.title
+    tempdirPrefix: "agent-runtime-cli-", // mkdtemp prefix for CLI provider scratch dirs
+    providerModelPrefix: "agent",  // id prefix for custom Pi providers
+    doctorCommand: "agent-runtime doctor", // command suggested in tool error messages
+    serviceName: "agent-runtime",  // Codex app-server serviceName
+    clientInfoName: "agent-runtime", // Codex app-server clientInfo.name
+    clientInfoTitle: "Agent Runtime", // Codex app-server clientInfo.title
   },
 });
 ```
 
-`runtimeBrand` lets an external host reskin the package without forking string-by-string. Defaults preserve worklab strings, so worklab itself doesn't need to set anything.
+`runtimeBrand` lets an external host reskin the package without forking string-by-string.
 
 Returns:
 

@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/context",
   "version": "0.1.0",
-  "description": "Deterministic context assembly for Worklab-style agents.",
+  "description": "Deterministic context assembly for host-compatible agents.",
   "type": "module",
   "exports": {
     ".": {

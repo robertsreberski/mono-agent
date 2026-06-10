@@ -1,6 +1,6 @@
 # Final Agent Demo
 
-This is the Mono Agent final demo. It is intentionally **not** an npm package: there is no `package.json`, no workspace entry, and no publishable export. The demo is just repo code that shows how the packages fit together.
+This is the final agent demo. It is intentionally **not** an npm package: there is no `package.json`, no workspace entry, and no publishable export. The demo is just repo code that shows how the packages fit together.
 
 ## What it wires together
 
@@ -46,7 +46,7 @@ The CLI prints:
 
 Open the operator console and save a valid config. Telegram, A2A, webhook, OpenAI API, and cron start independently: missing Telegram credentials do not block the HTTP or scheduled adapters, and disabled adapters do not block the rest of the host. Later operator-console saves are applied in-process: the demo stops and rebuilds Telegram, A2A, webhook, OpenAI API, cron, and traceability from the freshly saved config while keeping the operator console URL, token, and port stable. Active Telegram polling, A2A requests, webhook requests, OpenAI API requests, or cron jobs may be briefly interrupted; new requests after the save use the new runtime, tool policy, tokens, allowlists, Agent Card metadata, webhook settings, OpenAI API settings, cron jobs, artifact directory, and trace source settings.
 
-The top navigation includes **Settings** and **Traceability**. Traceability is refresh-based: the registry discovers running/stale/stopped/failed Mono Agent sources, and each source points at persisted `*.summary.json` / `*.events.jsonl` files. The timeline shows visible runtime/tool/message events and does not infer or expose private model chain-of-thought. The old `#observability` hash remains an alias for the traceability surface.
+The top navigation includes **Settings** and **Traceability**. Traceability is refresh-based: the registry discovers running/stale/stopped/failed agent sources, and each source points at persisted `*.summary.json` / `*.events.jsonl` files. The timeline shows visible runtime/tool/message events and does not infer or expose private model chain-of-thought. The old `#observability` hash remains an alias for the traceability surface.
 
 ## Deploy with Ollama Gemma 4
 
@@ -112,15 +112,15 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
       "port": 0
     },
     "agent": {
-      "name": "Mono Agent",
-      "description": "Local Mono Agent over A2A.",
+      "name": "Local Agent",
+      "description": "Local A2A provider.",
       "version": "0.1.0"
     },
     "skill": {
-      "id": "mono-agent",
-      "name": "Mono Agent",
-      "description": "Runs the configured Mono Agent runtime over text.",
-      "tags": ["mono-agent", "a2a"]
+      "id": "local-agent",
+      "name": "Local Agent",
+      "description": "Runs the configured runtime over text.",
+      "tags": ["agent", "a2a"]
     },
     "consumer": {
       "remoteAgentUrls": [],
@@ -139,7 +139,7 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/v1",
-    "modelId": "mono-agent"
+    "modelId": "agent"
   },
   "cron": {
     "enabled": false,
@@ -194,25 +194,25 @@ Enable the OpenAI API adapter with a real runtime configuration:
     "host": "127.0.0.1",
     "port": 4311,
     "basePath": "/v1",
-    "modelId": "mono-agent",
-    "apiKey": "local-openwebui-key"
+    "modelId": "agent",
+    "apiKey": "demo-key"
   }
 }
 ```
 
-Start the demo and use the printed OpenAI API base URL in OpenWebUI. If OpenWebUI runs in local Docker while Mono Agent runs on the host, keep the adapter bound to host loopback (`127.0.0.1`) and use `http://host.docker.internal:4311/v1` from OpenWebUI instead of `http://127.0.0.1:4311/v1`. Only bind a non-loopback/public host when `allowNonLoopback` is explicitly enabled; that setup should configure an `apiKey` and sit behind appropriate network protection such as a firewall, VPN, TLS-terminating reverse proxy, or private network. Set OpenWebUI's API key to the same `apiKey` only when one is configured; otherwise leave the adapter key unset for loopback-only local use.
+Start the demo and use the printed OpenAI API base URL in OpenWebUI. If OpenWebUI runs in local Docker while the demo runs on the host, keep the adapter bound to host loopback (`127.0.0.1`) and use `http://host.docker.internal:4311/v1` from OpenWebUI instead of `http://127.0.0.1:4311/v1`. Only bind a non-loopback/public host when `allowNonLoopback` is explicitly enabled; that setup should configure an `apiKey` and sit behind appropriate network protection such as a firewall, VPN, TLS-terminating reverse proxy, or private network. Set OpenWebUI's API key to the same `apiKey` only when one is configured; otherwise leave the adapter key unset for loopback-only local use.
 
 Terminal smoke:
 
 ```bash
 curl http://127.0.0.1:4311/v1/models \
-  -H 'Authorization: Bearer local-openwebui-key'
+  -H 'Authorization: Bearer demo-key'
 
 curl http://127.0.0.1:4311/v1/chat/completions \
-  -H 'Authorization: Bearer local-openwebui-key' \
+  -H 'Authorization: Bearer demo-key' \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "mono-agent",
+    "model": "agent",
     "messages": [{ "role": "user", "content": "Reply with one sentence." }]
   }'
 ```
@@ -238,7 +238,7 @@ Start Agent A with A2A provider enabled and a real runtime configuration:
       "id": "agent-a",
       "name": "Agent A",
       "description": "Answers text prompts.",
-      "tags": ["mono-agent", "a2a"]
+      "tags": ["agent", "a2a"]
     }
   }
 }
@@ -304,7 +304,7 @@ Standard local Ollama needs no API key. The demo validates local-provider URLs b
 
 For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `mono-agent.config.json`, then the built-in `./.mono-agent/artifacts` default. This lets the traceability view show existing default artifacts even while the rest of the demo config is incomplete.
 
-For source discovery, `MONO_AGENT_TRACE_REGISTRY_DIR` wins, then `traceability.registryDir`, then `~/.mono-agent/trace-sources`. The default is intentionally host-shared so multiple Mono Agent processes from different working directories appear in one local dashboard. Source id and label can be set with `MONO_AGENT_TRACE_SOURCE_ID` / `MONO_AGENT_TRACE_SOURCE_LABEL` or `traceability.sourceId` / `traceability.sourceLabel`; otherwise the demo uses a deterministic path-derived id and the label `Final Agent Demo`. Heartbeat and stale intervals follow `MONO_AGENT_TRACE_HEARTBEAT_MS` / `MONO_AGENT_TRACE_STALE_AFTER_MS`, then `traceability.heartbeatMs` / `traceability.staleAfterMs`, then the built-in defaults.
+For source discovery, `MONO_AGENT_TRACE_REGISTRY_DIR` wins, then `traceability.registryDir`, then `~/.mono-agent/trace-sources`. The default is intentionally host-shared so multiple agent processes from different working directories appear in one local dashboard. Source id and label can be set with `MONO_AGENT_TRACE_SOURCE_ID` / `MONO_AGENT_TRACE_SOURCE_LABEL` or `traceability.sourceId` / `traceability.sourceLabel`; otherwise the demo uses a deterministic path-derived id and the label `Final Agent Demo`. Heartbeat and stale intervals follow `MONO_AGENT_TRACE_HEARTBEAT_MS` / `MONO_AGENT_TRACE_STALE_AFTER_MS`, then `traceability.heartbeatMs` / `traceability.staleAfterMs`, then the built-in defaults.
 
 Useful env overrides:
 
@@ -320,12 +320,12 @@ MONO_AGENT_LOCAL_PROVIDER_BASE_URL=http://localhost:11434
 MONO_AGENT_A2A_PROVIDER_ENABLED=true
 MONO_AGENT_A2A_HOST=127.0.0.1
 MONO_AGENT_A2A_PORT=4300
-MONO_AGENT_A2A_AGENT_NAME="Mono Agent"
-MONO_AGENT_A2A_AGENT_DESCRIPTION="Local Mono Agent over A2A."
+MONO_AGENT_A2A_AGENT_NAME="Local Agent"
+MONO_AGENT_A2A_AGENT_DESCRIPTION="Local A2A provider."
 MONO_AGENT_A2A_AGENT_VERSION=0.1.0
 MONO_AGENT_A2A_SKILL_ID=mono-agent
-MONO_AGENT_A2A_SKILL_NAME="Mono Agent"
-MONO_AGENT_A2A_SKILL_DESCRIPTION="Runs the configured Mono Agent runtime over text."
+MONO_AGENT_A2A_SKILL_NAME="Local Agent"
+MONO_AGENT_A2A_SKILL_DESCRIPTION="Runs the configured runtime over text."
 MONO_AGENT_A2A_REMOTE_AGENT_URLS=http://127.0.0.1:4300/.well-known/agent-card.json
 MONO_AGENT_WEBHOOK_ENABLED=true
 MONO_AGENT_WEBHOOK_HOST=127.0.0.1
@@ -337,7 +337,7 @@ MONO_AGENT_OPENAI_API_HOST=127.0.0.1
 MONO_AGENT_OPENAI_API_PORT=4311
 MONO_AGENT_OPENAI_API_BASE_PATH=/v1
 MONO_AGENT_OPENAI_API_MODEL_ID=mono-agent
-MONO_AGENT_OPENAI_API_KEY=local-openwebui-key
+MONO_AGENT_OPENAI_API_KEY=demo-key
 MONO_AGENT_CRON_ENABLED=true
 MONO_AGENT_CRON_EXPRESSION="0 * * * *"
 MONO_AGENT_CRON_TIMEZONE=UTC

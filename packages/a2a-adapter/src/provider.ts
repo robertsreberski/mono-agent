@@ -269,7 +269,7 @@ class MonoA2AExecutor implements AgentExecutor {
           artifact: {
             artifactId: "final-text",
             name: "Final text response",
-            description: "Text response returned by the Mono Agent responder.",
+            description: "Text response returned by the responder.",
             parts: [textPart(finalText)],
             metadata: {},
             extensions: [],

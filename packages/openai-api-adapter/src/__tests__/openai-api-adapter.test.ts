@@ -9,7 +9,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder: echoResponder(),
     });
 
@@ -21,9 +21,9 @@ describe("OpenAI API adapter", () => {
         object: "list",
         data: [
           expect.objectContaining({
-            id: "mono-agent",
+            id: "agent",
             object: "model",
-            owned_by: "mono-agent",
+            owned_by: "host",
           }),
         ],
       });
@@ -48,7 +48,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder,
     });
 
@@ -57,7 +57,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           user: "openwebui-user",
           metadata: { conversation_id: "chat-1" },
           messages: [
@@ -71,7 +71,7 @@ describe("OpenAI API adapter", () => {
       const json = await response.json();
       expect(json).toMatchObject({
         object: "chat.completion",
-        model: "mono-agent",
+        model: "agent",
         choices: [
           {
             index: 0,
@@ -89,7 +89,7 @@ describe("OpenAI API adapter", () => {
           conversationId: "chat-1",
           text: "system: You are concise.\nuser: Hello Mono",
           metadata: expect.objectContaining({
-            model: "mono-agent",
+            model: "agent",
             stream: false,
             path: "/v1/chat/completions",
             requestId: expect.any(String),
@@ -117,7 +117,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder,
     });
 
@@ -126,7 +126,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           metadata: { conversation_id: "chat-base" },
           messages: [{ role: "user", content: "Hello base URL" }],
         }),
@@ -135,7 +135,7 @@ describe("OpenAI API adapter", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({
         object: "chat.completion",
-        model: "mono-agent",
+        model: "agent",
         choices: [
           {
             message: {
@@ -171,8 +171,8 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
-      apiKey: "local-secret",
+      modelId: "agent",
+      apiKey: "redacted-value",
       responder,
     });
 
@@ -180,11 +180,11 @@ describe("OpenAI API adapter", () => {
       const response = await fetch(`${server.baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
-          Authorization: "Bearer local-secret",
+          Authorization: "Bearer redacted-value",
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           messages: [{ role: "user", content: "Hello Mono" }],
         }),
       });
@@ -204,7 +204,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder: responder.responder,
     });
 
@@ -243,7 +243,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder: responder.responder,
     });
 
@@ -252,7 +252,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           messages: [{ role: "user", content: "Hello Mono" }],
           [field]: value,
         }),
@@ -275,7 +275,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder: responder.responder,
     });
 
@@ -284,7 +284,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           messages: [
             {
               role: "user",
@@ -314,7 +314,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder: responder.responder,
     });
 
@@ -323,7 +323,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           messages: [
             { role: "user", content: "Hello Mono" },
             {
@@ -358,7 +358,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder,
     });
 
@@ -367,7 +367,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           stream: true,
           messages: [{ role: "user", content: "Stream it" }],
         }),
@@ -410,7 +410,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder,
     });
 
@@ -419,7 +419,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           stream: true,
           messages: [{ role: "user", content: "Show progress" }],
         }),
@@ -446,8 +446,8 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
-      apiKey: "local-secret",
+      modelId: "agent",
+      apiKey: "redacted-value",
       responder: echoResponder(),
     });
 
@@ -462,7 +462,7 @@ describe("OpenAI API adapter", () => {
       });
 
       const authorized = await fetch(`${server.baseUrl}/models`, {
-        headers: { Authorization: "Bearer local-secret" },
+        headers: { Authorization: "Bearer redacted-value" },
       });
       expect(authorized.status).toBe(200);
     } finally {
@@ -475,7 +475,7 @@ describe("OpenAI API adapter", () => {
       host: "127.0.0.1",
       port: 0,
       basePath: "/",
-      modelId: "mono-agent",
+      modelId: "agent",
       responder: echoResponder(),
     });
 
@@ -490,7 +490,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           messages: [{ role: "user", content: "root path" }],
         }),
       });
@@ -503,7 +503,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           messages: [{ role: "user", content: "root base" }],
         }),
       });
@@ -524,7 +524,7 @@ describe("OpenAI API adapter", () => {
           host: "127.0.0.1",
           port: 0,
           basePath,
-          modelId: "mono-agent",
+          modelId: "agent",
           responder: echoResponder(),
         }),
       ).rejects.toMatchObject({ code: "invalid_config" });
@@ -550,7 +550,7 @@ describe("OpenAI API adapter", () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
       port: 0,
-      modelId: "mono-agent",
+      modelId: "agent",
       responder,
     });
 
@@ -560,7 +560,7 @@ describe("OpenAI API adapter", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           messages: [{ role: "user", content: "hang" }],
         }),
         signal: controller.signal,
@@ -583,7 +583,7 @@ describe("OpenAI API adapter", () => {
       startOpenAIApiAdapter({
         host: "0.0.0.0",
         port: 0,
-        modelId: "mono-agent",
+        modelId: "agent",
         responder: echoResponder(),
       }),
     ).rejects.toMatchObject({ code: "unsafe_host" });

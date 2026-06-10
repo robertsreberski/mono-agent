@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Deterministic context assembly for Mono Agent prompts. It loads identity and optional SOUL text, normalizes JSON/Markdown blocks, indexes selected skills, appends recent history, and returns a structured prompt context without calling a model.
+Deterministic context assembly for agent prompts. It loads identity and optional SOUL text, normalizes JSON/Markdown blocks, indexes selected skills, appends recent history, and returns a structured prompt context without calling a model.
 
 ## Install / Usage
 

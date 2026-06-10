@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { CORE_AGENT_FIELD_GROUPS, runtimeFieldGroup } from "../field-groups.js";
 
 describe("CORE_AGENT_FIELD_GROUPS", () => {
-  it("contains only adapter-neutral Mono Agent settings sections", () => {
+  it("contains only adapter-neutral core agent settings sections", () => {
     expect(CORE_AGENT_FIELD_GROUPS.map((group) => group.id)).toEqual([
       "identity",
       "runtime",

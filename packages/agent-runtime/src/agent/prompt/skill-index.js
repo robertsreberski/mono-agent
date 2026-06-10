@@ -5,7 +5,7 @@
 
 import { dirname, resolve } from "node:path";
 
-const SKILL_PATH_RULE = "Path rule: Files referenced by SKILL.md are bundled with the skill. Resolve `scripts/...`, `references/...`, and `assets/...` relative to that skill's directory; resolve `<skill-directory-name>/...` relative to the Worklab skills root.";
+const SKILL_PATH_RULE = "Path rule: Files referenced by SKILL.md are bundled with the skill. Resolve `scripts/...`, `references/...`, and `assets/...` relative to that skill's directory; resolve `<skill-directory-name>/...` relative to the configured skills root.";
 
 function skillDir(skill) {
   if (!skill?.assetsPath || typeof skill.assetsPath !== "string") return "";
@@ -25,7 +25,7 @@ export function getSkillAccessDirs(skills = []) {
 
 export function buildSkillPathNote({ assetsPath, skillsRoot } = {}) {
   const lines = [];
-  if (skillsRoot) lines.push(`Worklab skills root: ${resolve(skillsRoot)}`);
+  if (skillsRoot) lines.push(`Configured skills root: ${resolve(skillsRoot)}`);
   if (assetsPath) lines.push(`Skill directory: ${resolve(assetsPath)}`);
   lines.push(SKILL_PATH_RULE);
   return lines.join("\n");

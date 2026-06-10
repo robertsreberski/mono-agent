@@ -23,23 +23,23 @@ describe("JsonlEntityGraphStore", () => {
     const path = await graphPath();
     const store = createEntityGraphStore({ path });
 
-    await store.upsertEntities([{ name: "Robert", entityType: "person", observations: ["prefers concise answers"] }]);
+    await store.upsertEntities([{ name: "Example Person", entityType: "person", observations: ["prefers concise answers"] }]);
     const result = await store.upsertEntities([
-      { name: "robert", observations: ["prefers concise answers", "works on mono-agent"] },
+      { name: "example person", observations: ["prefers concise answers", "contributes to sample-project"] },
     ]);
 
     expect(result.observationsAdded).toBe(1);
-    const entity = await store.getEntity("ROBERT");
-    expect(entity?.name).toBe("Robert"); // first-seen display name preserved
+    const entity = await store.getEntity("example person");
+    expect(entity?.name).toBe("Example Person"); // first-seen display name preserved
     expect(entity?.entityType).toBe("person");
-    expect(entity?.observations).toEqual(["prefers concise answers", "works on mono-agent"]);
+    expect(entity?.observations).toEqual(["prefers concise answers", "contributes to sample-project"]);
   });
 
   it("persists to JSONL with the MCP memory-server shape and reloads", async () => {
     const path = await graphPath();
     const store = createEntityGraphStore({ path });
-    await store.upsertEntities([{ name: "mono-agent", entityType: "project", observations: ["TS monorepo"] }]);
-    await store.upsertRelations([{ from: "Robert", to: "mono-agent", relationType: "works on" }]);
+    await store.upsertEntities([{ name: "sample-project", entityType: "project", observations: ["TS monorepo"] }]);
+    await store.upsertRelations([{ from: "Example Person", to: "sample-project", relationType: "works on" }]);
 
     const raw = await readFile(path, "utf8");
     expect(raw).toContain('"type":"entity"');
@@ -47,19 +47,19 @@ describe("JsonlEntityGraphStore", () => {
     expect(raw).toContain('"relationType":"works on"');
 
     const reloaded = createEntityGraphStore({ path });
-    const sub = await reloaded.getSubgraph("Robert", 1);
-    expect(sub.entities.map((e) => e.name).sort()).toEqual(["Robert", "mono-agent"]);
-    expect(sub.relations).toEqual([{ from: "Robert", to: "mono-agent", relationType: "works on" }]);
+    const sub = await reloaded.getSubgraph("Example Person", 1);
+    expect(sub.entities.map((e) => e.name).sort()).toEqual(["Example Person", "sample-project"]);
+    expect(sub.relations).toEqual([{ from: "Example Person", to: "sample-project", relationType: "works on" }]);
   });
 
   it("auto-creates stub endpoints for relations and dedups relations", async () => {
     const path = await graphPath();
     const store = createEntityGraphStore({ path });
-    await store.upsertRelations([{ from: "Alice", to: "Bravo", relationType: "leads" }]);
-    const again = await store.upsertRelations([{ from: "alice", to: "bravo", relationType: "leads" }]);
+    await store.upsertRelations([{ from: "Person A", to: "Entity B", relationType: "leads" }]);
+    const again = await store.upsertRelations([{ from: "person a", to: "entity b", relationType: "leads" }]);
 
     expect(again.relationsUpserted).toBe(0);
-    expect((await store.getEntity("Alice"))?.entityType).toBe("unknown");
+    expect((await store.getEntity("Person A"))?.entityType).toBe("unknown");
     expect((await store.snapshot()).relations).toHaveLength(1);
   });
 
@@ -82,13 +82,13 @@ describe("JsonlEntityGraphStore", () => {
     const path = await graphPath();
     const store = createEntityGraphStore({ path });
     await store.upsertEntities([
-      { name: "Robert", entityType: "person", observations: ["likes TypeScript"] },
-      { name: "mono-agent", entityType: "project", observations: ["written in TypeScript"] },
+      { name: "Example Person", entityType: "person", observations: ["likes TypeScript"] },
+      { name: "sample-project", entityType: "project", observations: ["written in TypeScript"] },
       { name: "Cooking", entityType: "topic", observations: ["pasta"] },
     ]);
 
     const hits = await store.search("typescript");
-    expect(hits.map((e) => e.name).sort()).toEqual(["Robert", "mono-agent"]);
+    expect(hits.map((e) => e.name).sort()).toEqual(["Example Person", "sample-project"]);
     expect(await store.search("")).toEqual([]);
   });
 
@@ -96,12 +96,12 @@ describe("JsonlEntityGraphStore", () => {
     const path = await graphPath();
     const store = createEntityGraphStore({ path });
     await store.upsertEntities([
-      { name: "Robert", entityType: "person", observations: ["a", "b", "c"] },
+      { name: "Example Person", entityType: "person", observations: ["a", "b", "c"] },
       { name: "Side", entityType: "topic", observations: ["x"] },
     ]);
 
     const digest = await store.digest(10);
-    expect(digest.split("\n")[0]).toContain("Robert (person)");
+    expect(digest.split("\n")[0]).toContain("Example Person (person)");
     expect(digest).toContain("- Side (topic): x");
   });
 

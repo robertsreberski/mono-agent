@@ -90,7 +90,7 @@ export const HELP_TEXT = `Usage: mono-agent-tui [options]
                           to createResponder().
   --conversation <id>     Conversation id passed to the responder
                           (default: tui-local).
-  --title <text>          Header title (default: "Mono Agent").
+  --title <text>          Header title (default: "Agent").
   -h, --help              Show this help and exit.
 
 The TUI is a communication adapter — it does not boot a harness on its

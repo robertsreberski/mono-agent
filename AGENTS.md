@@ -2,7 +2,7 @@
 
 ## Project
 
-Mono Agent is intended to become a small, single-purpose agent framework built from npm packages under the `@mono-agent` scope. The framework should provide reusable building blocks around `@mono-agent/agent-runtime`, including modular communication adapters, skills/MCP/harness integration, and an optional memory layer.
+This repository is intended to become a small, single-purpose agent framework built from npm packages under the `@mono-agent` scope. The framework should provide reusable building blocks around `@mono-agent/agent-runtime`, including modular communication adapters, skills/MCP/harness integration, and an optional memory layer.
 
 ## Repository shape
 

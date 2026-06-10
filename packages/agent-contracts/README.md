@@ -6,7 +6,7 @@ Category: `core`
 
 ## Responsibility
 
-Shared structural contracts for Mono Agent request/response boundaries. It defines the adapter-neutral agent request base, response, message stream, responder, and cancellation error used by harnesses, communication adapters, and operator surfaces.
+Shared structural contracts for agent request/response boundaries. It defines the adapter-neutral agent request base, response, message stream, responder, and cancellation error used by harnesses, communication adapters, and operator surfaces.
 
 ## Install / Usage
 

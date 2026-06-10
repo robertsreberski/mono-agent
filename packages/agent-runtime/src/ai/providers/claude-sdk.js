@@ -824,7 +824,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
     mcpServersUsed: Object.keys(mcpServers || {}),
     nativeSubagentsUsed: configuredSubagents,
     toolCompactionApplied: toolCompactionAppliedFromWarnings(runtimeWarnings),
-    contextCompactionApplied: null, // Claude SDK doesn't use the worklab compaction layer
+    contextCompactionApplied: null, // Claude SDK doesn't use the runtime compaction layer
   });
   emitEvent({ type: "capabilities_resolved", sdk: "claude", model: model.model, capabilitiesUsed });
 

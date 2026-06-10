@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-export const COMPACTED_CONTEXT_MARKER = "Compacted prior Worklab context";
+export const COMPACTED_CONTEXT_MARKER = "Compacted prior agent context";
 
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_TRIGGER_RATIO = 0.85;
@@ -487,7 +487,7 @@ export function createAgentCompactionManager({
     onEvent?.(event);
   }
 
-  // The host (worklab worker) owns persistence: it receives the structured
+  // The host owns persistence: it receives the structured
   // record below and writes it into `run_compactions`. The kernel emits a
   // runtime_warning if the host's callback throws.
   function record(row) {

@@ -127,7 +127,7 @@ export const whatsappFieldGroup: FieldGroup = defineFieldGroup({
       label: "Mention aliases",
       description: "Comma-separated mention text aliases to strip from triggered messages.",
       kind: "csv",
-      placeholder: "@mono, Mono Agent",
+      placeholder: "@agent, Assistant",
       path: ["whatsapp", "mentionTextAliases"],
     },
     {

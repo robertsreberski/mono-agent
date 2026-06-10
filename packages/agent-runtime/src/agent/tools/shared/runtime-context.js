@@ -1,5 +1,5 @@
 // Process-level configuration for the agent kernel's internal tool helpers.
-// Worklab (or any other host) configures this once at worker boot; internal
+// The host configures this once at worker boot; internal
 // modules (output-truncation, ripgrep, path-resolver, pi-bridge) read from
 // it instead of reaching into process.env.
 //

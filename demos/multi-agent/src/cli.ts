@@ -81,7 +81,7 @@ function printTraceabilityStatus(status: MultiAgentTraceabilityStatus): void {
 }
 
 function printHelp(): void {
-  console.log(`Usage: pnpm run demo:multi -- [--config-dir <path>] [--port <port>] [--no-telegram] [--no-a2a]\n\nStarts the non-package Mono Agent multi-agent demo from generated role configs.\n\nOptions:\n  --config-dir <path>  Config/state directory (default: ./.mono-agent/multi-agent)\n  --port <port>        Operator Console port (default: 0, choose a free port)\n  --no-telegram        Do not start the Telegram poller even if configured\n  --no-a2a             Do not start role A2A providers\n  -h, --help           Show this help`);
+  console.log(`Usage: pnpm run demo:multi -- [--config-dir <path>] [--port <port>] [--no-telegram] [--no-a2a]\n\nStarts the non-package multi-agent demo from generated role configs.\n\nOptions:\n  --config-dir <path>  Config/state directory (default: ./.mono-agent/multi-agent)\n  --port <port>        Operator Console port (default: 0, choose a free port)\n  --no-telegram        Do not start the Telegram poller even if configured\n  --no-a2a             Do not start role A2A providers\n  -h, --help           Show this help`);
 }
 
 void main().catch((error: unknown) => {

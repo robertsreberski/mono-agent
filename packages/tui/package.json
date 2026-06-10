@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/tui",
   "version": "0.1.0",
-  "description": "Ink-based React TUI console adapter for Mono Agent: chat, history, redacted config view.",
+  "description": "Ink-based React TUI console adapter for agent hosts: chat, history, redacted config view.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

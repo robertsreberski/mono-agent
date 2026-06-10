@@ -3,22 +3,22 @@
 // transcript-snapshot schema id, temp-directory prefix, the doctor command
 // suggested in tool error messages, etc.
 //
-// Worklab ships with the defaults below ("worklab*"), so changing the brand
-// is opt-in. External hosts pass `runtimeBrand` to `createRuntime` to make
-// the package look like theirs without forking string-by-string.
+// The runtime ships with neutral defaults. External hosts pass `runtimeBrand`
+// to `createRuntime` to make the package look like theirs without forking
+// string-by-string.
 
 export const DEFAULT_RUNTIME_BRAND = Object.freeze({
-  schemaPrefix: "worklab",
-  mcpClientName: "worklab",
+  schemaPrefix: "agent_runtime",
+  mcpClientName: "agent-runtime",
   mcpClientVersion: "0.1.0",
-  tempdirPrefix: "worklab-cli-",
-  providerModelPrefix: "worklab",
-  doctorCommand: "worklab doctor",
+  tempdirPrefix: "agent-runtime-cli-",
+  providerModelPrefix: "agent",
+  doctorCommand: "agent-runtime doctor",
   // serviceName + clientInfo names propagated to provider SDKs that report
   // a client identity (Codex app-server, etc.).
-  serviceName: "worklab",
-  clientInfoName: "worklab",
-  clientInfoTitle: "Worklab",
+  serviceName: "agent-runtime",
+  clientInfoName: "agent-runtime",
+  clientInfoTitle: "Agent Runtime",
 });
 
 export function resolveRuntimeBrand(input) {

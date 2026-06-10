@@ -6,7 +6,7 @@ Category: `evaluation`
 
 ## Responsibility
 
-Local-first end-to-end eval scenarios for Mono Agent responders and harnesses. The package runs a prompt against the shared `AgentResponder` or `AgentHarness` seam, captures runtime-style events, writes local artifacts, and scores deterministic expectations before optional judge checks.
+Local-first end-to-end eval scenarios for agent responders and harnesses. The package runs a prompt against the shared `AgentResponder` or `AgentHarness` seam, captures runtime-style events, writes local artifacts, and scores deterministic expectations before optional judge checks.
 
 ## Install / Usage
 

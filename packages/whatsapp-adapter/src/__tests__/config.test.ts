@@ -69,7 +69,7 @@ describe("loadWhatsAppAdapterConfig", () => {
         MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS: "true",
         MONO_AGENT_WHATSAPP_GROUP_MODE: "any",
         MONO_AGENT_WHATSAPP_BOT_JIDS: "bot@s.whatsapp.net",
-        MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES: "@mono,Mono Agent",
+        MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES: "@agent,Assistant",
         MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT: "false",
       },
       jsonPath: path,
@@ -81,7 +81,7 @@ describe("loadWhatsAppAdapterConfig", () => {
       trigger: {
         groupMode: "any",
         botJids: ["bot@s.whatsapp.net"],
-        mentionTextAliases: ["@mono", "Mono Agent"],
+        mentionTextAliases: ["@agent", "Assistant"],
         stripMentionText: false,
       },
     });

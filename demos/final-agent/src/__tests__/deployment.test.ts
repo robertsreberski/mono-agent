@@ -190,7 +190,7 @@ function createFakeRuntime(): {
     calls,
     runtime: {
       async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
-        options.onEvent?.({ type: "fake-deploy-event", authorization: "should-redact" });
+        options.onEvent?.({ type: "fake-deploy-event", authorization: "redacted-value" });
         calls.push({ prompt, options });
         return {
           text: "deployed runtime ok",

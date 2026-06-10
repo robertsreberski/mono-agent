@@ -2,8 +2,8 @@
 
 ## What It Is
 
-`@mono-agent/agent-runtime` is Worklab's provider-agnostic agent execution
-kernel. It does not own tasks, database state, UI, scheduling, or Worklab's
+`@mono-agent/agent-runtime` is a provider-agnostic agent execution
+kernel. It does not own tasks, database state, UI, scheduling, or a host's
 domain-specific result contract. It owns the lower-level act of running an
 agent turn:
 
@@ -14,14 +14,13 @@ agent turn:
 - collect usage, cost, cache, capability, and warning telemetry
 - return raw text plus raw structured output to the host
 
-Worklab consumes the package mainly through `src/core/ai.js`, while the package
-entry point is `src/runtime.js`.
+Hosts consume the package through `src/runtime.js`.
 
 ## Package Boundary
 
 ```mermaid
 flowchart TB
-  Worklab["Worklab host app<br/>API / coordinator / worker / UI / DB"] --> CoreAI["src/core/ai.js<br/>generateResponse()"]
+  HostApp["Host app<br/>API / coordinator / worker / UI / DB"] --> CoreAI["host runtime composition"]
 
   CoreAI --> Runtime["agent-runtime<br/>createRuntime() / createRouterRuntime()"]
 
@@ -46,12 +45,12 @@ flowchart TB
 
   Runtime --> Result["RuntimeResult<br/>text, structuredResult, events,<br/>usage, diagnostics, failureKind"]
   Result --> CoreAI
-  CoreAI --> WorklabContract["Worklab parses domain contract<br/>worklab.v2 / assistant result / task effects"]
+  CoreAI --> HostContract["Host parses domain contract<br/>assistant result / task effects"]
 ```
 
-The runtime stays below Worklab domain behavior. Provider code in this package
-must not import Worklab DB, API, coordinator, or UI modules. Worklab passes
-host callbacks and pre-resolved settings into the runtime instead.
+The runtime stays below host domain behavior. Provider code in this package
+must not import host DB, API, coordinator, or UI modules. Hosts pass callbacks
+and pre-resolved settings into the runtime instead.
 
 ## Runtime Selection
 
@@ -85,7 +84,7 @@ keeps the package boundary honest by rejecting reserved runtime IDs such as
 
 ```mermaid
 sequenceDiagram
-  participant Host as Worklab host
+  participant Host as Host app
   participant Runtime as createRuntime()
   participant Registry as Bridge registry
   participant Bridge as Provider bridge
@@ -113,11 +112,11 @@ sequenceDiagram
   Bridge-->>Runtime: RuntimeResult
   Runtime->>Observer: flush()
   Runtime-->>Host: text, structuredResult, events, usage, diagnostics
-  Host->>Host: validate/parse Worklab-specific contract
+  Host->>Host: validate/parse host-specific contract
 ```
 
 The package forwards provider structured output as `structuredResult`, but it
-does not validate that output against Worklab's domain schema. Hosts own that
+does not validate that output against a host domain schema. Hosts own that
 validation and any state-machine side effects.
 
 ## Main Subsystems
@@ -194,7 +193,7 @@ flowchart LR
   Roots --> Runtime
 
   Runtime --> Raw["Raw runtime result"]
-  Raw --> Domain["Host-owned domain validation<br/>Worklab result contract, state machine,<br/>DB writes, UI surfaces"]
+  Raw --> Domain["Host-owned domain validation<br/>result contract, state machine,<br/>DB writes, UI surfaces"]
 ```
 
 The host is responsible for:
@@ -210,8 +209,8 @@ The host is responsible for:
 ## Essential Takeaway
 
 Think of `@mono-agent/agent-runtime` as the portable agent process engine
-underneath Worklab. Worklab decides what a task means, which agent should run,
-how state changes, and how results are persisted. The runtime decides how to
-talk to Claude, Pi, and Codex execution surfaces; how tools are exposed; how
+underneath a host app. The host decides what a task means, which agent should
+run, how state changes, and how results are persisted. The runtime decides how
+to talk to Claude, Pi, and Codex execution surfaces; how tools are exposed; how
 provider failures are normalized; and how enough telemetry is returned for a
 host to make reliable orchestration decisions.

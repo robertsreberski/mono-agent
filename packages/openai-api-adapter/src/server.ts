@@ -92,7 +92,7 @@ interface ChatCompletionChunkInput {
   readonly model: string;
 }
 
-const OPENAI_OWNED_BY = "mono-agent";
+const OPENAI_OWNED_BY = "host";
 const SENSITIVE_REQUEST_HEADERS = new Set([
   "authorization",
   "cookie",

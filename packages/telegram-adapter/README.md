@@ -6,7 +6,7 @@ Category: `communication`
 
 ## Responsibility
 
-Telegram communication adapter for Mono Agent hosts. It provides a Bot API client, long poller, update handler, streamed message edits, cancellation, allowlist enforcement, and Telegram-owned settings helpers.
+Telegram communication adapter for agent hosts. It provides a Bot API client, long poller, update handler, streamed message edits, cancellation, allowlist enforcement, and Telegram-owned settings helpers.
 
 ## Install / Usage
 
@@ -41,7 +41,7 @@ This adapter depends only on shared contracts and settings primitives inside the
 
 ## What This Package Does Not Own
 
-It does not build prompts, run models, store memory, serve UI, manage provider credentials, or decide core Mono Agent runtime settings.
+It does not build prompts, run models, store memory, serve UI, manage provider credentials, or decide core runtime settings.
 
 ## Verification
 

@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/telegram-adapter",
   "version": "0.1.0",
-  "description": "Telegram communication adapter for Worklab-style agent runtimes.",
+  "description": "Telegram communication adapter for host-compatible runtimes.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

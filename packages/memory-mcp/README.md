@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-MCP stdio server that exposes Mono Agent's long-term memory to the model as tools.
+MCP stdio server that exposes host-provided long-term memory to the model as tools.
 It composes `@mono-agent/memory-journal` and `@mono-agent/memory-graph` and
 registers: `journal_append` (write a note into today's journal), `memory_read_day`
 and `memory_list_days` (read older notes directly), `memory_grep` (keyword search

@@ -7,7 +7,7 @@ function textMessage(overrides: Partial<WhatsAppRawMessage> = {}): WhatsAppRawMe
     key: { remoteJid: "123@s.whatsapp.net", id: "m1" },
     message: { conversation: "hello" },
     messageTimestamp: 1_715_000_000,
-    pushName: "Mickey",
+    pushName: "Sender",
     ...overrides,
   };
 }
@@ -25,7 +25,7 @@ describe("normalizeWhatsAppMessage", () => {
     expect(result.message.senderJid).toBe("123@s.whatsapp.net");
     expect(result.message.messageId).toBe("m1");
     expect(result.message.timestamp).toBe(1_715_000_000);
-    expect(result.message.pushName).toBe("Mickey");
+    expect(result.message.pushName).toBe("Sender");
     expect(result.message.text).toBe("hello");
   });
 
@@ -34,7 +34,7 @@ describe("normalizeWhatsAppMessage", () => {
       textMessage({
         key: {
           remoteJid: "456@g.us",
-          participant: "alice@s.whatsapp.net",
+          participant: "participant@s.whatsapp.net",
           id: "group-message",
         },
         message: {
@@ -54,8 +54,8 @@ describe("normalizeWhatsAppMessage", () => {
     }
     expect(result.message.chatKind).toBe("group");
     expect(result.message.chatJid).toBe("456@g.us");
-    expect(result.message.participantJid).toBe("alice@s.whatsapp.net");
-    expect(result.message.senderJid).toBe("alice@s.whatsapp.net");
+    expect(result.message.participantJid).toBe("participant@s.whatsapp.net");
+    expect(result.message.senderJid).toBe("participant@s.whatsapp.net");
     expect(result.message.mentionedJids).toEqual(["bot@s.whatsapp.net"]);
     expect(result.message.text).toBe("@bot hi");
   });

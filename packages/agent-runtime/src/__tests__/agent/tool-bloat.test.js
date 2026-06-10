@@ -18,7 +18,7 @@ function makeRunDir() {
   return mkdtempSync(join(tmpdir(), "wl-tool-bloat-"));
 }
 
-// Mirrors worklab's createToolOutputSink (src/core/tool-artifacts.js): writes
+// Mirrors a host createToolOutputSink implementation: writes
 // every persisted block to {runDir}/tool-output/{filename}. Tests against this
 // sink so they continue to assert on disk paths.
 function makeSink(runDir) {

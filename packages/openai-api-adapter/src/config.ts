@@ -52,7 +52,7 @@ export const openAIApiFieldGroup: FieldGroup = defineFieldGroup({
     {
       id: "openaiApi.enabled",
       label: "Enable OpenAI API",
-      description: "Expose this Mono Agent as an OpenAI-compatible chat provider.",
+      description: "Expose this responder as an OpenAI-compatible chat provider.",
       kind: "switch",
       path: ["openaiApi", "enabled"],
     },
@@ -101,7 +101,7 @@ export const openAIApiFieldGroup: FieldGroup = defineFieldGroup({
       label: "Model id",
       description: "Model id advertised through /models and selected in OpenWebUI.",
       kind: "string",
-      placeholder: "mono-agent",
+      placeholder: "agent",
       path: ["openaiApi", "modelId"],
     },
   ],

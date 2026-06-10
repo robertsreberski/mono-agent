@@ -26,13 +26,13 @@ describe("gatherMemoryChunks", () => {
     await mkdir(join(root, "monthly"), { recursive: true });
     await writeFile(
       join(root, "daily", "2026-06-09.md"),
-      "## Turn — 1\n\nDiscussed pricing.\n\n## Note — 2\n\nRobert prefers concision.",
+      "## Turn — 1\n\nDiscussed pricing.\n\n## Note — 2\n\nExample Person prefers concision.",
       "utf8",
     );
     await writeFile(join(root, "monthly", "2026-06.md"), "## Summary\n\nShipped the adapter.", "utf8");
 
     const chunks = await gatherMemoryChunks(root, [
-      { name: "Robert", entityType: "person", observations: ["prefers concision", "leads mono-agent"] },
+      { name: "Example Person", entityType: "person", observations: ["prefers concision", "contributes to sample-project"] },
       { name: "Empty", entityType: "topic", observations: [] },
     ]);
 
@@ -46,8 +46,8 @@ describe("gatherMemoryChunks", () => {
     expect(monthly?.text).toContain("Shipped the adapter.");
     expect(monthly?.day).toBeUndefined();
 
-    const robert = chunks.find((chunk) => chunk.id === "entity:robert");
-    expect(robert?.text).toBe("Robert (person): prefers concision; leads mono-agent");
+    const examplePerson = chunks.find((chunk) => chunk.id === "entity:example person");
+    expect(examplePerson?.text).toBe("Example Person (person): prefers concision; contributes to sample-project");
     expect(chunks.find((chunk) => chunk.id === "entity:empty")?.text).toBe("Empty (topic)");
   });
 

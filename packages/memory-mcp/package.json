@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/memory-mcp",
   "version": "0.1.0",
-  "description": "MCP stdio server exposing Mono Agent memory tools: journaling, entity graph, and keyword search.",
+  "description": "MCP stdio server exposing memory tools: journaling, entity graph, and keyword search.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

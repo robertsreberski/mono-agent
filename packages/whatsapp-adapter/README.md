@@ -6,7 +6,7 @@ Category: `communication`
 
 ## Responsibility
 
-WhatsApp communication adapter for Mono Agent hosts using Baileys-compatible sockets. It normalizes WhatsApp messages, handles direct and group mention triggers, streams replies, supports cancellation, and enforces explicit chat allowlists or allow-all mode.
+WhatsApp communication adapter for agent hosts using Baileys-compatible sockets. It normalizes WhatsApp messages, handles direct and group mention triggers, streams replies, supports cancellation, and enforces explicit chat allowlists or allow-all mode.
 
 ## Install / Usage
 
@@ -42,7 +42,7 @@ This adapter depends on Baileys plus shared contracts/settings primitives, but m
 
 ## What This Package Does Not Own
 
-It does not manage QR/login persistence policy, build prompts, run models, store memory, expose UI, or define core Mono Agent settings.
+It does not manage QR/login persistence policy, build prompts, run models, store memory, expose UI, or define core core agent settings.
 
 ## Verification
 

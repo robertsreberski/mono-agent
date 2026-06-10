@@ -511,7 +511,7 @@ describe("startOperatorConsole", () => {
   it("lists recorded runs and reads event details through bearer-protected observability endpoints", async () => {
     const artifactDir = join(dir, "artifacts");
     const recorder = createJsonlRunRecorder({ runId: "run-api", conversationId: "chat-api", artifactDir });
-    recorder.onEvent({ type: "tool.call", toolName: "Read", status: "started", apiKey: "should-redact" });
+    recorder.onEvent({ type: "tool.call", toolName: "Read", status: "started", apiKey: "redacted-value" });
     recorder.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "done" }] } });
     await recorder.finish({ usage: { inputTokens: 3 }, capabilitiesUsed: ["tools"] });
 
@@ -534,7 +534,7 @@ describe("startOperatorConsole", () => {
       expect(listBody.enabled).toBe(true);
       expect(listBody.artifactDir).toBe(artifactDir);
       expect(listBody.runs[0]).toMatchObject({ runId: "run-api", conversationId: "chat-api", status: "succeeded", eventCount: 2 });
-      expect(JSON.stringify(listBody)).not.toContain("should-redact");
+      expect(JSON.stringify(listBody)).not.toContain("redacted-value");
 
       const detailResponse = await fetch(`${bridge.url}/api/observability/runs/${encodeURIComponent("run-api")}`, {
         headers: { Authorization: "Bearer test-token" },
@@ -548,7 +548,7 @@ describe("startOperatorConsole", () => {
       expect(detailBody.run.events.map((event) => event.category)).toEqual(["tool", "message"]);
       expect(detailBody.run.events[0]?.label).toBe("Tool: Read");
       expect(detailBody.run.events[1]?.summary).toBe("done");
-      expect(JSON.stringify(detailBody)).not.toContain("should-redact");
+      expect(JSON.stringify(detailBody)).not.toContain("redacted-value");
     } finally {
       await bridge.stop();
     }
@@ -571,10 +571,10 @@ describe("startOperatorConsole", () => {
       label: "Agent B",
       artifactDir: artifactDirB,
       status: "failed",
-      metadata: { token: "should-redact-source" },
+      metadata: { token: "source-redacted-value" },
     });
     const recorderA = createJsonlRunRecorder({ runId: "duplicate", conversationId: "chat-a", artifactDir: artifactDirA });
-    recorderA.onEvent({ type: "assistant", text: "A", authorization: "should-redact-event" });
+    recorderA.onEvent({ type: "assistant", text: "A", authorization: "event-redacted-value" });
     await recorderA.finish({});
     const recorderB = createJsonlRunRecorder({ runId: "duplicate", conversationId: "chat-b", artifactDir: artifactDirB });
     await recorderB.finish({ failureKind: "provider_error" });
@@ -599,7 +599,7 @@ describe("startOperatorConsole", () => {
         ["agent-a", "running"],
         ["agent-b", "failed"],
       ]);
-      expect(JSON.stringify(sourcesBody)).not.toContain("should-redact-source");
+      expect(JSON.stringify(sourcesBody)).not.toContain("source-redacted-value");
 
       const runsResponse = await fetch(`${bridge.url}/api/traceability/runs`, {
         headers: { Authorization: "Bearer test-token" },
@@ -623,7 +623,7 @@ describe("startOperatorConsole", () => {
       };
       expect(detailBody.detail?.source.sourceId).toBe("agent-a");
       expect(detailBody.detail?.run.summary.conversationId).toBe("chat-a");
-      expect(JSON.stringify(detailBody)).not.toContain("should-redact-event");
+      expect(JSON.stringify(detailBody)).not.toContain("event-redacted-value");
     } finally {
       await bridge.stop();
     }

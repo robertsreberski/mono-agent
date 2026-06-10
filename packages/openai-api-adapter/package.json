@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/openai-api-adapter",
   "version": "0.1.0",
-  "description": "OpenAI-compatible Chat Completions adapter for Mono Agent responders.",
+  "description": "OpenAI-compatible Chat Completions adapter for host responders.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

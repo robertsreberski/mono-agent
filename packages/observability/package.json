@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/observability",
   "version": "0.1.0",
-  "description": "Run event recording and artifact summaries for Mono Agent hosts.",
+  "description": "Run event recording and artifact summaries for agent hosts.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

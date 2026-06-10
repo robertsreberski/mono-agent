@@ -36,12 +36,12 @@ afterEach(async () => {
 describe("memory MCP tools", () => {
   it("journals and reads back today's note", async () => {
     const tools = createMemoryTools(await deps());
-    const append = await tools.journalAppend({ text: "Robert prefers concise answers." });
+    const append = await tools.journalAppend({ text: "Example Person prefers concise answers." });
     expect(append.isError).toBeUndefined();
 
     const today = journalDayFor(new Date());
     const read = await tools.readDay({ date: today });
-    expect(read.content[0]?.text).toContain("Robert prefers concise answers.");
+    expect(read.content[0]?.text).toContain("Example Person prefers concise answers.");
 
     const list = await tools.listDays();
     expect((list.structuredContent?.days as string[]).includes(today)).toBe(true);
@@ -57,16 +57,16 @@ describe("memory MCP tools", () => {
   it("upserts entities and relations and reads the subgraph back", async () => {
     const tools = createMemoryTools(await deps());
     const upsert = await tools.entityUpsert({
-      entities: [{ name: "Robert", entityType: "person", observations: ["leads mono-agent"] }],
-      relations: [{ from: "Robert", to: "mono-agent", relationType: "works on" }],
+      entities: [{ name: "Example Person", entityType: "person", observations: ["contributes to sample-project"] }],
+      relations: [{ from: "Example Person", to: "sample-project", relationType: "works on" }],
     });
     expect(upsert.structuredContent).toMatchObject({ entitiesUpserted: 1, relationsUpserted: 1 });
 
-    const get = await tools.entityGet({ name: "Robert", hops: 1 });
-    expect(get.content[0]?.text).toContain("Robert (person)");
+    const get = await tools.entityGet({ name: "Example Person", hops: 1 });
+    expect(get.content[0]?.text).toContain("Example Person (person)");
     expect(get.content[0]?.text).toContain("works on");
     const structured = get.structuredContent as { entities: Array<{ name: string }> };
-    expect(structured.entities.map((e) => e.name).sort()).toEqual(["Robert", "mono-agent"]);
+    expect(structured.entities.map((e) => e.name).sort()).toEqual(["Example Person", "sample-project"]);
   });
 
   it("keyword-greps across the journal archive and the entity graph", async () => {
@@ -103,7 +103,7 @@ describe("memory MCP tools", () => {
       ...base,
       search: {
         async search() {
-          return [{ id: "a", source: "daily/2026-06-09.md", text: "Robert likes short replies.", score: 0.71, day: "2026-06-09" }];
+          return [{ id: "a", source: "daily/2026-06-09.md", text: "Example Person likes short replies.", score: 0.71, day: "2026-06-09" }];
         },
         async rebuild() {
           return { indexed: 0 };
@@ -116,7 +116,7 @@ describe("memory MCP tools", () => {
 
     const result = await tools.search({ query: "communication preferences" });
     expect(result.structuredContent?.mode).toBe("semantic");
-    expect(result.content[0]?.text).toContain("Robert likes short replies.");
+    expect(result.content[0]?.text).toContain("Example Person likes short replies.");
   });
 
   it("falls back to keyword search when the semantic index throws", async () => {

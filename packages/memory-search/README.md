@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Local semantic search over Mono Agent memory. It embeds text with a pluggable
+Local semantic search over memory. It embeds text with a pluggable
 provider (Ollama `nomic-embed-text` by default, OpenAI as a fallback) and stores
 vectors in a dependency-free JSON Lines index searched by brute-force cosine
 similarity — fast and simple well under ~50k chunks, with no external vector

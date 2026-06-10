@@ -6,7 +6,7 @@ Category: `communication`
 
 ## Responsibility
 
-Cron-based scheduled invocation adapter for Mono Agent hosts. It parses configured cron jobs, schedules future ticks, invokes a structural `AgentResponder`, and reports explicit succeeded, failed, cancelled, or skipped results.
+Cron-based scheduled invocation adapter for agent hosts. It parses configured cron jobs, schedules future ticks, invokes a structural `AgentResponder`, and reports explicit succeeded, failed, cancelled, or skipped results.
 
 ## Install / Usage
 
@@ -48,7 +48,7 @@ This adapter depends on `cron-parser` plus shared contracts/settings primitives.
 
 ## What This Package Does Not Own
 
-It does not build prompts, run models, persist missed runs, catch up after restart, queue overlapping jobs, expose UI, or define core Mono Agent settings. Durable scheduling state can be added later by a host-level persistence package.
+It does not build prompts, run models, persist missed runs, catch up after restart, queue overlapping jobs, expose UI, or define core core agent settings. Durable scheduling state can be added later by a host-level persistence package.
 
 ## Verification
 

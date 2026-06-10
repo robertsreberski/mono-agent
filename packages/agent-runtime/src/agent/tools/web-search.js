@@ -1,7 +1,7 @@
 export async function webSearchToolImpl({ query, limit = 5 }) {
   const max = Math.min(Math.max(Number(limit) || 5, 1), 10);
   const resp = await fetch(`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
-    headers: { "User-Agent": "Mozilla/5.0 Worklab/0.1" },
+    headers: { "User-Agent": "Mozilla/5.0 AgentRuntime/0.1" },
     signal: AbortSignal.timeout(15000),
   });
   if (!resp.ok) return `Search failed: HTTP ${resp.status}`;

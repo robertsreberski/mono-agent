@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Global daily-journal memory store for Mono Agent hosts. It implements the
+Global daily-journal memory store for agent hosts. It implements the
 `@mono-agent/memory-md` `MemoryStore` contract so it drops into the harness
 unchanged: `load()` returns today's daily note (capped, and optionally prefixed
 with a long-term entity digest) for always-in-context recall, while

@@ -10,7 +10,6 @@ import {
   loadMonoAgentConfig,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createClaudeAgentsRuntime } from "@mono-agent/claude-agents-runtime";
 import { createOpenAIAgentsRuntime } from "@mono-agent/openai-agents-runtime";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
@@ -29,11 +28,11 @@ export interface AgentsSdkRuntimeChoice {
 export const DEFAULT_AGENTS_SDK_CHOICES: readonly AgentsSdkRuntimeChoice[] = [
   {
     name: "claude",
-    model: { sdk: "anthropic", model: "claude-opus-4-7" },
+    model: { sdk: "claude", model: "claude-opus-4-7" },
     port: 41100,
     cardSkillId: "claude-agent-skill",
-    cardSkillName: "Claude Agents SDK runtime",
-    cardDescription: "Agent backed by @anthropic-ai/claude-agent-sdk with Claude Code's built-in tools.",
+    cardSkillName: "Claude agent-runtime backend",
+    cardDescription: "Agent backed by the runtime Claude SDK bridge.",
   },
   {
     name: "openai",
@@ -155,7 +154,7 @@ function chooseRuntime(
     if (!hasNonEmpty(env.ANTHROPIC_API_KEY)) {
       return { kind: "skipped", reason: "ANTHROPIC_API_KEY not set" };
     }
-    return { kind: "ready", runtime: createClaudeAgentsRuntime() };
+    return { kind: "ready", runtime: createMonoRuntime() };
   }
   if (choice.name === "openai") {
     if (!hasNonEmpty(env.OPENAI_API_KEY)) {

@@ -9,7 +9,7 @@ export function formatLiveInputGuidance(text) {
     String(text || ""),
     "",
     "Apply this guidance before continuing. It may correct, narrow, or override your current approach.",
-    "Keep satisfying the original Worklab task and existing comments except where this live guidance conflicts with them.",
+    "Keep satisfying the original task and existing comments except where this live guidance conflicts with them.",
     "When there is a conflict, the newest human live guidance wins. Do not discard the broader task unless the user explicitly asks to replace it.",
   ].join("\n");
 }

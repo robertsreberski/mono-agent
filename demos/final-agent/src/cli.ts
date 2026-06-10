@@ -133,7 +133,7 @@ function printCronStatus(status: CronStatus): void {
 }
 
 function printHelp(): void {
-  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the non-package Mono Agent final demo: operator console first, then optional Telegram, A2A, webhook, OpenAI API, and cron adapters once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Operator Console port (default: 0, choose a free port)\n  -h, --help       Show this help`);
+  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the final demo: operator console first, then optional Telegram, A2A, webhook, OpenAI API, and cron adapters once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Operator Console port (default: 0, choose a free port)\n  -h, --help       Show this help`);
 }
 
 void main().catch((error: unknown) => {

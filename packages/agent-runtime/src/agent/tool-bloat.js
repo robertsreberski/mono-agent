@@ -6,7 +6,7 @@
 // still cite the artifact.
 //
 // Persistence is delegated to the host via a `persistArtifact({ filename, buffer,
-// toolName, toolUseId }) -> path | null` callback. Worklab's createToolOutputSink
+// toolName, toolUseId }) -> path | null` callback. Host output sinks
 // in src/core/tool-artifacts.js writes to {runArtifactDir}/tool-output/<file>.
 // Hosts that don't care can pass null and the truncated payload is dropped.
 

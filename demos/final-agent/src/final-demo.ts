@@ -1062,7 +1062,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
         } else {
           this.cronStatusValue = { kind: "waiting_for_config", reason: error.message };
         }
-        this.logger?.info?.("Waiting for a valid Mono Agent config.", { reason: error.message });
+        this.logger?.info?.("Waiting for a valid agent config.", { reason: error.message });
         return undefined;
       }
       throw error;
@@ -1202,14 +1202,14 @@ function buildAdapterOptions(input: {
     allowedChatIds: [...input.telegramConfig.allowedChatIds],
     allowAllChats: input.telegramConfig.allowAllChats,
     stream: {
-      initialStatusText: "Mono Agent is thinking…",
+      initialStatusText: "Agent is thinking...",
       editDebounceMs: 350,
     },
     messages: {
-      welcomeText: "Mono Agent is online. Send a message to run the configured runtime.",
-      helpText: "Send a message to talk to Mono Agent. Use /cancel to stop an in-flight response.",
-      unauthorizedText: "This chat is not allowlisted for this Mono Agent demo.",
-      errorText: "Mono Agent failed honestly; check the local artifact summary for details.",
+      welcomeText: "Agent is online. Send a message to run the configured runtime.",
+      helpText: "Send a message to talk to the agent. Use /cancel to stop an in-flight response.",
+      unauthorizedText: "This chat is not allowlisted for this demo.",
+      errorText: "The agent failed honestly; check the local artifact summary for details.",
     },
     ...(input.logger === undefined ? {} : { logger: input.logger }),
   };

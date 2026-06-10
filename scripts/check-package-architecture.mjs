@@ -10,7 +10,6 @@ import {
 
 const root = process.cwd();
 const packageScope = "@mono-agent/";
-const formerPackageScope = `@${"worklab-ai"}/`;
 const requiredReadmeSections = [
   "## Category",
   "## Responsibility",
@@ -121,7 +120,6 @@ for (const file of ["package.json", "README.md", "pnpm-lock.yaml"]) {
 }
 
 const staleReferences = [
-  formerPackageScope,
   `@mono-agent/${"comm"}/`,
   `${"config"}-${"ui"}`,
   `${"telegram"}-${"bridge"}`,
@@ -157,7 +155,7 @@ if (errors.length > 0) {
 console.log(`Package architecture check passed for ${packageCatalog.length} workspace packages.`);
 
 function walkTextFiles(dir) {
-  const ignoredDirs = new Set([".git", "node_modules", "dist", ".worklab-tmp"]);
+  const ignoredDirs = new Set([".git", "node_modules", "dist", ".mono-agent"]);
   const files = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (ignoredDirs.has(entry.name)) {

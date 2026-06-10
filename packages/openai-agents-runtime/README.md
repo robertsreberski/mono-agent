@@ -6,7 +6,7 @@ Category: `runtime`
 
 ## Responsibility
 
-Adapts `@openai/agents` to the Mono Agent runtime contract (`MonoRuntimeLike`). The runtime is a thin, structural translator: it constructs an `Agent` with the host-supplied system prompt and model, attaches MCP servers from `RuntimeRunOptions.mcpServers`, streams `RunStreamEvent`s back as `RuntimeEventLike`, and returns a `RuntimeResult` with text, usage, and turn count.
+Adapts `@openai/agents` to the runtime contract (`MonoRuntimeLike`). The runtime is a thin, structural translator: it constructs an `Agent` with the host-supplied system prompt and model, attaches MCP servers from `RuntimeRunOptions.mcpServers`, streams `RunStreamEvent`s back as `RuntimeEventLike`, and returns a `RuntimeResult` with text, usage, and turn count.
 
 ## Install / Usage
 

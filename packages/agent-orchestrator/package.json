@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/agent-orchestrator",
   "version": "0.1.0",
-  "description": "Reusable collaborator tool orchestration for Mono Agent runtimes.",
+  "description": "Reusable collaborator tool orchestration for agent runtimes.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

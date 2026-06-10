@@ -15,7 +15,7 @@ function makeStubClient(overrides: Partial<OperatorConsoleClient> = {}): Operato
 }
 
 const sourceA = {
-  schema: "worklab.trace-source.v1" as const,
+  schema: "agent-runtime.trace-source.v1" as const,
   sourceId: "agent-a",
   label: "Agent A",
   artifactDir: "/repo/a",
@@ -28,7 +28,7 @@ const sourceA = {
 };
 
 const sourceB = {
-  schema: "worklab.trace-source.v1" as const,
+  schema: "agent-runtime.trace-source.v1" as const,
   sourceId: "agent-b",
   label: "Agent B",
   artifactDir: "/repo/b",

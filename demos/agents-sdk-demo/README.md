@@ -1,14 +1,14 @@
 # Agents SDK Demo
 
-Three responders side-by-side, one per first-class in-repo runtime package, each exposed over A2A on its own port:
+Three responders side-by-side, one per runtime backend path, each exposed over A2A on its own port:
 
 | Runtime | Package | Default port | Skipped if |
 | --- | --- | --- | --- |
-| Claude | `@mono-agent/claude-agents-runtime` | 41100 | `ANTHROPIC_API_KEY` is unset |
+| Claude | `@mono-agent/runtime-adapter` -> `@mono-agent/agent-runtime` Claude SDK bridge | 41100 | `ANTHROPIC_API_KEY` is unset |
 | OpenAI | `@mono-agent/openai-agents-runtime` | 41101 | `OPENAI_API_KEY` is unset |
-| Codex  | `@mono-agent/agent-runtime` (codex-app bridge)     | 41102 | `OPENAI_API_KEY` is unset (Codex CLI auth) |
+| Codex  | `@mono-agent/runtime-adapter` -> `@mono-agent/agent-runtime` codex-app bridge | 41102 | `OPENAI_API_KEY` is unset (Codex CLI auth) |
 
-Proves the framework's premise: any team picks the SDK they want, the host composes responders identically, A2A handles interop.
+Proves the host-neutral premise: any team picks the SDK they want, the host composes responders identically, A2A handles interop.
 
 ## Run
 
@@ -17,8 +17,8 @@ Each agent's responder reads identity, tools, artifacts, etc. from the same `Mon
 ```bash
 export MONO_AGENT_MODEL="claude:claude-sonnet-4-6"   # placeholder, runtime overrides it
 export MONO_AGENT_IDENTITY_PATH="/path/to/IDENTITY.md"
-export ANTHROPIC_API_KEY="sk-ant-..."                # enables Claude responder
-export OPENAI_API_KEY="sk-..."                       # enables OpenAI + Codex responders
+export ANTHROPIC_API_KEY="paste-anthropic-key-here"                # enables Claude responder
+export OPENAI_API_KEY="paste-openai-key-here"                       # enables OpenAI + Codex responders
 pnpm run build
 pnpm run demo:agents-sdk
 ```

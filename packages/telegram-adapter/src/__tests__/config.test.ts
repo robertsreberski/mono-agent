@@ -84,7 +84,7 @@ describe("loadTelegramAdapterConfig", () => {
 describe("redactTelegramAdapterConfig", () => {
   it("redacts bot tokens and reports chat ids by count", () => {
     const redacted = redactTelegramAdapterConfig({
-      botToken: "123456:secret-token",
+      botToken: "123456:test-token",
       allowedChatIds: ["111", "222"],
       allowAllChats: false,
     });

@@ -6,7 +6,7 @@ Category: `operator-surface`
 
 ## Responsibility
 
-Local loopback operator surface for Mono Agent hosts. It serves a React settings UI, validates registered field-group patches, writes a JSON settings file atomically, and reads local trace registry plus recorded-run artifacts for a Traceability view.
+Local loopback operator surface for agent hosts. It serves a React settings UI, validates registered field-group patches, writes a JSON settings file atomically, and reads local trace registry plus recorded-run artifacts for a Traceability view.
 
 ## Install / Usage
 

@@ -236,7 +236,7 @@ describe("runtime adapter local providers", () => {
           baseUrl: "https://api.example.com/openai",
           trustPublicUrl: true,
           enabled: true,
-          apiKey: "secret-from-env",
+          apiKey: "fixture-key-from-env",
         },
       ],
     );
@@ -244,7 +244,7 @@ describe("runtime adapter local providers", () => {
       id: "local-gateway",
       provider_type: "openai_compat",
       base_url: "https://api.example.com/openai",
-      api_key: "secret-from-env",
+      api_key: "fixture-key-from-env",
     });
     expect(gateway.isPrivateProvider).toBe(false);
   });

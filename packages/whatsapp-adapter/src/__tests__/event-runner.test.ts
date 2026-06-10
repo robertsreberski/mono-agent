@@ -144,7 +144,7 @@ describe("WhatsAppEventRunner", () => {
     });
     runner.start();
 
-    socket.ev.emit("creds.update", { secret: "do-not-read" });
+    socket.ev.emit("creds.update", { secret: "redacted-credential-value" });
     socket.ev.emit("connection.update", { connection: "connecting", qr: "sensitive-qr" });
     await flushMicrotasks();
 

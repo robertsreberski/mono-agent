@@ -28,8 +28,8 @@ describe("loadSlackAdapterConfig", () => {
       path,
       `${JSON.stringify({
         slack: {
-          botToken: "xoxb-json-token",
-          appToken: "xapp-json-token",
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
           allowedChannelIds: ["D111", "C222"],
           botUserIds: ["Ubot"],
           mentionTextAliases: ["@mono"],
@@ -41,8 +41,8 @@ describe("loadSlackAdapterConfig", () => {
     const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
 
     expect(config).toEqual({
-      botToken: "xoxb-json-token",
-      appToken: "xapp-json-token",
+      botToken: "json-bot-token",
+      appToken: "json-app-token",
       allowedChannelIds: ["D111", "C222"],
       allowAllChannels: false,
       botUserIds: ["Ubot"],
@@ -57,8 +57,8 @@ describe("loadSlackAdapterConfig", () => {
       path,
       `${JSON.stringify({
         slack: {
-          botToken: "xoxb-json-token",
-          appToken: "xapp-json-token",
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
           allowedChannelIds: ["C111"],
           stripMentionText: true,
         },
@@ -68,38 +68,38 @@ describe("loadSlackAdapterConfig", () => {
 
     const config = await loadSlackAdapterConfig({
       env: {
-        MONO_AGENT_SLACK_BOT_TOKEN: "xoxb-env-token",
-        MONO_AGENT_SLACK_APP_TOKEN: "xapp-env-token",
+        MONO_AGENT_SLACK_BOT_TOKEN: "env-bot-token",
+        MONO_AGENT_SLACK_APP_TOKEN: "env-app-token",
         MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS: "",
         MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS: "true",
         MONO_AGENT_SLACK_BOT_USER_IDS: "U1, U2",
-        MONO_AGENT_SLACK_MENTION_TEXT_ALIASES: "@mono, Mono Agent",
+        MONO_AGENT_SLACK_MENTION_TEXT_ALIASES: "@agent, Assistant",
         MONO_AGENT_SLACK_STRIP_MENTION_TEXT: "false",
       },
       jsonPath: path,
     });
 
     expect(config).toEqual({
-      botToken: "xoxb-env-token",
-      appToken: "xapp-env-token",
+      botToken: "env-bot-token",
+      appToken: "env-app-token",
       allowedChannelIds: [],
       allowAllChannels: true,
       botUserIds: ["U1", "U2"],
-      mentionTextAliases: ["@mono", "Mono Agent"],
+      mentionTextAliases: ["@agent", "Assistant"],
       stripMentionText: false,
     });
   });
 
   it("requires tokens and an explicit allowlist or allow-all choice", async () => {
     await expect(
-      loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_BOT_TOKEN: "xoxb-token" } }),
+      loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_BOT_TOKEN: "bot-token" } }),
     ).rejects.toBeInstanceOf(SlackAdapterConfigError);
 
     await expect(
       loadSlackAdapterConfig({
         env: {
-          MONO_AGENT_SLACK_BOT_TOKEN: "xoxb-token",
-          MONO_AGENT_SLACK_APP_TOKEN: "xapp-token",
+          MONO_AGENT_SLACK_BOT_TOKEN: "bot-token",
+          MONO_AGENT_SLACK_APP_TOKEN: "app-token",
         },
       }),
     ).rejects.toBeInstanceOf(SlackAdapterConfigError);
@@ -109,8 +109,8 @@ describe("loadSlackAdapterConfig", () => {
     await expect(
       loadSlackAdapterConfig({
         env: {
-          MONO_AGENT_SLACK_BOT_TOKEN: "xoxb-token",
-          MONO_AGENT_SLACK_APP_TOKEN: "xapp-token",
+          MONO_AGENT_SLACK_BOT_TOKEN: "bot-token",
+          MONO_AGENT_SLACK_APP_TOKEN: "app-token",
           MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS: "sometimes",
         },
       }),
@@ -121,8 +121,8 @@ describe("loadSlackAdapterConfig", () => {
 describe("redactSlackAdapterConfig", () => {
   it("redacts tokens and reports identifiers only by count", () => {
     const redacted = redactSlackAdapterConfig({
-      botToken: "xoxb-secret",
-      appToken: "xapp-secret",
+      botToken: "redacted-bot-token",
+      appToken: "redacted-app-token",
       allowedChannelIds: ["D111", "C222"],
       allowAllChannels: false,
       botUserIds: ["Ubot"],
