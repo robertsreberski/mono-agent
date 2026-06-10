@@ -1,16 +1,18 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { DEFAULT_MAX_STRING_BYTES, mkdir, safeArtifactName, writeJsonAtomic } from "./artifact-fs.js";
 import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
 
-const DEFAULT_MAX_STRING_BYTES = 4_096;
 const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|api[_-]?key|cookie)/iu;
 
-export class ObservabilityError extends Error {
-  readonly code: "invalid_recorder_options" | "artifact_write_failed";
-  readonly details: Record<string, unknown>;
+export type ObservabilityErrorCode = "invalid_recorder_options" | "artifact_write_failed";
+export type ObservabilityErrorDetails = Record<string, unknown> & { readonly code: ObservabilityErrorCode };
 
-  constructor(code: ObservabilityError["code"], message: string, details: Record<string, unknown> = {}) {
+export class ObservabilityError extends Error {
+  readonly code: ObservabilityErrorCode;
+  readonly details: ObservabilityErrorDetails;
+
+  constructor(code: ObservabilityErrorCode, message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.name = "ObservabilityError";
     this.code = code;
@@ -18,7 +20,7 @@ export class ObservabilityError extends Error {
   }
 }
 
-export class JsonlRunRecorder implements RunRecorder {
+class JsonlRunRecorder implements RunRecorder {
   private readonly runId: string;
   private readonly conversationId: string;
   private readonly artifactDir: string;
@@ -105,8 +107,8 @@ export class JsonlRunRecorder implements RunRecorder {
     try {
       await mkdir(this.artifactDir, { recursive: true });
       const eventsJsonl = this.events.map((event) => JSON.stringify(event)).join("\n");
-      await writeFile(eventsPath, eventsJsonl.length === 0 ? "" : `${eventsJsonl}\n`, "utf8");
-      await writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+      await writeJsonAtomic(eventsPath, eventsJsonl.length === 0 ? "" : `${eventsJsonl}\n`);
+      await writeJsonAtomic(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
       return summary;
     } catch (error) {
       throw new ObservabilityError("artifact_write_failed", "Unable to write run artifacts.", {
@@ -116,7 +118,7 @@ export class JsonlRunRecorder implements RunRecorder {
   }
 }
 
-export function createJsonlRunRecorder(options: JsonlRunRecorderOptions): JsonlRunRecorder {
+export function createJsonlRunRecorder(options: JsonlRunRecorderOptions): RunRecorder {
   return new JsonlRunRecorder(options);
 }
 
@@ -173,10 +175,6 @@ function normalizeId(value: string, field: string): string {
     throw new ObservabilityError("invalid_recorder_options", `${field} must be a non-empty string.`, { field });
   }
   return value.trim();
-}
-
-function safeArtifactName(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9._-]+/gu, "-").replace(/^-+|-+$/gu, "") || "run";
 }
 
 function runtimeFailureKind(result: RuntimeResultLike): string | undefined {

@@ -7,7 +7,6 @@ import type { FieldGroup } from "@mono-agent/settings/field-groups";
 export interface OperatorConsoleRuntime {
   readonly baseUrl: string;
   readonly token: string;
-  readonly fieldGroupIds: readonly string[];
 }
 
 declare global {
@@ -20,7 +19,7 @@ export function readRuntime(): OperatorConsoleRuntime {
   if (typeof window !== "undefined" && window.__OPERATOR_CONSOLE__) {
     return window.__OPERATOR_CONSOLE__;
   }
-  return { baseUrl: "", token: "", fieldGroupIds: [] };
+  return { baseUrl: "", token: "" };
 }
 
 export type { FieldGroup };

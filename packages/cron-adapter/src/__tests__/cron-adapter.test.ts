@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
-import { startCronAdapter } from "../index.js";
+import { startCronAdapter, toCronJobs } from "../index.js";
 
 describe("Cron adapter", () => {
   it("runs due cron jobs through a structural responder with cron metadata", async () => {
@@ -127,6 +127,35 @@ describe("Cron adapter", () => {
       scheduler.stop();
       expect(observedAbort).toBe(true);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not schedule or run jobs disabled in config", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const calls: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        calls.push(request.text);
+        return {};
+      },
+    };
+
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: toCronJobs({
+        jobs: [{ id: "off", enabled: false, expression: "* * * * *", timezone: "UTC", prompt: "should not run" }],
+      }),
+      now: () => new Date(Date.now()),
+    });
+
+    try {
+      expect(scheduler.jobs).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(calls).toEqual([]);
+    } finally {
+      scheduler.stop();
       vi.useRealTimers();
     }
   });

@@ -1,4 +1,5 @@
 export {
+  acceptedSdkIdsForBackend,
   assertExecutionModeCompatible,
   assertParsedRuntimeModelReference,
   createMonoRuntime,
@@ -6,12 +7,27 @@ export {
   describeMonoRuntimeSupport,
   isRuntimeExecutionMode,
   listMonoRuntimeBackends,
+  listMonoRuntimeSelectionTable,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeBackendForModel,
   RuntimeAdapterError,
+  selectMonoRuntimeBackendId,
 } from "./runtime-adapter.js";
 export type { RuntimeAdapterErrorCode, RuntimeAdapterErrorDetails } from "./runtime-adapter.js";
+export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
+export {
+  applyTemporaryEnv,
+  assertBaseRunOptions,
+  buildRuntimeResult,
+  isPlainObject,
+  isValidMcpServerName,
+  readLastStringUserMessage,
+  withTemporaryEnv,
+} from "./runtime-helpers.js";
+export type { RuntimeErrorFactory, RuntimeResultParts } from "./runtime-helpers.js";
+export { parseMcpServers } from "./mcp-servers.js";
+export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
 export {
   isPrivateBaseUrl,
   runtimeOptionsForLocalProvider,
@@ -34,6 +50,7 @@ export type {
   MonoRuntimeBackendTransport,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
+  MonoRuntimeSelectionEntry,
   MonoRuntimeSupportDescription,
   RuntimeEventLike,
   RuntimeExecutionMode,

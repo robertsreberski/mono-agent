@@ -1,15 +1,15 @@
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
 
 import { buildAgentContext } from './context-builder.js';
 import { ContextValidationError } from './errors.js';
+import { resolveRequiredPath } from './fs-paths.js';
 import { buildSkillIndex, loadSkillIndexFromDirectory } from './skill-index.js';
 import type { BuildContextInput, BuiltAgentContext, FileContextInput, MarkdownContextBlock, SkillIndexEntry } from './types.js';
 
 export async function loadContextFromFiles(input: FileContextInput): Promise<BuiltAgentContext> {
   const rawInput = input as unknown;
   if (rawInput === null || typeof rawInput !== 'object') {
-    throw new ContextValidationError('file_read_failed', 'File context input must be an object.');
+    throw new ContextValidationError('invalid_context_block', 'File context input must be an object.');
   }
 
   const identity = await readMarkdownFile(input.identityPath, 'identityPath');
@@ -53,13 +53,4 @@ async function readMarkdownFile(filePath: string, field: string): Promise<Markdo
       cause: error instanceof Error ? error.message : String(error),
     });
   }
-}
-
-function resolveRequiredPath(value: string, field: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new ContextValidationError('file_read_failed', `${field} must be a non-empty path.`, {
-      field,
-    });
-  }
-  return resolve(value);
 }

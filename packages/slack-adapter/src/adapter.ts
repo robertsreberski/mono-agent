@@ -20,14 +20,6 @@ import type {
   SlackWebApi,
 } from "./types.js";
 
-export {
-  AgentResponseCancelledError as AgentResponderCancelledError,
-  isAgentResponseCancelledError as isAgentResponderCancelledError,
-} from "@mono-agent/agent-contracts";
-export type {
-  AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
-} from "@mono-agent/agent-contracts";
-
 export type SlackTriggerKind = "direct" | "app_mention";
 
 export interface AgentRequest extends AgentRequestBase {

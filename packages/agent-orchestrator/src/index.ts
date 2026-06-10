@@ -10,6 +10,7 @@ import type {
   AgentResponder,
   AgentResponse,
 } from "@mono-agent/agent-contracts";
+import { assertSafeBind } from "@mono-agent/settings";
 import * as z from "zod/v4";
 
 export const DEFAULT_COLLABORATOR_TOOL_NAME = "ask_collaborator";
@@ -24,6 +25,8 @@ export interface OrchestratorCollaborator {
   readonly timeoutMs?: number;
 }
 
+// The index signature is load-bearing: it makes this assignable to the harness's
+// `Omit<RuntimeRunOptions, …>` runtime-options shape (which has an index signature).
 export interface CollaboratorToolRuntimeOptions extends Record<string, unknown> {
   readonly allowedTools: readonly string[];
   readonly mcpServers: Record<string, CollaboratorToolMcpServerConfig>;
@@ -53,6 +56,8 @@ export interface CreateCollaboratorToolRuntimeExtensionOptions {
   readonly path?: string;
   readonly toolName?: string;
   readonly serverName?: string;
+  /** Allow binding a non-loopback host. Fail-closed (loopback-only) by default. */
+  readonly allowNonLoopback?: boolean;
 }
 
 interface NormalizedCollaborator {
@@ -73,6 +78,10 @@ export async function createCollaboratorToolRuntimeExtension(
   options: CreateCollaboratorToolRuntimeExtensionOptions,
 ): Promise<CollaboratorToolRuntimeExtension> {
   const host = normalizeHost(options.host);
+  assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
+    new Error(
+      `Collaborator MCP server refuses to bind a non-loopback host (${boundHost}) unless allowNonLoopback is true.`,
+    ));
   const port = normalizePort(options.port);
   const path = normalizeMcpPath(options.path);
   const toolName = normalizeIdentifier(options.toolName ?? DEFAULT_COLLABORATOR_TOOL_NAME, "toolName");
@@ -83,6 +92,7 @@ export async function createCollaboratorToolRuntimeExtension(
   const collaborators = normalizeCollaborators(options.collaborators);
   let callCount = 0;
 
+  // Passing host to createMcpExpressApp enables the MCP SDK's DNS-rebinding protection.
   const app = createMcpExpressApp({ host });
   app.post(path, async (req, res) => {
     const server = createRequestMcpServer({
@@ -330,7 +340,7 @@ function normalizeCollaborators(
         ? {}
         : { description: normalizeNonEmpty(collaborator.description, "collaborator.description") }),
       responder: collaborator.responder,
-      ...(collaborator.timeoutMs === undefined ? {} : { timeoutMs: normalizeMaxCalls(collaborator.timeoutMs) }),
+      ...(collaborator.timeoutMs === undefined ? {} : { timeoutMs: normalizeTimeoutMs(collaborator.timeoutMs) }),
     });
   }
   return out;
@@ -389,6 +399,13 @@ function normalizeMaxCalls(value: number | undefined): number {
     throw new TypeError("maxCalls must be a positive integer.");
   }
   return normalized;
+}
+
+function normalizeTimeoutMs(value: number): number {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new TypeError("timeoutMs must be a positive integer.");
+  }
+  return value;
 }
 
 function normalizeMcpPath(value: string | undefined): string {

@@ -1,8 +1,18 @@
 import {
   defineFieldGroup,
+  layerJsonOntoEnv,
+  readBoolean,
+  readCsv,
+  readJsonSection,
+  readRequired,
   readSettingsJson,
+  redactedSecret,
 } from "@mono-agent/settings";
-import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
+import type {
+  FieldGroup,
+  RedactedSecretValue,
+  SettingsJson,
+} from "@mono-agent/settings";
 
 export interface TelegramAdapterConfig {
   readonly botToken: string;
@@ -11,7 +21,7 @@ export interface TelegramAdapterConfig {
 }
 
 export interface RedactedTelegramAdapterConfig {
-  readonly botToken: { readonly present: boolean; readonly redacted: true };
+  readonly botToken: RedactedSecretValue;
   readonly allowedChatIds: { readonly count: number };
   readonly allowAllChats: boolean;
 }
@@ -49,6 +59,18 @@ export interface LoadTelegramAdapterConfigInput {
   readonly jsonPath?: string;
 }
 
+const missingRequiredConfig = (
+  message: string,
+  details?: Record<string, unknown>,
+): TelegramAdapterConfigError =>
+  new TelegramAdapterConfigError("missing_required_config", message, details);
+
+const invalidConfig = (
+  message: string,
+  details?: Record<string, unknown>,
+): TelegramAdapterConfigError =>
+  new TelegramAdapterConfigError("invalid_config", message, details);
+
 export const telegramFieldGroup: FieldGroup = defineFieldGroup({
   id: "telegram",
   label: "Telegram",
@@ -84,13 +106,21 @@ export async function loadTelegramAdapterConfig(
 ): Promise<TelegramAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerTelegramJsonOntoEnv(json, input.env);
-  const botToken = readRequired(env, "MONO_AGENT_TELEGRAM_BOT_TOKEN");
+  const botToken = readRequired(
+    env.MONO_AGENT_TELEGRAM_BOT_TOKEN,
+    "MONO_AGENT_TELEGRAM_BOT_TOKEN",
+    missingRequiredConfig,
+  );
   const allowedChatIds = readCsv(env.MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS);
-  const allowAllChats = readBoolean(env.MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS, false);
+  const allowAllChats = readBoolean(
+    env.MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS,
+    "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS",
+    false,
+    invalidConfig,
+  );
 
   if (!allowAllChats && allowedChatIds.length === 0) {
-    throw new TelegramAdapterConfigError(
-      "missing_required_config",
+    throw missingRequiredConfig(
       "Telegram adapter requires MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS or MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS=true.",
       { env: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS" },
     );
@@ -103,7 +133,7 @@ export function redactTelegramAdapterConfig(
   config: TelegramAdapterConfig,
 ): RedactedTelegramAdapterConfig {
   return {
-    botToken: { present: config.botToken.length > 0, redacted: true },
+    botToken: redactedSecret(config.botToken),
     allowedChatIds: { count: config.allowedChatIds.length },
     allowAllChats: config.allowAllChats,
   };
@@ -113,78 +143,10 @@ function layerTelegramJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readTelegramSection(json);
-  const fromJson: Record<string, string | undefined> = {};
-  if (typeof section.botToken === "string") {
-    fromJson.MONO_AGENT_TELEGRAM_BOT_TOKEN = section.botToken;
-  }
-  if (Array.isArray(section.allowedChatIds)) {
-    fromJson.MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS = section.allowedChatIds
-      .filter((value): value is string => typeof value === "string")
-      .join(",");
-  }
-  if (typeof section.allowAllChats === "boolean") {
-    fromJson.MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS = section.allowAllChats ? "true" : "false";
-  }
-
-  const layered: Record<string, string | undefined> = { ...fromJson };
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) {
-      layered[key] = value;
-    }
-  }
-  return layered;
-}
-
-function readTelegramSection(json: SettingsJson): Record<string, unknown> {
-  const section = json.telegram;
-  if (section !== null && typeof section === "object" && !Array.isArray(section)) {
-    return section as Record<string, unknown>;
-  }
-  return {};
-}
-
-function readRequired(env: Record<string, string | undefined>, name: string): string {
-  const value = normalizeOptionalString(env[name]);
-  if (value === undefined) {
-    throw new TelegramAdapterConfigError("missing_required_config", `${name} is required.`, { env: name });
-  }
-  return value;
-}
-
-function readCsv(raw: string | undefined): readonly string[] {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return [];
-  }
-  return normalized
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-function readBoolean(raw: string | undefined, defaultValue: boolean): boolean {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new TelegramAdapterConfigError(
-    "invalid_config",
-    "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS must be true or false.",
-    { env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS" },
-  );
-}
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
+  const section = readJsonSection(json, "telegram");
+  return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_TELEGRAM_BOT_TOKEN", value: section.botToken },
+    { env: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS", value: section.allowedChatIds, kind: "csv" },
+    { env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS", value: section.allowAllChats, kind: "boolean" },
+  ]);
 }

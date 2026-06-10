@@ -1,3 +1,5 @@
+import { coerceInteger } from "./coerce.js";
+import { setPath } from "./path.js";
 import type { FieldDefinition, FieldGroup, SettingsJson } from "./types.js";
 
 export interface PatchValidationOk {
@@ -143,22 +145,18 @@ function coerceLeaf(field: FieldDefinition, raw: unknown): CoerceResult {
       return { ok: false, reason: `${field.id} must be a boolean.` };
     }
     case "integer": {
-      const value =
-        typeof raw === "number"
-          ? raw
-          : typeof raw === "string" && raw.trim().length > 0 && /^-?\d+$/u.test(raw.trim())
-            ? Number(raw.trim())
-            : Number.NaN;
-      if (!Number.isInteger(value)) {
-        return { ok: false, reason: `${field.id} must be an integer.` };
+      const result = coerceInteger(raw, { min: field.min, max: field.max });
+      if (!result.ok) {
+        switch (result.reason) {
+          case "below_min":
+            return { ok: false, reason: `${field.id} must be >= ${field.min}.` };
+          case "above_max":
+            return { ok: false, reason: `${field.id} must be <= ${field.max}.` };
+          default:
+            return { ok: false, reason: `${field.id} must be an integer.` };
+        }
       }
-      if (field.min !== undefined && value < field.min) {
-        return { ok: false, reason: `${field.id} must be >= ${field.min}.` };
-      }
-      if (field.max !== undefined && value > field.max) {
-        return { ok: false, reason: `${field.id} must be <= ${field.max}.` };
-      }
-      return { ok: true, value };
+      return { ok: true, value: result.value };
     }
     case "csv": {
       if (Array.isArray(raw)) {
@@ -179,20 +177,4 @@ function coerceLeaf(field: FieldDefinition, raw: unknown): CoerceResult {
     default:
       return { ok: false, reason: `${field.id} has unsupported kind.` };
   }
-}
-
-function setPath(obj: Record<string, unknown>, path: readonly string[], value: unknown): void {
-  let cursor: Record<string, unknown> = obj;
-  for (let i = 0; i < path.length - 1; i += 1) {
-    const segment = path[i] as string;
-    const next = cursor[segment];
-    if (next === undefined || next === null || typeof next !== "object" || Array.isArray(next)) {
-      const fresh: Record<string, unknown> = {};
-      cursor[segment] = fresh;
-      cursor = fresh;
-    } else {
-      cursor = next as Record<string, unknown>;
-    }
-  }
-  cursor[path[path.length - 1] as string] = value;
 }

@@ -1,12 +1,11 @@
+import type { AgentHarness, AgentHarnessFailure } from "./types.js";
 import type {
-  AgentHarness,
-  AgentHarnessFailure,
-  AgentMessageStreamLike,
-  AgentRequestLike,
-  AgentResponderLike,
-  AgentResponseLike,
-} from "./types.js";
-import type { AgentStreamEvent } from "@mono-agent/agent-contracts";
+  AgentMessageStream,
+  AgentRequestBase,
+  AgentResponder,
+  AgentResponse,
+  AgentStreamEvent,
+} from "@mono-agent/agent-contracts";
 
 export class AgentHarnessFailureError extends Error {
   readonly failure: AgentHarnessFailure;
@@ -18,9 +17,8 @@ export class AgentHarnessFailureError extends Error {
   }
 }
 
-export function createAgentResponder(options: { readonly harness: AgentHarness }): {
-  respond: AgentResponderLike["respond"];
-  dispose: () => Promise<void>;
+export function createAgentResponder(options: { readonly harness: AgentHarness }): AgentResponder & {
+  dispose(): Promise<void>;
 } {
   if (typeof options.harness?.run !== "function") {
     throw new TypeError("createAgentResponder requires a harness with run().");
@@ -30,7 +28,7 @@ export function createAgentResponder(options: { readonly harness: AgentHarness }
     async dispose(): Promise<void> {
       await options.harness.dispose?.();
     },
-    async respond(request: AgentRequestLike, stream: AgentMessageStreamLike): Promise<AgentResponseLike> {
+    async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       const runtimeEventStream = createRuntimeEventStream(stream);
       const response = await options.harness.run({
         conversationId: request.conversationId,
@@ -139,7 +137,7 @@ export function streamEventFromRuntimeEvent(event: unknown): AgentStreamEvent | 
   return undefined;
 }
 
-function createRuntimeEventStream(stream: AgentMessageStreamLike): {
+function createRuntimeEventStream(stream: AgentMessageStream): {
   enqueueText(delta: string): void;
   enqueueEvent(event: AgentStreamEvent): void;
   flush(): Promise<void>;
@@ -206,5 +204,5 @@ function hasOwn(value: Record<string, unknown>, key: string): boolean {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

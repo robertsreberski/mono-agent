@@ -5,6 +5,14 @@ import {
   MCPServerStreamableHttp,
   run as runAgent,
 } from "@openai/agents";
+import {
+  CodedError,
+  acceptedSdkIdsForBackend,
+  applyTemporaryEnv,
+  assertBaseRunOptions,
+  buildRuntimeResult,
+  readLastStringUserMessage,
+} from "@mono-agent/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import {
@@ -51,18 +59,26 @@ export interface OpenAIRunResult {
   readonly providerSessionId?: string;
 }
 
-export class OpenAIAgentsRuntimeError extends Error {
-  readonly code: string;
+export type OpenAIAgentsRuntimeErrorCode = "invalid_options" | "runtime_error" | "cancelled";
 
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "OpenAIAgentsRuntimeError";
-    this.code = code;
+export interface OpenAIAgentsRuntimeErrorDetails {
+  readonly failureKind?: string;
+  readonly [key: string]: unknown;
+}
+
+export class OpenAIAgentsRuntimeError extends CodedError<OpenAIAgentsRuntimeErrorCode> {
+  constructor(
+    code: OpenAIAgentsRuntimeErrorCode,
+    message: string,
+    details: OpenAIAgentsRuntimeErrorDetails = {},
+  ) {
+    super(code, message, details);
   }
 }
 
 const DEFAULT_API_KEY_ENV = "OPENAI_API_KEY";
 const DEFAULT_BASE_URL_ENV = "OPENAI_BASE_URL";
+const ACCEPTED_SDK_IDS = new Set(acceptedSdkIdsForBackend("openai-agents-sdk"));
 
 export function createOpenAIAgentsRuntime(options: OpenAIAgentsRuntimeOptions = {}): MonoRuntimeLike {
   const runFactory = options.runFactory ?? defaultRunFactory;
@@ -70,7 +86,7 @@ export function createOpenAIAgentsRuntime(options: OpenAIAgentsRuntimeOptions = 
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {
       assertRunOptions(systemPrompt, runOptions);
       const startedAt = Date.now();
-      const userMessage = readUserMessage(runOptions);
+      const userMessage = readLastStringUserMessage(runOptions, makeError, "OpenAI Agents runtime");
       const mcpServers = translateMcpServers(runOptions.mcpServers);
       const agentOptions = buildAgentOptions(systemPrompt, runOptions, options);
       const runConfig = buildRunConfig(runOptions, options);
@@ -117,45 +133,36 @@ export function createOpenAIAgentsRuntime(options: OpenAIAgentsRuntimeOptions = 
       }
 
       const cancelled = runOptions.abortSignal.aborted;
-      const result: RuntimeResult = {
-        ...(finalText === undefined ? {} : { text: finalText }),
+      return buildRuntimeResult({
+        text: finalText,
         events,
-        sdk: runOptions.model.sdk,
-        model: runOptions.model.model,
+        model: runOptions.model,
         numTurns,
         durationMs: Date.now() - startedAt,
-        ...(usage === undefined ? {} : { usage }),
-        ...(providerSessionId === undefined ? {} : { providerSessionId }),
-        ...(cancelled ? { cancelled: true } : {}),
-        ...(failureKind === undefined ? {} : { failureKind }),
-        ...(errorMessage === undefined ? {} : { error: errorMessage }),
-      };
-      return result;
+        usage,
+        providerSessionId,
+        cancelled,
+        failureKind,
+        error: errorMessage,
+      });
     },
   };
 }
 
-function assertRunOptions(systemPrompt: string, runOptions: RuntimeRunOptions): void {
-  if (typeof systemPrompt !== "string" || systemPrompt.trim().length === 0) {
-    throw new OpenAIAgentsRuntimeError("invalid_options", "OpenAI Agents runtime requires a non-empty system prompt.");
-  }
-  if (!runOptions || !runOptions.model || typeof runOptions.model.model !== "string" || runOptions.model.model.length === 0) {
-    throw new OpenAIAgentsRuntimeError("invalid_options", "OpenAI Agents runtime requires runOptions.model.model.");
-  }
-  if (!(runOptions.abortSignal instanceof AbortSignal)) {
-    throw new OpenAIAgentsRuntimeError("invalid_options", "OpenAI Agents runtime requires runOptions.abortSignal.");
-  }
+function makeError(code: "invalid_options", message: string): OpenAIAgentsRuntimeError {
+  return new OpenAIAgentsRuntimeError(code, message);
 }
 
-function readUserMessage(runOptions: RuntimeRunOptions): string {
-  const last = runOptions.messages[runOptions.messages.length - 1];
-  if (last === undefined) {
-    throw new OpenAIAgentsRuntimeError("invalid_options", "OpenAI Agents runtime requires at least one message.");
+function assertRunOptions(systemPrompt: string, runOptions: RuntimeRunOptions): void {
+  assertBaseRunOptions(systemPrompt, runOptions, makeError, "OpenAI Agents runtime");
+  const sdk = runOptions.model.sdk;
+  if (typeof sdk !== "string" || !ACCEPTED_SDK_IDS.has(sdk)) {
+    throw new OpenAIAgentsRuntimeError(
+      "invalid_options",
+      `OpenAI Agents runtime only serves sdk ${[...ACCEPTED_SDK_IDS].join("/")}; received ${String(sdk)}.`,
+      { receivedSdk: sdk },
+    );
   }
-  if (typeof last.content !== "string") {
-    throw new OpenAIAgentsRuntimeError("invalid_options", "OpenAI Agents runtime only supports string message content.");
-  }
-  return last.content;
 }
 
 function buildAgentOptions(
@@ -185,30 +192,14 @@ function buildRunConfig(
 }
 
 function applyEnv(options: OpenAIAgentsRuntimeOptions): () => void {
-  const restorers: Array<() => void> = [];
+  const vars: Record<string, string | undefined> = {};
   if (options.apiKey !== undefined) {
-    restorers.push(setEnv(options.apiKeyEnv ?? DEFAULT_API_KEY_ENV, options.apiKey));
+    vars[options.apiKeyEnv ?? DEFAULT_API_KEY_ENV] = options.apiKey;
   }
   if (options.baseUrl !== undefined) {
-    restorers.push(setEnv(DEFAULT_BASE_URL_ENV, options.baseUrl));
+    vars[DEFAULT_BASE_URL_ENV] = options.baseUrl;
   }
-  return (): void => {
-    for (const restore of restorers) {
-      restore();
-    }
-  };
-}
-
-function setEnv(name: string, value: string): () => void {
-  const previous = process.env[name];
-  process.env[name] = value;
-  return (): void => {
-    if (previous === undefined) {
-      delete process.env[name];
-    } else {
-      process.env[name] = previous;
-    }
-  };
+  return applyTemporaryEnv(vars);
 }
 
 async function defaultRunFactory(input: OpenAIRunFactoryInput): Promise<OpenAIRunHandle> {

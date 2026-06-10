@@ -26,6 +26,8 @@ const responder = createConfiguredAgentResponder({
 });
 ```
 
+The runtime serves the `openai-agents-sdk` backend; its `model.sdk` guard accepts `"openai"` and rejects any other sdk fail-closed.
+
 `OPENAI_API_KEY` must be set in the environment, or supplied via `createOpenAIAgentsRuntime({ apiKey })`.
 
 ## Public API

@@ -12,6 +12,10 @@ import type {
 } from "@mono-agent/agent-harness";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { join } from "node:path";
+
+import { createEntityGraphStore } from "@mono-agent/memory-graph";
+import { createJournalMemoryStore } from "@mono-agent/memory-journal";
 import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
 import type { MemoryStore } from "@mono-agent/memory-md";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
@@ -110,6 +114,20 @@ export function createConfiguredAgentResponder(options: ConfiguredAgentResponder
 function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
+  }
+  if (config.memory.mode === "journal") {
+    // The entity graph lives next to the journal; its salient-entity digest is
+    // folded into the always-in-context block so long-term memory is present
+    // without loading the whole archive.
+    const graph = createEntityGraphStore({ path: join(config.memory.path, "graph.jsonl") });
+    return createJournalMemoryStore({
+      rootDir: config.memory.path,
+      maxBytes: config.memory.maxBytes,
+      entityDigest: async () => {
+        const digest = await graph.digest();
+        return digest.length === 0 ? undefined : digest;
+      },
+    });
   }
   return createMarkdownMemoryStore({
     path: config.memory.path,

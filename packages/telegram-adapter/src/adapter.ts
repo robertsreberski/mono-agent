@@ -19,14 +19,6 @@ import type {
   TelegramUser,
 } from "./types.js";
 
-export {
-  AgentResponseCancelledError as AgentResponderCancelledError,
-  isAgentResponseCancelledError as isAgentResponderCancelledError,
-} from "@mono-agent/agent-contracts";
-export type {
-  AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
-} from "@mono-agent/agent-contracts";
-
 export interface AgentRequest extends AgentRequestBase {
   conversationId: string;
   chatId: TelegramChatId;

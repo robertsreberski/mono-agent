@@ -237,6 +237,120 @@ describe("AgentHarness", () => {
     expect(cleanupCalls).toEqual(["cleaned"]);
   });
 
+  it("appends a deterministic host summary when memoryWriteMode is append-host-summary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const summaries: Array<{ conversationId: string; summary: string }> = [];
+    const memory = {
+      async load() {
+        return undefined;
+      },
+      async appendHostSummary(conversationId: string, summary: string) {
+        summaries.push({ conversationId, summary });
+        return { conversationId, source: "memory.md", bytesWritten: summary.length };
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "The build is green." }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "append-host-summary",
+      createRunId: () => "run-summary",
+    }).run({ conversationId: "telegram:9", userMessage: "Is the build ok?", abortSignal: new AbortController().signal });
+
+    expect(response.text).toBe("The build is green.");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.conversationId).toBe("telegram:9");
+    expect(summaries[0]?.summary).toBe(
+      [
+        "Host-observed completed turn.",
+        "User: Is the build ok?",
+        "Assistant: The build is green.",
+      ].join("\n"),
+    );
+  });
+
+  it("does not write a host summary when memoryWriteMode is omitted", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let appendCount = 0;
+    const memory = {
+      async load() {
+        return undefined;
+      },
+      async appendHostSummary() {
+        appendCount += 1;
+        return { conversationId: "c", source: "memory.md", bytesWritten: 0 };
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "Done." }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      createRunId: () => "run-no-summary",
+    }).run({ conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(appendCount).toBe(0);
+  });
+
+  it("resolves scalar and mcpServers precedence collisions last-wins across merge layers", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      // tool policy (first merge layer) seeds mcpServers + allowedTools
+      toolPolicy: {
+        allowedTools: ["Read"],
+        disallowedTools: [],
+        mcpServers: { shared: { url: "policy" }, policyOnly: { url: "p" } },
+      },
+      // static runtimeOptions (second layer) sets a scalar + overrides one server
+      runtimeOptions: {
+        mcpConfigPath: "/from-static",
+        mcpServers: { shared: { url: "static" }, staticOnly: { url: "s" } },
+      },
+      createRunId: () => "run-merge",
+      // request extension (last layer) wins scalar + the shared server key
+      runtimeOptionsForRequest: () => ({
+        runtimeOptions: {
+          mcpConfigPath: "/from-request",
+          allowedTools: ["Grep"],
+          mcpServers: { shared: { url: "request" }, requestOnly: { url: "r" } },
+        },
+      }),
+    }).run({ conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(response.text).toBe("ok");
+    const options = fake.calls[0]?.options;
+    // scalar: last layer wins
+    expect(options?.mcpConfigPath).toBe("/from-request");
+    // allowedTools: list-merged + de-duplicated across layers
+    expect(options?.allowedTools).toEqual(["Read", "Grep"]);
+    // mcpServers: shallow merge per key, last layer wins on the shared key
+    expect(options?.mcpServers).toEqual({
+      shared: { url: "request" },
+      policyOnly: { url: "p" },
+      staticOnly: { url: "s" },
+      requestOnly: { url: "r" },
+    });
+  });
+
   it("handles cancellation before runtime execution", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

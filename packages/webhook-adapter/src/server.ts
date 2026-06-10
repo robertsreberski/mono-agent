@@ -1,15 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer } from "node:http";
 import { dirname } from "node:path/posix";
 
 import {
+  BufferedMessageStream,
   isAgentResponseCancelledError,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
+import {
+  assertSafeBind,
+  close,
+  hostForUrl,
+  listen,
+} from "@mono-agent/settings";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 export type WebhookInvocationMode = "sync" | "async";
@@ -64,13 +70,19 @@ export type WebhookInvocationStatus =
       readonly startedAt: string;
       readonly completedAt: string;
       readonly error: string;
-    }
-  | {
-      readonly status: "busy";
-      readonly requestId: string;
-      readonly conversationId: string;
-      readonly error: string;
     };
+
+/**
+ * Transport-only 409 response shape. Unlike {@link WebhookInvocationStatus},
+ * a busy result is never stored or replayed via the status endpoint, so it is
+ * kept out of the persisted status union.
+ */
+export interface WebhookBusyResponse {
+  readonly status: "busy";
+  readonly requestId: string;
+  readonly conversationId: string;
+  readonly error: string;
+}
 
 export interface WebhookAdapterLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -158,7 +170,12 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS;
   const maxStoredRequests = options.maxStoredRequests ?? DEFAULT_MAX_STORED_REQUESTS;
   const defaultMode = options.defaultMode ?? DEFAULT_MODE;
-  assertSafeBind(host, options.allowNonLoopback === true);
+  assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
+    new WebhookAdapterError(
+      "unsafe_host",
+      "Webhook adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
+      { host: boundHost },
+    ));
 
   const app = express();
   const server = createServer(app);
@@ -195,7 +212,12 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
     res.status(400).json({ status: "failed", error: errorToMessage(error) });
   });
 
-  const address = await listen(server, port, host);
+  const address = await listen(server, port, host, {
+    listenFailed: (reason) =>
+      new WebhookAdapterError("start_failed", "Webhook adapter failed to listen.", { reason }),
+    noAddress: () =>
+      new WebhookAdapterError("start_failed", "Webhook adapter did not receive a TCP address."),
+  });
   const boundPort = address.port;
   const url = `http://${hostForUrl(host)}:${boundPort}`;
 
@@ -211,7 +233,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
     const controller = new AbortController();
 
     if (activeByConversation.has(body.conversationId)) {
-      const busy: WebhookInvocationStatus = {
+      const busy: WebhookBusyResponse = {
         status: "busy",
         requestId,
         conversationId: body.conversationId,
@@ -316,7 +338,10 @@ async function runResponder(input: {
   readonly retentionMs: number;
   readonly maxStoredRequests: number;
 }): Promise<WebhookInvocationStatus> {
-  const stream = new InMemoryMessageStream();
+  const stream = new BufferedMessageStream({
+    onClosed: () =>
+      new WebhookAdapterError("invalid_config", "Cannot write to a finished webhook stream."),
+  });
   let status: WebhookInvocationStatus;
   try {
     const response = await input.options.responder.respond(input.request, stream);
@@ -356,43 +381,6 @@ async function runResponder(input: {
   }
   setStatus(input.statuses, status, input.retentionMs, input.maxStoredRequests);
   return status;
-}
-
-class InMemoryMessageStream implements AgentMessageStream {
-  private currentText = "";
-  private done = false;
-
-  get text(): string {
-    return this.currentText.trim();
-  }
-
-  async status(_text: string): Promise<void> {}
-
-  async append(delta: string): Promise<void> {
-    this.assertOpen();
-    this.currentText += delta;
-  }
-
-  async replace(text: string): Promise<void> {
-    this.assertOpen();
-    this.currentText = text;
-  }
-
-  async finish(finalText?: string): Promise<void> {
-    if (this.done) {
-      return;
-    }
-    this.done = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
-    }
-  }
-
-  private assertOpen(): void {
-    if (this.done) {
-      throw new WebhookAdapterError("invalid_config", "Cannot write to a finished webhook stream.");
-    }
-  }
 }
 
 function normalizeBody(body: unknown, input: { readonly requestId: string; readonly defaultMode: WebhookInvocationMode }): NormalizedBody {
@@ -477,61 +465,6 @@ function normalizePath(path: string): string {
     throw new WebhookAdapterError("invalid_config", "Webhook path must be an absolute path without query or hash.");
   }
   return normalized.length === 1 ? DEFAULT_PATH : normalized.replace(/\/+$/u, "");
-}
-
-function assertSafeBind(host: string, allowNonLoopback: boolean): void {
-  if (allowNonLoopback || isLoopbackHost(host)) {
-    return;
-  }
-  throw new WebhookAdapterError(
-    "unsafe_host",
-    "Webhook adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
-    { host },
-  );
-}
-
-function isLoopbackHost(host: string): boolean {
-  const normalized = host.toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
-  return normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized.startsWith("127.");
-}
-
-function hostForUrl(host: string): string {
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
-
-function listen(server: Server, port: number, host: string): Promise<AddressInfo> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const onError = (error: Error): void => {
-      rejectPromise(new WebhookAdapterError("start_failed", "Webhook adapter failed to listen.", {
-        reason: error.message,
-      }));
-    };
-    server.once("error", onError);
-    server.listen(port, host, () => {
-      server.off("error", onError);
-      const address = server.address();
-      if (typeof address !== "object" || address === null) {
-        rejectPromise(new WebhookAdapterError("start_failed", "Webhook adapter did not receive a TCP address."));
-        return;
-      }
-      resolvePromise(address);
-    });
-  });
-}
-
-function close(server: Server): Promise<void> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    server.close((error) => {
-      if (error === undefined) {
-        resolvePromise();
-        return;
-      }
-      rejectPromise(error);
-    });
-  });
 }
 
 function errorToMessage(error: unknown): string {

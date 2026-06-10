@@ -1,13 +1,7 @@
-import type {
-  AgentMessageStream,
-  AgentRequestBase,
-  AgentResponder,
-  AgentResponse,
-} from "@mono-agent/agent-contracts";
 import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
 import type { MemoryStore } from "@mono-agent/memory-md";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
-import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import type { ToolPolicy } from "@mono-agent/tool-policy";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
@@ -108,9 +102,3 @@ export interface AgentHarnessRuntimeOptionsExtension {
   readonly cleanup?: () => void | Promise<void>;
 }
 
-export type AgentRequestLike = AgentRequestBase;
-export type AgentMessageStreamLike = AgentMessageStream;
-export type AgentResponseLike = AgentResponse;
-export type AgentResponderLike = AgentResponder;
-
-export type RuntimeFailureResult = Pick<RuntimeResult, "cancelled" | "error" | "failureKind" | "errorDetails">;

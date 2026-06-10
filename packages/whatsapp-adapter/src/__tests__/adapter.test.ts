@@ -1,6 +1,6 @@
+import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
-  AgentResponderCancelledError,
   WhatsAppAdapter,
   type AgentRequest,
   type AgentResponder,
@@ -325,7 +325,7 @@ describe("WhatsAppAdapter", () => {
           new Promise<never>((_resolve, reject) => {
             request.abortSignal.addEventListener(
               "abort",
-              () => reject(new AgentResponderCancelledError()),
+              () => reject(new AgentResponseCancelledError()),
               { once: true },
             );
           }),

@@ -1,9 +1,16 @@
 import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 
 import { ContextValidationError } from './errors.js';
+import { fileReadError, resolveRequiredPath } from './fs-paths.js';
+import { normalizeInlineText } from './text.js';
 import type { SkillIndexEntry } from './types.js';
+
+export interface LoadedSkillFile {
+  readonly entry: SkillIndexEntry;
+  readonly markdown: string;
+}
 
 export function buildSkillIndex(entries: readonly SkillIndexEntry[]): readonly SkillIndexEntry[] {
   const normalized = entries.map((entry, index) => normalizeSkillEntry(entry, index));
@@ -26,6 +33,11 @@ export function buildSkillIndex(entries: readonly SkillIndexEntry[]): readonly S
 }
 
 export async function loadSkillIndexFromDirectory(root: string): Promise<readonly SkillIndexEntry[]> {
+  const files = await loadSkillFilesFromDirectory(root);
+  return files.map((file) => file.entry);
+}
+
+export async function loadSkillFilesFromDirectory(root: string): Promise<readonly LoadedSkillFile[]> {
   const rootPath = resolveRequiredPath(root, 'skillsRoot');
   let entries: Dirent[];
   try {
@@ -35,6 +47,7 @@ export async function loadSkillIndexFromDirectory(root: string): Promise<readonl
   }
 
   const discovered: SkillIndexEntry[] = [];
+  const markdownByMainFile = new Map<string, string>();
   const childDirectories = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -65,14 +78,22 @@ export async function loadSkillIndexFromDirectory(root: string): Promise<readonl
       description,
       mainFile: skillFile,
     });
+    markdownByMainFile.set(skillFile, markdown);
   }
 
-  return buildSkillIndex(discovered);
+  const index = buildSkillIndex(discovered);
+  return index.map((entry) => ({
+    entry,
+    markdown: markdownByMainFile.get(entry.mainFile) ?? '',
+  }));
 }
 
 export function renderSkillIndex(entries: readonly SkillIndexEntry[]): string {
-  const normalized = buildSkillIndex(entries);
-  return normalized
+  return renderSkillIndexEntries(buildSkillIndex(entries));
+}
+
+export function renderSkillIndexEntries(entries: readonly SkillIndexEntry[]): string {
+  return entries
     .map((entry) => `- **${entry.name}** — ${entry.description}\n  - Main file: \`${entry.mainFile}\``)
     .join('\n');
 }
@@ -109,10 +130,6 @@ function normalizeRequiredInlineString(value: unknown, field: string, index: num
   }
 
   return normalized;
-}
-
-function normalizeInlineText(value: string): string {
-  return value.replace(/\r\n?/g, '\n').split('\n').map((line) => line.trim()).filter(Boolean).join(' ');
 }
 
 function compareSkillEntries(left: SkillIndexEntry, right: SkillIndexEntry): number {
@@ -159,22 +176,6 @@ function deriveSkillDescription(markdown: string): string {
   flush();
 
   return paragraphs.find((paragraph) => paragraph.length > 0) ?? '';
-}
-
-function resolveRequiredPath(value: string, field: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new ContextValidationError('file_read_failed', `${field} must be a non-empty path.`, {
-      field,
-    });
-  }
-  return resolve(value);
-}
-
-function fileReadError(message: string, filePath: string, error: unknown): ContextValidationError {
-  return new ContextValidationError('file_read_failed', message, {
-    path: filePath,
-    cause: error instanceof Error ? error.message : String(error),
-  });
 }
 
 function isErrorWithCode(error: unknown, code: string): boolean {

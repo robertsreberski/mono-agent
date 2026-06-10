@@ -1,14 +1,19 @@
 import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { RedactedSecretValue } from "@mono-agent/settings";
+
+import type { EFFORT_LEVELS } from "./field-groups.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
+export type MemoryMode = "markdown" | "journal";
 export type SessionMode = "continuous" | "per-message";
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export interface MonoAgentConfig {
   readonly runtime: {
     readonly model: RuntimeModelReference;
     readonly executionMode: RuntimeExecutionMode;
-    readonly effort?: string;
+    readonly effort?: EffortLevel;
     readonly maxTurns: number;
     readonly workspace: string;
     readonly session: {
@@ -23,6 +28,7 @@ export interface MonoAgentConfig {
     readonly selectedSkills: readonly string[];
   };
   readonly memory?: {
+    readonly mode: MemoryMode;
     readonly path: string;
     readonly maxBytes: number;
     readonly scope: MemoryScope;
@@ -49,7 +55,7 @@ export interface MonoAgentConfig {
 }
 
 export type RedactedLocalProviderDefinition = Omit<LocalProviderDefinition, "apiKey"> & {
-  readonly apiKeyPresent?: boolean;
+  readonly apiKey?: RedactedSecretValue;
 };
 
 export interface RedactedMonoAgentConfig {

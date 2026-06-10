@@ -1,5 +1,6 @@
 import {
   isAgentResponseCancelledError,
+  type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
@@ -11,7 +12,6 @@ import {
 } from "./message-normalizer.js";
 import {
   WhatsAppMessageStream,
-  type AgentMessageStream,
   type WhatsAppMessageStreamLogger,
   type WhatsAppMessageStreamOptions,
 } from "./message-stream.js";
@@ -22,14 +22,6 @@ import type {
   WhatsAppSocketLike,
   WhatsAppTextMessage,
 } from "./types.js";
-
-export {
-  AgentResponseCancelledError as AgentResponderCancelledError,
-  isAgentResponseCancelledError as isAgentResponderCancelledError,
-} from "@mono-agent/agent-contracts";
-export type {
-  AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
-} from "@mono-agent/agent-contracts";
 
 export type WhatsAppGroupTriggerMode = "mention" | "any";
 
@@ -522,7 +514,7 @@ function parseCommand(text: string): NormalizedCommand | undefined {
 }
 
 async function finishSafely(
-  stream: AgentMessageStream,
+  stream: WhatsAppMessageStream,
   text: string,
   logger: WhatsAppAdapterLogger | undefined,
 ): Promise<void> {

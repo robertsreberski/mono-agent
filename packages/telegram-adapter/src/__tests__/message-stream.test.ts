@@ -142,6 +142,35 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls[0]?.text.startsWith("…\n")).toBe(true);
   });
 
+  it("does not substitute the placeholder for blank status updates", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 7,
+      initialStatusText: "Working…",
+      editDebounceMs: 0,
+    });
+
+    // Establish the message, then push a whitespace-only status update.
+    await stream.status("first");
+    await stream.status("   \n");
+
+    const lastEdit = api.editMessageTextCalls.at(-1);
+    expect(lastEdit?.text).toBe("");
+    expect(lastEdit?.text).not.toBe("No response text was returned.");
+  });
+
+  it("substitutes the placeholder only when finishing with empty content", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({ api, chatId: 8, editDebounceMs: 0 });
+
+    await stream.finish("   ");
+
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 8, message_id: 100, text: "No response text was returned." },
+    ]);
+  });
+
   it("propagates send and edit failures", async () => {
     const sendApi = new FakeTelegramApi();
     sendApi.failSendWith = new Error("send failed");

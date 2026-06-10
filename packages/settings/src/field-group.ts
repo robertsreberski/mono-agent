@@ -1,3 +1,5 @@
+import { coerceInteger } from "./coerce.js";
+import { cloneJson, deletePath, readPath, setPath } from "./path.js";
 import type { FieldDefinition, FieldGroup, SettingsJson } from "./types.js";
 
 export type FieldValue = string | number | boolean | undefined;
@@ -58,10 +60,11 @@ export function writeFieldValue(
       .map((part) => part.trim())
       .filter((part) => part.length > 0);
   } else if (field.kind === "integer") {
-    if (!/^\d+$/u.test(trimmed)) {
-      throw new Error(`${field.id} must be an integer.`);
+    const result = coerceInteger(trimmed, { min: field.min, max: field.max });
+    if (!result.ok) {
+      throw new Error(integerErrorMessage(field, result.reason));
     }
-    coerced = Number.parseInt(trimmed, 10);
+    coerced = result.value;
   } else if (field.kind === "switch") {
     coerced = trimmed === "true";
   }
@@ -69,46 +72,25 @@ export function writeFieldValue(
   return next as SettingsJson;
 }
 
-function readPath(obj: Record<string, unknown>, path: readonly string[]): unknown {
-  let cursor: unknown = obj;
-  for (const segment of path) {
-    if (cursor === null || typeof cursor !== "object") {
-      return undefined;
-    }
-    cursor = (cursor as Record<string, unknown>)[segment];
-  }
-  return cursor;
+/**
+ * Read a field's raw stored value without CSV/kind coercion. Operator surfaces
+ * use this to display secret markers or build their own renderings instead of
+ * reimplementing path traversal.
+ */
+export function readRawFieldValue(json: SettingsJson, field: FieldDefinition): unknown {
+  return readPath(json as Record<string, unknown>, field.path);
 }
 
-function setPath(obj: Record<string, unknown>, path: readonly string[], value: unknown): void {
-  let cursor: Record<string, unknown> = obj;
-  for (let i = 0; i < path.length - 1; i += 1) {
-    const segment = path[i] as string;
-    const next = cursor[segment];
-    if (next === undefined || next === null || typeof next !== "object") {
-      const fresh: Record<string, unknown> = {};
-      cursor[segment] = fresh;
-      cursor = fresh;
-    } else {
-      cursor = next as Record<string, unknown>;
-    }
+function integerErrorMessage(
+  field: FieldDefinition,
+  reason: "not_integer" | "below_min" | "above_max",
+): string {
+  switch (reason) {
+    case "below_min":
+      return `${field.id} must be >= ${field.min}.`;
+    case "above_max":
+      return `${field.id} must be <= ${field.max}.`;
+    default:
+      return `${field.id} must be an integer.`;
   }
-  cursor[path[path.length - 1] as string] = value;
-}
-
-function deletePath(obj: Record<string, unknown>, path: readonly string[]): void {
-  let cursor: Record<string, unknown> = obj;
-  for (let i = 0; i < path.length - 1; i += 1) {
-    const segment = path[i] as string;
-    const next = cursor[segment];
-    if (next === undefined || next === null || typeof next !== "object") {
-      return;
-    }
-    cursor = next as Record<string, unknown>;
-  }
-  delete cursor[path[path.length - 1] as string];
-}
-
-function cloneJson(value: SettingsJson): SettingsJson {
-  return JSON.parse(JSON.stringify(value)) as SettingsJson;
 }

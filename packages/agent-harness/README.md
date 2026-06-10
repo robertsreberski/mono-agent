@@ -23,9 +23,9 @@ Hosts that need request-scoped runtime setup can provide `runtimeOptionsForReque
 
 ## Public API
 
-- `createAgentHarness`, `MonoAgentHarness`, `AgentHarnessError`
+- `createAgentHarness`, `AgentHarnessError`
 - `createAgentResponder`, `AgentHarnessFailureError`
-- `createInMemoryHistoryStore`, `InMemoryConversationHistoryStore`
+- `createInMemoryHistoryStore`
 - `createRuntimeSessionStore` plus the session record/store types from `sessions.ts`
 - `NoopRunRecorder`
 - Harness, shared responder, runtime, request-scoped runtime option, memory, history, and session types from `types.ts`

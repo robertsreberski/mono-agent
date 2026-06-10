@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer } from "node:http";
 
 import {
   AgentEvent,
@@ -34,6 +33,15 @@ import {
   type AgentResponder,
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
+import {
+  assertSafeBind,
+  bearerTokensEqual,
+  close,
+  hostForUrl,
+  isLoopbackHost,
+  listen,
+  readAuthorizationBearer,
+} from "@mono-agent/settings";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {
@@ -93,8 +101,6 @@ export interface A2AProviderStartResult {
   stop(): Promise<void>;
 }
 
-export type A2AProvider = A2AProviderStartResult;
-
 interface ActiveRun {
   readonly controller: AbortController;
   readonly taskId: string;
@@ -110,7 +116,12 @@ export async function startA2AProvider(
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 0;
 
-  assertSafeBind(host, options.allowNonLoopback === true);
+  assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
+    new A2AProviderError(
+      "unsafe_host",
+      "A2A provider refuses to bind a non-loopback host unless allowNonLoopback is true.",
+      { host: boundHost },
+    ));
   const requireBearer = options.requireBearer === true;
   if (requireBearer && normalizeOptionalString(options.bearerToken) === undefined) {
     throw new A2AProviderError(
@@ -121,7 +132,12 @@ export async function startA2AProvider(
 
   const app = express();
   const server = createServer(app);
-  const address = await listen(server, port, host);
+  const address = await listen(server, port, host, {
+    listenFailed: (reason) =>
+      new A2AProviderError("start_failed", "A2A provider failed to listen.", { reason }),
+    noAddress: () =>
+      new A2AProviderError("start_failed", "A2A provider did not receive a TCP address."),
+  });
   const boundHost = hostForUrl(host);
   const boundPort = address.port;
   const publicBaseUrl = options.publicBaseUrl === undefined
@@ -284,7 +300,7 @@ class MonoA2AExecutor implements AgentExecutor {
         taskId: requestContext.taskId,
         contextId: requestContext.contextId,
         state: error instanceof A2AProviderError && error.code === "unsupported_input"
-          ? TaskState.TASK_STATE_FAILED
+          ? TaskState.TASK_STATE_REJECTED
           : TaskState.TASK_STATE_FAILED,
         text: reason,
       })));
@@ -378,17 +394,6 @@ function validateProviderOptions(options: A2AProviderOptions): void {
   }
 }
 
-function assertSafeBind(host: string, allowNonLoopback: boolean): void {
-  if (allowNonLoopback || isLoopbackHost(host)) {
-    return;
-  }
-  throw new A2AProviderError(
-    "unsafe_host",
-    "A2A provider refuses to bind a non-loopback host unless allowNonLoopback is true.",
-    { host },
-  );
-}
-
 function assertSafePublicBaseUrl(publicBaseUrl: string, allowNonLoopback: boolean): void {
   const parsed = new URL(publicBaseUrl);
   if (allowNonLoopback || isLoopbackHost(parsed.hostname)) {
@@ -401,54 +406,10 @@ function assertSafePublicBaseUrl(publicBaseUrl: string, allowNonLoopback: boolea
   );
 }
 
-function isLoopbackHost(host: string): boolean {
-  const normalized = host.toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
-  return normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized.startsWith("127.");
-}
-
-function hostForUrl(host: string): string {
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
-
-function listen(server: Server, port: number, host: string): Promise<AddressInfo> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const onError = (error: Error): void => {
-      rejectPromise(new A2AProviderError("start_failed", "A2A provider failed to listen.", {
-        reason: error.message,
-      }));
-    };
-    server.once("error", onError);
-    server.listen(port, host, () => {
-      server.off("error", onError);
-      const address = server.address();
-      if (typeof address !== "object" || address === null) {
-        rejectPromise(new A2AProviderError("start_failed", "A2A provider did not receive a TCP address."));
-        return;
-      }
-      resolvePromise(address);
-    });
-  });
-}
-
-function close(server: Server): Promise<void> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    server.close((error) => {
-      if (error === undefined) {
-        resolvePromise();
-        return;
-      }
-      rejectPromise(error);
-    });
-  });
-}
-
 function bearerAuthMiddleware(token: string) {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const authorization = req.header("authorization");
-    if (authorization === `Bearer ${token}`) {
+    const presented = readAuthorizationBearer(req.header("authorization"));
+    if (presented !== undefined && bearerTokensEqual(presented, token)) {
       next();
       return;
     }

@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { journalDayFor } from "@mono-agent/memory-journal";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import {
@@ -96,6 +97,73 @@ describe("agent host composition helpers", () => {
     const summaryFile = artifactFiles.find((file) => file.endsWith(".summary.json"));
     expect(summaryFile).toBeDefined();
     expect(await readFile(join(artifactDir, summaryFile as string), "utf8")).toContain("run-host");
+  });
+
+  it("journals each turn into today's note (journal mode) and injects it on the next turn", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryRoot = join(dir, "memory");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Logged answer" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        memoryPath: memoryRoot,
+        memoryMode: "journal",
+        memoryWriteMode: "append-host-summary",
+        artifactDir,
+      }),
+      runtime: fake.runtime,
+    });
+
+    await responder.respond(
+      { conversationId: "channel-a", text: "First message", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    // The completed turn is journaled into today's global daily note.
+    const dailyPath = join(memoryRoot, "daily", `${journalDayFor(new Date())}.md`);
+    const dailyContent = await readFile(dailyPath, "utf8");
+    expect(dailyContent).toContain("Conversation: `channel-a`");
+    expect(dailyContent).toContain("Logged answer");
+
+    // A second turn (different conversation — one global brain) sees today's note in context.
+    await responder.respond(
+      { conversationId: "channel-b", text: "Second message", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+    expect(fake.calls[1]?.prompt).toContain("## Memory");
+    expect(fake.calls[1]?.prompt).toContain("Logged answer");
+  });
+
+  it("folds the entity-graph digest into the always-in-context block (journal mode)", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryRoot = join(dir, "memory");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(memoryRoot, { recursive: true });
+    await writeFile(
+      join(memoryRoot, "graph.jsonl"),
+      `${JSON.stringify({ type: "entity", name: "Robert", entityType: "person", observations: ["prefers concise answers"] })}\n`,
+      "utf8",
+    );
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, memoryPath: memoryRoot, memoryMode: "journal", artifactDir }),
+      runtime: fake.runtime,
+    });
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.prompt).toContain("Long-term memory (entity digest)");
+    expect(fake.calls[0]?.prompt).toContain("Robert (person)");
   });
 
   it("creates a configured harness when a host wants to wrap the responder itself", async () => {
@@ -244,6 +312,8 @@ function monoConfig(input: {
   readonly dir: string;
   readonly identityPath: string;
   readonly memoryPath?: string;
+  readonly memoryMode?: "markdown" | "journal";
+  readonly memoryWriteMode?: "disabled" | "append-host-summary";
   readonly artifactDir: string;
 }): MonoAgentConfig {
   return {
@@ -273,10 +343,11 @@ function monoConfig(input: {
       ? {}
       : {
           memory: {
+            mode: input.memoryMode ?? "markdown",
             path: input.memoryPath,
             maxBytes: 64_000,
             scope: "single-file",
-            writeMode: "disabled",
+            writeMode: input.memoryWriteMode ?? "disabled",
           },
         }),
     tools: {

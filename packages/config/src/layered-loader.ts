@@ -78,6 +78,9 @@ export function layerJsonOntoEnv(
   if (json.context?.selectedSkills !== undefined) {
     fromJson.MONO_AGENT_SELECTED_SKILLS = csv(json.context.selectedSkills);
   }
+  if (json.memory?.mode !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_MODE = json.memory.mode;
+  }
   if (json.memory?.path !== undefined) {
     fromJson.MONO_AGENT_MEMORY_PATH = json.memory.path;
   }

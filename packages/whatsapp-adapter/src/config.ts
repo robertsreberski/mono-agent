@@ -1,11 +1,18 @@
 import {
   defineFieldGroup,
+  layerJsonOntoEnv,
+  readBoolean,
+  readChoice,
+  readCsv,
+  readJsonSection,
   readSettingsJson,
 } from "@mono-agent/settings";
 import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
 
 import type { WhatsAppGroupTriggerMode } from "./adapter.js";
 import type { WhatsAppJid } from "./types.js";
+
+const WHATSAPP_GROUP_MODES = ["mention", "any"] as const satisfies readonly WhatsAppGroupTriggerMode[];
 
 export interface WhatsAppAdapterTriggerConfig {
   readonly groupMode: WhatsAppGroupTriggerMode;
@@ -63,6 +70,18 @@ export interface LoadWhatsAppAdapterConfigInput {
   readonly json?: SettingsJson;
   readonly jsonPath?: string;
 }
+
+const invalidConfig = (
+  message: string,
+  details?: Record<string, unknown>,
+): WhatsAppAdapterConfigError =>
+  new WhatsAppAdapterConfigError("invalid_config", message, details);
+
+const missingRequiredConfig = (
+  message: string,
+  details?: Record<string, unknown>,
+): WhatsAppAdapterConfigError =>
+  new WhatsAppAdapterConfigError("missing_required_config", message, details);
 
 export const whatsappFieldGroup: FieldGroup = defineFieldGroup({
   id: "whatsapp",
@@ -127,19 +146,30 @@ export async function loadWhatsAppAdapterConfig(
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerWhatsAppJsonOntoEnv(json, input.env);
   const allowedChatJids = readCsv(env.MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS);
-  const allowAllChats = readBoolean(env.MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS, false, "MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS");
-  const groupMode = readGroupMode(env.MONO_AGENT_WHATSAPP_GROUP_MODE);
+  const allowAllChats = readBoolean(
+    env.MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS,
+    "MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS",
+    false,
+    invalidConfig,
+  );
+  const groupMode = readChoice(
+    env.MONO_AGENT_WHATSAPP_GROUP_MODE,
+    "MONO_AGENT_WHATSAPP_GROUP_MODE",
+    WHATSAPP_GROUP_MODES,
+    "mention",
+    invalidConfig,
+  );
   const botJids = readCsv(env.MONO_AGENT_WHATSAPP_BOT_JIDS);
   const mentionTextAliases = readCsv(env.MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES);
   const stripMentionText = readBoolean(
     env.MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT,
-    mentionTextAliases.length > 0,
     "MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT",
+    mentionTextAliases.length > 0,
+    invalidConfig,
   );
 
   if (!allowAllChats && allowedChatJids.length === 0) {
-    throw new WhatsAppAdapterConfigError(
-      "missing_required_config",
+    throw missingRequiredConfig(
       "WhatsApp adapter requires MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS or MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS=true.",
       { env: "MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS" },
     );
@@ -176,102 +206,13 @@ function layerWhatsAppJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readWhatsAppSection(json);
-  const fromJson: Record<string, string | undefined> = {};
-  if (Array.isArray(section.allowedChatJids)) {
-    fromJson.MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS = section.allowedChatJids
-      .filter((value): value is string => typeof value === "string")
-      .join(",");
-  }
-  if (typeof section.allowAllChats === "boolean") {
-    fromJson.MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS = section.allowAllChats ? "true" : "false";
-  }
-  if (typeof section.groupMode === "string") {
-    fromJson.MONO_AGENT_WHATSAPP_GROUP_MODE = section.groupMode;
-  }
-  if (Array.isArray(section.botJids)) {
-    fromJson.MONO_AGENT_WHATSAPP_BOT_JIDS = section.botJids
-      .filter((value): value is string => typeof value === "string")
-      .join(",");
-  }
-  if (Array.isArray(section.mentionTextAliases)) {
-    fromJson.MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES = section.mentionTextAliases
-      .filter((value): value is string => typeof value === "string")
-      .join(",");
-  }
-  if (typeof section.stripMentionText === "boolean") {
-    fromJson.MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT = section.stripMentionText ? "true" : "false";
-  }
-
-  const layered: Record<string, string | undefined> = { ...fromJson };
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) {
-      layered[key] = value;
-    }
-  }
-  return layered;
-}
-
-function readWhatsAppSection(json: SettingsJson): Record<string, unknown> {
-  const section = json.whatsapp;
-  if (section !== null && typeof section === "object" && !Array.isArray(section)) {
-    return section as Record<string, unknown>;
-  }
-  return {};
-}
-
-function readCsv(raw: string | undefined): readonly string[] {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return [];
-  }
-  return normalized
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-function readBoolean(
-  raw: string | undefined,
-  defaultValue: boolean,
-  envName: string,
-): boolean {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new WhatsAppAdapterConfigError(
-    "invalid_config",
-    `${envName} must be true or false.`,
-    { env: envName },
-  );
-}
-
-function readGroupMode(raw: string | undefined): WhatsAppGroupTriggerMode {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return "mention";
-  }
-  if (normalized === "mention" || normalized === "any") {
-    return normalized;
-  }
-  throw new WhatsAppAdapterConfigError(
-    "invalid_config",
-    "MONO_AGENT_WHATSAPP_GROUP_MODE must be mention or any.",
-    { env: "MONO_AGENT_WHATSAPP_GROUP_MODE" },
-  );
-}
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
+  const section = readJsonSection(json, "whatsapp");
+  return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS", value: section.allowedChatJids, kind: "csv" },
+    { env: "MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS", value: section.allowAllChats, kind: "boolean" },
+    { env: "MONO_AGENT_WHATSAPP_GROUP_MODE", value: section.groupMode },
+    { env: "MONO_AGENT_WHATSAPP_BOT_JIDS", value: section.botJids, kind: "csv" },
+    { env: "MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES", value: section.mentionTextAliases, kind: "csv" },
+    { env: "MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT", value: section.stripMentionText, kind: "boolean" },
+  ]);
 }

@@ -1,6 +1,21 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join, normalize, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 
+import {
+  DEFAULT_MAX_EVENTS_PER_RUN,
+  DEFAULT_MAX_RUNS,
+  DEFAULT_MAX_STRING_BYTES,
+  errorMessage,
+  isErrno,
+  isRecord,
+  minInteger,
+  normalizeRunId as normalizeRunIdGuard,
+  positiveInteger,
+  safeArtifactName,
+  safeJoin as safeJoinGuard,
+  stringField,
+} from "./artifact-fs.js";
+import { classifyAssistantContent, compactString } from "./content.js";
 import { redactJsonValue } from "./recorder.js";
 import type {
   JsonlRunReaderOptions,
@@ -13,9 +28,6 @@ import type {
   RunSummaryStatus,
 } from "./types.js";
 
-const DEFAULT_MAX_RUNS = 50;
-const DEFAULT_MAX_EVENTS_PER_RUN = 500;
-const DEFAULT_MAX_STRING_BYTES = 4_096;
 const SUMMARY_SUFFIX = ".summary.json";
 const EVENTS_SUFFIX = ".events.jsonl";
 
@@ -33,11 +45,14 @@ interface ParsedSummaryFile {
   readonly mtimeMs: number;
 }
 
-export class ObservabilityReadError extends Error {
-  readonly code: "invalid_reader_options" | "invalid_run_id";
-  readonly details: Record<string, unknown>;
+export type ObservabilityReadErrorCode = "invalid_reader_options" | "invalid_run_id";
+export type ObservabilityReadErrorDetails = Record<string, unknown> & { readonly code: ObservabilityReadErrorCode };
 
-  constructor(code: ObservabilityReadError["code"], message: string, details: Record<string, unknown> = {}) {
+export class ObservabilityReadError extends Error {
+  readonly code: ObservabilityReadErrorCode;
+  readonly details: ObservabilityReadErrorDetails;
+
+  constructor(code: ObservabilityReadErrorCode, message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.name = "ObservabilityReadError";
     this.code = code;
@@ -343,11 +358,11 @@ function eventSummary(
 ): string {
   const direct = stringField(record, "summary") ?? stringField(record, "text") ?? stringField(record, "delta") ?? stringField(record, "error");
   if (direct !== undefined) {
-    return compactString(direct, 220);
+    return compactString(direct);
   }
   const messageText = textFromMessage(record.message);
   if (messageText !== undefined) {
-    return compactString(messageText, 220);
+    return compactString(messageText);
   }
   if (category === "tool") {
     const status = stringField(record, "status") ?? stringField(record, "state");
@@ -362,7 +377,7 @@ function eventSummary(
   if (category === "thinking") {
     return "Runtime emitted a reasoning/thinking process event.";
   }
-  return compactString(JSON.stringify(redactJsonValue(payload, maxStringBytes)), 220);
+  return compactString(JSON.stringify(redactJsonValue(payload, maxStringBytes)));
 }
 
 function textFromMessage(value: unknown): string | undefined {
@@ -394,82 +409,37 @@ function textFromMessage(value: unknown): string | undefined {
 }
 
 function assistantMessageContentKind(event: Record<string, unknown>): "thinking" | "text" | undefined {
-  if (stringField(event, "type") !== "assistant" || !isRecord(event.message)) {
+  if (stringField(event, "type") !== "assistant") {
     return undefined;
   }
-  const content = event.message.content;
-  if (!Array.isArray(content) || content.length === 0) {
-    return undefined;
-  }
-
-  let kind: "thinking" | "text" | undefined;
-  for (const block of content) {
-    if (!isRecord(block) || (block.type !== "thinking" && block.type !== "text")) {
-      return undefined;
-    }
-    if (kind === undefined) {
-      kind = block.type;
-    } else if (kind !== block.type) {
-      return undefined;
-    }
-  }
-  return kind;
+  return classifyAssistantContent(event.message)?.kind;
 }
 
 function normalizeReaderOptions(options: JsonlRunReaderOptions): NormalizedReaderOptions {
   if (typeof options.artifactDir !== "string" || options.artifactDir.trim().length === 0) {
     throw new ObservabilityReadError("invalid_reader_options", "artifactDir must be a non-empty path.");
   }
+  const raiseOptions = (message: string, field: string): never => {
+    throw new ObservabilityReadError("invalid_reader_options", message, { field });
+  };
   return {
     artifactDir: resolve(options.artifactDir),
-    maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns"),
-    maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun"),
-    maxStringBytes: minInteger(options.maxStringBytes, DEFAULT_MAX_STRING_BYTES, 64, "maxStringBytes"),
+    maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns", raiseOptions),
+    maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun", raiseOptions),
+    maxStringBytes: minInteger(options.maxStringBytes, DEFAULT_MAX_STRING_BYTES, 64, "maxStringBytes", raiseOptions),
   };
 }
 
 function normalizeRunId(runId: string): string {
-  if (typeof runId !== "string" || runId.trim().length === 0) {
-    throw new ObservabilityReadError("invalid_run_id", "runId must be a non-empty string.");
-  }
-  if (runId.includes("/") || runId.includes("\\") || runId.includes("..")) {
-    throw new ObservabilityReadError("invalid_run_id", "runId cannot contain path separators or '..'.");
-  }
-  return runId.trim();
-}
-
-function positiveInteger(value: number | undefined, fallback: number, field: string): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (!Number.isInteger(value) || value < 1) {
-    throw new ObservabilityReadError("invalid_reader_options", `${field} must be a positive integer.`, { field });
-  }
-  return value;
-}
-
-function minInteger(value: number | undefined, fallback: number, min: number, field: string): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (!Number.isInteger(value) || value < min) {
-    throw new ObservabilityReadError("invalid_reader_options", `${field} must be an integer of at least ${min}.`, { field });
-  }
-  return value;
+  return normalizeRunIdGuard(runId, (message) => {
+    throw new ObservabilityReadError("invalid_run_id", message);
+  });
 }
 
 function safeJoin(root: string, fileName: string): string {
-  const normalizedRoot = normalize(resolve(root));
-  const resolved = normalize(join(normalizedRoot, fileName));
-  const safeRoot = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
-  if (!resolved.startsWith(safeRoot)) {
+  return safeJoinGuard(root, fileName, () => {
     throw new ObservabilityReadError("invalid_run_id", "Resolved artifact path escapes artifactDir.");
-  }
-  return resolved;
-}
-
-function safeArtifactName(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9._-]+/gu, "-").replace(/^-+|-+$/gu, "") || "run";
+  });
 }
 
 function runSummaryStatus(value: unknown): RunSummaryStatus | undefined {
@@ -488,11 +458,6 @@ function providerSessionIdField(value: unknown): string | null | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
-
 function finiteNumberField(record: Record<string, unknown>, key: string): number | undefined {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -501,24 +466,4 @@ function finiteNumberField(record: Record<string, unknown>, key: string): number
 function integerNumberField(record: Record<string, unknown>, key: string): number | undefined {
   const value = record[key];
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
-}
-
-function compactString(value: string, maxChars: number): string {
-  const compact = value.replace(/\s+/gu, " ").trim();
-  if (compact.length <= maxChars) {
-    return compact;
-  }
-  return `${compact.slice(0, maxChars)}…`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isErrno(error: unknown, code: string): boolean {
-  return isRecord(error) && error.code === code;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

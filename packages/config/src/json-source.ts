@@ -6,7 +6,7 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
-import type { MemoryScope, MemoryWriteMode } from "./types.js";
+import type { MemoryMode, MemoryScope, MemoryWriteMode } from "./types.js";
 
 export type MonoAgentLocalProviderModelJson = {
   readonly name?: string;
@@ -60,6 +60,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly selectedSkills?: readonly string[];
   };
   readonly memory?: {
+    readonly mode?: MemoryMode;
     readonly path?: string;
     readonly maxBytes?: number;
     readonly scope?: MemoryScope;

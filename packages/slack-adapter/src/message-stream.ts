@@ -1,3 +1,10 @@
+import {
+  DEFAULT_EMPTY_FINAL_TEXT,
+  DEFAULT_MAX_MESSAGE_CHARS,
+  buildStreamingTailPreview,
+  normalizeTrailing,
+  splitTextByCodePoints,
+} from "@mono-agent/agent-contracts";
 import type { AgentMessageStream as AgentMessageStreamBase } from "@mono-agent/agent-contracts";
 
 import type {
@@ -33,8 +40,7 @@ export interface SlackMessageStreamLogger {
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking...";
 const DEFAULT_EDIT_DEBOUNCE_MS = 750;
-const DEFAULT_MAX_MESSAGE_CHARS = 3_800;
-const EMPTY_FINAL_TEXT = "No response text was returned.";
+const EMPTY_FINAL_TEXT = DEFAULT_EMPTY_FINAL_TEXT;
 
 export class SlackMessageStream implements AgentMessageStream {
   private readonly api: SlackWebApi;
@@ -58,7 +64,10 @@ export class SlackMessageStream implements AgentMessageStream {
     this.api = options.api;
     this.channelId = options.channelId;
     this.threadTs = options.threadTs;
-    this.initialStatusText = normalizeSlackText(options.initialStatusText ?? DEFAULT_INITIAL_STATUS_TEXT);
+    this.initialStatusText = normalizeTrailing(
+      options.initialStatusText ?? DEFAULT_INITIAL_STATUS_TEXT,
+      EMPTY_FINAL_TEXT,
+    );
     this.statusText = this.initialStatusText;
     this.editDebounceMs = options.editDebounceMs ?? DEFAULT_EDIT_DEBOUNCE_MS;
     this.maxMessageChars = options.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
@@ -75,7 +84,7 @@ export class SlackMessageStream implements AgentMessageStream {
   async status(text: string): Promise<void> {
     this.assertOpen();
     await this.throwIfAsyncError();
-    this.statusText = normalizeSlackText(text);
+    this.statusText = normalizeTrailing(text, EMPTY_FINAL_TEXT);
     const hadMessage = this.sentMessage !== undefined;
     await this.ensureMessage();
     if (hadMessage) {
@@ -118,10 +127,11 @@ export class SlackMessageStream implements AgentMessageStream {
     await this.awaitInFlightUpdate();
     await this.throwIfAsyncError();
 
-    const finalMessageText = normalizeSlackText(
+    const finalMessageText = normalizeTrailing(
       this.currentText.length > 0 ? this.currentText : EMPTY_FINAL_TEXT,
+      EMPTY_FINAL_TEXT,
     );
-    const chunks = splitSlackText(finalMessageText, this.maxMessageChars);
+    const chunks = splitTextByCodePoints(finalMessageText, this.maxMessageChars);
     const [firstChunk, ...remainingChunks] = chunks;
 
     await this.ensureMessage();
@@ -175,7 +185,11 @@ export class SlackMessageStream implements AgentMessageStream {
   }
 
   private startInFlightUpdate(): void {
-    const text = buildStreamingPreview(this.currentText, this.maxMessageChars);
+    const text = buildStreamingTailPreview(
+      normalizeTrailing(this.currentText, EMPTY_FINAL_TEXT),
+      this.maxMessageChars,
+      "...\n",
+    );
     this.inFlightUpdate = this.flushUpdate(text).catch((error: unknown) => {
       this.lastAsyncError = error;
       this.logger?.error?.("Slack stream update failed.", {
@@ -191,7 +205,7 @@ export class SlackMessageStream implements AgentMessageStream {
     await this.api.chatUpdate({
       channel: this.channelId,
       ts: message.ts,
-      text: formatMarkdownForSlack(normalizeSlackText(text)),
+      text: formatMarkdownForSlack(normalizeTrailing(text, EMPTY_FINAL_TEXT)),
       mrkdwn: true,
     });
   }
@@ -227,39 +241,4 @@ export class SlackMessageStream implements AgentMessageStream {
       throw new Error("Cannot write to a finished SlackMessageStream.");
     }
   }
-}
-
-export function splitSlackText(text: string, maxChars: number): string[] {
-  if (!Number.isInteger(maxChars) || maxChars < 1) {
-    throw new RangeError("maxChars must be a positive integer.");
-  }
-
-  const normalized = normalizeSlackText(text);
-  const characters = Array.from(normalized);
-  if (characters.length <= maxChars) {
-    return [normalized];
-  }
-
-  const chunks: string[] = [];
-  for (let index = 0; index < characters.length; index += maxChars) {
-    chunks.push(characters.slice(index, index + maxChars).join(""));
-  }
-  return chunks;
-}
-
-function buildStreamingPreview(text: string, maxChars: number): string {
-  const normalized = normalizeSlackText(text);
-  const characters = Array.from(normalized);
-  if (characters.length <= maxChars) {
-    return normalized;
-  }
-
-  const prefix = "...\n";
-  const available = Math.max(1, maxChars - Array.from(prefix).length);
-  return `${prefix}${characters.slice(-available).join("")}`;
-}
-
-function normalizeSlackText(text: string): string {
-  const trimmed = text.trimEnd();
-  return trimmed.length > 0 ? trimmed : EMPTY_FINAL_TEXT;
 }

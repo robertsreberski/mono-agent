@@ -9,6 +9,7 @@ export type {
   MonoAgentConfigErrorDetails,
 } from "./config.js";
 export type {
+  EffortLevel,
   MemoryScope,
   MemoryWriteMode,
   MonoAgentConfig,
@@ -18,7 +19,6 @@ export type {
 } from "./types.js";
 export {
   loadMonoAgentConfigWithSources,
-  layerJsonOntoEnv,
 } from "./layered-loader.js";
 export type { LoadMonoAgentConfigWithSourcesInput } from "./layered-loader.js";
 export {
@@ -35,6 +35,7 @@ export type {
 export {
   artifactsFieldGroup,
   CORE_AGENT_FIELD_GROUPS,
+  EFFORT_LEVELS,
   identityFieldGroup,
   memoryFieldGroup,
   runtimeFieldGroup,

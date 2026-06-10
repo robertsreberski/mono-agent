@@ -1,8 +1,18 @@
 import {
   defineFieldGroup,
+  layerJsonOntoEnv,
+  readBoolean,
+  readCsv,
+  readJsonSection,
+  readRequired,
   readSettingsJson,
+  redactedSecret,
 } from "@mono-agent/settings";
-import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
+import type {
+  FieldGroup,
+  RedactedSecretValue,
+  SettingsJson,
+} from "@mono-agent/settings";
 
 export interface SlackAdapterConfig {
   readonly botToken: string;
@@ -15,8 +25,8 @@ export interface SlackAdapterConfig {
 }
 
 export interface RedactedSlackAdapterConfig {
-  readonly botToken: { readonly present: boolean; readonly redacted: true };
-  readonly appToken: { readonly present: boolean; readonly redacted: true };
+  readonly botToken: RedactedSecretValue;
+  readonly appToken: RedactedSecretValue;
   readonly allowedChannelIds: { readonly count: number };
   readonly allowAllChannels: boolean;
   readonly botUserIds: { readonly count: number };
@@ -117,26 +127,43 @@ export const slackFieldGroup: FieldGroup = defineFieldGroup({
   ],
 });
 
+const missingConfig = (
+  message: string,
+  details?: Record<string, unknown>,
+): SlackAdapterConfigError =>
+  new SlackAdapterConfigError("missing_required_config", message, details);
+
+const invalidConfig = (
+  message: string,
+  details?: Record<string, unknown>,
+): SlackAdapterConfigError =>
+  new SlackAdapterConfigError("invalid_config", message, details);
+
 export async function loadSlackAdapterConfig(
   input: LoadSlackAdapterConfigInput,
 ): Promise<SlackAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerSlackJsonOntoEnv(json, input.env);
-  const botToken = readRequired(env, "MONO_AGENT_SLACK_BOT_TOKEN");
-  const appToken = readRequired(env, "MONO_AGENT_SLACK_APP_TOKEN");
+  const botToken = readRequired(env.MONO_AGENT_SLACK_BOT_TOKEN, "MONO_AGENT_SLACK_BOT_TOKEN", missingConfig);
+  const appToken = readRequired(env.MONO_AGENT_SLACK_APP_TOKEN, "MONO_AGENT_SLACK_APP_TOKEN", missingConfig);
   const allowedChannelIds = readCsv(env.MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS);
-  const allowAllChannels = readBoolean(env.MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS, false, "MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS");
+  const allowAllChannels = readBoolean(
+    env.MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS,
+    "MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS",
+    false,
+    invalidConfig,
+  );
   const botUserIds = readCsv(env.MONO_AGENT_SLACK_BOT_USER_IDS);
   const mentionTextAliases = readCsv(env.MONO_AGENT_SLACK_MENTION_TEXT_ALIASES);
   const stripMentionText = readBoolean(
     env.MONO_AGENT_SLACK_STRIP_MENTION_TEXT,
-    botUserIds.length > 0 || mentionTextAliases.length > 0,
     "MONO_AGENT_SLACK_STRIP_MENTION_TEXT",
+    botUserIds.length > 0 || mentionTextAliases.length > 0,
+    invalidConfig,
   );
 
   if (!allowAllChannels && allowedChannelIds.length === 0) {
-    throw new SlackAdapterConfigError(
-      "missing_required_config",
+    throw missingConfig(
       "Slack adapter requires MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS or MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS=true.",
       { env: "MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS" },
     );
@@ -157,8 +184,8 @@ export function redactSlackAdapterConfig(
   config: SlackAdapterConfig,
 ): RedactedSlackAdapterConfig {
   return {
-    botToken: { present: config.botToken.length > 0, redacted: true },
-    appToken: { present: config.appToken.length > 0, redacted: true },
+    botToken: redactedSecret(config.botToken),
+    appToken: redactedSecret(config.appToken),
     allowedChannelIds: { count: config.allowedChannelIds.length },
     allowAllChannels: config.allowAllChannels,
     botUserIds: { count: config.botUserIds.length },
@@ -171,98 +198,14 @@ function layerSlackJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readSlackSection(json);
-  const fromJson: Record<string, string | undefined> = {};
-  if (typeof section.botToken === "string") {
-    fromJson.MONO_AGENT_SLACK_BOT_TOKEN = section.botToken;
-  }
-  if (typeof section.appToken === "string") {
-    fromJson.MONO_AGENT_SLACK_APP_TOKEN = section.appToken;
-  }
-  if (Array.isArray(section.allowedChannelIds)) {
-    fromJson.MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS = section.allowedChannelIds
-      .filter((value): value is string => typeof value === "string")
-      .join(",");
-  }
-  if (typeof section.allowAllChannels === "boolean") {
-    fromJson.MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS = section.allowAllChannels ? "true" : "false";
-  }
-  if (Array.isArray(section.botUserIds)) {
-    fromJson.MONO_AGENT_SLACK_BOT_USER_IDS = section.botUserIds
-      .filter((value): value is string => typeof value === "string")
-      .join(",");
-  }
-  if (Array.isArray(section.mentionTextAliases)) {
-    fromJson.MONO_AGENT_SLACK_MENTION_TEXT_ALIASES = section.mentionTextAliases
-      .filter((value): value is string => typeof value === "string")
-      .join(",");
-  }
-  if (typeof section.stripMentionText === "boolean") {
-    fromJson.MONO_AGENT_SLACK_STRIP_MENTION_TEXT = section.stripMentionText ? "true" : "false";
-  }
-
-  const layered: Record<string, string | undefined> = { ...fromJson };
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) {
-      layered[key] = value;
-    }
-  }
-  return layered;
-}
-
-function readSlackSection(json: SettingsJson): Record<string, unknown> {
-  const section = json.slack;
-  if (section !== null && typeof section === "object" && !Array.isArray(section)) {
-    return section as Record<string, unknown>;
-  }
-  return {};
-}
-
-function readRequired(env: Record<string, string | undefined>, name: string): string {
-  const value = normalizeOptionalString(env[name]);
-  if (value === undefined) {
-    throw new SlackAdapterConfigError("missing_required_config", `${name} is required.`, { env: name });
-  }
-  return value;
-}
-
-function readCsv(raw: string | undefined): readonly string[] {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return [];
-  }
-  return normalized
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-}
-
-function readBoolean(
-  raw: string | undefined,
-  defaultValue: boolean,
-  envName: string,
-): boolean {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new SlackAdapterConfigError(
-    "invalid_config",
-    `${envName} must be true or false.`,
-    { env: envName },
-  );
-}
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
+  const section = readJsonSection(json, "slack");
+  return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_SLACK_BOT_TOKEN", value: section.botToken },
+    { env: "MONO_AGENT_SLACK_APP_TOKEN", value: section.appToken },
+    { env: "MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS", value: section.allowedChannelIds, kind: "csv" },
+    { env: "MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS", value: section.allowAllChannels, kind: "boolean" },
+    { env: "MONO_AGENT_SLACK_BOT_USER_IDS", value: section.botUserIds, kind: "csv" },
+    { env: "MONO_AGENT_SLACK_MENTION_TEXT_ALIASES", value: section.mentionTextAliases, kind: "csv" },
+    { env: "MONO_AGENT_SLACK_STRIP_MENTION_TEXT", value: section.stripMentionText, kind: "boolean" },
+  ]);
 }

@@ -16,14 +16,14 @@ mono-agent-tui --help
 ```
 
 ```ts
-import { startTui } from "@mono-agent/tui";
+import { startMonoAgentTui } from "@mono-agent/tui";
 ```
 
 Hosts supply a structural responder compatible with `@mono-agent/agent-contracts` and decide how config files are loaded.
 
 ## Public API
 
-- `startTui`
+- `startMonoAgentTui`
 - TUI app/component types and message-stream helpers
 - Structural `AgentResponder` aliases and cancellation helpers backed by `@mono-agent/agent-contracts`
 - Read-only config summary helpers

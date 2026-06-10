@@ -1,6 +1,12 @@
 import {
   defineFieldGroup,
+  layerJsonOntoEnv,
+  readBoolean,
+  readChoice,
+  readInteger,
+  readJsonSection,
   readSettingsJson,
+  readString,
 } from "@mono-agent/settings";
 import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
 
@@ -32,6 +38,11 @@ const DEFAULT_PATH = "/webhook/invoke";
 const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
+
+const WEBHOOK_MODES: readonly WebhookInvocationMode[] = ["sync", "async"];
+
+const invalidConfig = (message: string, details?: Record<string, unknown>): WebhookAdapterError =>
+  new WebhookAdapterError("invalid_config", message, details);
 
 export const webhookFieldGroup: FieldGroup = defineFieldGroup({
   id: "webhook",
@@ -117,16 +128,15 @@ export async function loadWebhookAdapterConfig(
 ): Promise<WebhookAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerWebhookJsonOntoEnv(json, input.env);
-  const defaultMode = readMode(env.MONO_AGENT_WEBHOOK_DEFAULT_MODE);
   return {
-    enabled: readBoolean(env.MONO_AGENT_WEBHOOK_ENABLED, DEFAULT_ENABLED, "MONO_AGENT_WEBHOOK_ENABLED"),
+    enabled: readBoolean(env.MONO_AGENT_WEBHOOK_ENABLED, "MONO_AGENT_WEBHOOK_ENABLED", DEFAULT_ENABLED, invalidConfig),
     host: readString(env.MONO_AGENT_WEBHOOK_HOST, DEFAULT_HOST),
-    port: readInteger(env.MONO_AGENT_WEBHOOK_PORT, DEFAULT_PORT, "MONO_AGENT_WEBHOOK_PORT", { min: 0, max: 65535 }),
+    port: readInteger(env.MONO_AGENT_WEBHOOK_PORT, "MONO_AGENT_WEBHOOK_PORT", DEFAULT_PORT, invalidConfig, { min: 0, max: 65535 }),
     path: readString(env.MONO_AGENT_WEBHOOK_PATH, DEFAULT_PATH),
-    allowNonLoopback: readBoolean(env.MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK, false, "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK"),
-    defaultMode,
-    retentionMs: readInteger(env.MONO_AGENT_WEBHOOK_RETENTION_MS, DEFAULT_RETENTION_MS, "MONO_AGENT_WEBHOOK_RETENTION_MS", { min: 1, max: 86_400_000 }),
-    maxStoredRequests: readInteger(env.MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS, DEFAULT_MAX_STORED_REQUESTS, "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", { min: 1, max: 10_000 }),
+    allowNonLoopback: readBoolean(env.MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK, "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", false, invalidConfig),
+    defaultMode: readChoice(env.MONO_AGENT_WEBHOOK_DEFAULT_MODE, "MONO_AGENT_WEBHOOK_DEFAULT_MODE", WEBHOOK_MODES, DEFAULT_MODE, invalidConfig),
+    retentionMs: readInteger(env.MONO_AGENT_WEBHOOK_RETENTION_MS, "MONO_AGENT_WEBHOOK_RETENTION_MS", DEFAULT_RETENTION_MS, invalidConfig, { min: 1, max: 86_400_000 }),
+    maxStoredRequests: readInteger(env.MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS, "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", DEFAULT_MAX_STORED_REQUESTS, invalidConfig, { min: 1, max: 10_000 }),
   };
 }
 
@@ -138,107 +148,15 @@ function layerWebhookJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readWebhookSection(json);
-  const fromJson: Record<string, string | undefined> = {};
-  setBoolean(fromJson, "MONO_AGENT_WEBHOOK_ENABLED", section.enabled);
-  setString(fromJson, "MONO_AGENT_WEBHOOK_HOST", section.host);
-  setInteger(fromJson, "MONO_AGENT_WEBHOOK_PORT", section.port);
-  setString(fromJson, "MONO_AGENT_WEBHOOK_PATH", section.path);
-  setBoolean(fromJson, "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", section.allowNonLoopback);
-  setString(fromJson, "MONO_AGENT_WEBHOOK_DEFAULT_MODE", section.defaultMode);
-  setInteger(fromJson, "MONO_AGENT_WEBHOOK_RETENTION_MS", section.retentionMs);
-  setInteger(fromJson, "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", section.maxStoredRequests);
-
-  const layered: Record<string, string | undefined> = { ...fromJson };
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) {
-      layered[key] = value;
-    }
-  }
-  return layered;
-}
-
-function readWebhookSection(json: SettingsJson): Record<string, unknown> {
-  const section = json.webhook;
-  if (section !== null && typeof section === "object" && !Array.isArray(section)) {
-    return section as Record<string, unknown>;
-  }
-  return {};
-}
-
-function readString(raw: string | undefined, defaultValue: string): string {
-  return normalizeOptionalString(raw) ?? defaultValue;
-}
-
-function readMode(raw: string | undefined): WebhookInvocationMode {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return DEFAULT_MODE;
-  }
-  if (normalized === "sync" || normalized === "async") {
-    return normalized;
-  }
-  throw new WebhookAdapterError("invalid_config", "MONO_AGENT_WEBHOOK_DEFAULT_MODE must be sync or async.", {
-    reason: normalized,
-  });
-}
-
-function readBoolean(raw: string | undefined, defaultValue: boolean, envName: string): boolean {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new WebhookAdapterError("invalid_config", `${envName} must be true or false.`, { reason: normalized });
-}
-
-function readInteger(
-  raw: string | undefined,
-  defaultValue: number,
-  envName: string,
-  bounds: { readonly min: number; readonly max: number },
-): number {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (!/^\d+$/u.test(normalized)) {
-    throw new WebhookAdapterError("invalid_config", `${envName} must be an integer.`);
-  }
-  const value = Number(normalized);
-  if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
-    throw new WebhookAdapterError("invalid_config", `${envName} must be between ${bounds.min} and ${bounds.max}.`);
-  }
-  return value;
-}
-
-function setString(out: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "string") {
-    out[key] = value;
-  }
-}
-
-function setBoolean(out: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "boolean") {
-    out[key] = value ? "true" : "false";
-  }
-}
-
-function setInteger(out: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (Number.isInteger(value)) {
-    out[key] = String(value);
-  }
-}
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
+  const section = readJsonSection(json, "webhook");
+  return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_WEBHOOK_ENABLED", value: section.enabled, kind: "boolean" },
+    { env: "MONO_AGENT_WEBHOOK_HOST", value: section.host },
+    { env: "MONO_AGENT_WEBHOOK_PORT", value: section.port, kind: "integer" },
+    { env: "MONO_AGENT_WEBHOOK_PATH", value: section.path },
+    { env: "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", value: section.allowNonLoopback, kind: "boolean" },
+    { env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", value: section.defaultMode },
+    { env: "MONO_AGENT_WEBHOOK_RETENTION_MS", value: section.retentionMs, kind: "integer" },
+    { env: "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", value: section.maxStoredRequests, kind: "integer" },
+  ]);
 }

@@ -292,11 +292,13 @@ function sendFallbackShell(res: ServerResponse, deps: HandlerDeps): void {
 }
 
 function injectRuntime(html: string, deps: HandlerDeps): string {
+  // Only the fields the SPA actually reads (see client/runtime.ts). Field
+  // groups arrive via GET /api/schema and traceability availability is
+  // derived from the /api/traceability responses, so neither needs to be
+  // baked into the shell.
   const runtime = {
     baseUrl: "",
     token: deps.token,
-    fieldGroupIds: deps.fieldGroups.map((g) => g.id),
-    traceabilityEnabled: deps.traceability !== undefined || deps.observability !== undefined,
   };
   const tag = `<script>window.__OPERATOR_CONSOLE__ = ${JSON.stringify(runtime)};</script>`;
   if (html.includes("</head>")) {

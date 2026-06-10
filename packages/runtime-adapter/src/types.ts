@@ -11,7 +11,22 @@ export type MonoRuntimeBackendId =
   | "claude-sdk"
   | "claude-code-cli"
   | "codex-app-cli"
+  | "openai-agents-sdk"
   | "pi-sdk";
+
+/**
+ * One row of the additive (sdk, executionMode) -> backend selection table. This
+ * is a declarative building block exported alongside the backend descriptors; it
+ * does not itself perform routing. `sdkAliases` lists every accepted spelling of
+ * the sdk id for that backend (canonical first), so a runtime's fail-closed
+ * `model.sdk` guard and the table share one vocabulary.
+ */
+export interface MonoRuntimeSelectionEntry {
+  readonly sdk: string;
+  readonly sdkAliases: readonly string[];
+  readonly executionMode: RuntimeExecutionMode;
+  readonly backendId: MonoRuntimeBackendId;
+}
 
 export type MonoRuntimeBackendTransport = "sdk" | "cli";
 
