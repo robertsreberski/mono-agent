@@ -1,9 +1,42 @@
 export {
   defineFieldGroup,
   readFieldValue,
+  readRawFieldValue,
   writeFieldValue,
 } from "./field-group.js";
 export type { FieldValue } from "./field-group.js";
+export {
+  layerJsonOntoEnv,
+  normalizeOptionalString,
+  readBoolean,
+  readChoice,
+  readCsv,
+  readInteger,
+  readJsonSection,
+  readRecord,
+  readRequired,
+  readString,
+  redactedSecret,
+} from "./config-loader.js";
+export type {
+  ConfigErrorFactory,
+  EnvEncodeKind,
+  JsonEnvMapping,
+  RedactedSecretValue,
+} from "./config-loader.js";
+export {
+  assertSafeBind,
+  close,
+  hostForUrl,
+  isLoopbackHost,
+  listen,
+} from "./host-safety.js";
+export type { ListenErrorFactories } from "./host-safety.js";
+export {
+  bearerTokensEqual,
+  generateBearerToken,
+  readAuthorizationBearer,
+} from "./bearer.js";
 export {
   SettingsJsonError,
   readSettingsJson,
@@ -20,8 +53,8 @@ export type {
   PatchValidationOk,
   PatchValidationResult,
 } from "./patch-validator.js";
-export { redactSettingsForFieldGroups } from "./redact.js";
-export type { RedactedSecret } from "./redact.js";
+export { isSecretMarker, redactSettingsForFieldGroups } from "./redact.js";
+export type { RedactedSecret, SecretMarker } from "./redact.js";
 export type {
   FieldDefinition,
   FieldGroup,

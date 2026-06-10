@@ -1,3 +1,11 @@
+import {
+  CodedError,
+  acceptedSdkIdsForBackend,
+  assertBaseRunOptions,
+  buildRuntimeResult,
+  isPlainObject,
+  readLastStringUserMessage,
+} from "@worklab-ai/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
 
 import { normalizeCodexItemEvent } from "./codex-events.js";
@@ -32,13 +40,27 @@ export interface CodexClientFactoryInput {
   readonly onWarning: (message: string) => void;
 }
 
-export class CodexAppRuntimeError extends Error {
-  readonly code: string;
+export type CodexAppRuntimeErrorCode =
+  | "invalid_options"
+  | "thread_start_failed"
+  | "runtime_error"
+  | "cancelled";
 
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "CodexAppRuntimeError";
-    this.code = code;
+export interface CodexAppRuntimeErrorDetails {
+  /** Tail of the codex subprocess stderr, when captured. */
+  readonly stderrTail?: string;
+  /** Codex thread id (provider session id), when a thread was started. */
+  readonly providerSessionId?: string;
+  readonly [key: string]: unknown;
+}
+
+export class CodexAppRuntimeError extends CodedError<CodexAppRuntimeErrorCode> {
+  constructor(
+    code: CodexAppRuntimeErrorCode,
+    message: string,
+    details: CodexAppRuntimeErrorDetails = {},
+  ) {
+    super(code, message, details);
   }
 }
 
@@ -58,12 +80,14 @@ const CLIENT_INFO = {
   version: "0.1.0",
 } as const;
 
+const ACCEPTED_SDK_IDS = new Set(acceptedSdkIdsForBackend("codex-app-cli"));
+
 export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): MonoRuntimeLike {
   return {
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {
       assertRunOptions(systemPrompt, runOptions);
       const startedAt = Date.now();
-      const userMessage = readUserMessage(runOptions);
+      const userMessage = readLastStringUserMessage(runOptions, makeError, "Codex app runtime");
 
       const command = options.command ?? DEFAULTS.command;
       const args = options.args ?? DEFAULTS.args;
@@ -103,7 +127,7 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
           return;
         }
         if (method === "turn/completed") {
-          if (isObject(params.usage)) {
+          if (isPlainObject(params.usage)) {
             turnUsage = params.usage;
           }
           const turnError = failedTurnMessage(params);
@@ -115,7 +139,7 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
           resolveTurnCompleted?.();
           return;
         }
-        if (method === "thread/tokenUsage/updated" && isObject(params.tokenUsage)) {
+        if (method === "thread/tokenUsage/updated" && isPlainObject(params.tokenUsage)) {
           turnUsage = params.tokenUsage;
           return;
         }
@@ -137,7 +161,7 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
           return;
         }
         if (method === "item/started" || method === "item/completed") {
-          const item = isObject(params.item) ? (params.item as Record<string, unknown>) : undefined;
+          const item = isPlainObject(params.item) ? (params.item as Record<string, unknown>) : undefined;
           if (item !== undefined && item.type === "agentMessage" && method === "item/completed") {
             const id = typeof item.id === "string" ? item.id : "agent_message";
             const text = typeof item.text === "string" && item.text.length > 0
@@ -263,21 +287,19 @@ export function createCodexAppRuntime(options: CodexAppRuntimeOptions = {}): Mon
         diagnostics.stderr_tail = stderrTail;
       }
 
-      const result: RuntimeResult = {
-        ...(finalText === undefined ? {} : { text: finalText }),
+      return buildRuntimeResult({
+        text: finalText,
         events,
-        sdk: runOptions.model.sdk,
-        model: runOptions.model.model,
+        model: runOptions.model,
         numTurns: activeTurnId === undefined ? 0 : 1,
         durationMs,
-        ...(turnUsage === undefined ? {} : { usage: turnUsage }),
-        ...(threadId === undefined ? {} : { providerSessionId: threadId }),
-        ...(cancelled ? { cancelled: true } : {}),
-        ...(failureKind === undefined ? {} : { failureKind }),
-        ...(errorMessage === undefined ? {} : { error: errorMessage }),
+        usage: turnUsage,
+        providerSessionId: threadId,
+        cancelled,
+        failureKind,
+        error: errorMessage,
         diagnostics,
-      };
-      return result;
+      });
     },
   };
 }
@@ -286,27 +308,20 @@ function defaultClientFactory(input: CodexClientFactoryInput): JsonRpcClient {
   return createJsonRpcClient(input);
 }
 
-function assertRunOptions(systemPrompt: string, runOptions: RuntimeRunOptions): void {
-  if (typeof systemPrompt !== "string" || systemPrompt.trim().length === 0) {
-    throw new CodexAppRuntimeError("invalid_options", "Codex app runtime requires a non-empty system prompt.");
-  }
-  if (!runOptions || !runOptions.model || typeof runOptions.model.model !== "string" || runOptions.model.model.length === 0) {
-    throw new CodexAppRuntimeError("invalid_options", "Codex app runtime requires runOptions.model.model.");
-  }
-  if (!(runOptions.abortSignal instanceof AbortSignal)) {
-    throw new CodexAppRuntimeError("invalid_options", "Codex app runtime requires runOptions.abortSignal.");
-  }
+function makeError(code: "invalid_options", message: string): CodexAppRuntimeError {
+  return new CodexAppRuntimeError(code, message);
 }
 
-function readUserMessage(runOptions: RuntimeRunOptions): string {
-  const last = runOptions.messages[runOptions.messages.length - 1];
-  if (last === undefined) {
-    throw new CodexAppRuntimeError("invalid_options", "Codex app runtime requires at least one message.");
+function assertRunOptions(systemPrompt: string, runOptions: RuntimeRunOptions): void {
+  assertBaseRunOptions(systemPrompt, runOptions, makeError, "Codex app runtime");
+  const sdk = runOptions.model.sdk;
+  if (typeof sdk !== "string" || !ACCEPTED_SDK_IDS.has(sdk)) {
+    throw new CodexAppRuntimeError(
+      "invalid_options",
+      `Codex app runtime only serves sdk ${[...ACCEPTED_SDK_IDS].join("/")}; received ${String(sdk)}.`,
+      { receivedSdk: sdk },
+    );
   }
-  if (typeof last.content !== "string") {
-    throw new CodexAppRuntimeError("invalid_options", "Codex app runtime only supports string message content.");
-  }
-  return last.content;
 }
 
 function buildTurnInputText(systemPrompt: string, userMessage: string): string {
@@ -403,36 +418,36 @@ async function waitForTurnCompletion(turnCompleted: Promise<void>, abortSignal: 
 }
 
 function extractThreadId(value: unknown): string | undefined {
-  if (isObject(value) && typeof value.threadId === "string") {
+  if (isPlainObject(value) && typeof value.threadId === "string") {
     return value.threadId;
   }
-  if (isObject(value) && typeof value.thread_id === "string") {
+  if (isPlainObject(value) && typeof value.thread_id === "string") {
     return value.thread_id;
   }
-  if (isObject(value) && isObject(value.thread) && typeof value.thread.id === "string") {
+  if (isPlainObject(value) && isPlainObject(value.thread) && typeof value.thread.id === "string") {
     return value.thread.id;
   }
-  if (isObject(value) && isObject(value.thread) && typeof value.thread.sessionId === "string") {
+  if (isPlainObject(value) && isPlainObject(value.thread) && typeof value.thread.sessionId === "string") {
     return value.thread.sessionId;
   }
   return undefined;
 }
 
 function extractTurnId(value: unknown): string | undefined {
-  if (isObject(value) && typeof value.turnId === "string") {
+  if (isPlainObject(value) && typeof value.turnId === "string") {
     return value.turnId;
   }
-  if (isObject(value) && typeof value.turn_id === "string") {
+  if (isPlainObject(value) && typeof value.turn_id === "string") {
     return value.turn_id;
   }
-  if (isObject(value) && isObject(value.turn) && typeof value.turn.id === "string") {
+  if (isPlainObject(value) && isPlainObject(value.turn) && typeof value.turn.id === "string") {
     return value.turn.id;
   }
   return undefined;
 }
 
 function failedTurnMessage(params: Record<string, unknown>): string | undefined {
-  const turn = isObject(params.turn) ? params.turn : params;
+  const turn = isPlainObject(params.turn) ? params.turn : params;
   if (turn.status !== "failed") {
     return undefined;
   }
@@ -443,7 +458,7 @@ function errorMessageFromValue(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim().length > 0) {
     return value;
   }
-  if (isObject(value) && typeof value.message === "string" && value.message.trim().length > 0) {
+  if (isPlainObject(value) && typeof value.message === "string" && value.message.trim().length > 0) {
     return value.message;
   }
   return undefined;
@@ -456,6 +471,3 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

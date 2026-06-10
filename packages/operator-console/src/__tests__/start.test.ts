@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +40,40 @@ function startTestConsole(
   });
 }
 
+/**
+ * Issue a raw HTTP GET with the path sent verbatim. `fetch`/undici normalize
+ * `..` segments out of the URL before they reach the wire, so we drop down to
+ * node:http to exercise the server's static path-traversal guard directly.
+ */
+function rawGet(
+  url: string,
+  rawPath: string,
+): Promise<{ readonly status: number; readonly body: string }> {
+  const target = new URL(url);
+  return new Promise((resolveRequest, rejectRequest) => {
+    const req = httpRequest(
+      {
+        hostname: target.hostname,
+        port: target.port,
+        method: "GET",
+        path: rawPath,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolveRequest({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+    req.on("error", rejectRequest);
+    req.end();
+  });
+}
+
 let dir: string;
 
 beforeEach(async () => {
@@ -72,7 +107,10 @@ describe("startOperatorConsole", () => {
       expect(response.status).toBe(200);
       expect(html).toContain("window.__OPERATOR_CONSOLE__");
       expect(html).toContain("\"token\":\"test-token\"");
-      expect(html).toContain("\"fieldGroupIds\":[");
+      // The shell only injects fields the SPA reads (baseUrl + token); it
+      // must not bake the field-group ids or a traceability flag in.
+      expect(html).not.toContain("fieldGroupIds");
+      expect(html).not.toContain("traceabilityEnabled");
     } finally {
       await bridge.stop();
     }
@@ -653,6 +691,21 @@ describe("startOperatorConsole", () => {
       expect(response.status).toBe(400);
       const body = (await response.json()) as { error: string };
       expect(body.error).toBe("invalid_run_id");
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("rejects static path traversal with 403", async () => {
+    const bridge = await startTestConsole({
+      configPath: join(dir, "config.json"),
+      token: "test-token",
+    });
+    try {
+      const response = await rawGet(bridge.url, "/../secret");
+      expect(response.status).toBe(403);
+      const body = JSON.parse(response.body) as { error: string };
+      expect(body.error).toBe("forbidden");
     } finally {
       await bridge.stop();
     }

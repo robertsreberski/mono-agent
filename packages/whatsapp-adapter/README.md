@@ -33,9 +33,8 @@ Hosts provide a Baileys socket, adapter options, and a structural `AgentResponde
 - `createBaileysWhatsAppSocket`
 - `normalizeWhatsAppMessage`, `isGroupJid`
 - `WhatsAppMessageStream`, `splitWhatsAppText`
-- `createRuntimeResponder`
 - `loadWhatsAppAdapterConfig`, `redactWhatsAppAdapterConfig`, `whatsappFieldGroup`
-- WhatsApp socket, message, trigger, config, runtime-responder, and event-runner types
+- WhatsApp socket, message, trigger, config, and event-runner types
 
 ## Dependency Boundary
 

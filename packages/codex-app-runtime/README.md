@@ -26,6 +26,8 @@ const responder = createConfiguredAgentResponder({
 });
 ```
 
+The runtime serves the `codex-app-cli` backend; its `model.sdk` guard accepts `"codex"` and rejects any other sdk fail-closed.
+
 The `codex` CLI must be on `PATH` (install via `pnpm add -D @openai/codex` to get the binary, or `brew install --cask codex`). `OPENAI_API_KEY` must be set in the environment, or supplied via `createCodexAppRuntime({ apiKey })`.
 
 ## Public API

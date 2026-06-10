@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
+import { CodedError, isPlainObject } from "@worklab-ai/runtime-adapter";
+
 export interface JsonRpcClientOptions {
   readonly command: string;
   readonly args: readonly string[];
@@ -30,13 +32,29 @@ interface PendingEntry {
   readonly timer: NodeJS.Timeout;
 }
 
-export class JsonRpcClientError extends Error {
-  readonly code: string;
+export type JsonRpcClientErrorCode =
+  | "rpc_error"
+  | "process_exit"
+  | "process_error"
+  | "client_closed"
+  | "request_timeout"
+  | "write_error";
 
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = "JsonRpcClientError";
-    this.code = code;
+export interface JsonRpcClientErrorDetails {
+  /** JSON-RPC method that was in flight when the error occurred, when known. */
+  readonly method?: string;
+  /** Process exit code for process_exit errors. */
+  readonly exitCode?: number | null;
+  readonly [key: string]: unknown;
+}
+
+export class JsonRpcClientError extends CodedError<JsonRpcClientErrorCode> {
+  constructor(
+    code: JsonRpcClientErrorCode,
+    message: string,
+    details: JsonRpcClientErrorDetails = {},
+  ) {
+    super(code, message, details);
   }
 }
 
@@ -75,7 +93,7 @@ export function createJsonRpcClient(options: JsonRpcClientOptions): JsonRpcClien
       options.onWarning(`Malformed Codex stdout line: ${truncate(trimmed, 240)}`);
       return;
     }
-    if (!isObject(message)) {
+    if (!isPlainObject(message)) {
       options.onWarning(`Unexpected Codex stdout shape: ${truncate(trimmed, 240)}`);
       return;
     }
@@ -96,14 +114,14 @@ export function createJsonRpcClient(options: JsonRpcClientOptions): JsonRpcClien
       return;
     }
     if (typeof message.method === "string") {
-      const params = isObject(message.params) ? message.params : {};
+      const params = isPlainObject(message.params) ? message.params : {};
       options.onNotification(message.method, params);
     }
   });
 
   child.on("exit", (code) => {
     closed = true;
-    rejectAll(new JsonRpcClientError("process_exit", `Codex process exited with code ${code ?? "null"}.`));
+    rejectAll(new JsonRpcClientError("process_exit", `Codex process exited with code ${code ?? "null"}.`, { exitCode: code }));
   });
 
   child.on("error", (error) => {
@@ -138,7 +156,7 @@ export function createJsonRpcClient(options: JsonRpcClientOptions): JsonRpcClien
       return await new Promise<unknown>((resolve, reject) => {
         const timer: NodeJS.Timeout = setTimeout(() => {
           pending.delete(id);
-          reject(new JsonRpcClientError("request_timeout", `Codex RPC ${input.method} timed out after ${input.timeoutMs}ms.`));
+          reject(new JsonRpcClientError("request_timeout", `Codex RPC ${input.method} timed out after ${input.timeoutMs}ms.`, { method: input.method }));
         }, input.timeoutMs);
         pending.set(id, { resolve, reject, timer });
         try {
@@ -192,10 +210,6 @@ function filterEnv(env: Record<string, string | undefined>): Record<string, stri
     }
   }
   return out;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function truncate(value: string, max: number): string {

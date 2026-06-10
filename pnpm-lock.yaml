@@ -50,9 +50,21 @@ importers:
       '@worklab-ai/cron-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/cron-adapter
+      '@worklab-ai/memory-graph':
+        specifier: workspace:^0.1.0
+        version: link:packages/memory-graph
+      '@worklab-ai/memory-journal':
+        specifier: workspace:^0.1.0
+        version: link:packages/memory-journal
+      '@worklab-ai/memory-mcp':
+        specifier: workspace:^0.1.0
+        version: link:packages/memory-mcp
       '@worklab-ai/memory-md':
         specifier: workspace:^0.1.0
         version: link:packages/memory-md
+      '@worklab-ai/memory-search':
+        specifier: workspace:^0.1.0
+        version: link:packages/memory-search
       '@worklab-ai/observability':
         specifier: workspace:^0.1.0
         version: link:packages/observability
@@ -170,6 +182,12 @@ importers:
       '@worklab-ai/config':
         specifier: workspace:^0.1.0
         version: link:../config
+      '@worklab-ai/memory-graph':
+        specifier: workspace:^0.1.0
+        version: link:../memory-graph
+      '@worklab-ai/memory-journal':
+        specifier: workspace:^0.1.0
+        version: link:../memory-journal
       '@worklab-ai/memory-md':
         specifier: workspace:^0.1.0
         version: link:../memory-md
@@ -191,6 +209,9 @@ importers:
       '@worklab-ai/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
+      '@worklab-ai/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -245,7 +266,35 @@ importers:
         specifier: ^5.5.0
         version: 5.5.0
 
+  packages/memory-graph: {}
+
+  packages/memory-journal:
+    dependencies:
+      '@worklab-ai/memory-md':
+        specifier: workspace:^0.1.0
+        version: link:../memory-md
+
+  packages/memory-mcp:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
+      '@worklab-ai/memory-graph':
+        specifier: workspace:^0.1.0
+        version: link:../memory-graph
+      '@worklab-ai/memory-journal':
+        specifier: workspace:^0.1.0
+        version: link:../memory-journal
+      '@worklab-ai/memory-search':
+        specifier: workspace:^0.1.0
+        version: link:../memory-search
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   packages/memory-md: {}
+
+  packages/memory-search: {}
 
   packages/observability: {}
 
@@ -341,6 +390,9 @@ importers:
 
   packages/runtime-adapter:
     dependencies:
+      '@worklab-ai/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
       '@worklab-ai/agent-runtime':
         specifier: ^0.1.7
         version: 0.1.7(@cfworker/json-schema@4.1.1)(ws@8.20.1)

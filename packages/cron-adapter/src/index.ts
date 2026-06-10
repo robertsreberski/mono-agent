@@ -17,6 +17,7 @@ export {
   cronFieldGroup,
   loadCronAdapterConfig,
   redactCronAdapterConfig,
+  toCronJobs,
 } from "./config.js";
 export type {
   CronAdapterConfig,

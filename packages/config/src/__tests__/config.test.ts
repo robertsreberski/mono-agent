@@ -44,6 +44,7 @@ describe("loadMonoAgentConfig", () => {
       selectedSkills: ["research", "review"],
     });
     expect(config.memory).toEqual({
+      mode: "markdown",
       path: "/repo/memory.md",
       maxBytes: 2048,
       scope: "single-file",
@@ -97,7 +98,7 @@ describe("loadMonoAgentConfig", () => {
     expect(redacted.providers?.local[0]).toMatchObject({
       id: "ollama",
       type: "ollama",
-      apiKeyPresent: true,
+      apiKey: { present: true, redacted: true },
     });
     expect(JSON.stringify(redacted)).not.toContain("local-secret");
   });

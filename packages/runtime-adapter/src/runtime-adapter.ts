@@ -8,6 +8,7 @@ import type {
   MonoRuntimeBackendId,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
+  MonoRuntimeSelectionEntry,
   MonoRuntimeSupportDescription,
   RuntimeExecutionMode,
   RuntimeModelReference,
@@ -187,7 +188,14 @@ function normalizeRuntimeModelReference(value: unknown): RuntimeModelReference {
 
 interface RuntimeBackendDefinition {
   readonly id: MonoRuntimeBackendId;
-  readonly runtimeBridgeId: string;
+  /**
+   * Agent-runtime bridge id whose capabilities back this descriptor. Omit (use
+   * `inlineCapabilities` instead) for standalone backends that are not routed
+   * through @worklab-ai/agent-runtime, e.g. the @openai/agents runtime.
+   */
+  readonly runtimeBridgeId?: string;
+  /** Self-described capabilities for backends with no agent-runtime bridge. */
+  readonly inlineCapabilities?: MonoRuntimeBackendCapabilities;
   readonly label: string;
   readonly sdk: RuntimeModelReference["sdk"];
   readonly executionMode: RuntimeExecutionMode;
@@ -232,6 +240,30 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     acceptsProviderIds: false,
   },
   {
+    id: "openai-agents-sdk",
+    // No agent-runtime bridge: @openai/agents is driven directly by
+    // @worklab-ai/openai-agents-runtime, so capabilities are self-described.
+    inlineCapabilities: {
+      kind: "openai-agents",
+      runtime: "sdk",
+      streaming: true,
+      structured_output: false,
+      supports_session_resume: false,
+      supports_mcp: true,
+      supports_skills: false,
+      supports_builtin_tools: false,
+      supports_live_input: false,
+      supports_native_subagents: false,
+    },
+    label: "OpenAI Agents SDK",
+    sdk: "openai",
+    executionMode: "sdk",
+    transport: "sdk",
+    providerBoundary: "@openai/agents via @worklab-ai/openai-agents-runtime",
+    modelReferenceExamples: ["openai:gpt-5"],
+    acceptsProviderIds: false,
+  },
+  {
     id: "pi-sdk",
     runtimeBridgeId: "pi",
     label: "Pi SDK provider",
@@ -244,13 +276,97 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
   },
 ];
 
+/**
+ * The additive (sdk, executionMode) -> backend selection table. This is a
+ * declarative building block: it states which backend serves a given sdk under a
+ * given execution mode, and which sdk-id spellings each runtime accepts. It is
+ * NOT wired into agent-host routing; consumers read it to align vocabularies.
+ *
+ * `sdkAliases[0]` is the canonical sdk id used by the backend descriptor; later
+ * entries are accepted legacy spellings (e.g. "anthropic" for claude). The SDK
+ * runtimes derive their fail-closed `model.sdk` guard sets from these aliases via
+ * {@link acceptedSdkIdsForBackend}.
+ */
+const RUNTIME_SELECTION_TABLE: readonly MonoRuntimeSelectionEntry[] = [
+  { sdk: "claude", sdkAliases: ["claude", "anthropic"], executionMode: "sdk", backendId: "claude-sdk" },
+  { sdk: "claude", sdkAliases: ["claude", "anthropic"], executionMode: "cli", backendId: "claude-code-cli" },
+  { sdk: "codex", sdkAliases: ["codex"], executionMode: "cli", backendId: "codex-app-cli" },
+  { sdk: "openai", sdkAliases: ["openai"], executionMode: "sdk", backendId: "openai-agents-sdk" },
+  { sdk: "pi", sdkAliases: ["pi"], executionMode: "sdk", backendId: "pi-sdk" },
+];
+
+/**
+ * Returns a defensive copy of the (sdk, executionMode) selection table. Additive
+ * building block; does not perform routing.
+ */
+export function listMonoRuntimeSelectionTable(): readonly MonoRuntimeSelectionEntry[] {
+  return RUNTIME_SELECTION_TABLE.map((entry) => ({
+    ...entry,
+    sdkAliases: [...entry.sdkAliases],
+  }));
+}
+
+/**
+ * Resolves a backend id from the selection table by sdk (canonical or alias) and
+ * execution mode. Returns undefined when no row matches, leaving the caller to
+ * decide how to fail. Matching is alias-aware so "anthropic" resolves the same
+ * row as "claude".
+ */
+export function selectMonoRuntimeBackendId(
+  sdk: string,
+  executionMode: RuntimeExecutionMode,
+): MonoRuntimeBackendId | undefined {
+  const entry = RUNTIME_SELECTION_TABLE.find(
+    (candidate) => candidate.executionMode === executionMode && candidate.sdkAliases.includes(sdk),
+  );
+  return entry?.backendId;
+}
+
+/**
+ * The set of accepted `model.sdk` spellings for a backend, drawn from the
+ * selection table. SDK runtimes use this to build a single-source-of-truth
+ * fail-closed guard instead of hard-coding the vocabulary.
+ */
+export function acceptedSdkIdsForBackend(backendId: MonoRuntimeBackendId): readonly string[] {
+  const aliases = new Set<string>();
+  for (const entry of RUNTIME_SELECTION_TABLE) {
+    if (entry.backendId === backendId) {
+      for (const alias of entry.sdkAliases) {
+        aliases.add(alias);
+      }
+    }
+  }
+  return [...aliases];
+}
+
 function buildBackendDescriptor(
   definition: RuntimeBackendDefinition,
 ): MonoRuntimeBackendDescriptor {
+  const { runtimeBridgeId, inlineCapabilities, ...rest } = definition;
+  const capabilities = runtimeBridgeId === undefined
+    ? requireInlineCapabilities(definition.id, inlineCapabilities)
+    : capabilitiesForRuntimeBridge(runtimeBridgeId);
   return {
-    ...definition,
-    capabilities: capabilitiesForRuntimeBridge(definition.runtimeBridgeId),
+    ...rest,
+    // Public descriptors always carry a string bridge id; standalone backends
+    // (no agent-runtime bridge) report their own backend id here.
+    runtimeBridgeId: runtimeBridgeId ?? definition.id,
+    capabilities,
   };
+}
+
+function requireInlineCapabilities(
+  id: MonoRuntimeBackendId,
+  inlineCapabilities: MonoRuntimeBackendCapabilities | undefined,
+): MonoRuntimeBackendCapabilities {
+  if (inlineCapabilities === undefined) {
+    throw new RuntimeAdapterError(
+      "runtime_backend_unavailable",
+      "Runtime backend has neither a runtime bridge nor inline capabilities.",
+      { id },
+    );
+  }
+  return { ...inlineCapabilities };
 }
 
 function backendById(id: MonoRuntimeBackendId): MonoRuntimeBackendDescriptor {

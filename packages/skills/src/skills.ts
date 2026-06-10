@@ -1,7 +1,5 @@
-import { readFile } from "node:fs/promises";
-
-import { buildSkillIndex, loadSkillIndexFromDirectory } from "@worklab-ai/context";
-import type { MarkdownContextBlock, SkillIndexEntry } from "@worklab-ai/context";
+import { ContextValidationError, loadSkillFilesFromDirectory, normalizeInlineText } from "@worklab-ai/context";
+import type { LoadedSkillFile, MarkdownContextBlock, SkillIndexEntry } from "@worklab-ai/context";
 
 export interface LoadedSkill {
   readonly name: string;
@@ -31,7 +29,7 @@ export class SkillActivationError extends Error {
     super(message);
     this.name = "SkillActivationError";
     this.code = code;
-    this.details = { ...details, code };
+    this.details = details;
   }
 }
 
@@ -50,22 +48,23 @@ export async function loadSelectedSkills(input: LoadSelectedSkillsInput): Promis
     throw new SkillActivationError("invalid_skill_selection", "maxBytes must be an integer of at least 256.");
   }
 
-  const index = await loadSkillIndexFromDirectory(input.skillsRoot);
-  const byName = new Map(index.map((entry) => [entry.name.toLowerCase(), entry]));
+  const files = await readSkillFiles(input.skillsRoot);
+  const byName = new Map(files.map((file) => [file.entry.name.toLowerCase(), file]));
+  const available = files.map((file) => file.entry.name);
   const loaded: LoadedSkill[] = [];
   for (const name of names) {
-    const entry = byName.get(name.toLowerCase());
-    if (entry === undefined) {
+    const file = byName.get(name.toLowerCase());
+    if (file === undefined) {
       throw new SkillActivationError("skill_not_found", "Configured skill was not found in skillsRoot.", {
         name,
-        available: index.map((candidate) => candidate.name),
+        available,
       });
     }
-    loaded.push(await loadSkillBody(entry, maxBytes));
+    loaded.push(loadSkillBody(file, maxBytes));
   }
 
   return {
-    index: buildSkillIndex(loaded.map(({ name, description, mainFile }) => ({ name, description, mainFile }))),
+    index: sortSkillEntries(loaded.map(({ name, description, mainFile }) => ({ name, description, mainFile }))),
     instructions: skillInstructionsToContextBlocks(loaded),
     loaded,
   };
@@ -83,7 +82,7 @@ function normalizeSkillNames(names: readonly string[]): readonly string[] {
   if (!Array.isArray(names)) {
     throw new SkillActivationError("invalid_skill_selection", "names must be an array.");
   }
-  const normalized = names.map((name, index) => normalizeInlineString(name, `names[${index}]`));
+  const normalized = names.map((name, index) => normalizeSkillName(name, `names[${index}]`));
   const seen = new Set<string>();
   for (const name of normalized) {
     const key = name.toLowerCase();
@@ -95,36 +94,61 @@ function normalizeSkillNames(names: readonly string[]): readonly string[] {
   return normalized;
 }
 
-async function loadSkillBody(entry: SkillIndexEntry, maxBytes: number): Promise<LoadedSkill> {
+async function readSkillFiles(skillsRoot: string): Promise<readonly LoadedSkillFile[]> {
   try {
-    const buffer = await readFile(entry.mainFile);
-    const truncated = buffer.byteLength > maxBytes;
-    const content = truncated
-      ? `${buffer.subarray(0, maxBytes).toString("utf8")}\n<!-- truncated to first ${maxBytes} bytes -->`
-      : buffer.toString("utf8");
-    return {
-      name: entry.name,
-      description: entry.description,
-      mainFile: entry.mainFile,
-      content: content.trim(),
-      truncated,
-    };
+    return await loadSkillFilesFromDirectory(skillsRoot);
   } catch (error) {
-    throw new SkillActivationError("skill_read_failed", "Unable to read selected skill body.", {
-      name: entry.name,
-      mainFile: entry.mainFile,
-      cause: error instanceof Error ? error.message : String(error),
-    });
+    if (error instanceof ContextValidationError && error.code === "file_read_failed") {
+      const { code: _innerCode, ...details } = error.details;
+      throw new SkillActivationError("skill_read_failed", "Unable to read selected skill body.", details);
+    }
+    throw error;
   }
 }
 
-function normalizeInlineString(value: unknown, field: string): string {
+function loadSkillBody(file: LoadedSkillFile, maxBytes: number): LoadedSkill {
+  const { entry, markdown } = file;
+  const buffer = Buffer.from(markdown, "utf8");
+  const truncated = buffer.byteLength > maxBytes;
+  const content = truncated
+    ? `${buffer.subarray(0, maxBytes).toString("utf8")}\n<!-- truncated to first ${maxBytes} bytes -->`
+    : markdown;
+  return {
+    name: entry.name,
+    description: entry.description,
+    mainFile: entry.mainFile,
+    content: content.trim(),
+    truncated,
+  };
+}
+
+function normalizeSkillName(value: unknown, field: string): string {
   if (typeof value !== "string") {
     throw new SkillActivationError("invalid_skill_selection", `${field} must be a string.`, { field });
   }
-  const normalized = value.replace(/\r\n?/gu, "\n").split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
+  const normalized = normalizeInlineText(value);
   if (normalized.length === 0) {
     throw new SkillActivationError("invalid_skill_selection", `${field} must not be empty.`, { field });
   }
   return normalized;
+}
+
+function sortSkillEntries(entries: readonly SkillIndexEntry[]): readonly SkillIndexEntry[] {
+  return [...entries].sort((left, right) => {
+    const leftKey = left.name.toLowerCase();
+    const rightKey = right.name.toLowerCase();
+    if (leftKey < rightKey) {
+      return -1;
+    }
+    if (leftKey > rightKey) {
+      return 1;
+    }
+    if (left.name < right.name) {
+      return -1;
+    }
+    if (left.name > right.name) {
+      return 1;
+    }
+    return 0;
+  });
 }

@@ -32,9 +32,8 @@ Load adapter settings separately from core config, then pass a structural `Agent
 - `TelegramBotApiClient`, `TelegramApiError`
 - `TelegramLongPoller`
 - `TelegramMessageStream`, `splitTelegramText`
-- `createRuntimeResponder`
 - `loadTelegramAdapterConfig`, `redactTelegramAdapterConfig`, `telegramFieldGroup`
-- Telegram Bot API, request/response, runtime-responder, and config types
+- Telegram Bot API, request/response, and config types
 
 ## Dependency Boundary
 

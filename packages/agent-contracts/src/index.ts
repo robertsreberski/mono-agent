@@ -50,11 +50,6 @@ export interface AgentMessageStream {
   finish?(finalText?: string): Promise<void>;
 }
 
-export interface AgentMessageStreamResult {
-  readonly text?: string;
-  readonly metadata?: AgentResponseMetadata;
-}
-
 export interface AgentResponder<
   Request extends AgentRequestBase = AgentRequestBase,
   Stream extends AgentMessageStream = AgentMessageStream,
@@ -69,6 +64,12 @@ export interface AgentResponseCancelledErrorOptions {
 
 export class AgentResponseCancelledError extends Error {
   readonly reason?: unknown;
+  /**
+   * Stable brand so the guard recognizes cancellation even across duplicate
+   * class identities (e.g. two copies of this package in a dependency graph),
+   * without string-matching subclass `name`s.
+   */
+  readonly agentResponseCancelled = true as const;
 
   constructor(
     message = "Agent response was cancelled.",
@@ -88,10 +89,24 @@ export function isAgentResponseCancelledError(
   if (error instanceof AgentResponseCancelledError) {
     return true;
   }
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  return error.name === "AgentResponseCancelledError" ||
-    error.name === "AgentResponderCancelledError" ||
-    error.name === "TuiAgentCancelledError";
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { agentResponseCancelled?: unknown }).agentResponseCancelled === true
+  );
 }
+
+export { CodedError, isCodedError } from "./coded-error.js";
+export {
+  BufferedMessageStream,
+} from "./buffered-message-stream.js";
+export type {
+  BufferedMessageStreamOptions,
+} from "./buffered-message-stream.js";
+export {
+  DEFAULT_EMPTY_FINAL_TEXT,
+  DEFAULT_MAX_MESSAGE_CHARS,
+  buildStreamingTailPreview,
+  normalizeTrailing,
+  splitTextByCodePoints,
+} from "./stream-text.js";

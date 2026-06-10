@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  classifyRecordedRunEvent,
   createJsonlRunRecorder,
   listRecordedRuns,
   readRecordedRun,
   ObservabilityReadError,
 } from "../index.js";
+import { classifyRecordedRunEvent } from "../recorded-runs.js";
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {

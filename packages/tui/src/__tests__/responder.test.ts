@@ -26,17 +26,20 @@ describe("isTuiAgentCancelledError", () => {
     expect(isTuiAgentCancelledError(new TuiAgentCancelledError())).toBe(true);
   });
 
-  it("recognises duck-typed AgentResponderCancelledError from telegram-adapter", () => {
-    class AgentResponderCancelledError extends Error {
-      constructor() {
-        super("cancelled");
-        this.name = "AgentResponderCancelledError";
-      }
-    }
-    expect(isTuiAgentCancelledError(new AgentResponderCancelledError())).toBe(true);
+  it("recognises a cross-realm cancellation via the stable brand", () => {
+    // A duplicate agent-contracts copy (or another adapter's alias) produces an
+    // error carrying the stable brand rather than a recognizable class identity.
+    const crossRealm = {
+      name: "AgentResponseCancelledError",
+      agentResponseCancelled: true,
+    };
+    expect(isTuiAgentCancelledError(crossRealm)).toBe(true);
   });
 
-  it("rejects unrelated errors and non-error values", () => {
+  it("rejects unrelated errors, name-only lookalikes, and non-error values", () => {
+    const nameOnly = new Error("cancelled");
+    nameOnly.name = "AgentResponderCancelledError";
+    expect(isTuiAgentCancelledError(nameOnly)).toBe(false);
     expect(isTuiAgentCancelledError(new Error("boom"))).toBe(false);
     expect(isTuiAgentCancelledError("cancelled")).toBe(false);
     expect(isTuiAgentCancelledError(undefined)).toBe(false);

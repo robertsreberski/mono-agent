@@ -22,6 +22,6 @@ export class ContextValidationError extends Error {
     super(message);
     this.name = 'ContextValidationError';
     this.code = code;
-    this.details = details;
+    this.details = { ...details, code };
   }
 }

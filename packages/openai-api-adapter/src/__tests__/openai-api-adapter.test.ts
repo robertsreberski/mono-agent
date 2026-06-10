@@ -470,6 +470,114 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("routes models and chat completions at the root when basePath is '/'", async () => {
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      basePath: "/",
+      modelId: "mono-agent",
+      responder: echoResponder(),
+    });
+
+    try {
+      expect(server.baseUrl).toBe(server.url);
+
+      const models = await fetch(`${server.url}/models`);
+      expect(models.status).toBe(200);
+      await expect(models.json()).resolves.toMatchObject({ object: "list" });
+
+      const chat = await fetch(`${server.url}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mono-agent",
+          messages: [{ role: "user", content: "root path" }],
+        }),
+      });
+      expect(chat.status).toBe(200);
+      await expect(chat.json()).resolves.toMatchObject({
+        choices: [{ message: { content: "echo: user: root path" } }],
+      });
+
+      const base = await fetch(server.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mono-agent",
+          messages: [{ role: "user", content: "root base" }],
+        }),
+      });
+      expect(base.status).toBe(200);
+      await expect(base.json()).resolves.toMatchObject({
+        choices: [{ message: { content: "echo: user: root base" } }],
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each(["/v1?foo=bar", "/v1#frag", "no-leading-slash"])(
+    "rejects a basePath that is not a clean absolute path (%s)",
+    async (basePath) => {
+      await expect(
+        startOpenAIApiAdapter({
+          host: "127.0.0.1",
+          port: 0,
+          basePath,
+          modelId: "mono-agent",
+          responder: echoResponder(),
+        }),
+      ).rejects.toMatchObject({ code: "invalid_config" });
+    },
+  );
+
+  it("aborts the responder when the client disconnects mid-request", async () => {
+    let abortObserved!: () => void;
+    const abortSeen = new Promise<void>((resolve) => {
+      abortObserved = resolve;
+    });
+    const responder: AgentResponder = {
+      async respond(request) {
+        await new Promise<void>((resolve, reject) => {
+          request.abortSignal.addEventListener("abort", () => {
+            abortObserved();
+            reject(new Error("aborted by client"));
+          });
+        });
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "mono-agent",
+      responder,
+    });
+
+    try {
+      const controller = new AbortController();
+      const pending = fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "mono-agent",
+          messages: [{ role: "user", content: "hang" }],
+        }),
+        signal: controller.signal,
+      });
+      const settled = pending.catch(() => undefined);
+
+      // Give the request time to reach the responder, then disconnect.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      controller.abort();
+
+      await abortSeen;
+      await settled;
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("rejects non-loopback binds unless explicitly allowed", async () => {
     await expect(
       startOpenAIApiAdapter({

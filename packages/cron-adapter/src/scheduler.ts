@@ -1,12 +1,14 @@
 import { CronExpressionParser } from "cron-parser";
 
 import {
+  BufferedMessageStream,
   isAgentResponseCancelledError,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
 } from "@worklab-ai/agent-contracts";
+import { normalizeOptionalString } from "@worklab-ai/settings";
 
 export interface CronRequestMetadata {
   readonly jobId: string;
@@ -70,7 +72,7 @@ export interface CronAdapterStartResult {
   stop(): void;
 }
 
-export type CronAdapterErrorCode = "invalid_config";
+export type CronAdapterErrorCode = "invalid_config" | "stream_closed";
 
 export interface CronAdapterErrorDetails {
   readonly code?: CronAdapterErrorCode;
@@ -166,7 +168,10 @@ function handleTick(
   const controller = new AbortController();
   activeJobs.set(job.id, { controller });
   const startedAt = (options.now?.() ?? new Date()).toISOString();
-  const stream = new InMemoryMessageStream();
+  const stream = new BufferedMessageStream({
+    onClosed: () =>
+      new CronAdapterError("stream_closed", "Cannot write to a finished cron stream."),
+  });
   const request: AgentRequestBase = {
     conversationId: job.conversationId ?? `cron:${job.id}`,
     text: job.prompt,
@@ -215,43 +220,6 @@ function handleTick(
     .finally(() => {
       activeJobs.delete(job.id);
     });
-}
-
-class InMemoryMessageStream implements AgentMessageStream {
-  private currentText = "";
-  private done = false;
-
-  get text(): string {
-    return this.currentText.trim();
-  }
-
-  async status(_text: string): Promise<void> {}
-
-  async append(delta: string): Promise<void> {
-    this.assertOpen();
-    this.currentText += delta;
-  }
-
-  async replace(text: string): Promise<void> {
-    this.assertOpen();
-    this.currentText = text;
-  }
-
-  async finish(finalText?: string): Promise<void> {
-    if (this.done) {
-      return;
-    }
-    this.done = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
-    }
-  }
-
-  private assertOpen(): void {
-    if (this.done) {
-      throw new CronAdapterError("invalid_config", "Cannot write to a finished cron stream.");
-    }
-  }
 }
 
 async function emitResult(options: CronAdapterOptions, result: CronJobResult): Promise<void> {
@@ -309,12 +277,4 @@ function assertFiveFieldExpression(job: CronJob): void {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
 }

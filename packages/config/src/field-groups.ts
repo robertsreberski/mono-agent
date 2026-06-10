@@ -1,6 +1,13 @@
 import { defineFieldGroup } from "@worklab-ai/settings";
 import type { FieldGroupRegistry } from "@worklab-ai/settings";
 
+/**
+ * Closed set of reasoning-effort hints, shared by the runtime field group's
+ * select options and the loader's `MONO_AGENT_EFFORT` validation so the two
+ * surfaces never drift.
+ */
+export const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+
 export const identityFieldGroup = defineFieldGroup({
   id: "identity",
   label: "Identity",
@@ -73,14 +80,7 @@ export const runtimeFieldGroup = defineFieldGroup({
       label: "Effort",
       description: "Reasoning effort hint (none, low, medium, high, xhigh, max).",
       kind: "select",
-      options: [
-        { value: "none", label: "none" },
-        { value: "low", label: "low" },
-        { value: "medium", label: "medium" },
-        { value: "high", label: "high" },
-        { value: "xhigh", label: "xhigh" },
-        { value: "max", label: "max" },
-      ],
+      options: EFFORT_LEVELS.map((level) => ({ value: level, label: level })),
       path: ["runtime", "effort"],
     },
     {
@@ -110,9 +110,22 @@ export const memoryFieldGroup = defineFieldGroup({
   description: "Where the agent's persistent notes live (optional).",
   fields: [
     {
+      id: "memory.mode",
+      label: "Mode",
+      description:
+        "markdown = one capped file (or per-conversation files). journal = a global daily journal whose today note is always in context, with older notes searched via tools.",
+      kind: "select",
+      options: [
+        { value: "markdown", label: "markdown" },
+        { value: "journal", label: "journal" },
+      ],
+      path: ["memory", "mode"],
+    },
+    {
       id: "memory.path",
-      label: "Memory file",
-      description: "Markdown file the memory layer reads and writes. Leave empty to disable memory.",
+      label: "Memory path",
+      description:
+        "markdown mode: the Markdown file read/written. journal mode: the memory root directory holding daily/ notes. Leave empty to disable memory.",
       kind: "path",
       placeholder: "./MEMORY.md",
       path: ["memory", "path"],

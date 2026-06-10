@@ -87,4 +87,37 @@ describe("WhatsAppMessageStream", () => {
     expect(chunks).toEqual(["ab", "cd", "ef"]);
     expect(chunks.join("")).toBe("abcdef");
   });
+
+  it("splits on code points so multi-byte emoji are never cut in half", () => {
+    const chunks = splitWhatsAppText("😀😀😀", 2);
+
+    expect(chunks).toEqual(["😀😀", "😀"]);
+    expect(chunks.join("")).toBe("😀😀😀");
+    for (const chunk of chunks) {
+      expect([...chunk].every((codePoint) => codePoint.length === 2)).toBe(true);
+    }
+  });
+
+  it("rejects writes after the stream has finished", async () => {
+    const socket = new FakeSocket();
+    const stream = new WhatsAppMessageStream({
+      socket,
+      chatJid: "123@s.whatsapp.net",
+      sendInitialStatus: false,
+    });
+
+    await stream.append("done");
+    await stream.finish();
+
+    await expect(stream.status("late")).rejects.toThrow(
+      "Cannot write to a finished WhatsAppMessageStream.",
+    );
+    await expect(stream.append("late")).rejects.toThrow(
+      "Cannot write to a finished WhatsAppMessageStream.",
+    );
+    await expect(stream.replace("late")).rejects.toThrow(
+      "Cannot write to a finished WhatsAppMessageStream.",
+    );
+    expect(socket.sent.map((message) => message.content.text)).toEqual(["done"]);
+  });
 });

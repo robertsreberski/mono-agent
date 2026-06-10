@@ -20,14 +20,6 @@ import type {
   SlackWebApi,
 } from "./types.js";
 
-export {
-  AgentResponseCancelledError as AgentResponderCancelledError,
-  isAgentResponseCancelledError as isAgentResponderCancelledError,
-} from "@worklab-ai/agent-contracts";
-export type {
-  AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
-} from "@worklab-ai/agent-contracts";
-
 export type SlackTriggerKind = "direct" | "app_mention";
 
 export interface AgentRequest extends AgentRequestBase {

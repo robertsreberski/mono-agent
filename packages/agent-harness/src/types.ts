@@ -1,13 +1,7 @@
-import type {
-  AgentMessageStream,
-  AgentRequestBase,
-  AgentResponder,
-  AgentResponse,
-} from "@worklab-ai/agent-contracts";
 import type { BuiltAgentContext, HistoryMessage } from "@worklab-ai/context";
 import type { MemoryStore } from "@worklab-ai/memory-md";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@worklab-ai/observability";
-import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
 import type { ToolPolicy } from "@worklab-ai/tool-policy";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
@@ -93,9 +87,3 @@ export interface AgentHarnessRuntimeOptionsExtension {
   readonly cleanup?: () => void | Promise<void>;
 }
 
-export type AgentRequestLike = AgentRequestBase;
-export type AgentMessageStreamLike = AgentMessageStream;
-export type AgentResponseLike = AgentResponse;
-export type AgentResponderLike = AgentResponder;
-
-export type RuntimeFailureResult = Pick<RuntimeResult, "cancelled" | "error" | "failureKind" | "errorDetails">;
