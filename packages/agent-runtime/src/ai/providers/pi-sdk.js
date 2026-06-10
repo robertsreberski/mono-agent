@@ -1,5 +1,6 @@
 import { Agent, InMemorySessionRepo, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { stream as piStream, streamSimple as piStreamSimple } from "@earendil-works/pi-ai";
 import * as openAiCodexResponses from "@earendil-works/pi-ai/openai-codex-responses";
 import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
@@ -93,6 +94,33 @@ function thinkingLevelForEffort(effort, capabilities) {
   if (effort === "high") return "high";
   if (effort === "medium") return "medium";
   return "low";
+}
+
+const OPENAI_REASONING_APIS = new Set(["openai-responses", "openai-codex-responses"]);
+
+function openAiReasoningOptions(model, streamOptions = {}, runtimeOptions = {}) {
+  const hasConfiguredSummary = Object.prototype.hasOwnProperty.call(runtimeOptions, "piReasoningSummary")
+    && runtimeOptions.piReasoningSummary !== undefined;
+  if (!hasConfiguredSummary) return streamOptions;
+  if (!OPENAI_REASONING_APIS.has(model?.api)) return streamOptions;
+  if (!streamOptions.reasoning || streamOptions.reasoning === "off") return streamOptions;
+  const reasoningSummary = Object.prototype.hasOwnProperty.call(streamOptions, "reasoningSummary")
+    ? streamOptions.reasoningSummary
+    : runtimeOptions.piReasoningSummary;
+  return {
+    ...streamOptions,
+    reasoningEffort: streamOptions.reasoningEffort ?? streamOptions.reasoning,
+    reasoningSummary,
+  };
+}
+
+function createPiRuntimeStreamFn(streamFn, runtimeOptions = {}) {
+  return (model, context, options = {}) => {
+    const enrichedOptions = openAiReasoningOptions(model, options, runtimeOptions);
+    if (streamFn) return streamFn(model, context, enrichedOptions);
+    const useFullOpenAiStream = enrichedOptions !== options && OPENAI_REASONING_APIS.has(model?.api);
+    return (useFullOpenAiStream ? piStream : piStreamSimple)(model, context, enrichedOptions);
+  };
 }
 
 function appendStructuredOutputInstruction(systemPrompt, outputSchema) {
@@ -603,6 +631,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
     const runtime = resolvePiRuntimeModel(resolved, options);
     piTransport = resolvePiTransport(runtime.model, runtimeWarnings, options.piCodexTransport);
     const capabilities = runtime.capabilities || {};
+    const effectiveThinkingLevel = thinkingLevelForEffort(options.effort || "medium", capabilities);
     const settings = readRuntimeSettings(options.settings);
     const reference = resolved.reference
       || (resolved.sdk === "pi" ? `pi:${resolved.provider}:${resolved.model}` : `${resolved.sdk}:${resolved.model}`);
@@ -681,11 +710,13 @@ export async function generatePiResponse(systemPrompt, options = {}) {
       initialState: {
         systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema),
         model: runtime.model,
-        thinkingLevel: thinkingLevelForEffort(options.effort || "medium", capabilities),
+        thinkingLevel: effectiveThinkingLevel,
         tools,
         ...(resumeMessages ? { messages: resumeMessages } : {}),
       },
-      streamFn: options.streamFn,
+      streamFn: createPiRuntimeStreamFn(options.streamFn, {
+        piReasoningSummary: options.piReasoningSummary,
+      }),
       transformContext: compaction.transformContext,
       afterToolCall: compaction.afterToolCall,
       sessionId: providerSessionId,
@@ -720,8 +751,10 @@ export async function generatePiResponse(systemPrompt, options = {}) {
           onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.delta }] } });
         } else if (streamEvent?.type === "thinking_end" && streamEvent.content) {
           const key = streamContentKey(streamEvent, "thinking");
-          if (!thinkingDeltaIndexes.has(key)) assistantThinking.push(streamEvent.content);
-          onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.content }] } });
+          if (!thinkingDeltaIndexes.has(key)) {
+            assistantThinking.push(streamEvent.content);
+            onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.content }] } });
+          }
         }
       } else if (event.type === "tool_execution_start") {
         if (event.toolName) lastToolName = event.toolName;
@@ -1080,9 +1113,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
     const compactionDiag = compaction?.diagnostics?.() || {};
     const capabilitiesUsed = buildCapabilitiesUsed({
       promptCacheActive: usage.cacheRead > 0 || usage.cacheWrite > 0,
-      thinkingEnabled: options.effort && options.effort !== "none" && options.effort !== "low"
-        ? true
-        : (options.effort === "none" || options.effort === "low" ? false : null),
+      thinkingEnabled: effectiveThinkingLevel !== "off" && effectiveThinkingLevel !== "low",
       structuredOutputEnforced: !!options.outputSchema,
       subagentInvoked: subagentResults.length > 0,
       mcpServersUsed: mcpClients.map((entry) => entry?.name).filter(Boolean),
