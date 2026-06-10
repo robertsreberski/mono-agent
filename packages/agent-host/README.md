@@ -1,4 +1,4 @@
-# @worklab-ai/agent-host
+# @mono-agent/agent-host
 
 ## Category
 
@@ -11,12 +11,12 @@ Adapter-neutral host composition helpers for Mono Agent. This package turns a lo
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/agent-host run build
+pnpm --filter @mono-agent/agent-host run build
 ```
 
 ```ts
-import { loadMonoAgentConfigWithSources } from "@worklab-ai/config";
-import { createConfiguredAgentResponder } from "@worklab-ai/agent-host";
+import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
 
 const config = await loadMonoAgentConfigWithSources({
   env: process.env,
@@ -49,7 +49,7 @@ It does not poll chats, serve HTTP operator UI, host A2A, parse Telegram/Slack/W
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/agent-host run build
-pnpm --filter @worklab-ai/agent-host run typecheck
-pnpm --filter @worklab-ai/agent-host run test
+pnpm --filter @mono-agent/agent-host run build
+pnpm --filter @mono-agent/agent-host run typecheck
+pnpm --filter @mono-agent/agent-host run test
 ```

@@ -32,7 +32,7 @@ import {
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
   bearerTokensEqual,
@@ -41,7 +41,7 @@ import {
   isLoopbackHost,
   listen,
   readAuthorizationBearer,
-} from "@worklab-ai/settings";
+} from "@mono-agent/settings";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {

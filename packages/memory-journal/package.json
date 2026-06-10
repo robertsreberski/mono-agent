@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/memory-journal",
+  "name": "@mono-agent/memory-journal",
   "version": "0.1.0",
   "description": "Global daily-journal memory store: continuous journaling and an always-in-context today note for Mono Agent hosts.",
   "type": "module",
@@ -23,6 +23,6 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/memory-md": "workspace:^0.1.0"
+    "@mono-agent/memory-md": "workspace:^0.1.0"
   }
 }

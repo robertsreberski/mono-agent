@@ -1,4 +1,4 @@
-# @worklab-ai/webhook-adapter
+# @mono-agent/webhook-adapter
 
 ## Category
 
@@ -11,11 +11,11 @@ HTTP webhook invocation adapter for Mono Agent hosts. It starts a small HTTP ser
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/webhook-adapter run build
+pnpm --filter @mono-agent/webhook-adapter run build
 ```
 
 ```ts
-import { startWebhookAdapter } from "@worklab-ai/webhook-adapter";
+import { startWebhookAdapter } from "@mono-agent/webhook-adapter";
 
 const webhook = await startWebhookAdapter({
   host: "127.0.0.1",
@@ -55,7 +55,7 @@ It does not build prompts, run models, persist async status, authenticate extern
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/webhook-adapter run build
-pnpm --filter @worklab-ai/webhook-adapter run typecheck
-pnpm --filter @worklab-ai/webhook-adapter run test
+pnpm --filter @mono-agent/webhook-adapter run build
+pnpm --filter @mono-agent/webhook-adapter run typecheck
+pnpm --filter @mono-agent/webhook-adapter run test
 ```

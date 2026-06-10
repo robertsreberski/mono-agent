@@ -1,4 +1,4 @@
-# @worklab-ai/tool-policy
+# @mono-agent/tool-policy
 
 ## Category
 
@@ -11,14 +11,14 @@ Fail-closed tool and MCP policy normalization. It accepts host policy input, loa
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/tool-policy run build
+pnpm --filter @mono-agent/tool-policy run build
 ```
 
 ```ts
 import {
   createToolPolicy,
   toolPolicyToRuntimeOptions,
-} from "@worklab-ai/tool-policy";
+} from "@mono-agent/tool-policy";
 ```
 
 ## Public API
@@ -40,7 +40,7 @@ It does not grant tools by default, execute tools, validate MCP server reachabil
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/tool-policy run build
-pnpm --filter @worklab-ai/tool-policy run typecheck
-pnpm --filter @worklab-ai/tool-policy run test
+pnpm --filter @mono-agent/tool-policy run build
+pnpm --filter @mono-agent/tool-policy run typecheck
+pnpm --filter @mono-agent/tool-policy run test
 ```

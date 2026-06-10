@@ -1,19 +1,19 @@
 import {
   startA2AProvider,
-} from "@worklab-ai/a2a-adapter";
-import type { A2AProviderStartResult } from "@worklab-ai/a2a-adapter";
+} from "@mono-agent/a2a-adapter";
+import type { A2AProviderStartResult } from "@mono-agent/a2a-adapter";
 import {
   createConfiguredAgentResponder,
-} from "@worklab-ai/agent-host";
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-host";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 import {
   loadMonoAgentConfig,
-} from "@worklab-ai/config";
-import type { MonoAgentConfig } from "@worklab-ai/config";
-import { createClaudeAgentsRuntime } from "@worklab-ai/claude-agents-runtime";
-import { createCodexAppRuntime } from "@worklab-ai/codex-app-runtime";
-import { createOpenAIAgentsRuntime } from "@worklab-ai/openai-agents-runtime";
-import type { MonoRuntimeLike, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
+} from "@mono-agent/config";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { createClaudeAgentsRuntime } from "@mono-agent/claude-agents-runtime";
+import { createOpenAIAgentsRuntime } from "@mono-agent/openai-agents-runtime";
+import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 export type AgentsSdkRuntimeName = "claude" | "openai" | "codex";
 
@@ -166,7 +166,7 @@ function chooseRuntime(
   if (!hasNonEmpty(env.OPENAI_API_KEY)) {
     return { kind: "skipped", reason: "OPENAI_API_KEY not set (Codex CLI uses it for auth)" };
   }
-  return { kind: "ready", runtime: createCodexAppRuntime() };
+  return { kind: "ready", runtime: createMonoRuntime() };
 }
 
 function hasNonEmpty(value: string | undefined): boolean {
@@ -174,6 +174,6 @@ function hasNonEmpty(value: string | undefined): boolean {
 }
 
 function _typecheck(_provider: A2AProviderStartResult): void {
-  // touch import to keep tsc happy across @worklab-ai/a2a-adapter types
+  // touch import to keep tsc happy across @mono-agent/a2a-adapter types
 }
 void _typecheck;

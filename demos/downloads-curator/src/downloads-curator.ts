@@ -3,16 +3,16 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 import {
   createConfiguredAgentResponder,
-} from "@worklab-ai/agent-host";
-import type { MonoAgentConfigJson } from "@worklab-ai/config";
+} from "@mono-agent/agent-host";
+import type { MonoAgentConfigJson } from "@mono-agent/config";
 import type {
   MonoRuntimeLike,
   RuntimeModelReference,
-} from "@worklab-ai/runtime-adapter";
-import { parseMonoRuntimeModelReference } from "@worklab-ai/runtime-adapter";
+} from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 export const DOWNLOADS_CURATOR_SOURCE_ID = "downloads-curator";
 export const DEFAULT_DOWNLOADS_CURATOR_MODEL = "gpt-5.5";
@@ -36,7 +36,7 @@ export interface DownloadsCuratorResponderOptions {
 }
 
 export interface DownloadsCuratorConfig {
-  readonly mono: import("@worklab-ai/config").MonoAgentConfig;
+  readonly mono: import("@mono-agent/config").MonoAgentConfig;
   readonly downloadsRoot: string;
   readonly stateDir: string;
   readonly identityPath: string;
@@ -75,6 +75,7 @@ export function buildDownloadsCuratorConfig(input: DownloadsCuratorConfigInput):
         executionMode: "cli",
         maxTurns: 8,
         workspace: downloadsRoot,
+        session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
       },
       context: {
         identityPath,

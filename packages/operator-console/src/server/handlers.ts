@@ -8,8 +8,8 @@ import {
   SettingsJsonError,
   validateSettingsPatch,
   writeSettingsJson,
-} from "@worklab-ai/settings";
-import type { FieldGroup, SettingsJson } from "@worklab-ai/settings";
+} from "@mono-agent/settings";
+import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
 
 import { OPERATOR_CONSOLE_STATIC_DIR } from "../static.js";
 import { readBearerToken, tokensEqual } from "./auth.js";

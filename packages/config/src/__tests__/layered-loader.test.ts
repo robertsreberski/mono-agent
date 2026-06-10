@@ -61,6 +61,27 @@ describe("layerJsonOntoEnv", () => {
     ]);
   });
 
+  it("translates JSON runtime.session to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000 } } },
+      {},
+    );
+    expect(layered.MONO_AGENT_SESSION_MODE).toBe("per-message");
+    expect(layered.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS).toBe("120000");
+  });
+
+  it("lets env override JSON session values", () => {
+    const layered = layerJsonOntoEnv(
+      { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000 } } },
+      {
+        MONO_AGENT_SESSION_MODE: "continuous",
+        MONO_AGENT_SESSION_IDLE_TIMEOUT_MS: "5000",
+      },
+    );
+    expect(layered.MONO_AGENT_SESSION_MODE).toBe("continuous");
+    expect(layered.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS).toBe("5000");
+  });
+
   it("lets env override JSON values", () => {
     const layered = layerJsonOntoEnv(
       {
@@ -163,6 +184,31 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: path,
     });
     expect(config.runtime.maxTurns).toBe(20);
+  });
+
+  it("loads session settings from JSON and lets env win for overlaps", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: {
+          model: "pi:openai-codex:gpt-5.5",
+          session: { mode: "per-message", idleTimeoutMs: 120_000 },
+        },
+        context: { identityPath: "IDENTITY.md" },
+      }),
+      "utf8",
+    );
+
+    const fromJson = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(fromJson.runtime.session).toEqual({ mode: "per-message", idleTimeoutMs: 120_000 });
+
+    const withEnv = await loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_SESSION_MODE: "continuous", MONO_AGENT_SESSION_IDLE_TIMEOUT_MS: "5000" },
+      cwd: dir,
+      jsonPath: path,
+    });
+    expect(withEnv.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 5000 });
   });
 
   it("works without a jsonPath (pure env loader behavior)", async () => {

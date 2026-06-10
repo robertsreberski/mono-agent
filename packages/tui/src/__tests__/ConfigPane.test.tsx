@@ -102,6 +102,7 @@ describe("buildTuiConfigSummary", () => {
           effort: "high",
           maxTurns: 4,
           workspace: "/tmp/work",
+          session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
         },
         context: {
           identityPath: "/tmp/IDENTITY.md",

@@ -1,6 +1,6 @@
-import { createRuntime } from "@worklab-ai/agent-runtime";
-import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@worklab-ai/agent-runtime/ai/runtime/model-refs.js";
-import { listRuntimeBridges } from "@worklab-ai/agent-runtime/ai/runtime/registry.js";
+import { createRuntime } from "@mono-agent/agent-runtime";
+import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
+import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 
 import type {
   MonoRuntimeBackendCapabilities,
@@ -77,6 +77,13 @@ export function runtimeBackendForModel(
   const resolvedExecutionMode = executionMode ?? defaultExecutionModeForModel(model);
   assertExecutionModeCompatible(model, resolvedExecutionMode);
   return backendById(backendIdForModel(model, resolvedExecutionMode));
+}
+
+export function monoRuntimeSupportsSessionResume(
+  model: RuntimeModelReference,
+  executionMode?: RuntimeExecutionMode,
+): boolean {
+  return runtimeBackendForModel(model, executionMode).capabilities.supports_session_resume === true;
 }
 
 export function describeMonoRuntimeSupport(
@@ -157,6 +164,12 @@ export function createMonoRuntime(options: MonoRuntimeHostOptions = {}): MonoRun
     configureTools(next?: RuntimeToolOptions): void {
       runtime.configureTools?.(next === undefined ? undefined : { ...next });
     },
+    async disposeSession(providerSessionId: string): Promise<boolean | void> {
+      return runtime.disposeSession?.(providerSessionId);
+    },
+    async disposeAllSessions(): Promise<void> {
+      await runtime.disposeAllSessions?.();
+    },
   };
 }
 
@@ -191,7 +204,7 @@ interface RuntimeBackendDefinition {
   /**
    * Agent-runtime bridge id whose capabilities back this descriptor. Omit (use
    * `inlineCapabilities` instead) for standalone backends that are not routed
-   * through @worklab-ai/agent-runtime, e.g. the @openai/agents runtime.
+   * through @mono-agent/agent-runtime, e.g. the @openai/agents runtime.
    */
   readonly runtimeBridgeId?: string;
   /** Self-described capabilities for backends with no agent-runtime bridge. */
@@ -213,7 +226,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "claude",
     executionMode: "sdk",
     transport: "sdk",
-    providerBoundary: "@anthropic-ai/claude-agent-sdk via @worklab-ai/agent-runtime",
+    providerBoundary: "@anthropic-ai/claude-agent-sdk via @mono-agent/agent-runtime",
     modelReferenceExamples: ["claude:claude-sonnet-4-6"],
     acceptsProviderIds: false,
   },
@@ -224,7 +237,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "claude",
     executionMode: "cli",
     transport: "cli",
-    providerBoundary: "Claude Code CLI bridge via @worklab-ai/agent-runtime",
+    providerBoundary: "Claude Code CLI bridge via @mono-agent/agent-runtime",
     modelReferenceExamples: ["claude:claude-sonnet-4-6"],
     acceptsProviderIds: false,
   },
@@ -235,14 +248,14 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "codex",
     executionMode: "cli",
     transport: "cli",
-    providerBoundary: "Codex app-server bridge via @worklab-ai/agent-runtime",
+    providerBoundary: "Codex app-server bridge via @mono-agent/agent-runtime",
     modelReferenceExamples: ["codex:gpt-5.5"],
     acceptsProviderIds: false,
   },
   {
     id: "openai-agents-sdk",
     // No agent-runtime bridge: @openai/agents is driven directly by
-    // @worklab-ai/openai-agents-runtime, so capabilities are self-described.
+    // @mono-agent/openai-agents-runtime, so capabilities are self-described.
     inlineCapabilities: {
       kind: "openai-agents",
       runtime: "sdk",
@@ -259,7 +272,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "openai",
     executionMode: "sdk",
     transport: "sdk",
-    providerBoundary: "@openai/agents via @worklab-ai/openai-agents-runtime",
+    providerBoundary: "@openai/agents via @mono-agent/openai-agents-runtime",
     modelReferenceExamples: ["openai:gpt-5"],
     acceptsProviderIds: false,
   },
@@ -270,7 +283,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "pi",
     executionMode: "sdk",
     transport: "sdk",
-    providerBoundary: "Pi SDK provider gateway via @worklab-ai/agent-runtime",
+    providerBoundary: "Pi SDK provider gateway via @mono-agent/agent-runtime",
     modelReferenceExamples: ["pi:openai-codex:gpt-5.5", "pi:github-copilot:gpt-4.1"],
     acceptsProviderIds: true,
   },

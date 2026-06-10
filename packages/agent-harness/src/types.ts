@@ -1,8 +1,8 @@
-import type { BuiltAgentContext, HistoryMessage } from "@worklab-ai/context";
-import type { MemoryStore } from "@worklab-ai/memory-md";
-import type { RunRecorder, RunSummary, RuntimeEventLike } from "@worklab-ai/observability";
-import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
-import type { ToolPolicy } from "@worklab-ai/tool-policy";
+import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
+import type { MemoryStore } from "@mono-agent/memory-md";
+import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
+import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { ToolPolicy } from "@mono-agent/tool-policy";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 
@@ -44,6 +44,20 @@ export interface AgentHarnessResponse {
 
 export interface AgentHarness {
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  /** Retire all live provider sessions (graceful shutdown). */
+  dispose?(): Promise<void>;
+}
+
+export type AgentSessionMode = "continuous" | "per-message";
+
+export interface AgentHarnessSessionOptions {
+  readonly mode: AgentSessionMode;
+  readonly idleTimeoutMs: number;
+  /**
+   * Overrides backend capability detection (monoRuntimeSupportsSessionResume)
+   * — primarily for tests and custom runtimes.
+   */
+  readonly supportsResume?: boolean;
 }
 
 export interface AgentHarnessRecorderFactoryInput {
@@ -74,6 +88,7 @@ export interface AgentHarnessOptions {
   readonly recorderFactory?: (input: AgentHarnessRecorderFactoryInput) => RunRecorder;
   readonly createRunId?: () => string;
   readonly now?: () => Date;
+  readonly session?: AgentHarnessSessionOptions;
 }
 
 export interface AgentHarnessRuntimeOptionsInput {

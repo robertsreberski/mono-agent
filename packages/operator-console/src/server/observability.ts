@@ -4,12 +4,12 @@ import {
   listRecordedRuns,
   ObservabilityReadError,
   readRecordedRun,
-} from "@worklab-ai/observability";
+} from "@mono-agent/observability";
 import type {
   JsonlRunReaderOptions,
   RecordedRunDetail,
   RecordedRunListItem,
-} from "@worklab-ai/observability";
+} from "@mono-agent/observability";
 
 import type { OperatorConsoleObservabilityOptions } from "./types.js";
 

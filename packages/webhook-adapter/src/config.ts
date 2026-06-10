@@ -7,8 +7,8 @@ import {
   readJsonSection,
   readSettingsJson,
   readString,
-} from "@worklab-ai/settings";
-import type { FieldGroup, SettingsJson } from "@worklab-ai/settings";
+} from "@mono-agent/settings";
+import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
 
 import { WebhookAdapterError, type WebhookInvocationMode } from "./server.js";
 

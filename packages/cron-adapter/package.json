@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/cron-adapter",
+  "name": "@mono-agent/cron-adapter",
   "version": "0.1.0",
   "description": "Cron-based scheduled invocation adapter for Mono Agent responders.",
   "type": "module",
@@ -23,8 +23,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/settings": "workspace:^0.1.0",
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/settings": "workspace:^0.1.0",
     "cron-parser": "^5.5.0"
   }
 }

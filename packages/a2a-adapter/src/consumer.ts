@@ -23,7 +23,7 @@ import type {
   AgentRequestBase,
   AgentResponder,
   AgentResponse,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 
 import { A2AConsumerError } from "./errors.js";
 

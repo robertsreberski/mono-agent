@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/openai-api-adapter",
+  "name": "@mono-agent/openai-api-adapter",
   "version": "0.1.0",
   "description": "OpenAI-compatible Chat Completions adapter for Mono Agent responders.",
   "type": "module",
@@ -23,8 +23,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/settings": "workspace:^0.1.0",
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/settings": "workspace:^0.1.0",
     "express": "^5.1.0"
   },
   "devDependencies": {

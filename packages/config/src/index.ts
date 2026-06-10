@@ -15,6 +15,7 @@ export type {
   MonoAgentConfig,
   RedactedMonoAgentConfig,
   RedactedLocalProviderDefinition,
+  SessionMode,
 } from "./types.js";
 export {
   loadMonoAgentConfigWithSources,

@@ -1,12 +1,12 @@
 import { join } from "node:path";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createEntityGraphStore } from "@worklab-ai/memory-graph";
-import type { Entity, EntitySubgraph, JsonlEntityGraphStore, Relation } from "@worklab-ai/memory-graph";
-import { createJournalMemoryStore } from "@worklab-ai/memory-journal";
-import type { JournalMemoryStore } from "@worklab-ai/memory-journal";
-import { createEmbeddingProvider, createVectorMemoryIndex, gatherMemoryChunks } from "@worklab-ai/memory-search";
-import type { EmbeddingProviderConfig, SearchHit, VectorMemoryIndex } from "@worklab-ai/memory-search";
+import { createEntityGraphStore } from "@mono-agent/memory-graph";
+import type { Entity, EntitySubgraph, JsonlEntityGraphStore, Relation } from "@mono-agent/memory-graph";
+import { createJournalMemoryStore } from "@mono-agent/memory-journal";
+import type { JournalMemoryStore } from "@mono-agent/memory-journal";
+import { createEmbeddingProvider, createVectorMemoryIndex, gatherMemoryChunks } from "@mono-agent/memory-search";
+import type { EmbeddingProviderConfig, SearchHit, VectorMemoryIndex } from "@mono-agent/memory-search";
 import * as z from "zod/v4";
 
 import { grepMemory, listDailyNotes, readDailyNote } from "./file-store.js";

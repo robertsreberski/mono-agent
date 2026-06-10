@@ -12,8 +12,8 @@ import {
   readSettingsJson,
   readString,
   redactedSecret,
-} from "@worklab-ai/settings";
-import type { FieldGroup, RedactedSecretValue, SettingsJson } from "@worklab-ai/settings";
+} from "@mono-agent/settings";
+import type { FieldGroup, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
 
 import type { A2AAgentSkillOptions } from "./card.js";
 import { A2AProviderError } from "./errors.js";

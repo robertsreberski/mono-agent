@@ -6,10 +6,10 @@ import type {
   AgentRequestBase,
   AgentResponder,
   AgentResponse,
-} from "@worklab-ai/agent-contracts";
-import type { AgentHarness, AgentHarnessResponse } from "@worklab-ai/agent-harness";
-import { createJsonlRunRecorder } from "@worklab-ai/observability";
-import type { RuntimeEventLike, RuntimeResultLike, RunSummary } from "@worklab-ai/observability";
+} from "@mono-agent/agent-contracts";
+import type { AgentHarness, AgentHarnessResponse } from "@mono-agent/agent-harness";
+import { createJsonlRunRecorder } from "@mono-agent/observability";
+import type { RuntimeEventLike, RuntimeResultLike, RunSummary } from "@mono-agent/observability";
 import { createTrajectoryMatchEvaluator } from "agentevals";
 import type {
   EvaluatorResult,

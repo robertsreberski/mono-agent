@@ -1,5 +1,5 @@
-import { ContextValidationError, loadSkillFilesFromDirectory, normalizeInlineText } from "@worklab-ai/context";
-import type { LoadedSkillFile, MarkdownContextBlock, SkillIndexEntry } from "@worklab-ai/context";
+import { ContextValidationError, loadSkillFilesFromDirectory, normalizeInlineText } from "@mono-agent/context";
+import type { LoadedSkillFile, MarkdownContextBlock, SkillIndexEntry } from "@mono-agent/context";
 
 export interface LoadedSkill {
   readonly name: string;

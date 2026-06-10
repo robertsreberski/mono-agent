@@ -4,7 +4,7 @@ import {
   loadMonoAgentConfigWithSources,
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
-} from "@worklab-ai/config";
+} from "@mono-agent/config";
 
 import {
   buildTuiConfigSummary,
@@ -127,7 +127,7 @@ export function ConfigPane({
       <Box>
         <Text color="gray">
           {configPath} · loaded {loadedLabel} · press r to reload · edits via
-          @worklab-ai/operator-console
+          @mono-agent/operator-console
         </Text>
       </Box>
       {state.sections?.map((section) => (

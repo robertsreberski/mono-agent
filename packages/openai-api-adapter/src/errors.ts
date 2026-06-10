@@ -1,4 +1,4 @@
-import { CodedError } from "@worklab-ai/agent-contracts";
+import { CodedError } from "@mono-agent/agent-contracts";
 
 export type OpenAIApiAdapterErrorCode =
   | "invalid_config"

@@ -2,7 +2,7 @@ import {
   bearerTokensEqual,
   generateBearerToken,
   readAuthorizationBearer,
-} from "@worklab-ai/settings";
+} from "@mono-agent/settings";
 
 /**
  * 32-byte random hex token for per-boot bearer auth. Delegates to the shared

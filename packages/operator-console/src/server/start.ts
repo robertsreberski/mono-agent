@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { isLoopbackHost } from "@worklab-ai/settings";
+import { isLoopbackHost } from "@mono-agent/settings";
 
 import { OPERATOR_CONSOLE_STATIC_DIR } from "../static.js";
 import { generateToken } from "./auth.js";

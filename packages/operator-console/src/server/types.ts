@@ -1,5 +1,5 @@
-import type { FieldGroup } from "@worklab-ai/settings";
-import type { SettingsJson } from "@worklab-ai/settings";
+import type { FieldGroup } from "@mono-agent/settings";
+import type { SettingsJson } from "@mono-agent/settings";
 
 export interface OperatorConsoleObservabilityOptions {
   /** Artifact directory containing *.summary.json and *.events.jsonl files. */

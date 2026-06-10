@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { AgentResponseCancelledError } from "@worklab-ai/agent-contracts";
+import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 
 import {
   SlackAdapter,

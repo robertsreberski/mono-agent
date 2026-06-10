@@ -1,4 +1,4 @@
-declare module "@worklab-ai/agent-runtime" {
+declare module "@mono-agent/agent-runtime" {
   export interface AgentRuntimeHostOptions {
     readonly workspace?: string;
     readonly repoRoot?: string;
@@ -21,19 +21,21 @@ declare module "@worklab-ai/agent-runtime" {
   export interface AgentRuntimeInstance {
     run(systemPrompt: string, options?: Record<string, unknown>): Promise<Record<string, unknown>>;
     configureTools?(next?: Record<string, unknown>): void;
+    disposeSession?(providerSessionId: string): Promise<boolean | void>;
+    disposeAllSessions?(): Promise<void>;
   }
 
   export function createRuntime(host?: AgentRuntimeHostOptions): AgentRuntimeInstance;
 }
 
-declare module "@worklab-ai/agent-runtime/ai/runtime/model-refs.js" {
+declare module "@mono-agent/agent-runtime/ai/runtime/model-refs.js" {
   export function parseRuntimeModelReference(value: string): unknown;
   export function normalizeRuntimeModelReference(value: string): unknown;
   export function executionModeIncompatibilityReason(modelRefOrParsed: unknown, executionMode: string): string | null;
   export function isModelCompatibleWithExecutionMode(modelRefOrParsed: unknown, executionMode: string): boolean;
 }
 
-declare module "@worklab-ai/agent-runtime/ai/runtime/registry.js" {
+declare module "@mono-agent/agent-runtime/ai/runtime/registry.js" {
   export interface RuntimeBridgeDescriptor {
     readonly id: string;
     readonly supports: (modelRef: unknown, options?: Record<string, unknown>) => boolean;

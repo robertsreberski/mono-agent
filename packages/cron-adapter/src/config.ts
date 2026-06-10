@@ -5,8 +5,8 @@ import {
   readBoolean,
   readJsonSection,
   readSettingsJson,
-} from "@worklab-ai/settings";
-import type { FieldGroup, SettingsJson } from "@worklab-ai/settings";
+} from "@mono-agent/settings";
+import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
 
 import { CronAdapterError, type CronJob } from "./scheduler.js";
 

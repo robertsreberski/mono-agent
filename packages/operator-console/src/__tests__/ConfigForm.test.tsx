@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { defineFieldGroup } from "@worklab-ai/settings/field-groups";
+import { defineFieldGroup } from "@mono-agent/settings/field-groups";
 import { OperatorConsoleClient, type PutResponse } from "../client/api.js";
 import { ConfigForm } from "../client/components/ConfigForm.js";
 

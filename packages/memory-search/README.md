@@ -1,4 +1,4 @@
-# @worklab-ai/memory-search
+# @mono-agent/memory-search
 
 ## Category
 
@@ -16,11 +16,11 @@ archive and an entity snapshot.
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/memory-search run build
+pnpm --filter @mono-agent/memory-search run build
 ```
 
 ```ts
-import { createEmbeddingProvider, createVectorMemoryIndex, gatherMemoryChunks } from "@worklab-ai/memory-search";
+import { createEmbeddingProvider, createVectorMemoryIndex, gatherMemoryChunks } from "@mono-agent/memory-search";
 
 const embeddings = createEmbeddingProvider({ provider: "ollama", model: "nomic-embed-text" });
 const index = createVectorMemoryIndex({ path: "./.mono-agent/memory/index/embeddings.jsonl", embeddings });
@@ -46,12 +46,12 @@ caller decides when to rebuild the index (typically the nightly consolidation jo
 
 It does not own the journal or graph storage, does not extract entities, does not
 schedule consolidation, and does not expose MCP tools. It only embeds, indexes, and
-ranks. Keyword fallback lives in `@worklab-ai/memory-mcp`.
+ranks. Keyword fallback lives in `@mono-agent/memory-mcp`.
 
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/memory-search run build
-pnpm --filter @worklab-ai/memory-search run typecheck
-pnpm --filter @worklab-ai/memory-search run test
+pnpm --filter @mono-agent/memory-search run build
+pnpm --filter @mono-agent/memory-search run typecheck
+pnpm --filter @mono-agent/memory-search run test
 ```

@@ -2,8 +2,8 @@ import {
   readSettingsJson,
   SettingsJsonError,
   writeSettingsJson,
-} from "@worklab-ai/settings";
-import type { SettingsJson, SettingsJsonValue } from "@worklab-ai/settings";
+} from "@mono-agent/settings";
+import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryMode, MemoryScope, MemoryWriteMode } from "./types.js";
@@ -48,6 +48,10 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly effort?: string;
     readonly maxTurns?: number;
     readonly workspace?: string;
+    readonly session?: {
+      readonly mode?: string;
+      readonly idleTimeoutMs?: number;
+    };
   };
   readonly context?: {
     readonly identityPath?: string;

@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/a2a-adapter",
+  "name": "@mono-agent/a2a-adapter",
   "version": "0.1.0",
   "description": "A2A provider and consumer adapter for Worklab-style agent runtimes.",
   "type": "module",
@@ -24,8 +24,8 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0-alpha.0",
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/settings": "workspace:^0.1.0",
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/settings": "workspace:^0.1.0",
     "express": "^5.1.0"
   },
   "devDependencies": {

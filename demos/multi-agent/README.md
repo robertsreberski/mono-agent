@@ -2,14 +2,14 @@
 
 This non-package demo proves a three-agent Mono Agent topology using reusable orchestration and communication packages.
 
-Each role uses `@worklab-ai/agent-host` for the core config-to-responder step:
+Each role uses `@mono-agent/agent-host` for the core config-to-responder step:
 
 ```ts
 const runtime = createConfiguredAgentRuntime(coreConfig);
 const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
 ```
 
-The orchestrator keeps the same shape, but adds one request-scoped runtime extension from `@worklab-ai/agent-orchestrator` so the model can call collaborators through a bounded `ask_collaborator` MCP tool.
+The orchestrator keeps the same shape, but adds one request-scoped runtime extension from `@mono-agent/agent-orchestrator` so the model can call collaborators through a bounded `ask_collaborator` MCP tool.
 
 ## Topology
 
@@ -63,7 +63,7 @@ Operator-console config saves persist changes to disk, but this demo reports a r
 
 ## A2A Smoke
 
-The deploy command prints the orchestrator Agent Card URL. Send a text request to that URL with `sendA2AMessage` from `@worklab-ai/a2a-adapter` or any A2A client. A successful request that calls both collaborator agents should record three runs in the operator console Traceability view:
+The deploy command prints the orchestrator Agent Card URL. Send a text request to that URL with `sendA2AMessage` from `@mono-agent/a2a-adapter` or any A2A client. A successful request that calls both collaborator agents should record three runs in the operator console Traceability view:
 
 - `multi-agent-orchestrator`
 - `multi-agent-researcher`

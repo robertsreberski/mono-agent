@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/agent-host",
+  "name": "@mono-agent/agent-host",
   "version": "0.1.0",
   "description": "Host composition helpers for Mono Agent responders.",
   "type": "module",
@@ -23,15 +23,14 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/agent-harness": "workspace:^0.1.0",
-    "@worklab-ai/config": "workspace:^0.1.0",
-    "@worklab-ai/codex-app-runtime": "workspace:^0.1.0",
-    "@worklab-ai/memory-graph": "workspace:^0.1.0",
-    "@worklab-ai/memory-journal": "workspace:^0.1.0",
-    "@worklab-ai/memory-md": "workspace:^0.1.0",
-    "@worklab-ai/observability": "workspace:^0.1.0",
-    "@worklab-ai/runtime-adapter": "workspace:^0.1.0",
-    "@worklab-ai/tool-policy": "workspace:^0.1.0"
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/agent-harness": "workspace:^0.1.0",
+    "@mono-agent/config": "workspace:^0.1.0",
+    "@mono-agent/memory-graph": "workspace:^0.1.0",
+    "@mono-agent/memory-journal": "workspace:^0.1.0",
+    "@mono-agent/memory-md": "workspace:^0.1.0",
+    "@mono-agent/observability": "workspace:^0.1.0",
+    "@mono-agent/runtime-adapter": "workspace:^0.1.0",
+    "@mono-agent/tool-policy": "workspace:^0.1.0"
   }
 }

@@ -4,15 +4,15 @@ This is the Mono Agent final demo. It is intentionally **not** an npm package: t
 
 ## What it wires together
 
-- `@worklab-ai/operator-console` starts a loopback settings UI for `mono-agent.config.json`, plus a Traceability view over registered agent sources and recorded run artifacts.
-- `@worklab-ai/config` loads adapter-neutral core JSON plus environment overrides.
-- `@worklab-ai/agent-host` turns the core config into a runtime-backed responder.
-- `@worklab-ai/observability` registers this host in the local trace source registry.
-- `@worklab-ai/telegram-adapter` owns Telegram settings, Bot API handling, and long polling.
-- `@worklab-ai/a2a-adapter` owns A2A Agent Card discovery, loopback provider hosting, bearer auth, and remote text-task calls.
-- `@worklab-ai/webhook-adapter` owns loopback HTTP invocation and per-request status.
-- `@worklab-ai/openai-api-adapter` owns OpenAI-compatible model discovery and Chat Completions for OpenWebUI-style clients.
-- `@worklab-ai/cron-adapter` owns scheduled invocation from five-field cron jobs.
+- `@mono-agent/operator-console` starts a loopback settings UI for `mono-agent.config.json`, plus a Traceability view over registered agent sources and recorded run artifacts.
+- `@mono-agent/config` loads adapter-neutral core JSON plus environment overrides.
+- `@mono-agent/agent-host` turns the core config into a runtime-backed responder.
+- `@mono-agent/observability` registers this host in the local trace source registry.
+- `@mono-agent/telegram-adapter` owns Telegram settings, Bot API handling, and long polling.
+- `@mono-agent/a2a-adapter` owns A2A Agent Card discovery, loopback provider hosting, bearer auth, and remote text-task calls.
+- `@mono-agent/webhook-adapter` owns loopback HTTP invocation and per-request status.
+- `@mono-agent/openai-api-adapter` owns OpenAI-compatible model discovery and Chat Completions for OpenWebUI-style clients.
+- `@mono-agent/cron-adapter` owns scheduled invocation from five-field cron jobs.
 
 The important package-composition code is deliberately small:
 
@@ -82,7 +82,7 @@ The CLI prints the operator console URL/token, trace source id `final-agent-gemm
 
 ```bash
 node --input-type=module - <<'EOF'
-import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
+import { sendA2AMessage } from "@mono-agent/a2a-adapter";
 
 const response = await sendA2AMessage({
   agentUrl: "http://127.0.0.1:4317/.well-known/agent-card.json",
@@ -181,7 +181,7 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
 }
 ```
 
-Environment variables override the JSON file, including values saved through the operator console. Keep provider credentials in the provider/runtime environment expected by `@worklab-ai/agent-runtime`; the operator console JSON is not a secret manager.
+Environment variables override the JSON file, including values saved through the operator console. Keep provider credentials in the provider/runtime environment expected by `@mono-agent/agent-runtime`; the operator console JSON is not a secret manager.
 
 ## OpenWebUI Smoke
 
@@ -254,7 +254,7 @@ From another local Mono host or a one-off package smoke, discover Agent A and se
 
 ```bash
 node --input-type=module - <<'EOF'
-import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
+import { sendA2AMessage } from "@mono-agent/a2a-adapter";
 
 const response = await sendA2AMessage({
   agentUrl: "http://127.0.0.1:4300/.well-known/agent-card.json",
@@ -349,7 +349,7 @@ MONO_AGENT_TRACE_SOURCE_LABEL="Final Agent Demo"
 
 ## Persistent memory (journal + entity graph + semantic search)
 
-The agent can keep a persistent, file-first memory: a daily journal whose **today** note is always in context, a long-term **entity graph**, and **semantic search** over older notes. It is a single global brain shared across every channel. Four packages compose it: `@worklab-ai/memory-journal` (today note), `@worklab-ai/memory-graph` (entity graph), `@worklab-ai/memory-search` (Ollama/OpenAI embeddings + cosine index), and `@worklab-ai/memory-mcp` (the tools the model calls).
+The agent can keep a persistent, file-first memory: a daily journal whose **today** note is always in context, a long-term **entity graph**, and **semantic search** over older notes. It is a single global brain shared across every channel. Four packages compose it: `@mono-agent/memory-journal` (today note), `@mono-agent/memory-graph` (entity graph), `@mono-agent/memory-search` (Ollama/OpenAI embeddings + cosine index), and `@mono-agent/memory-mcp` (the tools the model calls).
 
 **1. Enable journal-mode memory.** Point `memory.path` at a directory (not a file) and switch the mode to `journal`. `writeMode: "append-host-summary"` makes every completed turn auto-append to today's note:
 

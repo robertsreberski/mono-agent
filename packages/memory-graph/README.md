@@ -1,4 +1,4 @@
-# @worklab-ai/memory-graph
+# @mono-agent/memory-graph
 
 ## Category
 
@@ -17,11 +17,11 @@ search, and a salience-ranked digest for always-in-context recall.
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/memory-graph run build
+pnpm --filter @mono-agent/memory-graph run build
 ```
 
 ```ts
-import { createEntityGraphStore } from "@worklab-ai/memory-graph";
+import { createEntityGraphStore } from "@mono-agent/memory-graph";
 
 const graph = createEntityGraphStore({ path: "./.mono-agent/memory/graph.jsonl" });
 await graph.upsertEntities([{ name: "Robert", entityType: "person", observations: ["prefers concise answers"] }]);
@@ -45,13 +45,13 @@ the host/agent during consolidation, not by this package.
 
 It does not extract entities from text, call a model, embed or semantically rank,
 journal daily notes, or expose MCP tools. Those belong to the consolidation job,
-`@worklab-ai/memory-search`, `@worklab-ai/memory-journal`, and
-`@worklab-ai/memory-mcp`.
+`@mono-agent/memory-search`, `@mono-agent/memory-journal`, and
+`@mono-agent/memory-mcp`.
 
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/memory-graph run build
-pnpm --filter @worklab-ai/memory-graph run typecheck
-pnpm --filter @worklab-ai/memory-graph run test
+pnpm --filter @mono-agent/memory-graph run build
+pnpm --filter @mono-agent/memory-graph run typecheck
+pnpm --filter @mono-agent/memory-graph run test
 ```

@@ -5,7 +5,7 @@ import type {
   AgentResponder,
   AgentResponse,
   AgentStreamEvent,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 
 export class AgentHarnessFailureError extends Error {
   readonly failure: AgentHarnessFailure;
@@ -17,12 +17,17 @@ export class AgentHarnessFailureError extends Error {
   }
 }
 
-export function createAgentResponder(options: { readonly harness: AgentHarness }): AgentResponder {
+export function createAgentResponder(options: { readonly harness: AgentHarness }): AgentResponder & {
+  dispose(): Promise<void>;
+} {
   if (typeof options.harness?.run !== "function") {
     throw new TypeError("createAgentResponder requires a harness with run().");
   }
 
   return {
+    async dispose(): Promise<void> {
+      await options.harness.dispose?.();
+    },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       const runtimeEventStream = createRuntimeEventStream(stream);
       const response = await options.harness.run({

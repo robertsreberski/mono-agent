@@ -1,11 +1,12 @@
-import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
-import type { RedactedSecretValue } from "@worklab-ai/settings";
+import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { RedactedSecretValue } from "@mono-agent/settings";
 
 import type { EFFORT_LEVELS } from "./field-groups.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
 export type MemoryMode = "markdown" | "journal";
+export type SessionMode = "continuous" | "per-message";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export interface MonoAgentConfig {
@@ -15,6 +16,10 @@ export interface MonoAgentConfig {
     readonly effort?: EffortLevel;
     readonly maxTurns: number;
     readonly workspace: string;
+    readonly session: {
+      readonly mode: SessionMode;
+      readonly idleTimeoutMs: number;
+    };
   };
   readonly context: {
     readonly identityPath: string;
