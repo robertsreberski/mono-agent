@@ -7,6 +7,8 @@ flowchart TB
   subgraph HostDemos["Host/demo composition"]
     FinalDemo["demos/final-agent"]
     MultiDemo["demos/multi-agent"]
+    AgentsSdkDemo["demos/agents-sdk-demo"]
+    DownloadsCurator["demos/downloads-curator"]
   end
 
   subgraph OperatorSurfaces["operator-surface"]
@@ -33,7 +35,11 @@ flowchart TB
   subgraph ContextLayer["context"]
     Context["@mono-agent/context"]
     Skills["@mono-agent/skills"]
-    Memory["@mono-agent/memory-md"]
+    MemoryMd["@mono-agent/memory-md"]
+    MemoryJournal["@mono-agent/memory-journal"]
+    MemoryGraph["@mono-agent/memory-graph"]
+    MemorySearch["@mono-agent/memory-search"]
+    MemoryMcp["@mono-agent/memory-mcp"]
   end
 
   subgraph ObservabilityLayer["observability"]
@@ -93,13 +99,15 @@ flowchart TB
 
   Host --> Harness
   Host --> Config
-  Host --> Memory
+  Host --> MemoryMd
+  Host --> MemoryJournal
+  Host --> MemoryGraph
   Host --> Observability
   Host --> RuntimeAdapter
   Host --> ToolPolicy
   Harness --> Contracts
   Harness --> Context
-  Harness --> Memory
+  Harness --> MemoryMd
   Harness --> Observability
   Harness --> RuntimeAdapter
   Harness --> Skills
@@ -113,6 +121,9 @@ flowchart TB
   Config --> Settings
   Config --> RuntimeAdapter
   Skills --> Context
+  MemoryJournal --> MemoryMd
+  MemoryMcp --> MemoryJournal
+  MemoryMcp --> MemoryGraph
   RuntimeAdapter --> AgentRuntime
   OpenAIAgents --> RuntimeAdapter
 ```
@@ -121,9 +132,9 @@ flowchart TB
 
 | Layer | Packages |
 | --- | --- |
-| `runtime` | `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime` |
+| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md` |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md`, `@mono-agent/memory-journal`, `@mono-agent/memory-graph`, `@mono-agent/memory-search`, `@mono-agent/memory-mcp` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |
 | `evaluation` | `@mono-agent/agent-evals` |
