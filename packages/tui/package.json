@@ -26,8 +26,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:^0.1.0",
-    "@mono-agent/config": "workspace:^0.1.0",
+    "@mono-agent/agent-contracts": "workspace:0.1.0",
+    "@mono-agent/config": "workspace:0.1.0",
     "ink": "^7.0.3",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
@@ -36,5 +36,8 @@
   "devDependencies": {
     "@types/react": "^19.2.2",
     "ink-testing-library": "^4.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
