@@ -95,6 +95,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: config.runtime.maxTurns * 2 }),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
+    ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
     recorderFactory: ({ runId, conversationId }) => createJsonlRunRecorder({
       runId,
       conversationId,

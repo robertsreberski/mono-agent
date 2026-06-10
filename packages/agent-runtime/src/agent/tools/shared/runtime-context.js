@@ -16,10 +16,12 @@
 //                      back to vendored binary, then PATH lookup.
 //   qaOutputDir      — fallback for normalizeMcpToolParams when the per-call
 //                      runArtifactDir isn't supplied.
+//   sandboxPolicy    — optional strict filesystem/process/network sandbox policy.
 //   runtimeBrand     — resolved RuntimeBrand object (see runtime-brand.js).
 //                      Internal helpers read it to stamp host-specific names
 //                      (MCP client name, transcript schema id, doctor command).
 
+import { mergeSandboxPolicies } from "@mono-agent/sandbox";
 import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-brand.js";
 
 const context = {
@@ -29,6 +31,7 @@ const context = {
   toolArtifactDir: undefined,
   ripgrepPath: undefined,
   qaOutputDir: undefined,
+  sandboxPolicy: undefined,
   runtimeBrand: { ...DEFAULT_RUNTIME_BRAND },
 };
 
@@ -44,6 +47,15 @@ export function configureToolRuntime(next = {}) {
 
 export function readToolRuntime() {
   return context;
+}
+
+// Single source of truth for the sandbox policy a tool call runs under.
+// Merging (rather than letting the per-call option shadow the context policy)
+// keeps the guarantee monotonic: a request-scoped policy can tighten the
+// host-configured policy but never weaken or disable it.
+export function resolveSandboxPolicy(requestPolicy = undefined) {
+  const merged = mergeSandboxPolicies(context.sandboxPolicy ?? undefined, requestPolicy ?? undefined);
+  return merged && merged.mode !== "off" ? merged : undefined;
 }
 
 export function readRuntimeBrand() {

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { prepareSandboxedCommand } from "@mono-agent/sandbox";
 import { DEFAULT_MAX_BASH_OUTPUT_CHARS } from "./shared/constants.js";
 import { capChars } from "./shared/output-truncation.js";
 import {
@@ -7,6 +8,7 @@ import {
   isWorkdirAllowed,
   workspaceRoot,
 } from "./shared/path-resolver.js";
+import { resolveSandboxPolicy } from "./shared/runtime-context.js";
 
 const DEFAULT_BASH_TIMEOUT_MS = 120000;
 const BASH_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
@@ -42,11 +44,12 @@ function appendChunk(chunks, chunk, state) {
   return true;
 }
 
-function runBash(command, { cwd, timeoutMs, signal, maxBufferBytes = BASH_MAX_BUFFER_BYTES }) {
+function runCommand(commandSpec, { timeoutMs, signal, maxBufferBytes = BASH_MAX_BUFFER_BYTES }) {
   return new Promise((resolve) => {
-    const child = spawn("/bin/bash", ["-lc", command], {
-      cwd,
+    const child = spawn(commandSpec.command, commandSpec.args || [], {
+      cwd: commandSpec.cwd,
       detached: true,
+      env: commandSpec.env ? { ...process.env, ...commandSpec.env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout = [];
@@ -109,14 +112,31 @@ function runBash(command, { cwd, timeoutMs, signal, maxBufferBytes = BASH_MAX_BU
   });
 }
 
-export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS, max_output_chars, workdir }, { signal } = {}) {
-  if (workdir && !isWorkdirAllowed(workdir)) return `Error: Working directory not allowed: ${workdir}`;
+export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS, max_output_chars, workdir }, { signal, sandboxPolicy, sandboxEngine } = {}) {
+  const policy = resolveSandboxPolicy(sandboxPolicy);
+  const pathOptions = { sandboxPolicy: policy };
+  if (workdir && !isWorkdirAllowed(workdir, pathOptions)) return `Error: Working directory not allowed: ${workdir}`;
   const cwd = workspaceRoot(workdir);
-  if (!isPathAllowed(cwd, workdir)) return `Error: Working directory not allowed: ${cwd}`;
+  if (!isPathAllowed(cwd, workdir, pathOptions)) return `Error: Working directory not allowed: ${cwd}`;
   if (!existsSync(cwd)) return `Error: Working directory not found: ${cwd}`;
   const maxChars = Number(max_output_chars) || DEFAULT_MAX_BASH_OUTPUT_CHARS;
   const timeoutMs = normalizeBashTimeoutMs(timeout);
-  const result = await runBash(command, { cwd, timeoutMs, signal });
+  let prepared;
+  try {
+    prepared = await prepareSandboxedCommand({
+      policy,
+      engine: sandboxEngine ?? undefined,
+      command: { command: "/bin/bash", args: ["-lc", command], cwd },
+    });
+  } catch (err) {
+    return `Error: ${err?.message || String(err)}`;
+  }
+  let result;
+  try {
+    result = await runCommand(prepared, { timeoutMs, signal });
+  } finally {
+    await prepared.cleanup?.();
+  }
   if (result.timedOut) return `Error: Command timed out after ${timeoutMs}ms`;
   if (result.aborted) return "Error: Command aborted";
   if (result.bufferExceeded) return `Error: Command output exceeded ${BASH_MAX_BUFFER_BYTES} bytes`;

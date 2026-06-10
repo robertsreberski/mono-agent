@@ -6,7 +6,7 @@ Category: `runtime`
 
 ## Responsibility
 
-Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts.
+Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts, and it enforces optional `@mono-agent/sandbox` policy for runtime-owned tools.
 
 ## Public API
 
@@ -15,10 +15,11 @@ Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, C
 - `ai/runtime/registry.js` — `listRuntimeBridges`
 - Provider bridges for `claude` (SDK + CLI), `codex` (app-server), `pi` (Pi SDK), and `opencode`
 - Provider session support: bridges accept `sessionId` in run options and report `provider_session_id`; the runtime exposes `disposeSession` / `disposeAllSessions`
+- Sandbox-aware built-in tools and stdio MCP startup through `@mono-agent/sandbox`
 
 ## Dependency Boundary
 
-Depends only on external provider SDKs (`@anthropic-ai/claude-agent-sdk`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `zod`). No workspace dependencies.
+Depends on external provider SDKs (`@anthropic-ai/claude-agent-sdk`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `zod`) plus `@mono-agent/sandbox` for runtime-owned command preparation and network/path policy checks.
 
 ## What This Package Does Not Own
 
@@ -148,6 +149,7 @@ createRuntime({
   repoRoot,                // secondary allowed root
   ripgrepPath,             // explicit path to `rg`; falls back to vendored binary, then PATH
   qaOutputDir,             // fallback dir for Playwright MCP filename routing
+  sandboxPolicy,           // optional @mono-agent/sandbox policy for tools and stdio MCP
 
   // -- observers (multi-subscriber telemetry) --
   // Optional. Each observer receives every event the runtime emits.
@@ -200,6 +202,7 @@ Per-call options (a non-exhaustive selection):
 | `allowedTools` | `string[]` | Built-in tool allowlist. Default: all. |
 | `disallowedTools` | `string[]` | Block list. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
+| `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | If set, the agent is asked to produce structured JSON matching this schema. The result lands in `result.structuredResult`. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |

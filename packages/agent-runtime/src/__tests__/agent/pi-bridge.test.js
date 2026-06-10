@@ -1,13 +1,20 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
 import {
   coerceMcpContent,
   getPiBuiltinTools,
+  initPiMcpTools,
   normalizeMcpToolParams,
   normalizePiBuiltinToolParams,
+  prepareMcpStdioCommand,
   resolveMcpStdioCwd,
 } from "../../agent/tools/pi-bridge.js";
+import {
+  configureToolRuntime,
+  resetToolRuntime,
+} from "../../agent/tools/shared/runtime-context.js";
 
 function makeSink(runDir) {
   return ({ filename, buffer }) => {
@@ -28,6 +35,7 @@ function tempWorkspace() {
 }
 
 afterEach(() => {
+  resetToolRuntime();
   while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
 });
 
@@ -155,6 +163,106 @@ describe("pi MCP tool helpers", () => {
     expect(resolveMcpStdioCwd({}, "/repo/project")).toBe("/repo/project");
     expect(resolveMcpStdioCwd({ cwd: "tools" }, "/repo/project")).toBe("/repo/project/tools");
     expect(resolveMcpStdioCwd({ cwd: "/opt/mcp" }, "/repo/project")).toBe("/opt/mcp");
+  });
+
+  it("prepares stdio MCP commands through the configured sandbox engine", async () => {
+    const policy = failClosedSandboxPolicy({ root: "/repo/project" });
+    const prepared = await prepareMcpStdioCommand(
+      { command: "node", args: ["server.js"], cwd: "tools" },
+      {
+        cwd: "/repo/project",
+        sandboxPolicy: policy,
+        sandboxEngine: {
+          id: "fake",
+          async isAvailable() {
+            return true;
+          },
+          async prepareCommand(command) {
+            return {
+              ...command,
+              command: "sandbox",
+              args: [command.command, ...(command.args ?? [])],
+              sandboxed: true,
+            };
+          },
+        },
+      },
+    );
+
+    expect(prepared).toMatchObject({
+      command: "sandbox",
+      args: ["node", "server.js"],
+      cwd: "/repo/project/tools",
+      sandboxed: true,
+    });
+  });
+
+  it("prepares stdio MCP commands under the context-configured sandbox policy without per-call options", async () => {
+    const root = tempWorkspace();
+    configureToolRuntime({
+      workspace: root,
+      sandboxPolicy: failClosedSandboxPolicy({ root }),
+    });
+
+    const prepared = await prepareMcpStdioCommand(
+      { command: "node", args: ["server.js"] },
+      {
+        cwd: root,
+        sandboxEngine: {
+          id: "fake",
+          async isAvailable() {
+            return true;
+          },
+          async prepareCommand(command) {
+            return { ...command, command: "sandbox", sandboxed: true };
+          },
+        },
+      },
+    );
+
+    expect(prepared).toMatchObject({ command: "sandbox", sandboxed: true });
+  });
+
+  it("cleans up sandboxed stdio MCP commands when client connect fails", async () => {
+    const root = tempWorkspace();
+    const policy = failClosedSandboxPolicy({ root });
+    let cleanupCalls = 0;
+    const result = await initPiMcpTools(
+      {
+        broken: {
+          command: "node",
+          args: ["server.js"],
+          cwd: ".",
+        },
+      },
+      new Set(),
+      {
+        cwd: root,
+        sandboxPolicy: policy,
+        sandboxEngine: {
+          id: "fake",
+          async isAvailable() {
+            return true;
+          },
+          async prepareCommand(command) {
+            return {
+              ...command,
+              command: process.execPath,
+              args: ["-e", "process.exit(1)"],
+              cwd: root,
+              sandboxed: true,
+              cleanup: async () => {
+                cleanupCalls += 1;
+              },
+            };
+          },
+        },
+      },
+    );
+
+    expect(result.clients).toEqual([]);
+    expect(result.warnings).toMatchObject([{ warning_kind: "mcp_init_failed", server: "broken" }]);
+    expect(cleanupCalls).toBe(1);
   });
 
   it("blocks non-read-only Bash commands when planning shell policy is enforced", async () => {

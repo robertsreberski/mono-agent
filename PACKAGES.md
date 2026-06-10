@@ -55,6 +55,7 @@ flowchart TB
     RuntimeAdapter["@mono-agent/runtime-adapter"]
     AgentRuntime["@mono-agent/agent-runtime"]
     OpenAIAgents["@mono-agent/openai-agents-runtime"]
+    Sandbox["@mono-agent/sandbox"]
   end
 
   FinalDemo --> OperatorConsole
@@ -96,12 +97,14 @@ flowchart TB
   Host --> Memory
   Host --> Observability
   Host --> RuntimeAdapter
+  Host --> Sandbox
   Host --> ToolPolicy
   Harness --> Contracts
   Harness --> Context
   Harness --> Memory
   Harness --> Observability
   Harness --> RuntimeAdapter
+  Harness --> Sandbox
   Harness --> Skills
   Harness --> ToolPolicy
   Orchestrator --> Contracts
@@ -112,8 +115,12 @@ flowchart TB
 
   Config --> Settings
   Config --> RuntimeAdapter
+  Config --> Sandbox
   Skills --> Context
   RuntimeAdapter --> AgentRuntime
+  RuntimeAdapter --> Sandbox
+  AgentRuntime --> Sandbox
+  Sandbox --> Contracts
   OpenAIAgents --> RuntimeAdapter
 ```
 
@@ -121,7 +128,7 @@ flowchart TB
 
 | Layer | Packages |
 | --- | --- |
-| `runtime` | `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime` |
+| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime`, `@mono-agent/sandbox` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |

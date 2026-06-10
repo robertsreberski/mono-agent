@@ -640,6 +640,8 @@ export async function generatePiResponse(systemPrompt, options = {}) {
         toolPayloadMaxBytes,
         onTruncate,
         toolPolicy: options.toolPolicy,
+        sandboxPolicy: options.sandboxPolicy,
+        sandboxEngine: options.sandboxEngine,
         approvalManager,
         approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
       });
@@ -662,6 +664,8 @@ export async function generatePiResponse(systemPrompt, options = {}) {
         qaOutputDir,
         toolPayloadMaxBytes,
         onTruncate,
+        sandboxPolicy: options.sandboxPolicy,
+        sandboxEngine: options.sandboxEngine,
       });
     mcpClients = mcpInit.clients;
     for (const warning of mcpInit.warnings || []) onEvent(warning);
