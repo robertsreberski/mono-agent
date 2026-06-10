@@ -24,9 +24,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }) {
+export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }, { sandboxPolicy } = {}) {
   const cwd = resolveToolPath(path || workspaceRoot(workdir), workdir);
-  if (!isPathAllowed(cwd, workdir)) return `Error: Path not allowed: ${cwd}`;
+  if (!isPathAllowed(cwd, workdir, { sandboxPolicy })) return `Error: Path not allowed: ${cwd}`;
   const stat = safeStat(cwd);
   if (!stat?.isDirectory()) return `Error: Glob path is not a directory: ${cwd}`;
   const resultLimit = boundedInt(limit ?? max_matches, DEFAULT_MAX_SEARCH_LINES, { min: 1, max: 1000 });

@@ -1,7 +1,7 @@
 {
-  "name": "@mono-agent/config",
+  "name": "@mono-agent/sandbox",
   "version": "0.1.0",
-  "description": "Strict environment/file config parser for agent hosts.",
+  "description": "Fail-closed sandbox policy and native process wrapping for Mono Agent runtimes.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
@@ -23,8 +23,6 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/runtime-adapter": "workspace:^0.1.0",
-    "@mono-agent/sandbox": "workspace:^0.1.0",
-    "@mono-agent/settings": "workspace:^0.1.0"
+    "@mono-agent/agent-contracts": "workspace:^0.1.0"
   }
 }

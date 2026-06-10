@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { isPathAllowed, resolveToolPath } from "./shared/path-resolver.js";
+import { isPathAllowed, isWritablePathAllowed, resolveToolPath } from "./shared/path-resolver.js";
 
-export async function editToolImpl({ file_path, old_string, new_string, replace_all = false, workdir }) {
+export async function editToolImpl({ file_path, old_string, new_string, replace_all = false, workdir }, { sandboxPolicy } = {}) {
   const target = resolveToolPath(file_path, workdir);
-  if (!isPathAllowed(target, workdir)) return `Error: Path not allowed: ${file_path}`;
+  const pathOptions = { sandboxPolicy };
+  if (!isPathAllowed(target, workdir, pathOptions) || !isWritablePathAllowed(target, workdir, pathOptions)) return `Error: Path not allowed: ${file_path}`;
   if (!existsSync(target)) return `Error: File not found: ${file_path}`;
   const content = readFileSync(target, "utf8");
   const count = content.split(old_string).length - 1;

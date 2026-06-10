@@ -11,6 +11,14 @@ import {
 } from "@mono-agent/runtime-adapter";
 import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@mono-agent/runtime-adapter";
 import {
+  SANDBOX_FALLBACKS,
+  SANDBOX_MODES,
+  SANDBOX_NETWORK_MODES,
+  SandboxPolicyError,
+  createSandboxPolicy,
+} from "@mono-agent/sandbox";
+import type { SandboxFallback, SandboxMode, SandboxNetworkMode } from "@mono-agent/sandbox";
+import {
   normalizeOptionalString,
   readBoolean,
   readChoice,
@@ -81,6 +89,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const selectedSkills = readCsv(input.env.MONO_AGENT_SELECTED_SKILLS);
   const memory = readMemoryConfig(input.env, cwd);
   const mcpConfigPath = readOptionalPath(input.env.MONO_AGENT_MCP_CONFIG_PATH, cwd);
+  const sandbox = readSandboxConfig(input.env, workspace);
   const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
   const traceability = readTraceabilityConfig(input.env, cwd);
   const localProviders = readLocalProviders(input.env);
@@ -114,6 +123,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     runtime,
     context,
     tools,
+    ...(sandbox === undefined ? {} : { sandbox }),
     artifacts: {
       dir: artifactDir,
     },
@@ -136,6 +146,7 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
       allowedTools: [...config.tools.allowedTools],
       disallowedTools: [...config.tools.disallowedTools],
     },
+    ...(config.sandbox === undefined ? {} : { sandbox: { ...config.sandbox } }),
     artifacts: { ...config.artifacts },
     traceability: { ...config.traceability },
   };
@@ -182,6 +193,71 @@ function assertModeCompatibility(model: MonoAgentConfig["runtime"]["model"], exe
     }
     throw error;
   }
+}
+
+function readSandboxConfig(env: Record<string, string | undefined>, workspace: string): MonoAgentConfig["sandbox"] | undefined {
+  if (!hasSandboxEnv(env)) {
+    return undefined;
+  }
+
+  const mode = readChoice<SandboxMode>(env.MONO_AGENT_SANDBOX_MODE, "MONO_AGENT_SANDBOX_MODE", SANDBOX_MODES, "native", invalidEnv);
+  const networkMode = readChoice<SandboxNetworkMode>(env.MONO_AGENT_SANDBOX_NETWORK, "MONO_AGENT_SANDBOX_NETWORK", SANDBOX_NETWORK_MODES, "none", invalidEnv);
+  const fallback = readChoice<SandboxFallback>(env.MONO_AGENT_SANDBOX_FALLBACK, "MONO_AGENT_SANDBOX_FALLBACK", SANDBOX_FALLBACKS, "fail-closed", invalidEnv);
+  try {
+    return createSandboxPolicy({
+      mode,
+      root: workspace,
+      network: {
+        mode: networkMode,
+        allowlist: readCsv(env.MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST),
+      },
+      fallback,
+      unsafeAllowHostProcess: readBoolean(
+        env.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS,
+        "MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS",
+        false,
+        invalidEnv,
+      ),
+    });
+  } catch (error) {
+    if (error instanceof SandboxPolicyError) {
+      throw new MonoAgentConfigError("invalid_env", `Sandbox policy env is invalid: ${error.message}`, {
+        env: sandboxPolicyErrorEnv(error),
+        reason: error.message,
+      });
+    }
+    throw error;
+  }
+}
+
+function sandboxPolicyErrorEnv(error: SandboxPolicyError): string {
+  const field = typeof error.details.field === "string" ? error.details.field : undefined;
+  if (field === "unsafeAllowHostProcess") {
+    return "MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS";
+  }
+  if (field === "network.allowlist" || field?.startsWith("network.allowlist[")) {
+    return "MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST";
+  }
+  if (field === "network.mode") {
+    return "MONO_AGENT_SANDBOX_NETWORK";
+  }
+  if (field === "fallback") {
+    return "MONO_AGENT_SANDBOX_FALLBACK";
+  }
+  if (field === "root") {
+    return "MONO_AGENT_WORKSPACE";
+  }
+  return "MONO_AGENT_SANDBOX_MODE";
+}
+
+function hasSandboxEnv(env: Record<string, string | undefined>): boolean {
+  return [
+    env.MONO_AGENT_SANDBOX_MODE,
+    env.MONO_AGENT_SANDBOX_NETWORK,
+    env.MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST,
+    env.MONO_AGENT_SANDBOX_FALLBACK,
+    env.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS,
+  ].some((value) => normalizeOptionalString(value) !== undefined);
 }
 
 function readSessionConfig(env: Record<string, string | undefined>): MonoAgentConfig["runtime"]["session"] {

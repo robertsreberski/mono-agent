@@ -80,6 +80,18 @@ MONO_AGENT_SESSION_IDLE_TIMEOUT_MS=1800000   # 30 min default; min 1s, max 24h
 
 In `continuous` mode (the default) consecutive messages in a conversation reuse one live provider session (codex app-server thread, claude resume, pi Session transcript) and conversation history is omitted from the prompt while the session lives; sessions die after the idle timeout and the next message falls back to history replay.
 
+## Sandbox Policy
+
+Sandbox config is optional. When any `MONO_AGENT_SANDBOX_*` variable is present, config builds a fail-closed `@mono-agent/sandbox` policy rooted at `runtime.workspace`:
+
+```bash
+MONO_AGENT_SANDBOX_MODE=native
+MONO_AGENT_SANDBOX_NETWORK=none
+MONO_AGENT_SANDBOX_FALLBACK=fail-closed
+```
+
+Supported network modes are `none`, `localhost`, `allowlist`, and `all`. `allowlist` reads comma-separated domains from `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST`. Unsafe host-process fallback requires both `MONO_AGENT_SANDBOX_FALLBACK=unsafe-host-process` and `MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS=true`.
+
 ## Public API
 
 - `loadMonoAgentConfig`, `loadMonoAgentConfigWithSources`
@@ -91,7 +103,7 @@ In `continuous` mode (the default) consecutive messages in a conversation reuse 
 
 ## Dependency Boundary
 
-`@mono-agent/config` may depend on `@mono-agent/settings` and `@mono-agent/runtime-adapter`. It must not depend on communication adapters, the operator console, agent harness, or UI packages.
+`@mono-agent/config` may depend on `@mono-agent/settings`, `@mono-agent/runtime-adapter`, and `@mono-agent/sandbox`. It must not depend on communication adapters, the operator console, agent harness, or UI packages.
 
 ## What This Package Does Not Own
 

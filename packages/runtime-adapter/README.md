@@ -32,7 +32,7 @@ const backends = listMonoRuntimeBackends();
 - `listMonoRuntimeBackends`, `runtimeBackendForModel`, `describeMonoRuntimeSupport`
 - `runtimeOptionsForLocalProvider`, `validateLocalProviderDefinition`, `isPrivateBaseUrl`
 - `RuntimeAdapterError`
-- Runtime backend, model, execution mode, message, event, tool, and result types
+- Runtime backend, model, execution mode, message, event, sandbox, tool, and result types
 - Local provider types for Ollama, LM Studio, and OpenAI-compatible gateways
 
 Supported backend seams are exposed as data:
@@ -74,7 +74,7 @@ Private HTTP(S) URLs such as `localhost`, RFC1918 addresses, and Tailscale CGNAT
 
 ## Dependency Boundary
 
-This is the only package that depends on `@mono-agent/agent-runtime`. Other packages consume its small `MonoRuntimeLike` interface and backend descriptors instead of importing provider/runtime internals.
+This is the only facade package that depends on `@mono-agent/agent-runtime`. Other packages consume its small `MonoRuntimeLike` interface and backend descriptors instead of importing provider/runtime internals. It may expose `@mono-agent/sandbox` policy types as part of the runtime options contract.
 
 ## What This Package Does Not Own
 
