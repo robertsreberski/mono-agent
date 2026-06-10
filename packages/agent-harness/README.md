@@ -26,8 +26,11 @@ Hosts that need request-scoped runtime setup can provide `runtimeOptionsForReque
 - `createAgentHarness`, `MonoAgentHarness`, `AgentHarnessError`
 - `createAgentResponder`, `AgentHarnessFailureError`
 - `createInMemoryHistoryStore`, `InMemoryConversationHistoryStore`
+- `createRuntimeSessionStore` plus the session record/store types from `sessions.ts`
 - `NoopRunRecorder`
-- Harness, shared responder, runtime, request-scoped runtime option, memory, and history types from `types.ts`
+- Harness, shared responder, runtime, request-scoped runtime option, memory, history, and session types from `types.ts`
+
+With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation: resumed runs pass `sessionId`/`sessionKeepAlive` to the runtime and omit history from the prompt, stale sessions are evicted and retried once with history, rotated provider session ids are tracked, and `dispose()` retires everything on shutdown. History is still appended after every successful turn so post-expiry runs replay it as before.
 
 ## Dependency Boundary
 
