@@ -59,6 +59,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "agent-runtime",
+    name: "@worklab-ai/agent-runtime",
+    category: "runtime",
+    responsibility: "Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support.",
+    allowedDependencyCategories: ["runtime"],
+    publishable: true,
+  },
+  {
     dir: "claude-agents-runtime",
     name: "@worklab-ai/claude-agents-runtime",
     category: "runtime",
@@ -143,7 +151,7 @@ export const packageCatalog = [
     name: "@worklab-ai/runtime-adapter",
     category: "runtime",
     responsibility: "Wraps @worklab-ai/agent-runtime behind Mono Agent runtime contracts.",
-    allowedDependencyCategories: ["core"],
+    allowedDependencyCategories: ["core", "runtime"],
     publishable: true,
   },
   {

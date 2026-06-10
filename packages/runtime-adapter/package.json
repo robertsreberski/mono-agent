@@ -23,6 +23,6 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-runtime": "^0.1.7"
+    "@worklab-ai/agent-runtime": "workspace:*"
   }
 }
