@@ -225,6 +225,12 @@ describe("ai tool helpers", () => {
     expect(searchResult).toContain("Network access denied by sandbox policy");
   });
 
+  it("rejects non-http WebFetch URLs before calling fetch", async () => {
+    const result = await webFetchToolImpl({ url: "file:///etc/passwd" });
+
+    expect(result).toBe("Error: WebFetch only supports http(s) URLs.");
+  });
+
   it("returns a clean error when ripgrep is unavailable", async () => {
     const root = tempWorkspace();
     configureToolRuntime({ workspace: root, ripgrepPath: join(root, "missing-rg") });
@@ -272,6 +278,25 @@ describe("ai tool helpers", () => {
     const bashResult = await bashToolImpl({ command: "pwd", workdir: "/tmp" });
 
     expect(readResult).toContain("Path not allowed");
+    expect(bashResult).toContain("Working directory not allowed");
+  });
+
+  it("treats explicit empty sandbox roots as deny-all", async () => {
+    const root = tempWorkspace();
+    const rootFile = join(root, "secret.txt");
+    writeFile(rootFile, "secret");
+    const sandboxPolicy = failClosedSandboxPolicy({
+      root,
+      readableRoots: [],
+      writableRoots: [],
+    });
+
+    const readResult = await readToolImpl({ file_path: rootFile }, { sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: join(root, "new.txt"), content: "x" }, { sandboxPolicy });
+    const bashResult = await bashToolImpl({ command: "pwd", workdir: root }, { sandboxPolicy });
+
+    expect(readResult).toContain("Path not allowed");
+    expect(writeResult).toContain("Path not allowed");
     expect(bashResult).toContain("Working directory not allowed");
   });
 

@@ -5,6 +5,7 @@ import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
 import {
   coerceMcpContent,
   getPiBuiltinTools,
+  initPiMcpTools,
   normalizeMcpToolParams,
   normalizePiBuiltinToolParams,
   prepareMcpStdioCommand,
@@ -189,6 +190,48 @@ describe("pi MCP tool helpers", () => {
       cwd: "/repo/project/tools",
       sandboxed: true,
     });
+  });
+
+  it("cleans up sandboxed stdio MCP commands when client connect fails", async () => {
+    const root = tempWorkspace();
+    const policy = failClosedSandboxPolicy({ root });
+    let cleanupCalls = 0;
+    const result = await initPiMcpTools(
+      {
+        broken: {
+          command: "node",
+          args: ["server.js"],
+          cwd: ".",
+        },
+      },
+      new Set(),
+      {
+        cwd: root,
+        sandboxPolicy: policy,
+        sandboxEngine: {
+          id: "fake",
+          async isAvailable() {
+            return true;
+          },
+          async prepareCommand(command) {
+            return {
+              ...command,
+              command: process.execPath,
+              args: ["-e", "process.exit(1)"],
+              cwd: root,
+              sandboxed: true,
+              cleanup: async () => {
+                cleanupCalls += 1;
+              },
+            };
+          },
+        },
+      },
+    );
+
+    expect(result.clients).toEqual([]);
+    expect(result.warnings).toMatchObject([{ warning_kind: "mcp_init_failed", server: "broken" }]);
+    expect(cleanupCalls).toBe(1);
   });
 
   it("blocks non-read-only Bash commands when planning shell policy is enforced", async () => {

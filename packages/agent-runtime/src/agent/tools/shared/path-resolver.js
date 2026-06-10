@@ -20,7 +20,7 @@ export function resolveToolPath(path, workdir) {
 function roots(workdir, access = "read", options = {}) {
   const { workspace, repoRoot } = configured();
   const sandboxRoots = sandboxPathRoots(access, options.sandboxPolicy);
-  if (sandboxRoots.length) return sandboxRoots;
+  if (sandboxRoots !== undefined) return sandboxRoots;
   return normalizeRoots([
     workdir,
     workspace,
@@ -53,7 +53,7 @@ function isPathAllowedFor(path, workdir, access, options) {
 function envRoots(options = {}) {
   const { workspace, repoRoot } = configured();
   const sandboxRoots = sandboxPathRoots("read", options.sandboxPolicy);
-  if (sandboxRoots.length) return sandboxRoots;
+  if (sandboxRoots !== undefined) return sandboxRoots;
   return normalizeRoots([
     workspace,
     repoRoot,
@@ -73,7 +73,7 @@ export function isWorkdirAllowed(workdir, options = {}) {
 
 function sandboxPathRoots(access = "read", sandboxPolicy = undefined) {
   const policy = sandboxPolicy ?? readToolRuntime().sandboxPolicy;
-  if (!policy || policy.mode === "off") return [];
+  if (!policy || policy.mode === "off") return undefined;
   const field = access === "write" ? policy.writableRoots : policy.readableRoots;
   return normalizeRoots(Array.isArray(field) ? field : []);
 }

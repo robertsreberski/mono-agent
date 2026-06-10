@@ -230,12 +230,32 @@ function readSandboxConfig(env: Record<string, string | undefined>, workspace: s
   } catch (error) {
     if (error instanceof SandboxPolicyError) {
       throw new MonoAgentConfigError("invalid_env", `Sandbox policy env is invalid: ${error.message}`, {
-        env: "MONO_AGENT_SANDBOX_MODE",
+        env: sandboxPolicyErrorEnv(error),
         reason: error.message,
       });
     }
     throw error;
   }
+}
+
+function sandboxPolicyErrorEnv(error: SandboxPolicyError): string {
+  const field = typeof error.details.field === "string" ? error.details.field : undefined;
+  if (field === "unsafeAllowHostProcess") {
+    return "MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS";
+  }
+  if (field === "network.allowlist" || field?.startsWith("network.allowlist[")) {
+    return "MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST";
+  }
+  if (field === "network.mode") {
+    return "MONO_AGENT_SANDBOX_NETWORK";
+  }
+  if (field === "fallback") {
+    return "MONO_AGENT_SANDBOX_FALLBACK";
+  }
+  if (field === "root") {
+    return "MONO_AGENT_WORKSPACE";
+  }
+  return "MONO_AGENT_SANDBOX_MODE";
 }
 
 function hasSandboxEnv(env: Record<string, string | undefined>): boolean {

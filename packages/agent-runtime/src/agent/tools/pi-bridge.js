@@ -446,8 +446,14 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine }
     });
     transport.__monoSandboxCleanup = prepared.cleanup;
   }
-  await client.connect(transport);
-  return { name, client, transport };
+  try {
+    await client.connect(transport);
+    return { name, client, transport };
+  } catch (error) {
+    try { await transport?.close?.(); } catch { /* best-effort */ }
+    try { await transport?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+    throw error;
+  }
 }
 
 export function coerceMcpContent(out, {
