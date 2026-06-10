@@ -1,4 +1,4 @@
-# @worklab-ai/whatsapp-adapter
+# @mono-agent/whatsapp-adapter
 
 ## Category
 
@@ -11,7 +11,7 @@ WhatsApp communication adapter for Mono Agent hosts using Baileys-compatible soc
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/whatsapp-adapter run build
+pnpm --filter @mono-agent/whatsapp-adapter run build
 ```
 
 ```ts
@@ -21,10 +21,10 @@ import {
   createBaileysWhatsAppSocket,
   loadWhatsAppAdapterConfig,
   whatsappFieldGroup,
-} from "@worklab-ai/whatsapp-adapter";
+} from "@mono-agent/whatsapp-adapter";
 ```
 
-Hosts provide a Baileys socket, adapter options, and a structural `AgentResponder`. The base responder, stream, response, and cancellation contracts come from `@worklab-ai/agent-contracts`.
+Hosts provide a Baileys socket, adapter options, and a structural `AgentResponder`. The base responder, stream, response, and cancellation contracts come from `@mono-agent/agent-contracts`.
 
 ## Public API
 
@@ -47,7 +47,7 @@ It does not manage QR/login persistence policy, build prompts, run models, store
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/whatsapp-adapter run build
-pnpm --filter @worklab-ai/whatsapp-adapter run typecheck
-pnpm --filter @worklab-ai/whatsapp-adapter run test
+pnpm --filter @mono-agent/whatsapp-adapter run build
+pnpm --filter @mono-agent/whatsapp-adapter run typecheck
+pnpm --filter @mono-agent/whatsapp-adapter run test
 ```

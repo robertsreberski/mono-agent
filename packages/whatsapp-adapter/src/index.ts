@@ -21,7 +21,7 @@ export type {
 } from "./message-normalizer.js";
 export { isGroupJid, normalizeWhatsAppMessage } from "./message-normalizer.js";
 
-export type { AgentMessageStream } from "@worklab-ai/agent-contracts";
+export type { AgentMessageStream } from "@mono-agent/agent-contracts";
 export type {
   WhatsAppMessageStreamLogger,
   WhatsAppMessageStreamOptions,

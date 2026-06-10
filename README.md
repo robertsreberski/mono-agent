@@ -1,23 +1,23 @@
 # Mono Agent
 
-Mono Agent is a small pnpm workspace of reusable npm packages under the `@worklab-ai` scope. The framework is built around `@worklab-ai/agent-runtime`, but keeps runtime access, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
+Mono Agent is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
 
 ## Package Architecture
 
-Package categories are catalog metadata, documentation, and architecture-guard inputs. The physical layout intentionally stays `packages/<package-name>` and published names stay `@worklab-ai/<package-name>`; a future physical move to `packages/<category>/<package-name>` would be a separate mechanical release-tooling task.
+Package categories are catalog metadata, documentation, and architecture-guard inputs. The physical layout intentionally stays `packages/<package-name>` and published names stay `@mono-agent/<package-name>`; a future physical move to `packages/<category>/<package-name>` would be a separate mechanical release-tooling task.
 
 See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
-| `runtime` | `@worklab-ai/runtime-adapter` | `core` | The only package that wraps `@worklab-ai/agent-runtime`; parses model refs, validates execution modes, and exposes backend descriptors. |
-| `core` | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
-| `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
-| `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
-| `observability` | `@worklab-ai/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
-| `evaluation` | `@worklab-ai/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
-| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/cron-adapter`, `@worklab-ai/openai-api-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/webhook-adapter`, `@worklab-ai/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
-| `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
+| `runtime` | `@mono-agent/runtime-adapter` | `core` | The only package that wraps `@mono-agent/agent-runtime`; parses model refs, validates execution modes, and exposes backend descriptors. |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
+| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
+| `observability` | `@mono-agent/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
+| `evaluation` | `@mono-agent/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
+| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
+| `operator-surface` | `@mono-agent/operator-console`, `@mono-agent/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
 | `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition that load config, build responders, start surfaces/transports, and register local traces. |
 
 ## Dependency Direction
@@ -34,7 +34,7 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ agent-host
   │   ├─ config
   │   ├─ agent-harness ── agent-contracts, context, skills, memory-md, observability, runtime-adapter, tool-policy
-  │   ├─ runtime-adapter ── @worklab-ai/agent-runtime
+  │   ├─ runtime-adapter ── @mono-agent/agent-runtime
   │   ├─ memory-md
   │   ├─ observability
   │   └─ tool-policy
@@ -47,7 +47,7 @@ demos/final-agent and demos/multi-agent (not workspace packages)
 
 Rules for future packages:
 
-- New packages live under `packages/<package-name>` and publish as `@worklab-ai/<package-name>`.
+- New packages live under `packages/<package-name>` and publish as `@mono-agent/<package-name>`.
 - Add every workspace package to `scripts/package-catalog.mjs` with category, responsibility, and allowed dependency categories.
 - Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
 - Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.
@@ -95,15 +95,15 @@ const responder = createConfiguredAgentResponder({ config: coreConfig, runtime }
 
 The demo then passes that responder to whichever adapters are enabled:
 
-- `CORE_AGENT_FIELD_GROUPS` from `@worklab-ai/config`
-- `createConfiguredAgentRuntime` and `createConfiguredAgentResponder` from `@worklab-ai/agent-host`
-- `a2aFieldGroup`, `loadA2AAdapterConfig`, and `startA2AProvider` from `@worklab-ai/a2a-adapter`
-- `telegramFieldGroup` and `loadTelegramAdapterConfig` from `@worklab-ai/telegram-adapter`
-- `webhookFieldGroup`, `loadWebhookAdapterConfig`, and `startWebhookAdapter` from `@worklab-ai/webhook-adapter`
-- `openAIApiFieldGroup`, `loadOpenAIApiAdapterConfig`, and `startOpenAIApiAdapter` from `@worklab-ai/openai-api-adapter`
-- `cronFieldGroup`, `loadCronAdapterConfig`, and `startCronAdapter` from `@worklab-ai/cron-adapter`
-- `startOperatorConsole` from `@worklab-ai/operator-console`
-- `registerTraceSource` from `@worklab-ai/observability`
+- `CORE_AGENT_FIELD_GROUPS` from `@mono-agent/config`
+- `createConfiguredAgentRuntime` and `createConfiguredAgentResponder` from `@mono-agent/agent-host`
+- `a2aFieldGroup`, `loadA2AAdapterConfig`, and `startA2AProvider` from `@mono-agent/a2a-adapter`
+- `telegramFieldGroup` and `loadTelegramAdapterConfig` from `@mono-agent/telegram-adapter`
+- `webhookFieldGroup`, `loadWebhookAdapterConfig`, and `startWebhookAdapter` from `@mono-agent/webhook-adapter`
+- `openAIApiFieldGroup`, `loadOpenAIApiAdapterConfig`, and `startOpenAIApiAdapter` from `@mono-agent/openai-api-adapter`
+- `cronFieldGroup`, `loadCronAdapterConfig`, and `startCronAdapter` from `@mono-agent/cron-adapter`
+- `startOperatorConsole` from `@mono-agent/operator-console`
+- `registerTraceSource` from `@mono-agent/observability`
 
 ### Host Traceability
 
@@ -115,7 +115,7 @@ See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config sh
 
 ## Multi-Agent Demo
 
-The multi-agent demo lives at `demos/multi-agent/`. It starts a Telegram-connected orchestrator plus three loopback A2A providers: the orchestrator itself for smoke tests, a researcher with web-oriented tools, and a worker with read-only local inspection tools. The orchestrator receives one `ask_collaborator` MCP tool from `@worklab-ai/agent-orchestrator`, so the model decides whether to ask the researcher, the worker, or both multiple times before producing the final answer.
+The multi-agent demo lives at `demos/multi-agent/`. It starts a Telegram-connected orchestrator plus three loopback A2A providers: the orchestrator itself for smoke tests, a researcher with web-oriented tools, and a worker with read-only local inspection tools. The orchestrator receives one `ask_collaborator` MCP tool from `@mono-agent/agent-orchestrator`, so the model decides whether to ask the researcher, the worker, or both multiple times before producing the final answer.
 
 The preferred deployment path writes ignored role configs and local state under `.mono-agent/multi-agent/`, checks the configured Ollama model, starts traceability, and starts the role A2A providers:
 
@@ -133,13 +133,13 @@ See [`demos/multi-agent/README.md`](./demos/multi-agent/README.md) for topology,
 
 ### A2A Inter-Agent Discovery
 
-`@worklab-ai/a2a-adapter` exposes a Mono responder over the A2A v1 protocol using the pinned `@a2a-js/sdk@1.0.0-alpha.0`. Provider mode serves the public Agent Card at `/.well-known/agent-card.json` and message/task endpoints under `/a2a/json-rpc` and `/a2a/rest`. Consumer mode discovers direct Agent Card URLs and sends text messages to remote agents.
+`@mono-agent/a2a-adapter` exposes a Mono responder over the A2A v1 protocol using the pinned `@a2a-js/sdk@1.0.0-alpha.0`. Provider mode serves the public Agent Card at `/.well-known/agent-card.json` and message/task endpoints under `/a2a/json-rpc` and `/a2a/rest`. Consumer mode discovers direct Agent Card URLs and sends text messages to remote agents.
 
-The A2A adapter remains deliberately text/task only: no central registry, gRPC hosting, push notifications, signed cards, file exchange, or adapter-owned delegation policy. Dynamic collaborator selection is composed above A2A by `@worklab-ai/agent-orchestrator`. Provider binds to loopback by default; non-loopback bind or advertised public URLs require explicit config and should be deployed behind HTTPS with bearer auth.
+The A2A adapter remains deliberately text/task only: no central registry, gRPC hosting, push notifications, signed cards, file exchange, or adapter-owned delegation policy. Dynamic collaborator selection is composed above A2A by `@mono-agent/agent-orchestrator`. Provider binds to loopback by default; non-loopback bind or advertised public URLs require explicit config and should be deployed behind HTTPS with bearer auth.
 
 ### Local Providers
 
-Mono Agent can pass local OpenAI-compatible providers into `@worklab-ai/agent-runtime` through the Pi adapter. Ollama is the primary supported local path:
+Mono Agent can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime` through the Pi adapter. Ollama is the primary supported local path:
 
 ```json
 {
@@ -176,9 +176,9 @@ git diff --check
 For package-level work:
 
 ```bash
-pnpm --filter @worklab-ai/<package> run build
-pnpm --filter @worklab-ai/<package> run typecheck
-pnpm --filter @worklab-ai/<package> run test
+pnpm --filter @mono-agent/<package> run build
+pnpm --filter @mono-agent/<package> run typecheck
+pnpm --filter @mono-agent/<package> run test
 ```
 
 ## Safety Model
@@ -197,43 +197,43 @@ flowchart TB
   Host["Host composition layer\n`demos/final-agent`"]
 
   subgraph Surfaces["Operator-surface choices"]
-    Console["`@worklab-ai/operator-console`\nBrowser settings + runs"]
-    Tui["`@worklab-ai/tui`\nTerminal chat + read-only config"]
+    Console["`@mono-agent/operator-console`\nBrowser settings + runs"]
+    Tui["`@mono-agent/tui`\nTerminal chat + read-only config"]
   end
 
   subgraph Communication["Communication adapter choices"]
-    A2A["`@worklab-ai/a2a-adapter`\nAgent Card discovery + text tasks"]
-    Cron["`@worklab-ai/cron-adapter`\nScheduled invocations"]
-    OpenAIApi["`@worklab-ai/openai-api-adapter`\nOpenAI Chat Completions"]
-    Slack["`@worklab-ai/slack-adapter`\nSocket Mode + Web API"]
-    Telegram["`@worklab-ai/telegram-adapter`\nBot API + long polling"]
-    Webhook["`@worklab-ai/webhook-adapter`\nHTTP sync/async invocation"]
-    WhatsApp["`@worklab-ai/whatsapp-adapter`\nBaileys socket + group trigger policy"]
+    A2A["`@mono-agent/a2a-adapter`\nAgent Card discovery + text tasks"]
+    Cron["`@mono-agent/cron-adapter`\nScheduled invocations"]
+    OpenAIApi["`@mono-agent/openai-api-adapter`\nOpenAI Chat Completions"]
+    Slack["`@mono-agent/slack-adapter`\nSocket Mode + Web API"]
+    Telegram["`@mono-agent/telegram-adapter`\nBot API + long polling"]
+    Webhook["`@mono-agent/webhook-adapter`\nHTTP sync/async invocation"]
+    WhatsApp["`@mono-agent/whatsapp-adapter`\nBaileys socket + group trigger policy"]
   end
 
   subgraph Core["Core contracts and settings"]
-    Contracts["`@worklab-ai/agent-contracts`\nrequest/response/stream/cancel"]
-    Settings["`@worklab-ai/settings`\nfield groups + redaction"]
-    Config["`@worklab-ai/config`\ncore runtime/context settings"]
-    Policy["`@worklab-ai/tool-policy`\nfail-closed tools + MCP"]
+    Contracts["`@mono-agent/agent-contracts`\nrequest/response/stream/cancel"]
+    Settings["`@mono-agent/settings`\nfield groups + redaction"]
+    Config["`@mono-agent/config`\ncore runtime/context settings"]
+    Policy["`@mono-agent/tool-policy`\nfail-closed tools + MCP"]
   end
 
   subgraph PromptContext["Context layer"]
-    Context["`@worklab-ai/context`\nprompt assembly"]
-    Skills["`@worklab-ai/skills`\nselected skill blocks"]
-    Memory["`@worklab-ai/memory-md`\noptional memory file"]
+    Context["`@mono-agent/context`\nprompt assembly"]
+    Skills["`@mono-agent/skills`\nselected skill blocks"]
+    Memory["`@mono-agent/memory-md`\noptional memory file"]
   end
 
   subgraph Execution["Execution layer"]
-    AgentHost["`@worklab-ai/agent-host`\nconfig to responder"]
-    Harness["`@worklab-ai/agent-harness`\nrequest to runtime run"]
-    Orchestrator["`@worklab-ai/agent-orchestrator`\ncollaborator MCP tool"]
-    Observability["`@worklab-ai/observability`\nJSONL events + summaries + trace registry"]
+    AgentHost["`@mono-agent/agent-host`\nconfig to responder"]
+    Harness["`@mono-agent/agent-harness`\nrequest to runtime run"]
+    Orchestrator["`@mono-agent/agent-orchestrator`\ncollaborator MCP tool"]
+    Observability["`@mono-agent/observability`\nJSONL events + summaries + trace registry"]
   end
 
   subgraph Runtime["Runtime backend choices"]
-    RuntimeAdapter["`@worklab-ai/runtime-adapter`\nmodel refs + backend support"]
-    AgentRuntime["`@worklab-ai/agent-runtime`\nprovider/CLI implementation"]
+    RuntimeAdapter["`@mono-agent/runtime-adapter`\nmodel refs + backend support"]
+    AgentRuntime["`@mono-agent/agent-runtime`\nprovider/CLI implementation"]
     ClaudeSdk["Claude SDK\n`claude:<model>` + `sdk`"]
     ClaudeCli["Claude Code CLI\n`claude:<model>` + `cli`"]
     CodexCli["Codex app CLI\n`codex:<model>` + `cli`"]

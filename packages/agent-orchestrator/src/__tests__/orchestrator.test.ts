@@ -1,7 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createCollaboratorToolRuntimeExtension } from "../index.js";

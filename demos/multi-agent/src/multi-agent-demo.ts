@@ -2,58 +2,58 @@ import { resolve } from "node:path";
 
 import {
   startOperatorConsole,
-} from "@worklab-ai/operator-console";
+} from "@mono-agent/operator-console";
 import type {
   ConfigApplyResult,
   OperatorConsoleEvent,
   OperatorConsoleOptions,
   OperatorConsoleStartResult,
-} from "@worklab-ai/operator-console";
+} from "@mono-agent/operator-console";
 import {
   CORE_AGENT_FIELD_GROUPS,
   loadMonoAgentConfigWithSources,
-} from "@worklab-ai/config";
-import type { MonoAgentConfig } from "@worklab-ai/config";
+} from "@mono-agent/config";
+import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   loadA2AAdapterConfig,
   createA2AConsumerResponder,
   startA2AProvider,
   a2aFieldGroup,
-} from "@worklab-ai/a2a-adapter";
+} from "@mono-agent/a2a-adapter";
 import type {
   A2AAdapterConfig,
   A2AProviderOptions,
   A2AProviderStartResult,
-} from "@worklab-ai/a2a-adapter";
+} from "@mono-agent/a2a-adapter";
 import {
   createConfiguredAgentResponder,
   createConfiguredAgentRuntime,
-} from "@worklab-ai/agent-host";
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-host";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 import {
   createCollaboratorToolRuntimeExtension,
-} from "@worklab-ai/agent-orchestrator";
-import type { OrchestratorCollaborator } from "@worklab-ai/agent-orchestrator";
+} from "@mono-agent/agent-orchestrator";
+import type { OrchestratorCollaborator } from "@mono-agent/agent-orchestrator";
 import {
   registerTraceSource,
-} from "@worklab-ai/observability";
-import type { TraceSourceHandle } from "@worklab-ai/observability";
-import type { MonoRuntimeLike } from "@worklab-ai/runtime-adapter";
+} from "@mono-agent/observability";
+import type { TraceSourceHandle } from "@mono-agent/observability";
+import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import {
   TelegramAdapter,
   TelegramBotApiClient,
   TelegramLongPoller,
   loadTelegramAdapterConfig,
   telegramFieldGroup,
-} from "@worklab-ai/telegram-adapter";
+} from "@mono-agent/telegram-adapter";
 import type {
   TelegramAdapterConfig,
   TelegramAdapterOptions,
   TelegramBotApi,
   TelegramLongPollerOptions,
   TelegramLongPollerStartOptions,
-} from "@worklab-ai/telegram-adapter";
-import type { FieldGroup } from "@worklab-ai/settings";
+} from "@mono-agent/telegram-adapter";
+import type { FieldGroup } from "@mono-agent/settings";
 
 import {
   DEFAULT_MULTI_AGENT_CONFIG_DIR,

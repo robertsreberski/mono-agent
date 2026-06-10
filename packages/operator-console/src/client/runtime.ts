@@ -1,4 +1,4 @@
-import type { FieldGroup } from "@worklab-ai/settings/field-groups";
+import type { FieldGroup } from "@mono-agent/settings/field-groups";
 
 /**
  * Runtime config injected by the server into window.__OPERATOR_CONSOLE__

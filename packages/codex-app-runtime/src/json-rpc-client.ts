@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
-import { CodedError, isPlainObject } from "@worklab-ai/runtime-adapter";
+import { CodedError, isPlainObject } from "@mono-agent/runtime-adapter";
 
 export interface JsonRpcClientOptions {
   readonly command: string;

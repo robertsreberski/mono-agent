@@ -1,4 +1,4 @@
-import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@worklab-ai/observability";
+import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 
 export class NoopRunRecorder implements RunRecorder {
   private readonly runId: string;

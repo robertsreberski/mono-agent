@@ -8,8 +8,8 @@ import {
   parseMonoRuntimeModelReference,
   RuntimeAdapterError,
   validateLocalProviderDefinition,
-} from "@worklab-ai/runtime-adapter";
-import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@worklab-ai/runtime-adapter";
+} from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@mono-agent/runtime-adapter";
 import {
   normalizeOptionalString,
   readBoolean,
@@ -17,8 +17,8 @@ import {
   readCsv,
   readInteger,
   redactedSecret,
-} from "@worklab-ai/settings";
-import type { ConfigErrorFactory } from "@worklab-ai/settings";
+} from "@mono-agent/settings";
+import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS } from "./field-groups.js";
 import type { EffortLevel, MemoryMode, MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig } from "./types.js";
@@ -51,7 +51,7 @@ export class MonoAgentConfigError extends Error {
 
 /**
  * Error factory bound to the `invalid_env` code, handed to the shared
- * `@worklab-ai/settings` coercers so their fail-closed throws keep config's
+ * `@mono-agent/settings` coercers so their fail-closed throws keep config's
  * typed error shape (code + env/reason details) verbatim.
  */
 const invalidEnv: ConfigErrorFactory = (message, details) =>

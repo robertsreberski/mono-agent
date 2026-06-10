@@ -1,4 +1,4 @@
-# @worklab-ai/agent-evals
+# @mono-agent/agent-evals
 
 ## Category
 
@@ -11,14 +11,14 @@ Local-first end-to-end eval scenarios for Mono Agent responders and harnesses. T
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/agent-evals run build
+pnpm --filter @mono-agent/agent-evals run build
 ```
 
 ```ts
 import {
   defineAgentEvalScenario,
   runAgentEvalScenario,
-} from "@worklab-ai/agent-evals";
+} from "@mono-agent/agent-evals";
 
 const scenario = defineAgentEvalScenario({
   id: "collaborator-routing",
@@ -67,7 +67,7 @@ It does not start Telegram, Slack, WhatsApp, A2A providers, or operator consoles
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/agent-evals run build
-pnpm --filter @worklab-ai/agent-evals run typecheck
-pnpm --filter @worklab-ai/agent-evals run test
+pnpm --filter @mono-agent/agent-evals run build
+pnpm --filter @mono-agent/agent-evals run typecheck
+pnpm --filter @mono-agent/agent-evals run test
 ```

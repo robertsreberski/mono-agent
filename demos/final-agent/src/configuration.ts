@@ -8,63 +8,63 @@ import {
   MonoAgentConfigError,
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
-} from "@worklab-ai/config";
+} from "@mono-agent/config";
 import type {
   MonoAgentConfig,
   RedactedMonoAgentConfig,
-} from "@worklab-ai/config";
-import type { FieldGroup } from "@worklab-ai/settings";
+} from "@mono-agent/config";
+import type { FieldGroup } from "@mono-agent/settings";
 import {
   a2aFieldGroup,
   A2AConsumerError,
   A2AProviderError,
   loadA2AAdapterConfig,
   redactA2AAdapterConfig,
-} from "@worklab-ai/a2a-adapter";
+} from "@mono-agent/a2a-adapter";
 import type {
   A2AAdapterConfig,
   RedactedA2AAdapterConfig,
-} from "@worklab-ai/a2a-adapter";
+} from "@mono-agent/a2a-adapter";
 import {
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,
   telegramFieldGroup,
   TelegramAdapterConfigError,
-} from "@worklab-ai/telegram-adapter";
+} from "@mono-agent/telegram-adapter";
 import type {
   RedactedTelegramAdapterConfig,
   TelegramAdapterConfig,
-} from "@worklab-ai/telegram-adapter";
+} from "@mono-agent/telegram-adapter";
 import {
   loadWebhookAdapterConfig,
   redactWebhookAdapterConfig,
   webhookFieldGroup,
   WebhookAdapterError,
-} from "@worklab-ai/webhook-adapter";
+} from "@mono-agent/webhook-adapter";
 import type {
   RedactedWebhookAdapterConfig,
   WebhookAdapterConfig,
-} from "@worklab-ai/webhook-adapter";
+} from "@mono-agent/webhook-adapter";
 import {
   loadOpenAIApiAdapterConfig,
   openAIApiFieldGroup,
   OpenAIApiAdapterError,
   redactOpenAIApiAdapterConfig,
-} from "@worklab-ai/openai-api-adapter";
+} from "@mono-agent/openai-api-adapter";
 import type {
   OpenAIApiAdapterConfig,
   RedactedOpenAIApiAdapterConfig,
-} from "@worklab-ai/openai-api-adapter";
+} from "@mono-agent/openai-api-adapter";
 import {
   cronFieldGroup,
   CronAdapterError,
   loadCronAdapterConfig,
   redactCronAdapterConfig,
-} from "@worklab-ai/cron-adapter";
+} from "@mono-agent/cron-adapter";
 import type {
   CronAdapterConfig,
   RedactedCronAdapterConfig,
-} from "@worklab-ai/cron-adapter";
+} from "@mono-agent/cron-adapter";
 
 export const FINAL_DEMO_FIELD_GROUPS: readonly FieldGroup[] = [
   ...CORE_AGENT_FIELD_GROUPS,

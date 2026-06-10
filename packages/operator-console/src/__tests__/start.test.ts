@@ -5,9 +5,9 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { createJsonlRunRecorder, registerTraceSource } from "@worklab-ai/observability";
-import { defineFieldGroup } from "@worklab-ai/settings";
-import type { FieldGroup } from "@worklab-ai/settings";
+import { createJsonlRunRecorder, registerTraceSource } from "@mono-agent/observability";
+import { defineFieldGroup } from "@mono-agent/settings";
+import type { FieldGroup } from "@mono-agent/settings";
 
 import { startOperatorConsole } from "../server/start.js";
 

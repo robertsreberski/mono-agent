@@ -2,7 +2,7 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { MonoAgentConfig } from "@worklab-ai/config";
+import type { MonoAgentConfig } from "@mono-agent/config";
 
 const codexMocks = vi.hoisted(() => {
   const runtime = {
@@ -14,7 +14,7 @@ const codexMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("@worklab-ai/codex-app-runtime", () => ({
+vi.mock("@mono-agent/codex-app-runtime", () => ({
   createCodexAppRuntime: codexMocks.createCodexAppRuntime,
 }));
 

@@ -1,5 +1,5 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { EmbeddingProviderConfig, EmbeddingProviderKind } from "@worklab-ai/memory-search";
+import type { EmbeddingProviderConfig, EmbeddingProviderKind } from "@mono-agent/memory-search";
 
 import { createMemoryMcpServerFromConfig } from "./server.js";
 

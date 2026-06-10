@@ -1,4 +1,4 @@
-# @worklab-ai/agent-orchestrator
+# @mono-agent/agent-orchestrator
 
 ## Category
 
@@ -11,11 +11,11 @@ Reusable orchestration helpers for exposing named collaborator responders to an 
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/agent-orchestrator run build
+pnpm --filter @mono-agent/agent-orchestrator run build
 ```
 
 ```ts
-import { createCollaboratorToolRuntimeExtension } from "@worklab-ai/agent-orchestrator";
+import { createCollaboratorToolRuntimeExtension } from "@mono-agent/agent-orchestrator";
 ```
 
 Hosts create one request-scoped extension, merge `extension.runtimeOptions` into the orchestrator runtime call, and call `extension.cleanup()` after the request. Collaborators are plain `AgentResponder` instances, so hosts can wrap local agents, A2A consumers, or other adapter-owned responders without this package depending on those adapters.
@@ -38,7 +38,7 @@ It does not start Telegram, WhatsApp, or A2A transports, discover remote agents,
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/agent-orchestrator run build
-pnpm --filter @worklab-ai/agent-orchestrator run typecheck
-pnpm --filter @worklab-ai/agent-orchestrator run test
+pnpm --filter @mono-agent/agent-orchestrator run build
+pnpm --filter @mono-agent/agent-orchestrator run typecheck
+pnpm --filter @mono-agent/agent-orchestrator run test
 ```

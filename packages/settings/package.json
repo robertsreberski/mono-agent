@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/settings",
+  "name": "@mono-agent/settings",
   "version": "0.1.0",
   "description": "Generic field schema, patch validation, redaction, and JSON settings storage for Mono Agent hosts.",
   "type": "module",

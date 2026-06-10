@@ -8,14 +8,14 @@ import {
   readTraceRun,
   ObservabilityReadError,
   TraceSourceRegistryError,
-} from "@worklab-ai/observability";
+} from "@mono-agent/observability";
 import type {
   JsonlRunReaderOptions,
   TraceRunDetail,
   TraceRunListItem,
   TraceSourceListItem,
   TraceRunListOptions,
-} from "@worklab-ai/observability";
+} from "@mono-agent/observability";
 
 import type {
   OperatorConsoleObservabilityOptions,

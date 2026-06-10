@@ -2,10 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createEntityGraphStore } from "@worklab-ai/memory-graph";
-import { createJournalMemoryStore, journalDayFor } from "@worklab-ai/memory-journal";
-import { createVectorMemoryIndex } from "@worklab-ai/memory-search";
-import type { EmbeddingProvider } from "@worklab-ai/memory-search";
+import { createEntityGraphStore } from "@mono-agent/memory-graph";
+import { createJournalMemoryStore, journalDayFor } from "@mono-agent/memory-journal";
+import { createVectorMemoryIndex } from "@mono-agent/memory-search";
+import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createMemoryMcpServer, createMemoryTools, grepMemory } from "../index.js";

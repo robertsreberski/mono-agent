@@ -1,9 +1,9 @@
-import { loadContextFromFiles } from "@worklab-ai/context";
-import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@worklab-ai/context";
-import type { RunRecorder, RunSummary, RuntimeEventLike } from "@worklab-ai/observability";
-import type { RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
-import { loadSelectedSkills } from "@worklab-ai/skills";
-import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@worklab-ai/tool-policy";
+import { loadContextFromFiles } from "@mono-agent/context";
+import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono-agent/context";
+import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import { loadSelectedSkills } from "@mono-agent/skills";
+import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/tool-policy";
 
 import { NoopRunRecorder } from "./recorder.js";
 import type {
@@ -118,7 +118,7 @@ export class MonoAgentHarness implements AgentHarness {
     };
   }
 
-  private async loadSkills(): Promise<{ readonly index: readonly import("@worklab-ai/context").SkillIndexEntry[]; readonly instructions: readonly ContextBlockInput[] }> {
+  private async loadSkills(): Promise<{ readonly index: readonly import("@mono-agent/context").SkillIndexEntry[]; readonly instructions: readonly ContextBlockInput[] }> {
     if (this.options.selectedSkills === undefined || this.options.selectedSkills.length === 0) {
       return { index: [], instructions: [] };
     }

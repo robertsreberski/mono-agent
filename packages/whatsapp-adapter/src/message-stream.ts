@@ -4,7 +4,7 @@ import {
   normalizeTrailing,
   splitTextByCodePoints,
   type AgentMessageStream,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 import type {
   WhatsAppJid,
   WhatsAppRawMessage,

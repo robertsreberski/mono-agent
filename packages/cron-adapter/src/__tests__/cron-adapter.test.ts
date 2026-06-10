@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import { startCronAdapter, toCronJobs } from "../index.js";
 

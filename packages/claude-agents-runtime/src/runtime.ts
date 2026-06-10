@@ -6,8 +6,8 @@ import {
   assertBaseRunOptions,
   buildRuntimeResult,
   readLastStringUserMessage,
-} from "@worklab-ai/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
+} from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import {
   extractAssistantTextDelta,

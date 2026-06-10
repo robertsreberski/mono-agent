@@ -1,5 +1,5 @@
-import { parseMcpServers } from "@worklab-ai/runtime-adapter";
-import type { NormalizedMcpServer } from "@worklab-ai/runtime-adapter";
+import { parseMcpServers } from "@mono-agent/runtime-adapter";
+import type { NormalizedMcpServer } from "@mono-agent/runtime-adapter";
 
 export interface CodexMcpServerEntry {
   readonly enabled: true;

@@ -1,5 +1,5 @@
-import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
-import type { RedactedSecretValue } from "@worklab-ai/settings";
+import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { RedactedSecretValue } from "@mono-agent/settings";
 
 import type { EFFORT_LEVELS } from "./field-groups.js";
 

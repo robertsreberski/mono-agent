@@ -5,7 +5,7 @@ import type {
   AgentResponder,
   AgentResponse,
   AgentStreamEvent,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 
 export class AgentHarnessFailureError extends Error {
   readonly failure: AgentHarnessFailure;

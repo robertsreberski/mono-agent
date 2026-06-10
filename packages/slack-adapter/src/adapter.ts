@@ -3,7 +3,7 @@ import {
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 
 import {
   SlackMessageStream,

@@ -1,4 +1,4 @@
-# @worklab-ai/codex-app-runtime
+# @mono-agent/codex-app-runtime
 
 ## Category
 
@@ -6,17 +6,17 @@ Category: `runtime`
 
 ## Responsibility
 
-Adapts the OpenAI Codex app-server to the Mono Agent runtime contract (`MonoRuntimeLike`). Spawns the `codex` CLI binary (provided by the `@openai/codex` npm package) as a child process via `codex app-server --listen stdio://`, speaks newline-delimited JSON-RPC over stdio, and maps Codex's `item.started` / `item.completed` notifications into `RuntimeEventLike` per the same translation logic used in `@worklab-ai/agent-runtime`.
+Adapts the OpenAI Codex app-server to the Mono Agent runtime contract (`MonoRuntimeLike`). Spawns the `codex` CLI binary (provided by the `@openai/codex` npm package) as a child process via `codex app-server --listen stdio://`, speaks newline-delimited JSON-RPC over stdio, and maps Codex's `item.started` / `item.completed` notifications into `RuntimeEventLike` per the same translation logic used in `@mono-agent/agent-runtime`.
 
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/codex-app-runtime run build
+pnpm --filter @mono-agent/codex-app-runtime run build
 ```
 
 ```ts
-import { createCodexAppRuntime } from "@worklab-ai/codex-app-runtime";
-import { createConfiguredAgentResponder } from "@worklab-ai/agent-host";
+import { createCodexAppRuntime } from "@mono-agent/codex-app-runtime";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
 
 const runtime = createCodexAppRuntime();
 const responder = createConfiguredAgentResponder({
@@ -71,21 +71,21 @@ This runtime replicates 8 specific behaviors from the upstream `worklab/packages
 
 ## Dependency Boundary
 
-This package depends on `@worklab-ai/runtime-adapter` (workspace, for shared types) and the `@openai/codex` npm package (optional, provides the CLI binary). It does not depend on `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, or any communication adapter.
+This package depends on `@mono-agent/runtime-adapter` (workspace, for shared types) and the `@openai/codex` npm package (optional, provides the CLI binary). It does not depend on `@mono-agent/agent-harness`, `@mono-agent/agent-host`, or any communication adapter.
 
 ## What This Package Does Not Own
 
 - Local-action tool implementations. Codex's built-in tools (file edit, shell within its sandbox) are governed by the spawned CLI's own permission/sandbox model. Pass `permissionMode` and related knobs via `sdkOptions`.
 - MCP server lifecycle beyond `thread/start` config. The CLI manages MCP connections internally.
 - Live-input steering (`turn/steer`), native subagents, fast-mode toggling, structured output enforcement, file-change snapshots — out of scope for v1.
-- Conversation history, recording, observability. Owned by `@worklab-ai/agent-harness` and `@worklab-ai/observability`.
+- Conversation history, recording, observability. Owned by `@mono-agent/agent-harness` and `@mono-agent/observability`.
 
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/codex-app-runtime run typecheck
-pnpm --filter @worklab-ai/codex-app-runtime run test
-pnpm --filter @worklab-ai/codex-app-runtime run build
+pnpm --filter @mono-agent/codex-app-runtime run typecheck
+pnpm --filter @mono-agent/codex-app-runtime run test
+pnpm --filter @mono-agent/codex-app-runtime run build
 ```
 
 Tested against `@openai/codex@^0.130.0` (CLI binary).

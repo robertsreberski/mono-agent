@@ -2,13 +2,13 @@
 
 ## Project
 
-Mono Agent is intended to become a small, single-purpose agent framework built from npm packages under the `@worklab-ai` scope. The framework should provide reusable building blocks around `@worklab-ai/agent-runtime`, including modular communication adapters, skills/MCP/harness integration, and an optional memory layer.
+Mono Agent is intended to become a small, single-purpose agent framework built from npm packages under the `@mono-agent` scope. The framework should provide reusable building blocks around `@mono-agent/agent-runtime`, including modular communication adapters, skills/MCP/harness integration, and an optional memory layer.
 
 ## Repository shape
 
 - Treat this repository as a pnpm workspace monorepo.
 - Future packages should live under `packages/<package-name>/`.
-- Published package names should use the `@worklab-ai/<package-name>` scope.
+- Published package names should use the `@mono-agent/<package-name>` scope.
 - Package categories live in `scripts/package-catalog.mjs` and README docs; keep the physical workspace layout flat unless a task explicitly asks for a mechanical migration.
 - Root instructions apply to every package unless a package-local `AGENTS.md` narrows them.
 - Keep root workspace/package-manager scaffolding limited to the checked-in pnpm workspace setup unless a task explicitly asks to broaden it.
@@ -25,7 +25,7 @@ Mono Agent is intended to become a small, single-purpose agent framework built f
 ## Package expectations
 
 - Each package should have one clear responsibility and a focused public API.
-- Use `@worklab-ai/*` package names consistently.
+- Use `@mono-agent/*` package names consistently.
 - Add or update focused tests with behavior changes.
 - Use package-local scripts once package manifests exist; route repo-wide commands through the root pnpm recursive scripts.
 - Keep runtime-facing artifacts structured and machine-validated where practical.

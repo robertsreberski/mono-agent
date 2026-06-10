@@ -79,7 +79,7 @@ for (const catalogEntry of packageCatalog) {
   };
   const depNames = Object.keys(deps);
   for (const depName of depNames) {
-    if (!depName.startsWith("@worklab-ai/")) {
+    if (!depName.startsWith("@mono-agent/")) {
       continue;
     }
     const depEntry = catalogByName.get(depName);
@@ -101,9 +101,9 @@ for (const catalogEntry of packageCatalog) {
 }
 
 const oldReferences = [
-  `@worklab-ai/${"config"}-${"ui"}`,
-  `@worklab-ai/${"telegram"}-${"bridge"}`,
-  `@worklab-ai/${"whatsapp"}-${"bridge"}`,
+  `@mono-agent/${"config"}-${"ui"}`,
+  `@mono-agent/${"telegram"}-${"bridge"}`,
+  `@mono-agent/${"whatsapp"}-${"bridge"}`,
 ];
 for (const file of ["package.json", "README.md", "pnpm-lock.yaml"]) {
   const text = readFileSync(join(root, file), "utf8");
@@ -115,7 +115,7 @@ for (const file of ["package.json", "README.md", "pnpm-lock.yaml"]) {
 }
 
 const staleReferences = [
-  `@worklab-ai/${"comm"}/`,
+  `@mono-agent/${"comm"}/`,
   `${"config"}-${"ui"}`,
   `${"telegram"}-${"bridge"}`,
   `${"whatsapp"}-${"bridge"}`,

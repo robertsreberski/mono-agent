@@ -5,8 +5,8 @@ import {
   buildRuntimeResult,
   isPlainObject,
   readLastStringUserMessage,
-} from "@worklab-ai/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
+} from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { normalizeCodexItemEvent } from "./codex-events.js";
 import { createJsonRpcClient } from "./json-rpc-client.js";
@@ -76,7 +76,7 @@ const DEFAULTS = {
 } as const;
 
 const CLIENT_INFO = {
-  name: "worklab-ai-codex-app-runtime",
+  name: "mono-agent-codex-app-runtime",
   version: "0.1.0",
 } as const;
 

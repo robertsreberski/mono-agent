@@ -22,7 +22,7 @@ describe("createCodexAppRuntime", () => {
         initialized = true;
         expect(request.params).toMatchObject({
           clientInfo: {
-            name: "worklab-ai-codex-app-runtime",
+            name: "mono-agent-codex-app-runtime",
             version: "0.1.0",
           },
         });

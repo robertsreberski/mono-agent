@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/codex-app-runtime",
+  "name": "@mono-agent/codex-app-runtime",
   "version": "0.1.0",
   "description": "Adapts the OpenAI Codex app-server to the Mono Agent runtime contract.",
   "type": "module",
@@ -23,7 +23,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/runtime-adapter": "workspace:*"
+    "@mono-agent/runtime-adapter": "workspace:*"
   },
   "optionalDependencies": {
     "@openai/codex": "^0.130.0"

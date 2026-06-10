@@ -1,4 +1,4 @@
-# @worklab-ai/context
+# @mono-agent/context
 
 ## Category
 
@@ -11,11 +11,11 @@ Deterministic context assembly for Mono Agent prompts. It loads identity and opt
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/context run build
+pnpm --filter @mono-agent/context run build
 ```
 
 ```ts
-import { buildAgentContext, loadContextFromFiles } from "@worklab-ai/context";
+import { buildAgentContext, loadContextFromFiles } from "@mono-agent/context";
 ```
 
 Use file loading at host boundaries and `buildAgentContext` for deterministic prompt assembly in tests or harnesses.
@@ -40,7 +40,7 @@ It does not decide which tools are allowed, run a model, mutate memory, manage c
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/context run build
-pnpm --filter @worklab-ai/context run typecheck
-pnpm --filter @worklab-ai/context run test
+pnpm --filter @mono-agent/context run build
+pnpm --filter @mono-agent/context run typecheck
+pnpm --filter @mono-agent/context run test
 ```

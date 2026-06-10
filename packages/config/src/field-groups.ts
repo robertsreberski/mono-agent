@@ -1,5 +1,5 @@
-import { defineFieldGroup } from "@worklab-ai/settings";
-import type { FieldGroupRegistry } from "@worklab-ai/settings";
+import { defineFieldGroup } from "@mono-agent/settings";
+import type { FieldGroupRegistry } from "@mono-agent/settings";
 
 /**
  * Closed set of reasoning-effort hints, shared by the runtime field group's

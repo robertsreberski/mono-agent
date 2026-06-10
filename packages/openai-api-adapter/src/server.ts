@@ -9,7 +9,7 @@ import {
   type AgentResponder,
   type AgentResponse,
   type AgentStreamEvent,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
   bearerTokensEqual,
@@ -17,7 +17,7 @@ import {
   hostForUrl,
   listen,
   readAuthorizationBearer,
-} from "@worklab-ai/settings";
+} from "@mono-agent/settings";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {
@@ -92,7 +92,7 @@ interface ChatCompletionChunkInput {
   readonly model: string;
 }
 
-const OPENAI_OWNED_BY = "worklab-ai";
+const OPENAI_OWNED_BY = "mono-agent";
 const SENSITIVE_REQUEST_HEADERS = new Set([
   "authorization",
   "cookie",

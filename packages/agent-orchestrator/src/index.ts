@@ -9,8 +9,8 @@ import type {
   AgentRequestBase,
   AgentResponder,
   AgentResponse,
-} from "@worklab-ai/agent-contracts";
-import { assertSafeBind } from "@worklab-ai/settings";
+} from "@mono-agent/agent-contracts";
+import { assertSafeBind } from "@mono-agent/settings";
 import * as z from "zod/v4";
 
 export const DEFAULT_COLLABORATOR_TOOL_NAME = "ask_collaborator";

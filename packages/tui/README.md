@@ -1,4 +1,4 @@
-# @worklab-ai/tui
+# @mono-agent/tui
 
 ## Category
 
@@ -11,27 +11,27 @@ Terminal operator surface built with Ink. It provides local chat, in-memory tran
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/tui run build
+pnpm --filter @mono-agent/tui run build
 mono-agent-tui --help
 ```
 
 ```ts
-import { startMonoAgentTui } from "@worklab-ai/tui";
+import { startMonoAgentTui } from "@mono-agent/tui";
 ```
 
-Hosts supply a structural responder compatible with `@worklab-ai/agent-contracts` and decide how config files are loaded.
+Hosts supply a structural responder compatible with `@mono-agent/agent-contracts` and decide how config files are loaded.
 
 ## Public API
 
 - `startMonoAgentTui`
 - TUI app/component types and message-stream helpers
-- Structural `AgentResponder` aliases and cancellation helpers backed by `@worklab-ai/agent-contracts`
+- Structural `AgentResponder` aliases and cancellation helpers backed by `@mono-agent/agent-contracts`
 - Read-only config summary helpers
 - Bin: `mono-agent-tui`
 
 ## Dependency Boundary
 
-The TUI depends on React/Ink, shared contracts, and `@worklab-ai/config` for core config summaries. It remains a terminal operator surface, not a communication adapter, runtime host, or settings editor.
+The TUI depends on React/Ink, shared contracts, and `@mono-agent/config` for core config summaries. It remains a terminal operator surface, not a communication adapter, runtime host, or settings editor.
 
 ## What This Package Does Not Own
 
@@ -40,7 +40,7 @@ It does not poll Telegram/WhatsApp, edit config inline, persist transcripts, cal
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/tui run build
-pnpm --filter @worklab-ai/tui run typecheck
-pnpm --filter @worklab-ai/tui run test
+pnpm --filter @mono-agent/tui run build
+pnpm --filter @mono-agent/tui run typecheck
+pnpm --filter @mono-agent/tui run test
 ```

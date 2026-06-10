@@ -1,4 +1,4 @@
-# @worklab-ai/skills
+# @mono-agent/skills
 
 ## Category
 
@@ -11,14 +11,14 @@ Deterministic selected-skill activation. It loads only explicitly selected skill
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/skills run build
+pnpm --filter @mono-agent/skills run build
 ```
 
 ```ts
 import {
   loadSelectedSkills,
   skillInstructionsToContextBlocks,
-} from "@worklab-ai/skills";
+} from "@mono-agent/skills";
 ```
 
 ## Public API
@@ -30,7 +30,7 @@ import {
 
 ## Dependency Boundary
 
-This package may depend on `@worklab-ai/context` for context block types. It must not depend on runtimes, communication adapters, UI, memory, or MCP execution.
+This package may depend on `@mono-agent/context` for context block types. It must not depend on runtimes, communication adapters, UI, memory, or MCP execution.
 
 ## What This Package Does Not Own
 
@@ -39,7 +39,7 @@ It does not discover skills automatically, execute tools, install skills, call M
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/skills run build
-pnpm --filter @worklab-ai/skills run typecheck
-pnpm --filter @worklab-ai/skills run test
+pnpm --filter @mono-agent/skills run build
+pnpm --filter @mono-agent/skills run typecheck
+pnpm --filter @mono-agent/skills run test
 ```

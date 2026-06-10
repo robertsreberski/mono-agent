@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/agent-contracts",
+  "name": "@mono-agent/agent-contracts",
   "version": "0.1.0",
   "description": "Shared structural request, response, stream, responder, and cancellation contracts for Mono Agent packages.",
   "type": "module",

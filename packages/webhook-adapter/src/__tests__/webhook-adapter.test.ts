@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import { startWebhookAdapter } from "../index.js";
 

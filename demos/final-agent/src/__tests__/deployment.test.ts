@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 
-import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
-import type { RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
+import { sendA2AMessage } from "@mono-agent/a2a-adapter";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startFinalAgentDemo } from "../final-demo.js";

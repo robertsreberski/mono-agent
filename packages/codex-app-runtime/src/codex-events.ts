@@ -1,7 +1,7 @@
 // Ported from worklab/packages/agent-runtime/src/ai/streaming/codex-events.js
 // (verbatim translation to TypeScript; preserves behavior of normalizeCodexItemEvent).
 
-import type { RuntimeEventLike } from "@worklab-ai/runtime-adapter";
+import type { RuntimeEventLike } from "@mono-agent/runtime-adapter";
 
 const CODEX_ITEM_EVENTS = new Set(["item.started", "item.completed"]);
 

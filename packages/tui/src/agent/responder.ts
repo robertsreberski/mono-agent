@@ -6,7 +6,7 @@ import {
   type AgentResponder,
   type AgentResponse,
   type AgentResponseCancelledErrorOptions,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 
 export type AgentRequestLike = AgentRequestBase;
 export type AgentResponseLike = AgentResponse;

@@ -1,11 +1,11 @@
-import type { AgentMessageStream as AgentMessageStreamBase } from "@worklab-ai/agent-contracts";
+import type { AgentMessageStream as AgentMessageStreamBase } from "@mono-agent/agent-contracts";
 import {
   DEFAULT_EMPTY_FINAL_TEXT,
   DEFAULT_MAX_MESSAGE_CHARS,
   buildStreamingTailPreview,
   normalizeTrailing,
   splitTextByCodePoints,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 import type {
   TelegramBotApi,
   TelegramChatId,
