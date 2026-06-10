@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
 import {
@@ -319,6 +320,55 @@ describe("ai tool helpers", () => {
     expect(bashResult).toContain("Working directory not allowed");
   });
 
+  it("enforces a context-configured sandbox policy on bash and network tools without per-call options", async () => {
+    const root = tempWorkspace();
+    configureToolRuntime({
+      workspace: root,
+      sandboxPolicy: failClosedSandboxPolicy({ root }),
+    });
+
+    const fetchResult = await webFetchToolImpl({ url: "https://example.com" });
+    const searchResult = await webSearchToolImpl({ query: "mono agent" });
+    const bashResult = await bashToolImpl(
+      { command: "echo host", workdir: root },
+      {
+        sandboxEngine: {
+          id: "fake",
+          async isAvailable() {
+            return true;
+          },
+          async prepareCommand(command) {
+            return {
+              ...command,
+              command: process.execPath,
+              args: ["-e", "console.log('context sandboxed')"],
+              sandboxed: true,
+            };
+          },
+        },
+      },
+    );
+
+    expect(fetchResult).toContain("Network access denied by sandbox policy");
+    expect(searchResult).toContain("Network access denied by sandbox policy");
+    expect(bashResult).toContain("context sandboxed");
+  });
+
+  it("does not let a per-call policy weaken the context-configured sandbox policy", async () => {
+    const root = tempWorkspace();
+    configureToolRuntime({
+      workspace: root,
+      sandboxPolicy: failClosedSandboxPolicy({ root }),
+    });
+
+    const fetchResult = await webFetchToolImpl(
+      { url: "https://example.com" },
+      { sandboxPolicy: { mode: "off" } },
+    );
+
+    expect(fetchResult).toContain("Network access denied by sandbox policy");
+  });
+
   it("rejects symlink escapes when sandbox policy is configured", async () => {
     const root = tempWorkspace();
     const outside = mkdtempSync(resolve("/tmp", "mono-agent-outside-"));
@@ -334,6 +384,26 @@ describe("ai tool helpers", () => {
     const readResult = await readToolImpl({ file_path: "linked-outside/secret.txt" });
 
     expect(readResult).toContain("Path not allowed");
+  });
+
+  it("keeps following workspace symlinks when no sandbox policy is configured", async () => {
+    const root = tempWorkspace();
+    const outside = mkdtempSync(join(tmpdir(), "mono-agent-linked-"));
+    tempDirs.push(outside);
+    writeFile(join(outside, "linked.txt"), "linked content");
+    symlinkSync(outside, join(root, "linked-dep"));
+
+    const readResult = await readToolImpl({ file_path: "linked-dep/linked.txt" });
+
+    expect(readResult).toContain("linked content");
+  });
+
+  it("runs an empty bash command without sandbox argument validation errors", async () => {
+    const root = tempWorkspace();
+
+    const result = await bashToolImpl({ command: "", workdir: root });
+
+    expect(result).toBe("(no output)");
   });
 
   it("honors sandbox writable roots separately from readable roots", async () => {

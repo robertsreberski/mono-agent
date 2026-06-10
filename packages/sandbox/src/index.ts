@@ -1,15 +1,27 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { CodedError } from "@mono-agent/agent-contracts";
+
 const execFileAsync = promisify(execFile);
 
-export type SandboxMode = "native" | "off";
-export type SandboxEngineId = "srt" | string;
-export type SandboxFallback = "fail-closed" | "unsafe-host-process";
-export type SandboxNetworkMode = "none" | "localhost" | "allowlist" | "all";
+export const SANDBOX_MODES = ["native", "off"] as const;
+export type SandboxMode = (typeof SANDBOX_MODES)[number];
+
+export const SANDBOX_NETWORK_MODES = ["none", "localhost", "allowlist", "all"] as const;
+export type SandboxNetworkMode = (typeof SANDBOX_NETWORK_MODES)[number];
+
+export const SANDBOX_FALLBACKS = ["fail-closed", "unsafe-host-process"] as const;
+export type SandboxFallback = (typeof SANDBOX_FALLBACKS)[number];
+
+export type SandboxEngineId = string;
+
+export const DEFAULT_DENY_WRITE = [".env", ".env.*", ".git/config", ".git/hooks/**"] as const;
 
 export interface SandboxNetworkPolicyInput {
   readonly mode?: SandboxNetworkMode;
@@ -22,6 +34,7 @@ export interface SandboxPolicyInput {
   readonly root?: string;
   readonly readableRoots?: readonly string[];
   readonly writableRoots?: readonly string[];
+  readonly denyWrite?: readonly string[];
   readonly tempRoot?: string;
   readonly network?: SandboxNetworkPolicyInput;
   readonly fallback?: SandboxFallback;
@@ -39,33 +52,22 @@ export interface SandboxPolicy {
   readonly root: string;
   readonly readableRoots: readonly string[];
   readonly writableRoots: readonly string[];
+  readonly denyWrite: readonly string[];
   readonly tempRoot: string;
   readonly network: SandboxNetworkPolicy;
   readonly fallback: SandboxFallback;
   readonly unsafeAllowHostProcess: boolean;
-  readonly required: boolean;
 }
 
 export type SandboxErrorCode =
   | "invalid_sandbox_policy"
   | "sandbox_unavailable";
 
-export class SandboxPolicyError extends Error {
-  readonly code: SandboxErrorCode;
-  readonly details: Record<string, unknown>;
-
-  constructor(code: SandboxErrorCode, message: string, details: Record<string, unknown> = {}) {
-    super(message);
-    this.name = "SandboxPolicyError";
-    this.code = code;
-    this.details = { ...details, code };
-  }
-}
+export class SandboxPolicyError extends CodedError<SandboxErrorCode> {}
 
 export class SandboxUnavailableError extends SandboxPolicyError {
   constructor(message: string, details: Record<string, unknown> = {}) {
     super("sandbox_unavailable", message, details);
-    this.name = "SandboxUnavailableError";
   }
 }
 
@@ -138,6 +140,7 @@ export function createSandboxPolicy(input: SandboxPolicyInput = {}): SandboxPoli
 
   const readableRoots = normalizePathList(input.readableRoots ?? [root], root, "readableRoots");
   const writableRoots = normalizePathList(input.writableRoots ?? [root], root, "writableRoots");
+  const denyWrite = normalizeStringList(input.denyWrite ?? DEFAULT_DENY_WRITE, "denyWrite");
   const tempRoot = normalizePath(input.tempRoot ?? resolve(root, ".mono-agent", "tmp"), "tempRoot");
   const network = normalizeNetworkPolicy(input.network);
 
@@ -147,11 +150,11 @@ export function createSandboxPolicy(input: SandboxPolicyInput = {}): SandboxPoli
     root,
     readableRoots,
     writableRoots,
+    denyWrite,
     tempRoot,
     network,
     fallback,
     unsafeAllowHostProcess,
-    required: mode !== "off" && fallback === "fail-closed",
   };
 }
 
@@ -165,10 +168,19 @@ export function failClosedSandboxPolicy(input: Omit<SandboxPolicyInput, "mode" |
   });
 }
 
+export function sandboxRequired(policy: SandboxPolicy): boolean {
+  return policy.mode !== "off" && policy.fallback === "fail-closed";
+}
+
 export function sandboxPolicyToRuntimeOptions(policy: SandboxPolicy): SandboxPolicyRuntimeOptions {
   return { sandboxPolicy: policy };
 }
 
+/**
+ * Monotonic merge: the result is never more permissive than `configured`.
+ * A request-scoped policy can only tighten roots, network access, and the
+ * fallback; it can never re-enable host execution or widen filesystem access.
+ */
 export function mergeSandboxPolicies(
   configured: SandboxPolicy | undefined,
   request: SandboxPolicy | undefined,
@@ -176,34 +188,43 @@ export function mergeSandboxPolicies(
   if (configured === undefined) {
     return request;
   }
-  if (request === undefined || configured.mode === "native") {
-    return {
-      ...configured,
-      network: mergeNetworkPolicies(configured.network, request?.network),
-      required: configured.mode !== "off" && configured.fallback === "fail-closed",
-    };
+  if (request === undefined) {
+    return configured;
   }
-  return request.mode === "native" ? request : configured;
+  if (configured.mode === "off") {
+    return request.mode === "native" ? request : configured;
+  }
+  if (request.mode === "off") {
+    return configured;
+  }
+  return {
+    ...configured,
+    readableRoots: intersectRoots(configured.readableRoots, request.readableRoots),
+    writableRoots: intersectRoots(configured.writableRoots, request.writableRoots),
+    denyWrite: [...new Set([...(configured.denyWrite ?? []), ...(request.denyWrite ?? [])])],
+    network: mergeNetworkPolicies(configured.network, request.network),
+    fallback: configured.fallback === "fail-closed" || request.fallback === "fail-closed"
+      ? "fail-closed"
+      : configured.fallback,
+    unsafeAllowHostProcess: configured.unsafeAllowHostProcess && request.unsafeAllowHostProcess,
+  };
 }
 
 export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): SandboxEngine {
   const command = options.command ?? "srt";
+  // Availability cannot change mid-session in a way we can act on, and the
+  // probe spawns a process — resolve it once per engine instance.
+  let availability: Promise<boolean> | null = null;
   return {
     id: "srt",
-    async isAvailable(): Promise<boolean> {
-      try {
-        await execFileAsync(command, ["--version"], { timeout: 5_000 });
-        return true;
-      } catch {
-        return false;
-      }
+    isAvailable(): Promise<boolean> {
+      availability ??= execFileAsync(command, ["--version"], { timeout: 5_000 })
+        .then(() => true, () => false);
+      return availability;
     },
     async prepareCommand(spec: SandboxCommandSpec, policy: SandboxPolicy): Promise<PreparedSandboxCommand> {
       const cwd = resolve(spec.cwd ?? policy.root);
-      await mkdir(policy.tempRoot, { recursive: true });
-      const settingsDir = await mkdtemp(resolve(policy.tempRoot, "srt-"));
-      const settingsPath = resolve(settingsDir, "settings.json");
-      await writeFile(settingsPath, `${JSON.stringify(srtSettingsForPolicy(policy), null, 2)}\n`, "utf8");
+      const settingsPath = await writeSrtSettingsFile(policy);
       return {
         ...spec,
         command,
@@ -211,12 +232,23 @@ export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): S
         cwd,
         sandboxed: true,
         sandboxSettingsPath: settingsPath,
-        cleanup: async () => {
-          await rm(settingsDir, { recursive: true, force: true });
-        },
       };
     },
   };
+}
+
+const defaultEngines = new Map<SandboxEngineId, SandboxEngine>();
+
+function resolveDefaultEngine(policy: SandboxPolicy): SandboxEngine | undefined {
+  if (policy.engine !== "srt") {
+    return undefined;
+  }
+  let engine = defaultEngines.get(policy.engine);
+  if (engine === undefined) {
+    engine = createSrtSandboxEngine();
+    defaultEngines.set(policy.engine, engine);
+  }
+  return engine;
 }
 
 export async function prepareSandboxedCommand(input: PrepareSandboxedCommandInput): Promise<PreparedSandboxCommand> {
@@ -226,16 +258,20 @@ export async function prepareSandboxedCommand(input: PrepareSandboxedCommandInpu
     return { ...command, sandboxed: false };
   }
 
-  const engine = input.engine ?? createSrtSandboxEngine();
-  const available = await engine.isAvailable();
-  if (!available) {
+  const engine = input.engine ?? resolveDefaultEngine(policy);
+  if (engine === undefined || !(await engine.isAvailable())) {
     if (policy.fallback === "unsafe-host-process" && policy.unsafeAllowHostProcess) {
       return { ...command, sandboxed: false };
     }
-    throw new SandboxUnavailableError("Sandbox engine is unavailable and policy is fail-closed.", {
-      engine: engine.id,
-      command: command.command,
-    });
+    throw new SandboxUnavailableError(
+      engine === undefined
+        ? `No sandbox engine is registered for "${policy.engine}" and policy is fail-closed.`
+        : "Sandbox engine is unavailable and policy is fail-closed.",
+      {
+        engine: engine?.id ?? policy.engine,
+        command: command.command,
+      },
+    );
   }
   return engine.prepareCommand(command, policy);
 }
@@ -252,7 +288,7 @@ export function srtSettingsForPolicy(policy: SandboxPolicy): SrtSettings {
       denyRead: denyReadRootsForPolicy(policy),
       allowRead: [...policy.readableRoots],
       allowWrite: [...policy.writableRoots],
-      denyWrite: [".env", ".env.*", ".git/config", ".git/hooks/**"],
+      denyWrite: [...(policy.denyWrite ?? DEFAULT_DENY_WRITE)],
     },
   };
 }
@@ -267,7 +303,8 @@ export function networkPolicyAllowsUrl(policy: SandboxPolicy | undefined, url: s
   } catch {
     return false;
   }
-  const host = parsed.hostname.toLowerCase();
+  // URL.hostname keeps IPv6 hosts bracketed ("[::1]"); match on the bare host.
+  const host = stripIpv6Brackets(parsed.hostname.toLowerCase());
   if (policy.network.mode === "all") {
     return true;
   }
@@ -285,16 +322,30 @@ function normalizeCommandSpec(spec: SandboxCommandSpec, fallbackCwd: string | un
   const cwd = resolve(spec.cwd ?? fallbackCwd ?? process.cwd());
   return {
     command,
-    args: normalizeStringList(spec.args ?? [], "args"),
+    args: normalizeArgs(spec.args ?? []),
     cwd,
     ...(spec.env === undefined ? {} : { env: { ...spec.env } }),
     sandboxed: false,
   };
 }
 
+// argv entries may legitimately be empty (e.g. `--prefix ""`) and whitespace is
+// significant, so unlike policy fields they are only type-checked.
+function normalizeArgs(values: readonly string[]): readonly string[] {
+  if (!Array.isArray(values)) {
+    throw new SandboxPolicyError("invalid_sandbox_policy", "args must be an array.", { field: "args" });
+  }
+  return values.map((value, index) => {
+    if (typeof value !== "string") {
+      throw new SandboxPolicyError("invalid_sandbox_policy", `args[${index}] must be a string.`, { field: `args[${index}]` });
+    }
+    return value;
+  });
+}
+
 function normalizeNetworkPolicy(input: SandboxNetworkPolicyInput | undefined): SandboxNetworkPolicy {
   const mode = input?.mode ?? "none";
-  if (!["none", "localhost", "allowlist", "all"].includes(mode)) {
+  if (!SANDBOX_NETWORK_MODES.includes(mode)) {
     throw new SandboxPolicyError("invalid_sandbox_policy", "Invalid sandbox network mode.", { mode });
   }
   const allowlist = normalizeStringList(input?.allowlist ?? [], "network.allowlist")
@@ -310,6 +361,12 @@ function normalizeNetworkPolicy(input: SandboxNetworkPolicyInput | undefined): S
   };
 }
 
+/**
+ * Intersection semantics: the merged policy allows a host only if both
+ * policies allow it. Incomparable modes (localhost vs allowlist) reduce to the
+ * allowlist entries that are loopback hosts; an empty intersection is "none",
+ * never an invalid empty allowlist.
+ */
 function mergeNetworkPolicies(
   configured: SandboxNetworkPolicy,
   request: SandboxNetworkPolicy | undefined,
@@ -317,20 +374,43 @@ function mergeNetworkPolicies(
   if (request === undefined) {
     return configured;
   }
-  const rank: Record<SandboxNetworkMode, number> = {
-    none: 0,
-    localhost: 1,
-    allowlist: 2,
-    all: 3,
-  };
-  const mode = rank[configured.mode] <= rank[request.mode] ? configured.mode : request.mode;
-  if (mode !== "allowlist") {
-    return { mode, allowlist: [] };
+  if (configured.mode === "none" || request.mode === "none") {
+    return { mode: "none", allowlist: [] };
   }
-  const configuredDomains = new Set(configured.allowlist);
-  const requestDomains = new Set(request.allowlist);
-  const allowlist = [...configuredDomains].filter((domain) => requestDomains.has(domain)).sort();
-  return { mode, allowlist };
+  if (configured.mode === "all") {
+    return { mode: request.mode, allowlist: [...request.allowlist] };
+  }
+  if (request.mode === "all") {
+    return { mode: configured.mode, allowlist: [...configured.allowlist] };
+  }
+  if (configured.mode === "localhost" && request.mode === "localhost") {
+    return { mode: "localhost", allowlist: [] };
+  }
+  if (configured.mode === "allowlist" && request.mode === "allowlist") {
+    const requestDomains = new Set(request.allowlist);
+    const allowlist = configured.allowlist.filter((domain) => requestDomains.has(domain)).sort();
+    return allowlist.length === 0 ? { mode: "none", allowlist: [] } : { mode: "allowlist", allowlist };
+  }
+  const loopbackEntries = (configured.mode === "allowlist" ? configured.allowlist : request.allowlist)
+    .filter((domain) => isLocalhost(domain))
+    .sort();
+  return loopbackEntries.length === 0
+    ? { mode: "none", allowlist: [] }
+    : { mode: "allowlist", allowlist: loopbackEntries };
+}
+
+function intersectRoots(configured: readonly string[], request: readonly string[]): readonly string[] {
+  const out = new Set<string>();
+  for (const configuredRoot of configured) {
+    for (const requestRoot of request) {
+      if (pathContains(configuredRoot, requestRoot)) {
+        out.add(requestRoot);
+      } else if (pathContains(requestRoot, configuredRoot)) {
+        out.add(configuredRoot);
+      }
+    }
+  }
+  return removeCoveredRoots([...out].sort());
 }
 
 function domainsForNetworkPolicy(policy: SandboxNetworkPolicy): readonly string[] {
@@ -348,8 +428,14 @@ function domainsForNetworkPolicy(policy: SandboxNetworkPolicy): readonly string[
 
 function denyReadRootsForPolicy(policy: SandboxPolicy): readonly string[] {
   const roots = new Set<string>();
+  const home = homedir();
+  // Secrets live under the home directory; deny it unless the policy
+  // explicitly grants it. More-specific allowRead roots inside home still win.
+  const homeReadable = policy.readableRoots.some((root) => pathContains(root, home));
+  if (!homeReadable) {
+    roots.add(home);
+  }
   for (const readableRoot of policy.readableRoots) {
-    const home = homedir();
     if (readableRoot === home || readableRoot.startsWith(`${home}/`)) {
       roots.add(dirname(home));
     }
@@ -360,8 +446,24 @@ function denyReadRootsForPolicy(policy: SandboxPolicy): readonly string[] {
       roots.add("/home");
     }
   }
-  roots.add(resolve(homedir(), ".ssh"));
+  roots.add(resolve(home, ".ssh"));
   return removeCoveredRoots([...roots].sort());
+}
+
+// srt settings are a pure function of the policy, so the file is
+// content-addressed and shared across every command run under that policy.
+async function writeSrtSettingsFile(policy: SandboxPolicy): Promise<string> {
+  const content = `${JSON.stringify(srtSettingsForPolicy(policy), null, 2)}\n`;
+  const digest = createHash("sha256").update(content).digest("hex").slice(0, 16);
+  const settingsPath = resolve(policy.tempRoot, `srt-settings-${digest}.json`);
+  if (existsSync(settingsPath)) {
+    return settingsPath;
+  }
+  await mkdir(policy.tempRoot, { recursive: true });
+  const stagingPath = `${settingsPath}.${process.pid}.tmp`;
+  await writeFile(stagingPath, content, "utf8");
+  await rename(stagingPath, settingsPath);
+  return settingsPath;
 }
 
 function normalizePath(value: string, field: string): string {
@@ -391,6 +493,10 @@ function normalizeNonEmptyString(value: unknown, field: string): string {
   return normalized;
 }
 
+function stripIpv6Brackets(host: string): string {
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+}
+
 function isLocalhost(host: string): boolean {
   return host === "localhost" || host === "::1" || host === "127.0.0.1" || host.startsWith("127.");
 }
@@ -403,10 +509,14 @@ function domainMatches(host: string, pattern: string): boolean {
   return host === pattern;
 }
 
+function pathContains(root: string, target: string): boolean {
+  return target === root || target.startsWith(root === "/" ? "/" : `${root}/`);
+}
+
 function removeCoveredRoots(paths: readonly string[]): readonly string[] {
   const out: string[] = [];
   for (const path of paths) {
-    if (out.some((root) => path === root || path.startsWith(`${root}/`))) {
+    if (out.some((root) => pathContains(root, path))) {
       continue;
     }
     out.push(path);

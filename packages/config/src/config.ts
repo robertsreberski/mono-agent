@@ -11,6 +11,9 @@ import {
 } from "@mono-agent/runtime-adapter";
 import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@mono-agent/runtime-adapter";
 import {
+  SANDBOX_FALLBACKS,
+  SANDBOX_MODES,
+  SANDBOX_NETWORK_MODES,
   SandboxPolicyError,
   createSandboxPolicy,
 } from "@mono-agent/sandbox";
@@ -197,20 +200,9 @@ function readSandboxConfig(env: Record<string, string | undefined>, workspace: s
     return undefined;
   }
 
-  const mode = readChoice<SandboxMode>(env.MONO_AGENT_SANDBOX_MODE, "MONO_AGENT_SANDBOX_MODE", [
-    "native",
-    "off",
-  ], "native", invalidEnv);
-  const networkMode = readChoice<SandboxNetworkMode>(env.MONO_AGENT_SANDBOX_NETWORK, "MONO_AGENT_SANDBOX_NETWORK", [
-    "none",
-    "localhost",
-    "allowlist",
-    "all",
-  ], "none", invalidEnv);
-  const fallback = readChoice<SandboxFallback>(env.MONO_AGENT_SANDBOX_FALLBACK, "MONO_AGENT_SANDBOX_FALLBACK", [
-    "fail-closed",
-    "unsafe-host-process",
-  ], "fail-closed", invalidEnv);
+  const mode = readChoice<SandboxMode>(env.MONO_AGENT_SANDBOX_MODE, "MONO_AGENT_SANDBOX_MODE", SANDBOX_MODES, "native", invalidEnv);
+  const networkMode = readChoice<SandboxNetworkMode>(env.MONO_AGENT_SANDBOX_NETWORK, "MONO_AGENT_SANDBOX_NETWORK", SANDBOX_NETWORK_MODES, "none", invalidEnv);
+  const fallback = readChoice<SandboxFallback>(env.MONO_AGENT_SANDBOX_FALLBACK, "MONO_AGENT_SANDBOX_FALLBACK", SANDBOX_FALLBACKS, "fail-closed", invalidEnv);
   try {
     return createSandboxPolicy({
       mode,

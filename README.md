@@ -35,7 +35,7 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   │   ├─ config
   │   ├─ agent-harness ── agent-contracts, context, skills, memory-md, observability, runtime-adapter, sandbox, tool-policy
   │   ├─ runtime-adapter ── @mono-agent/agent-runtime, sandbox types
-  │   ├─ sandbox
+  │   ├─ sandbox ── agent-contracts
   │   ├─ memory-md
   │   ├─ observability
   │   └─ tool-policy

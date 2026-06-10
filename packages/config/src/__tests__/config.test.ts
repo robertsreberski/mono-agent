@@ -88,7 +88,7 @@ describe("loadMonoAgentConfig", () => {
       mode: "native",
       engine: "srt",
       root: "/repo/workspace",
-      required: true,
+      fallback: "fail-closed",
       network: {
         mode: "allowlist",
         allowlist: ["github.com", "api.github.com"],
@@ -116,7 +116,9 @@ describe("loadMonoAgentConfig", () => {
       return;
     }
     throw new Error("Expected unsafe sandbox fallback to fail.");
+  });
 
+  it("allows unsafe sandbox fallback with the explicit opt-in", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
@@ -128,7 +130,6 @@ describe("loadMonoAgentConfig", () => {
     });
 
     expect(config.sandbox).toMatchObject({
-      required: false,
       fallback: "unsafe-host-process",
       unsafeAllowHostProcess: true,
     });

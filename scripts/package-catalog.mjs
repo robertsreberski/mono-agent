@@ -175,7 +175,7 @@ export const packageCatalog = [
     name: "@mono-agent/sandbox",
     category: "runtime",
     responsibility: "Normalizes fail-closed sandbox policy and prepares native sandboxed command execution.",
-    allowedDependencyCategories: ["runtime"],
+    allowedDependencyCategories: ["core", "runtime"],
     publishable: true,
   },
   {

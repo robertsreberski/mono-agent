@@ -11,6 +11,10 @@ import {
   prepareMcpStdioCommand,
   resolveMcpStdioCwd,
 } from "../../agent/tools/pi-bridge.js";
+import {
+  configureToolRuntime,
+  resetToolRuntime,
+} from "../../agent/tools/shared/runtime-context.js";
 
 function makeSink(runDir) {
   return ({ filename, buffer }) => {
@@ -31,6 +35,7 @@ function tempWorkspace() {
 }
 
 afterEach(() => {
+  resetToolRuntime();
   while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
 });
 
@@ -190,6 +195,32 @@ describe("pi MCP tool helpers", () => {
       cwd: "/repo/project/tools",
       sandboxed: true,
     });
+  });
+
+  it("prepares stdio MCP commands under the context-configured sandbox policy without per-call options", async () => {
+    const root = tempWorkspace();
+    configureToolRuntime({
+      workspace: root,
+      sandboxPolicy: failClosedSandboxPolicy({ root }),
+    });
+
+    const prepared = await prepareMcpStdioCommand(
+      { command: "node", args: ["server.js"] },
+      {
+        cwd: root,
+        sandboxEngine: {
+          id: "fake",
+          async isAvailable() {
+            return true;
+          },
+          async prepareCommand(command) {
+            return { ...command, command: "sandbox", sandboxed: true };
+          },
+        },
+      },
+    );
+
+    expect(prepared).toMatchObject({ command: "sandbox", sandboxed: true });
   });
 
   it("cleans up sandboxed stdio MCP commands when client connect fails", async () => {

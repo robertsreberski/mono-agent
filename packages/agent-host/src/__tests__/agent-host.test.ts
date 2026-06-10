@@ -275,7 +275,7 @@ describe("agent host composition helpers", () => {
 
     expect(fake.calls[0]?.options.sandboxPolicy).toMatchObject({
       mode: "native",
-      required: true,
+      fallback: "fail-closed",
       network: { mode: "none", allowlist: [] },
     });
   });

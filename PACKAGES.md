@@ -120,6 +120,7 @@ flowchart TB
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Sandbox
   AgentRuntime --> Sandbox
+  Sandbox --> Contracts
   OpenAIAgents --> RuntimeAdapter
 ```
 

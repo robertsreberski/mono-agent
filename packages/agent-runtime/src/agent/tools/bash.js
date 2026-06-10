@@ -8,6 +8,7 @@ import {
   isWorkdirAllowed,
   workspaceRoot,
 } from "./shared/path-resolver.js";
+import { resolveSandboxPolicy } from "./shared/runtime-context.js";
 
 const DEFAULT_BASH_TIMEOUT_MS = 120000;
 const BASH_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
@@ -112,7 +113,8 @@ function runCommand(commandSpec, { timeoutMs, signal, maxBufferBytes = BASH_MAX_
 }
 
 export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS, max_output_chars, workdir }, { signal, sandboxPolicy, sandboxEngine } = {}) {
-  const pathOptions = { sandboxPolicy };
+  const policy = resolveSandboxPolicy(sandboxPolicy);
+  const pathOptions = { sandboxPolicy: policy };
   if (workdir && !isWorkdirAllowed(workdir, pathOptions)) return `Error: Working directory not allowed: ${workdir}`;
   const cwd = workspaceRoot(workdir);
   if (!isPathAllowed(cwd, workdir, pathOptions)) return `Error: Working directory not allowed: ${cwd}`;
@@ -122,8 +124,8 @@ export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS,
   let prepared;
   try {
     prepared = await prepareSandboxedCommand({
-      policy: sandboxPolicy,
-      engine: sandboxEngine,
+      policy,
+      engine: sandboxEngine ?? undefined,
       command: { command: "/bin/bash", args: ["-lc", command], cwd },
     });
   } catch (err) {

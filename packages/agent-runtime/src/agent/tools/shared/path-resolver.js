@@ -1,6 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { readToolRuntime } from "./runtime-context.js";
+import { readToolRuntime, resolveSandboxPolicy } from "./runtime-context.js";
 
 function configured() {
   const { workspace, repoRoot } = readToolRuntime();
@@ -17,19 +17,6 @@ export function resolveToolPath(path, workdir) {
   return resolve(isAbsolute(path) ? path : resolve(workspaceRoot(workdir), path));
 }
 
-function roots(workdir, access = "read", options = {}) {
-  const { workspace, repoRoot } = configured();
-  const sandboxRoots = sandboxPathRoots(access, options.sandboxPolicy);
-  if (sandboxRoots !== undefined) return sandboxRoots;
-  return normalizeRoots([
-    workdir,
-    workspace,
-    repoRoot,
-    process.cwd(),
-    "/tmp",
-  ]);
-}
-
 export function isPathAllowed(path, workdir, options = {}) {
   return isPathAllowedFor(path, workdir, "read", options);
 }
@@ -38,44 +25,42 @@ export function isWritablePathAllowed(path, workdir, options = {}) {
   return isPathAllowedFor(path, workdir, "write", options);
 }
 
-export function isPathReadable(path, workdir, options = {}) {
-  return isPathAllowedFor(path, workdir, "read", options);
-}
-
 function isPathAllowedFor(path, workdir, access, options) {
   const r = resolveToolPath(path, workdir);
-  const real = realTargetPath(r);
-  const allowedRoots = roots(workdir, access, options);
-  return allowedRoots.some((root) => pathInside(root, r))
-    && allowedRoots.some((root) => pathInside(root, real));
-}
-
-function envRoots(options = {}) {
+  const policy = resolveSandboxPolicy(options.sandboxPolicy);
+  if (policy) {
+    const field = access === "write" ? policy.writableRoots : policy.readableRoots;
+    return insideSandboxRoots(Array.isArray(field) ? field : [], r);
+  }
   const { workspace, repoRoot } = configured();
-  const sandboxRoots = sandboxPathRoots("read", options.sandboxPolicy);
-  if (sandboxRoots !== undefined) return sandboxRoots;
-  return normalizeRoots([
-    workspace,
-    repoRoot,
-    process.cwd(),
-    "/tmp",
-  ]);
+  return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
 }
 
 export function isWorkdirAllowed(workdir, options = {}) {
   if (!workdir) return true;
   const r = resolve(workdir);
-  const real = realTargetPath(r);
-  const allowedRoots = envRoots(options);
-  return allowedRoots.some((root) => pathInside(root, r))
-    && allowedRoots.some((root) => pathInside(root, real));
+  const policy = resolveSandboxPolicy(options.sandboxPolicy);
+  if (policy) {
+    return insideSandboxRoots(Array.isArray(policy.readableRoots) ? policy.readableRoots : [], r);
+  }
+  const { workspace, repoRoot } = configured();
+  return insideLegacyRoots([workspace, repoRoot, process.cwd(), "/tmp"], r);
 }
 
-function sandboxPathRoots(access = "read", sandboxPolicy = undefined) {
-  const policy = sandboxPolicy ?? readToolRuntime().sandboxPolicy;
-  if (!policy || policy.mode === "off") return undefined;
-  const field = access === "write" ? policy.writableRoots : policy.readableRoots;
-  return normalizeRoots(Array.isArray(field) ? field : []);
+// Sandbox roots also enforce realpath containment so a symlink inside an
+// allowed root cannot escape to a target outside the policy.
+function insideSandboxRoots(roots, target) {
+  const allowedRoots = normalizeRoots(roots);
+  const real = realTargetPath(target);
+  return allowedRoots.some((root) => isInsidePath(root, target))
+    && allowedRoots.some((root) => isInsidePath(root, real));
+}
+
+// Without a sandbox policy, keep the historical literal containment check —
+// symlinks out of the workspace (npm link et al.) stay usable by default.
+function insideLegacyRoots(roots, target) {
+  const allowedRoots = [...new Set(roots.filter(Boolean).map((p) => resolve(p)))];
+  return allowedRoots.some((root) => isInsidePath(root, target));
 }
 
 function normalizeRoots(paths) {
@@ -88,7 +73,8 @@ function normalizeRoots(paths) {
   return [...out];
 }
 
-function pathInside(root, target) {
+export function isInsidePath(root, target) {
+  if (!root || !target) return false;
   const rel = relative(resolve(root), resolve(target));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }

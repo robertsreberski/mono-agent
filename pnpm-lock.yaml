@@ -400,7 +400,11 @@ importers:
         specifier: workspace:^0.1.0
         version: link:../sandbox
 
-  packages/sandbox: {}
+  packages/sandbox:
+    dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
 
   packages/settings: {}
 
