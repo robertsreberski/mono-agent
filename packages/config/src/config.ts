@@ -75,6 +75,7 @@ const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
+const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
   const cwd = normalizeCwd(input.cwd);
@@ -92,6 +93,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const sandbox = readSandboxConfig(input.env, workspace);
   const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
   const traceability = readTraceabilityConfig(input.env, cwd);
+  const piAuthPath = readPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
   const localProviders = readLocalProviders(input.env);
 
   assertModeCompatibility(model, executionMode);
@@ -128,7 +130,10 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       dir: artifactDir,
     },
     traceability,
-    ...(localProviders.length === 0 ? {} : { providers: { local: localProviders } }),
+    providers: {
+      piAuthPath,
+      ...(localProviders.length === 0 ? {} : { local: localProviders }),
+    },
   };
 
   if (memory !== undefined) {
@@ -470,13 +475,18 @@ function withRedactedProviders(
   return {
     ...redacted,
     providers: {
-      local: config.providers.local.map((provider) => {
-        const { apiKey, ...safeProvider } = provider;
-        return {
-          ...safeProvider,
-          ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
-        };
-      }),
+      ...(config.providers.piAuthPath === undefined ? {} : { piAuthPath: config.providers.piAuthPath }),
+      ...(config.providers.local === undefined
+        ? {}
+        : {
+            local: config.providers.local.map((provider) => {
+              const { apiKey, ...safeProvider } = provider;
+              return {
+                ...safeProvider,
+                ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
+              };
+            }),
+          }),
     },
   };
 }

@@ -26,6 +26,7 @@ declare module "@mono-agent/agent-runtime" {
   }
 
   export function createRuntime(host?: AgentRuntimeHostOptions): AgentRuntimeInstance;
+  export function createPiOAuthApiKeyResolver(options: { readonly path: string }): (provider: string) => Promise<string | undefined>;
 }
 
 declare module "@mono-agent/agent-runtime/ai/runtime/model-refs.js" {

@@ -52,7 +52,8 @@ export interface MonoAgentConfig {
     readonly staleAfterMs?: number;
   };
   readonly providers?: {
-    readonly local: readonly LocalProviderDefinition[];
+    readonly piAuthPath?: string;
+    readonly local?: readonly LocalProviderDefinition[];
   };
 }
 
@@ -69,6 +70,7 @@ export interface RedactedMonoAgentConfig {
   readonly artifacts: MonoAgentConfig["artifacts"];
   readonly traceability: MonoAgentConfig["traceability"];
   readonly providers?: {
-    readonly local: readonly RedactedLocalProviderDefinition[];
+    readonly piAuthPath?: string;
+    readonly local?: readonly RedactedLocalProviderDefinition[];
   };
 }

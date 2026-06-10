@@ -48,6 +48,11 @@ Supported backend seams are exposed as data:
 
 `runtimeOptionsForLocalProvider()` converts host config into the custom-provider context expected by `@mono-agent/agent-runtime`'s Pi adapter. It only returns options when the parsed model is `pi:<provider>:<model>` and `<provider>` matches a configured local provider. Built-in Pi providers such as `pi:openai-codex:gpt-5.5` return `{}`.
 
+Built-in Pi OAuth providers still need credentials. Use
+`createPiOAuthApiKeyResolver({ path })` and pass it to `createMonoRuntime()` as
+`resolvePiApiKey` when the host owns an auth JSON file such as
+`~/.pi/agent/auth.json`.
+
 Ollama example:
 
 ```ts

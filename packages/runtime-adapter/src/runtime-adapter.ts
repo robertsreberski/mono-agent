@@ -1,4 +1,4 @@
-import { createRuntime } from "@mono-agent/agent-runtime";
+import { createPiOAuthApiKeyResolver, createRuntime } from "@mono-agent/agent-runtime";
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 
@@ -172,6 +172,8 @@ export function createMonoRuntime(options: MonoRuntimeHostOptions = {}): MonoRun
     },
   };
 }
+
+export { createPiOAuthApiKeyResolver };
 
 export function assertParsedRuntimeModelReference(value: unknown): asserts value is RuntimeModelReference {
   normalizeRuntimeModelReference(value);

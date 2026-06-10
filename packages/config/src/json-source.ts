@@ -29,6 +29,7 @@ export type MonoAgentLocalProviderJson = {
 };
 
 export type MonoAgentProvidersJson = {
+  readonly piAuthPath?: string;
   readonly local?: readonly MonoAgentLocalProviderJson[];
 };
 

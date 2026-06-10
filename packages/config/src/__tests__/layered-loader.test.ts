@@ -30,6 +30,7 @@ describe("layerJsonOntoEnv", () => {
         tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
         traceability: { registryDir: ".mono-agent/traces", sourceId: "json-source", staleAfterMs: 60000 },
         providers: {
+          piAuthPath: ".pi/auth.json",
           local: [
             {
               id: "ollama",
@@ -51,6 +52,7 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_TRACE_REGISTRY_DIR).toBe(".mono-agent/traces");
     expect(layered.MONO_AGENT_TRACE_SOURCE_ID).toBe("json-source");
     expect(layered.MONO_AGENT_TRACE_STALE_AFTER_MS).toBe("60000");
+    expect(layered.MONO_AGENT_PI_AUTH_PATH).toBe(".pi/auth.json");
     expect(JSON.parse(layered.MONO_AGENT_LOCAL_PROVIDERS_JSON ?? "[]")).toEqual([
       {
         id: "ollama",
@@ -87,16 +89,19 @@ describe("layerJsonOntoEnv", () => {
       {
         runtime: { maxTurns: 4 },
         providers: {
+          piAuthPath: ".json/pi-auth.json",
           local: [{ id: "json-ollama", type: "ollama", baseUrl: "http://localhost:11434" }],
         },
       },
       {
         MONO_AGENT_MAX_TURNS: "16",
+        MONO_AGENT_PI_AUTH_PATH: "/env/pi-auth.json",
         MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
         MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
       },
     );
     expect(layered.MONO_AGENT_MAX_TURNS).toBe("16");
+    expect(layered.MONO_AGENT_PI_AUTH_PATH).toBe("/env/pi-auth.json");
     expect(layered.MONO_AGENT_LOCAL_PROVIDERS_JSON).toBeUndefined();
     expect(layered.MONO_AGENT_LOCAL_PROVIDER_ID).toBe("ollama");
   });
@@ -119,6 +124,7 @@ describe("loadMonoAgentConfigWithSources", () => {
         runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 12 },
         context: { identityPath: "IDENTITY.md" },
         providers: {
+          piAuthPath: ".worklab/auth.json",
           local: [
             {
               id: "ollama",
@@ -139,7 +145,8 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
     expect(config.runtime.maxTurns).toBe(12);
     expect(config.runtime.model).toMatchObject({ sdk: "pi" });
-    expect(config.providers?.local[0]?.models?.[0]?.capabilities).toMatchObject({ context_window: 32768 });
+    expect(config.providers?.piAuthPath).toBe(join(dir, ".worklab", "auth.json"));
+    expect(config.providers?.local?.[0]?.models?.[0]?.capabilities).toMatchObject({ context_window: 32768 });
   });
 
   it("env local-provider settings beat JSON provider defaults", async () => {
@@ -165,7 +172,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       cwd: dir,
       jsonPath: path,
     });
-    expect(config.providers?.local.map((provider) => provider.id)).toEqual(["ollama"]);
+    expect(config.providers?.local?.map((provider) => provider.id)).toEqual(["ollama"]);
   });
 
   it("env beats JSON for overlapping fields", async () => {

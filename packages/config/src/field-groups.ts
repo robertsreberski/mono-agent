@@ -287,11 +287,28 @@ export const traceabilityFieldGroup = defineFieldGroup({
   ],
 });
 
+export const providersFieldGroup = defineFieldGroup({
+  id: "providers",
+  label: "Providers",
+  description: "Provider-specific credential and registry settings.",
+  fields: [
+    {
+      id: "providers.piAuthPath",
+      label: "Pi auth path",
+      description: "OAuth credential JSON used by Pi providers such as openai-codex.",
+      kind: "path",
+      placeholder: "~/.pi/agent/auth.json",
+      path: ["providers", "piAuthPath"],
+    },
+  ],
+});
+
 export const CORE_AGENT_FIELD_GROUPS: FieldGroupRegistry = [
   identityFieldGroup,
   runtimeFieldGroup,
   memoryFieldGroup,
   toolsFieldGroup,
+  providersFieldGroup,
   artifactsFieldGroup,
   traceabilityFieldGroup,
 ];

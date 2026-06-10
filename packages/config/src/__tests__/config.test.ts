@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig } from "../index.js";
@@ -56,6 +59,7 @@ describe("loadMonoAgentConfig", () => {
       mcpConfigPath: "/repo/mcp.json",
     });
     expect(config.artifacts.dir).toBe("/repo/artifacts");
+    expect(config.providers?.piAuthPath).toBe(join(homedir(), ".pi", "agent", "auth.json"));
     expect(config.traceability).toEqual({
       registryDir: "/repo/trace-registry",
       sourceId: "agent-one",
@@ -63,6 +67,18 @@ describe("loadMonoAgentConfig", () => {
       heartbeatMs: 5000,
       staleAfterMs: 15000,
     });
+  });
+
+  it("loads the Pi OAuth auth path from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PI_AUTH_PATH: "/tmp/pi-auth.json",
+      },
+    });
+
+    expect(config.providers?.piAuthPath).toBe("/tmp/pi-auth.json");
   });
 
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {
@@ -229,11 +245,12 @@ describe("loadMonoAgentConfig", () => {
 
     expect("telegram" in redacted).toBe(false);
     expect(redacted.runtime.model).toMatchObject({ sdk: "pi" });
-    expect(redacted.providers?.local[0]).toMatchObject({
+    expect(redacted.providers?.local?.[0]).toMatchObject({
       id: "ollama",
       type: "ollama",
       apiKey: { present: true, redacted: true },
     });
+    expect(redacted.providers?.piAuthPath).toBe(join(homedir(), ".pi", "agent", "auth.json"));
     expect(JSON.stringify(redacted)).not.toContain("redacted-value");
   });
 
@@ -261,7 +278,7 @@ describe("loadMonoAgentConfig", () => {
       },
     });
 
-    expect(config.providers?.local[0]).toMatchObject({
+    expect(config.providers?.local?.[0]).toMatchObject({
       id: "ollama",
       type: "ollama",
       baseUrl: "http://localhost:11434",
@@ -289,7 +306,7 @@ describe("loadMonoAgentConfig", () => {
       },
     });
 
-    expect(config.providers?.local[0]?.models?.[0]).toMatchObject({
+    expect(config.providers?.local?.[0]?.models?.[0]).toMatchObject({
       name: "qwen3:8b",
       capabilities: { context_window: 32768 },
     });

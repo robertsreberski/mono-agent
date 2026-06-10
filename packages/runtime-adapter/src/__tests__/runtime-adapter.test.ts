@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertExecutionModeCompatible,
+  createPiOAuthApiKeyResolver,
   createMonoRuntime,
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
@@ -88,6 +89,12 @@ describe("runtime adapter model references", () => {
     });
     expect(() => runtimeBackendForModel(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"), "cli"))
       .toThrow(RuntimeAdapterError);
+  });
+});
+
+describe("runtime adapter Pi auth exports", () => {
+  it("re-exports the Pi OAuth API key resolver factory", () => {
+    expect(typeof createPiOAuthApiKeyResolver).toBe("function");
   });
 });
 

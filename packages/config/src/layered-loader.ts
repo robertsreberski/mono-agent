@@ -120,6 +120,9 @@ export function layerJsonOntoEnv(
   if (json.traceability?.staleAfterMs !== undefined) {
     fromJson.MONO_AGENT_TRACE_STALE_AFTER_MS = String(json.traceability.staleAfterMs);
   }
+  if (json.providers?.piAuthPath !== undefined) {
+    fromJson.MONO_AGENT_PI_AUTH_PATH = json.providers.piAuthPath;
+  }
   if (json.providers?.local !== undefined && !hasLocalProviderEnv(env)) {
     fromJson.MONO_AGENT_LOCAL_PROVIDERS_JSON = JSON.stringify(json.providers.local);
   }

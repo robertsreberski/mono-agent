@@ -38,6 +38,7 @@ export {
   EFFORT_LEVELS,
   identityFieldGroup,
   memoryFieldGroup,
+  providersFieldGroup,
   runtimeFieldGroup,
   traceabilityFieldGroup,
   toolsFieldGroup,

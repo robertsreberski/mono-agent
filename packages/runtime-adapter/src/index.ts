@@ -3,6 +3,7 @@ export {
   assertExecutionModeCompatible,
   assertParsedRuntimeModelReference,
   createMonoRuntime,
+  createPiOAuthApiKeyResolver,
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   isRuntimeExecutionMode,

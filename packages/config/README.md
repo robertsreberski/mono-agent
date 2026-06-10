@@ -29,9 +29,30 @@ const config = await loadMonoAgentConfigWithSources({
 
 Environment variables win over JSON values. Missing or empty JSON is treated as an empty layer.
 
+## Pi OAuth Auth
+
+Built-in Pi OAuth providers such as `pi:openai-codex:gpt-5.5` read credentials
+through the configured Pi auth file. The default path is
+`~/.pi/agent/auth.json`; override it with JSON or env:
+
+```json
+{
+  "providers": {
+    "piAuthPath": ".worklab/auth.json"
+  }
+}
+```
+
+```bash
+MONO_AGENT_PI_AUTH_PATH=/Users/example/.pi/agent/auth.json
+```
+
+Only the path is stored in config. Token contents stay in the auth JSON file and
+are never included in `redactMonoAgentConfig()`.
+
 ## Local Providers
 
-Core config can define local Pi providers under `providers.local`. The primary supported path is Ollama:
+Core config can also define local Pi providers under `providers.local`. The primary supported path is Ollama:
 
 ```json
 {
@@ -98,7 +119,7 @@ Supported network modes are `none`, `localhost`, `allowlist`, and `all`. `allowl
 - `redactMonoAgentConfig`
 - `readMonoAgentConfigJson`, `writeMonoAgentConfigJson`
 - `layerJsonOntoEnv`
-- `CORE_AGENT_FIELD_GROUPS`, plus individual identity/runtime/memory/tools/artifacts field groups
+- `CORE_AGENT_FIELD_GROUPS`, plus individual identity/runtime/memory/tools/providers/artifacts field groups
 - `MonoAgentConfig`, `MonoAgentConfigJson`, `RedactedMonoAgentConfig`, `MonoAgentConfigError`
 
 ## Dependency Boundary

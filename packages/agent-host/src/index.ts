@@ -21,6 +21,7 @@ import type { MemoryStore } from "@mono-agent/memory-md";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
   createMonoRuntime,
+  createPiOAuthApiKeyResolver,
   runtimeOptionsForLocalProvider,
 } from "@mono-agent/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
@@ -59,6 +60,9 @@ export function createConfiguredAgentRuntime(
   return createMonoRuntime({
     workspace: config.runtime.workspace,
     qaOutputDir: config.artifacts.dir,
+    ...(config.providers?.piAuthPath === undefined
+      ? {}
+      : { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: config.providers.piAuthPath }) }),
   });
 }
 
