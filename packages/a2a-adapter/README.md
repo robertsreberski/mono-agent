@@ -8,7 +8,7 @@ Communication adapter.
 
 ## Responsibility
 
-Expose a Mono Agent responder as an A2A provider and call remote A2A agents through direct Agent Card discovery.
+Expose a agent responder as an A2A provider and call remote A2A agents through direct Agent Card discovery.
 
 ## Install / Usage
 
@@ -27,7 +27,7 @@ const provider = await startA2AProvider({
   responder,
   agent: {
     name: "Agent A",
-    description: "Local Mono Agent over A2A.",
+    description: "Local A2A provider.",
     version: "0.1.0",
   },
   skill: {
@@ -74,7 +74,7 @@ Config can be loaded from nested JSON under `a2a` or explicit environment variab
       "host": "127.0.0.1",
       "port": 4300,
       "requireBearer": true,
-      "bearerToken": "local-secret"
+      "bearerToken": "redacted-value"
     },
     "agent": {
       "name": "Agent A",
@@ -118,7 +118,7 @@ Important env names:
 
 ## Dependency Boundary
 
-This package depends only on core Mono Agent contracts/settings plus the pinned A2A SDK and Express transport surface. It does not depend on the agent harness, config package, operator surfaces, or other communication adapters.
+This package depends only on core agent contracts/settings plus the pinned A2A SDK and Express transport surface. It does not depend on the agent harness, config package, operator surfaces, or other communication adapters.
 
 ## What This Package Does Not Own
 

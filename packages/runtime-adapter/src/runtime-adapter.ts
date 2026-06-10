@@ -296,13 +296,13 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
  * NOT wired into agent-host routing; consumers read it to align vocabularies.
  *
  * `sdkAliases[0]` is the canonical sdk id used by the backend descriptor; later
- * entries are accepted legacy spellings (e.g. "anthropic" for claude). The SDK
- * runtimes derive their fail-closed `model.sdk` guard sets from these aliases via
+ * entries may be accepted legacy spellings. Runtime packages derive their
+ * fail-closed `model.sdk` guard sets from these aliases via
  * {@link acceptedSdkIdsForBackend}.
  */
 const RUNTIME_SELECTION_TABLE: readonly MonoRuntimeSelectionEntry[] = [
-  { sdk: "claude", sdkAliases: ["claude", "anthropic"], executionMode: "sdk", backendId: "claude-sdk" },
-  { sdk: "claude", sdkAliases: ["claude", "anthropic"], executionMode: "cli", backendId: "claude-code-cli" },
+  { sdk: "claude", sdkAliases: ["claude"], executionMode: "sdk", backendId: "claude-sdk" },
+  { sdk: "claude", sdkAliases: ["claude"], executionMode: "cli", backendId: "claude-code-cli" },
   { sdk: "codex", sdkAliases: ["codex"], executionMode: "cli", backendId: "codex-app-cli" },
   { sdk: "openai", sdkAliases: ["openai"], executionMode: "sdk", backendId: "openai-agents-sdk" },
   { sdk: "pi", sdkAliases: ["pi"], executionMode: "sdk", backendId: "pi-sdk" },
@@ -322,8 +322,7 @@ export function listMonoRuntimeSelectionTable(): readonly MonoRuntimeSelectionEn
 /**
  * Resolves a backend id from the selection table by sdk (canonical or alias) and
  * execution mode. Returns undefined when no row matches, leaving the caller to
- * decide how to fail. Matching is alias-aware so "anthropic" resolves the same
- * row as "claude".
+ * decide how to fail.
  */
 export function selectMonoRuntimeBackendId(
   sdk: string,

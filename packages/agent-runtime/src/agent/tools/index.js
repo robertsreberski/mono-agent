@@ -1,6 +1,6 @@
 // Barrel re-exporting per-tool implementations and the small bit of shared
 // surface that callers outside this directory consume (the path/workdir
-// guards plus the ripgrep resolver used by `worklab doctor`). Each tool
+// guards plus the ripgrep resolver used by the configured doctor command. Each tool
 // implementation lives in its own file under `./` and pulls helpers from
 // `./shared/`. `pi-bridge.js` imports the tool impls from this barrel.
 

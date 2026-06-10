@@ -123,7 +123,7 @@ describe("TelegramAdapter", () => {
     });
 
     await expect(
-      bridge.handleUpdate(textUpdate("  hello agent  ", { username: "alice" })),
+      bridge.handleUpdate(textUpdate("  hello agent  ", { username: "person_a" })),
     ).resolves.toMatchObject({
       kind: "handled",
       action: "responded",
@@ -137,14 +137,14 @@ describe("TelegramAdapter", () => {
       messageId: 10,
       updateId: 1,
       userId: 7,
-      username: "alice",
+      username: "person_a",
       text: "hello agent",
       metadata: {
         telegram: {
           updateId: 1,
           chat: { id: 42, type: "private" },
           message: { id: 10, date: 1234 },
-          from: { id: 7, username: "alice", firstName: "Alice" },
+          from: { id: 7, username: "person_a", firstName: "Person A" },
         },
       },
     });
@@ -287,8 +287,8 @@ function textUpdate(
       chat: { id: options?.chatId ?? 42, type: "private" },
       from: {
         id: 7,
-        first_name: "Alice",
-        username: options?.username ?? "alice",
+        first_name: "Person A",
+        username: options?.username ?? "person_a",
       },
       text,
     },

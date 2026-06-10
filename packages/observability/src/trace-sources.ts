@@ -187,7 +187,7 @@ function buildManifest(input: {
   readonly metadata?: Record<string, unknown>;
 }): TraceSourceManifest {
   return {
-    schema: "worklab.trace-source.v1",
+    schema: "agent-runtime.trace-source.v1",
     sourceId: normalizeSourceId(input.sourceId),
     label: normalizeNonEmpty(input.label, "label"),
     artifactDir: resolvePath(input.artifactDir, "artifactDir"),
@@ -241,8 +241,8 @@ function coerceManifest(value: unknown, fileName: string, warnings: string[]): T
     warnings.push(`Skipping ${fileName}: manifest is not an object.`);
     return undefined;
   }
-  if (value.schema !== "worklab.trace-source.v1") {
-    warnings.push(`Skipping ${fileName}: manifest schema is not worklab.trace-source.v1.`);
+  if (value.schema !== "agent-runtime.trace-source.v1") {
+    warnings.push(`Skipping ${fileName}: manifest schema is not agent-runtime.trace-source.v1.`);
     return undefined;
   }
   const sourceId = stringField(value, "sourceId");

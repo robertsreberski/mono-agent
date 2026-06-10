@@ -136,7 +136,7 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_LOCAL_PROVIDER_ID: "ollama",
         MONO_AGENT_LOCAL_PROVIDER_TYPE: "ollama",
         MONO_AGENT_LOCAL_PROVIDER_BASE_URL: "http://localhost:11434",
-        MONO_AGENT_LOCAL_PROVIDER_API_KEY: "local-secret",
+        MONO_AGENT_LOCAL_PROVIDER_API_KEY: "redacted-value",
       },
     });
     const redacted = redactMonoAgentConfig(config);
@@ -148,7 +148,7 @@ describe("loadMonoAgentConfig", () => {
       type: "ollama",
       apiKey: { present: true, redacted: true },
     });
-    expect(JSON.stringify(redacted)).not.toContain("local-secret");
+    expect(JSON.stringify(redacted)).not.toContain("redacted-value");
   });
 
   it("defaults traceability to a host-shared registry path", () => {
@@ -171,7 +171,7 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_LOCAL_PROVIDER_BASE_URL: "http://localhost:11434",
         MONO_AGENT_LOCAL_PROVIDER_ENABLED: "true",
         MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL: "false",
-        MONO_AGENT_LOCAL_PROVIDER_API_KEY: "local-secret",
+        MONO_AGENT_LOCAL_PROVIDER_API_KEY: "redacted-value",
       },
     });
 
@@ -181,7 +181,7 @@ describe("loadMonoAgentConfig", () => {
       baseUrl: "http://localhost:11434",
       enabled: true,
       trustPublicUrl: false,
-      apiKey: "local-secret",
+      apiKey: "redacted-value",
     });
   });
 

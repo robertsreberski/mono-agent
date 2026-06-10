@@ -17,8 +17,8 @@ import {
 // Capability notes (verified against @opencode-ai/sdk 1.15.x):
 //   - `session.prompt` blocks until the turn is done and returns the final message.
 //   - The published SDK has NO structured-output (`format`) field, so we do not
-//     enforce the worklab_result schema here; the system prompt asks for the JSON
-//     and the worker's parseWorklabResultLenient recovers it (same as codex-app).
+//     enforce a host-specific result schema here; the system prompt asks for
+//     JSON and the host can recover it (same as codex-app).
 //   - No mid-turn steering primitive and no native-subagent injection in this SDK
 //     revision, so supports_live_input / supports_native_subagents are false.
 const OPENCODE_APP_CAPABILITIES = {

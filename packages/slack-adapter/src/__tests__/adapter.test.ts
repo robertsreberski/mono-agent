@@ -126,7 +126,7 @@ describe("SlackAdapter", () => {
       threadTs: "171.000001",
       eventId: "Ev1",
       teamId: "T1",
-      userId: "Ualice",
+      userId: "UUSER1",
       text: "hello agent",
       trigger: "direct",
       metadata: {
@@ -137,7 +137,7 @@ describe("SlackAdapter", () => {
           eventTime: 171,
           channel: { id: "D123", type: "im" },
           message: { ts: "171.000001", eventTs: "171.000001" },
-          user: { id: "Ualice" },
+          user: { id: "UUSER1" },
           trigger: "direct",
         },
       },
@@ -359,7 +359,7 @@ function directMessage(
   const event: Record<string, unknown> = {
     type: "message",
     channel: options.channel ?? "D123",
-    user: options.user ?? "Ualice",
+    user: options.user ?? "UUSER1",
     text,
     ts: options.ts ?? "171.000001",
     event_ts: options.ts ?? "171.000001",
@@ -394,7 +394,7 @@ function appMention(text: string): SlackEventCallback {
     event: {
       type: "app_mention",
       channel: "C123",
-      user: "Ualice",
+      user: "UUSER1",
       text,
       ts: "172.000001",
       event_ts: "172.000001",

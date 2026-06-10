@@ -62,11 +62,11 @@ describe("JournalMemoryStore", () => {
     const root = await tempDir();
     const store = createJournalMemoryStore({ rootDir: root, maxBytes: 64_000, clock: fixedClock });
 
-    await store.appendEntry("Robert prefers concise answers.");
+    await store.appendEntry("Example Person prefers concise answers.");
 
     const raw = await readFile(store.dailyPathFor(FIXED_DAY), "utf8");
     expect(raw).toContain("## Note —");
-    expect(raw).toContain("Robert prefers concise answers.");
+    expect(raw).toContain("Example Person prefers concise answers.");
   });
 
   it("tail-caps today's note at maxBytes", async () => {
@@ -87,7 +87,7 @@ describe("JournalMemoryStore", () => {
       rootDir: root,
       maxBytes: 64_000,
       clock: fixedClock,
-      entityDigest: async (day) => `Salient entities for ${day}: Robert (person).`,
+      entityDigest: async (day) => `Salient entities for ${day}: Example Person (person).`,
     });
 
     await store.appendEntry("today's work");
@@ -105,11 +105,11 @@ describe("JournalMemoryStore", () => {
       rootDir: root,
       maxBytes: 64_000,
       clock: fixedClock,
-      entityDigest: async () => "Robert (person), mono-agent (project).",
+      entityDigest: async () => "Example Person (person), sample-project (project).",
     });
 
     const block = await store.load("slack:c1");
-    expect(block?.content).toContain("Robert (person)");
+    expect(block?.content).toContain("Example Person (person)");
   });
 
   it("buckets notes by host-local day", async () => {

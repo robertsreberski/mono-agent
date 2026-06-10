@@ -262,7 +262,7 @@ async function resolveFallbackSource(
   const now = new Date().toISOString();
   return {
     source: {
-      schema: "worklab.trace-source.v1",
+      schema: "agent-runtime.trace-source.v1",
       sourceId: "local",
       label: "Local artifacts",
       artifactDir,

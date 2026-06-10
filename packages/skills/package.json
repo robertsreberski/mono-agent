@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/skills",
   "version": "0.1.0",
-  "description": "Deterministic skill activation helpers for Mono Agent prompts.",
+  "description": "Deterministic skill activation helpers for agent prompts.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

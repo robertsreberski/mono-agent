@@ -84,7 +84,7 @@ export const a2aFieldGroup: FieldGroup = defineFieldGroup({
     {
       id: "a2a.provider.enabled",
       label: "Enable provider",
-      description: "Expose this Mono Agent as an A2A provider.",
+      description: "Expose this responder as an A2A provider.",
       kind: "switch",
       path: ["a2a", "provider", "enabled"],
     },

@@ -5,7 +5,7 @@ import {
   TelegramBotApiClient,
 } from "../telegram-client.js";
 
-const TOKEN = "123456:secret-token";
+const TOKEN = "123456:test-token";
 
 function jsonResponse(payload: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(payload), {
@@ -37,7 +37,7 @@ describe("TelegramBotApiClient", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
     expect(String(url)).toBe(
-      "https://telegram.example/bot123456:secret-token/sendMessage",
+      "https://telegram.example/bot123456:test-token/sendMessage",
     );
     expect(init?.method).toBe("POST");
     expect(init?.headers).toEqual({ "content-type": "application/json" });

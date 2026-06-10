@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/tool-policy",
   "version": "0.1.0",
-  "description": "Typed tool and MCP policy normalization for Mono Agent hosts.",
+  "description": "Typed tool and MCP policy normalization for agent hosts.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

@@ -6,7 +6,7 @@ Category: `communication`
 
 ## Responsibility
 
-HTTP webhook invocation adapter for Mono Agent hosts. It starts a small HTTP server, validates JSON invocation requests, maps them into structural `AgentResponder` calls, and returns either a synchronous result or an in-memory async request status.
+HTTP webhook invocation adapter for agent hosts. It starts a small HTTP server, validates JSON invocation requests, maps them into structural `AgentResponder` calls, and returns either a synchronous result or an in-memory async request status.
 
 ## Install / Usage
 
@@ -50,7 +50,7 @@ This adapter depends on Express plus shared contracts/settings primitives. It mu
 
 ## What This Package Does Not Own
 
-It does not build prompts, run models, persist async status, authenticate external webhook providers, manage TLS, expose an operator UI, or own core Mono Agent settings. The adapter binds to loopback by default; public deployment safety is host or reverse-proxy responsibility.
+It does not build prompts, run models, persist async status, authenticate external webhook providers, manage TLS, expose an operator UI, or own core core agent settings. The adapter binds to loopback by default; public deployment safety is host or reverse-proxy responsibility.
 
 ## Verification
 

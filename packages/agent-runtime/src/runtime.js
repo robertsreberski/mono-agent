@@ -19,7 +19,8 @@
 //
 // `text` is the raw assistant text. `structuredResult` is whatever JSON the
 // agent returned via the configured outputSchema (undefined when no schema
-// was supplied). Hosts that want a domain-specific contract (worklab_result,
+// was supplied). Hosts that want a domain-specific contract (for example,
+// a product-specific result object,
 // task envelopes, etc.) parse it themselves.
 
 import { resolveRuntimeBridge } from "./ai/runtime/registry.js";
@@ -62,7 +63,7 @@ export function createRuntime(host = {}) {
   const hostObservers = Array.isArray(host.observers) ? host.observers.slice() : [];
   // Always configure: even when no tool keys are supplied, we must publish
   // the resolved brand so internal modules (transcript, pi-bridge, ripgrep
-  // error message) pick it up. The brand defaults preserve worklab strings.
+  // error message) pick it up.
   configureToolRuntime({ ...toolRuntime, runtimeBrand });
 
   return {

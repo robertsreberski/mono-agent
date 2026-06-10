@@ -6,7 +6,7 @@ Category: `runtime`
 
 ## Responsibility
 
-Typed Mono Agent facade over `@mono-agent/agent-runtime`. It parses runtime model references, selects or validates execution mode, exposes the available backend matrix, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
+Typed runtime facade over `@mono-agent/agent-runtime`. It parses runtime model references, selects or validates execution mode, exposes the available backend matrix, creates a runtime wrapper, and exposes a small structural runtime contract to the harness.
 
 ## Install / Usage
 

@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/whatsapp-adapter",
   "version": "0.1.0",
-  "description": "WhatsApp communication adapter for Worklab-style agent runtimes using Baileys.",
+  "description": "WhatsApp communication adapter for host-compatible runtimes using Baileys.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/openai-agents-runtime",
   "version": "0.1.0",
-  "description": "Adapts @openai/agents to the Mono Agent runtime contract.",
+  "description": "Adapts @openai/agents to the runtime contract.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

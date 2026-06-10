@@ -88,20 +88,20 @@ describe("opencode-app bridge", () => {
     expect(harness.close).toHaveBeenCalled();
   });
 
-  it("translates worklab MCP servers into OpenCode local/remote config", async () => {
+  it("translates local MCP servers into OpenCode local/remote config", async () => {
     fakeOpencode({ events: [idle()], promptParts: [{ type: "text", text: "ok" }], info: baseInfo });
     await opencodeAppRuntimeBridge.execute("SYSTEM", {
       model: { sdk: "opencode", provider: "p", model: "m", reference: "opencode:p:m" },
       messages: [{ role: "user", content: "hi" }],
       mcpServers: {
-        worklab: { command: "node", args: ["mcp.js"], env: { WORKLAB_DATA_DIR: "/d" } },
+        local: { command: "node", args: ["mcp.js"], env: { MONO_AGENT_DATA_DIR: "/d" } },
         remote: { url: "https://example.com/mcp", headers: { Authorization: "Bearer x" } },
       },
     });
     expect(createOpencode).toHaveBeenCalledWith(expect.objectContaining({
       config: expect.objectContaining({
         mcp: {
-          worklab: { type: "local", command: ["node", "mcp.js"], environment: { WORKLAB_DATA_DIR: "/d" }, enabled: true },
+          local: { type: "local", command: ["node", "mcp.js"], environment: { MONO_AGENT_DATA_DIR: "/d" }, enabled: true },
           remote: { type: "remote", url: "https://example.com/mcp", headers: { Authorization: "Bearer x" }, enabled: true },
         },
       }),

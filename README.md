@@ -1,6 +1,6 @@
-# Mono Agent
+# Agent Framework Packages
 
-Mono Agent is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
+This repository is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
 
 ## Package Architecture
 
@@ -107,7 +107,7 @@ The demo then passes that responder to whichever adapters are enabled:
 
 ### Host Traceability
 
-Mono Agent now has a local host traceability path. Each running host registers a `worklab.trace-source.v1` manifest in a registry directory such as `~/.mono-agent/trace-sources`; each manifest points at that source's artifact directory, where run summaries and event JSONL files remain. The operator console Traceability view reads the registry, marks stale sources when their heartbeat ages out, aggregates recent runs across sources, and loads details by `(sourceId, runId)` so duplicate run ids do not collide.
+The workspace now has a local host traceability path. Each running host registers an `agent-runtime.trace-source.v1` manifest in a registry directory such as `~/.mono-agent/trace-sources`; each manifest points at that source's artifact directory, where run summaries and event JSONL files remain. The operator console Traceability view reads the registry, marks stale sources when their heartbeat ages out, aggregates recent runs across sources, and loads details by `(sourceId, runId)` so duplicate run ids do not collide.
 
 This is local-first and bearer-protected through the loopback console. It is not a LangSmith dependency, database, or cloud collector. LangSmith/OpenTelemetry export remains a later sink option.
 
@@ -139,7 +139,7 @@ The A2A adapter remains deliberately text/task only: no central registry, gRPC h
 
 ### Local Providers
 
-Mono Agent can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime` through the Pi adapter. Ollama is the primary supported local path:
+Hosts can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime` through the Pi adapter. Ollama is the primary supported local path:
 
 ```json
 {

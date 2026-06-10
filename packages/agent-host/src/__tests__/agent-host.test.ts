@@ -148,7 +148,7 @@ describe("agent host composition helpers", () => {
     await mkdir(memoryRoot, { recursive: true });
     await writeFile(
       join(memoryRoot, "graph.jsonl"),
-      `${JSON.stringify({ type: "entity", name: "Robert", entityType: "person", observations: ["prefers concise answers"] })}\n`,
+      `${JSON.stringify({ type: "entity", name: "Example Person", entityType: "person", observations: ["prefers concise answers"] })}\n`,
       "utf8",
     );
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
@@ -163,7 +163,7 @@ describe("agent host composition helpers", () => {
     );
 
     expect(fake.calls[0]?.prompt).toContain("Long-term memory (entity digest)");
-    expect(fake.calls[0]?.prompt).toContain("Robert (person)");
+    expect(fake.calls[0]?.prompt).toContain("Example Person (person)");
   });
 
   it("creates a configured harness when a host wants to wrap the responder itself", async () => {
@@ -199,7 +199,7 @@ describe("agent host composition helpers", () => {
     const harness = createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
-      model: { sdk: "anthropic", model: "claude-opus-4-7" },
+      model: { sdk: "claude", model: "claude-opus-4-7" },
       executionMode: "stream",
     });
 
@@ -209,7 +209,7 @@ describe("agent host composition helpers", () => {
       abortSignal: new AbortController().signal,
     });
 
-    expect(fake.calls[0]?.options.model).toEqual({ sdk: "anthropic", model: "claude-opus-4-7" });
+    expect(fake.calls[0]?.options.model).toEqual({ sdk: "claude", model: "claude-opus-4-7" });
     expect(fake.calls[0]?.options.executionMode).toBe("stream");
   });
 

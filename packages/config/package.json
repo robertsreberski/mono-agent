@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/config",
   "version": "0.1.0",
-  "description": "Strict environment/file config parser for Mono Agent hosts.",
+  "description": "Strict environment/file config parser for agent hosts.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

@@ -37,7 +37,7 @@ export interface TuiAppProps {
   readonly logger?: TuiAppLogger;
 }
 
-const DEFAULT_TITLE = "Mono Agent";
+const DEFAULT_TITLE = "Agent";
 const DEFAULT_CONVERSATION_ID = "tui-local";
 
 export function TuiApp({

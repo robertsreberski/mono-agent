@@ -409,7 +409,7 @@ describe("final agent demo", () => {
       expect(observedRuns.runs[0]).toMatchObject({ conversationId: "telegram:987654321", status: "succeeded" });
       const observedDetail = await getObservedRun(demo.operatorConsole.url, demo.operatorConsole.token, observedRuns.runs[0]?.runId ?? "");
       expect(observedDetail.run?.events[0]).toMatchObject({ category: "runtime", type: "fake-event" });
-      expect(JSON.stringify(observedDetail)).not.toContain("should-redact");
+      expect(JSON.stringify(observedDetail)).not.toContain("redacted-value");
       const traceability = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
       expect(traceability.runs[0]).toMatchObject({
         conversationId: "telegram:987654321",
@@ -446,7 +446,7 @@ describe("final agent demo", () => {
           enabled: true,
           host: "127.0.0.1",
           port: 0,
-          modelId: "mono-agent",
+          modelId: "agent",
         },
         cron: {
           enabled: true,
@@ -484,7 +484,7 @@ describe("final agent demo", () => {
         throw new Error(`Expected OpenAI API running, got ${openAIApiStatus.kind}.`);
       }
       expect(openAIApiStatus.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/u);
-      expect(JSON.stringify(openAIApiStatus)).toContain("\"modelId\":\"mono-agent\"");
+      expect(JSON.stringify(openAIApiStatus)).toContain("\"modelId\":\"agent\"");
 
       const cronStatus = demo.cronStatus;
       if (cronStatus.kind !== "running") {
@@ -518,14 +518,14 @@ describe("final agent demo", () => {
       const models = await fetch(`${openAIApiStatus.baseUrl}/models`);
       expect(models.status).toBe(200);
       await expect(models.json()).resolves.toMatchObject({
-        data: [expect.objectContaining({ id: "mono-agent" })],
+        data: [expect.objectContaining({ id: "agent" })],
       });
 
       const chat = await fetch(`${openAIApiStatus.baseUrl}/chat/completions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          model: "mono-agent",
+          model: "agent",
           metadata: { conversation_id: "openai-api:test" },
           messages: [{ role: "user", content: "Hello from OpenWebUI" }],
         }),
@@ -691,7 +691,7 @@ describe("final agent demo", () => {
 function validConfigPatch() {
   return {
     telegram: {
-      botToken: "123456:secret-token",
+      botToken: "123456:test-token",
       allowedChatIds: ["987654321"],
     },
     runtime: {
@@ -749,7 +749,7 @@ function validA2AOnlyConfigPatch() {
         id: "final-demo",
         name: "Final Demo",
         description: "Runs the configured final demo runtime over A2A.",
-        tags: ["mono-agent", "a2a"],
+        tags: ["agent", "a2a"],
       },
     },
   };
@@ -864,7 +864,7 @@ function createFakeRuntime(): {
     calls,
     runtime: {
       async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
-        options.onEvent?.({ type: "fake-event", token: "should-redact" });
+        options.onEvent?.({ type: "fake-event", token: "redacted-value" });
         calls.push({ prompt, options });
         return {
           text: "runtime ok",

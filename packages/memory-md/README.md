@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Optional Markdown memory store for Mono Agent hosts. It reads capped memory blocks and appends host-owned summaries to either one shared file or safe per-conversation files.
+Optional Markdown memory store for agent hosts. It reads capped memory blocks and appends host-owned summaries to either one shared file or safe per-conversation files.
 
 ## Install / Usage
 

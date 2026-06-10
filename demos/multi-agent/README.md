@@ -1,6 +1,6 @@
 # Multi-Agent Demo
 
-This non-package demo proves a three-agent Mono Agent topology using reusable orchestration and communication packages.
+This non-package demo proves a three-agent multi-agent topology using reusable orchestration and communication packages.
 
 Each role uses `@mono-agent/agent-host` for the core config-to-responder step:
 

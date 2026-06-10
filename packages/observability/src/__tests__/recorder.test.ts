@@ -24,7 +24,7 @@ describe("JsonlRunRecorder", () => {
     let now = 1000;
     const recorder = createJsonlRunRecorder({ runId: "run:1", conversationId: "telegram:1", artifactDir: dir, clock: () => now });
 
-    recorder.onEvent({ type: "request", apiKey: "secret-value", nested: { token: "abc" } });
+    recorder.onEvent({ type: "request", apiKey: "redacted-value", nested: { token: "fixture-token-value" } });
     now = 1250;
     const summary = await recorder.finish({
       usage: { inputTokens: 3 },

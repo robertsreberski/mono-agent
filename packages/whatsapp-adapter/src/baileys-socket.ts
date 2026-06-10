@@ -33,7 +33,7 @@ export async function createBaileysWhatsAppSocket(
     auth: state,
     browser:
       options.socketConfig?.browser ??
-      Browsers.appropriate(options.browserName ?? "Mono Agent"),
+      Browsers.appropriate(options.browserName ?? "Agent"),
     markOnlineOnConnect:
       options.socketConfig?.markOnlineOnConnect ?? options.markOnlineOnConnect ?? false,
     syncFullHistory:

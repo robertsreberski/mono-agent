@@ -21,7 +21,7 @@ const tempDirs = [];
 let previousPath = process.env.PATH;
 
 function tempWorkspace() {
-  const dir = mkdtempSync(resolve("/tmp", "mono-agent-tools-"));
+  const dir = mkdtempSync(resolve("/tmp", "agent-runtime-tools-"));
   tempDirs.push(dir);
   configureToolRuntime({ workspace: dir });
   return dir;
@@ -93,7 +93,7 @@ describe("ai tool helpers", () => {
     expect(result).toContain("[truncated Grep result: showing 1 of 2 lines");
   });
 
-  it("resolves relative file paths and shell commands from WORKLAB_WORKSPACE", async () => {
+  it("resolves relative file paths and shell commands from the configured workspace", async () => {
     const root = tempWorkspace();
 
     const writeResult = await writeToolImpl({ file_path: "src/relative.txt", content: "hello" });
@@ -108,7 +108,7 @@ describe("ai tool helpers", () => {
 
   it("prefers an explicit tool workdir over the default workspace", async () => {
     const root = tempWorkspace();
-    const project = mkdtempSync(resolve("/tmp", "worklab-project-tools-"));
+    const project = mkdtempSync(resolve("/tmp", "agent-runtime-project-tools-"));
     tempDirs.push(project);
     writeFile(join(project, "src", "project.txt"), "from project");
 
@@ -154,7 +154,7 @@ describe("ai tool helpers", () => {
 
   it("keeps bash head and tail when truncating large output", async () => {
     const root = tempWorkspace();
-    const dataDir = mkdtempSync(resolve("/tmp", "worklab-tool-artifacts-"));
+    const dataDir = mkdtempSync(resolve("/tmp", "agent-runtime-tool-artifacts-"));
     tempDirs.push(dataDir);
     configureToolRuntime({ toolArtifactDir: dataDir, runId: "run-tools" });
 
@@ -171,7 +171,7 @@ describe("ai tool helpers", () => {
 
   it("kills the bash process group on timeout", async () => {
     const root = tempWorkspace();
-    const marker = `worklab-bash-timeout-${process.pid}-${Date.now()}`;
+    const marker = `agent-runtime-bash-timeout-${process.pid}-${Date.now()}`;
 
     const result = await bashToolImpl({
       command: `${process.execPath} -e "setTimeout(() => {}, 5000)" ${marker}`,
@@ -202,7 +202,7 @@ describe("ai tool helpers", () => {
 
   it("rejects absolute paths outside the workspace boundary", async () => {
     tempWorkspace();
-    const outside = "/etc/worklab-not-real";
+    const outside = "/etc/agent-runtime-not-real";
     const outsideFile = `${outside}/secret.txt`;
 
     const readResult = await readToolImpl({ file_path: outsideFile });
@@ -221,7 +221,7 @@ describe("ai tool helpers", () => {
   it("rejects bash workdir outside the workspace boundary", async () => {
     tempWorkspace();
 
-    const result = await bashToolImpl({ command: "pwd", workdir: "/etc/worklab-not-real" });
+    const result = await bashToolImpl({ command: "pwd", workdir: "/etc/agent-runtime-not-real" });
 
     expect(result).toContain("Working directory not allowed");
   });

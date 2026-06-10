@@ -113,7 +113,7 @@ function claudePricing(parsed) {
 }
 
 // `resolveCustomPricing(parsed) -> NormalizedPricing | null` lets a host plug
-// in user-defined pricing tables. Worklab queries `custom_models`/`custom_providers`
+// in user-defined pricing tables. Hosts query custom model/provider stores
 // in src/core/custom-pricing.js and passes the closure in via `generateResponse`.
 // The pricing helpers below (`normalizePricing`, `zeroPricing`, `unknownPricing`,
 // `pricingHasRates`, `isPrivateHost`, `parseReference`) are exported so hosts

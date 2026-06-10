@@ -28,7 +28,7 @@ Adapter settings can be loaded from nested JSON under `slack` or explicit enviro
 
 ## Dependency Boundary
 
-This package may depend on core Mono Agent contracts/settings plus Slack transport dependencies. It must not depend on the agent harness, runtime adapter, operator surfaces, other communication adapters, or host/demo code.
+This package may depend on core agent contracts/settings plus Slack transport dependencies. It must not depend on the agent harness, runtime adapter, operator surfaces, other communication adapters, or host/demo code.
 
 ## What This Package Does Not Own
 

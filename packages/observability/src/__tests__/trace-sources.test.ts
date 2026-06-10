@@ -40,7 +40,7 @@ describe("trace source registry", () => {
       label: "Agent A",
       artifactDir: artifactDirA,
       transports: ["telegram"],
-      metadata: { apiKey: "registry-secret" },
+      metadata: { apiKey: "registry-redacted-value" },
       clock,
     });
     const sourceB = await registerTraceSource({
@@ -68,7 +68,7 @@ describe("trace source registry", () => {
       ["agent-a", "stale"],
       ["agent-b", "running"],
     ]);
-    expect(JSON.stringify(sources)).not.toContain("registry-secret");
+    expect(JSON.stringify(sources)).not.toContain("registry-redacted-value");
 
     const runs = await listTraceRuns({ registryDir, staleAfterMs: 10_000, clock, maxRuns: 10 });
 

@@ -54,7 +54,6 @@ flowchart TB
   subgraph Runtime["runtime"]
     RuntimeAdapter["@mono-agent/runtime-adapter"]
     AgentRuntime["@mono-agent/agent-runtime"]
-    ClaudeAgents["@mono-agent/claude-agents-runtime"]
     OpenAIAgents["@mono-agent/openai-agents-runtime"]
   end
 
@@ -115,7 +114,6 @@ flowchart TB
   Config --> RuntimeAdapter
   Skills --> Context
   RuntimeAdapter --> AgentRuntime
-  ClaudeAgents --> RuntimeAdapter
   OpenAIAgents --> RuntimeAdapter
 ```
 
@@ -123,7 +121,7 @@ flowchart TB
 
 | Layer | Packages |
 | --- | --- |
-| `runtime` | `@mono-agent/runtime-adapter`, `@mono-agent/claude-agents-runtime`, `@mono-agent/openai-agents-runtime` |
+| `runtime` | `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
@@ -132,4 +130,4 @@ flowchart TB
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
 | `operator-surface` | `@mono-agent/operator-console`, `@mono-agent/tui` |
 
-`@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). The `claude-agents-runtime` and `openai-agents-runtime` packages are additional first-class adapters that wrap their respective SDKs directly; Codex flows through the agent-runtime codex-app bridge. Hosts choose one runtime per responder at composition time via `createConfiguredAgentResponder({ runtime, model })`.
+`@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). `@mono-agent/openai-agents-runtime` remains an additional first-class adapter for the OpenAI Agents SDK; Claude and Codex both flow through `agent-runtime`. Hosts choose one runtime per responder at composition time via `createConfiguredAgentResponder({ runtime, model })`.

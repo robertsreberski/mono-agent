@@ -147,15 +147,15 @@ describe("startSlackAdapter", () => {
   it("fails closed when no responder is provided", async () => {
     await expect(
       // @ts-expect-error intentional missing responder
-      startSlackAdapter({ botToken: "xoxb", appToken: "xapp", allowAllChannels: true }),
+      startSlackAdapter({ botToken: "bot-token", appToken: "app-token", allowAllChannels: true }),
     ).rejects.toThrow(/responder/);
   });
 
   it("fails closed when neither allowedChannelIds nor allowAllChannels is set", async () => {
     await expect(
       startSlackAdapter({
-        botToken: "xoxb",
-        appToken: "xapp",
+        botToken: "bot-token",
+        appToken: "app-token",
         createApi: () => new FakeSlackApi(),
         responder: responderFrom(async () => ({ text: "ok" })),
       }),
@@ -167,8 +167,8 @@ function buildOptions(
   overrides: Partial<SlackAdapterStartOptions> & Pick<SlackAdapterStartOptions, "responder">,
 ): SlackAdapterStartOptions {
   return {
-    botToken: "xoxb-test",
-    appToken: "xapp-test",
+    botToken: "test-bot-token",
+    appToken: "test-app-token",
     allowAllChannels: true,
     reconnect: { initialMs: 0, maxMs: 0 },
     ...overrides,

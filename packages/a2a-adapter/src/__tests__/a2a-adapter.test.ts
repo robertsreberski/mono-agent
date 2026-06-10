@@ -23,7 +23,7 @@ describe("A2A adapter contract", () => {
       publicBaseUrl: "http://127.0.0.1:4300",
       requireBearer: true,
       provider: {
-        organization: "Worklab",
+        organization: "Demo Org",
         url: "https://example.com",
       },
       skill: {

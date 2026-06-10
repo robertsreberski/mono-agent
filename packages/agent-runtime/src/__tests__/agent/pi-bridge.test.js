@@ -22,7 +22,7 @@ function makeSink(runDir) {
 const tempDirs = [];
 
 function tempWorkspace() {
-  const dir = mkdtempSync(resolve("/tmp", "worklab-pi-bridge-"));
+  const dir = mkdtempSync(resolve("/tmp", "agent-runtime-pi-bridge-"));
   tempDirs.push(dir);
   return dir;
 }
@@ -39,7 +39,7 @@ describe("pi MCP tool helpers", () => {
     expect(content).toHaveLength(1);
     expect(content[0].text.length).toBeLessThan(large.length);
     expect(content[0].text).toContain("[truncated MCP tool result");
-    expect(content[0].text).toContain("Use a more specific Worklab MCP tool");
+    expect(content[0].text).toContain("Use a more specific MCP tool");
   });
 
   it("leaves small text results unchanged", () => {
@@ -50,7 +50,7 @@ describe("pi MCP tool helpers", () => {
 
   it("persists oversized MCP images before replacing them with compact text", () => {
     const root = tempWorkspace();
-    const runArtifactDir = join(root, ".worklab-tmp", "artifacts", "run-image");
+    const runArtifactDir = join(root, ".mono-agent", "artifacts", "run-image");
     const imageBytes = Buffer.from("large screenshot payload");
     const truncations = [];
 
@@ -166,12 +166,12 @@ describe("pi MCP tool helpers", () => {
 
     await expect(bash.execute("tool-write", { command: "touch should-not-exist" })).rejects.toThrow("Planning shell policy");
     const result = await bash.execute("tool-read", { command: "pwd" });
-    expect(result.content[0].text.trim()).toContain("worklab-pi-bridge-");
+    expect(result.content[0].text.trim()).toContain("agent-runtime-pi-bridge-");
   });
 
   it("routes Playwright MCP relative artifact filenames into the QA output directory", () => {
     const root = tempWorkspace();
-    const qaOutputDir = join(root, ".worklab-tmp", "artifacts", "run-1");
+    const qaOutputDir = join(root, ".mono-agent", "artifacts", "run-1");
 
     const screenshot = normalizeMcpToolParams("playwright", "browser_take_screenshot", {
       filename: "screens/title.png",

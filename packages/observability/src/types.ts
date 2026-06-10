@@ -111,7 +111,7 @@ export type TraceSourceStatus = "running" | "stopped" | "failed";
 export type TraceSourceHealth = "running" | "stale" | "stopped" | "failed";
 
 export interface TraceSourceManifest {
-  readonly schema: "worklab.trace-source.v1";
+  readonly schema: "agent-runtime.trace-source.v1";
   readonly sourceId: string;
   readonly label: string;
   readonly artifactDir: string;

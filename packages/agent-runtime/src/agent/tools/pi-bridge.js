@@ -124,7 +124,7 @@ function truncateMcpText(text, limit = MCP_TEXT_RESULT_LIMIT) {
   const marker = [
     "",
     `[truncated MCP tool result from ${value.length} to ${limit} characters]`,
-    "Use a more specific Worklab MCP tool, filters, or a detail/get tool for the exact item you need.",
+    "Use a more specific MCP tool, filters, or a detail/get tool for the exact item you need.",
   ].join("\n");
   return {
     text: `${value.slice(0, Math.max(0, limit - marker.length))}${marker}`,
@@ -274,7 +274,7 @@ function readSkillTool(skillNames = [], dataDir) {
   return {
     name: "read_skill",
     label: "Read Skill",
-    description: "Load the full instructions for a named Worklab skill.",
+    description: "Load the full instructions for a named skill.",
     parameters: objectSchema({ name: { type: "string", enum: safe } }, ["name"]),
     async execute(_toolCallId, { name }) {
       const path = resolve(dataDir, "skills", name, "SKILL.md");
@@ -368,7 +368,7 @@ export function getPiBuiltinTools(allowedTools, {
       max_matches: { type: "integer" },
       max_output_chars: textLimitSchema,
     }, ["pattern"]), grepToolImpl, { cwd, onEvent, toolLimits, toolPolicy }),
-    Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command in the Worklab workspace.", objectSchema({
+    Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command in the workspace.", objectSchema({
       command: { type: "string" },
       workdir: { type: "string" },
       description: { type: "string" },

@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/webhook-adapter",
   "version": "0.1.0",
-  "description": "HTTP webhook invocation adapter for Mono Agent responders.",
+  "description": "HTTP webhook invocation adapter for agent responders.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

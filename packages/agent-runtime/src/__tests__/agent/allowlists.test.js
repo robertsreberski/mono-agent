@@ -24,8 +24,8 @@ describe("agent allowlists", () => {
   });
 
   it("resolves custom empty maps to none", () => {
-    const all = { worklab: { command: "/bin/sh" }, github: { command: "/bin/sh" } };
-    expect(Object.keys(resolveAllowlistMap({ mode: "all", allowlist: [], all }))).toEqual(["worklab", "github"]);
+    const all = { local: { command: "/bin/sh" }, github: { command: "/bin/sh" } };
+    expect(Object.keys(resolveAllowlistMap({ mode: "all", allowlist: [], all }))).toEqual(["local", "github"]);
     expect(resolveAllowlistMap({ mode: "custom", allowlist: [], all })).toEqual({});
     expect(Object.keys(resolveAllowlistMap({ mode: "custom", allowlist: ["github"], all }))).toEqual(["github"]);
   });

@@ -28,10 +28,10 @@ describe("recorded run reader", () => {
     const dir = await tempDir();
     const first = createJsonlRunRecorder({ runId: "run-one", conversationId: "chat-1", artifactDir: dir });
     first.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "hello" }] } });
-    const firstSummary = await first.finish({ usage: { inputTokens: 1, apiKey: "secret" } });
+    const firstSummary = await first.finish({ usage: { inputTokens: 1, apiKey: "fixture-redacted-value" } });
 
     const second = createJsonlRunRecorder({ runId: "run-two", conversationId: "chat-2", artifactDir: dir });
-    const secondSummary = await second.finish({ failureKind: "provider_error", diagnostics: { token: "abc" } });
+    const secondSummary = await second.finish({ failureKind: "provider_error", diagnostics: { token: "fixture-token-value" } });
 
     await utimes(firstSummary.artifactPaths[1] ?? "", new Date("2026-05-15T10:00:00Z"), new Date("2026-05-15T10:00:00Z"));
     await utimes(secondSummary.artifactPaths[1] ?? "", new Date("2026-05-15T11:00:00Z"), new Date("2026-05-15T11:00:00Z"));
@@ -41,8 +41,8 @@ describe("recorded run reader", () => {
     expect(list.warnings).toEqual([]);
     expect(list.runs.map((run) => run.runId)).toEqual(["run-two", "run-one"]);
     expect(list.runs[0]).toMatchObject({ status: "failed", failureKind: "provider_error", eventCount: 0 });
-    expect(JSON.stringify(list.runs)).not.toContain("secret");
-    expect(JSON.stringify(list.runs)).not.toContain("abc");
+    expect(JSON.stringify(list.runs)).not.toContain("fixture-redacted-value");
+    expect(JSON.stringify(list.runs)).not.toContain("fixture-token-value");
     expect(JSON.stringify(list.runs)).toContain("[redacted]");
   });
 

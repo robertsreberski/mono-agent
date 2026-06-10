@@ -3,9 +3,8 @@
 /*
  * Design tokens — shadcn radix-nova preset, neutral baseColor.
  *
- * Sourced from the standalone design-system reference
- * (worklab-workspace/design-system/src/index.css). We only ship the
- * subset of tokens the form-essentials primitives reference; chart and
+ * Sourced from a standalone design-system reference. We only ship the
+ * subset of tokens the form primitives reference; chart and
  * sidebar tokens were dropped since the operator console does not use them.
  */
 

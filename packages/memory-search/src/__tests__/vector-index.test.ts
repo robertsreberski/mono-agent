@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createVectorMemoryIndex } from "../index.js";
 import type { EmbeddingProvider } from "../index.js";
 
-const VOCAB = ["pricing", "migration", "typescript", "cooking", "pasta", "robert"];
+const VOCAB = ["pricing", "migration", "typescript", "cooking", "pasta", "example", "person"];
 
 // Deterministic bag-of-words embedder so cosine ranking is predictable offline.
 const stubEmbeddings: EmbeddingProvider = {
@@ -37,7 +37,7 @@ describe("VectorMemoryIndex", () => {
     const index = createVectorMemoryIndex({ path: await indexPath(), embeddings: stubEmbeddings });
     await index.rebuild([
       { id: "a", source: "daily/x.md", text: "Discussed the pricing migration timeline." },
-      { id: "b", source: "graph", text: "Robert likes TypeScript." },
+      { id: "b", source: "graph", text: "Example Person likes TypeScript." },
       { id: "c", source: "daily/y.md", text: "Cooking pasta tonight." },
     ]);
 
@@ -50,7 +50,7 @@ describe("VectorMemoryIndex", () => {
   it("persists to JSONL and reloads in a fresh instance", async () => {
     const path = await indexPath();
     const writer = createVectorMemoryIndex({ path, embeddings: stubEmbeddings });
-    await writer.rebuild([{ id: "a", source: "graph", text: "Robert and TypeScript", day: "2026-06-09" }]);
+    await writer.rebuild([{ id: "a", source: "graph", text: "Example Person and TypeScript", day: "2026-06-09" }]);
 
     const raw = await readFile(path, "utf8");
     expect(raw).toContain('"vector"');
@@ -58,7 +58,7 @@ describe("VectorMemoryIndex", () => {
 
     const reader = createVectorMemoryIndex({ path, embeddings: stubEmbeddings });
     expect(await reader.size()).toBe(1);
-    const hits = await reader.search("robert", 3);
+    const hits = await reader.search("example person", 3);
     expect(hits[0]?.id).toBe("a");
     expect(hits[0]?.day).toBe("2026-06-09");
   });
@@ -66,15 +66,15 @@ describe("VectorMemoryIndex", () => {
   it("returns nothing for an empty index or empty query", async () => {
     const index = createVectorMemoryIndex({ path: await indexPath(), embeddings: stubEmbeddings });
     expect(await index.search("anything")).toEqual([]);
-    await index.rebuild([{ id: "a", source: "graph", text: "Robert" }]);
+    await index.rebuild([{ id: "a", source: "graph", text: "Example Person" }]);
     expect(await index.search("   ")).toEqual([]);
   });
 
   it("dedupes chunks by id and skips blank text", async () => {
     const index = createVectorMemoryIndex({ path: await indexPath(), embeddings: stubEmbeddings });
     const result = await index.rebuild([
-      { id: "a", source: "graph", text: "Robert" },
-      { id: "a", source: "graph", text: "Robert updated" },
+      { id: "a", source: "graph", text: "Example Person" },
+      { id: "a", source: "graph", text: "Example Person updated" },
       { id: "b", source: "graph", text: "   " },
     ]);
     expect(result.indexed).toBe(1);

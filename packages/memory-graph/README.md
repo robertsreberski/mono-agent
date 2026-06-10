@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Local, file-first entity knowledge graph for Mono Agent long-term memory. It
+Local, file-first entity knowledge graph for long-term memory. It
 stores entities, relations, and observations as JSON Lines using the official MCP
 memory-server shape (`{type:"entity",name,entityType,observations}` /
 `{type:"relation",from,to,relationType}`), holds the graph in memory, and rewrites
@@ -24,8 +24,8 @@ pnpm --filter @mono-agent/memory-graph run build
 import { createEntityGraphStore } from "@mono-agent/memory-graph";
 
 const graph = createEntityGraphStore({ path: "./.mono-agent/memory/graph.jsonl" });
-await graph.upsertEntities([{ name: "Robert", entityType: "person", observations: ["prefers concise answers"] }]);
-const subgraph = await graph.getSubgraph("Robert", 1);
+await graph.upsertEntities([{ name: "Example Person", entityType: "person", observations: ["prefers concise answers"] }]);
+const subgraph = await graph.getSubgraph("Example Person", 1);
 ```
 
 ## Public API

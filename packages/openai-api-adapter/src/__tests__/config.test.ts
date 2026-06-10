@@ -32,7 +32,7 @@ describe("loadOpenAIApiAdapterConfig", () => {
           port: 4111,
           basePath: "/openai/v1",
           allowNonLoopback: true,
-          apiKey: "json-secret",
+          apiKey: "json-redacted-value",
           modelId: "json-model",
         },
       })}\n`,
@@ -53,7 +53,7 @@ describe("loadOpenAIApiAdapterConfig", () => {
       port: 4222,
       basePath: "/openai/v1",
       allowNonLoopback: true,
-      apiKey: "json-secret",
+      apiKey: "json-redacted-value",
       modelId: "env-model",
     });
   });
@@ -67,8 +67,8 @@ describe("redactOpenAIApiAdapterConfig", () => {
       port: 0,
       basePath: "/v1",
       allowNonLoopback: false,
-      apiKey: "secret",
-      modelId: "mono-agent",
+      apiKey: "fixture-redacted-value",
+      modelId: "agent",
     })).toEqual({
       enabled: true,
       host: "127.0.0.1",
@@ -76,7 +76,7 @@ describe("redactOpenAIApiAdapterConfig", () => {
       basePath: "/v1",
       allowNonLoopback: false,
       apiKey: { present: true, redacted: true },
-      modelId: "mono-agent",
+      modelId: "agent",
     });
   });
 });

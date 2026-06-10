@@ -102,7 +102,7 @@ describe("brand-aware modules", () => {
     expect(ripgrepMissingMessage()).toContain("`demo doctor`");
   });
 
-  it("default brand preserves worklab strings (no regression for current host)", async () => {
+  it("default brand uses neutral schema strings", async () => {
     resetToolRuntime();
     const { buildTranscriptTailSnapshot } = await import("../agent/transcript.js");
     const events = [
@@ -110,6 +110,6 @@ describe("brand-aware modules", () => {
       { type: "final" },
     ];
     const snapshot = buildTranscriptTailSnapshot(events);
-    expect(snapshot?.schema).toBe("worklab.transcript-tail.v1");
+    expect(snapshot?.schema).toBe("agent_runtime.transcript-tail.v1");
   });
 });

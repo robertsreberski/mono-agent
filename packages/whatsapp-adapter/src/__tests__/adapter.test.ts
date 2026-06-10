@@ -41,7 +41,7 @@ function directMessage(text: string, id = "m1"): WhatsAppRawMessage {
   return {
     key: { remoteJid: "123@s.whatsapp.net", id },
     message: { conversation: text },
-    pushName: "Mickey",
+    pushName: "Sender",
   };
 }
 
@@ -53,7 +53,7 @@ function groupMessage(options: {
   return {
     key: {
       remoteJid: "456@g.us",
-      participant: "alice@s.whatsapp.net",
+      participant: "participant@s.whatsapp.net",
       id: options.id ?? "g1",
     },
     message: {
@@ -152,7 +152,7 @@ describe("WhatsAppAdapter", () => {
       metadata: {
         whatsapp: {
           chat: { jid: "123@s.whatsapp.net", kind: "direct" },
-          sender: { jid: "123@s.whatsapp.net", pushName: "Mickey" },
+          sender: { jid: "123@s.whatsapp.net", pushName: "Sender" },
           mentionedJids: [],
           trigger: "direct",
         },
@@ -215,13 +215,13 @@ describe("WhatsAppAdapter", () => {
     expect(capturedRequest).toMatchObject({
       conversationId: "whatsapp:456@g.us",
       chatKind: "group",
-      participantJid: "alice@s.whatsapp.net",
+      participantJid: "participant@s.whatsapp.net",
       text: "help me",
       trigger: "group_mention",
       metadata: {
         whatsapp: {
           mentionedJids: ["bot@s.whatsapp.net"],
-          participantJid: "alice@s.whatsapp.net",
+          participantJid: "participant@s.whatsapp.net",
           trigger: "group_mention",
         },
       },

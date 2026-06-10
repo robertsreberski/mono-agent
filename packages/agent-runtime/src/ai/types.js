@@ -1,4 +1,4 @@
-// Worklab AI runtime contracts. These are JSDoc-only; the codebase is JS
+// Runtime contracts. These are JSDoc-only; the codebase is JS
 // (no TypeScript), so the types document the bridge surface that active
 // runtimes implement through src/ai/runtime/registry.js.
 

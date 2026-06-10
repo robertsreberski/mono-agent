@@ -300,7 +300,7 @@ function buildRoleConfig(input: {
         id: `multi-agent-${input.role}`,
         name: `${titleCase(input.role)} collaboration`,
         description: skillDescriptionForRole(input.role),
-        tags: ["mono-agent", "multi-agent", input.role],
+        tags: ["agent", "multi-agent", input.role],
       },
       consumer: {
         remoteAgentUrls: [],

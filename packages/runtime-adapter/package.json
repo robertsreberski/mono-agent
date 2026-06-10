@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/runtime-adapter",
   "version": "0.1.0",
-  "description": "Typed Mono Agent facade over @mono-agent/agent-runtime.",
+  "description": "Typed runtime facade over @mono-agent/agent-runtime.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

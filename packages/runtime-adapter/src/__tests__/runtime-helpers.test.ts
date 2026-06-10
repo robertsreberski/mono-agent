@@ -79,7 +79,7 @@ describe("buildRuntimeResult", () => {
   it("spreads only present optional fields and echoes sdk from the model", () => {
     const result = buildRuntimeResult({
       events: [],
-      model: { sdk: "anthropic", model: "claude-opus-4-7" },
+      model: { sdk: "claude", model: "claude-opus-4-7" },
       numTurns: 1,
       durationMs: 10,
       text: "hi",
@@ -89,7 +89,7 @@ describe("buildRuntimeResult", () => {
     expect(result).toEqual({
       text: "hi",
       events: [],
-      sdk: "anthropic",
+      sdk: "claude",
       model: "claude-opus-4-7",
       numTurns: 1,
       durationMs: 10,
@@ -189,7 +189,7 @@ describe("parseMcpServers", () => {
 describe("(sdk, executionMode) selection table", () => {
   it("includes a row per backend and resolves backend ids alias-aware", () => {
     expect(selectMonoRuntimeBackendId("claude", "sdk")).toBe("claude-sdk");
-    expect(selectMonoRuntimeBackendId("anthropic", "sdk")).toBe("claude-sdk");
+    expect(selectMonoRuntimeBackendId("anthropic", "sdk")).toBeUndefined();
     expect(selectMonoRuntimeBackendId("claude", "cli")).toBe("claude-code-cli");
     expect(selectMonoRuntimeBackendId("codex", "cli")).toBe("codex-app-cli");
     expect(selectMonoRuntimeBackendId("openai", "sdk")).toBe("openai-agents-sdk");
@@ -197,8 +197,8 @@ describe("(sdk, executionMode) selection table", () => {
     expect(selectMonoRuntimeBackendId("openai", "cli")).toBeUndefined();
   });
 
-  it("derives accepted sdk ids per backend including legacy aliases", () => {
-    expect(new Set(acceptedSdkIdsForBackend("claude-sdk"))).toEqual(new Set(["claude", "anthropic"]));
+  it("derives accepted sdk ids per backend", () => {
+    expect(acceptedSdkIdsForBackend("claude-sdk")).toEqual(["claude"]);
     expect(acceptedSdkIdsForBackend("codex-app-cli")).toEqual(["codex"]);
     expect(acceptedSdkIdsForBackend("openai-agents-sdk")).toEqual(["openai"]);
   });

@@ -21,7 +21,7 @@ export default function App() {
     <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-5 px-4 py-6 pb-[calc(5rem+env(safe-area-inset-bottom))] sm:gap-6 sm:px-6 sm:py-10 lg:px-8">
       <header className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
         <div className="min-w-0 space-y-1.5">
-          <h1 className="text-2xl font-medium tracking-tight sm:text-3xl">Mono Agent Console</h1>
+          <h1 className="text-2xl font-medium tracking-tight sm:text-3xl">Agent Console</h1>
           <p className="max-w-3xl text-sm text-muted-foreground">
             Local settings for this agent's runtime, identity, memory,
             tools, adapters, and recorded request artifacts. Edits are persisted to{" "}

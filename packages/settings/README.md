@@ -6,7 +6,7 @@ Category: `core`
 
 ## Responsibility
 
-Generic settings primitives for Mono Agent hosts: field-group schemas, field read/write helpers, sparse patch validation, secret redaction, and atomic JSON settings storage. This package is adapter-neutral and can preserve unknown top-level JSON sections for future hosts or adapters.
+Generic settings primitives for agent hosts: field-group schemas, field read/write helpers, sparse patch validation, secret redaction, and atomic JSON settings storage. This package is adapter-neutral and can preserve unknown top-level JSON sections for future hosts or adapters.
 
 ## Install / Usage
 
@@ -39,7 +39,7 @@ This package has no workspace runtime dependency. It is safe for core config loa
 
 ## What This Package Does Not Own
 
-It does not define Mono Agent core config semantics, adapter-specific required fields, runtime model validation, UI rendering, or observability artifacts.
+It does not define core agent config semantics, adapter-specific required fields, runtime model validation, UI rendering, or observability artifacts.
 
 ## Verification
 

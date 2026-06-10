@@ -5,8 +5,8 @@ import {
   SlackWebApiClient,
 } from "../slack-client.js";
 
-const BOT_TOKEN = "xoxb-secret-bot";
-const APP_TOKEN = "xapp-secret-app";
+const BOT_TOKEN = "test-bot-token";
+const APP_TOKEN = "test-app-token";
 
 function jsonResponse(payload: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(payload), {

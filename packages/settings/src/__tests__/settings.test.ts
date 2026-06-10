@@ -113,7 +113,7 @@ describe("validateSettingsPatch", () => {
 describe("redactSettingsForFieldGroups", () => {
   it("replaces registered secret fields without leaking stored values", () => {
     const redacted = redactSettingsForFieldGroups(
-      { telegram: { botToken: "123456:secret-token", allowedChatIds: ["111"] } },
+      { telegram: { botToken: "123456:test-token", allowedChatIds: ["111"] } },
       groups,
     );
 

@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/agent-host",
   "version": "0.1.0",
-  "description": "Host composition helpers for Mono Agent responders.",
+  "description": "Host composition helpers for agent responders.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

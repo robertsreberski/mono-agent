@@ -131,14 +131,14 @@ export function buildFinalDemoDeploymentConfig(
       },
       agent: {
         name: "Final Agent Demo (Gemma 4)",
-        description: "Local Mono Agent final demo deployed with Ollama Gemma 4.",
+        description: "Local final demo deployed with Ollama Gemma 4.",
         version: "0.1.0",
       },
       skill: {
         id: "final-agent-gemma4",
         name: "Final Agent Demo",
         description: "Runs the configured final demo runtime over local A2A text requests.",
-        tags: ["mono-agent", "a2a", "gemma4", "ollama"],
+        tags: ["agent", "a2a", "gemma4", "ollama"],
       },
       consumer: {
         remoteAgentUrls: [],
