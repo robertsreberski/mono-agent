@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
@@ -428,6 +428,40 @@ describe("ai tool helpers", () => {
     expect(readResult).toContain("1\tread only");
     expect(writeResult).toContain("Path not allowed");
     expect(editResult).toContain("Path not allowed");
+  });
+
+  it("enforces sandbox denyWrite for file tool writes inside writable roots", async () => {
+    const root = tempWorkspace();
+    writeFile(join(root, ".env"), "TOKEN=old");
+    writeFile(join(root, ".env.local"), "TOKEN=local");
+    writeFile(join(root, ".git", "config"), "[core]\nrepositoryformatversion = 0\n");
+    writeFile(join(root, ".git", "hooks", "pre-commit"), "echo old\n");
+
+    const sandboxPolicy = failClosedSandboxPolicy({ root });
+
+    const writeResult = await writeToolImpl({ file_path: ".env", content: "TOKEN=new" }, { sandboxPolicy });
+    const envLocalResult = await writeToolImpl({ file_path: ".env.local", content: "TOKEN=new" }, { sandboxPolicy });
+    const editResult = await editToolImpl({
+      file_path: ".git/config",
+      old_string: "repositoryformatversion",
+      new_string: "changed",
+    }, { sandboxPolicy });
+    const hookResult = await editToolImpl({
+      file_path: ".git/hooks/pre-commit",
+      old_string: "echo old",
+      new_string: "echo changed",
+    }, { sandboxPolicy });
+    const allowedWriteResult = await writeToolImpl({ file_path: "notes.txt", content: "ok" }, { sandboxPolicy });
+
+    expect(writeResult).toContain("Path not allowed");
+    expect(envLocalResult).toContain("Path not allowed");
+    expect(editResult).toContain("Path not allowed");
+    expect(hookResult).toContain("Path not allowed");
+    expect(readFileSync(join(root, ".env"), "utf8")).toBe("TOKEN=old");
+    expect(readFileSync(join(root, ".env.local"), "utf8")).toBe("TOKEN=local");
+    expect(readFileSync(join(root, ".git", "config"), "utf8")).toContain("repositoryformatversion");
+    expect(readFileSync(join(root, ".git", "hooks", "pre-commit"), "utf8")).toContain("echo old");
+    expect(allowedWriteResult).toContain("Successfully wrote");
   });
 
   it("rejects bash workdir outside the workspace boundary", async () => {

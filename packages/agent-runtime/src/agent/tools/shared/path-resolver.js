@@ -30,7 +30,8 @@ function isPathAllowedFor(path, workdir, access, options) {
   const policy = resolveSandboxPolicy(options.sandboxPolicy);
   if (policy) {
     const field = access === "write" ? policy.writableRoots : policy.readableRoots;
-    return insideSandboxRoots(Array.isArray(field) ? field : [], r);
+    return insideSandboxRoots(Array.isArray(field) ? field : [], r)
+      && (access !== "write" || !sandboxDeniesWrite(policy, r));
   }
   const { workspace, repoRoot } = configured();
   return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
@@ -92,4 +93,64 @@ function realTargetPath(target) {
     current = dirname(current);
   }
   return resolved;
+}
+
+function sandboxDeniesWrite(policy, target) {
+  const patterns = Array.isArray(policy.denyWrite) ? policy.denyWrite : [];
+  if (patterns.length === 0) return false;
+  const candidates = [...new Set([resolve(target), realTargetPath(target)])];
+  return candidates.some((candidate) =>
+    patterns.some((pattern) => denyWritePatternMatches(policy, pattern, candidate)));
+}
+
+function denyWritePatternMatches(policy, pattern, target) {
+  if (!pattern || typeof pattern !== "string") return false;
+  const normalizedPattern = normalizeMatchPath(pattern);
+  if (isAbsolute(pattern)) {
+    return globPatternMatches(normalizedPattern, normalizeMatchPath(target));
+  }
+  const root = resolve(policy.root || workspaceRoot());
+  const rel = relative(root, resolve(target));
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
+  return globPatternMatches(stripDotSlash(normalizedPattern), normalizeMatchPath(rel));
+}
+
+function normalizeMatchPath(path) {
+  return path.replaceAll("\\", "/");
+}
+
+function stripDotSlash(path) {
+  let out = path;
+  while (out.startsWith("./")) out = out.slice(2);
+  return out;
+}
+
+function globPatternMatches(pattern, target) {
+  return globPatternToRegExp(pattern).test(target);
+}
+
+function globPatternToRegExp(pattern) {
+  let source = "^";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === "*") {
+      if (pattern[index + 1] === "*") {
+        source += ".*";
+        index += 1;
+      } else {
+        source += "[^/]*";
+      }
+      continue;
+    }
+    if (char === "?") {
+      source += "[^/]";
+      continue;
+    }
+    source += escapeRegExp(char);
+  }
+  return new RegExp(`${source}$`, "u");
+}
+
+function escapeRegExp(char) {
+  return /[\\^$.*+?()[\]{}|]/u.test(char) ? `\\${char}` : char;
 }

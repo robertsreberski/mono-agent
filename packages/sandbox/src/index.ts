@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -460,7 +460,7 @@ async function writeSrtSettingsFile(policy: SandboxPolicy): Promise<string> {
     return settingsPath;
   }
   await mkdir(policy.tempRoot, { recursive: true });
-  const stagingPath = `${settingsPath}.${process.pid}.tmp`;
+  const stagingPath = `${settingsPath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(stagingPath, content, "utf8");
   await rename(stagingPath, settingsPath);
   return settingsPath;

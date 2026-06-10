@@ -312,4 +312,31 @@ describe("srt integration contract", () => {
     expect(settings).toEqual(srtSettingsForPolicy(policy));
     expect(first.args.slice(0, 2)).toEqual(["--settings", first.sandboxSettingsPath]);
   });
+
+  it("prepares shared srt settings for concurrent commands without staging collisions", async () => {
+    const root = await tempDir();
+    const policy = failClosedSandboxPolicy({
+      root,
+      tempRoot: join(root, "tmp"),
+    });
+    const engine = createSrtSandboxEngine();
+
+    const settled = await Promise.allSettled(
+      Array.from({ length: 64 }, (_, index) =>
+        engine.prepareCommand({ command: "node", args: ["server.js", String(index)] }, policy),
+      ),
+    );
+
+    const rejected = settled.flatMap((result) =>
+      result.status === "rejected"
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : [],
+    );
+    expect(rejected).toEqual([]);
+    expect(new Set(
+      settled
+        .filter((result) => result.status === "fulfilled")
+        .map((result) => result.value.sandboxSettingsPath),
+    ).size).toBe(1);
+  });
 });
