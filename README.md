@@ -2,6 +2,15 @@
 
 This repository is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
 
+## Skill-Based Composition Guide
+
+The repo includes a mono-agent-native skill document for agents that need to help users compose these packages into a working host:
+
+- Skill: [`docs/skills/mono-agent-composer/SKILL.md`](./docs/skills/mono-agent-composer/SKILL.md)
+- References: [`docs/skills/mono-agent-composer/references/`](./docs/skills/mono-agent-composer/references/)
+
+Use it as a selected mono-agent skill by pointing `context.skillsRoot` at `./docs/skills` and adding `mono-agent-composer` to `context.selectedSkills`. The skill makes the agent ask discovery questions first, then walks through runtime, context, selected skills, optional memory, tool/MCP policy, communication adapters, operator surfaces, and validation.
+
 ## Package Architecture
 
 Package categories are catalog metadata, documentation, and architecture-guard inputs. The physical layout intentionally stays `packages/<package-name>` and published names stay `@mono-agent/<package-name>`; a future physical move to `packages/<category>/<package-name>` would be a separate mechanical release-tooling task.
