@@ -64,6 +64,54 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
+  it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
+
+    expect(config.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 1_800_000 });
+  });
+
+  it("respects session env overrides", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SESSION_MODE: "per-message",
+        MONO_AGENT_SESSION_IDLE_TIMEOUT_MS: "60000",
+      },
+    });
+
+    expect(config.runtime.session).toEqual({ mode: "per-message", idleTimeoutMs: 60000 });
+  });
+
+  it("rejects an invalid session mode", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_SESSION_MODE: "forever" },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_SESSION_MODE" } });
+      return;
+    }
+    throw new Error("Expected config load to fail.");
+  });
+
+  it("rejects invalid or out-of-bounds session idle timeouts", () => {
+    for (const raw of ["not-a-number", "999", "86400001"]) {
+      try {
+        loadMonoAgentConfig({
+          cwd: "/repo",
+          env: { ...baseEnv, MONO_AGENT_SESSION_IDLE_TIMEOUT_MS: raw },
+        });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_SESSION_IDLE_TIMEOUT_MS" } });
+        continue;
+      }
+      throw new Error(`Expected config load to fail for ${raw}.`);
+    }
+  });
+
   it("defaults Codex model references to CLI execution mode", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

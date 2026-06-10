@@ -101,6 +101,27 @@ export const runtimeFieldGroup = defineFieldGroup({
       placeholder: ".",
       path: ["runtime", "workspace"],
     },
+    {
+      id: "runtime.session.mode",
+      label: "Session mode",
+      description: "continuous keeps one runtime session alive across messages; per-message starts fresh each run.",
+      kind: "select",
+      options: [
+        { value: "continuous", label: "continuous" },
+        { value: "per-message", label: "per-message" },
+      ],
+      path: ["runtime", "session", "mode"],
+    },
+    {
+      id: "runtime.session.idleTimeoutMs",
+      label: "Session idle timeout ms",
+      description: "How long a continuous session may sit idle before it is disposed (1,000-86,400,000).",
+      kind: "integer",
+      min: 1_000,
+      max: 86_400_000,
+      placeholder: "1800000",
+      path: ["runtime", "session", "idleTimeoutMs"],
+    },
   ],
 });
 

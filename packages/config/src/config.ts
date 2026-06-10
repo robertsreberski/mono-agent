@@ -11,7 +11,7 @@ import {
 } from "@worklab-ai/runtime-adapter";
 import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@worklab-ai/runtime-adapter";
 
-import type { MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig } from "./types.js";
+import type { MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -44,6 +44,7 @@ export interface LoadMonoAgentConfigInput {
 }
 
 const DEFAULT_MAX_TURNS = 8;
+const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
@@ -54,6 +55,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readInteger(input.env, "MONO_AGENT_MAX_TURNS", DEFAULT_MAX_TURNS, { min: 1, max: 100 });
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
+  const session = readSessionConfig(input.env);
   const identityPath = readPath(readRequired(input.env, "MONO_AGENT_IDENTITY_PATH"), cwd);
   const soulPath = readOptionalPath(input.env.MONO_AGENT_SOUL_PATH, cwd);
   const skillsRoot = readOptionalPath(input.env.MONO_AGENT_SKILLS_ROOT, cwd);
@@ -72,6 +74,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     executionMode,
     maxTurns,
     workspace,
+    session,
     ...(effort === undefined ? {} : { effort }),
   };
 
@@ -160,6 +163,18 @@ function assertModeCompatibility(model: MonoAgentConfig["runtime"]["model"], exe
     }
     throw error;
   }
+}
+
+function readSessionConfig(env: Record<string, string | undefined>): MonoAgentConfig["runtime"]["session"] {
+  const mode = readChoice<SessionMode>(env.MONO_AGENT_SESSION_MODE, "MONO_AGENT_SESSION_MODE", [
+    "continuous",
+    "per-message",
+  ], "continuous");
+  const idleTimeoutMs = readInteger(env, "MONO_AGENT_SESSION_IDLE_TIMEOUT_MS", DEFAULT_SESSION_IDLE_TIMEOUT_MS, {
+    min: 1_000,
+    max: 86_400_000,
+  });
+  return { mode, idleTimeoutMs };
 }
 
 function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {

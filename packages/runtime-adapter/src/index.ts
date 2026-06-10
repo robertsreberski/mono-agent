@@ -6,6 +6,7 @@ export {
   describeMonoRuntimeSupport,
   isRuntimeExecutionMode,
   listMonoRuntimeBackends,
+  monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeBackendForModel,
   RuntimeAdapterError,

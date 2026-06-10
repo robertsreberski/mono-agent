@@ -105,6 +105,8 @@ export interface RuntimeRunOptions {
 export interface MonoRuntimeLike {
   run(systemPrompt: string, options: RuntimeRunOptions): Promise<RuntimeResult>;
   configureTools?(next?: RuntimeToolOptions): void;
+  disposeSession?(providerSessionId: string): Promise<boolean | void>;
+  disposeAllSessions?(): Promise<void>;
 }
 
 export interface RuntimeToolOptions {

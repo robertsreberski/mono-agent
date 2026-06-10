@@ -2,6 +2,7 @@ import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReferen
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
+export type SessionMode = "continuous" | "per-message";
 
 export interface MonoAgentConfig {
   readonly runtime: {
@@ -10,6 +11,10 @@ export interface MonoAgentConfig {
     readonly effort?: string;
     readonly maxTurns: number;
     readonly workspace: string;
+    readonly session: {
+      readonly mode: SessionMode;
+      readonly idleTimeoutMs: number;
+    };
   };
   readonly context: {
     readonly identityPath: string;

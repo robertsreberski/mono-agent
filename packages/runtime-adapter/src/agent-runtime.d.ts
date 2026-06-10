@@ -21,6 +21,8 @@ declare module "@worklab-ai/agent-runtime" {
   export interface AgentRuntimeInstance {
     run(systemPrompt: string, options?: Record<string, unknown>): Promise<Record<string, unknown>>;
     configureTools?(next?: Record<string, unknown>): void;
+    disposeSession?(providerSessionId: string): Promise<boolean | void>;
+    disposeAllSessions?(): Promise<void>;
   }
 
   export function createRuntime(host?: AgentRuntimeHostOptions): AgentRuntimeInstance;

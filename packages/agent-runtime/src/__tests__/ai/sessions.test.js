@@ -41,6 +41,27 @@ describe("createSessionRegistry", () => {
     expect(onEvict).toHaveBeenCalledWith({ name: "alpha" }, "idle_timeout");
   });
 
+  it("does not idle-evict a busy session; explicit dispose still wins", async () => {
+    const onEvict = vi.fn();
+    const registry = createSessionRegistry({
+      idleTimeoutMs: 60_000,
+      onEvict,
+      isBusy: (value) => value.busy === true,
+    });
+    const value = { name: "alpha", busy: true };
+    registry.set("session-1", value);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(onEvict).not.toHaveBeenCalled();
+    value.busy = false;
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(onEvict).toHaveBeenCalledWith(value, "idle_timeout");
+
+    const disposable = { name: "beta", busy: true };
+    registry.set("session-2", disposable);
+    await registry.dispose("session-2");
+    expect(onEvict).toHaveBeenCalledWith(disposable, "disposed");
+  });
+
   it("touch re-arms the idle timer", async () => {
     const registry = createSessionRegistry({ idleTimeoutMs: 60_000 });
     registry.set("session-1", { name: "alpha" });

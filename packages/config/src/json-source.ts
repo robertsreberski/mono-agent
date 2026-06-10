@@ -48,6 +48,10 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly effort?: string;
     readonly maxTurns?: number;
     readonly workspace?: string;
+    readonly session?: {
+      readonly mode?: string;
+      readonly idleTimeoutMs?: number;
+    };
   };
   readonly context?: {
     readonly identityPath?: string;

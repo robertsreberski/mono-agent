@@ -18,13 +18,20 @@ const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 const allRegistries = new Set();
 
-export function createSessionRegistry({ idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, onEvict, now = Date.now } = {}) {
+export function createSessionRegistry({ idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, onEvict, now = Date.now, isBusy } = {}) {
   const entries = new Map();
   const ttlMs = Math.max(1_000, Number(idleTimeoutMs) || DEFAULT_IDLE_TIMEOUT_MS);
 
   async function evict(id, reason) {
     const entry = entries.get(id);
     if (!entry) return false;
+    if (reason === "idle_timeout" && isBusy?.(entry.value)) {
+      // A session executing a turn must not be torn down by the idle timer;
+      // give it a fresh TTL window. Explicit dispose still wins.
+      entry.lastActivityAt = now();
+      armTimer(id, entry);
+      return false;
+    }
     entries.delete(id);
     clearTimeout(entry.timer);
     if (onEvict) {

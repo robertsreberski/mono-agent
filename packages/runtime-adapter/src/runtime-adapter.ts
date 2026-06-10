@@ -78,6 +78,13 @@ export function runtimeBackendForModel(
   return backendById(backendIdForModel(model, resolvedExecutionMode));
 }
 
+export function monoRuntimeSupportsSessionResume(
+  model: RuntimeModelReference,
+  executionMode?: RuntimeExecutionMode,
+): boolean {
+  return runtimeBackendForModel(model, executionMode).capabilities.supports_session_resume === true;
+}
+
 export function describeMonoRuntimeSupport(
   model: RuntimeModelReference,
   executionMode?: RuntimeExecutionMode,
@@ -155,6 +162,12 @@ export function createMonoRuntime(options: MonoRuntimeHostOptions = {}): MonoRun
     },
     configureTools(next?: RuntimeToolOptions): void {
       runtime.configureTools?.(next === undefined ? undefined : { ...next });
+    },
+    async disposeSession(providerSessionId: string): Promise<boolean | void> {
+      return runtime.disposeSession?.(providerSessionId);
+    },
+    async disposeAllSessions(): Promise<void> {
+      await runtime.disposeAllSessions?.();
     },
   };
 }

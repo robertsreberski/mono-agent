@@ -1,9 +1,11 @@
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, InMemorySessionRepo, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
+import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import * as openAiCodexResponses from "@earendil-works/pi-ai/openai-codex-responses";
 import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
 import { PROVIDER_ABORT_RE } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
+import { createSessionRegistry } from "../runtime/sessions.js";
 import { formatLiveInputGuidance } from "../live-input-prompt.js";
 import {
   createAgentCompactionManager,
@@ -365,8 +367,11 @@ function createPiSubagentTool(nativeSubagents, parentOptions, recordResult) {
       outputSchema: null,
       liveInput: null,
       onEvent: null,
-      providerSessionId: null,
-      sessionId: `${parentOptions.runId || "pi"}:subagent:${agentName}:${randomUUID()}`,
+      // sessionId now means "resume"; subagents only need a stable id for
+      // provider cache reuse and must never inherit the parent's session.
+      providerSessionId: `${parentOptions.runId || "pi"}:subagent:${agentName}:${randomUUID()}`,
+      sessionId: null,
+      sessionKeepAlive: false,
       abortSignal: signal || parentOptions.abortSignal,
     });
     const summary = {
@@ -425,6 +430,80 @@ function createPiSubagentTool(nativeSubagents, parentOptions, recordResult) {
   };
 }
 
+// Live pi sessions, keyed by provider session id. Entries are
+// { session, metadata, repo, durable, busy }. In-memory transcripts are freed
+// when the registry evicts them; durable (jsonl) transcripts must survive
+// eviction so a later resume can reopen them from disk.
+const piSessionRepo = new InMemorySessionRepo();
+const piSessions = createSessionRegistry({
+  isBusy: (entry) => entry.busy === true,
+  onEvict: async (entry) => {
+    if (entry.durable) return;
+    try {
+      await entry.repo.delete(entry.metadata);
+    } catch { /* best-effort */ }
+  },
+});
+
+const durablePiSessionRepos = new Map();
+
+function resolveDurablePiSessionRepo(piSessionsRoot) {
+  if (typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) return null;
+  const root = piSessionsRoot.trim();
+  let repo = durablePiSessionRepos.get(root);
+  if (!repo) {
+    repo = new JsonlSessionRepo({
+      fs: new NodeExecutionEnv({ cwd: process.cwd() }),
+      sessionsRoot: root,
+    });
+    durablePiSessionRepos.set(root, repo);
+  }
+  return repo;
+}
+
+async function reopenDurablePiSession(repo, sessionId) {
+  try {
+    const metadata = (await repo.list()).find((entry) => entry?.id === sessionId);
+    if (!metadata) return null;
+    const session = await repo.open(metadata);
+    return { session, metadata, repo, durable: true, busy: false };
+  } catch {
+    return null;
+  }
+}
+
+function sessionUnavailableResult({
+  resolved,
+  options,
+  events,
+  runtimeWarnings,
+  start,
+  sessionId,
+  errorMessage,
+  failureKind,
+  piErrorCode,
+}) {
+  return {
+    text: null,
+    events,
+    usage: {},
+    durationMs: Date.now() - start,
+    numTurns: 0,
+    model: resolved?.reference || resolved?.model || null,
+    effort: options.effort || null,
+    sdk: resolved?.sdk || "pi",
+    cancelled: false,
+    error: errorMessage,
+    failureKind,
+    providerSessionId: sessionId,
+    runtimeWarnings,
+    diagnostics: {
+      provider_session_id: sessionId,
+      pi_error_code: piErrorCode,
+    },
+  };
+}
+
 export async function generatePiResponse(systemPrompt, options = {}) {
   const resolved = options.model;
   const start = Date.now();
@@ -455,6 +534,11 @@ export async function generatePiResponse(systemPrompt, options = {}) {
     || options.providerSessionId
     || options.runId
     || randomUUID();
+  const requestedSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
+    ? options.sessionId
+    : null;
+  let sessionEntry = null;
+  let sessionBaselineCount = 0;
 
   const onEvent = (event) => emitCaptured(events, options.onEvent, event);
   const approvalManager = options.onToolApprovalRequest
@@ -469,6 +553,48 @@ export async function generatePiResponse(systemPrompt, options = {}) {
     : null;
 
   try {
+    // Resume check first: a session miss must stay cheap (no tool/MCP init).
+    const durableRepo = resolveDurablePiSessionRepo(options.piSessionsRoot);
+    let resumeMessages = null;
+    if (requestedSessionId) {
+      let entry = piSessions.get(requestedSessionId);
+      if (!entry && durableRepo) {
+        entry = await reopenDurablePiSession(durableRepo, requestedSessionId);
+        if (entry) piSessions.set(requestedSessionId, entry);
+      }
+      if (!entry) {
+        return sessionUnavailableResult({
+          resolved,
+          options,
+          events,
+          runtimeWarnings,
+          start,
+          sessionId: requestedSessionId,
+          errorMessage: `Pi session ${requestedSessionId} is not live`,
+          failureKind: "session_not_found",
+          piErrorCode: "pi_session_not_found",
+        });
+      }
+      if (entry.busy) {
+        return sessionUnavailableResult({
+          resolved,
+          options,
+          events,
+          runtimeWarnings,
+          start,
+          sessionId: requestedSessionId,
+          errorMessage: `Pi session ${requestedSessionId} is busy with another turn`,
+          failureKind: "session_busy",
+          piErrorCode: "pi_session_busy",
+        });
+      }
+      entry.busy = true;
+      sessionEntry = entry;
+      const sessionContext = await sessionEntry.session.buildContext();
+      resumeMessages = sessionContext.messages;
+      sessionBaselineCount = resumeMessages.length;
+    }
+
     const runtime = resolvePiRuntimeModel(resolved, options);
     piTransport = resolvePiTransport(runtime.model, runtimeWarnings, options.piCodexTransport);
     const capabilities = runtime.capabilities || {};
@@ -548,6 +674,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
         model: runtime.model,
         thinkingLevel: thinkingLevelForEffort(options.effort || "medium", capabilities),
         tools,
+        ...(resumeMessages ? { messages: resumeMessages } : {}),
       },
       streamFn: options.streamFn,
       transformContext: compaction.transformContext,
@@ -956,6 +1083,44 @@ export async function generatePiResponse(systemPrompt, options = {}) {
     });
     onEvent({ type: "capabilities_resolved", sdk: resolved.sdk, model: reference, capabilitiesUsed });
 
+    if (options.sessionKeepAlive === true && !externalAbort && !errorMessage) {
+      let createdEntry = null;
+      try {
+        const newMessages = transcript.slice(sessionBaselineCount);
+        if (sessionEntry) {
+          for (const message of newMessages) await sessionEntry.session.appendMessage(message);
+          piSessions.touch(requestedSessionId);
+        } else {
+          const repo = durableRepo || piSessionRepo;
+          const session = await repo.create({ id: providerSessionId, cwd: options.cwd || process.cwd() });
+          createdEntry = {
+            session,
+            metadata: await session.getMetadata(),
+            repo,
+            durable: !!durableRepo,
+            busy: false,
+          };
+          for (const message of newMessages) await createdEntry.session.appendMessage(message);
+          piSessions.set(providerSessionId, createdEntry);
+        }
+      } catch (err) {
+        // Session persistence must never fail the run; drop the (now
+        // inconsistent) session instead of resuming from a broken transcript.
+        onEvent({
+          type: "runtime_warning",
+          warning_kind: "pi_session_persist_failed",
+          message: err?.message || String(err),
+        });
+        piSessions.delete(providerSessionId);
+        const broken = sessionEntry || createdEntry;
+        if (broken) {
+          try {
+            await broken.repo.delete(broken.metadata);
+          } catch { /* best-effort */ }
+        }
+      }
+    }
+
     return {
       text,
       thinking: finalThinking,
@@ -1062,6 +1227,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
       },
     };
   } finally {
+    if (sessionEntry) sessionEntry.busy = false;
     removeAbortHandler?.();
     await closePiMcpClients(mcpClients);
   }

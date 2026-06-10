@@ -7,6 +7,7 @@ import { estimateCost } from "../cost.js";
 import { codexModelSupportsFastMode, normalizeFastMode } from "../runtime/fast-mode.js";
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 import { buildCapabilitiesUsed } from "../runtime/capabilities-used.js";
+import { createSessionRegistry } from "../runtime/sessions.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_THREAD_START_ATTEMPTS = 2;
@@ -21,11 +22,11 @@ const CODEX_APP_CAPABILITIES = {
   runtime: "app-server",
   streaming: true,
   structured_output: true,
-  // intelligence-ramp Phase 5.2: codex-app emits the started thread id, which
-  // we surface as provider_session_id so the coordinator can hand it back to
-  // the next continuation. The app-server itself always starts a fresh
-  // thread today (no thread/load primitive in this protocol revision), so
-  // the value primarily lets us correlate continuations in the run log.
+  // codex-app emits the started thread id, surfaced as provider_session_id.
+  // With options.sessionKeepAlive the app-server subprocess + thread stay
+  // live in codexSessions, so a follow-up run can resume the thread via
+  // options.sessionId. The protocol still has no thread/load primitive, so
+  // resume only works while the subprocess is alive.
   supports_session_resume: true,
   native_runtime_config: null,
   supports_mcp: true,
@@ -428,9 +429,25 @@ function usageFromTokenUsage(tokenUsage) {
   };
 }
 
+const noopNotificationHandler = () => {};
+
+// Live keep-alive sessions keyed by codex thread id.
+const codexSessions = createSessionRegistry({
+  isBusy: (entry) => entry.busy === true,
+  onEvict: async (entry) => {
+    try { entry.client.close(); } catch {}
+  },
+});
+
 export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const start = Date.now();
   const resolved = options.model;
+  // Test seam: lets tests drive the bridge with a stub app-server client.
+  const makeClient = options.codexClientFactory || createCodexAppServerClient;
+  const keepAlive = options.sessionKeepAlive === true;
+  const resumeSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
+    ? options.sessionId
+    : null;
   const prompt = promptFromMessages(options.messages);
   // Effort is expected to be pre-normalized by core/ai.js#generateResponse
   // before reaching this provider. We trust options.effort verbatim.
@@ -530,13 +547,19 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   }
 
   let client = null;
+  let resumeEntry = null;
+  let sessionRetained = false;
+  // Mutable holder so keep-alive clients can outlive this run: each run
+  // installs its own handleNotification and the bridge restores a no-op
+  // once the session goes idle.
+  const notificationTarget = { handler: handleNotification };
   function createClient() {
-    return createCodexAppServerClient({
+    return makeClient({
       command: options.codexAppServerCommand,
       args: options.codexAppServerArgs,
       cwd: options.cwd,
       env: options.codexAppServerEnv,
-      onNotification: handleNotification,
+      onNotification: (notification) => notificationTarget.handler(notification),
     });
   }
 
@@ -597,7 +620,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     if (threadId && activeTurnId) {
       client?.request("turn/interrupt", { threadId, turnId: activeTurnId }).catch(() => {});
     }
-    client?.close();
+    // Resumed sessions stay alive across an interrupt; only fresh runs tear
+    // down their subprocess on abort.
+    if (!resumeEntry) client?.close();
   };
 
   async function steerLiveInput() {
@@ -656,13 +681,74 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     }
   }
 
+  function sessionUnavailableResult(kind, error, codexErrorCode) {
+    return {
+      text: null,
+      structuredResult: undefined,
+      structuredResultSource: null,
+      events: [],
+      usage: {},
+      durationMs: Date.now() - start,
+      numTurns: 0,
+      model: resolved?.reference || `codex:${resolved?.model || ""}`,
+      effort: options.effort || null,
+      sdk: "codex",
+      providerSessionId: resumeSessionId,
+      provider_session_id: resumeSessionId,
+      cancelled: false,
+      error,
+      failureKind: kind,
+      diagnostics: { codex_error_code: codexErrorCode },
+      capabilitiesUsed: buildCapabilitiesUsed({
+        promptCacheActive: null,
+        thinkingEnabled: null,
+        structuredOutputEnforced: !!options.outputSchema,
+        subagentInvoked: null,
+        mcpServersUsed: Object.keys(options.mcpServers || {}),
+        nativeSubagentsUsed: [],
+        toolCompactionApplied: false,
+        contextCompactionApplied: null,
+      }),
+    };
+  }
+
+  if (resumeSessionId) {
+    const entry = codexSessions.get(resumeSessionId);
+    if (!entry) {
+      // The host sent no conversation history for a resume, so silently
+      // starting a fresh thread would lose context. Fail fast instead.
+      return sessionUnavailableResult(
+        "session_not_found",
+        `Codex session ${resumeSessionId} is not live; cannot resume`,
+        "codex_session_not_found",
+      );
+    }
+    if (entry.busy) {
+      return sessionUnavailableResult(
+        "session_busy",
+        `Codex session ${resumeSessionId} is already executing a turn`,
+        "codex_session_busy",
+      );
+    }
+    entry.busy = true;
+    resumeEntry = entry;
+  }
+
   try {
-    client = createClient();
+    if (resumeEntry) {
+      client = resumeEntry.client;
+      threadId = resumeEntry.threadId;
+      resumeEntry.notificationTarget.handler = handleNotification;
+      // Keep the idle TTL from firing while the turn is in flight.
+      codexSessions.touch(resumeSessionId);
+    } else {
+      client = createClient();
+    }
     if (options.abortSignal) {
       if (options.abortSignal.aborted) abortHandler();
       else options.abortSignal.addEventListener("abort", abortHandler, { once: true });
     }
-    await initializeClient(client);
+    if (!resumeEntry) await initializeClient(client);
     let collaborationMode = codexCollaborationModePayload(options.nativeSubagents, {
       model: resolved.model,
       effort: normalizedEffort,
@@ -680,40 +766,40 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         collaborationMode = null;
       }
     }
-    const mcpServers = codexMcpConfig(options.mcpServers);
     const fastMode = codexModelSupportsFastMode(resolved.model) && normalizeFastMode(options.fastMode, true);
-    const config = {
-      ...(fastMode ? { service_tier: "fast" } : {}),
-      features: { fast_mode: fastMode },
-      ...(Object.keys(mcpServers).length ? { mcp_servers: mcpServers } : {}),
-    };
-    if (normalizedEffort) {
-      config.model_reasoning_effort = normalizedEffort;
-      if (normalizedEffort !== "none") config.model_reasoning_summary = "auto";
+    if (!resumeEntry) {
+      const mcpServers = codexMcpConfig(options.mcpServers);
+      const config = {
+        ...(fastMode ? { service_tier: "fast" } : {}),
+        features: { fast_mode: fastMode },
+        ...(Object.keys(mcpServers).length ? { mcp_servers: mcpServers } : {}),
+      };
+      if (normalizedEffort) {
+        config.model_reasoning_effort = normalizedEffort;
+        if (normalizedEffort !== "none") config.model_reasoning_summary = "auto";
+      }
+      // The codex app-server protocol exposes thread/start but no thread/load
+      // primitive, so cold continuations always start a fresh thread; a
+      // thread is only resumable while its subprocess stays live in
+      // codexSessions (options.sessionKeepAlive + options.sessionId).
+      const thread = await requestThreadStart({
+        model: resolved.model,
+        modelProvider: "openai",
+        ...(fastMode ? { serviceTier: "fast" } : {}),
+        cwd: options.cwd || process.cwd(),
+        approvalPolicy: approvalPolicyForPermissionMode(options.permissionMode),
+        sandbox: sandboxForPermissionMode(options.permissionMode),
+        config,
+        serviceName: readRuntimeBrand().serviceName,
+        developerInstructions: systemPrompt,
+        ephemeral: true,
+        sessionStartSource: "startup",
+        experimentalRawEvents: false,
+        persistExtendedHistory: false,
+      });
+      threadId = thread?.thread?.id;
+      if (!threadId) throw new Error("Codex app-server did not return a thread id");
     }
-    // intelligence-ramp Phase 5.2: codex-app's protocol revision shipped with
-    // Worklab today exposes thread/start but no thread/load primitive, so
-    // continuations always start a fresh thread. We still record the
-    // returned thread id as provider_session_id so the run log links the
-    // chain. TODO(intelligence-ramp): add thread/load + reusableSessionId
-    // pass-through when the codex protocol supports resume.
-    const thread = await requestThreadStart({
-      model: resolved.model,
-      modelProvider: "openai",
-      ...(fastMode ? { serviceTier: "fast" } : {}),
-      cwd: options.cwd || process.cwd(),
-      approvalPolicy: approvalPolicyForPermissionMode(options.permissionMode),
-      sandbox: sandboxForPermissionMode(options.permissionMode),
-      config,
-      serviceName: readRuntimeBrand().serviceName,
-      developerInstructions: systemPrompt,
-      ephemeral: true,
-      sessionStartSource: "startup",
-      experimentalRawEvents: false,
-      persistExtendedHistory: false,
-    });
-    threadId = thread?.thread?.id;
-    if (!threadId) throw new Error("Codex app-server did not return a thread id");
 
     const steerTask = steerLiveInput();
     steerTask.catch((err) => {
@@ -782,6 +868,17 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       failureKind = "provider_unavailable";
       codexErrorCode = codexErrorCode || "codex_app_server_no_output";
     }
+    if (resumeEntry) {
+      // A failed turn or a closed transport leaves the thread untrustworthy.
+      sessionRetained = !errorMessage && !failureKind;
+      if (sessionRetained) codexSessions.touch(resumeSessionId);
+      else codexSessions.delete(resumeSessionId);
+    } else if (keepAlive && threadId && !errorMessage && !failureKind && !options.abortSignal?.aborted) {
+      sessionRetained = true;
+      notificationTarget.handler = noopNotificationHandler;
+      codexSessions.set(threadId, { client, threadId, busy: false, notificationTarget });
+      client.closed.then(() => codexSessions.delete(threadId));
+    }
     const hadPartialProgress = events.length > 0 || texts.length > 0;
     const reference = `codex:${resolved.model}`;
     const inputTokens = usage?.input_tokens ?? usage?.inputTokens ?? 0;
@@ -840,6 +937,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       }),
     };
   } catch (err) {
+    if (resumeEntry) codexSessions.delete(resumeSessionId);
     return {
       text: texts[texts.length - 1] || null,
       structuredResult: undefined,
@@ -874,7 +972,11 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     };
   } finally {
     options.abortSignal?.removeEventListener?.("abort", abortHandler);
-    client?.close();
+    if (resumeEntry) {
+      resumeEntry.busy = false;
+      resumeEntry.notificationTarget.handler = noopNotificationHandler;
+    }
+    if (!sessionRetained) client?.close();
   }
 }
 
