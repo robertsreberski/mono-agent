@@ -75,14 +75,6 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "codex-app-runtime",
-    name: "@worklab-ai/codex-app-runtime",
-    category: "runtime",
-    responsibility: "Adapts the OpenAI Codex app-server CLI to the Mono Agent runtime contract.",
-    allowedDependencyCategories: ["core", "runtime"],
-    publishable: true,
-  },
-  {
     dir: "config",
     name: "@worklab-ai/config",
     category: "core",

@@ -3,7 +3,6 @@ import {
   createAgentResponder,
   createInMemoryHistoryStore,
 } from "@worklab-ai/agent-harness";
-import { createCodexAppRuntime } from "@worklab-ai/codex-app-runtime";
 import type {
   AgentHarness,
   AgentHarnessOptions,
@@ -53,11 +52,6 @@ export function createConfiguredAgentRuntime(
   input: MonoAgentConfig | ConfiguredAgentRuntimeOptions,
 ): MonoRuntimeLike {
   const config = isRuntimeOptions(input) ? input.config : input;
-  const model = isRuntimeOptions(input) ? input.model ?? config.runtime.model : config.runtime.model;
-  const executionMode = isRuntimeOptions(input) ? input.executionMode ?? config.runtime.executionMode : config.runtime.executionMode;
-  if (model.sdk === "codex" && executionMode === "cli") {
-    return createCodexAppRuntime();
-  }
   return createMonoRuntime({
     workspace: config.runtime.workspace,
     qaOutputDir: config.artifacts.dir,
@@ -85,6 +79,10 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     maxTurns: config.runtime.maxTurns,
+    session: {
+      mode: config.runtime.session.mode,
+      idleTimeoutMs: config.runtime.session.idleTimeoutMs,
+    },
     runtimeOptions,
     ...(options.runtimeOptionsForRequest === undefined
       ? {}

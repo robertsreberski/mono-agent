@@ -93,7 +93,7 @@ describe("AgentHarness continuous sessions", () => {
   it("tracks provider session id rotation", async () => {
     const identityPath = await identityFixture();
     const ids = ["ps-1", "ps-2", "ps-3"];
-    const fake = createSessionFakeRuntime(async (_p, _o, call) => ({ text: "ok", providerSessionId: ids[call - 1] }));
+    const fake = createSessionFakeRuntime(async (_p, _o, call) => ({ text: "ok", providerSessionId: ids[call - 1] ?? null }));
     const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
 
     await harness.run(request("conv-1"));

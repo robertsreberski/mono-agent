@@ -75,6 +75,7 @@ export function buildDownloadsCuratorConfig(input: DownloadsCuratorConfigInput):
         executionMode: "cli",
         maxTurns: 8,
         workspace: downloadsRoot,
+        session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
       },
       context: {
         identityPath,

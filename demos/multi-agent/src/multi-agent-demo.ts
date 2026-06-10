@@ -360,6 +360,7 @@ class MultiAgentDemoController implements MultiAgentDemo {
           this.logger?.warn?.("A2A provider did not stop cleanly.", { role, reason: reasonOf(error) });
         });
       }
+      await running?.loaded.runtime.disposeAllSessions?.().catch(() => undefined);
       if (running?.traceSource !== undefined) {
         await running.traceSource.stop({
           status: "stopped",

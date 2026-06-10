@@ -6,7 +6,7 @@ Three responders side-by-side, one per first-class in-repo runtime package, each
 | --- | --- | --- | --- |
 | Claude | `@worklab-ai/claude-agents-runtime` | 41100 | `ANTHROPIC_API_KEY` is unset |
 | OpenAI | `@worklab-ai/openai-agents-runtime` | 41101 | `OPENAI_API_KEY` is unset |
-| Codex  | `@worklab-ai/codex-app-runtime`     | 41102 | `OPENAI_API_KEY` is unset (Codex CLI auth) |
+| Codex  | `@worklab-ai/agent-runtime` (codex-app bridge)     | 41102 | `OPENAI_API_KEY` is unset (Codex CLI auth) |
 
 Proves the framework's premise: any team picks the SDK they want, the host composes responders identically, A2A handles interop.
 

@@ -80,6 +80,7 @@ export function buildFinalDemoDeploymentConfig(
       executionMode: "sdk",
       maxTurns: 8,
       workspace: DEPLOY_WORKSPACE_DIR,
+      session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
     },
     providers: {
       local: [

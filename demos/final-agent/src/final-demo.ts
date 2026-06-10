@@ -305,6 +305,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
   private readonly env: Record<string, string | undefined>;
   private readonly logger: FinalAgentDemoLogger | undefined;
   private readonly runtime: MonoRuntimeLike | undefined;
+  private readonly activeRuntimes: MonoRuntimeLike[] = [];
   private readonly telegramApi: TelegramBotApi | undefined;
   private readonly pollerFactory: ((options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike) | undefined;
   private readonly a2aProviderFactory: ((options: A2AProviderOptions) => Promise<A2AProviderStartResult>) | undefined;
@@ -618,6 +619,17 @@ class FinalAgentDemoController implements FinalAgentDemo {
     await this.stopCron("stop");
     await this.stopTraceSource("stop");
     await this.consoleServer.stop();
+    for (const runtime of this.activeRuntimes.splice(0)) {
+      await runtime.disposeAllSessions?.().catch(() => undefined);
+    }
+  }
+
+  private resolveRuntime(coreConfig: MonoAgentConfig): MonoRuntimeLike {
+    const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+    if (!this.activeRuntimes.includes(runtime)) {
+      this.activeRuntimes.push(runtime);
+    }
+    return runtime;
   }
 
   private async stopTelegram(reason: string): Promise<void> {
@@ -770,7 +782,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     try {
       const redacted = redactFinalAgentDemoConfig({ coreConfig, telegramConfig });
       const api = this.telegramApi ?? new TelegramBotApiClient({ token: telegramConfig.botToken });
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterOptions = buildAdapterOptions({
         api,
@@ -829,7 +841,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const providerFactory = this.a2aProviderFactory ?? startA2AProvider;
       const provider = await providerFactory({
@@ -892,7 +904,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterFactory = this.webhookAdapterFactory ?? startWebhookAdapter;
       const adapter = await adapterFactory({
@@ -942,7 +954,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterFactory = this.openAIApiAdapterFactory ?? startOpenAIApiAdapter;
       const adapter = await adapterFactory({
@@ -992,7 +1004,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterFactory = this.cronAdapterFactory ?? startCronAdapter;
       const adapter = adapterFactory({

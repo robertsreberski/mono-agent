@@ -35,7 +35,6 @@
     "@worklab-ai/agent-host": "workspace:^0.1.0",
     "@worklab-ai/agent-orchestrator": "workspace:^0.1.0",
     "@worklab-ai/claude-agents-runtime": "workspace:^0.1.0",
-    "@worklab-ai/codex-app-runtime": "workspace:^0.1.0",
     "@worklab-ai/config": "workspace:^0.1.0",
     "@worklab-ai/context": "workspace:^0.1.0",
     "@worklab-ai/cron-adapter": "workspace:^0.1.0",

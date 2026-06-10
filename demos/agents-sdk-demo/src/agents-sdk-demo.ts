@@ -11,8 +11,8 @@ import {
 } from "@worklab-ai/config";
 import type { MonoAgentConfig } from "@worklab-ai/config";
 import { createClaudeAgentsRuntime } from "@worklab-ai/claude-agents-runtime";
-import { createCodexAppRuntime } from "@worklab-ai/codex-app-runtime";
 import { createOpenAIAgentsRuntime } from "@worklab-ai/openai-agents-runtime";
+import { createMonoRuntime } from "@worklab-ai/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
 
 export type AgentsSdkRuntimeName = "claude" | "openai" | "codex";
@@ -166,7 +166,7 @@ function chooseRuntime(
   if (!hasNonEmpty(env.OPENAI_API_KEY)) {
     return { kind: "skipped", reason: "OPENAI_API_KEY not set (Codex CLI uses it for auth)" };
   }
-  return { kind: "ready", runtime: createCodexAppRuntime() };
+  return { kind: "ready", runtime: createMonoRuntime() };
 }
 
 function hasNonEmpty(value: string | undefined): boolean {

@@ -1,44 +1,19 @@
 import { join } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@worklab-ai/config";
 
-const codexMocks = vi.hoisted(() => {
-  const runtime = {
-    run: vi.fn(async () => ({ text: "codex runtime" })),
-  };
-  return {
-    runtime,
-    createCodexAppRuntime: vi.fn(() => runtime),
-  };
-});
-
-vi.mock("@worklab-ai/codex-app-runtime", () => ({
-  createCodexAppRuntime: codexMocks.createCodexAppRuntime,
-}));
-
-const { createConfiguredAgentRuntime } = await import("../index.js");
+import { createConfiguredAgentRuntime } from "../index.js";
 
 describe("agent host Codex runtime routing", () => {
-  it("uses the direct Codex app runtime for codex CLI models", async () => {
+  it("routes codex CLI models through the shared Mono runtime with session support", () => {
     const runtime = createConfiguredAgentRuntime(codexConfig());
 
-    await runtime.run("system", {
-      model: { sdk: "codex", model: "gpt-5.5", reference: "codex:gpt-5.5" },
-      executionMode: "cli",
-      messages: [{ role: "user", content: "Hi" }],
-      abortSignal: new AbortController().signal,
-    });
-
-    expect(codexMocks.createCodexAppRuntime).toHaveBeenCalledTimes(1);
-    expect(codexMocks.runtime.run).toHaveBeenCalledWith(
-      "system",
-      expect.objectContaining({
-        model: { sdk: "codex", model: "gpt-5.5", reference: "codex:gpt-5.5" },
-        executionMode: "cli",
-      }),
-    );
+    expect(runtime.run).toEqual(expect.any(Function));
+    expect(runtime.configureTools).toEqual(expect.any(Function));
+    expect(runtime.disposeSession).toEqual(expect.any(Function));
+    expect(runtime.disposeAllSessions).toEqual(expect.any(Function));
   });
 });
 
@@ -50,6 +25,7 @@ function codexConfig(): MonoAgentConfig {
       executionMode: "cli",
       maxTurns: 4,
       workspace: dir,
+      session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
     },
     context: {
       identityPath: join(dir, "IDENTITY.md"),

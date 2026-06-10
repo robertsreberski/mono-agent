@@ -225,7 +225,9 @@ function codexCollaborationModePayload(nativeSubagents, { model, effort, systemP
 
 export function createCodexAppServerClient({
   command = "codex",
-  args = ["app-server", "--listen", "stdio://"],
+  // project_doc_max_bytes=0 keeps codex from injecting its own project docs;
+  // the host supplies the full context through developerInstructions.
+  args = ["app-server", "--listen", "stdio://", "-c", "project_doc_max_bytes=0"],
   cwd,
   env = {},
   onNotification = () => {},

@@ -242,6 +242,7 @@ function buildRoleConfig(input: {
       executionMode: "sdk",
       maxTurns: input.role === "orchestrator" ? 8 : 6,
       workspace: jsonPath(input.cwd, join(input.baseDir, "workspace", input.role)),
+      session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
     },
     providers: {
       local: [
