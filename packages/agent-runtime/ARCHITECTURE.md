@@ -2,7 +2,7 @@
 
 ## What It Is
 
-`@worklab-ai/agent-runtime` is Worklab's provider-agnostic agent execution
+`@mono-agent/agent-runtime` is Worklab's provider-agnostic agent execution
 kernel. It does not own tasks, database state, UI, scheduling, or Worklab's
 domain-specific result contract. It owns the lower-level act of running an
 agent turn:
@@ -209,7 +209,7 @@ The host is responsible for:
 
 ## Essential Takeaway
 
-Think of `@worklab-ai/agent-runtime` as the portable agent process engine
+Think of `@mono-agent/agent-runtime` as the portable agent process engine
 underneath Worklab. Worklab decides what a task means, which agent should run,
 how state changes, and how results are persisted. The runtime decides how to
 talk to Claude, Pi, and Codex execution surfaces; how tools are exposed; how

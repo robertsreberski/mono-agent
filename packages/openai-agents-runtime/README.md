@@ -1,4 +1,4 @@
-# @worklab-ai/openai-agents-runtime
+# @mono-agent/openai-agents-runtime
 
 ## Category
 
@@ -11,12 +11,12 @@ Adapts `@openai/agents` to the Mono Agent runtime contract (`MonoRuntimeLike`). 
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/openai-agents-runtime run build
+pnpm --filter @mono-agent/openai-agents-runtime run build
 ```
 
 ```ts
-import { createOpenAIAgentsRuntime } from "@worklab-ai/openai-agents-runtime";
-import { createConfiguredAgentResponder } from "@worklab-ai/agent-host";
+import { createOpenAIAgentsRuntime } from "@mono-agent/openai-agents-runtime";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
 
 const runtime = createOpenAIAgentsRuntime();
 const responder = createConfiguredAgentResponder({
@@ -58,7 +58,7 @@ const runtime = createOpenAIAgentsRuntime({
 
 ## Dependency Boundary
 
-This package depends on `@worklab-ai/runtime-adapter` (workspace, for shared types) and `@openai/agents` (external). It does not depend on `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, or any communication adapter. Hosts compose this runtime with a harness.
+This package depends on `@mono-agent/runtime-adapter` (workspace, for shared types) and `@openai/agents` (external). It does not depend on `@mono-agent/agent-harness`, `@mono-agent/agent-host`, or any communication adapter. Hosts compose this runtime with a harness.
 
 ## What This Package Does Not Own
 
@@ -66,14 +66,14 @@ This package depends on `@worklab-ai/runtime-adapter` (workspace, for shared typ
 - MCP server lifecycle beyond construction. The default `runFactory` constructs `MCPServerStreamableHttp` / `MCPServerSSE` / `MCPServerStdio` instances from the host's `mcpServers` map. Connection / disconnection is handled by `@openai/agents` during the `run()` call.
 - API key management beyond the optional env-var helpers. Hosts set `OPENAI_API_KEY` / `OPENAI_BASE_URL` in their environment normally.
 - Model selection. The model comes from `RuntimeRunOptions.model.model`.
-- Conversation history, recording, observability. Owned by `@worklab-ai/agent-harness` and `@worklab-ai/observability`.
+- Conversation history, recording, observability. Owned by `@mono-agent/agent-harness` and `@mono-agent/observability`.
 
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/openai-agents-runtime run typecheck
-pnpm --filter @worklab-ai/openai-agents-runtime run test
-pnpm --filter @worklab-ai/openai-agents-runtime run build
+pnpm --filter @mono-agent/openai-agents-runtime run typecheck
+pnpm --filter @mono-agent/openai-agents-runtime run test
+pnpm --filter @mono-agent/openai-agents-runtime run build
 ```
 
 Tested against `@openai/agents@^0.11.4`.

@@ -1,7 +1,7 @@
 {
-  "name": "@worklab-ai/runtime-adapter",
+  "name": "@mono-agent/runtime-adapter",
   "version": "0.1.0",
-  "description": "Typed Mono Agent facade over @worklab-ai/agent-runtime.",
+  "description": "Typed Mono Agent facade over @mono-agent/agent-runtime.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
@@ -23,6 +23,6 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-runtime": "workspace:*"
+    "@mono-agent/agent-runtime": "workspace:*"
   }
 }

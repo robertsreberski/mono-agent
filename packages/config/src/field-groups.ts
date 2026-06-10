@@ -1,5 +1,5 @@
-import { defineFieldGroup } from "@worklab-ai/settings";
-import type { FieldGroupRegistry } from "@worklab-ai/settings";
+import { defineFieldGroup } from "@mono-agent/settings";
+import type { FieldGroupRegistry } from "@mono-agent/settings";
 
 export const identityFieldGroup = defineFieldGroup({
   id: "identity",

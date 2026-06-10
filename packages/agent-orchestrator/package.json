@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/agent-orchestrator",
+  "name": "@mono-agent/agent-orchestrator",
   "version": "0.1.0",
   "description": "Reusable collaborator tool orchestration for Mono Agent runtimes.",
   "type": "module",
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
     "zod": "^4.4.3"
   }
 }

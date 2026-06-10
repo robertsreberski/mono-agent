@@ -1,4 +1,4 @@
-# @worklab-ai/openai-api-adapter
+# @mono-agent/openai-api-adapter
 
 ## Category
 
@@ -11,11 +11,11 @@ OpenAI-compatible Chat Completions adapter for Mono Agent hosts. It starts a sma
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/openai-api-adapter run build
+pnpm --filter @mono-agent/openai-api-adapter run build
 ```
 
 ```ts
-import { startOpenAIApiAdapter } from "@worklab-ai/openai-api-adapter";
+import { startOpenAIApiAdapter } from "@mono-agent/openai-api-adapter";
 
 const adapter = await startOpenAIApiAdapter({
   host: "127.0.0.1",
@@ -49,7 +49,7 @@ It does not build prompts, run models, persist conversations, implement the Resp
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/openai-api-adapter run build
-pnpm --filter @worklab-ai/openai-api-adapter run typecheck
-pnpm --filter @worklab-ai/openai-api-adapter run test
+pnpm --filter @mono-agent/openai-api-adapter run build
+pnpm --filter @mono-agent/openai-api-adapter run typecheck
+pnpm --filter @mono-agent/openai-api-adapter run test
 ```

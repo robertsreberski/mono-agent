@@ -5,7 +5,7 @@ import {
   MCPServerStreamableHttp,
   run as runAgent,
 } from "@openai/agents";
-import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeEventLike, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import {
   translateMcpServers,

@@ -2,26 +2,26 @@ import {
   createAgentHarness,
   createAgentResponder,
   createInMemoryHistoryStore,
-} from "@worklab-ai/agent-harness";
+} from "@mono-agent/agent-harness";
 import type {
   AgentHarness,
   AgentHarnessOptions,
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
   ConversationHistoryStore,
-} from "@worklab-ai/agent-harness";
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
-import type { MonoAgentConfig } from "@worklab-ai/config";
-import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
-import type { MemoryStore } from "@worklab-ai/memory-md";
-import { createJsonlRunRecorder } from "@worklab-ai/observability";
+} from "@mono-agent/agent-harness";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
+import type { MemoryStore } from "@mono-agent/memory-md";
+import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
   createMonoRuntime,
   runtimeOptionsForLocalProvider,
-} from "@worklab-ai/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
-import { createToolPolicy } from "@worklab-ai/tool-policy";
-import type { ToolPolicyInput } from "@worklab-ai/tool-policy";
+} from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createToolPolicy } from "@mono-agent/tool-policy";
+import type { ToolPolicyInput } from "@mono-agent/tool-policy";
 
 export interface ConfiguredAgentRuntimeOptions {
   readonly config: MonoAgentConfig;

@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { MonoAgentConfig } from "@worklab-ai/config";
-import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import {
   createConfiguredAgentHarness,

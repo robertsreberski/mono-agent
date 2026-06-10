@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
 import type { AgentHarnessSessionOptions } from "../index.js";

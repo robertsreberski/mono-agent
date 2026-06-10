@@ -2,7 +2,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { MonoAgentConfig } from "@worklab-ai/config";
+import type { MonoAgentConfig } from "@mono-agent/config";
 
 import { createConfiguredAgentRuntime } from "../index.js";
 

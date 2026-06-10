@@ -1,4 +1,4 @@
-# @worklab-ai/agent-harness
+# @mono-agent/agent-harness
 
 ## Category
 
@@ -11,11 +11,11 @@ Composition spine for a Mono Agent request. It turns a communication request int
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/agent-harness run build
+pnpm --filter @mono-agent/agent-harness run build
 ```
 
 ```ts
-import { createAgentHarness, createAgentResponder } from "@worklab-ai/agent-harness";
+import { createAgentHarness, createAgentResponder } from "@mono-agent/agent-harness";
 ```
 
 Hosts wire identity/context paths, runtime, model, execution mode, tool policy, history, memory, skills, and recorder factory explicitly.
@@ -43,7 +43,7 @@ It does not poll chats, serve UI, parse host settings files, own provider creden
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/agent-harness run build
-pnpm --filter @worklab-ai/agent-harness run typecheck
-pnpm --filter @worklab-ai/agent-harness run test
+pnpm --filter @mono-agent/agent-harness run build
+pnpm --filter @mono-agent/agent-harness run typecheck
+pnpm --filter @mono-agent/agent-harness run test
 ```

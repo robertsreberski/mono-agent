@@ -1,4 +1,4 @@
-# @worklab-ai/claude-agents-runtime
+# @mono-agent/claude-agents-runtime
 
 ## Category
 
@@ -11,12 +11,12 @@ Adapts `@anthropic-ai/claude-agent-sdk` to the Mono Agent runtime contract (`Mon
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/claude-agents-runtime run build
+pnpm --filter @mono-agent/claude-agents-runtime run build
 ```
 
 ```ts
-import { createClaudeAgentsRuntime } from "@worklab-ai/claude-agents-runtime";
-import { createConfiguredAgentResponder } from "@worklab-ai/agent-host";
+import { createClaudeAgentsRuntime } from "@mono-agent/claude-agents-runtime";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
 
 const runtime = createClaudeAgentsRuntime();
 const responder = createConfiguredAgentResponder({
@@ -46,22 +46,22 @@ const responder = createConfiguredAgentResponder({
 
 ## Dependency Boundary
 
-This package depends on `@worklab-ai/runtime-adapter` (workspace, for shared types) and `@anthropic-ai/claude-agent-sdk` (external). It does not depend on `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, or any communication adapter. Hosts compose this runtime with a harness.
+This package depends on `@mono-agent/runtime-adapter` (workspace, for shared types) and `@anthropic-ai/claude-agent-sdk` (external). It does not depend on `@mono-agent/agent-harness`, `@mono-agent/agent-host`, or any communication adapter. Hosts compose this runtime with a harness.
 
 ## What This Package Does Not Own
 
-- Tool implementations. Claude Agent SDK ships with Claude Code's built-in toolset (`Read`, `Edit`, `Write`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Task`, etc.) which are available by default. Use `RuntimeRunOptions.disallowedTools` (sourced from `@worklab-ai/tool-policy`) to turn any off. This package does not implement or wrap tools itself.
+- Tool implementations. Claude Agent SDK ships with Claude Code's built-in toolset (`Read`, `Edit`, `Write`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `Task`, etc.) which are available by default. Use `RuntimeRunOptions.disallowedTools` (sourced from `@mono-agent/tool-policy`) to turn any off. This package does not implement or wrap tools itself.
 - MCP server lifecycle. Hosts attach MCP servers via `RuntimeRunOptions.mcpServers` (the `agent-host` plumbing); this package forwards the configs.
 - API key management beyond the optional env-var helper. Hosts set `ANTHROPIC_API_KEY` in their environment normally; the `apiKey` option is a convenience.
 - Model selection. The model comes from `RuntimeRunOptions.model.model`. This package never defaults a model name.
-- Conversation history, recording, observability. Owned by `@worklab-ai/agent-harness` and `@worklab-ai/observability`.
+- Conversation history, recording, observability. Owned by `@mono-agent/agent-harness` and `@mono-agent/observability`.
 
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/claude-agents-runtime run typecheck
-pnpm --filter @worklab-ai/claude-agents-runtime run test
-pnpm --filter @worklab-ai/claude-agents-runtime run build
+pnpm --filter @mono-agent/claude-agents-runtime run typecheck
+pnpm --filter @mono-agent/claude-agents-runtime run test
+pnpm --filter @mono-agent/claude-agents-runtime run build
 ```
 
 Tested against `@anthropic-ai/claude-agent-sdk@^0.3.143`.

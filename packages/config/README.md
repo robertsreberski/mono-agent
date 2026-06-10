@@ -1,4 +1,4 @@
-# @worklab-ai/config
+# @mono-agent/config
 
 ## Category
 
@@ -6,19 +6,19 @@ Category: `core`
 
 ## Responsibility
 
-Adapter-neutral Mono Agent core configuration. It loads runtime, context, memory, tool/MCP, and artifact settings from environment variables plus optional JSON, validates runtime model/execution-mode compatibility through `@worklab-ai/runtime-adapter`, and exposes core field groups for settings UIs.
+Adapter-neutral Mono Agent core configuration. It loads runtime, context, memory, tool/MCP, and artifact settings from environment variables plus optional JSON, validates runtime model/execution-mode compatibility through `@mono-agent/runtime-adapter`, and exposes core field groups for settings UIs.
 
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/config run build
+pnpm --filter @mono-agent/config run build
 ```
 
 ```ts
 import {
   CORE_AGENT_FIELD_GROUPS,
   loadMonoAgentConfigWithSources,
-} from "@worklab-ai/config";
+} from "@mono-agent/config";
 
 const config = await loadMonoAgentConfigWithSources({
   env: process.env,
@@ -91,7 +91,7 @@ In `continuous` mode (the default) consecutive messages in a conversation reuse 
 
 ## Dependency Boundary
 
-`@worklab-ai/config` may depend on `@worklab-ai/settings` and `@worklab-ai/runtime-adapter`. It must not depend on communication adapters, the operator console, agent harness, or UI packages.
+`@mono-agent/config` may depend on `@mono-agent/settings` and `@mono-agent/runtime-adapter`. It must not depend on communication adapters, the operator console, agent harness, or UI packages.
 
 ## What This Package Does Not Own
 
@@ -100,7 +100,7 @@ It does not load Telegram, WhatsApp, Slack, or other adapter-specific credential
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/config run build
-pnpm --filter @worklab-ai/config run typecheck
-pnpm --filter @worklab-ai/config run test
+pnpm --filter @mono-agent/config run build
+pnpm --filter @mono-agent/config run typecheck
+pnpm --filter @mono-agent/config run test
 ```

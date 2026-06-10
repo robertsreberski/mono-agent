@@ -1,4 +1,4 @@
-import type { FieldDefinition } from "@worklab-ai/settings/field-groups";
+import type { FieldDefinition } from "@mono-agent/settings/field-groups";
 import { Badge } from "./ui/badge.js";
 import { Input } from "./ui/input.js";
 import { Label } from "./ui/label.js";

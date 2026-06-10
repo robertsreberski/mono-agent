@@ -1,4 +1,4 @@
-import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
+import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";

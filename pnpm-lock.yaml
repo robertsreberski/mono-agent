@@ -17,73 +17,73 @@ importers:
       '@vitest/coverage-v8':
         specifier: 3.2.4
         version: 3.2.4(vitest@3.2.4(@types/node@22.19.19)(happy-dom@15.11.7)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))
-      '@worklab-ai/a2a-adapter':
+      '@mono-agent/a2a-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/a2a-adapter
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:packages/agent-contracts
-      '@worklab-ai/agent-evals':
+      '@mono-agent/agent-evals':
         specifier: workspace:^0.1.0
         version: link:packages/agent-evals
-      '@worklab-ai/agent-harness':
+      '@mono-agent/agent-harness':
         specifier: workspace:^0.1.0
         version: link:packages/agent-harness
-      '@worklab-ai/agent-host':
+      '@mono-agent/agent-host':
         specifier: workspace:^0.1.0
         version: link:packages/agent-host
-      '@worklab-ai/agent-orchestrator':
+      '@mono-agent/agent-orchestrator':
         specifier: workspace:^0.1.0
         version: link:packages/agent-orchestrator
-      '@worklab-ai/claude-agents-runtime':
+      '@mono-agent/claude-agents-runtime':
         specifier: workspace:^0.1.0
         version: link:packages/claude-agents-runtime
-      '@worklab-ai/config':
+      '@mono-agent/config':
         specifier: workspace:^0.1.0
         version: link:packages/config
-      '@worklab-ai/context':
+      '@mono-agent/context':
         specifier: workspace:^0.1.0
         version: link:packages/context
-      '@worklab-ai/cron-adapter':
+      '@mono-agent/cron-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/cron-adapter
-      '@worklab-ai/memory-md':
+      '@mono-agent/memory-md':
         specifier: workspace:^0.1.0
         version: link:packages/memory-md
-      '@worklab-ai/observability':
+      '@mono-agent/observability':
         specifier: workspace:^0.1.0
         version: link:packages/observability
-      '@worklab-ai/openai-agents-runtime':
+      '@mono-agent/openai-agents-runtime':
         specifier: workspace:^0.1.0
         version: link:packages/openai-agents-runtime
-      '@worklab-ai/openai-api-adapter':
+      '@mono-agent/openai-api-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/openai-api-adapter
-      '@worklab-ai/operator-console':
+      '@mono-agent/operator-console':
         specifier: workspace:^0.1.0
         version: link:packages/operator-console
-      '@worklab-ai/runtime-adapter':
+      '@mono-agent/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/runtime-adapter
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:packages/settings
-      '@worklab-ai/slack-adapter':
+      '@mono-agent/slack-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/slack-adapter
-      '@worklab-ai/telegram-adapter':
+      '@mono-agent/telegram-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/telegram-adapter
-      '@worklab-ai/tool-policy':
+      '@mono-agent/tool-policy':
         specifier: workspace:^0.1.0
         version: link:packages/tool-policy
-      '@worklab-ai/tui':
+      '@mono-agent/tui':
         specifier: workspace:^0.1.0
         version: link:packages/tui
-      '@worklab-ai/webhook-adapter':
+      '@mono-agent/webhook-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/webhook-adapter
-      '@worklab-ai/whatsapp-adapter':
+      '@mono-agent/whatsapp-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/whatsapp-adapter
       typescript:
@@ -98,10 +98,10 @@ importers:
       '@a2a-js/sdk':
         specifier: 1.0.0-alpha.0
         version: 1.0.0-alpha.0(express@5.2.1)
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
       express:
@@ -116,13 +116,13 @@ importers:
 
   packages/agent-evals:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/agent-harness':
+      '@mono-agent/agent-harness':
         specifier: workspace:^0.1.0
         version: link:../agent-harness
-      '@worklab-ai/observability':
+      '@mono-agent/observability':
         specifier: workspace:^0.1.0
         version: link:../observability
       agentevals:
@@ -131,49 +131,49 @@ importers:
 
   packages/agent-harness:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/context':
+      '@mono-agent/context':
         specifier: workspace:^0.1.0
         version: link:../context
-      '@worklab-ai/memory-md':
+      '@mono-agent/memory-md':
         specifier: workspace:^0.1.0
         version: link:../memory-md
-      '@worklab-ai/observability':
+      '@mono-agent/observability':
         specifier: workspace:^0.1.0
         version: link:../observability
-      '@worklab-ai/runtime-adapter':
+      '@mono-agent/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:../runtime-adapter
-      '@worklab-ai/skills':
+      '@mono-agent/skills':
         specifier: workspace:^0.1.0
         version: link:../skills
-      '@worklab-ai/tool-policy':
+      '@mono-agent/tool-policy':
         specifier: workspace:^0.1.0
         version: link:../tool-policy
 
   packages/agent-host:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/agent-harness':
+      '@mono-agent/agent-harness':
         specifier: workspace:^0.1.0
         version: link:../agent-harness
-      '@worklab-ai/config':
+      '@mono-agent/config':
         specifier: workspace:^0.1.0
         version: link:../config
-      '@worklab-ai/memory-md':
+      '@mono-agent/memory-md':
         specifier: workspace:^0.1.0
         version: link:../memory-md
-      '@worklab-ai/observability':
+      '@mono-agent/observability':
         specifier: workspace:^0.1.0
         version: link:../observability
-      '@worklab-ai/runtime-adapter':
+      '@mono-agent/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:../runtime-adapter
-      '@worklab-ai/tool-policy':
+      '@mono-agent/tool-policy':
         specifier: workspace:^0.1.0
         version: link:../tool-policy
 
@@ -182,7 +182,7 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
       zod:
@@ -215,7 +215,7 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.143
         version: 0.3.143(@anthropic-ai/sdk@0.91.1(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(zod@4.4.3)
-      '@worklab-ai/runtime-adapter':
+      '@mono-agent/runtime-adapter':
         specifier: workspace:*
         version: link:../runtime-adapter
     devDependencies:
@@ -225,10 +225,10 @@ importers:
 
   packages/config:
     dependencies:
-      '@worklab-ai/runtime-adapter':
+      '@mono-agent/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:../runtime-adapter
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
 
@@ -236,10 +236,10 @@ importers:
 
   packages/cron-adapter:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
       cron-parser:
@@ -255,7 +255,7 @@ importers:
       '@openai/agents':
         specifier: ^0.11.4
         version: 0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)
-      '@worklab-ai/runtime-adapter':
+      '@mono-agent/runtime-adapter':
         specifier: workspace:*
         version: link:../runtime-adapter
     devDependencies:
@@ -265,10 +265,10 @@ importers:
 
   packages/openai-api-adapter:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
       express:
@@ -281,10 +281,10 @@ importers:
 
   packages/operator-console:
     dependencies:
-      '@worklab-ai/observability':
+      '@mono-agent/observability':
         specifier: workspace:^0.1.0
         version: link:../observability
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
     devDependencies:
@@ -342,7 +342,7 @@ importers:
 
   packages/runtime-adapter:
     dependencies:
-      '@worklab-ai/agent-runtime':
+      '@mono-agent/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime
 
@@ -350,16 +350,16 @@ importers:
 
   packages/skills:
     dependencies:
-      '@worklab-ai/context':
+      '@mono-agent/context':
         specifier: workspace:^0.1.0
         version: link:../context
 
   packages/slack-adapter:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
       ws:
@@ -372,10 +372,10 @@ importers:
 
   packages/telegram-adapter:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
 
@@ -383,10 +383,10 @@ importers:
 
   packages/tui:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/config':
+      '@mono-agent/config':
         specifier: workspace:^0.1.0
         version: link:../config
       ink:
@@ -411,10 +411,10 @@ importers:
 
   packages/webhook-adapter:
     dependencies:
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
       express:
@@ -430,10 +430,10 @@ importers:
       '@whiskeysockets/baileys':
         specifier: ^7.0.0-rc11
         version: 7.0.0-rc11(sharp@0.34.5)
-      '@worklab-ai/agent-contracts':
+      '@mono-agent/agent-contracts':
         specifier: workspace:^0.1.0
         version: link:../agent-contracts
-      '@worklab-ai/settings':
+      '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
 

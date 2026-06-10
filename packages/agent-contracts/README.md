@@ -1,4 +1,4 @@
-# @worklab-ai/agent-contracts
+# @mono-agent/agent-contracts
 
 ## Category
 
@@ -11,11 +11,11 @@ Shared structural contracts for Mono Agent request/response boundaries. It defin
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/agent-contracts run build
+pnpm --filter @mono-agent/agent-contracts run build
 ```
 
 ```ts
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 ```
 
 Adapter packages extend the base request with transport metadata while keeping the responder and stream shapes compatible across hosts.
@@ -37,7 +37,7 @@ It does not normalize transport messages, run model providers, build prompts, pe
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/agent-contracts run build
-pnpm --filter @worklab-ai/agent-contracts run typecheck
-pnpm --filter @worklab-ai/agent-contracts run test
+pnpm --filter @mono-agent/agent-contracts run build
+pnpm --filter @mono-agent/agent-contracts run typecheck
+pnpm --filter @mono-agent/agent-contracts run test
 ```

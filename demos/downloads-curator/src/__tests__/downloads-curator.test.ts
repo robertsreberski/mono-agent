@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { parseDownloadsCuratorArgs } from "../cli.js";
 import {

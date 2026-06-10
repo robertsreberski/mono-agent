@@ -1,13 +1,13 @@
-import type { SettingsJson } from "@worklab-ai/settings/field-groups";
+import type { SettingsJson } from "@mono-agent/settings/field-groups";
 import type {
   RecordedRunDetail,
   RecordedRunListItem,
   TraceRunDetail,
   TraceRunListItem,
   TraceSourceListItem,
-} from "@worklab-ai/observability";
+} from "@mono-agent/observability";
 
-import type { FieldGroup } from "@worklab-ai/settings/field-groups";
+import type { FieldGroup } from "@mono-agent/settings/field-groups";
 
 export interface ConfigResponse {
   readonly config: SettingsJson;

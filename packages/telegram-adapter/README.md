@@ -1,4 +1,4 @@
-# @worklab-ai/telegram-adapter
+# @mono-agent/telegram-adapter
 
 ## Category
 
@@ -11,7 +11,7 @@ Telegram communication adapter for Mono Agent hosts. It provides a Bot API clien
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/telegram-adapter run build
+pnpm --filter @mono-agent/telegram-adapter run build
 ```
 
 ```ts
@@ -21,10 +21,10 @@ import {
   TelegramLongPoller,
   loadTelegramAdapterConfig,
   telegramFieldGroup,
-} from "@worklab-ai/telegram-adapter";
+} from "@mono-agent/telegram-adapter";
 ```
 
-Load adapter settings separately from core config, then pass a structural `AgentResponder` from the host or harness. The base responder, stream, response, and cancellation contracts come from `@worklab-ai/agent-contracts`.
+Load adapter settings separately from core config, then pass a structural `AgentResponder` from the host or harness. The base responder, stream, response, and cancellation contracts come from `@mono-agent/agent-contracts`.
 
 ## Public API
 
@@ -47,7 +47,7 @@ It does not build prompts, run models, store memory, serve UI, manage provider c
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/telegram-adapter run build
-pnpm --filter @worklab-ai/telegram-adapter run typecheck
-pnpm --filter @worklab-ai/telegram-adapter run test
+pnpm --filter @mono-agent/telegram-adapter run build
+pnpm --filter @mono-agent/telegram-adapter run typecheck
+pnpm --filter @mono-agent/telegram-adapter run test
 ```

@@ -10,52 +10,52 @@ flowchart TB
   end
 
   subgraph OperatorSurfaces["operator-surface"]
-    OperatorConsole["@worklab-ai/operator-console"]
-    Tui["@worklab-ai/tui"]
+    OperatorConsole["@mono-agent/operator-console"]
+    Tui["@mono-agent/tui"]
   end
 
   subgraph Communication["communication"]
-    A2A["@worklab-ai/a2a-adapter"]
-    Cron["@worklab-ai/cron-adapter"]
-    OpenAIApi["@worklab-ai/openai-api-adapter"]
-    Slack["@worklab-ai/slack-adapter"]
-    Telegram["@worklab-ai/telegram-adapter"]
-    WhatsApp["@worklab-ai/whatsapp-adapter"]
-    Webhook["@worklab-ai/webhook-adapter"]
+    A2A["@mono-agent/a2a-adapter"]
+    Cron["@mono-agent/cron-adapter"]
+    OpenAIApi["@mono-agent/openai-api-adapter"]
+    Slack["@mono-agent/slack-adapter"]
+    Telegram["@mono-agent/telegram-adapter"]
+    WhatsApp["@mono-agent/whatsapp-adapter"]
+    Webhook["@mono-agent/webhook-adapter"]
   end
 
   subgraph Execution["execution"]
-    Harness["@worklab-ai/agent-harness"]
-    Host["@worklab-ai/agent-host"]
-    Orchestrator["@worklab-ai/agent-orchestrator"]
+    Harness["@mono-agent/agent-harness"]
+    Host["@mono-agent/agent-host"]
+    Orchestrator["@mono-agent/agent-orchestrator"]
   end
 
   subgraph ContextLayer["context"]
-    Context["@worklab-ai/context"]
-    Skills["@worklab-ai/skills"]
-    Memory["@worklab-ai/memory-md"]
+    Context["@mono-agent/context"]
+    Skills["@mono-agent/skills"]
+    Memory["@mono-agent/memory-md"]
   end
 
   subgraph ObservabilityLayer["observability"]
-    Observability["@worklab-ai/observability"]
+    Observability["@mono-agent/observability"]
   end
 
   subgraph EvaluationLayer["evaluation"]
-    AgentEvals["@worklab-ai/agent-evals"]
+    AgentEvals["@mono-agent/agent-evals"]
   end
 
   subgraph Core["core"]
-    Contracts["@worklab-ai/agent-contracts"]
-    Settings["@worklab-ai/settings"]
-    Config["@worklab-ai/config"]
-    ToolPolicy["@worklab-ai/tool-policy"]
+    Contracts["@mono-agent/agent-contracts"]
+    Settings["@mono-agent/settings"]
+    Config["@mono-agent/config"]
+    ToolPolicy["@mono-agent/tool-policy"]
   end
 
   subgraph Runtime["runtime"]
-    RuntimeAdapter["@worklab-ai/runtime-adapter"]
-    AgentRuntime["@worklab-ai/agent-runtime"]
-    ClaudeAgents["@worklab-ai/claude-agents-runtime"]
-    OpenAIAgents["@worklab-ai/openai-agents-runtime"]
+    RuntimeAdapter["@mono-agent/runtime-adapter"]
+    AgentRuntime["@mono-agent/agent-runtime"]
+    ClaudeAgents["@mono-agent/claude-agents-runtime"]
+    OpenAIAgents["@mono-agent/openai-agents-runtime"]
   end
 
   FinalDemo --> OperatorConsole
@@ -123,13 +123,13 @@ flowchart TB
 
 | Layer | Packages |
 | --- | --- |
-| `runtime` | `@worklab-ai/runtime-adapter`, `@worklab-ai/claude-agents-runtime`, `@worklab-ai/openai-agents-runtime` |
-| `core` | `@worklab-ai/agent-contracts`, `@worklab-ai/config`, `@worklab-ai/settings`, `@worklab-ai/tool-policy` |
-| `context` | `@worklab-ai/context`, `@worklab-ai/skills`, `@worklab-ai/memory-md` |
-| `execution` | `@worklab-ai/agent-harness`, `@worklab-ai/agent-host`, `@worklab-ai/agent-orchestrator` |
-| `observability` | `@worklab-ai/observability` |
-| `evaluation` | `@worklab-ai/agent-evals` |
-| `communication` | `@worklab-ai/a2a-adapter`, `@worklab-ai/cron-adapter`, `@worklab-ai/openai-api-adapter`, `@worklab-ai/slack-adapter`, `@worklab-ai/telegram-adapter`, `@worklab-ai/webhook-adapter`, `@worklab-ai/whatsapp-adapter` |
-| `operator-surface` | `@worklab-ai/operator-console`, `@worklab-ai/tui` |
+| `runtime` | `@mono-agent/runtime-adapter`, `@mono-agent/claude-agents-runtime`, `@mono-agent/openai-agents-runtime` |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md` |
+| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
+| `observability` | `@mono-agent/observability` |
+| `evaluation` | `@mono-agent/agent-evals` |
+| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
+| `operator-surface` | `@mono-agent/operator-console`, `@mono-agent/tui` |
 
-`@worklab-ai/runtime-adapter` wraps the in-repo `@worklab-ai/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). The `claude-agents-runtime` and `openai-agents-runtime` packages are additional first-class adapters that wrap their respective SDKs directly; Codex flows through the agent-runtime codex-app bridge. Hosts choose one runtime per responder at composition time via `createConfiguredAgentResponder({ runtime, model })`.
+`@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). The `claude-agents-runtime` and `openai-agents-runtime` packages are additional first-class adapters that wrap their respective SDKs directly; Codex flows through the agent-runtime codex-app bridge. Hosts choose one runtime per responder at composition time via `createConfiguredAgentResponder({ runtime, model })`.

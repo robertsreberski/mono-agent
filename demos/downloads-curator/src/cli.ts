@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { startMonoAgentTui } from "@worklab-ai/tui";
+import { startMonoAgentTui } from "@mono-agent/tui";
 
 import {
   buildDownloadsCuratorConfig,

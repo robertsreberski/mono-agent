@@ -1,8 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
-import type { MonoAgentConfigJson } from "@worklab-ai/config";
-import type { SettingsJsonValue } from "@worklab-ai/settings";
+import type { MonoAgentConfigJson } from "@mono-agent/config";
+import type { SettingsJsonValue } from "@mono-agent/settings";
 
 import type { MultiAgentRole } from "./orchestrator-responder.js";
 

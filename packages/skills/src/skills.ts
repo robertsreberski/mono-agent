@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 
-import { buildSkillIndex, loadSkillIndexFromDirectory } from "@worklab-ai/context";
-import type { MarkdownContextBlock, SkillIndexEntry } from "@worklab-ai/context";
+import { buildSkillIndex, loadSkillIndexFromDirectory } from "@mono-agent/context";
+import type { MarkdownContextBlock, SkillIndexEntry } from "@mono-agent/context";
 
 export interface LoadedSkill {
   readonly name: string;

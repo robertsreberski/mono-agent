@@ -9,7 +9,7 @@ import type {
   AgentRequestBase,
   AgentResponder,
   AgentResponse,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 import * as z from "zod/v4";
 
 export const DEFAULT_COLLABORATOR_TOOL_NAME = "ask_collaborator";

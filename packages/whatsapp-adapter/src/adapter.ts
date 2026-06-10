@@ -3,7 +3,7 @@ import {
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 
 import {
   normalizeWhatsAppMessage,
@@ -26,10 +26,10 @@ import type {
 export {
   AgentResponseCancelledError as AgentResponderCancelledError,
   isAgentResponseCancelledError as isAgentResponderCancelledError,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 export type {
   AgentResponseCancelledErrorOptions as AgentResponderCancelledErrorOptions,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 
 export type WhatsAppGroupTriggerMode = "mention" | "any";
 

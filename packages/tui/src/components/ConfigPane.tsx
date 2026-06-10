@@ -4,11 +4,11 @@ import {
   loadMonoAgentConfigWithSources,
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
-} from "@worklab-ai/config";
+} from "@mono-agent/config";
 import type {
   MonoAgentConfigJson,
   RedactedMonoAgentConfig,
-} from "@worklab-ai/config";
+} from "@mono-agent/config";
 
 import {
   buildTuiConfigSummary,

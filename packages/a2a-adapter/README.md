@@ -1,4 +1,4 @@
-# @worklab-ai/a2a-adapter
+# @mono-agent/a2a-adapter
 
 Category: `communication`
 
@@ -13,13 +13,13 @@ Expose a Mono Agent responder as an A2A provider and call remote A2A agents thro
 ## Install / Usage
 
 ```bash
-pnpm add @worklab-ai/a2a-adapter
+pnpm add @mono-agent/a2a-adapter
 ```
 
 Provider usage starts a loopback HTTP server by default and serves the Agent Card at `/.well-known/agent-card.json`. Message/task endpoints are available under `/a2a/json-rpc` and `/a2a/rest`.
 
 ```ts
-import { startA2AProvider } from "@worklab-ai/a2a-adapter";
+import { startA2AProvider } from "@mono-agent/a2a-adapter";
 
 const provider = await startA2AProvider({
   host: "127.0.0.1",
@@ -44,7 +44,7 @@ console.log(provider.agentCardUrl);
 Consumer usage discovers a direct Agent Card URL and sends text:
 
 ```ts
-import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
+import { sendA2AMessage } from "@mono-agent/a2a-adapter";
 
 const response = await sendA2AMessage({
   agentUrl: "http://127.0.0.1:4300/.well-known/agent-card.json",
@@ -129,7 +129,7 @@ It does not own runtime execution, memory, tool policy, central registries, sign
 Run:
 
 ```bash
-pnpm --filter @worklab-ai/a2a-adapter run build
-pnpm --filter @worklab-ai/a2a-adapter run typecheck
-pnpm --filter @worklab-ai/a2a-adapter run test
+pnpm --filter @mono-agent/a2a-adapter run build
+pnpm --filter @mono-agent/a2a-adapter run typecheck
+pnpm --filter @mono-agent/a2a-adapter run test
 ```

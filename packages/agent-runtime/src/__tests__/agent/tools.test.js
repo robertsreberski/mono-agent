@@ -21,7 +21,7 @@ const tempDirs = [];
 let previousPath = process.env.PATH;
 
 function tempWorkspace() {
-  const dir = mkdtempSync(resolve("/tmp", "worklab-ai-tools-"));
+  const dir = mkdtempSync(resolve("/tmp", "mono-agent-tools-"));
   tempDirs.push(dir);
   configureToolRuntime({ workspace: dir });
   return dir;

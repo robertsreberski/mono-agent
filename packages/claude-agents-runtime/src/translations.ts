@@ -1,4 +1,4 @@
-import type { RuntimeEventLike } from "@worklab-ai/runtime-adapter";
+import type { RuntimeEventLike } from "@mono-agent/runtime-adapter";
 
 export interface ClaudeSDKMessageLike {
   readonly type?: string;

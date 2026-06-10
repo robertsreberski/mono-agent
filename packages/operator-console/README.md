@@ -1,4 +1,4 @@
-# @worklab-ai/operator-console
+# @mono-agent/operator-console
 
 ## Category
 
@@ -11,13 +11,13 @@ Local loopback operator surface for Mono Agent hosts. It serves a React settings
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/operator-console run build
+pnpm --filter @mono-agent/operator-console run build
 ```
 
 ```ts
-import { startOperatorConsole } from "@worklab-ai/operator-console";
-import { CORE_AGENT_FIELD_GROUPS } from "@worklab-ai/config";
-import { telegramFieldGroup } from "@worklab-ai/telegram-adapter";
+import { startOperatorConsole } from "@mono-agent/operator-console";
+import { CORE_AGENT_FIELD_GROUPS } from "@mono-agent/config";
+import { telegramFieldGroup } from "@mono-agent/telegram-adapter";
 
 const consoleServer = await startOperatorConsole({
   configPath: "./mono-agent.config.json",
@@ -35,8 +35,8 @@ console.log(`${consoleServer.url}/?t=${consoleServer.token}`);
 - `startOperatorConsole`
 - `OperatorConsoleOptions`, `OperatorConsoleStartResult`, `OperatorConsoleEvent`
 - `OperatorConsoleObservabilityOptions`, `OperatorConsoleTraceabilityOptions`
-- `OPERATOR_CONSOLE_STATIC_DIR` from `@worklab-ai/operator-console/static`
-- Field-group types re-exported from `@worklab-ai/settings`
+- `OPERATOR_CONSOLE_STATIC_DIR` from `@mono-agent/operator-console/static`
+- Field-group types re-exported from `@mono-agent/settings`
 
 ## Traceability
 
@@ -50,7 +50,7 @@ When no registry is configured but an `observability.artifactDir` is present, th
 
 ## Dependency Boundary
 
-The package depends on `@worklab-ai/settings` and `@worklab-ai/observability`. It must not depend on core config, communication adapters, or the agent harness; hosts compose field groups, trace source lifecycle, and runtime behavior outside the console.
+The package depends on `@mono-agent/settings` and `@mono-agent/observability`. It must not depend on core config, communication adapters, or the agent harness; hosts compose field groups, trace source lifecycle, and runtime behavior outside the console.
 
 ## What This Package Does Not Own
 
@@ -59,7 +59,7 @@ It is not a runtime host, credential manager, communication adapter, database, o
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/operator-console run build
-pnpm --filter @worklab-ai/operator-console run typecheck
-pnpm --filter @worklab-ai/operator-console run test
+pnpm --filter @mono-agent/operator-console run build
+pnpm --filter @mono-agent/operator-console run typecheck
+pnpm --filter @mono-agent/operator-console run test
 ```

@@ -1,7 +1,7 @@
 import type {
   MonoAgentConfigJson,
   RedactedMonoAgentConfig,
-} from "@worklab-ai/config";
+} from "@mono-agent/config";
 
 export type TuiConfigFieldSource = "env" | "json" | "default";
 
@@ -103,7 +103,7 @@ function toField(
 /**
  * Build a compact, redacted view of the resolved configuration suitable for
  * the TUI's Config pane. The pane is read-only — any edits should go through
- * `@worklab-ai/operator-console` so the console enforces the same registered-field
+ * `@mono-agent/operator-console` so the console enforces the same registered-field
  * patch validator and atomic writes.
  */
 export function buildTuiConfigSummary(

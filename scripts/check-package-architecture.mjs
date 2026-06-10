@@ -9,6 +9,8 @@ import {
 } from "./package-catalog.mjs";
 
 const root = process.cwd();
+const packageScope = "@mono-agent/";
+const formerPackageScope = `@${"worklab-ai"}/`;
 const requiredReadmeSections = [
   "## Category",
   "## Responsibility",
@@ -25,6 +27,7 @@ const catalogDirs = new Set(packageCatalog.map((entry) => entry.dir));
 const packageDirs = readdirSync(join(root, "packages"), { withFileTypes: true })
   .filter((entry) => entry.isDirectory())
   .map((entry) => entry.name)
+  .filter((packageDir) => isPackageDirectory(join(root, "packages", packageDir)) || catalogDirs.has(packageDir))
   .sort();
 
 for (const packageDir of packageDirs) {
@@ -72,6 +75,9 @@ for (const catalogEntry of packageCatalog) {
   if (packageName !== catalogEntry.name) {
     errors.push(`packages/${packageDir}/package.json has unexpected name ${packageName}.`);
   }
+  if (!packageName.startsWith(packageScope)) {
+    errors.push(`packages/${packageDir}/package.json name must use the ${packageScope} scope.`);
+  }
   const deps = {
     ...manifest.dependencies,
     ...manifest.optionalDependencies,
@@ -79,7 +85,7 @@ for (const catalogEntry of packageCatalog) {
   };
   const depNames = Object.keys(deps);
   for (const depName of depNames) {
-    if (!depName.startsWith("@worklab-ai/")) {
+    if (!depName.startsWith(packageScope)) {
       continue;
     }
     const depEntry = catalogByName.get(depName);
@@ -101,9 +107,9 @@ for (const catalogEntry of packageCatalog) {
 }
 
 const oldReferences = [
-  `@worklab-ai/${"config"}-${"ui"}`,
-  `@worklab-ai/${"telegram"}-${"bridge"}`,
-  `@worklab-ai/${"whatsapp"}-${"bridge"}`,
+  `@mono-agent/${"config"}-${"ui"}`,
+  `@mono-agent/${"telegram"}-${"bridge"}`,
+  `@mono-agent/${"whatsapp"}-${"bridge"}`,
 ];
 for (const file of ["package.json", "README.md", "pnpm-lock.yaml"]) {
   const text = readFileSync(join(root, file), "utf8");
@@ -115,7 +121,8 @@ for (const file of ["package.json", "README.md", "pnpm-lock.yaml"]) {
 }
 
 const staleReferences = [
-  `@worklab-ai/${"comm"}/`,
+  formerPackageScope,
+  `@mono-agent/${"comm"}/`,
   `${"config"}-${"ui"}`,
   `${"telegram"}-${"bridge"}`,
   `${"whatsapp"}-${"bridge"}`,
@@ -177,4 +184,12 @@ function isTextFile(path) {
     return false;
   }
   return /\.(?:cjs|css|html|js|json|md|mjs|ts|tsx|yaml|yml)$/u.test(path);
+}
+
+function isPackageDirectory(dir) {
+  if (existsSync(join(dir, "package.json"))) {
+    return true;
+  }
+  const ignoredPackageArtifacts = new Set(["dist", "node_modules"]);
+  return readdirSync(dir).some((entry) => !ignoredPackageArtifacts.has(entry));
 }

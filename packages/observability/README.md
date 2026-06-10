@@ -1,4 +1,4 @@
-# @worklab-ai/observability
+# @mono-agent/observability
 
 ## Category
 
@@ -11,7 +11,7 @@ Local JSONL run observability and host trace source discovery. It records runtim
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/observability run build
+pnpm --filter @mono-agent/observability run build
 ```
 
 ```ts
@@ -22,7 +22,7 @@ import {
   listRecordedRuns,
   listTraceRuns,
   readRecordedRun,
-} from "@worklab-ai/observability";
+} from "@mono-agent/observability";
 ```
 
 ## Public API
@@ -37,7 +37,7 @@ import {
 
 ## Timeline Display
 
-Raw `.events.jsonl` artifacts stay append-only and one event per line. UI surfaces that need readable timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant `thinking` or visible `text` stream chunks into bounded display rows while preserving raw source index ranges and event counts. Browser bundles can import the helper from `@worklab-ai/observability/event-timeline` without pulling in the Node-backed artifact readers.
+Raw `.events.jsonl` artifacts stay append-only and one event per line. UI surfaces that need readable timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant `thinking` or visible `text` stream chunks into bounded display rows while preserving raw source index ranges and event counts. Browser bundles can import the helper from `@mono-agent/observability/event-timeline` without pulling in the Node-backed artifact readers.
 
 ## Trace Registry
 
@@ -56,7 +56,7 @@ It does not provide a hosted trace backend, metrics service, durable database, U
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/observability run build
-pnpm --filter @worklab-ai/observability run typecheck
-pnpm --filter @worklab-ai/observability run test
+pnpm --filter @mono-agent/observability run build
+pnpm --filter @mono-agent/observability run typecheck
+pnpm --filter @mono-agent/observability run test
 ```

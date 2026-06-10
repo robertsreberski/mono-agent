@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/slack-adapter",
+  "name": "@mono-agent/slack-adapter",
   "version": "0.1.0",
   "description": "Slack Socket Mode communication adapter for Worklab-style agent runtimes.",
   "type": "module",
@@ -23,8 +23,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/settings": "workspace:^0.1.0",
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/settings": "workspace:^0.1.0",
     "ws": "^8.20.1"
   },
   "devDependencies": {

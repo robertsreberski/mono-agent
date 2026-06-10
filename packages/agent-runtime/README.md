@@ -1,4 +1,4 @@
-# @worklab-ai/agent-runtime
+# @mono-agent/agent-runtime
 
 ## Category
 
@@ -6,7 +6,7 @@ Category: `runtime`
 
 ## Responsibility
 
-Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@worklab-ai/runtime-adapter` wraps behind Mono Agent runtime contracts.
+Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind Mono Agent runtime contracts.
 
 ## Public API
 
@@ -22,14 +22,14 @@ Depends only on external provider SDKs (`@anthropic-ai/claude-agent-sdk`, `@eare
 
 ## What This Package Does Not Own
 
-- Mono Agent runtime contracts and backend descriptors (`@worklab-ai/runtime-adapter`)
-- Conversation history, context building, or host-side session TTL policy (`@worklab-ai/agent-harness`)
-- Host configuration (`@worklab-ai/config`, `@worklab-ai/agent-host`)
+- Mono Agent runtime contracts and backend descriptors (`@mono-agent/runtime-adapter`)
+- Conversation history, context building, or host-side session TTL policy (`@mono-agent/agent-harness`)
+- Host configuration (`@mono-agent/config`, `@mono-agent/agent-host`)
 
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/agent-runtime run test
+pnpm --filter @mono-agent/agent-runtime run test
 ```
 
 ## Overview
@@ -49,7 +49,7 @@ selection flow, lifecycle diagrams, and host responsibilities.
 ## Install / Usage
 
 ```bash
-npm install @worklab-ai/agent-runtime
+npm install @mono-agent/agent-runtime
 ```
 
 Peer requirements:
@@ -62,7 +62,7 @@ Peer requirements:
 ## Quick start
 
 ```js
-import { createRuntime } from "@worklab-ai/agent-runtime";
+import { createRuntime } from "@mono-agent/agent-runtime";
 
 const runtime = createRuntime({
   // Host integration (all optional)
@@ -85,11 +85,11 @@ console.log(result.text);
 
 ## When to reach for this vs. other JS agent runtimes
 
-`@worklab-ai/agent-runtime` is purpose-built for **autonomous, long-running agent work** with provider portability and operational resilience as first-class concerns. It is *not* a streaming-chat UI kit. Where each peer fits:
+`@mono-agent/agent-runtime` is purpose-built for **autonomous, long-running agent work** with provider portability and operational resilience as first-class concerns. It is *not* a streaming-chat UI kit. Where each peer fits:
 
 - **Vercel AI SDK** — best when you're building a chat / generative-UI experience inside a React or Next.js app. `useChat`, `useCompletion`, streaming server components, and edge-runtime compatibility are their strengths. Their provider list is curated (Anthropic, OpenAI, Google, etc., via `@ai-sdk/*` packages); there's no Pi gateway, no Claude Code CLI, no Codex CLI app-server, and no per-call provider fallback. If you're rendering a streaming chat into a browser, use them. If you're orchestrating multi-turn autonomous work that must survive a rate-limited primary provider, use us.
 - **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our four backends and add context compaction, transcript-resume across provider drops, a 22-kind failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
-- **Mastra** — a workflow engine + memory + RAG stack. Different category: it's the layer *above* a runtime. You can layer Mastra workflows on top of `@worklab-ai/agent-runtime` if you want both.
+- **Mastra** — a workflow engine + memory + RAG stack. Different category: it's the layer *above* a runtime. You can layer Mastra workflows on top of `@mono-agent/agent-runtime` if you want both.
 - **OpenAI Agents SDK** — first-party OpenAI SDK. Same trade-off as the Claude Agent SDK: tight integration with OpenAI, no other providers. Pi providers in our runtime cover OpenAI plus a dozen others through a single API.
 - **LangChain.js** — kitchen sink with deep abstraction stacks. We're deliberately lean; if you want chains, agents, vector stores, and parsers under one umbrella, LangChain is built for that. If you want a focused runtime kernel, use us.
 
@@ -273,7 +273,7 @@ The package does **not** validate `structuredResult` against your schema — it 
 `createRouterRuntime({ host, chain })` wraps the standard runtime with an ordered chain of model references. On a retryable provider failure (rate limit, overload, network blip — classified via the same taxonomy as `retryableProviderFailureInfo`), it retries the same logical run against the next chain entry, replaying the transcript-tail snapshot of the previous attempt so the next provider continues rather than starts over.
 
 ```js
-import { createRouterRuntime } from "@worklab-ai/agent-runtime";
+import { createRouterRuntime } from "@mono-agent/agent-runtime";
 
 const router = createRouterRuntime({
   host: { /* same shape as createRuntime */ },
@@ -306,7 +306,7 @@ The runtime emits structured events for everything that happens during a run —
 A built-in aggregator covers the common metrics:
 
 ```js
-import { createRuntime, createMetricsObserver } from "@worklab-ai/agent-runtime";
+import { createRuntime, createMetricsObserver } from "@mono-agent/agent-runtime";
 
 const metrics = createMetricsObserver();
 const runtime = createRuntime({ observers: [metrics] });
@@ -375,7 +375,7 @@ Approval lifecycle is observable via `onEvent`:
 
 ## Tool-result bloat handling
 
-`@worklab-ai/agent-runtime/agent/tool-bloat.js` enforces a 256 KB default cap per `tool_result`. When a payload exceeds the cap, the kernel:
+`@mono-agent/agent-runtime/agent/tool-bloat.js` enforces a 256 KB default cap per `tool_result`. When a payload exceeds the cap, the kernel:
 
 1. Calls your `persistArtifact({ filename, buffer, toolName, toolUseId })` callback (if you supplied one).
 2. Substitutes a compact text reference in the agent's transcript.
@@ -385,17 +385,17 @@ Hosts that don't supply `persistArtifact` get the truncation summary but no on-d
 
 ## Context compaction
 
-`@worklab-ai/agent-runtime/agent/compaction.js` provides `createAgentCompactionManager(...)` which the Pi SDK provider invokes automatically. Configure via the agent's settings (`agent_compaction_*` keys). When a compaction completes, the kernel hands a structured row to your `onCompactionRecorded(record)` callback so the host can persist it however it likes.
+`@mono-agent/agent-runtime/agent/compaction.js` provides `createAgentCompactionManager(...)` which the Pi SDK provider invokes automatically. Configure via the agent's settings (`agent_compaction_*` keys). When a compaction completes, the kernel hands a structured row to your `onCompactionRecorded(record)` callback so the host can persist it however it likes.
 
 ## Advanced exports
 
 The package exposes its inner pieces via subpath imports:
 
 ```js
-import { resolveRuntimeBridge, listRuntimeBridges, runtimeCapabilities } from "@worklab-ai/agent-runtime/ai/runtime/registry.js";
-import { generateClaudeResponse } from "@worklab-ai/agent-runtime/ai/providers/claude-sdk.js";
-import { createAgentCompactionManager, estimateFirstTurnInput } from "@worklab-ai/agent-runtime/agent/compaction.js";
-import { configureToolRuntime, readToolRuntime } from "@worklab-ai/agent-runtime/agent/tools/shared/runtime-context.js";
+import { resolveRuntimeBridge, listRuntimeBridges, runtimeCapabilities } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
+import { generateClaudeResponse } from "@mono-agent/agent-runtime/ai/providers/claude-sdk.js";
+import { createAgentCompactionManager, estimateFirstTurnInput } from "@mono-agent/agent-runtime/agent/compaction.js";
+import { configureToolRuntime, readToolRuntime } from "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js";
 // ...
 ```
 
@@ -403,7 +403,7 @@ These are stable but treated as advanced API. Most consumers should reach for `c
 
 ## Example consumer
 
-See [`examples/echo-agent/`](../../examples/echo-agent/) for a runnable consumer that imports `@worklab-ai/agent-runtime`, runs a single Claude SDK turn with the Bash tool, and prints the result.
+See [`examples/echo-agent/`](../../examples/echo-agent/) for a runnable consumer that imports `@mono-agent/agent-runtime`, runs a single Claude SDK turn with the Bash tool, and prints the result.
 
 ## License
 

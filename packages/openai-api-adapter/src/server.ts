@@ -9,7 +9,7 @@ import {
   type AgentResponder,
   type AgentResponse,
   type AgentStreamEvent,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 export interface OpenAIApiRequestMetadata {
@@ -108,7 +108,7 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 0;
 const DEFAULT_BASE_PATH = "/v1";
 const DEFAULT_MODEL_ID = "mono-agent";
-const OPENAI_OWNED_BY = "worklab-ai";
+const OPENAI_OWNED_BY = "mono-agent";
 const SENSITIVE_REQUEST_HEADERS = new Set([
   "authorization",
   "cookie",

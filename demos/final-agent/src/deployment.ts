@@ -1,8 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import type { MonoAgentConfigJson } from "@worklab-ai/config";
-import type { SettingsJsonValue } from "@worklab-ai/settings";
+import type { MonoAgentConfigJson } from "@mono-agent/config";
+import type { SettingsJsonValue } from "@mono-agent/settings";
 
 export const DEFAULT_FINAL_DEMO_DEPLOY_MODEL = "gemma4:31b";
 export const DEFAULT_FINAL_DEMO_DEPLOY_MODEL_REFERENCE = "pi:ollama:gemma4:31b";

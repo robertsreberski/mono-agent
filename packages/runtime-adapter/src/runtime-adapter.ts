@@ -1,6 +1,6 @@
-import { createRuntime } from "@worklab-ai/agent-runtime";
-import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@worklab-ai/agent-runtime/ai/runtime/model-refs.js";
-import { listRuntimeBridges } from "@worklab-ai/agent-runtime/ai/runtime/registry.js";
+import { createRuntime } from "@mono-agent/agent-runtime";
+import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
+import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 
 import type {
   MonoRuntimeBackendCapabilities,
@@ -218,7 +218,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "claude",
     executionMode: "sdk",
     transport: "sdk",
-    providerBoundary: "@anthropic-ai/claude-agent-sdk via @worklab-ai/agent-runtime",
+    providerBoundary: "@anthropic-ai/claude-agent-sdk via @mono-agent/agent-runtime",
     modelReferenceExamples: ["claude:claude-sonnet-4-6"],
     acceptsProviderIds: false,
   },
@@ -229,7 +229,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "claude",
     executionMode: "cli",
     transport: "cli",
-    providerBoundary: "Claude Code CLI bridge via @worklab-ai/agent-runtime",
+    providerBoundary: "Claude Code CLI bridge via @mono-agent/agent-runtime",
     modelReferenceExamples: ["claude:claude-sonnet-4-6"],
     acceptsProviderIds: false,
   },
@@ -240,7 +240,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "codex",
     executionMode: "cli",
     transport: "cli",
-    providerBoundary: "Codex app-server bridge via @worklab-ai/agent-runtime",
+    providerBoundary: "Codex app-server bridge via @mono-agent/agent-runtime",
     modelReferenceExamples: ["codex:gpt-5.5"],
     acceptsProviderIds: false,
   },
@@ -251,7 +251,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     sdk: "pi",
     executionMode: "sdk",
     transport: "sdk",
-    providerBoundary: "Pi SDK provider gateway via @worklab-ai/agent-runtime",
+    providerBoundary: "Pi SDK provider gateway via @mono-agent/agent-runtime",
     modelReferenceExamples: ["pi:openai-codex:gpt-5.5", "pi:github-copilot:gpt-4.1"],
     acceptsProviderIds: true,
   },

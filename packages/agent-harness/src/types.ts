@@ -3,12 +3,12 @@ import type {
   AgentRequestBase,
   AgentResponder,
   AgentResponse,
-} from "@worklab-ai/agent-contracts";
-import type { BuiltAgentContext, HistoryMessage } from "@worklab-ai/context";
-import type { MemoryStore } from "@worklab-ai/memory-md";
-import type { RunRecorder, RunSummary, RuntimeEventLike } from "@worklab-ai/observability";
-import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
-import type { ToolPolicy } from "@worklab-ai/tool-policy";
+} from "@mono-agent/agent-contracts";
+import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
+import type { MemoryStore } from "@mono-agent/memory-md";
+import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
+import type { MonoRuntimeLike, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { ToolPolicy } from "@mono-agent/tool-policy";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 

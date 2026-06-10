@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/telegram-adapter",
+  "name": "@mono-agent/telegram-adapter",
   "version": "0.1.0",
   "description": "Telegram communication adapter for Worklab-style agent runtimes.",
   "type": "module",
@@ -23,7 +23,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/settings": "workspace:^0.1.0"
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/settings": "workspace:^0.1.0"
   }
 }

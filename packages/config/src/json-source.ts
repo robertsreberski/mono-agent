@@ -2,8 +2,8 @@ import {
   readSettingsJson,
   SettingsJsonError,
   writeSettingsJson,
-} from "@worklab-ai/settings";
-import type { SettingsJson, SettingsJsonValue } from "@worklab-ai/settings";
+} from "@mono-agent/settings";
+import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryScope, MemoryWriteMode } from "./types.js";

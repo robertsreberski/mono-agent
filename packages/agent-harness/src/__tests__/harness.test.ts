@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
-import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@worklab-ai/observability";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 
 import {
   AgentHarnessFailureError,

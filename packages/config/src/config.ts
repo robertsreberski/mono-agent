@@ -8,8 +8,8 @@ import {
   parseMonoRuntimeModelReference,
   RuntimeAdapterError,
   validateLocalProviderDefinition,
-} from "@worklab-ai/runtime-adapter";
-import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@worklab-ai/runtime-adapter";
+} from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@mono-agent/runtime-adapter";
 
 import type { MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 

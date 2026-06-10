@@ -6,7 +6,7 @@ import {
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 
 export interface CronRequestMetadata {
   readonly jobId: string;

@@ -9,7 +9,7 @@ import {
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
-} from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 export type WebhookInvocationMode = "sync" | "async";

@@ -14,4 +14,4 @@ export type {
   FieldKind,
   FieldGroupRegistry,
   SettingsJson,
-} from "@worklab-ai/settings";
+} from "@mono-agent/settings";
