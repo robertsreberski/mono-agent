@@ -16,6 +16,7 @@
 //                      back to vendored binary, then PATH lookup.
 //   qaOutputDir      — fallback for normalizeMcpToolParams when the per-call
 //                      runArtifactDir isn't supplied.
+//   sandboxPolicy    — optional strict filesystem/process/network sandbox policy.
 //   runtimeBrand     — resolved RuntimeBrand object (see runtime-brand.js).
 //                      Internal helpers read it to stamp host-specific names
 //                      (MCP client name, transcript schema id, doctor command).
@@ -29,6 +30,7 @@ const context = {
   toolArtifactDir: undefined,
   ripgrepPath: undefined,
   qaOutputDir: undefined,
+  sandboxPolicy: undefined,
   runtimeBrand: { ...DEFAULT_RUNTIME_BRAND },
 };
 

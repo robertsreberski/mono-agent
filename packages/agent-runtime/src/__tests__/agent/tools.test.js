@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
 import {
   bashToolImpl,
   editToolImpl,
@@ -10,6 +11,8 @@ import {
   readToolImpl,
   normalizeBashTimeoutMs,
   resolveRgPath,
+  webFetchToolImpl,
+  webSearchToolImpl,
   writeToolImpl,
 } from "../../agent/tools/index.js";
 import {
@@ -169,6 +172,32 @@ describe("ai tool helpers", () => {
     expect(result).toContain("Full output saved to:");
   });
 
+  it("routes bash execution through the configured sandbox engine", async () => {
+    const root = tempWorkspace();
+    const result = await bashToolImpl(
+      { command: "echo unsandboxed", workdir: root },
+      {
+        sandboxPolicy: failClosedSandboxPolicy({ root }),
+        sandboxEngine: {
+          id: "fake",
+          async isAvailable() {
+            return true;
+          },
+          async prepareCommand(command) {
+            return {
+              ...command,
+              command: process.execPath,
+              args: ["-e", "console.log('sandboxed bash')"],
+              sandboxed: true,
+            };
+          },
+        },
+      },
+    );
+
+    expect(result).toContain("sandboxed bash");
+  });
+
   it("kills the bash process group on timeout", async () => {
     const root = tempWorkspace();
     const marker = `agent-runtime-bash-timeout-${process.pid}-${Date.now()}`;
@@ -183,6 +212,17 @@ describe("ai tool helpers", () => {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
     const processes = execFileSync("ps", ["axww", "-o", "command="], { encoding: "utf8" });
     expect(processes).not.toContain(marker);
+  });
+
+  it("denies network tools when sandbox policy blocks network", async () => {
+    const root = tempWorkspace();
+    const sandboxPolicy = failClosedSandboxPolicy({ root });
+
+    const fetchResult = await webFetchToolImpl({ url: "https://example.com" }, { sandboxPolicy });
+    const searchResult = await webSearchToolImpl({ query: "mono agent" }, { sandboxPolicy });
+
+    expect(fetchResult).toContain("Network access denied by sandbox policy");
+    expect(searchResult).toContain("Network access denied by sandbox policy");
   });
 
   it("returns a clean error when ripgrep is unavailable", async () => {
@@ -216,6 +256,83 @@ describe("ai tool helpers", () => {
     expect(editResult).toContain("Path not allowed");
     expect(globResult).toContain("Path not allowed");
     expect(grepResult).toContain("Path not allowed");
+  });
+
+  it("uses sandbox policy roots instead of permissive default roots", async () => {
+    const root = tempWorkspace();
+    const outsideTmpFile = join(resolve("/tmp"), `mono-agent-outside-${process.pid}.txt`);
+    writeFile(outsideTmpFile, "outside");
+
+    configureToolRuntime({
+      workspace: root,
+      sandboxPolicy: failClosedSandboxPolicy({ root }),
+    });
+
+    const readResult = await readToolImpl({ file_path: outsideTmpFile });
+    const bashResult = await bashToolImpl({ command: "pwd", workdir: "/tmp" });
+
+    expect(readResult).toContain("Path not allowed");
+    expect(bashResult).toContain("Working directory not allowed");
+  });
+
+  it("applies per-call sandbox policy to file and shell tools", async () => {
+    const root = tempWorkspace();
+    const outsideTmpFile = join(resolve("/tmp"), `mono-agent-outside-call-${process.pid}.txt`);
+    writeFile(outsideTmpFile, "outside");
+    const sandboxPolicy = failClosedSandboxPolicy({ root });
+
+    const readResult = await readToolImpl({ file_path: outsideTmpFile }, { sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: outsideTmpFile, content: "x" }, { sandboxPolicy });
+    const globResult = await globToolImpl({ path: "/tmp", pattern: "**/*" }, { sandboxPolicy });
+    const grepResult = await grepToolImpl({ path: "/tmp", pattern: "outside" }, { sandboxPolicy });
+    const bashResult = await bashToolImpl({ command: "pwd", workdir: "/tmp" }, { sandboxPolicy });
+
+    expect(readResult).toContain("Path not allowed");
+    expect(writeResult).toContain("Path not allowed");
+    expect(globResult).toContain("Path not allowed");
+    expect(grepResult).toContain("Path not allowed");
+    expect(bashResult).toContain("Working directory not allowed");
+  });
+
+  it("rejects symlink escapes when sandbox policy is configured", async () => {
+    const root = tempWorkspace();
+    const outside = mkdtempSync(resolve("/tmp", "mono-agent-outside-"));
+    tempDirs.push(outside);
+    writeFile(join(outside, "secret.txt"), "secret");
+    symlinkSync(outside, join(root, "linked-outside"));
+
+    configureToolRuntime({
+      workspace: root,
+      sandboxPolicy: failClosedSandboxPolicy({ root }),
+    });
+
+    const readResult = await readToolImpl({ file_path: "linked-outside/secret.txt" });
+
+    expect(readResult).toContain("Path not allowed");
+  });
+
+  it("honors sandbox writable roots separately from readable roots", async () => {
+    const root = tempWorkspace();
+    const readable = mkdtempSync(resolve("/tmp", "mono-agent-readable-"));
+    tempDirs.push(readable);
+    writeFile(join(readable, "note.txt"), "read only");
+
+    configureToolRuntime({
+      workspace: root,
+      sandboxPolicy: failClosedSandboxPolicy({
+        root,
+        readableRoots: [root, readable],
+        writableRoots: [root],
+      }),
+    });
+
+    const readResult = await readToolImpl({ file_path: join(readable, "note.txt") });
+    const writeResult = await writeToolImpl({ file_path: join(readable, "new.txt"), content: "x" });
+    const editResult = await editToolImpl({ file_path: join(readable, "note.txt"), old_string: "read", new_string: "write" });
+
+    expect(readResult).toContain("1\tread only");
+    expect(writeResult).toContain("Path not allowed");
+    expect(editResult).toContain("Path not allowed");
   });
 
   it("rejects bash workdir outside the workspace boundary", async () => {

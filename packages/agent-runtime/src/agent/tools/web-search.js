@@ -1,6 +1,10 @@
-export async function webSearchToolImpl({ query, limit = 5 }) {
+import { networkPolicyAllowsUrl } from "@mono-agent/sandbox";
+
+export async function webSearchToolImpl({ query, limit = 5 }, { sandboxPolicy } = {}) {
   const max = Math.min(Math.max(Number(limit) || 5, 1), 10);
-  const resp = await fetch(`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+  const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  if (!networkPolicyAllowsUrl(sandboxPolicy, url)) return "Error: Network access denied by sandbox policy.";
+  const resp = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 AgentRuntime/0.1" },
     signal: AbortSignal.timeout(15000),
   });

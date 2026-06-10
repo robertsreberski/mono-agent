@@ -3,6 +3,7 @@ import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { prepareSandboxedCommand } from "@mono-agent/sandbox";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import {
@@ -215,7 +216,7 @@ function isReadOnlyShellCommand(command) {
   ].some((pattern) => pattern.test(text));
 }
 
-function createBuiltinTool(name, label, description, parameters, execute, { cwd, onEvent, toolLimits, toolPolicy } = {}) {
+function createBuiltinTool(name, label, description, parameters, execute, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine } = {}) {
   return {
     name,
     label,
@@ -246,7 +247,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
         }));
       }
 
-      const raw = await execute(normalized, { signal });
+      const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine });
       const text = toolText(raw);
       if (isFileEdit && editState) {
         const failed = isErrorText(text);
@@ -319,6 +320,8 @@ export function getPiBuiltinTools(allowedTools, {
   onTruncate = null,
   toolPayloadMaxBytes = MAX_TOOL_RESULT_BYTES,
   toolPolicy = null,
+  sandboxPolicy = null,
+  sandboxEngine = null,
   approvalManager = null,
   approvalModel = null,
 } = {}) {
@@ -335,17 +338,17 @@ export function getPiBuiltinTools(allowedTools, {
       start_line: { type: "integer" },
       limit: { type: "integer" },
       max_output_chars: textLimitSchema,
-    }, ["file_path"]), readToolImpl, { cwd, onEvent, toolLimits, toolPolicy }),
+    }, ["file_path"]), readToolImpl, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine }),
     Write: createBuiltinTool("Write", "Write", "Write content to a local file.", objectSchema({
       file_path: { type: "string" },
       content: { type: "string" },
-    }, ["file_path", "content"]), writeToolImpl, { cwd, onEvent, toolLimits, toolPolicy }),
+    }, ["file_path", "content"]), writeToolImpl, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine }),
     Edit: createBuiltinTool("Edit", "Edit", "Replace an exact string in a local file.", objectSchema({
       file_path: { type: "string" },
       old_string: { type: "string" },
       new_string: { type: "string" },
       replace_all: { type: "boolean" },
-    }, ["file_path", "old_string", "new_string"]), editToolImpl, { cwd, onEvent, toolLimits, toolPolicy }),
+    }, ["file_path", "old_string", "new_string"]), editToolImpl, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine }),
     Glob: createBuiltinTool("Glob", "Glob", "Find files matching a pattern.", objectSchema({
       pattern: { type: "string" },
       path: { type: "string" },
@@ -353,7 +356,7 @@ export function getPiBuiltinTools(allowedTools, {
       offset: { type: "integer" },
       max_matches: { type: "integer" },
       max_output_chars: textLimitSchema,
-    }, ["pattern"]), globToolImpl, { cwd, onEvent, toolLimits, toolPolicy }),
+    }, ["pattern"]), globToolImpl, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine }),
     Grep: createBuiltinTool("Grep", "Grep", "Search file contents with ripgrep. Defaults to returning matching file paths; use output_mode='content' only for exact snippets.", objectSchema({
       pattern: { type: "string" },
       path: { type: "string" },
@@ -367,23 +370,23 @@ export function getPiBuiltinTools(allowedTools, {
       offset: { type: "integer" },
       max_matches: { type: "integer" },
       max_output_chars: textLimitSchema,
-    }, ["pattern"]), grepToolImpl, { cwd, onEvent, toolLimits, toolPolicy }),
+    }, ["pattern"]), grepToolImpl, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine }),
     Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command in the workspace.", objectSchema({
       command: { type: "string" },
       workdir: { type: "string" },
       description: { type: "string" },
       timeout: bashTimeoutSchema,
       max_output_chars: bashLimitSchema,
-    }, ["command"]), bashToolImpl, { cwd, onEvent, toolLimits, toolPolicy }),
+    }, ["command"]), bashToolImpl, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine }),
     WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Fetch a URL and return text.", objectSchema({
       url: { type: "string" },
       headers: { type: "object", additionalProperties: { type: "string" } },
       max_output_chars: textLimitSchema,
-    }, ["url"]), webFetchToolImpl, { cwd, onEvent, toolLimits, toolPolicy }),
+    }, ["url"]), webFetchToolImpl, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine }),
     WebSearch: createBuiltinTool("WebSearch", "Web Search", "Search the web and return result summaries.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
-    }, ["query"]), webSearchToolImpl, { cwd, onEvent, toolPolicy }),
+    }, ["query"]), webSearchToolImpl, { cwd, onEvent, toolPolicy, sandboxPolicy, sandboxEngine }),
   };
   const names = Array.isArray(allowedTools) ? allowedTools : Object.keys(all);
   const tools = names.map((name) => all[name]).filter(Boolean);
@@ -406,7 +409,20 @@ export function resolveMcpStdioCwd(cfg = {}, cwd = null) {
   return cwd || process.cwd();
 }
 
-async function connectMcpClient(name, cfg, { cwd } = {}) {
+export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null } = {}) {
+  return prepareSandboxedCommand({
+    policy: sandboxPolicy,
+    engine: sandboxEngine,
+    command: {
+      command: cfg.command,
+      args: cfg.args || [],
+      cwd: resolveMcpStdioCwd(cfg, cwd),
+      ...(cfg.env && typeof cfg.env === "object" ? { env: cfg.env } : {}),
+    },
+  });
+}
+
+async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine } = {}) {
   const brand = readRuntimeBrand();
   const client = new McpClient(
     { name: `${brand.mcpClientName}/${name}`, version: brand.mcpClientVersion },
@@ -421,12 +437,14 @@ async function connectMcpClient(name, cfg, { cwd } = {}) {
       requestInit: { headers: cfg.headers || {} },
     });
   } else {
+    const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine });
     transport = new StdioClientTransport({
-      command: cfg.command,
-      args: cfg.args || [],
-      cwd: resolveMcpStdioCwd(cfg, cwd),
-      env: { ...process.env, ...(cfg.env || {}) },
+      command: prepared.command,
+      args: prepared.args || [],
+      cwd: prepared.cwd,
+      env: { ...process.env, ...(prepared.env || {}) },
     });
+    transport.__monoSandboxCleanup = prepared.cleanup;
   }
   await client.connect(transport);
   return { name, client, transport };
@@ -512,11 +530,13 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   qaOutputDir = null,
   onTruncate = null,
   toolPayloadMaxBytes = MAX_TOOL_RESULT_BYTES,
+  sandboxPolicy = null,
+  sandboxEngine = null,
 } = {}) {
   const clients = [];
   const tools = [];
   const entries = Object.entries(mcpConfig || {});
-  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, { cwd })));
+  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine })));
   const warnings = [];
   const seen = new Set(reservedNames);
 
@@ -611,5 +631,6 @@ export async function closePiMcpClients(clients) {
   for (const { client, transport } of clients || []) {
     try { await client.close?.(); } catch { /* best-effort */ }
     try { await transport.close?.(); } catch { /* best-effort */ }
+    try { await transport.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
   }
 }

@@ -8,9 +8,9 @@ import { boundedInt, rememberRead, trimLine } from "./shared/dedup.js";
 import { capChars } from "./shared/output-truncation.js";
 import { isPathAllowed, resolveToolPath } from "./shared/path-resolver.js";
 
-export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }) {
+export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy } = {}) {
   const target = resolveToolPath(file_path, workdir);
-  if (!isPathAllowed(target, workdir)) return `Error: Path not allowed: ${file_path}`;
+  if (!isPathAllowed(target, workdir, { sandboxPolicy })) return `Error: Path not allowed: ${file_path}`;
   if (!existsSync(target)) return `Error: File not found: ${file_path}`;
   const content = readFileSync(target, "utf8");
   let lines = content.split("\n");

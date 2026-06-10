@@ -46,6 +46,7 @@ const TOOL_RUNTIME_KEYS = [
   "repoRoot",
   "ripgrepPath",
   "qaOutputDir",
+  "sandboxPolicy",
 ];
 
 function pickDefined(source, keys) {

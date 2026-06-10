@@ -1,3 +1,5 @@
+import type { SandboxPolicy } from "@mono-agent/sandbox";
+
 export type RuntimeExecutionMode = "sdk" | "cli";
 
 export interface RuntimeModelReference {
@@ -114,6 +116,7 @@ export interface RuntimeRunOptions {
   readonly disallowedTools?: readonly string[];
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
+  readonly sandboxPolicy?: SandboxPolicy;
   readonly [key: string]: unknown;
 }
 
@@ -129,6 +132,7 @@ export interface RuntimeToolOptions {
   readonly repoRoot?: string;
   readonly ripgrepPath?: string;
   readonly qaOutputDir?: string;
+  readonly sandboxPolicy?: SandboxPolicy;
   readonly [key: string]: unknown;
 }
 

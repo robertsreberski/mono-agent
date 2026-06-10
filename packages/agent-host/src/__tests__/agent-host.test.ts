@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { journalDayFor } from "@mono-agent/memory-journal";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy } from "@mono-agent/sandbox";
 
 import {
   createConfiguredAgentHarness,
@@ -246,6 +247,37 @@ describe("agent host composition helpers", () => {
 
     expect(runtime.run).toEqual(expect.any(Function));
     expect(runtime.configureTools).toEqual(expect.any(Function));
+  });
+
+  it("passes configured sandbox policy into runtime options", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const harness = createConfiguredAgentHarness({
+      config: {
+        ...monoConfig({ dir, identityPath, artifactDir }),
+        sandbox: createSandboxPolicy({
+          root: dir,
+          network: { mode: "none" },
+        }),
+      },
+      runtime: fake.runtime,
+    });
+
+    await harness.run({
+      conversationId: "conversation-sandbox",
+      userMessage: "Hello",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls[0]?.options.sandboxPolicy).toMatchObject({
+      mode: "native",
+      required: true,
+      network: { mode: "none", allowlist: [] },
+    });
   });
 
   it("forwards continuous session config so consecutive requests resume the provider session", async () => {

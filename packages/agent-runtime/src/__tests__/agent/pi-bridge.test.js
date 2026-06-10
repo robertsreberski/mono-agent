@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
 import {
   coerceMcpContent,
   getPiBuiltinTools,
   normalizeMcpToolParams,
   normalizePiBuiltinToolParams,
+  prepareMcpStdioCommand,
   resolveMcpStdioCwd,
 } from "../../agent/tools/pi-bridge.js";
 
@@ -155,6 +157,38 @@ describe("pi MCP tool helpers", () => {
     expect(resolveMcpStdioCwd({}, "/repo/project")).toBe("/repo/project");
     expect(resolveMcpStdioCwd({ cwd: "tools" }, "/repo/project")).toBe("/repo/project/tools");
     expect(resolveMcpStdioCwd({ cwd: "/opt/mcp" }, "/repo/project")).toBe("/opt/mcp");
+  });
+
+  it("prepares stdio MCP commands through the configured sandbox engine", async () => {
+    const policy = failClosedSandboxPolicy({ root: "/repo/project" });
+    const prepared = await prepareMcpStdioCommand(
+      { command: "node", args: ["server.js"], cwd: "tools" },
+      {
+        cwd: "/repo/project",
+        sandboxPolicy: policy,
+        sandboxEngine: {
+          id: "fake",
+          async isAvailable() {
+            return true;
+          },
+          async prepareCommand(command) {
+            return {
+              ...command,
+              command: "sandbox",
+              args: [command.command, ...(command.args ?? [])],
+              sandboxed: true,
+            };
+          },
+        },
+      },
+    );
+
+    expect(prepared).toMatchObject({
+      command: "sandbox",
+      args: ["node", "server.js"],
+      cwd: "/repo/project/tools",
+      sandboxed: true,
+    });
   });
 
   it("blocks non-read-only Bash commands when planning shell policy is enforced", async () => {

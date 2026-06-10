@@ -1,4 +1,5 @@
 import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { SandboxPolicy } from "@mono-agent/sandbox";
 import type { RedactedSecretValue } from "@mono-agent/settings";
 
 import type { EFFORT_LEVELS } from "./field-groups.js";
@@ -39,6 +40,7 @@ export interface MonoAgentConfig {
     readonly disallowedTools: readonly string[];
     readonly mcpConfigPath?: string;
   };
+  readonly sandbox?: SandboxPolicy;
   readonly artifacts: {
     readonly dir: string;
   };
@@ -63,6 +65,7 @@ export interface RedactedMonoAgentConfig {
   readonly context: MonoAgentConfig["context"];
   readonly memory?: MonoAgentConfig["memory"];
   readonly tools: MonoAgentConfig["tools"];
+  readonly sandbox?: MonoAgentConfig["sandbox"];
   readonly artifacts: MonoAgentConfig["artifacts"];
   readonly traceability: MonoAgentConfig["traceability"];
   readonly providers?: {

@@ -68,6 +68,9 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:packages/runtime-adapter
+      '@mono-agent/sandbox':
+        specifier: workspace:^0.1.0
+        version: link:packages/sandbox
       '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:packages/settings
@@ -155,6 +158,9 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:../runtime-adapter
+      '@mono-agent/sandbox':
+        specifier: workspace:^0.1.0
+        version: link:../sandbox
       '@mono-agent/skills':
         specifier: workspace:^0.1.0
         version: link:../skills
@@ -188,6 +194,9 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:../runtime-adapter
+      '@mono-agent/sandbox':
+        specifier: workspace:^0.1.0
+        version: link:../sandbox
       '@mono-agent/tool-policy':
         specifier: workspace:^0.1.0
         version: link:../tool-policy
@@ -221,6 +230,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
+      '@mono-agent/sandbox':
+        specifier: workspace:^0.1.0
+        version: link:../sandbox
       '@opencode-ai/sdk':
         specifier: ^1.15.13
         version: 1.17.0
@@ -233,6 +245,9 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:^0.1.0
         version: link:../runtime-adapter
+      '@mono-agent/sandbox':
+        specifier: workspace:^0.1.0
+        version: link:../sandbox
       '@mono-agent/settings':
         specifier: workspace:^0.1.0
         version: link:../settings
@@ -381,6 +396,11 @@ importers:
       '@mono-agent/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime
+      '@mono-agent/sandbox':
+        specifier: workspace:^0.1.0
+        version: link:../sandbox
+
+  packages/sandbox: {}
 
   packages/settings: {}
 

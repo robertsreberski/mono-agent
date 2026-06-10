@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
+import { createSandboxPolicy } from "@mono-agent/sandbox";
 
 import {
   AgentHarnessFailureError,
@@ -235,6 +236,46 @@ describe("AgentHarness", () => {
       collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
     });
     expect(cleanupCalls).toEqual(["cleaned"]);
+  });
+
+  it("does not allow request-scoped runtime options to weaken sandbox policy", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      sandboxPolicy: createSandboxPolicy({
+        root: dir,
+        network: { mode: "none" },
+      }),
+      runtimeOptionsForRequest: () => ({
+        runtimeOptions: {
+          sandboxPolicy: createSandboxPolicy({
+            mode: "off",
+            root: dir,
+            network: { mode: "all" },
+            fallback: "unsafe-host-process",
+            unsafeAllowHostProcess: true,
+          }),
+        },
+      }),
+    }).run({
+      conversationId: "conversation-sandbox",
+      userMessage: "Can you run this?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls[0]?.options.sandboxPolicy).toMatchObject({
+      mode: "native",
+      required: true,
+      fallback: "fail-closed",
+      network: { mode: "none", allowlist: [] },
+    });
   });
 
   it("appends a deterministic host summary when memoryWriteMode is append-host-summary", async () => {

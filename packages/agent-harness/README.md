@@ -18,8 +18,8 @@ pnpm --filter @mono-agent/agent-harness run build
 import { createAgentHarness, createAgentResponder } from "@mono-agent/agent-harness";
 ```
 
-Hosts wire identity/context paths, runtime, model, execution mode, tool policy, history, memory, skills, and recorder factory explicitly.
-Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call and runs the returned cleanup after execution.
+Hosts wire identity/context paths, runtime, model, execution mode, tool policy, sandbox policy, history, memory, skills, and recorder factory explicitly.
+Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call, keeps configured sandbox policy monotonic, and runs the returned cleanup after execution.
 
 ## Public API
 
@@ -34,7 +34,7 @@ With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live
 
 ## Dependency Boundary
 
-The harness may depend on core building blocks: agent-contracts, context, memory-md, observability, runtime-adapter, skills, and tool-policy. It must not depend on communication adapters, the operator console, or host/demo code.
+The harness may depend on core building blocks: agent-contracts, context, memory-md, observability, runtime-adapter, sandbox, skills, and tool-policy. It must not depend on communication adapters, the operator console, or host/demo code.
 
 ## What This Package Does Not Own
 

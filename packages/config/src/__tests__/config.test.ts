@@ -69,6 +69,58 @@ describe("loadMonoAgentConfig", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
 
     expect(config.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 1_800_000 });
+    expect(config.sandbox).toBeUndefined();
+  });
+
+  it("loads sandbox policy from env when configured", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_WORKSPACE: "workspace",
+        MONO_AGENT_SANDBOX_MODE: "native",
+        MONO_AGENT_SANDBOX_NETWORK: "allowlist",
+        MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST: "github.com, api.github.com",
+      },
+    });
+
+    expect(config.sandbox).toMatchObject({
+      mode: "native",
+      engine: "srt",
+      root: "/repo/workspace",
+      required: true,
+      network: {
+        mode: "allowlist",
+        allowlist: ["github.com", "api.github.com"],
+      },
+    });
+  });
+
+  it("rejects unsafe sandbox fallback unless explicitly opted in", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SANDBOX_MODE: "native",
+        MONO_AGENT_SANDBOX_FALLBACK: "unsafe-host-process",
+      },
+    })).toThrow(/unsafeAllowHostProcess/u);
+
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SANDBOX_MODE: "native",
+        MONO_AGENT_SANDBOX_FALLBACK: "unsafe-host-process",
+        MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS: "true",
+      },
+    });
+
+    expect(config.sandbox).toMatchObject({
+      required: false,
+      fallback: "unsafe-host-process",
+      unsafeAllowHostProcess: true,
+    });
   });
 
   it("respects session env overrides", () => {
