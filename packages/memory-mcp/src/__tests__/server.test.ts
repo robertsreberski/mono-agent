@@ -8,7 +8,7 @@ import { createVectorMemoryIndex } from "@worklab-ai/memory-search";
 import type { EmbeddingProvider } from "@worklab-ai/memory-search";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createMemoryMcpServer, createMemoryTools } from "../index.js";
+import { createMemoryMcpServer, createMemoryTools, grepMemory } from "../index.js";
 
 const stubEmbeddings: EmbeddingProvider = {
   id: "stub",
@@ -78,6 +78,17 @@ describe("memory MCP tools", () => {
     const grep = await tools.grep({ query: "pricing migration" });
     expect(grep.content[0]?.text).toContain("Pricing migration (project)");
     expect(grep.content[0]?.text.toLowerCase()).toContain("pricing migration");
+  });
+
+  it("scores sections by distinct query tokens, ignoring duplicates", async () => {
+    const d = await deps();
+    const tools = createMemoryTools(d);
+    await tools.journalAppend({ text: "Discussed the pricing migration in detail." });
+
+    const [single] = await grepMemory(d.rootDir, "pricing");
+    const [duplicated] = await grepMemory(d.rootDir, "pricing pricing");
+    expect(single?.score).toBe(1);
+    expect(duplicated?.score).toBe(1);
   });
 
   it("returns a friendly message for unknown entities", async () => {

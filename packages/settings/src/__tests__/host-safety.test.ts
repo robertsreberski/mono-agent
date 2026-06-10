@@ -45,6 +45,10 @@ describe("bearerTokensEqual", () => {
     expect(bearerTokensEqual("abc", "abd")).toBe(false);
     expect(bearerTokensEqual("abc", "abcd")).toBe(false);
   });
+
+  it("returns false when code-unit lengths match but UTF-8 byte lengths differ", () => {
+    expect(bearerTokensEqual("abé", "abc")).toBe(false);
+  });
 });
 
 describe("readAuthorizationBearer", () => {

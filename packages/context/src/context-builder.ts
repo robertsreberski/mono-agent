@@ -246,8 +246,11 @@ function renderSection(section: ContextSection): string {
 }
 
 function renderNumberedBlocks(blocks: readonly NormalizedBlock[], label: string): NormalizedBlock {
-  const [onlyBlock] = blocks;
-  if (blocks.length === 1 && onlyBlock !== undefined) {
+  if (blocks.length === 1) {
+    const [onlyBlock] = blocks;
+    if (onlyBlock === undefined) {
+      throw new ContextValidationError('invalid_context_block', `${label} block is unexpectedly missing.`);
+    }
     return onlyBlock;
   }
 

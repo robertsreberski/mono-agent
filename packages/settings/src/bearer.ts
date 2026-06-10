@@ -15,10 +15,12 @@ export function generateBearerToken(): string {
  * is not secret in this protocol, so leaking it via early exit is acceptable).
  */
 export function bearerTokensEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
+  const bufferA = Buffer.from(a, "utf8");
+  const bufferB = Buffer.from(b, "utf8");
+  if (bufferA.length !== bufferB.length) {
     return false;
   }
-  return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+  return timingSafeEqual(bufferA, bufferB);
 }
 
 /**

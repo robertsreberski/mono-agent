@@ -74,7 +74,7 @@ function splitSections(content: string): readonly string[] {
 }
 
 function tokenize(query: string): readonly string[] {
-  return query.toLowerCase().split(/\s+/u).map((token) => token.trim()).filter(Boolean);
+  return [...new Set(query.toLowerCase().split(/\s+/u).map((token) => token.trim()).filter(Boolean))];
 }
 
 function truncate(value: string, maxChars: number): string {
