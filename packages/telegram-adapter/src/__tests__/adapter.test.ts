@@ -1,7 +1,7 @@
+import { AgentResponseCancelledError } from "@worklab-ai/agent-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  AgentResponderCancelledError,
   TelegramAdapter,
   type AgentRequest,
   type AgentResponder,
@@ -216,7 +216,7 @@ describe("TelegramAdapter", () => {
       allowAllChats: true,
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async () => {
-        throw new AgentResponderCancelledError();
+        throw new AgentResponseCancelledError();
       }),
     });
 

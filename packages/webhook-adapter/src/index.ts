@@ -8,6 +8,7 @@ export type {
   WebhookAdapterLogger,
   WebhookAdapterOptions,
   WebhookAdapterStartResult,
+  WebhookBusyResponse,
   WebhookInvocationMode,
   WebhookInvocationRequest,
   WebhookInvocationStatus,

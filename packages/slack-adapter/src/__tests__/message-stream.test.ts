@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SlackMessageStream, splitSlackText } from "../message-stream.js";
+import { SlackMessageStream } from "../message-stream.js";
 import type {
   SlackChatPostMessageParams,
   SlackChatPostMessageResult,
@@ -170,12 +170,5 @@ describe("SlackMessageStream", () => {
     await expect(
       new SlackMessageStream({ api: updateApi, channelId: "C1" }).finish("done"),
     ).rejects.toThrow("update failed");
-  });
-});
-
-describe("splitSlackText", () => {
-  it("splits text without dropping characters", () => {
-    expect(splitSlackText("abcdef", 2)).toEqual(["ab", "cd", "ef"]);
-    expect(splitSlackText("abc", 10)).toEqual(["abc"]);
   });
 });

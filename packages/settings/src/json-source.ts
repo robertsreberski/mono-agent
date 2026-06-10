@@ -83,10 +83,17 @@ export async function writeSettingsJson(input: {
 
 async function mergePatch(path: string, patch: SettingsJson): Promise<SettingsJson> {
   const existing = (await readSettingsJson(path)).json;
-  return mergeTopLevel(existing, patch) as SettingsJson;
+  return deepMergeObject(existing, patch) as SettingsJson;
 }
 
-function mergeTopLevel(existing: SettingsJson, patch: SettingsJson): Record<string, unknown> {
+/**
+ * Recursively merge a sparse patch onto an existing object. Plain-object values
+ * merge in place; `undefined` deletes a key; everything else replaces.
+ */
+function deepMergeObject(
+  existing: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...existing };
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) {
@@ -95,24 +102,7 @@ function mergeTopLevel(existing: SettingsJson, patch: SettingsJson): Record<stri
     }
     const previous = merged[key];
     if (isPlainObject(previous) && isPlainObject(value)) {
-      merged[key] = mergeObject(previous, value);
-      continue;
-    }
-    merged[key] = value;
-  }
-  return merged;
-}
-
-function mergeObject(existing: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
-  const merged: Record<string, unknown> = { ...existing };
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) {
-      delete merged[key];
-      continue;
-    }
-    const previous = merged[key];
-    if (isPlainObject(previous) && isPlainObject(value)) {
-      merged[key] = mergeObject(previous, value);
+      merged[key] = deepMergeObject(previous, value);
       continue;
     }
     merged[key] = value;

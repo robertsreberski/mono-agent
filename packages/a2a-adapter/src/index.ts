@@ -12,7 +12,6 @@ export {
 } from "./provider.js";
 export type {
   A2AAgentRequest,
-  A2AProvider,
   A2AProviderLogger,
   A2AProviderOptions,
   A2AProviderStartResult,

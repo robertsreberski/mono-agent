@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createJsonlRunRecorder, redactJsonValue } from "../index.js";
+import { createJsonlRunRecorder } from "../index.js";
+import { redactJsonValue } from "../recorder.js";
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {
@@ -57,6 +58,9 @@ describe("JsonlRunRecorder", () => {
       clock: () => now,
     });
 
+    if (recorder.start === undefined) {
+      throw new Error("recorder must support start()");
+    }
     const running = await recorder.start();
 
     expect(running).toMatchObject({

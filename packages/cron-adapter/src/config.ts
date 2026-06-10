@@ -1,10 +1,14 @@
 import {
   defineFieldGroup,
+  layerJsonOntoEnv,
+  normalizeOptionalString,
+  readBoolean,
+  readJsonSection,
   readSettingsJson,
 } from "@worklab-ai/settings";
 import type { FieldGroup, SettingsJson } from "@worklab-ai/settings";
 
-import { CronAdapterError } from "./scheduler.js";
+import { CronAdapterError, type CronJob } from "./scheduler.js";
 
 export interface CronJobConfig {
   readonly id: string;
@@ -29,6 +33,9 @@ export interface LoadCronAdapterConfigInput {
 
 const DEFAULT_JOB_ID = "default";
 const DEFAULT_TIMEZONE = "UTC";
+
+const invalidConfig = (message: string, details?: Record<string, unknown>): CronAdapterError =>
+  new CronAdapterError("invalid_config", message, details);
 
 export const cronFieldGroup: FieldGroup = defineFieldGroup({
   id: "cron",
@@ -82,17 +89,17 @@ export async function loadCronAdapterConfig(input: LoadCronAdapterConfigInput): 
     return { jobs: readJobsJson(jobsJson) };
   }
   const env = layerCronJsonOntoEnv(json, input.env);
-  const enabled = readBoolean(env.MONO_AGENT_CRON_ENABLED, false, "MONO_AGENT_CRON_ENABLED");
+  const enabled = readBoolean(env.MONO_AGENT_CRON_ENABLED, "MONO_AGENT_CRON_ENABLED", false, invalidConfig);
   const expression = normalizeOptionalString(env.MONO_AGENT_CRON_EXPRESSION);
   const prompt = normalizeOptionalString(env.MONO_AGENT_CRON_PROMPT);
   if (!enabled && expression === undefined && prompt === undefined) {
     return { jobs: [] };
   }
   if (expression === undefined) {
-    throw new CronAdapterError("invalid_config", "Cron expression is required when cron is configured.");
+    throw invalidConfig("Cron expression is required when cron is configured.");
   }
   if (prompt === undefined) {
-    throw new CronAdapterError("invalid_config", "Cron prompt is required when cron is configured.");
+    throw invalidConfig("Cron prompt is required when cron is configured.");
   }
   const conversationId = normalizeOptionalString(env.MONO_AGENT_CRON_CONVERSATION_ID);
   return {
@@ -107,7 +114,27 @@ export async function loadCronAdapterConfig(input: LoadCronAdapterConfigInput): 
   };
 }
 
+/**
+ * Project the loaded config down to the runtime {@link CronJob} shape consumed
+ * by {@link import("./scheduler.js").startCronAdapter}, dropping disabled jobs.
+ * Hosts must route config jobs through this rather than spreading them directly,
+ * otherwise the `enabled` flag is silently ignored and disabled jobs would run.
+ */
+export function toCronJobs(config: CronAdapterConfig): CronJob[] {
+  return config.jobs
+    .filter((job) => job.enabled)
+    .map((job) => ({
+      id: job.id,
+      expression: job.expression,
+      timezone: job.timezone,
+      prompt: job.prompt,
+      ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
+    }));
+}
+
 export function redactCronAdapterConfig(config: CronAdapterConfig): RedactedCronAdapterConfig {
+  // Cron config holds no secrets (the prompt is not treated as one), so
+  // redaction is the identity transform; we only clone to preserve immutability.
   return {
     jobs: config.jobs.map((job) => ({ ...job })),
   };
@@ -118,32 +145,32 @@ function readJobsJson(value: string): readonly CronJobConfig[] {
   try {
     parsed = JSON.parse(value);
   } catch (error) {
-    throw new CronAdapterError("invalid_config", "MONO_AGENT_CRON_JOBS_JSON must contain valid JSON.", {
+    throw invalidConfig("MONO_AGENT_CRON_JOBS_JSON must contain valid JSON.", {
       reason: error instanceof Error ? error.message : String(error),
     });
   }
   if (!Array.isArray(parsed)) {
-    throw new CronAdapterError("invalid_config", "MONO_AGENT_CRON_JOBS_JSON must be an array.");
+    throw invalidConfig("MONO_AGENT_CRON_JOBS_JSON must be an array.");
   }
   return parsed.map((entry, index) => normalizeJobConfig(entry, index));
 }
 
 function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
   if (!isRecord(entry)) {
-    throw new CronAdapterError("invalid_config", "Cron job entries must be objects.", { index });
+    throw invalidConfig("Cron job entries must be objects.", { index });
   }
-  const id = normalizeOptionalString(entry.id);
-  const expression = normalizeOptionalString(entry.expression);
-  const prompt = normalizeOptionalString(entry.prompt);
+  const id = asOptionalString(entry.id);
+  const expression = asOptionalString(entry.expression);
+  const prompt = asOptionalString(entry.prompt);
   if (id === undefined || expression === undefined || prompt === undefined) {
-    throw new CronAdapterError("invalid_config", "Cron jobs require id, expression, and prompt.", { index });
+    throw invalidConfig("Cron jobs require id, expression, and prompt.", { index });
   }
-  const conversationId = normalizeOptionalString(entry.conversationId);
+  const conversationId = asOptionalString(entry.conversationId);
   return {
     id,
     enabled: typeof entry.enabled === "boolean" ? entry.enabled : true,
     expression,
-    timezone: normalizeOptionalString(entry.timezone) ?? DEFAULT_TIMEZONE,
+    timezone: asOptionalString(entry.timezone) ?? DEFAULT_TIMEZONE,
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
   };
@@ -153,63 +180,19 @@ function layerCronJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readCronSection(json);
-  const fromJson: Record<string, string | undefined> = {};
-  setBoolean(fromJson, "MONO_AGENT_CRON_ENABLED", section.enabled);
-  setString(fromJson, "MONO_AGENT_CRON_EXPRESSION", section.expression);
-  setString(fromJson, "MONO_AGENT_CRON_TIMEZONE", section.timezone);
-  setString(fromJson, "MONO_AGENT_CRON_PROMPT", section.prompt);
-  setString(fromJson, "MONO_AGENT_CRON_CONVERSATION_ID", section.conversationId);
-
-  const layered: Record<string, string | undefined> = { ...fromJson };
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) {
-      layered[key] = value;
-    }
-  }
-  return layered;
+  const section = readJsonSection(json, "cron");
+  return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_CRON_ENABLED", value: section.enabled, kind: "boolean" },
+    { env: "MONO_AGENT_CRON_EXPRESSION", value: section.expression },
+    { env: "MONO_AGENT_CRON_TIMEZONE", value: section.timezone },
+    { env: "MONO_AGENT_CRON_PROMPT", value: section.prompt },
+    { env: "MONO_AGENT_CRON_CONVERSATION_ID", value: section.conversationId },
+  ]);
 }
 
-function readCronSection(json: SettingsJson): Record<string, unknown> {
-  const section = json.cron;
-  if (section !== null && typeof section === "object" && !Array.isArray(section)) {
-    return section as Record<string, unknown>;
-  }
-  return {};
-}
-
-function readBoolean(raw: string | undefined, defaultValue: boolean, envName: string): boolean {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new CronAdapterError("invalid_config", `${envName} must be true or false.`);
-}
-
-function setString(out: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "string") {
-    out[key] = value;
-  }
-}
-
-function setBoolean(out: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "boolean") {
-    out[key] = value ? "true" : "false";
-  }
-}
-
-function normalizeOptionalString(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
+/** Trim a JSON value to a non-empty string, treating non-strings as absent. */
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? normalizeOptionalString(value) : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

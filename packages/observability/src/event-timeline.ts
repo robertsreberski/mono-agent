@@ -1,16 +1,12 @@
+import { isRecord } from "./artifact-fs.js";
+import { classifyAssistantContent, compactString } from "./content.js";
+import type { AssistantContentWalk } from "./content.js";
 import type {
   RecordedRunEvent,
   RecordedRunTimelineItem,
 } from "./types.js";
 
-type AssistantStreamKind = "thinking" | "text";
-
-interface AssistantStreamChunk {
-  readonly kind: AssistantStreamKind;
-  readonly text: string | undefined;
-}
-
-const SUMMARY_MAX_CHARS = 220;
+type AssistantStreamChunk = AssistantContentWalk;
 
 export function combineRecordedRunEvents(events: readonly RecordedRunEvent[]): readonly RecordedRunTimelineItem[] {
   const timeline: RecordedRunTimelineItem[] = [];
@@ -93,56 +89,5 @@ function assistantStreamChunk(event: RecordedRunEvent): AssistantStreamChunk | u
   if (event.type !== "assistant" || !isRecord(event.payload)) {
     return undefined;
   }
-  const message = event.payload.message;
-  if (!isRecord(message) || !Array.isArray(message.content) || message.content.length === 0) {
-    return undefined;
-  }
-
-  let kind: AssistantStreamKind | undefined;
-  const texts: string[] = [];
-  for (const block of message.content) {
-    if (!isRecord(block) || (block.type !== "thinking" && block.type !== "text")) {
-      return undefined;
-    }
-    if (kind === undefined) {
-      kind = block.type;
-    } else if (kind !== block.type) {
-      return undefined;
-    }
-    const text = blockText(block, block.type);
-    if (text !== undefined) {
-      texts.push(text);
-    }
-  }
-  if (kind === undefined) {
-    return undefined;
-  }
-  return {
-    kind,
-    text: texts.length > 0 ? texts.join("") : undefined,
-  };
-}
-
-function blockText(block: Record<string, unknown>, kind: AssistantStreamKind): string | undefined {
-  const value = kind === "thinking"
-    ? stringField(block, "thinking") ?? stringField(block, "text") ?? stringField(block, "content")
-    : stringField(block, "text") ?? stringField(block, "content");
-  return value;
-}
-
-function compactString(value: string): string {
-  const compact = value.replace(/\s+/gu, " ").trim();
-  if (compact.length <= SUMMARY_MAX_CHARS) {
-    return compact;
-  }
-  return `${compact.slice(0, SUMMARY_MAX_CHARS)}…`;
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return classifyAssistantContent(event.payload.message);
 }

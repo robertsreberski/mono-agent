@@ -13,6 +13,10 @@ import type {
 } from "@worklab-ai/agent-harness";
 import type { AgentResponder } from "@worklab-ai/agent-contracts";
 import type { MonoAgentConfig } from "@worklab-ai/config";
+import { join } from "node:path";
+
+import { createEntityGraphStore } from "@worklab-ai/memory-graph";
+import { createJournalMemoryStore } from "@worklab-ai/memory-journal";
 import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
 import type { MemoryStore } from "@worklab-ai/memory-md";
 import { createJsonlRunRecorder } from "@worklab-ai/observability";
@@ -112,6 +116,20 @@ export function createConfiguredAgentResponder(options: ConfiguredAgentResponder
 function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
+  }
+  if (config.memory.mode === "journal") {
+    // The entity graph lives next to the journal; its salient-entity digest is
+    // folded into the always-in-context block so long-term memory is present
+    // without loading the whole archive.
+    const graph = createEntityGraphStore({ path: join(config.memory.path, "graph.jsonl") });
+    return createJournalMemoryStore({
+      rootDir: config.memory.path,
+      maxBytes: config.memory.maxBytes,
+      entityDigest: async () => {
+        const digest = await graph.digest();
+        return digest.length === 0 ? undefined : digest;
+      },
+    });
   }
   return createMarkdownMemoryStore({
     path: config.memory.path,

@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { isLoopbackHost } from "@worklab-ai/settings";
+
 import { OPERATOR_CONSOLE_STATIC_DIR } from "../static.js";
 import { generateToken } from "./auth.js";
 import { handleRequest } from "./handlers.js";
@@ -8,8 +10,6 @@ import type {
   OperatorConsoleOptions,
   OperatorConsoleStartResult,
 } from "./types.js";
-
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 
 /**
  * Start a small loopback HTTP server that reads/writes a settings JSON file
@@ -19,7 +19,7 @@ export async function startOperatorConsole(
   options: OperatorConsoleOptions,
 ): Promise<OperatorConsoleStartResult> {
   const host = options.host ?? "127.0.0.1";
-  if (!LOOPBACK_HOSTS.has(host)) {
+  if (!isLoopbackHost(host)) {
     throw new Error(
       `startOperatorConsole refuses non-loopback host "${host}"; the console is local-only.`,
     );

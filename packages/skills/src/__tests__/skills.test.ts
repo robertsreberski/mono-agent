@@ -50,4 +50,43 @@ describe("loadSelectedSkills", () => {
     const result = await loadSelectedSkills({ skillsRoot: root, names: ["research"], maxBytes: 256 });
     expect(result.loaded[0]?.truncated).toBe(false);
   });
+
+  it("truncates skill bodies that exceed maxBytes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skills-test-"));
+    tempDirs.push(root);
+    await mkdir(join(root, "long"));
+    const body = `Long skill description paragraph.\n\n${"x".repeat(2000)}`;
+    await writeFile(join(root, "long", "SKILL.md"), `# Long\n\n${body}`, "utf8");
+
+    const result = await loadSelectedSkills({ skillsRoot: root, names: ["long"], maxBytes: 256 });
+
+    expect(result.loaded[0]?.truncated).toBe(true);
+    expect(result.loaded[0]?.content).toContain("<!-- truncated to first 256 bytes -->");
+    expect(result.instructions[0]?.content).toContain("<!-- skill truncated by maxBytes -->");
+  });
+
+  it("rejects duplicate skill names", async () => {
+    const root = await createSkillsRoot();
+    const error = await loadSelectedSkills({ skillsRoot: root, names: ["research", "Research"] }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(SkillActivationError);
+    expect((error as SkillActivationError).code).toBe("invalid_skill_selection");
+  });
+
+  it("rejects a non-integer or too-small maxBytes", async () => {
+    const root = await createSkillsRoot();
+    const error = await loadSelectedSkills({ skillsRoot: root, names: ["research"], maxBytes: 10 }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(SkillActivationError);
+    expect((error as SkillActivationError).code).toBe("invalid_skill_selection");
+  });
+
+  it("surfaces skill_read_failed when a SKILL.md cannot be read", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skills-test-"));
+    tempDirs.push(root);
+    // A directory named SKILL.md exists, so readFile fails with EISDIR (not ENOENT).
+    await mkdir(join(root, "broken", "SKILL.md"), { recursive: true });
+
+    const error = await loadSelectedSkills({ skillsRoot: root, names: ["broken"] }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(SkillActivationError);
+    expect((error as SkillActivationError).code).toBe("skill_read_failed");
+  });
 });

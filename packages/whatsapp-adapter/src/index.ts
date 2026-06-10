@@ -13,11 +13,7 @@ export type {
   WhatsAppTriggerKind,
   WhatsAppTriggerOptions,
 } from "./adapter.js";
-export {
-  AgentResponderCancelledError,
-  isAgentResponderCancelledError,
-  WhatsAppAdapter,
-} from "./adapter.js";
+export { WhatsAppAdapter } from "./adapter.js";
 
 export type {
   WhatsAppMessageIgnoredReason,
@@ -25,31 +21,12 @@ export type {
 } from "./message-normalizer.js";
 export { isGroupJid, normalizeWhatsAppMessage } from "./message-normalizer.js";
 
+export type { AgentMessageStream } from "@worklab-ai/agent-contracts";
 export type {
-  AgentMessageStream,
   WhatsAppMessageStreamLogger,
   WhatsAppMessageStreamOptions,
 } from "./message-stream.js";
-export { splitWhatsAppText, WhatsAppMessageStream } from "./message-stream.js";
-
-export type {
-  AgentRuntimeLike,
-  RuntimeEventLike,
-  RuntimeExecutionMode,
-  RuntimeMessage,
-  RuntimeMessageBuilder,
-  RuntimeModelReference,
-  RuntimeResponderErrorDetails,
-  RuntimeResponderOptions,
-  RuntimeResultLike,
-  RuntimeRunOptions,
-} from "./runtime-responder.js";
-export {
-  assistantTextFromRuntimeEvent,
-  createRuntimeResponder,
-  defaultRuntimeMessages,
-  RuntimeResponderError,
-} from "./runtime-responder.js";
+export { WhatsAppMessageStream } from "./message-stream.js";
 
 export {
   loadWhatsAppAdapterConfig,
@@ -94,3 +71,11 @@ export type {
   WhatsAppEventRunnerStartOptions,
 } from "./event-runner.js";
 export { WhatsAppEventRunner } from "./event-runner.js";
+
+export { startWhatsAppAdapter } from "./start.js";
+export type {
+  StartWhatsAppAdapterOptions,
+  WhatsAppAdapterStartLogger,
+  WhatsAppAdapterStartResult,
+  WhatsAppSocketFactory,
+} from "./start.js";

@@ -39,8 +39,12 @@ export type ConfigApplyResult =
 export interface OperatorConsoleOptions {
   /** Absolute path to the JSON settings file the console reads/writes. */
   readonly configPath: string;
-  /** Workspace root used for resolving relative paths in field validation. */
-  readonly cwd: string;
+  /**
+   * Deprecated and ignored. The console resolves paths from `configPath`
+   * (and the observability/traceability dir options) directly, so no
+   * separate workspace root is needed. Accepted for backwards compatibility.
+   */
+  readonly cwd?: string;
   /** Field group registry rendered by the Settings view. Defaults to none. */
   readonly fieldGroups?: readonly FieldGroup[];
   /** Bind host. Defaults to 127.0.0.1. Refuses non-loopback values. */

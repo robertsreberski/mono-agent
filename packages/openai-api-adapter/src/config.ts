@@ -1,10 +1,23 @@
 import {
   defineFieldGroup,
+  layerJsonOntoEnv,
+  readBoolean,
+  readInteger,
+  readJsonSection,
   readSettingsJson,
+  readString,
+  normalizeOptionalString,
+  redactedSecret,
 } from "@worklab-ai/settings";
-import type { FieldGroup, SettingsJson } from "@worklab-ai/settings";
+import type { FieldGroup, RedactedSecretValue, SettingsJson } from "@worklab-ai/settings";
 
-import { OpenAIApiAdapterError } from "./server.js";
+import {
+  DEFAULT_BASE_PATH,
+  DEFAULT_HOST,
+  DEFAULT_MODEL_ID,
+  DEFAULT_PORT,
+} from "./constants.js";
+import { OpenAIApiAdapterError } from "./errors.js";
 
 export interface OpenAIApiAdapterConfig {
   readonly enabled: boolean;
@@ -17,7 +30,7 @@ export interface OpenAIApiAdapterConfig {
 }
 
 export interface RedactedOpenAIApiAdapterConfig extends Omit<OpenAIApiAdapterConfig, "apiKey"> {
-  readonly apiKey: { readonly present: boolean; readonly redacted: true };
+  readonly apiKey: RedactedSecretValue;
 }
 
 export interface LoadOpenAIApiAdapterConfigInput {
@@ -27,10 +40,9 @@ export interface LoadOpenAIApiAdapterConfigInput {
 }
 
 const DEFAULT_ENABLED = false;
-const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 0;
-const DEFAULT_BASE_PATH = "/v1";
-const DEFAULT_MODEL_ID = "mono-agent";
+
+const invalidConfig = (message: string, details?: Record<string, unknown>): OpenAIApiAdapterError =>
+  new OpenAIApiAdapterError("invalid_config", message, details);
 
 export const openAIApiFieldGroup: FieldGroup = defineFieldGroup({
   id: "openaiApi",
@@ -100,13 +112,13 @@ export async function loadOpenAIApiAdapterConfig(
 ): Promise<OpenAIApiAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerOpenAIApiJsonOntoEnv(json, input.env);
-  const apiKey = readOptionalString(env.MONO_AGENT_OPENAI_API_KEY);
+  const apiKey = normalizeOptionalString(env.MONO_AGENT_OPENAI_API_KEY);
   return {
-    enabled: readBoolean(env.MONO_AGENT_OPENAI_API_ENABLED, DEFAULT_ENABLED, "MONO_AGENT_OPENAI_API_ENABLED"),
+    enabled: readBoolean(env.MONO_AGENT_OPENAI_API_ENABLED, "MONO_AGENT_OPENAI_API_ENABLED", DEFAULT_ENABLED, invalidConfig),
     host: readString(env.MONO_AGENT_OPENAI_API_HOST, DEFAULT_HOST),
-    port: readInteger(env.MONO_AGENT_OPENAI_API_PORT, DEFAULT_PORT, "MONO_AGENT_OPENAI_API_PORT", { min: 0, max: 65535 }),
+    port: readInteger(env.MONO_AGENT_OPENAI_API_PORT, "MONO_AGENT_OPENAI_API_PORT", DEFAULT_PORT, invalidConfig, { min: 0, max: 65535 }),
     basePath: readBasePath(env.MONO_AGENT_OPENAI_API_BASE_PATH),
-    allowNonLoopback: readBoolean(env.MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK, false, "MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK"),
+    allowNonLoopback: readBoolean(env.MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK, "MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK", false, invalidConfig),
     ...(apiKey === undefined ? {} : { apiKey }),
     modelId: readString(env.MONO_AGENT_OPENAI_API_MODEL_ID, DEFAULT_MODEL_ID),
   };
@@ -121,10 +133,7 @@ export function redactOpenAIApiAdapterConfig(
     port: config.port,
     basePath: config.basePath,
     allowNonLoopback: config.allowNonLoopback,
-    apiKey: {
-      present: config.apiKey !== undefined && config.apiKey.length > 0,
-      redacted: true,
-    },
+    apiKey: redactedSecret(config.apiKey),
     modelId: config.modelId,
   };
 }
@@ -133,101 +142,22 @@ function layerOpenAIApiJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readOpenAIApiSection(json);
-  const fromJson: Record<string, string | undefined> = {};
-  setBoolean(fromJson, "MONO_AGENT_OPENAI_API_ENABLED", section.enabled);
-  setString(fromJson, "MONO_AGENT_OPENAI_API_HOST", section.host);
-  setInteger(fromJson, "MONO_AGENT_OPENAI_API_PORT", section.port);
-  setString(fromJson, "MONO_AGENT_OPENAI_API_BASE_PATH", section.basePath);
-  setBoolean(fromJson, "MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK", section.allowNonLoopback);
-  setString(fromJson, "MONO_AGENT_OPENAI_API_KEY", section.apiKey);
-  setString(fromJson, "MONO_AGENT_OPENAI_API_MODEL_ID", section.modelId);
-
-  const layered: Record<string, string | undefined> = { ...fromJson };
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) {
-      layered[key] = value;
-    }
-  }
-  return layered;
-}
-
-function readOpenAIApiSection(json: SettingsJson): Record<string, unknown> {
-  const section = json.openaiApi;
-  if (section !== null && typeof section === "object" && !Array.isArray(section)) {
-    return section as Record<string, unknown>;
-  }
-  return {};
-}
-
-function readString(raw: string | undefined, defaultValue: string): string {
-  return readOptionalString(raw) ?? defaultValue;
+  const section = readJsonSection(json, "openaiApi");
+  return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_OPENAI_API_ENABLED", value: section.enabled, kind: "boolean" },
+    { env: "MONO_AGENT_OPENAI_API_HOST", value: section.host },
+    { env: "MONO_AGENT_OPENAI_API_PORT", value: section.port, kind: "integer" },
+    { env: "MONO_AGENT_OPENAI_API_BASE_PATH", value: section.basePath },
+    { env: "MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK", value: section.allowNonLoopback, kind: "boolean" },
+    { env: "MONO_AGENT_OPENAI_API_KEY", value: section.apiKey },
+    { env: "MONO_AGENT_OPENAI_API_MODEL_ID", value: section.modelId },
+  ]);
 }
 
 function readBasePath(raw: string | undefined): string {
   const value = readString(raw, DEFAULT_BASE_PATH);
   if (!value.startsWith("/") || value.includes("?") || value.includes("#")) {
-    throw new OpenAIApiAdapterError("invalid_config", "MONO_AGENT_OPENAI_API_BASE_PATH must be an absolute path without query or hash.");
+    throw invalidConfig("MONO_AGENT_OPENAI_API_BASE_PATH must be an absolute path without query or hash.");
   }
   return value.length === 1 ? "/" : value.replace(/\/+$/u, "");
-}
-
-function readBoolean(raw: string | undefined, defaultValue: boolean, envName: string): boolean {
-  const normalized = readOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new OpenAIApiAdapterError("invalid_config", `${envName} must be true or false.`, { reason: normalized });
-}
-
-function readInteger(
-  raw: string | undefined,
-  defaultValue: number,
-  envName: string,
-  bounds: { readonly min: number; readonly max: number },
-): number {
-  const normalized = readOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (!/^\d+$/u.test(normalized)) {
-    throw new OpenAIApiAdapterError("invalid_config", `${envName} must be an integer.`);
-  }
-  const value = Number(normalized);
-  if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
-    throw new OpenAIApiAdapterError("invalid_config", `${envName} must be between ${bounds.min} and ${bounds.max}.`);
-  }
-  return value;
-}
-
-function setString(out: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "string") {
-    out[key] = value;
-  }
-}
-
-function setBoolean(out: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (typeof value === "boolean") {
-    out[key] = value ? "true" : "false";
-  }
-}
-
-function setInteger(out: Record<string, string | undefined>, key: string, value: unknown): void {
-  if (Number.isInteger(value)) {
-    out[key] = String(value);
-  }
-}
-
-function readOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
 }

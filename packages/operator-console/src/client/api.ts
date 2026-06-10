@@ -1,7 +1,5 @@
 import type { SettingsJson } from "@worklab-ai/settings/field-groups";
 import type {
-  RecordedRunDetail,
-  RecordedRunListItem,
   TraceRunDetail,
   TraceRunListItem,
   TraceSourceListItem,
@@ -27,20 +25,6 @@ export interface PutResponse {
   readonly ok: boolean;
   readonly version: string;
   readonly apply?: ConfigApplyResult;
-}
-
-export interface ObservabilityRunsResponse {
-  readonly enabled: boolean;
-  readonly artifactDir?: string;
-  readonly runs: readonly RecordedRunListItem[];
-  readonly warnings?: readonly string[];
-}
-
-export interface ObservabilityRunResponse {
-  readonly enabled: boolean;
-  readonly artifactDir?: string;
-  readonly run?: RecordedRunDetail;
-  readonly warnings?: readonly string[];
 }
 
 export interface TraceabilityRunsResponse {
@@ -92,26 +76,6 @@ export class OperatorConsoleClient {
       throw new Error(`fetchConfig failed: ${response.status}`);
     }
     return (await response.json()) as ConfigResponse;
-  }
-
-  async fetchObservedRuns(): Promise<ObservabilityRunsResponse> {
-    const response = await fetch(`${this.baseUrl}/api/observability/runs`, {
-      headers: this.authHeader(),
-    });
-    if (!response.ok) {
-      throw new Error(`fetchObservedRuns failed: ${response.status}`);
-    }
-    return (await response.json()) as ObservabilityRunsResponse;
-  }
-
-  async fetchObservedRun(runId: string): Promise<ObservabilityRunResponse> {
-    const response = await fetch(`${this.baseUrl}/api/observability/runs/${encodeURIComponent(runId)}`, {
-      headers: this.authHeader(),
-    });
-    if (!response.ok) {
-      throw new Error(`fetchObservedRun failed: ${response.status}`);
-    }
-    return (await response.json()) as ObservabilityRunResponse;
   }
 
   async fetchTraceabilityRuns(): Promise<TraceabilityRunsResponse> {

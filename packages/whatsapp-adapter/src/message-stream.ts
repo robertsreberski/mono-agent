@@ -1,16 +1,15 @@
-import type { AgentMessageStream as AgentMessageStreamBase } from "@worklab-ai/agent-contracts";
+import {
+  DEFAULT_EMPTY_FINAL_TEXT,
+  DEFAULT_MAX_MESSAGE_CHARS,
+  normalizeTrailing,
+  splitTextByCodePoints,
+  type AgentMessageStream,
+} from "@worklab-ai/agent-contracts";
 import type {
   WhatsAppJid,
   WhatsAppRawMessage,
   WhatsAppSocketLike,
 } from "./types.js";
-
-export interface AgentMessageStream extends AgentMessageStreamBase {
-  status(text: string): Promise<void>;
-  append(delta: string): Promise<void>;
-  replace(text: string): Promise<void>;
-  finish(finalText?: string): Promise<void>;
-}
 
 export interface WhatsAppMessageStreamOptions {
   socket: WhatsAppSocketLike;
@@ -29,8 +28,6 @@ export interface WhatsAppMessageStreamLogger {
 }
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
-const DEFAULT_MAX_MESSAGE_CHARS = 3_800;
-const EMPTY_FINAL_TEXT = "No response text was returned.";
 
 export class WhatsAppMessageStream implements AgentMessageStream {
   private readonly socket: WhatsAppSocketLike;
@@ -95,10 +92,7 @@ export class WhatsAppMessageStream implements AgentMessageStream {
       this.currentText = finalText;
     }
 
-    const finalMessageText = normalizeWhatsAppText(
-      this.currentText.length > 0 ? this.currentText : EMPTY_FINAL_TEXT,
-    );
-    const chunks = splitWhatsAppText(finalMessageText, this.maxMessageChars);
+    const chunks = splitWhatsAppText(this.currentText, this.maxMessageChars);
     for (const chunk of chunks) {
       await this.sendText(chunk);
     }
@@ -125,24 +119,12 @@ export class WhatsAppMessageStream implements AgentMessageStream {
 }
 
 export function splitWhatsAppText(text: string, maxChars: number): string[] {
-  if (!Number.isInteger(maxChars) || maxChars < 1) {
-    throw new RangeError("maxChars must be a positive integer.");
-  }
-
-  const normalized = normalizeWhatsAppText(text);
-  const characters = Array.from(normalized);
-  if (characters.length <= maxChars) {
-    return [normalized];
-  }
-
-  const chunks: string[] = [];
-  for (let index = 0; index < characters.length; index += maxChars) {
-    chunks.push(characters.slice(index, index + maxChars).join(""));
-  }
-  return chunks;
+  return splitTextByCodePoints(
+    normalizeTrailing(text, DEFAULT_EMPTY_FINAL_TEXT),
+    maxChars,
+  );
 }
 
 function normalizeWhatsAppText(text: string): string {
-  const trimmed = text.trimEnd();
-  return trimmed.length > 0 ? trimmed : EMPTY_FINAL_TEXT;
+  return normalizeTrailing(text, DEFAULT_EMPTY_FINAL_TEXT);
 }

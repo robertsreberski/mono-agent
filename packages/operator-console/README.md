@@ -21,7 +21,6 @@ import { telegramFieldGroup } from "@worklab-ai/telegram-adapter";
 
 const consoleServer = await startOperatorConsole({
   configPath: "./mono-agent.config.json",
-  cwd: process.cwd(),
   fieldGroups: [...CORE_AGENT_FIELD_GROUPS, telegramFieldGroup],
   observability: { artifactDir: "./.mono-agent/artifacts" },
   traceability: { registryDir: "~/.mono-agent/trace-sources" },

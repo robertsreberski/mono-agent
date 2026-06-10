@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer } from "node:http";
 
 import {
+  BufferedMessageStream,
   isAgentResponseCancelledError,
   type AgentMessageStream,
   type AgentRequestBase,
@@ -10,7 +10,23 @@ import {
   type AgentResponse,
   type AgentStreamEvent,
 } from "@worklab-ai/agent-contracts";
+import {
+  assertSafeBind,
+  bearerTokensEqual,
+  close,
+  hostForUrl,
+  listen,
+  readAuthorizationBearer,
+} from "@worklab-ai/settings";
 import express, { type NextFunction, type Request, type Response } from "express";
+
+import {
+  DEFAULT_BASE_PATH,
+  DEFAULT_HOST,
+  DEFAULT_MODEL_ID,
+  DEFAULT_PORT,
+} from "./constants.js";
+import { OpenAIApiAdapterError } from "./errors.js";
 
 export interface OpenAIApiRequestMetadata {
   readonly requestId: string;
@@ -62,34 +78,6 @@ export interface OpenAIApiAdapterStartResult {
   stop(): Promise<void>;
 }
 
-export type OpenAIApiAdapterErrorCode =
-  | "invalid_config"
-  | "missing_required_config"
-  | "unsafe_host"
-  | "start_failed";
-
-export interface OpenAIApiAdapterErrorDetails {
-  readonly code?: OpenAIApiAdapterErrorCode;
-  readonly reason?: string;
-  readonly [key: string]: unknown;
-}
-
-export class OpenAIApiAdapterError extends Error {
-  readonly code: OpenAIApiAdapterErrorCode;
-  readonly details: OpenAIApiAdapterErrorDetails;
-
-  constructor(
-    code: OpenAIApiAdapterErrorCode,
-    message: string,
-    details: OpenAIApiAdapterErrorDetails = {},
-  ) {
-    super(message);
-    this.name = "OpenAIApiAdapterError";
-    this.code = code;
-    this.details = { ...details, code };
-  }
-}
-
 interface NormalizedChatBody {
   readonly model: string;
   readonly text: string;
@@ -104,10 +92,6 @@ interface ChatCompletionChunkInput {
   readonly model: string;
 }
 
-const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 0;
-const DEFAULT_BASE_PATH = "/v1";
-const DEFAULT_MODEL_ID = "mono-agent";
 const OPENAI_OWNED_BY = "worklab-ai";
 const SENSITIVE_REQUEST_HEADERS = new Set([
   "authorization",
@@ -135,7 +119,12 @@ export async function startOpenAIApiAdapter(
   const basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
   const modelId = normalizeOptionalString(options.modelId) ?? DEFAULT_MODEL_ID;
   const apiKey = normalizeOptionalString(options.apiKey);
-  assertSafeBind(host, options.allowNonLoopback === true);
+  assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
+    new OpenAIApiAdapterError(
+      "unsafe_host",
+      "OpenAI API adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
+      { host: boundHost },
+    ));
 
   const app = express();
   const server = createServer(app);
@@ -165,7 +154,7 @@ export async function startOpenAIApiAdapter(
       return;
     }
     void handleChatCompletion(req, res).catch((error: unknown) => {
-      const isClientError = error instanceof OpenAIApiAdapterError && error.code === "invalid_config";
+      const isClientError = error instanceof OpenAIApiAdapterError && error.code === "invalid_request";
       options.logger?.[isClientError ? "warn" : "error"]?.("OpenAI API chat completion failed before response.", {
         error: errorToMessage(error),
       });
@@ -189,7 +178,12 @@ export async function startOpenAIApiAdapter(
     sendOpenAIError(res, 400, errorToMessage(error), "invalid_request_error");
   });
 
-  const address = await listen(server, port, host);
+  const address = await listen(server, port, host, {
+    listenFailed: (reason) =>
+      new OpenAIApiAdapterError("start_failed", "OpenAI API adapter failed to listen.", { reason }),
+    noAddress: () =>
+      new OpenAIApiAdapterError("start_failed", "OpenAI API adapter did not receive a TCP address."),
+  });
   const boundPort = address.port;
   const url = `http://${hostForUrl(host)}:${boundPort}`;
 
@@ -251,7 +245,10 @@ async function runJsonResponder(input: {
   readonly model: string;
   readonly options: OpenAIApiAdapterOptions;
 }): Promise<void> {
-  const stream = new InMemoryMessageStream();
+  const stream = new BufferedMessageStream({
+    onClosed: () =>
+      new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream."),
+  });
   try {
     const response = await input.options.responder.respond(input.request, stream);
     await stream.finish(response.text);
@@ -308,45 +305,6 @@ async function runStreamingResponder(input: {
       error: errorToMessage(error),
     });
     stream.error(errorToMessage(error), cancelled ? "request_cancelled" : "server_error");
-  }
-}
-
-class InMemoryMessageStream implements AgentMessageStream {
-  private currentText = "";
-  private done = false;
-
-  get text(): string {
-    return this.currentText.trim();
-  }
-
-  async status(_text: string): Promise<void> {}
-
-  async event(_event: AgentStreamEvent): Promise<void> {}
-
-  async append(delta: string): Promise<void> {
-    this.assertOpen();
-    this.currentText += delta;
-  }
-
-  async replace(text: string): Promise<void> {
-    this.assertOpen();
-    this.currentText = text;
-  }
-
-  async finish(finalText?: string): Promise<void> {
-    if (this.done) {
-      return;
-    }
-    this.done = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
-    }
-  }
-
-  private assertOpen(): void {
-    if (this.done) {
-      throw new OpenAIApiAdapterError("invalid_config", "Cannot write to a finished OpenAI API stream.");
-    }
   }
 }
 
@@ -454,7 +412,7 @@ class SseChatMessageStream implements AgentMessageStream {
     }
   }
 
-  error(message: string, code: string): void {
+  error(message: string, code: "request_cancelled" | "server_error"): void {
     if (this.done) {
       return;
     }
@@ -492,25 +450,25 @@ class SseChatMessageStream implements AgentMessageStream {
 
 function normalizeChatBody(body: unknown, requestId: string, expectedModel: string): NormalizedChatBody {
   if (!isRecord(body)) {
-    throw new OpenAIApiAdapterError("invalid_config", "Chat completion body must be a JSON object.");
+    throw new OpenAIApiAdapterError("invalid_request", "Chat completion body must be a JSON object.");
   }
   const model = normalizeOptionalString(body.model);
   if (model === undefined) {
-    throw new OpenAIApiAdapterError("invalid_config", "Chat completion body requires a non-empty model.");
+    throw new OpenAIApiAdapterError("invalid_request", "Chat completion body requires a non-empty model.");
   }
   if (model !== expectedModel) {
-    throw new OpenAIApiAdapterError("invalid_config", `Chat completion model must be ${expectedModel}.`);
+    throw new OpenAIApiAdapterError("invalid_request", `Chat completion model must be ${expectedModel}.`);
   }
   assertNoUnsupportedChatRequestFields(body);
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
-    throw new OpenAIApiAdapterError("invalid_config", "Chat completion body requires at least one message.");
+    throw new OpenAIApiAdapterError("invalid_request", "Chat completion body requires at least one message.");
   }
   const text = body.messages
     .map(normalizeMessage)
     .filter((line) => line.length > 0)
     .join("\n");
   if (text.length === 0) {
-    throw new OpenAIApiAdapterError("invalid_config", "Chat completion messages must include text content.");
+    throw new OpenAIApiAdapterError("invalid_request", "Chat completion messages must include text content.");
   }
   return {
     model,
@@ -523,14 +481,14 @@ function normalizeChatBody(body: unknown, requestId: string, expectedModel: stri
 
 function normalizeMessage(value: unknown): string {
   if (!isRecord(value)) {
-    throw new OpenAIApiAdapterError("invalid_config", "Chat completion messages must be JSON objects.");
+    throw new OpenAIApiAdapterError("invalid_request", "Chat completion messages must be JSON objects.");
   }
   const role = normalizeOptionalString(value.role);
   if (role === undefined) {
-    throw new OpenAIApiAdapterError("invalid_config", "Chat completion messages require a role.");
+    throw new OpenAIApiAdapterError("invalid_request", "Chat completion messages require a role.");
   }
   if (hasOwn(value, "tool_calls") || hasOwn(value, "function_call")) {
-    throw new OpenAIApiAdapterError("invalid_config", "Chat completion message tool/function calls are not supported.");
+    throw new OpenAIApiAdapterError("invalid_request", "Chat completion message tool/function calls are not supported.");
   }
   const content = normalizeContent(value.content);
   return content.length === 0 ? "" : `${role}: ${content}`;
@@ -547,27 +505,27 @@ function normalizeContent(value: unknown): string {
     return value
       .map((part) => {
         if (!isRecord(part)) {
-          throw new OpenAIApiAdapterError("invalid_config", "Chat completion message content parts must be JSON objects.");
+          throw new OpenAIApiAdapterError("invalid_request", "Chat completion message content parts must be JSON objects.");
         }
         const type = normalizeOptionalString(part.type);
         if (type !== "text") {
-          throw new OpenAIApiAdapterError("invalid_config", `Chat completion message content part type ${String(part.type)} is not supported.`);
+          throw new OpenAIApiAdapterError("invalid_request", `Chat completion message content part type ${String(part.type)} is not supported.`);
         }
         if (typeof part.text !== "string") {
-          throw new OpenAIApiAdapterError("invalid_config", "Chat completion text content parts require string text.");
+          throw new OpenAIApiAdapterError("invalid_request", "Chat completion text content parts require string text.");
         }
         return part.text;
       })
       .filter((text) => text.length > 0)
       .join("\n");
   }
-  throw new OpenAIApiAdapterError("invalid_config", "Chat completion message content must be a string or text content parts.");
+  throw new OpenAIApiAdapterError("invalid_request", "Chat completion message content must be a string or text content parts.");
 }
 
 function assertNoUnsupportedChatRequestFields(body: Record<string, unknown>): void {
   for (const field of UNSUPPORTED_CHAT_REQUEST_FIELDS) {
     if (hasOwn(body, field)) {
-      throw new OpenAIApiAdapterError("invalid_config", `Chat completion request field ${field} is not supported.`);
+      throw new OpenAIApiAdapterError("invalid_request", `Chat completion request field ${field} is not supported.`);
     }
   }
 }
@@ -652,7 +610,8 @@ function authorize(req: Request, res: Response, apiKey: string | undefined): boo
   if (apiKey === undefined) {
     return true;
   }
-  if (req.header("authorization") === `Bearer ${apiKey}`) {
+  const presented = readAuthorizationBearer(req.header("authorization"));
+  if (presented !== undefined && bearerTokensEqual(presented, apiKey)) {
     return true;
   }
   sendOpenAIError(res, 401, "Invalid API key.", "invalid_api_key");
@@ -743,61 +702,6 @@ function normalizeBasePath(path: string): string {
     throw new OpenAIApiAdapterError("invalid_config", "OpenAI API basePath must be an absolute path without query or hash.");
   }
   return normalized.length === 1 ? "" : normalized.replace(/\/+$/u, "");
-}
-
-function assertSafeBind(host: string, allowNonLoopback: boolean): void {
-  if (allowNonLoopback || isLoopbackHost(host)) {
-    return;
-  }
-  throw new OpenAIApiAdapterError(
-    "unsafe_host",
-    "OpenAI API adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
-    { host },
-  );
-}
-
-function isLoopbackHost(host: string): boolean {
-  const normalized = host.toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
-  return normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized.startsWith("127.");
-}
-
-function hostForUrl(host: string): string {
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-}
-
-function listen(server: Server, port: number, host: string): Promise<AddressInfo> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    const onError = (error: Error): void => {
-      rejectPromise(new OpenAIApiAdapterError("start_failed", "OpenAI API adapter failed to listen.", {
-        reason: error.message,
-      }));
-    };
-    server.once("error", onError);
-    server.listen(port, host, () => {
-      server.off("error", onError);
-      const address = server.address();
-      if (typeof address !== "object" || address === null) {
-        rejectPromise(new OpenAIApiAdapterError("start_failed", "OpenAI API adapter did not receive a TCP address."));
-        return;
-      }
-      resolvePromise(address);
-    });
-  });
-}
-
-function close(server: Server): Promise<void> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    server.close((error) => {
-      if (error === undefined) {
-        resolvePromise();
-        return;
-      }
-      rejectPromise(error);
-    });
-  });
 }
 
 function errorToMessage(error: unknown): string {

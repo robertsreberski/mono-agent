@@ -1,7 +1,8 @@
 import { DEFAULT_SOUL_TEXT } from './default-soul.js';
 import { ContextValidationError } from './errors.js';
 import { normalizeJsonValue } from './json.js';
-import { buildSkillIndex, renderSkillIndex } from './skill-index.js';
+import { buildSkillIndex, renderSkillIndexEntries } from './skill-index.js';
+import { normalizeInlineText } from './text.js';
 import type {
   BuildContextInput,
   BuiltAgentContext,
@@ -41,7 +42,7 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
   ];
 
   if (memory.length > 0) {
-    sections.push(makeSection('memory', 'Memory', renderMemory(memory)));
+    sections.push(makeSection('memory', 'Memory', renderNumberedBlocks(memory, 'Memory')));
   }
 
   if (history.length > 0) {
@@ -49,11 +50,11 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
   }
 
   if (skills.length > 0) {
-    sections.push(makeSection('skills', 'Skill Index', { content: renderSkillIndex(skills) }));
+    sections.push(makeSection('skills', 'Skill Index', { content: renderSkillIndexEntries(skills) }));
   }
 
   if (skillInstructions.length > 0) {
-    sections.push(makeSection('skill-instructions', 'Selected Skill Instructions', renderSkillInstructions(skillInstructions)));
+    sections.push(makeSection('skill-instructions', 'Selected Skill Instructions', renderNumberedBlocks(skillInstructions, 'Skill Instruction')));
   }
 
   sections.push(makeSection('user-message', 'Current User Message', { content: userMessage }));
@@ -213,7 +214,7 @@ function normalizeOptionalInlineString(value: unknown, field: string): string {
     });
   }
 
-  const normalized = value.replace(/\r\n?/g, '\n').split('\n').map((line) => line.trim()).filter(Boolean).join(' ');
+  const normalized = normalizeInlineText(value);
   if (normalized.length === 0) {
     throw new ContextValidationError('invalid_history', `${field} must not be empty when provided.`, {
       field,
@@ -244,20 +245,20 @@ function renderSection(section: ContextSection): string {
   return `## ${section.title}\n\n${section.content}`;
 }
 
-function renderMemory(memory: readonly NormalizedBlock[]): NormalizedBlock {
-  if (memory.length === 1) {
-    const onlyBlock = memory[0];
+function renderNumberedBlocks(blocks: readonly NormalizedBlock[], label: string): NormalizedBlock {
+  if (blocks.length === 1) {
+    const [onlyBlock] = blocks;
     if (onlyBlock === undefined) {
-      throw new ContextValidationError('invalid_context_block', 'Memory block is unexpectedly missing.');
+      throw new ContextValidationError('invalid_context_block', `${label} block is unexpectedly missing.`);
     }
     return onlyBlock;
   }
 
   return {
-    content: memory
+    content: blocks
       .map((block, index) => {
         const sourceSuffix = block.source === undefined ? '' : ` (${block.source})`;
-        return `### Memory ${index + 1}${sourceSuffix}\n\n${block.content}`;
+        return `### ${label} ${index + 1}${sourceSuffix}\n\n${block.content}`;
       })
       .join('\n\n'),
   };
@@ -276,25 +277,6 @@ function renderHistory(history: readonly HistoryMessage[]): NormalizedBlock {
         }
 
         return `### ${labelParts.join(' — ')}\n\n${message.content}`;
-      })
-      .join('\n\n'),
-  };
-}
-
-function renderSkillInstructions(skillInstructions: readonly NormalizedBlock[]): NormalizedBlock {
-  if (skillInstructions.length === 1) {
-    const onlyBlock = skillInstructions[0];
-    if (onlyBlock === undefined) {
-      throw new ContextValidationError('invalid_context_block', 'Skill instruction block is unexpectedly missing.');
-    }
-    return onlyBlock;
-  }
-
-  return {
-    content: skillInstructions
-      .map((block, index) => {
-        const sourceSuffix = block.source === undefined ? '' : ` (${block.source})`;
-        return `### Skill Instruction ${index + 1}${sourceSuffix}\n\n${block.content}`;
       })
       .join('\n\n'),
   };

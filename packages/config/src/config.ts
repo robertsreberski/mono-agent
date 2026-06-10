@@ -10,12 +10,23 @@ import {
   validateLocalProviderDefinition,
 } from "@worklab-ai/runtime-adapter";
 import type { LocalProviderDefinition, LocalProviderModelDefinition, RuntimeExecutionMode } from "@worklab-ai/runtime-adapter";
+import {
+  normalizeOptionalString,
+  readBoolean,
+  readChoice,
+  readCsv,
+  readInteger,
+  redactedSecret,
+} from "@worklab-ai/settings";
+import type { ConfigErrorFactory } from "@worklab-ai/settings";
 
-import type { MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig } from "./types.js";
+import { EFFORT_LEVELS } from "./field-groups.js";
+import type { EffortLevel, MemoryMode, MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
   | "invalid_env"
+  | "invalid_json"
   | "invalid_model_reference"
   | "incompatible_execution_mode";
 
@@ -38,6 +49,14 @@ export class MonoAgentConfigError extends Error {
   }
 }
 
+/**
+ * Error factory bound to the `invalid_env` code, handed to the shared
+ * `@worklab-ai/settings` coercers so their fail-closed throws keep config's
+ * typed error shape (code + env/reason details) verbatim.
+ */
+const invalidEnv: ConfigErrorFactory = (message, details) =>
+  new MonoAgentConfigError("invalid_env", message, details);
+
 export interface LoadMonoAgentConfigInput {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
@@ -52,7 +71,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const cwd = normalizeCwd(input.cwd);
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
-  const maxTurns = readInteger(input.env, "MONO_AGENT_MAX_TURNS", DEFAULT_MAX_TURNS, { min: 1, max: 100 });
+  const maxTurns = readInteger(input.env.MONO_AGENT_MAX_TURNS, "MONO_AGENT_MAX_TURNS", DEFAULT_MAX_TURNS, invalidEnv, { min: 1, max: 100 });
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
   const identityPath = readPath(readRequired(input.env, "MONO_AGENT_IDENTITY_PATH"), cwd);
   const soulPath = readOptionalPath(input.env.MONO_AGENT_SOUL_PATH, cwd);
@@ -66,7 +85,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
 
   assertModeCompatibility(model, executionMode);
 
-  const effort = normalizeOptionalString(input.env.MONO_AGENT_EFFORT);
+  const effort = readEffort(input.env.MONO_AGENT_EFFORT);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
     executionMode,
@@ -168,18 +187,23 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     return undefined;
   }
 
+  const mode = readChoice<MemoryMode>(env.MONO_AGENT_MEMORY_MODE, "MONO_AGENT_MEMORY_MODE", [
+    "markdown",
+    "journal",
+  ], "markdown", invalidEnv);
   const writeMode = readChoice<MemoryWriteMode>(env.MONO_AGENT_MEMORY_WRITE_MODE, "MONO_AGENT_MEMORY_WRITE_MODE", [
     "disabled",
     "append-host-summary",
-  ], "disabled");
+  ], "disabled", invalidEnv);
   const scope = readChoice<MemoryScope>(env.MONO_AGENT_MEMORY_SCOPE, "MONO_AGENT_MEMORY_SCOPE", [
     "single-file",
     "per-conversation",
-  ], "single-file");
+  ], "single-file", invalidEnv);
 
   return {
+    mode,
     path: readPath(rawPath, cwd),
-    maxBytes: readInteger(env, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, { min: 1, max: 1_000_000 }),
+    maxBytes: readInteger(env.MONO_AGENT_MEMORY_MAX_BYTES, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, invalidEnv, { min: 1, max: 1_000_000 }),
     scope,
     writeMode,
   };
@@ -193,11 +217,11 @@ function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: st
   );
   const sourceId = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_ID);
   const sourceLabel = normalizeOptionalString(env.MONO_AGENT_TRACE_SOURCE_LABEL);
-  const heartbeatMs = readInteger(env, "MONO_AGENT_TRACE_HEARTBEAT_MS", DEFAULT_TRACE_HEARTBEAT_MS, {
+  const heartbeatMs = readInteger(env.MONO_AGENT_TRACE_HEARTBEAT_MS, "MONO_AGENT_TRACE_HEARTBEAT_MS", DEFAULT_TRACE_HEARTBEAT_MS, invalidEnv, {
     min: 250,
     max: 86_400_000,
   });
-  const staleAfterMs = readInteger(env, "MONO_AGENT_TRACE_STALE_AFTER_MS", DEFAULT_TRACE_STALE_AFTER_MS, {
+  const staleAfterMs = readInteger(env.MONO_AGENT_TRACE_STALE_AFTER_MS, "MONO_AGENT_TRACE_STALE_AFTER_MS", DEFAULT_TRACE_STALE_AFTER_MS, invalidEnv, {
     min: 1_000,
     max: 604_800_000,
   });
@@ -233,8 +257,8 @@ function readLocalProviders(env: Record<string, string | undefined>): readonly L
     id: id ?? "ollama",
     type: type ?? "ollama",
     ...(baseUrl === undefined ? {} : { baseUrl }),
-    enabled: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_ENABLED, "MONO_AGENT_LOCAL_PROVIDER_ENABLED", true),
-    trustPublicUrl: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL, "MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL", false),
+    enabled: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_ENABLED, "MONO_AGENT_LOCAL_PROVIDER_ENABLED", true, invalidEnv),
+    trustPublicUrl: readBoolean(env.MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL, "MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL", false, invalidEnv),
     ...(normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) === undefined
       ? {}
       : { apiKey: normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDER_API_KEY) as string }),
@@ -251,7 +275,7 @@ function readLocalProvidersJson(
   try {
     parsed = JSON.parse(value);
   } catch (error) {
-    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_LOCAL_PROVIDERS_JSON must contain valid JSON.", {
+    throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_LOCAL_PROVIDERS_JSON must contain valid JSON.", {
       env: "MONO_AGENT_LOCAL_PROVIDERS_JSON",
       reason: error instanceof Error ? error.message : String(error),
     });
@@ -353,10 +377,10 @@ function withRedactedProviders(
     ...redacted,
     providers: {
       local: config.providers.local.map((provider) => {
-        const { apiKey: _apiKey, ...safeProvider } = provider;
+        const { apiKey, ...safeProvider } = provider;
         return {
           ...safeProvider,
-          ...(provider.apiKey === undefined ? {} : { apiKeyPresent: true }),
+          ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
         };
       }),
     },
@@ -371,15 +395,12 @@ function readRequired(env: Record<string, string | undefined>, name: string): st
   return value;
 }
 
-function readCsv(raw: string | undefined): readonly string[] {
+function readEffort(raw: string | undefined): EffortLevel | undefined {
   const normalized = normalizeOptionalString(raw);
   if (normalized === undefined) {
-    return [];
+    return undefined;
   }
-  return normalized
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
+  return readChoice<EffortLevel>(normalized, "MONO_AGENT_EFFORT", EFFORT_LEVELS, EFFORT_LEVELS[0], invalidEnv);
 }
 
 function readPath(raw: string | undefined, cwd: string, defaultPath?: string): string {
@@ -396,51 +417,6 @@ function readPath(raw: string | undefined, cwd: string, defaultPath?: string): s
 function readOptionalPath(raw: string | undefined, cwd: string): string | undefined {
   const normalized = normalizeOptionalString(raw);
   return normalized === undefined ? undefined : resolve(cwd, normalized);
-}
-
-function readInteger(
-  env: Record<string, string | undefined>,
-  name: string,
-  defaultValue: number,
-  bounds: { readonly min: number; readonly max: number },
-): number {
-  const raw = normalizeOptionalString(env[name]);
-  if (raw === undefined) {
-    return defaultValue;
-  }
-  if (!/^\d+$/u.test(raw)) {
-    throw new MonoAgentConfigError("invalid_env", `${name} must be an integer.`, { env: name });
-  }
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isSafeInteger(value) || value < bounds.min || value > bounds.max) {
-    throw new MonoAgentConfigError("invalid_env", `${name} must be between ${bounds.min} and ${bounds.max}.`, { env: name });
-  }
-  return value;
-}
-
-function readChoice<T extends string>(raw: string | undefined, name: string, choices: readonly T[], defaultValue: T): T {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if ((choices as readonly string[]).includes(normalized)) {
-    return normalized as T;
-  }
-  throw new MonoAgentConfigError("invalid_env", `${name} must be one of: ${choices.join(", ")}.`, { env: name });
-}
-
-function readBoolean(raw: string | undefined, name: string, defaultValue: boolean): boolean {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return defaultValue;
-  }
-  if (normalized === "true") {
-    return true;
-  }
-  if (normalized === "false") {
-    return false;
-  }
-  throw new MonoAgentConfigError("invalid_env", `${name} must be true or false.`, { env: name });
 }
 
 function readObjectString(
@@ -483,14 +459,6 @@ function readPlainObject(value: unknown, source: string): Record<string, unknown
     throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
   }
   return { ...value };
-}
-
-function normalizeOptionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const normalized = value.trim();
-  return normalized.length === 0 ? undefined : normalized;
 }
 
 function normalizeCwd(value: string): string {

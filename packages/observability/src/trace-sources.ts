@@ -1,6 +1,20 @@
-import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { join, normalize, resolve, sep } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { resolve } from "node:path";
 
+import {
+  DEFAULT_MAX_EVENTS_PER_RUN,
+  DEFAULT_MAX_STRING_BYTES,
+  errorMessage,
+  isErrno,
+  isRecord,
+  mkdir,
+  minInteger,
+  normalizeRunId as normalizeRunIdGuard,
+  positiveInteger,
+  safeJoin as safeJoinGuard,
+  stringField,
+  writeJsonAtomic,
+} from "./artifact-fs.js";
 import { listRecordedRuns, readRecordedRun } from "./recorded-runs.js";
 import { redactJsonValue } from "./recorder.js";
 import type {
@@ -23,18 +37,19 @@ const DEFAULT_STALE_AFTER_MS = 30_000;
 const MANIFEST_SUFFIX = ".json";
 const SOURCE_ID_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const DEFAULT_MAX_RUNS = 100;
-const DEFAULT_MAX_EVENTS_PER_RUN = 500;
-const DEFAULT_MAX_STRING_BYTES = 4_096;
+
+export type TraceSourceRegistryErrorCode =
+  | "invalid_registry_options"
+  | "invalid_source_id"
+  | "invalid_run_id"
+  | "manifest_write_failed";
+export type TraceSourceRegistryErrorDetails = Record<string, unknown> & { readonly code: TraceSourceRegistryErrorCode };
 
 export class TraceSourceRegistryError extends Error {
-  readonly code:
-    | "invalid_registry_options"
-    | "invalid_source_id"
-    | "invalid_run_id"
-    | "manifest_write_failed";
-  readonly details: Record<string, unknown>;
+  readonly code: TraceSourceRegistryErrorCode;
+  readonly details: TraceSourceRegistryErrorDetails;
 
-  constructor(code: TraceSourceRegistryError["code"], message: string, details: Record<string, unknown> = {}) {
+  constructor(code: TraceSourceRegistryErrorCode, message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.name = "TraceSourceRegistryError";
     this.code = code;
@@ -293,9 +308,7 @@ async function writeManifest(registryDir: string, manifest: TraceSourceManifest)
   try {
     await mkdir(registryDir, { recursive: true });
     const path = manifestPath(registryDir, manifest.sourceId);
-    const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    await rename(tempPath, path);
+    await writeJsonAtomic(path, `${JSON.stringify(manifest, null, 2)}\n`);
   } catch (error) {
     throw new TraceSourceRegistryError("manifest_write_failed", "Unable to write trace source manifest.", {
       cause: errorMessage(error),
@@ -319,12 +332,16 @@ interface NormalizedRunListOptions extends NormalizedRegistryOptions {
   readonly maxStringBytes: number;
 }
 
+function raiseRegistryOption(message: string, field: string): never {
+  throw new TraceSourceRegistryError("invalid_registry_options", message, { field });
+}
+
 function normalizeRunListOptions(options: TraceRunListOptions): NormalizedRunListOptions {
   return {
     ...normalizeRegistryOptions(options),
-    maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns"),
-    maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun"),
-    maxStringBytes: minInteger(options.maxStringBytes, DEFAULT_MAX_STRING_BYTES, 64, "maxStringBytes"),
+    maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns", raiseRegistryOption),
+    maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun", raiseRegistryOption),
+    maxStringBytes: minInteger(options.maxStringBytes, DEFAULT_MAX_STRING_BYTES, 64, "maxStringBytes", raiseRegistryOption),
   };
 }
 
@@ -334,7 +351,7 @@ function normalizeRegistryOptions(options: TraceSourceRegistryOptions): Normaliz
   }
   return {
     registryDir: resolve(options.registryDir),
-    staleAfterMs: positiveInteger(options.staleAfterMs, DEFAULT_STALE_AFTER_MS, "staleAfterMs"),
+    staleAfterMs: positiveInteger(options.staleAfterMs, DEFAULT_STALE_AFTER_MS, "staleAfterMs", raiseRegistryOption),
     clock: options.clock ?? (() => Date.now()),
   };
 }
@@ -357,11 +374,15 @@ function normalizeSourceId(sourceId: string): string {
 }
 
 function normalizeRunId(runId: string): string {
-  const normalized = normalizeNonEmpty(runId, "runId");
-  if (normalized.includes("/") || normalized.includes("\\") || normalized.includes("..")) {
-    throw new TraceSourceRegistryError("invalid_run_id", "runId cannot contain path separators or '..'.");
-  }
-  return normalized;
+  return normalizeRunIdGuard(
+    runId,
+    (message) => {
+      throw new TraceSourceRegistryError("invalid_run_id", message);
+    },
+    () => {
+      throw new TraceSourceRegistryError("invalid_registry_options", "runId must be a non-empty string.", { field: "runId" });
+    },
+  );
 }
 
 function sourceIdFromLabel(label: string): string {
@@ -417,53 +438,12 @@ function normalizeNonEmpty(value: string, field: string): string {
   return value.trim();
 }
 
-function positiveInteger(value: number | undefined, fallback: number, field: string): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (!Number.isInteger(value) || value < 1) {
-    throw new TraceSourceRegistryError("invalid_registry_options", `${field} must be a positive integer.`, { field });
-  }
-  return value;
-}
-
-function minInteger(value: number | undefined, fallback: number, min: number, field: string): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (!Number.isInteger(value) || value < min) {
-    throw new TraceSourceRegistryError("invalid_registry_options", `${field} must be an integer of at least ${min}.`, { field });
-  }
-  return value;
-}
-
 function safeJoin(root: string, fileName: string): string {
-  const normalizedRoot = normalize(resolve(root));
-  const resolved = normalize(join(normalizedRoot, fileName));
-  const safeRoot = normalizedRoot.endsWith(sep) ? normalizedRoot : `${normalizedRoot}${sep}`;
-  if (!resolved.startsWith(safeRoot)) {
+  return safeJoinGuard(root, fileName, () => {
     throw new TraceSourceRegistryError("invalid_source_id", "Resolved manifest path escapes registryDir.");
-  }
-  return resolved;
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isErrno(error: unknown, code: string): boolean {
-  return isRecord(error) && error.code === code;
+  });
 }
 
 function isoNow(clock: () => number): string {
   return new Date(clock()).toISOString();
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

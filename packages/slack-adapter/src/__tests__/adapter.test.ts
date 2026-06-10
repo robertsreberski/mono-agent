@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { AgentResponseCancelledError } from "@worklab-ai/agent-contracts";
+
 import {
-  AgentResponderCancelledError,
   SlackAdapter,
   type AgentRequest,
   type AgentResponder,
@@ -327,7 +328,7 @@ describe("SlackAdapter", () => {
       allowAllChannels: true,
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async () => {
-        throw new AgentResponderCancelledError();
+        throw new AgentResponseCancelledError();
       }),
     });
 
