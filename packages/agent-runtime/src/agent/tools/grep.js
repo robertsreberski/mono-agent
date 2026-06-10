@@ -36,9 +36,9 @@ export async function grepToolImpl({
   max_matches,
   max_output_chars,
   workdir,
-}) {
+}, { sandboxPolicy } = {}) {
   const target = resolveToolPath(path || workspaceRoot(workdir), workdir);
-  if (!isPathAllowed(target, workdir)) return `Error: Path not allowed: ${target}`;
+  if (!isPathAllowed(target, workdir, { sandboxPolicy })) return `Error: Path not allowed: ${target}`;
   const stat = safeStat(target);
   if (!stat) return `Error: Path not found: ${target}`;
   const cwd = stat.isDirectory() ? target : dirname(target);

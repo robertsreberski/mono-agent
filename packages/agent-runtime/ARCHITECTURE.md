@@ -9,6 +9,7 @@ agent turn:
 
 - pick the right backend from a model reference and execution mode
 - expose built-in tools, MCP tools, approvals, structured output, and live input
+- enforce optional sandbox policy for built-in tool execution and stdio MCP startup
 - normalize provider events into one runtime event stream
 - classify runtime failures and retryable provider errors
 - collect usage, cost, cache, capability, and warning telemetry
@@ -36,6 +37,7 @@ flowchart TB
 
   AgentKernel --> Builtins["Read / Write / Edit / Glob / Grep / Bash<br/>WebFetch / WebSearch"]
   AgentKernel --> MCP["MCP stdio / SSE / HTTP tools"]
+  AgentKernel --> Sandbox["Sandbox policy<br/>path/network checks + stdio command wrapping"]
   AgentKernel --> Artifacts["Tool-output bloat guard<br/>host artifact persistence"]
 
   ClaudeSDK --> Providers["External model/provider surfaces"]
@@ -161,8 +163,9 @@ Key responsibilities by subsystem:
   provider failures, carrying a transcript-tail resume snapshot forward.
 - `ai/providers/*`: owns provider-specific request shapes, event conversion,
   structured-output extraction, native subagent wiring, usage, and diagnostics.
-- `agent/tools/*`: implements built-in tools, path/workdir guards, MCP tool
-  adaptation, Playwright artifact routing, and output limits.
+- `agent/tools/*`: implements built-in tools, path/workdir guards, sandbox
+  policy checks, MCP tool adaptation, Playwright artifact routing, and output
+  limits.
 - `agent/compaction.js`: estimates context pressure and compacts long agent
   conversations for providers that support the package's compaction loop.
 - `agent/transcript.js`: builds bounded resume snapshots from prior provider

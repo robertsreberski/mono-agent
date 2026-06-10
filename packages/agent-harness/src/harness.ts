@@ -4,6 +4,8 @@ import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/obse
 import { monoRuntimeSupportsSessionResume } from "@mono-agent/runtime-adapter";
 import type { RuntimeExecutionMode, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import { loadSelectedSkills } from "@mono-agent/skills";
+import { mergeSandboxPolicies, sandboxPolicyToRuntimeOptions } from "@mono-agent/sandbox";
+import type { SandboxPolicy } from "@mono-agent/sandbox";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/tool-policy";
 
 import { NoopRunRecorder } from "./recorder.js";
@@ -246,10 +248,14 @@ export class MonoAgentHarness implements AgentHarness {
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
     const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
+    const sandboxOptions = this.options.sandboxPolicy === undefined
+      ? {}
+      : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
     const requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
     const runtimeOptions: RuntimeRunOptions = {
       ...mergeRuntimeOptions(
         policyOptions,
+        sandboxOptions,
         this.options.runtimeOptions,
         requestExtension?.runtimeOptions,
       ),
@@ -353,10 +359,18 @@ function mergeRuntimeOptions(
         };
         continue;
       }
+      if (key === "sandboxPolicy") {
+        merged[key] = mergeSandboxPolicies(asSandboxPolicy(merged[key]), asSandboxPolicy(value));
+        continue;
+      }
       merged[key] = value;
     }
   }
   return merged;
+}
+
+function asSandboxPolicy(value: unknown): SandboxPolicy | undefined {
+  return isRecord(value) ? value as unknown as SandboxPolicy : undefined;
 }
 
 function mergeStringLists(current: unknown, next: unknown): readonly string[] {

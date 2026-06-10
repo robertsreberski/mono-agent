@@ -1,6 +1,6 @@
 # Agent Framework Packages
 
-This repository is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
+This repository is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
 
 ## Package Architecture
 
@@ -10,7 +10,7 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
-| `runtime` | `@mono-agent/runtime-adapter` | `core` | The only package that wraps `@mono-agent/agent-runtime`; parses model refs, validates execution modes, and exposes backend descriptors. |
+| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, OpenAI Agents SDK adapter, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
@@ -33,14 +33,15 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ webhook-adapter ── agent-contracts, settings, express
   ├─ agent-host
   │   ├─ config
-  │   ├─ agent-harness ── agent-contracts, context, skills, memory-md, observability, runtime-adapter, tool-policy
-  │   ├─ runtime-adapter ── @mono-agent/agent-runtime
+  │   ├─ agent-harness ── agent-contracts, context, skills, memory-md, observability, runtime-adapter, sandbox, tool-policy
+  │   ├─ runtime-adapter ── @mono-agent/agent-runtime, sandbox types
+  │   ├─ sandbox ── agent-contracts
   │   ├─ memory-md
   │   ├─ observability
   │   └─ tool-policy
   ├─ agent-orchestrator ── agent-contracts, MCP SDK
   ├─ agent-evals ── agent-contracts, agent-harness, observability, agentevals
-  ├─ config ── settings, runtime-adapter
+  ├─ config ── settings, runtime-adapter, sandbox
   ├─ tui ── config
   └─ core leaf packages as needed
 ```
@@ -187,6 +188,7 @@ pnpm --filter @mono-agent/<package> run test
 - Settings JSON is local, schema-validated, and written with restrictive file permissions where the settings helper writes it.
 - Secret fields are write-only in the operator console and redacted in diagnostics.
 - Tool policy is explicit and fail-closed.
+- Sandbox policy is explicit, fail-closed by default, and routes runtime-owned process execution through a native sandbox engine when configured.
 - Memory writes are host-owned and optional.
 - Fixtures and fake runtimes are for tests only, not product-runtime substitutes.
 
@@ -233,6 +235,7 @@ flowchart TB
 
   subgraph Runtime["Runtime backend choices"]
     RuntimeAdapter["`@mono-agent/runtime-adapter`\nmodel refs + backend support"]
+    Sandbox["`@mono-agent/sandbox`\nfail-closed sandbox policy"]
     AgentRuntime["`@mono-agent/agent-runtime`\nprovider/CLI implementation"]
     ClaudeSdk["Claude SDK\n`claude:<model>` + `sdk`"]
     ClaudeCli["Claude Code CLI\n`claude:<model>` + `cli`"]
@@ -278,19 +281,24 @@ flowchart TB
   AgentHost --> Harness
   AgentHost --> Memory
   AgentHost --> Policy
+  AgentHost --> Sandbox
   AgentHost --> RuntimeAdapter
   AgentHost --> Observability
   Config --> Settings
   Config --> RuntimeAdapter
+  Config --> Sandbox
   Harness --> Contracts
   Harness --> Context
   Harness --> Skills
   Harness --> Memory
   Harness --> Policy
+  Harness --> Sandbox
   Harness --> RuntimeAdapter
   Harness --> Observability
 
   RuntimeAdapter --> AgentRuntime
+  RuntimeAdapter --> Sandbox
+  AgentRuntime --> Sandbox
   AgentRuntime --> ClaudeSdk
   AgentRuntime --> ClaudeCli
   AgentRuntime --> CodexCli

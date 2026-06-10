@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:^0.1.0",
-    "@mono-agent/agent-runtime": "workspace:*"
+    "@mono-agent/agent-runtime": "workspace:*",
+    "@mono-agent/sandbox": "workspace:^0.1.0"
   }
 }

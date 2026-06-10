@@ -2,6 +2,7 @@ import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
 import type { MemoryStore } from "@mono-agent/memory-md";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { SandboxPolicy } from "@mono-agent/sandbox";
 import type { ToolPolicy } from "@mono-agent/tool-policy";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
@@ -85,6 +86,7 @@ export interface AgentHarnessOptions {
   readonly memoryWriteMode?: MemoryWriteMode;
   readonly historyStore?: ConversationHistoryStore;
   readonly toolPolicy?: ToolPolicy;
+  readonly sandboxPolicy?: SandboxPolicy;
   readonly recorderFactory?: (input: AgentHarnessRecorderFactoryInput) => RunRecorder;
   readonly createRunId?: () => string;
   readonly now?: () => Date;
@@ -101,4 +103,3 @@ export interface AgentHarnessRuntimeOptionsExtension {
   readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent">;
   readonly cleanup?: () => void | Promise<void>;
 }
-

@@ -69,6 +69,92 @@ describe("loadMonoAgentConfig", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
 
     expect(config.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 1_800_000 });
+    expect(config.sandbox).toBeUndefined();
+  });
+
+  it("loads sandbox policy from env when configured", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_WORKSPACE: "workspace",
+        MONO_AGENT_SANDBOX_MODE: "native",
+        MONO_AGENT_SANDBOX_NETWORK: "allowlist",
+        MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST: "github.com, api.github.com",
+      },
+    });
+
+    expect(config.sandbox).toMatchObject({
+      mode: "native",
+      engine: "srt",
+      root: "/repo/workspace",
+      fallback: "fail-closed",
+      network: {
+        mode: "allowlist",
+        allowlist: ["github.com", "api.github.com"],
+      },
+    });
+  });
+
+  it("rejects unsafe sandbox fallback unless explicitly opted in", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_SANDBOX_MODE: "native",
+          MONO_AGENT_SANDBOX_FALLBACK: "unsafe-host-process",
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({
+        code: "invalid_env",
+        details: { env: "MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS" },
+      });
+      expect(String(error)).toContain("unsafeAllowHostProcess");
+      return;
+    }
+    throw new Error("Expected unsafe sandbox fallback to fail.");
+  });
+
+  it("allows unsafe sandbox fallback with the explicit opt-in", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SANDBOX_MODE: "native",
+        MONO_AGENT_SANDBOX_FALLBACK: "unsafe-host-process",
+        MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS: "true",
+      },
+    });
+
+    expect(config.sandbox).toMatchObject({
+      fallback: "unsafe-host-process",
+      unsafeAllowHostProcess: true,
+    });
+  });
+
+  it("reports the sandbox allowlist env when allowlist mode has no domains", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_SANDBOX_MODE: "native",
+          MONO_AGENT_SANDBOX_NETWORK: "allowlist",
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({
+        code: "invalid_env",
+        details: { env: "MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST" },
+      });
+      expect(String(error)).toContain("allowlist network mode");
+      return;
+    }
+    throw new Error("Expected sandbox allowlist without domains to fail.");
   });
 
   it("respects session env overrides", () => {
