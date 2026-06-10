@@ -27,10 +27,10 @@ describe("backendUsesExecenvConfig", () => {
 });
 
 describe("backendSupportsSessionResume", () => {
-  it("does not claim session resume for registered providers", () => {
-    expect(backendSupportsSessionResume("claude")).toBe(false);
-    expect(backendSupportsSessionResume("pi")).toBe(false);
-    expect(backendSupportsSessionResume("codex")).toBe(false);
+  it("claims session resume for every registered provider", () => {
+    expect(backendSupportsSessionResume("claude")).toBe(true);
+    expect(backendSupportsSessionResume("pi")).toBe(true);
+    expect(backendSupportsSessionResume("codex")).toBe(true);
   });
 });
 

@@ -20,6 +20,12 @@ export const FAILURE_KINDS = [
   // (lead + members). Replaces the retired delegation_agent_not_allowed kind.
   "delegation_agent_not_in_team",
   "delegation_team_roster_empty",
+  // Provider session resume: the host asked to resume a provider session that
+  // is no longer live (expired, evicted, or process died) or that is still
+  // executing another turn. Both are non-retryable at the router level; the
+  // host retries once without the session (replaying history) instead.
+  "session_not_found",
+  "session_busy",
 ];
 
 const USAGE_LIMIT_RE = /(rate limit|usage limit|max tokens|max turns|context length|too many tokens)/i;

@@ -14,14 +14,23 @@ export const RUNTIME_CAPABILITIES = {
   claude: {
     runtime: "sdk",
     ...COMMON_CAPABILITIES,
+    // The Claude Agent SDK persists sessions on disk; the bridge resumes
+    // them via queryOptions.resume when options.sessionId is supplied.
+    supports_session_resume: true,
   },
   pi: {
     runtime: "pi-agent",
     ...COMMON_CAPABILITIES,
+    // The pi bridge keeps a pi-agent-core Session transcript per provider
+    // session id and seeds Agent initialState.messages on resume.
+    supports_session_resume: true,
   },
   codex: {
     runtime: "cli",
     ...COMMON_CAPABILITIES,
+    // The codex-app bridge keeps the app-server subprocess + thread alive
+    // when options.sessionKeepAlive is set; resumed turns reuse the thread.
+    supports_session_resume: true,
   },
 };
 

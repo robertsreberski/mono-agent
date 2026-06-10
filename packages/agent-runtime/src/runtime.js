@@ -24,6 +24,7 @@
 
 import { resolveRuntimeBridge } from "./ai/runtime/registry.js";
 import { createObserverHub } from "./ai/observer.js";
+import { disposeAllProviderSessions, disposeProviderSession } from "./ai/runtime/sessions.js";
 import { configureToolRuntime } from "./agent/tools/shared/runtime-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
 
@@ -90,6 +91,12 @@ export function createRuntime(host = {}) {
     },
     configureTools(next = {}) {
       configureToolRuntime(pickDefined(next, TOOL_RUNTIME_KEYS));
+    },
+    async disposeSession(providerSessionId) {
+      return disposeProviderSession(providerSessionId);
+    },
+    async disposeAllSessions() {
+      return disposeAllProviderSessions();
     },
   };
 }

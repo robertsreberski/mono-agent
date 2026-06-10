@@ -7,13 +7,16 @@ const builtinBridgeSpecs = {
   "claude-code": {
     id: "claude-code",
     supports: (ref, options) => ref?.sdk === "claude" && options?.executionMode === "cli",
-    capabilities: () => ({ kind: "claude-code", runtime: "cli", ...COMMON_CAPABILITIES }),
+    // The claude CLI resumes prior sessions via `--resume <sessionId>`.
+    capabilities: () => ({ kind: "claude-code", runtime: "cli", ...COMMON_CAPABILITIES, supports_session_resume: true }),
     load: async () => (await import("../providers/claude-cli.js")).claudeCodeRuntimeBridge,
   },
   "codex-app": {
     id: "codex-app",
     supports: (ref, options) => ref?.sdk === "codex" && options?.executionMode === "cli",
-    capabilities: () => ({ kind: "codex-app", runtime: "cli", ...COMMON_CAPABILITIES }),
+    // The codex-app bridge keeps the app-server subprocess + thread alive
+    // across turns when options.sessionKeepAlive is set.
+    capabilities: () => ({ kind: "codex-app", runtime: "cli", ...COMMON_CAPABILITIES, supports_session_resume: true }),
     load: async () => (await import("../providers/codex-app.js")).codexAppRuntimeBridge,
   },
   "opencode-app": {
