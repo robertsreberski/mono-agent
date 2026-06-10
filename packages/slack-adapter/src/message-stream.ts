@@ -4,8 +4,8 @@ import {
   buildStreamingTailPreview,
   normalizeTrailing,
   splitTextByCodePoints,
-} from "@worklab-ai/agent-contracts";
-import type { AgentMessageStream as AgentMessageStreamBase } from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-contracts";
+import type { AgentMessageStream as AgentMessageStreamBase } from "@mono-agent/agent-contracts";
 
 import type {
   SlackChannelId,

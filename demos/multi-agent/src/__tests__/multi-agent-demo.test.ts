@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
-import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+import { sendA2AMessage } from "@mono-agent/a2a-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { writeMultiAgentDeploymentFiles } from "../deployment.js";
 import { startMultiAgentDemo } from "../multi-agent-demo.js";

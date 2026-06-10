@@ -4,21 +4,21 @@ import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
-import { sendA2AMessage } from "@worklab-ai/a2a-adapter";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import { sendA2AMessage } from "@mono-agent/a2a-adapter";
 import type {
   A2AProviderOptions,
   A2AProviderStartResult,
-} from "@worklab-ai/a2a-adapter";
+} from "@mono-agent/a2a-adapter";
 import type {
   TelegramBotApi,
   TelegramLongPollerOptions,
   TelegramLongPollerStartOptions,
-} from "@worklab-ai/telegram-adapter";
+} from "@mono-agent/telegram-adapter";
 import type {
   CronAdapterOptions,
   CronAdapterStartResult,
-} from "@worklab-ai/cron-adapter";
+} from "@mono-agent/cron-adapter";
 
 import {
   resolveFinalDemoArtifactDir,

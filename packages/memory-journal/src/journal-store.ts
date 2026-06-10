@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@worklab-ai/memory-md";
+import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-md";
 
 import type { EntityDigestProvider, JournalMemoryErrorCode, JournalMemoryStoreOptions } from "./types.js";
 

@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/whatsapp-adapter",
+  "name": "@mono-agent/whatsapp-adapter",
   "version": "0.1.0",
   "description": "WhatsApp communication adapter for Worklab-style agent runtimes using Baileys.",
   "type": "module",
@@ -23,8 +23,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/settings": "workspace:^0.1.0",
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/settings": "workspace:^0.1.0",
     "@whiskeysockets/baileys": "^7.0.0-rc11"
   }
 }

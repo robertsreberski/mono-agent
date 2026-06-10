@@ -12,7 +12,7 @@ export const PACKAGE_CATEGORIES = [
 export const packageCatalog = [
   {
     dir: "a2a-adapter",
-    name: "@worklab-ai/a2a-adapter",
+    name: "@mono-agent/a2a-adapter",
     category: "communication",
     responsibility: "Exposes Mono Agent responders over A2A and consumes remote A2A agents through direct discovery.",
     allowedDependencyCategories: ["core"],
@@ -20,7 +20,7 @@ export const packageCatalog = [
   },
   {
     dir: "agent-contracts",
-    name: "@worklab-ai/agent-contracts",
+    name: "@mono-agent/agent-contracts",
     category: "core",
     responsibility: "Defines shared structural request, response, stream, responder, and cancellation contracts.",
     allowedDependencyCategories: ["core"],
@@ -28,7 +28,7 @@ export const packageCatalog = [
   },
   {
     dir: "agent-evals",
-    name: "@worklab-ai/agent-evals",
+    name: "@mono-agent/agent-evals",
     category: "evaluation",
     responsibility: "Runs local-first end-to-end eval scenarios against Mono Agent responders and harnesses.",
     allowedDependencyCategories: ["core", "execution", "observability", "evaluation"],
@@ -36,7 +36,7 @@ export const packageCatalog = [
   },
   {
     dir: "agent-harness",
-    name: "@worklab-ai/agent-harness",
+    name: "@mono-agent/agent-harness",
     category: "execution",
     responsibility: "Composes context, runtime, memory, history, tool policy, skills, and observability for one request.",
     allowedDependencyCategories: ["core", "context", "runtime", "observability"],
@@ -44,7 +44,7 @@ export const packageCatalog = [
   },
   {
     dir: "agent-host",
-    name: "@worklab-ai/agent-host",
+    name: "@mono-agent/agent-host",
     category: "execution",
     responsibility: "Builds configured Mono Agent harnesses and responders from adapter-neutral host config.",
     allowedDependencyCategories: ["core", "context", "runtime", "observability", "execution"],
@@ -52,31 +52,31 @@ export const packageCatalog = [
   },
   {
     dir: "agent-orchestrator",
-    name: "@worklab-ai/agent-orchestrator",
+    name: "@mono-agent/agent-orchestrator",
     category: "execution",
     responsibility: "Exposes named collaborator responders to an orchestrator runtime through a bounded MCP tool.",
     allowedDependencyCategories: ["core"],
     publishable: true,
   },
   {
+    dir: "agent-runtime",
+    name: "@mono-agent/agent-runtime",
+    category: "runtime",
+    responsibility: "Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support.",
+    allowedDependencyCategories: ["runtime"],
+    publishable: true,
+  },
+  {
     dir: "claude-agents-runtime",
-    name: "@worklab-ai/claude-agents-runtime",
+    name: "@mono-agent/claude-agents-runtime",
     category: "runtime",
     responsibility: "Adapts @anthropic-ai/claude-agent-sdk to the Mono Agent runtime contract.",
     allowedDependencyCategories: ["core", "runtime"],
     publishable: true,
   },
   {
-    dir: "codex-app-runtime",
-    name: "@worklab-ai/codex-app-runtime",
-    category: "runtime",
-    responsibility: "Adapts the OpenAI Codex app-server CLI to the Mono Agent runtime contract.",
-    allowedDependencyCategories: ["core", "runtime"],
-    publishable: true,
-  },
-  {
     dir: "config",
-    name: "@worklab-ai/config",
+    name: "@mono-agent/config",
     category: "core",
     responsibility: "Loads adapter-neutral runtime, context, memory, tool, and artifact settings.",
     allowedDependencyCategories: ["core", "runtime"],
@@ -84,7 +84,7 @@ export const packageCatalog = [
   },
   {
     dir: "cron-adapter",
-    name: "@worklab-ai/cron-adapter",
+    name: "@mono-agent/cron-adapter",
     category: "communication",
     responsibility: "Invokes Mono Agent responders from cron schedules with skip-overlap execution.",
     allowedDependencyCategories: ["core"],
@@ -92,7 +92,7 @@ export const packageCatalog = [
   },
   {
     dir: "context",
-    name: "@worklab-ai/context",
+    name: "@mono-agent/context",
     category: "context",
     responsibility: "Builds deterministic prompt context from identity, soul, skills, history, and user messages.",
     allowedDependencyCategories: ["core", "context"],
@@ -100,7 +100,7 @@ export const packageCatalog = [
   },
   {
     dir: "memory-md",
-    name: "@worklab-ai/memory-md",
+    name: "@mono-agent/memory-md",
     category: "context",
     responsibility: "Provides optional Markdown memory storage for host-owned summaries.",
     allowedDependencyCategories: ["core"],
@@ -108,7 +108,7 @@ export const packageCatalog = [
   },
   {
     dir: "memory-journal",
-    name: "@worklab-ai/memory-journal",
+    name: "@mono-agent/memory-journal",
     category: "context",
     responsibility: "Provides a global daily-journal memory store: continuous journaling and an always-in-context today note.",
     allowedDependencyCategories: ["core", "context"],
@@ -116,7 +116,7 @@ export const packageCatalog = [
   },
   {
     dir: "memory-graph",
-    name: "@worklab-ai/memory-graph",
+    name: "@mono-agent/memory-graph",
     category: "context",
     responsibility: "Provides a local JSONL entity/relation/observation knowledge graph for long-term memory.",
     allowedDependencyCategories: ["core"],
@@ -124,7 +124,7 @@ export const packageCatalog = [
   },
   {
     dir: "memory-search",
-    name: "@worklab-ai/memory-search",
+    name: "@mono-agent/memory-search",
     category: "context",
     responsibility: "Provides local semantic search via embeddings and a brute-force cosine vector index over memory.",
     allowedDependencyCategories: ["core"],
@@ -132,7 +132,7 @@ export const packageCatalog = [
   },
   {
     dir: "memory-mcp",
-    name: "@worklab-ai/memory-mcp",
+    name: "@mono-agent/memory-mcp",
     category: "context",
     responsibility: "Exposes journaling, entity-graph, and keyword/semantic-search memory tools to runtimes over an MCP stdio server.",
     allowedDependencyCategories: ["core", "context"],
@@ -140,7 +140,7 @@ export const packageCatalog = [
   },
   {
     dir: "openai-agents-runtime",
-    name: "@worklab-ai/openai-agents-runtime",
+    name: "@mono-agent/openai-agents-runtime",
     category: "runtime",
     responsibility: "Adapts @openai/agents to the Mono Agent runtime contract.",
     allowedDependencyCategories: ["core", "runtime"],
@@ -148,7 +148,7 @@ export const packageCatalog = [
   },
   {
     dir: "observability",
-    name: "@worklab-ai/observability",
+    name: "@mono-agent/observability",
     category: "observability",
     responsibility: "Records and reads local JSONL run artifacts, summaries, and trace source manifests.",
     allowedDependencyCategories: ["core"],
@@ -156,7 +156,7 @@ export const packageCatalog = [
   },
   {
     dir: "openai-api-adapter",
-    name: "@worklab-ai/openai-api-adapter",
+    name: "@mono-agent/openai-api-adapter",
     category: "communication",
     responsibility: "Exposes Mono Agent responders through OpenAI-compatible model discovery and Chat Completions endpoints.",
     allowedDependencyCategories: ["core"],
@@ -164,7 +164,7 @@ export const packageCatalog = [
   },
   {
     dir: "operator-console",
-    name: "@worklab-ai/operator-console",
+    name: "@mono-agent/operator-console",
     category: "operator-surface",
     responsibility: "Serves the local browser settings and traceability operator surface.",
     allowedDependencyCategories: ["core", "observability"],
@@ -172,15 +172,15 @@ export const packageCatalog = [
   },
   {
     dir: "runtime-adapter",
-    name: "@worklab-ai/runtime-adapter",
+    name: "@mono-agent/runtime-adapter",
     category: "runtime",
-    responsibility: "Wraps @worklab-ai/agent-runtime behind Mono Agent runtime contracts.",
-    allowedDependencyCategories: ["core"],
+    responsibility: "Wraps @mono-agent/agent-runtime behind Mono Agent runtime contracts.",
+    allowedDependencyCategories: ["core", "runtime"],
     publishable: true,
   },
   {
     dir: "settings",
-    name: "@worklab-ai/settings",
+    name: "@mono-agent/settings",
     category: "core",
     responsibility: "Defines generic field groups, patch validation, redaction, and JSON settings storage.",
     allowedDependencyCategories: ["core"],
@@ -188,7 +188,7 @@ export const packageCatalog = [
   },
   {
     dir: "skills",
-    name: "@worklab-ai/skills",
+    name: "@mono-agent/skills",
     category: "context",
     responsibility: "Loads explicitly selected skills and turns them into context blocks.",
     allowedDependencyCategories: ["core", "context"],
@@ -196,7 +196,7 @@ export const packageCatalog = [
   },
   {
     dir: "slack-adapter",
-    name: "@worklab-ai/slack-adapter",
+    name: "@mono-agent/slack-adapter",
     category: "communication",
     responsibility: "Adapts Slack Socket Mode events to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
@@ -204,7 +204,7 @@ export const packageCatalog = [
   },
   {
     dir: "telegram-adapter",
-    name: "@worklab-ai/telegram-adapter",
+    name: "@mono-agent/telegram-adapter",
     category: "communication",
     responsibility: "Adapts Telegram updates to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
@@ -212,7 +212,7 @@ export const packageCatalog = [
   },
   {
     dir: "tool-policy",
-    name: "@worklab-ai/tool-policy",
+    name: "@mono-agent/tool-policy",
     category: "core",
     responsibility: "Normalizes fail-closed tool and MCP policy into runtime options.",
     allowedDependencyCategories: ["core"],
@@ -220,7 +220,7 @@ export const packageCatalog = [
   },
   {
     dir: "tui",
-    name: "@worklab-ai/tui",
+    name: "@mono-agent/tui",
     category: "operator-surface",
     responsibility: "Provides an Ink terminal chat and read-only config operator surface.",
     allowedDependencyCategories: ["core"],
@@ -228,7 +228,7 @@ export const packageCatalog = [
   },
   {
     dir: "whatsapp-adapter",
-    name: "@worklab-ai/whatsapp-adapter",
+    name: "@mono-agent/whatsapp-adapter",
     category: "communication",
     responsibility: "Adapts WhatsApp messages to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
@@ -236,7 +236,7 @@ export const packageCatalog = [
   },
   {
     dir: "webhook-adapter",
-    name: "@worklab-ai/webhook-adapter",
+    name: "@mono-agent/webhook-adapter",
     category: "communication",
     responsibility: "Invokes Mono Agent responders from HTTP webhook requests with sync and async modes.",
     allowedDependencyCategories: ["core"],

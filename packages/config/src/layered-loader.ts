@@ -60,6 +60,12 @@ export function layerJsonOntoEnv(
   if (json.runtime?.workspace !== undefined) {
     fromJson.MONO_AGENT_WORKSPACE = json.runtime.workspace;
   }
+  if (json.runtime?.session?.mode !== undefined) {
+    fromJson.MONO_AGENT_SESSION_MODE = json.runtime.session.mode;
+  }
+  if (json.runtime?.session?.idleTimeoutMs !== undefined) {
+    fromJson.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS = String(json.runtime.session.idleTimeoutMs);
+  }
   if (json.context?.identityPath !== undefined) {
     fromJson.MONO_AGENT_IDENTITY_PATH = json.context.identityPath;
   }

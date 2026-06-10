@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/skills",
+  "name": "@mono-agent/skills",
   "version": "0.1.0",
   "description": "Deterministic skill activation helpers for Mono Agent prompts.",
   "type": "module",
@@ -23,6 +23,6 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/context": "workspace:^0.1.0"
+    "@mono-agent/context": "workspace:^0.1.0"
   }
 }

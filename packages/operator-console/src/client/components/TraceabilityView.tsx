@@ -8,8 +8,8 @@ import type {
   TraceRunListItem,
   TraceSourceHealth,
   TraceSourceListItem,
-} from "@worklab-ai/observability";
-import { combineRecordedRunEvents } from "@worklab-ai/observability/event-timeline";
+} from "@mono-agent/observability";
+import { combineRecordedRunEvents } from "@mono-agent/observability/event-timeline";
 
 import type {
   OperatorConsoleClient,

@@ -1,4 +1,4 @@
-# @worklab-ai/agent-harness
+# @mono-agent/agent-harness
 
 ## Category
 
@@ -11,11 +11,11 @@ Composition spine for a Mono Agent request. It turns a communication request int
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/agent-harness run build
+pnpm --filter @mono-agent/agent-harness run build
 ```
 
 ```ts
-import { createAgentHarness, createAgentResponder } from "@worklab-ai/agent-harness";
+import { createAgentHarness, createAgentResponder } from "@mono-agent/agent-harness";
 ```
 
 Hosts wire identity/context paths, runtime, model, execution mode, tool policy, history, memory, skills, and recorder factory explicitly.
@@ -26,8 +26,11 @@ Hosts that need request-scoped runtime setup can provide `runtimeOptionsForReque
 - `createAgentHarness`, `AgentHarnessError`
 - `createAgentResponder`, `AgentHarnessFailureError`
 - `createInMemoryHistoryStore`
+- `createRuntimeSessionStore` plus the session record/store types from `sessions.ts`
 - `NoopRunRecorder`
-- Harness, shared responder, runtime, request-scoped runtime option, memory, and history types from `types.ts`
+- Harness, shared responder, runtime, request-scoped runtime option, memory, history, and session types from `types.ts`
+
+With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation: resumed runs pass `sessionId`/`sessionKeepAlive` to the runtime and omit history from the prompt, stale sessions are evicted and retried once with history, rotated provider session ids are tracked, and `dispose()` retires everything on shutdown. History is still appended after every successful turn so post-expiry runs replay it as before.
 
 ## Dependency Boundary
 
@@ -40,7 +43,7 @@ It does not poll chats, serve UI, parse host settings files, own provider creden
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/agent-harness run build
-pnpm --filter @worklab-ai/agent-harness run typecheck
-pnpm --filter @worklab-ai/agent-harness run test
+pnpm --filter @mono-agent/agent-harness run build
+pnpm --filter @mono-agent/agent-harness run typecheck
+pnpm --filter @mono-agent/agent-harness run test
 ```

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import { startOpenAIApiAdapter } from "../index.js";
 
@@ -23,7 +23,7 @@ describe("OpenAI API adapter", () => {
           expect.objectContaining({
             id: "mono-agent",
             object: "model",
-            owned_by: "worklab-ai",
+            owned_by: "mono-agent",
           }),
         ],
       });

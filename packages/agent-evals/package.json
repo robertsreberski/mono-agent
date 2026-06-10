@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/agent-evals",
+  "name": "@mono-agent/agent-evals",
   "version": "0.1.0",
   "description": "Local-first end-to-end eval runner for Mono Agent responders and harnesses.",
   "type": "module",
@@ -23,9 +23,9 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@worklab-ai/agent-contracts": "workspace:^0.1.0",
-    "@worklab-ai/agent-harness": "workspace:^0.1.0",
-    "@worklab-ai/observability": "workspace:^0.1.0",
+    "@mono-agent/agent-contracts": "workspace:^0.1.0",
+    "@mono-agent/agent-harness": "workspace:^0.1.0",
+    "@mono-agent/observability": "workspace:^0.1.0",
     "agentevals": "^0.0.7"
   }
 }

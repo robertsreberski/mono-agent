@@ -8,13 +8,14 @@ export {
   isRuntimeExecutionMode,
   listMonoRuntimeBackends,
   listMonoRuntimeSelectionTable,
+  monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeBackendForModel,
   RuntimeAdapterError,
   selectMonoRuntimeBackendId,
 } from "./runtime-adapter.js";
 export type { RuntimeAdapterErrorCode, RuntimeAdapterErrorDetails } from "./runtime-adapter.js";
-export { CodedError, isCodedError } from "@worklab-ai/agent-contracts";
+export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
 export {
   applyTemporaryEnv,
   assertBaseRunOptions,

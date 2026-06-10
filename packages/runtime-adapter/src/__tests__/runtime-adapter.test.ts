@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertExecutionModeCompatible,
+  createMonoRuntime,
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   listMonoRuntimeBackends,
+  monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
   runtimeBackendForModel,
@@ -86,6 +88,28 @@ describe("runtime adapter model references", () => {
     });
     expect(() => runtimeBackendForModel(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"), "cli"))
       .toThrow(RuntimeAdapterError);
+  });
+});
+
+describe("runtime adapter provider sessions", () => {
+  it("reports session resume support for every backend", () => {
+    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
+    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(true);
+    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(true);
+    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
+  });
+
+  it("resolves the default execution mode when omitted", () => {
+    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"))).toBe(true);
+    expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("codex:gpt-5.5"))).toBe(true);
+  });
+
+  it("exposes session disposal on the mono runtime", async () => {
+    const runtime = createMonoRuntime();
+    expect(typeof runtime.disposeSession).toBe("function");
+    expect(typeof runtime.disposeAllSessions).toBe("function");
+    await expect(runtime.disposeSession?.("no-such-session")).resolves.toBeFalsy();
+    await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
   });
 });
 

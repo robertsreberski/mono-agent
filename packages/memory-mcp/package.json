@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/memory-mcp",
+  "name": "@mono-agent/memory-mcp",
   "version": "0.1.0",
   "description": "MCP stdio server exposing Mono Agent memory tools: journaling, entity graph, and keyword search.",
   "type": "module",
@@ -24,9 +24,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@worklab-ai/memory-graph": "workspace:^0.1.0",
-    "@worklab-ai/memory-journal": "workspace:^0.1.0",
-    "@worklab-ai/memory-search": "workspace:^0.1.0",
+    "@mono-agent/memory-graph": "workspace:^0.1.0",
+    "@mono-agent/memory-journal": "workspace:^0.1.0",
+    "@mono-agent/memory-search": "workspace:^0.1.0",
     "zod": "^4.4.3"
   }
 }

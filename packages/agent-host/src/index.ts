@@ -2,31 +2,30 @@ import {
   createAgentHarness,
   createAgentResponder,
   createInMemoryHistoryStore,
-} from "@worklab-ai/agent-harness";
-import { createCodexAppRuntime } from "@worklab-ai/codex-app-runtime";
+} from "@mono-agent/agent-harness";
 import type {
   AgentHarness,
   AgentHarnessOptions,
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
   ConversationHistoryStore,
-} from "@worklab-ai/agent-harness";
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
-import type { MonoAgentConfig } from "@worklab-ai/config";
+} from "@mono-agent/agent-harness";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { MonoAgentConfig } from "@mono-agent/config";
 import { join } from "node:path";
 
-import { createEntityGraphStore } from "@worklab-ai/memory-graph";
-import { createJournalMemoryStore } from "@worklab-ai/memory-journal";
-import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
-import type { MemoryStore } from "@worklab-ai/memory-md";
-import { createJsonlRunRecorder } from "@worklab-ai/observability";
+import { createEntityGraphStore } from "@mono-agent/memory-graph";
+import { createJournalMemoryStore } from "@mono-agent/memory-journal";
+import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
+import type { MemoryStore } from "@mono-agent/memory-md";
+import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
   createMonoRuntime,
   runtimeOptionsForLocalProvider,
-} from "@worklab-ai/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeModelReference } from "@worklab-ai/runtime-adapter";
-import { createToolPolicy } from "@worklab-ai/tool-policy";
-import type { ToolPolicyInput } from "@worklab-ai/tool-policy";
+} from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createToolPolicy } from "@mono-agent/tool-policy";
+import type { ToolPolicyInput } from "@mono-agent/tool-policy";
 
 export interface ConfiguredAgentRuntimeOptions {
   readonly config: MonoAgentConfig;
@@ -57,11 +56,6 @@ export function createConfiguredAgentRuntime(
   input: MonoAgentConfig | ConfiguredAgentRuntimeOptions,
 ): MonoRuntimeLike {
   const config = isRuntimeOptions(input) ? input.config : input;
-  const model = isRuntimeOptions(input) ? input.model ?? config.runtime.model : config.runtime.model;
-  const executionMode = isRuntimeOptions(input) ? input.executionMode ?? config.runtime.executionMode : config.runtime.executionMode;
-  if (model.sdk === "codex" && executionMode === "cli") {
-    return createCodexAppRuntime();
-  }
   return createMonoRuntime({
     workspace: config.runtime.workspace,
     qaOutputDir: config.artifacts.dir,
@@ -89,6 +83,10 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     maxTurns: config.runtime.maxTurns,
+    session: {
+      mode: config.runtime.session.mode,
+      idleTimeoutMs: config.runtime.session.idleTimeoutMs,
+    },
     runtimeOptions,
     ...(options.runtimeOptionsForRequest === undefined
       ? {}

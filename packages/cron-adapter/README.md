@@ -1,4 +1,4 @@
-# @worklab-ai/cron-adapter
+# @mono-agent/cron-adapter
 
 ## Category
 
@@ -11,11 +11,11 @@ Cron-based scheduled invocation adapter for Mono Agent hosts. It parses configur
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/cron-adapter run build
+pnpm --filter @mono-agent/cron-adapter run build
 ```
 
 ```ts
-import { startCronAdapter } from "@worklab-ai/cron-adapter";
+import { startCronAdapter } from "@mono-agent/cron-adapter";
 
 const cron = startCronAdapter({
   responder,
@@ -53,7 +53,7 @@ It does not build prompts, run models, persist missed runs, catch up after resta
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/cron-adapter run build
-pnpm --filter @worklab-ai/cron-adapter run typecheck
-pnpm --filter @worklab-ai/cron-adapter run test
+pnpm --filter @mono-agent/cron-adapter run build
+pnpm --filter @mono-agent/cron-adapter run typecheck
+pnpm --filter @mono-agent/cron-adapter run test
 ```

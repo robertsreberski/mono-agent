@@ -2,69 +2,69 @@ import { resolve } from "node:path";
 
 import {
   startOperatorConsole,
-} from "@worklab-ai/operator-console";
+} from "@mono-agent/operator-console";
 import type {
   ConfigApplyResult,
   OperatorConsoleEvent,
   OperatorConsoleOptions,
   OperatorConsoleStartResult,
-} from "@worklab-ai/operator-console";
-import type { MonoAgentConfig } from "@worklab-ai/config";
+} from "@mono-agent/operator-console";
+import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   startA2AProvider,
-} from "@worklab-ai/a2a-adapter";
+} from "@mono-agent/a2a-adapter";
 import type {
   A2AAdapterConfig,
   A2AProviderOptions,
   A2AProviderStartResult,
-} from "@worklab-ai/a2a-adapter";
+} from "@mono-agent/a2a-adapter";
 import {
   startWebhookAdapter,
-} from "@worklab-ai/webhook-adapter";
+} from "@mono-agent/webhook-adapter";
 import type {
   WebhookAdapterConfig,
   WebhookAdapterOptions,
   WebhookAdapterStartResult,
-} from "@worklab-ai/webhook-adapter";
+} from "@mono-agent/webhook-adapter";
 import {
   startOpenAIApiAdapter,
-} from "@worklab-ai/openai-api-adapter";
+} from "@mono-agent/openai-api-adapter";
 import type {
   OpenAIApiAdapterConfig,
   OpenAIApiAdapterOptions,
   OpenAIApiAdapterStartResult,
-} from "@worklab-ai/openai-api-adapter";
+} from "@mono-agent/openai-api-adapter";
 import {
   startCronAdapter,
-} from "@worklab-ai/cron-adapter";
+} from "@mono-agent/cron-adapter";
 import type {
   CronAdapterConfig,
   CronAdapterOptions,
   CronAdapterStartResult,
-} from "@worklab-ai/cron-adapter";
+} from "@mono-agent/cron-adapter";
 import {
   createConfiguredAgentResponder,
   createConfiguredAgentRuntime,
-} from "@worklab-ai/agent-host";
-import type { AgentResponder } from "@worklab-ai/agent-contracts";
+} from "@mono-agent/agent-host";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 import {
   registerTraceSource,
-} from "@worklab-ai/observability";
-import type { TraceSourceHandle } from "@worklab-ai/observability";
-import type { MonoRuntimeLike } from "@worklab-ai/runtime-adapter";
+} from "@mono-agent/observability";
+import type { TraceSourceHandle } from "@mono-agent/observability";
+import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import {
   TelegramBotApiClient,
   TelegramAdapter,
   TelegramLongPoller,
-} from "@worklab-ai/telegram-adapter";
+} from "@mono-agent/telegram-adapter";
 import type {
   TelegramBotApi,
   TelegramAdapterConfig,
   TelegramAdapterOptions,
   TelegramLongPollerOptions,
   TelegramLongPollerStartOptions,
-} from "@worklab-ai/telegram-adapter";
-import type { FieldGroup } from "@worklab-ai/settings";
+} from "@mono-agent/telegram-adapter";
+import type { FieldGroup } from "@mono-agent/settings";
 import {
   FINAL_DEMO_FIELD_GROUPS,
   isFinalAgentDemoConfigError,
@@ -305,6 +305,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
   private readonly env: Record<string, string | undefined>;
   private readonly logger: FinalAgentDemoLogger | undefined;
   private readonly runtime: MonoRuntimeLike | undefined;
+  private readonly activeRuntimes: MonoRuntimeLike[] = [];
   private readonly telegramApi: TelegramBotApi | undefined;
   private readonly pollerFactory: ((options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike) | undefined;
   private readonly a2aProviderFactory: ((options: A2AProviderOptions) => Promise<A2AProviderStartResult>) | undefined;
@@ -618,6 +619,17 @@ class FinalAgentDemoController implements FinalAgentDemo {
     await this.stopCron("stop");
     await this.stopTraceSource("stop");
     await this.consoleServer.stop();
+    for (const runtime of this.activeRuntimes.splice(0)) {
+      await runtime.disposeAllSessions?.().catch(() => undefined);
+    }
+  }
+
+  private resolveRuntime(coreConfig: MonoAgentConfig): MonoRuntimeLike {
+    const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+    if (!this.activeRuntimes.includes(runtime)) {
+      this.activeRuntimes.push(runtime);
+    }
+    return runtime;
   }
 
   private async stopTelegram(reason: string): Promise<void> {
@@ -770,7 +782,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     try {
       const redacted = redactFinalAgentDemoConfig({ coreConfig, telegramConfig });
       const api = this.telegramApi ?? new TelegramBotApiClient({ token: telegramConfig.botToken });
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterOptions = buildAdapterOptions({
         api,
@@ -829,7 +841,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const providerFactory = this.a2aProviderFactory ?? startA2AProvider;
       const provider = await providerFactory({
@@ -892,7 +904,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterFactory = this.webhookAdapterFactory ?? startWebhookAdapter;
       const adapter = await adapterFactory({
@@ -942,7 +954,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterFactory = this.openAIApiAdapterFactory ?? startOpenAIApiAdapter;
       const adapter = await adapterFactory({
@@ -992,7 +1004,7 @@ class FinalAgentDemoController implements FinalAgentDemo {
     }
 
     try {
-      const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+      const runtime = this.resolveRuntime(coreConfig);
       const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
       const adapterFactory = this.cronAdapterFactory ?? startCronAdapter;
       const adapter = adapterFactory({

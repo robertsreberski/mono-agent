@@ -3,8 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   readFieldValue,
   writeFieldValue,
-} from "@worklab-ai/settings/field-groups";
-import type { FieldDefinition, FieldGroup, SettingsJson } from "@worklab-ai/settings/field-groups";
+} from "@mono-agent/settings/field-groups";
+import type { FieldDefinition, FieldGroup, SettingsJson } from "@mono-agent/settings/field-groups";
 import type { OperatorConsoleClient, PutError } from "../api.js";
 import { FieldGroupCard } from "./FieldGroupCard.js";
 import { SaveBar, type SaveBarStatus } from "./SaveBar.js";

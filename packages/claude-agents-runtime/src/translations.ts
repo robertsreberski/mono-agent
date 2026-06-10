@@ -1,5 +1,5 @@
-import { parseMcpServers } from "@worklab-ai/runtime-adapter";
-import type { NormalizedMcpServer, RuntimeEventLike } from "@worklab-ai/runtime-adapter";
+import { parseMcpServers } from "@mono-agent/runtime-adapter";
+import type { NormalizedMcpServer, RuntimeEventLike } from "@mono-agent/runtime-adapter";
 
 export interface ClaudeSDKMessageLike {
   readonly type?: string;

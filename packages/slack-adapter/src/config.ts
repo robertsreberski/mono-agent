@@ -7,12 +7,12 @@ import {
   readRequired,
   readSettingsJson,
   redactedSecret,
-} from "@worklab-ai/settings";
+} from "@mono-agent/settings";
 import type {
   FieldGroup,
   RedactedSecretValue,
   SettingsJson,
-} from "@worklab-ai/settings";
+} from "@mono-agent/settings";
 
 export interface SlackAdapterConfig {
   readonly botToken: string;

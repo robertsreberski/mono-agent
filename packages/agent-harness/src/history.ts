@@ -1,4 +1,4 @@
-import type { HistoryMessage } from "@worklab-ai/context";
+import type { HistoryMessage } from "@mono-agent/context";
 
 import type { ConversationHistoryStore, InMemoryHistoryStoreOptions } from "./types.js";
 

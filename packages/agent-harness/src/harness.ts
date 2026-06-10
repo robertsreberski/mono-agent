@@ -1,11 +1,14 @@
-import { loadContextFromFiles } from "@worklab-ai/context";
-import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@worklab-ai/context";
-import type { RunRecorder, RunSummary, RuntimeEventLike } from "@worklab-ai/observability";
-import type { RuntimeResult, RuntimeRunOptions } from "@worklab-ai/runtime-adapter";
-import { loadSelectedSkills } from "@worklab-ai/skills";
-import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@worklab-ai/tool-policy";
+import { loadContextFromFiles } from "@mono-agent/context";
+import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono-agent/context";
+import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
+import { monoRuntimeSupportsSessionResume } from "@mono-agent/runtime-adapter";
+import type { RuntimeExecutionMode, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import { loadSelectedSkills } from "@mono-agent/skills";
+import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/tool-policy";
 
 import { NoopRunRecorder } from "./recorder.js";
+import { createRuntimeSessionStore } from "./sessions.js";
+import type { RuntimeSessionRecord, RuntimeSessionStore } from "./sessions.js";
 import type {
   AgentHarness,
   AgentHarnessFailure,
@@ -29,10 +32,20 @@ export class AgentHarnessError extends Error {
 
 export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
+  private readonly sessionStore: RuntimeSessionStore | undefined;
+  private supportsResumeCache: boolean | undefined;
 
   constructor(options: AgentHarnessOptions) {
     validateOptions(options);
     this.options = options;
+    this.sessionStore = options.session?.mode === "continuous"
+      ? createRuntimeSessionStore({
+        idleTimeoutMs: options.session.idleTimeoutMs,
+        onEvict: async (record) => {
+          await this.options.runtime.disposeSession?.(record.providerSessionId);
+        },
+      })
+      : undefined;
   }
 
   async run(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
@@ -46,11 +59,45 @@ export class MonoAgentHarness implements AgentHarness {
       return failureResponse({ runId, request, summary, kind: "cancelled", message: "Agent request was cancelled before runtime execution." });
     }
 
+    const sessionRecord = this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
     try {
-      const prepared = await this.prepareContext(request);
+      let resumeSessionId = sessionRecord?.providerSessionId;
+      // While a provider session is live it already holds the conversation,
+      // so history is omitted from the prompt — that is the optimization.
+      let prepared = await this.prepareContext(request, { omitHistory: resumeSessionId !== undefined });
       context = prepared.context;
-      const runtimeResult = await this.runRuntime(request, recorder, context, runId);
+
+      let runtimeResult: RuntimeResult | undefined;
+      let resumeError: unknown;
+      try {
+        runtimeResult = await this.runRuntime(request, recorder, context, runId, resumeSessionId);
+      } catch (error) {
+        if (resumeSessionId === undefined || request.abortSignal.aborted) {
+          throw error;
+        }
+        resumeError = error;
+      }
+
+      if (resumeSessionId !== undefined && (resumeError !== undefined || shouldRetryWithoutSession(runtimeResult, request.abortSignal.aborted))) {
+        const warning: RuntimeEventLike = {
+          type: "runtime_warning",
+          warning_kind: "session_resume_retry",
+          message: `Provider session ${resumeSessionId} could not be resumed; retrying with conversation history.`,
+          provider_session_id: resumeSessionId,
+        };
+        recorder.onEvent(warning);
+        request.onEvent?.(warning);
+        await this.sessionStore?.evict(request.conversationId, "stale", resumeSessionId);
+        resumeSessionId = undefined;
+        prepared = await this.prepareContext(request, { omitHistory: false });
+        context = prepared.context;
+        runtimeResult = await this.runRuntime(request, recorder, context, runId, undefined);
+      }
+      if (runtimeResult === undefined) {
+        throw resumeError ?? new Error("Runtime did not produce a result.");
+      }
+
       const failure = failureFromRuntimeResult(runtimeResult);
       const summary = await recorder.finish(failure === undefined ? runtimeResult : { ...runtimeResult, failureKind: failure.kind, error: failure.message });
       const baseMetadata = responseMetadata(runId, request, context, summary, runtimeResult);
@@ -61,6 +108,18 @@ export class MonoAgentHarness implements AgentHarness {
 
       const text = normalizeAssistantText(runtimeResult.text);
       if (text === undefined) {
+        // Empty turns are not appended to history, so a retained provider
+        // session would diverge from the history store. Retire it instead;
+        // the next message replays history into a fresh session.
+        if (sessionRecord !== undefined) {
+          await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
+        } else if (this.sessionsEnabled() && typeof runtimeResult.providerSessionId === "string" && runtimeResult.providerSessionId.trim().length > 0) {
+          try {
+            await this.options.runtime.disposeSession?.(runtimeResult.providerSessionId);
+          } catch {
+            // Bridge TTL backstop reclaims it eventually.
+          }
+        }
         return {
           metadata: baseMetadata,
           failure: {
@@ -70,6 +129,8 @@ export class MonoAgentHarness implements AgentHarness {
           },
         };
       }
+
+      this.saveSession(request.conversationId, runtimeResult.providerSessionId, sessionRecord);
 
       await this.persistSuccessfulTurn(request, text);
       return {
@@ -83,11 +144,55 @@ export class MonoAgentHarness implements AgentHarness {
         metadata: responseMetadata(runId, request, context, summary),
         failure,
       };
+    } finally {
+      if (sessionRecord !== undefined) {
+        this.sessionStore?.release(request.conversationId, sessionRecord);
+      }
     }
   }
 
-  private async prepareContext(request: AgentHarnessRequest): Promise<{ readonly context: BuiltAgentContext }> {
-    const history = await this.loadHistory(request.conversationId);
+  async dispose(): Promise<void> {
+    // Only this harness's tracked sessions are retired (the store's onEvict
+    // disposes each provider session individually). runtime.disposeAllSessions
+    // is intentionally NOT called here: the provider registries are
+    // process-global and other harnesses may share them.
+    await this.sessionStore?.disposeAll();
+  }
+
+  private sessionsEnabled(): boolean {
+    if (this.sessionStore === undefined) {
+      return false;
+    }
+    if (this.supportsResumeCache === undefined) {
+      const override = this.options.session?.supportsResume;
+      if (override !== undefined) {
+        this.supportsResumeCache = override;
+      } else {
+        try {
+          this.supportsResumeCache = monoRuntimeSupportsSessionResume(
+            this.options.model,
+            this.options.executionMode as RuntimeExecutionMode | undefined,
+          );
+        } catch {
+          this.supportsResumeCache = false;
+        }
+      }
+    }
+    return this.supportsResumeCache;
+  }
+
+  private saveSession(conversationId: string, providerSessionId: unknown, owner: RuntimeSessionRecord | undefined): void {
+    if (!this.sessionsEnabled()) {
+      return;
+    }
+    if (typeof providerSessionId !== "string" || providerSessionId.trim().length === 0) {
+      return;
+    }
+    this.sessionStore?.save(conversationId, providerSessionId, owner);
+  }
+
+  private async prepareContext(request: AgentHarnessRequest, options: { readonly omitHistory: boolean }): Promise<{ readonly context: BuiltAgentContext }> {
+    const history = options.omitHistory ? [] : await this.loadHistory(request.conversationId);
     const memory = await this.loadMemory(request.conversationId);
     const selectedSkills = await this.loadSkills();
     const context = await loadContextFromFiles({
@@ -118,7 +223,7 @@ export class MonoAgentHarness implements AgentHarness {
     };
   }
 
-  private async loadSkills(): Promise<{ readonly index: readonly import("@worklab-ai/context").SkillIndexEntry[]; readonly instructions: readonly ContextBlockInput[] }> {
+  private async loadSkills(): Promise<{ readonly index: readonly import("@mono-agent/context").SkillIndexEntry[]; readonly instructions: readonly ContextBlockInput[] }> {
     if (this.options.selectedSkills === undefined || this.options.selectedSkills.length === 0) {
       return { index: [], instructions: [] };
     }
@@ -137,6 +242,7 @@ export class MonoAgentHarness implements AgentHarness {
     recorder: RunRecorder,
     context: BuiltAgentContext,
     runId: string,
+    resumeSessionId: string | undefined,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
     const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
@@ -154,6 +260,17 @@ export class MonoAgentHarness implements AgentHarness {
       ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
       ...(this.options.effort === undefined ? {} : { effort: this.options.effort }),
       ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
+      // Session keys live after the merge so request extensions cannot
+      // clobber the harness's session decision — including forcing the keys
+      // back to undefined on fresh runs.
+      ...(this.sessionsEnabled()
+        ? {
+          sessionKeepAlive: true,
+          sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
+          sessionId: resumeSessionId,
+          providerSessionId: resumeSessionId,
+        }
+        : {}),
       onEvent: (event: RuntimeEventLike) => {
         recorder.onEvent(event);
         hostOnEvent?.(event);
@@ -254,6 +371,16 @@ function mergeStringLists(current: unknown, next: unknown): readonly string[] {
 
 function stringList(value: unknown): readonly string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function shouldRetryWithoutSession(result: RuntimeResult | undefined, aborted: boolean): boolean {
+  if (result === undefined || aborted || result.cancelled === true) {
+    return false;
+  }
+  if (typeof result.failureKind === "string" && result.failureKind.trim().length > 0) {
+    return result.failureKind !== "cancelled";
+  }
+  return typeof result.error === "string" && result.error.trim().length > 0;
 }
 
 function failureFromRuntimeResult(result: RuntimeResult): AgentHarnessFailure | undefined {

@@ -1,4 +1,4 @@
-# @worklab-ai/slack-adapter
+# @mono-agent/slack-adapter
 
 Category: `communication`
 
@@ -13,7 +13,7 @@ Adapt Slack Socket Mode events into structural agent requests and streamed Slack
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/slack-adapter run build
+pnpm --filter @mono-agent/slack-adapter run build
 ```
 
 Adapter settings can be loaded from nested JSON under `slack` or explicit environment variables such as `MONO_AGENT_SLACK_BOT_TOKEN`, `MONO_AGENT_SLACK_APP_TOKEN`, and `MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS`.
@@ -37,7 +37,7 @@ It does not own model execution, memory, prompt context, tool policy, browser/te
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/slack-adapter run build
-pnpm --filter @worklab-ai/slack-adapter run typecheck
-pnpm --filter @worklab-ai/slack-adapter run test
+pnpm --filter @mono-agent/slack-adapter run build
+pnpm --filter @mono-agent/slack-adapter run typecheck
+pnpm --filter @mono-agent/slack-adapter run test
 ```

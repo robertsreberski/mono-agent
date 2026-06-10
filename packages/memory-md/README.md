@@ -1,4 +1,4 @@
-# @worklab-ai/memory-md
+# @mono-agent/memory-md
 
 ## Category
 
@@ -11,11 +11,11 @@ Optional Markdown memory store for Mono Agent hosts. It reads capped memory bloc
 ## Install / Usage
 
 ```bash
-pnpm --filter @worklab-ai/memory-md run build
+pnpm --filter @mono-agent/memory-md run build
 ```
 
 ```ts
-import { createMarkdownMemoryStore } from "@worklab-ai/memory-md";
+import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
 ```
 
 ## Public API
@@ -36,7 +36,7 @@ It does not summarize conversations, decide what should be remembered, call a mo
 ## Verification
 
 ```bash
-pnpm --filter @worklab-ai/memory-md run build
-pnpm --filter @worklab-ai/memory-md run typecheck
-pnpm --filter @worklab-ai/memory-md run test
+pnpm --filter @mono-agent/memory-md run build
+pnpm --filter @mono-agent/memory-md run typecheck
+pnpm --filter @mono-agent/memory-md run test
 ```

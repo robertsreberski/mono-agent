@@ -8,8 +8,8 @@ import {
   readString,
   normalizeOptionalString,
   redactedSecret,
-} from "@worklab-ai/settings";
-import type { FieldGroup, RedactedSecretValue, SettingsJson } from "@worklab-ai/settings";
+} from "@mono-agent/settings";
+import type { FieldGroup, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
 
 import {
   DEFAULT_BASE_PATH,

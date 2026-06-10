@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/openai-agents-runtime",
+  "name": "@mono-agent/openai-agents-runtime",
   "version": "0.1.0",
   "description": "Adapts @openai/agents to the Mono Agent runtime contract.",
   "type": "module",
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@openai/agents": "^0.11.4",
-    "@worklab-ai/runtime-adapter": "workspace:*"
+    "@mono-agent/runtime-adapter": "workspace:*"
   },
   "devDependencies": {
     "vitest": "^3.2.4"

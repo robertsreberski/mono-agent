@@ -4,9 +4,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { MonoAgentConfig } from "@worklab-ai/config";
-import { journalDayFor } from "@worklab-ai/memory-journal";
-import type { RuntimeRunOptions, RuntimeResult } from "@worklab-ai/runtime-adapter";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { journalDayFor } from "@mono-agent/memory-journal";
+import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import {
   createConfiguredAgentHarness,
@@ -247,6 +247,52 @@ describe("agent host composition helpers", () => {
     expect(runtime.run).toEqual(expect.any(Function));
     expect(runtime.configureTools).toEqual(expect.any(Function));
   });
+
+  it("forwards continuous session config so consecutive requests resume the provider session", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-host-1" }));
+
+    const config = monoConfig({ dir, identityPath, artifactDir });
+    const harness = createConfiguredAgentHarness({
+      config: {
+        ...config,
+        runtime: { ...config.runtime, session: { mode: "continuous", idleTimeoutMs: 60_000 } },
+      },
+      runtime: fake.runtime,
+    });
+
+    await harness.run({ conversationId: "conv-session", userMessage: "first", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "conv-session", userMessage: "second", abortSignal: new AbortController().signal });
+
+    expect(fake.calls[0]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[0]?.options.sessionKeepAlive).toBe(true);
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-host-1");
+    expect(fake.calls[1]?.options.sessionKeepAlive).toBe(true);
+  });
+
+  it("never passes session keys in per-message mode", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-host-1" }));
+
+    const harness = createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: fake.runtime,
+    });
+
+    await harness.run({ conversationId: "conv-per-message", userMessage: "first", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "conv-per-message", userMessage: "second", abortSignal: new AbortController().signal });
+
+    for (const call of fake.calls) {
+      expect(call.options.sessionId).toBeUndefined();
+      expect(call.options.sessionKeepAlive).toBeUndefined();
+    }
+  });
 });
 
 function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>) {
@@ -276,6 +322,7 @@ function monoConfig(input: {
       executionMode: "sdk",
       maxTurns: 4,
       workspace: input.dir,
+      session: { mode: "per-message", idleTimeoutMs: 1_800_000 },
     },
     providers: {
       local: [

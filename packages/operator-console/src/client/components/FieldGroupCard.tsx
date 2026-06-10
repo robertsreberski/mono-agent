@@ -1,4 +1,4 @@
-import type { FieldDefinition, FieldGroup, SettingsJson } from "@worklab-ai/settings/field-groups";
+import type { FieldDefinition, FieldGroup, SettingsJson } from "@mono-agent/settings/field-groups";
 import {
   Card,
   CardContent,

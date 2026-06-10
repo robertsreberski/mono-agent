@@ -1,5 +1,5 @@
 {
-  "name": "@worklab-ai/observability",
+  "name": "@mono-agent/observability",
   "version": "0.1.0",
   "description": "Run event recording and artifact summaries for Mono Agent hosts.",
   "type": "module",
