@@ -50,6 +50,20 @@ export interface AgentHarnessResponse {
 
 export interface AgentHarness {
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  /** Retire all live provider sessions (graceful shutdown). */
+  dispose?(): Promise<void>;
+}
+
+export type AgentSessionMode = "continuous" | "per-message";
+
+export interface AgentHarnessSessionOptions {
+  readonly mode: AgentSessionMode;
+  readonly idleTimeoutMs: number;
+  /**
+   * Overrides backend capability detection (monoRuntimeSupportsSessionResume)
+   * — primarily for tests and custom runtimes.
+   */
+  readonly supportsResume?: boolean;
 }
 
 export interface AgentHarnessRecorderFactoryInput {
@@ -80,6 +94,7 @@ export interface AgentHarnessOptions {
   readonly recorderFactory?: (input: AgentHarnessRecorderFactoryInput) => RunRecorder;
   readonly createRunId?: () => string;
   readonly now?: () => Date;
+  readonly session?: AgentHarnessSessionOptions;
 }
 
 export interface AgentHarnessRuntimeOptionsInput {

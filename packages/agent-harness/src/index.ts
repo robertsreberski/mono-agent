@@ -1,6 +1,13 @@
 export { createAgentHarness, AgentHarnessError, MonoAgentHarness } from "./harness.js";
 export { createInMemoryHistoryStore, InMemoryConversationHistoryStore } from "./history.js";
 export { NoopRunRecorder } from "./recorder.js";
+export { createRuntimeSessionStore } from "./sessions.js";
+export type {
+  RuntimeSessionEvictReason,
+  RuntimeSessionRecord,
+  RuntimeSessionStore,
+  RuntimeSessionStoreOptions,
+} from "./sessions.js";
 export {
   AgentHarnessFailureError,
   assistantTextFromRuntimeEvent,
@@ -15,6 +22,8 @@ export type {
   AgentHarnessResponse,
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
+  AgentHarnessSessionOptions,
+  AgentSessionMode,
   AgentMessageStreamLike,
   AgentRequestLike,
   AgentResponderLike,
