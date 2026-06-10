@@ -5,7 +5,7 @@
 // so no API keys or network are involved. The pi model ref resolves through
 // pi-ai's static model registry.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -259,6 +259,54 @@ describe("pi-sdk native sessions", () => {
       "assistant:reply-1",
       "user:turn-2",
     ]);
+  });
+
+  it("bills a resumed run only for this run's messages, not the restored transcript", async () => {
+    const streamFn = makeStreamFn([{ text: "reply-1" }, { text: "reply-2" }]);
+    const first = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-1" }],
+      sessionKeepAlive: true,
+      streamFn,
+    }));
+    expect(first.usage.input_tokens).toBe(1);
+    expect(first.usage.output_tokens).toBe(1);
+    expect(first.numTurns).toBe(1);
+
+    const second = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-2" }],
+      sessionKeepAlive: true,
+      sessionId: first.providerSessionId,
+      streamFn,
+    }));
+    // The restored turn-1 assistant message must not be re-billed.
+    expect(second.usage.input_tokens).toBe(1);
+    expect(second.usage.output_tokens).toBe(1);
+    expect(second.numTurns).toBe(1);
+  });
+
+  it("a session persist failure warns and evicts without failing the run", async () => {
+    // sessionsRoot nested under a regular file makes every jsonl write fail.
+    const blockedFile = join(sessionsRoot, "blocked");
+    writeFileSync(blockedFile, "not a directory", "utf8");
+    const streamFn = makeStreamFn([{ text: "reply-1" }, { text: "never" }]);
+
+    const first = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-1" }],
+      sessionKeepAlive: true,
+      piSessionsRoot: join(blockedFile, "nested"),
+      streamFn,
+    }));
+    expect(first.error).toBeNull();
+    expect(first.text).toBe("reply-1");
+    expect(first.events.some((event) => event?.warning_kind === "pi_session_persist_failed")).toBe(true);
+
+    const resume = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-2" }],
+      sessionId: first.providerSessionId,
+      streamFn,
+    }));
+    expect(resume.failureKind).toBe("session_not_found");
+    expect(streamFn.calls.length).toBe(1);
   });
 
   it("disposeProviderSession drops the live session", async () => {

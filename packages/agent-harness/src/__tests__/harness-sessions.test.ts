@@ -237,7 +237,7 @@ describe("AgentHarness continuous sessions", () => {
     await inFlight;
   });
 
-  it("dispose retires store records and provider sessions", async () => {
+  it("dispose retires this harness's tracked sessions without touching the process-global registries", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
     const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
@@ -245,11 +245,109 @@ describe("AgentHarness continuous sessions", () => {
     await harness.run(request("conv-1"));
     await harness.dispose?.();
     expect(fake.disposedSessions).toContain("ps-1");
-    expect(fake.disposedAllCount()).toBe(1);
+    // Other harnesses may share the provider registries; dispose must stay
+    // scoped to this harness's conversations.
+    expect(fake.disposedAllCount()).toBe(0);
 
     // After dispose the next run starts fresh.
     await harness.run(request("conv-1"));
     expect(fake.calls[1]?.options.sessionId).toBeUndefined();
+  });
+
+  it("the stale retry keeps sessionKeepAlive and the idle timeout so a fresh provider session is captured", async () => {
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      if (options.sessionId !== undefined) {
+        return { failureKind: "session_not_found", error: "gone" };
+      }
+      return { text: "ok", providerSessionId: "ps-1" };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+
+    await harness.run(request("conv-1"));
+    await harness.run(request("conv-1"));
+    const retryCall = fake.calls[2];
+    expect(retryCall?.options.sessionId).toBeUndefined();
+    expect(retryCall?.options.sessionKeepAlive).toBe(true);
+    expect(retryCall?.options.sessionIdleTimeoutMs).toBe(60_000);
+  });
+
+  it("retries exactly once even when the retry also fails", async () => {
+    const identityPath = await identityFixture();
+    let seeded = false;
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      if (!seeded) {
+        seeded = true;
+        return { text: "ok", providerSessionId: "ps-1" };
+      }
+      return options.sessionId !== undefined
+        ? { failureKind: "session_not_found", error: "gone" }
+        : { failureKind: "provider_unavailable", error: "still down" };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+
+    await harness.run(request("conv-1"));
+    const second = await harness.run(request("conv-1"));
+    expect(second.failure).toMatchObject({ kind: "provider_unavailable" });
+    expect(fake.calls).toHaveLength(3);
+  });
+
+  it("an error string without a failureKind also triggers the stale retry", async () => {
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      if (options.sessionId !== undefined) {
+        return { error: "thread evaporated" };
+      }
+      return { text: "ok", providerSessionId: "ps-1" };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+
+    await harness.run(request("conv-1"));
+    const second = await harness.run(request("conv-1"));
+    expect(second.text).toBe("ok");
+    expect(fake.calls).toHaveLength(3);
+  });
+
+  it("an empty resumed turn retires the session so the next message replays history", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = await primedHistoryStore("conv-1");
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      if (options.sessionId !== undefined) {
+        return { text: "   ", providerSessionId: options.sessionId as string };
+      }
+      return { text: "ok", providerSessionId: "ps-1" };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+
+    await harness.run(request("conv-1"));
+    const second = await harness.run(request("conv-1"));
+    expect(second.failure).toMatchObject({ kind: "empty_response" });
+    expect(fake.disposedSessions).toContain("ps-1");
+    const third = await harness.run(request("conv-1"));
+    expect(third.text).toBe("ok");
+    expect(fake.calls[2]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+  });
+
+  it("request extensions cannot clobber the harness session keys", async () => {
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      session,
+      runtimeOptionsForRequest: () => ({
+        runtimeOptions: { sessionId: "hijacked", sessionKeepAlive: false } as Record<string, unknown>,
+      }),
+    });
+
+    await harness.run(request("conv-1"));
+    expect(fake.calls[0]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[0]?.options.sessionKeepAlive).toBe(true);
+    await harness.run(request("conv-1"));
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-1");
   });
 
   it("emits a session_resume_retry warning on stale retry", async () => {

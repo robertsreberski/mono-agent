@@ -20,12 +20,16 @@ export class AgentHarnessFailureError extends Error {
 
 export function createAgentResponder(options: { readonly harness: AgentHarness }): {
   respond: AgentResponderLike["respond"];
+  dispose: () => Promise<void>;
 } {
   if (typeof options.harness?.run !== "function") {
     throw new TypeError("createAgentResponder requires a harness with run().");
   }
 
   return {
+    async dispose(): Promise<void> {
+      await options.harness.dispose?.();
+    },
     async respond(request: AgentRequestLike, stream: AgentMessageStreamLike): Promise<AgentResponseLike> {
       const runtimeEventStream = createRuntimeEventStream(stream);
       const response = await options.harness.run({

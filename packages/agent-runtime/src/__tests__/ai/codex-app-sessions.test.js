@@ -160,6 +160,74 @@ describe("codex-app persistent sessions", () => {
     expect(factory).toHaveBeenCalledTimes(1);
   });
 
+  it("an aborted resumed turn with no output resolves (no hang) and keeps the session alive", async () => {
+    const factory = stubClientFactory({ threadId: "thread-abort-empty" });
+    await generateCodexAppResponse("SYS", runOptions(factory, { sessionKeepAlive: true }));
+
+    const client = factory.clients[0];
+    factory.turnPlan.push("manual");
+    // Interrupt produces no turn/completed at all: the turn just dies.
+    client.request.mockImplementation(async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "turn/start") {
+        queueMicrotask(() => client.notify("turn/started", { turn: { id: "turn-dead" } }));
+        return { turn: { id: "turn-dead" } };
+      }
+      return {};
+    });
+    const controller = new AbortController();
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-abort-empty",
+      abortSignal: controller.signal,
+    }));
+    await vi.waitFor(() => {
+      expect(client.requests.some((r) => r.method === "turn/start" && r.params.threadId === "thread-abort-empty")).toBe(true);
+    });
+    controller.abort();
+    const result = await pending;
+    expect(result.cancelled).toBe(true);
+    expect(client.requests.some((r) => r.method === "turn/interrupt")).toBe(true);
+    expect(client.close).not.toHaveBeenCalled();
+
+    // The session survives the empty abort and stays resumable.
+    client.request.mockImplementation(async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "turn/start") {
+        queueMicrotask(() => {
+          client.notify("turn/started", { turn: { id: "turn-next" } });
+          client.notify("item/completed", { item: { id: "msg-next", type: "agentMessage", text: "back" } });
+          client.notify("turn/completed", { turn: { id: "turn-next", status: "completed" } });
+        });
+        return { turn: { id: "turn-next" } };
+      }
+      return {};
+    });
+    const resumed = await generateCodexAppResponse("SYS", runOptions(factory, { sessionId: "thread-abort-empty" }));
+    expect(resumed.error).toBeNull();
+    expect(resumed.text).toBe("back");
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumed turns carry the full turn parameters (model, effort, outputSchema)", async () => {
+    const factory = stubClientFactory({ threadId: "thread-params" });
+    const schema = { type: "object", properties: { ok: { type: "boolean" } } };
+    await generateCodexAppResponse("SYS", runOptions(factory, { sessionKeepAlive: true, effort: "high", outputSchema: schema }));
+
+    await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-params",
+      effort: "high",
+      outputSchema: schema,
+      messages: [{ role: "user", content: "again" }],
+    }));
+    const client = factory.clients[0];
+    const resumedTurn = client.requests.filter((r) => r.method === "turn/start")[1];
+    expect(resumedTurn.params.model).toBe(model.model);
+    expect(resumedTurn.params.effort).toBe("high");
+    expect(resumedTurn.params.summary).toBe("auto");
+    expect(resumedTurn.params.outputSchema).toEqual(schema);
+    expect(resumedTurn.params.threadId).toBe("thread-params");
+  });
+
   it("closes the client and registers nothing when the keep-alive turn fails", async () => {
     const factory = stubClientFactory({ threadId: "thread-fail" });
     factory.turnPlan.push("fail");

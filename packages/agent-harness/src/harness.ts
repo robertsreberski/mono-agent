@@ -88,7 +88,7 @@ export class MonoAgentHarness implements AgentHarness {
         };
         recorder.onEvent(warning);
         request.onEvent?.(warning);
-        await this.sessionStore?.evict(request.conversationId, "stale");
+        await this.sessionStore?.evict(request.conversationId, "stale", resumeSessionId);
         resumeSessionId = undefined;
         prepared = await this.prepareContext(request, { omitHistory: false });
         context = prepared.context;
@@ -106,10 +106,20 @@ export class MonoAgentHarness implements AgentHarness {
         return { metadata: baseMetadata, failure };
       }
 
-      this.saveSession(request.conversationId, runtimeResult.providerSessionId);
-
       const text = normalizeAssistantText(runtimeResult.text);
       if (text === undefined) {
+        // Empty turns are not appended to history, so a retained provider
+        // session would diverge from the history store. Retire it instead;
+        // the next message replays history into a fresh session.
+        if (sessionRecord !== undefined) {
+          await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
+        } else if (this.sessionsEnabled() && typeof runtimeResult.providerSessionId === "string" && runtimeResult.providerSessionId.trim().length > 0) {
+          try {
+            await this.options.runtime.disposeSession?.(runtimeResult.providerSessionId);
+          } catch {
+            // Bridge TTL backstop reclaims it eventually.
+          }
+        }
         return {
           metadata: baseMetadata,
           failure: {
@@ -119,6 +129,8 @@ export class MonoAgentHarness implements AgentHarness {
           },
         };
       }
+
+      this.saveSession(request.conversationId, runtimeResult.providerSessionId, sessionRecord);
 
       await this.persistSuccessfulTurn(request, text);
       return {
@@ -134,14 +146,17 @@ export class MonoAgentHarness implements AgentHarness {
       };
     } finally {
       if (sessionRecord !== undefined) {
-        this.sessionStore?.release(request.conversationId);
+        this.sessionStore?.release(request.conversationId, sessionRecord);
       }
     }
   }
 
   async dispose(): Promise<void> {
+    // Only this harness's tracked sessions are retired (the store's onEvict
+    // disposes each provider session individually). runtime.disposeAllSessions
+    // is intentionally NOT called here: the provider registries are
+    // process-global and other harnesses may share them.
     await this.sessionStore?.disposeAll();
-    await this.options.runtime.disposeAllSessions?.();
   }
 
   private sessionsEnabled(): boolean {
@@ -166,14 +181,14 @@ export class MonoAgentHarness implements AgentHarness {
     return this.supportsResumeCache;
   }
 
-  private saveSession(conversationId: string, providerSessionId: unknown): void {
+  private saveSession(conversationId: string, providerSessionId: unknown, owner: RuntimeSessionRecord | undefined): void {
     if (!this.sessionsEnabled()) {
       return;
     }
     if (typeof providerSessionId !== "string" || providerSessionId.trim().length === 0) {
       return;
     }
-    this.sessionStore?.save(conversationId, providerSessionId);
+    this.sessionStore?.save(conversationId, providerSessionId, owner);
   }
 
   private async prepareContext(request: AgentHarnessRequest, options: { readonly omitHistory: boolean }): Promise<{ readonly context: BuiltAgentContext }> {
@@ -246,9 +261,16 @@ export class MonoAgentHarness implements AgentHarness {
       ...(this.options.effort === undefined ? {} : { effort: this.options.effort }),
       ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
       // Session keys live after the merge so request extensions cannot
-      // clobber the harness's session decision.
-      ...(this.sessionsEnabled() ? { sessionKeepAlive: true } : {}),
-      ...(resumeSessionId === undefined ? {} : { sessionId: resumeSessionId, providerSessionId: resumeSessionId }),
+      // clobber the harness's session decision — including forcing the keys
+      // back to undefined on fresh runs.
+      ...(this.sessionsEnabled()
+        ? {
+          sessionKeepAlive: true,
+          sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
+          sessionId: resumeSessionId,
+          providerSessionId: resumeSessionId,
+        }
+        : {}),
       onEvent: (event: RuntimeEventLike) => {
         recorder.onEvent(event);
         hostOnEvent?.(event);

@@ -447,6 +447,11 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   // Test seam: lets tests drive the bridge with a stub app-server client.
   const makeClient = options.codexClientFactory || createCodexAppServerClient;
   const keepAlive = options.sessionKeepAlive === true;
+  // The bridge TTL is a backstop behind the host's session policy; the grace
+  // keeps the host's lazy expiry firing first so eviction stays host-driven.
+  const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
+    ? Number(options.sessionIdleTimeoutMs) + 60_000
+    : undefined;
   const resumeSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
     ? options.sessionId
     : null;
@@ -484,6 +489,12 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     if (steerReady && !turnReadyResolved && threadId && activeTurnId) {
       turnReadyResolved = true;
       resolveTurnReady();
+    }
+    // An abort that fired before the turn id was known could not interrupt;
+    // deliver it as soon as the turn becomes addressable.
+    if (abortRequested && !interruptSent && threadId && activeTurnId) {
+      interruptSent = true;
+      client?.request("turn/interrupt", { threadId, turnId: activeTurnId }).catch(() => {});
     }
   }
 
@@ -551,6 +562,8 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   let client = null;
   let resumeEntry = null;
   let sessionRetained = false;
+  let abortRequested = false;
+  let interruptSent = false;
   // Mutable holder so keep-alive clients can outlive this run: each run
   // installs its own handleNotification and the bridge restores a no-op
   // once the session goes idle.
@@ -619,7 +632,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   }
 
   const abortHandler = () => {
-    if (threadId && activeTurnId) {
+    abortRequested = true;
+    if (threadId && activeTurnId && !interruptSent) {
+      interruptSent = true;
       client?.request("turn/interrupt", { threadId, turnId: activeTurnId }).catch(() => {});
     }
     // Resumed sessions stay alive across an interrupt; only fresh runs tear
@@ -742,7 +757,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       threadId = resumeEntry.threadId;
       resumeEntry.notificationTarget.handler = handleNotification;
       // Keep the idle TTL from firing while the turn is in flight.
-      codexSessions.touch(resumeSessionId);
+      codexSessions.touch(resumeSessionId, { idleTimeoutMs: sessionTtlMs });
     } else {
       client = createClient();
     }
@@ -841,13 +856,34 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     setActiveTurnId(turn?.turn?.id);
 
     let prematureClose = false;
+    // Resumed runs watch subprocess death through the entry's mutable hook
+    // instead of client.closed.then: a long-lived thread would otherwise
+    // accumulate one permanent .then closure per turn.
+    const closedSignal = resumeEntry
+      ? new Promise((resolve) => { resumeEntry.closedTarget.handler = resolve; })
+      : client.closed;
+    // Resumed runs never close the client on abort, so the wait must also
+    // resolve on the abort signal or an interrupted turn could hang forever.
+    let abortRaceCleanup = () => {};
+    const abortedSignal = resumeEntry && options.abortSignal
+      ? new Promise((resolve) => {
+        if (options.abortSignal.aborted) {
+          resolve(null);
+          return;
+        }
+        const onAbort = () => resolve(null);
+        options.abortSignal.addEventListener("abort", onAbort, { once: true });
+        abortRaceCleanup = () => options.abortSignal.removeEventListener?.("abort", onAbort);
+      })
+      : null;
     try {
       await Promise.race([
         turnDone,
-        client.closed.then((err) => {
+        ...(abortedSignal === null ? [] : [abortedSignal]),
+        closedSignal.then((err) => {
           if (!turnCompleted) {
             prematureClose = true;
-            throw err;
+            throw err || new Error("codex app-server closed");
           }
           return null;
         }),
@@ -859,6 +895,8 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       } else if (!prematureClose) {
         throw err;
       }
+    } finally {
+      abortRaceCleanup();
     }
     turnCompleted = true;
     await Promise.race([steerTask, Promise.resolve()]);
@@ -871,15 +909,21 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       codexErrorCode = codexErrorCode || "codex_app_server_no_output";
     }
     if (resumeEntry) {
-      // A failed turn or a closed transport leaves the thread untrustworthy.
-      sessionRetained = !errorMessage && !failureKind;
-      if (sessionRetained) codexSessions.touch(resumeSessionId);
+      // A failed turn or a closed transport leaves the thread untrustworthy,
+      // but an interrupt is normal steering: the aborted session survives.
+      const aborted = !!options.abortSignal?.aborted;
+      sessionRetained = (aborted && !prematureClose) || (!errorMessage && !failureKind);
+      if (sessionRetained) codexSessions.touch(resumeSessionId, { idleTimeoutMs: sessionTtlMs });
       else codexSessions.delete(resumeSessionId);
     } else if (keepAlive && threadId && !errorMessage && !failureKind && !options.abortSignal?.aborted) {
       sessionRetained = true;
       notificationTarget.handler = noopNotificationHandler;
-      codexSessions.set(threadId, { client, threadId, busy: false, notificationTarget });
-      client.closed.then(() => codexSessions.delete(threadId));
+      const entry = { client, threadId, busy: false, notificationTarget, closedTarget: { handler: null } };
+      codexSessions.set(threadId, entry, { idleTimeoutMs: sessionTtlMs });
+      client.closed.then(() => {
+        codexSessions.delete(threadId);
+        entry.closedTarget.handler?.(new Error("codex app-server closed"));
+      });
     }
     const hadPartialProgress = events.length > 0 || texts.length > 0;
     const reference = `codex:${resolved.model}`;
@@ -977,6 +1021,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     if (resumeEntry) {
       resumeEntry.busy = false;
       resumeEntry.notificationTarget.handler = noopNotificationHandler;
+      resumeEntry.closedTarget.handler = null;
     }
     if (!sessionRetained) client?.close();
   }

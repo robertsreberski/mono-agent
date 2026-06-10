@@ -537,6 +537,11 @@ export async function generatePiResponse(systemPrompt, options = {}) {
   const requestedSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
     ? options.sessionId
     : null;
+  // Bridge TTL is a backstop behind the host's session policy; the grace
+  // keeps host-side lazy expiry firing first.
+  const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
+    ? Number(options.sessionIdleTimeoutMs) + 60_000
+    : undefined;
   let sessionEntry = null;
   let sessionBaselineCount = 0;
 
@@ -560,7 +565,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
       let entry = piSessions.get(requestedSessionId);
       if (!entry && durableRepo) {
         entry = await reopenDurablePiSession(durableRepo, requestedSessionId);
-        if (entry) piSessions.set(requestedSessionId, entry);
+        if (entry) piSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
       }
       if (!entry) {
         return sessionUnavailableResult({
@@ -956,7 +961,11 @@ export async function generatePiResponse(systemPrompt, options = {}) {
       stopReason,
     } = state;
     const text = finalText;
-    const usage = usageFromMessages(transcript);
+    // Resumed runs restore prior turns into the transcript; usage, cost, and
+    // turn counts must only cover messages produced by THIS run.
+    const runTranscript = transcript.slice(sessionBaselineCount);
+    const runAssistantCount = runTranscript.filter((message) => message?.role === "assistant").length;
+    const usage = usageFromMessages(runTranscript);
     for (const child of subagentResults) addUsage(usage, usageFromRuntimeResult(child));
     const estimatedCost = estimateCost({
       resolveCustomPricing: options.resolveCustomPricing,
@@ -1019,7 +1028,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
       last_tool_name: lastToolName,
       had_partial_progress: hadPartialProgress,
       tool_results_seen: toolResultsSeen,
-      turn_count: turnCount || assistantMessages.length || finalMessages.length,
+      turn_count: turnCount || runAssistantCount || finalMessages.length,
       max_turns_hit: maxTurnsHit,
       provider_session_id: providerSessionId,
       pi_transport: piTransport,
@@ -1037,7 +1046,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
       pi_transport: piTransport,
       max_turns_hit: maxTurnsHit,
       max_turns: Number.isFinite(Number(options.maxTurns)) ? Number(options.maxTurns) : null,
-      turn_count: turnCount || assistantMessages.length || finalMessages.length,
+      turn_count: turnCount || runAssistantCount || finalMessages.length,
       external_abort: externalAbort,
       ...(piErrorCode ? { pi_error_code: piErrorCode } : {}),
       ...(piErrorPayload?.request_id ? { pi_request_id: piErrorPayload.request_id } : {}),
@@ -1089,7 +1098,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
         const newMessages = transcript.slice(sessionBaselineCount);
         if (sessionEntry) {
           for (const message of newMessages) await sessionEntry.session.appendMessage(message);
-          piSessions.touch(requestedSessionId);
+          piSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
         } else {
           const repo = durableRepo || piSessionRepo;
           const session = await repo.create({ id: providerSessionId, cwd: options.cwd || process.cwd() });
@@ -1101,7 +1110,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
             busy: false,
           };
           for (const message of newMessages) await createdEntry.session.appendMessage(message);
-          piSessions.set(providerSessionId, createdEntry);
+          piSessions.set(providerSessionId, createdEntry, { idleTimeoutMs: sessionTtlMs });
         }
       } catch (err) {
         // Session persistence must never fail the run; drop the (now
@@ -1134,7 +1143,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
         cost_usd: usage.cost || estimatedCost,
       },
       durationMs: Date.now() - start,
-      numTurns: turnCount || assistantMessages.length || finalMessages.length,
+      numTurns: turnCount || runAssistantCount || finalMessages.length,
       model: resolved.reference || `pi:${resolved.provider}:${resolved.model}`,
       effort: options.effort || null,
       sdk: resolved.sdk,

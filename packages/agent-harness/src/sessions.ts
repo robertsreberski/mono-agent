@@ -17,14 +17,27 @@ export interface RuntimeSessionStoreOptions {
 export interface RuntimeSessionStore {
   /**
    * Returns the live record for a conversation and marks it busy, or
-   * undefined when there is no session, it idled out (lazy wall-clock check
-   * covers stalled timers), or another run already holds it.
+   * undefined when there is no session, another run already holds it, or it
+   * idled out (lazy wall-clock check covers stalled timers). Busy records are
+   * never evicted here — a session executing a turn must not be torn down.
    */
   acquire(conversationId: string): RuntimeSessionRecord | undefined;
-  release(conversationId: string): void;
-  /** Upsert; a differing stored id is evicted first with reason "replaced". */
-  save(conversationId: string, providerSessionId: string): void;
-  evict(conversationId: string, reason: RuntimeSessionEvictReason): Promise<void>;
+  /** No-op unless `record` is still the conversation's live record. */
+  release(conversationId: string, record: RuntimeSessionRecord): void;
+  /**
+   * Upsert. A differing stored id is evicted first with reason "replaced" —
+   * unless that record is busy under another run (`owner` is the caller's
+   * acquired record), in which case the save is skipped: the in-flight run's
+   * session must not be disposed out from under it.
+   */
+  save(conversationId: string, providerSessionId: string, owner?: RuntimeSessionRecord): void;
+  /**
+   * When `providerSessionId` is given, evicts only if it still matches the
+   * stored record — a stale-resume eviction must not retire a session some
+   * other run replaced it with.
+   */
+  evict(conversationId: string, reason: RuntimeSessionEvictReason, providerSessionId?: string): Promise<void>;
+  /** Evicts everything and latches the store shut: later save/acquire no-op. */
   disposeAll(): Promise<void>;
 }
 
@@ -37,6 +50,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
   const idleTimeoutMs = Math.max(1_000, options.idleTimeoutMs);
   const now = options.now ?? Date.now;
   const entries = new Map<string, StoredRecord>();
+  let disposed = false;
 
   async function evictStored(conversationId: string, reason: RuntimeSessionEvictReason): Promise<void> {
     const stored = entries.get(conversationId);
@@ -62,7 +76,9 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       clearTimeout(stored.timer);
     }
     stored.timer = setTimeout(() => {
-      void evictStored(conversationId, "idle_timeout");
+      if (!stored.record.busy) {
+        void evictStored(conversationId, "idle_timeout");
+      }
     }, idleTimeoutMs);
     stored.timer.unref?.();
   }
@@ -76,41 +92,54 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
 
   return {
     acquire(conversationId: string): RuntimeSessionRecord | undefined {
+      if (disposed) {
+        return undefined;
+      }
       const stored = entries.get(conversationId);
       if (stored === undefined) {
+        return undefined;
+      }
+      if (stored.record.busy) {
         return undefined;
       }
       if (now() - stored.record.lastActivityAt > idleTimeoutMs) {
         void evictStored(conversationId, "idle_timeout");
         return undefined;
       }
-      if (stored.record.busy) {
-        return undefined;
-      }
       stored.record.busy = true;
+      stored.record.lastActivityAt = now();
       // No idle eviction while a run holds the session.
       clearTimer(stored);
       return stored.record;
     },
-    release(conversationId: string): void {
+    release(conversationId: string, record: RuntimeSessionRecord): void {
       const stored = entries.get(conversationId);
-      if (stored === undefined) {
+      if (stored === undefined || stored.record !== record) {
         return;
       }
       stored.record.busy = false;
       stored.record.lastActivityAt = now();
       armTimer(conversationId, stored);
     },
-    save(conversationId: string, providerSessionId: string): void {
+    save(conversationId: string, providerSessionId: string, owner?: RuntimeSessionRecord): void {
+      if (disposed) {
+        return;
+      }
       const stored = entries.get(conversationId);
-      if (stored !== undefined && stored.record.providerSessionId !== providerSessionId) {
-        void evictStored(conversationId, "replaced");
-      } else if (stored !== undefined) {
+      if (stored !== undefined && stored.record.providerSessionId === providerSessionId) {
         stored.record.lastActivityAt = now();
         if (!stored.record.busy) {
           armTimer(conversationId, stored);
         }
         return;
+      }
+      if (stored !== undefined) {
+        if (stored.record.busy && stored.record !== owner) {
+          // Another run is mid-turn on the stored session; keep its mapping.
+          // The caller's provider session is reclaimed by the bridge TTL.
+          return;
+        }
+        void evictStored(conversationId, "replaced");
       }
       const timestamp = now();
       const next: StoredRecord = {
@@ -126,10 +155,18 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       entries.set(conversationId, next);
       armTimer(conversationId, next);
     },
-    async evict(conversationId: string, reason: RuntimeSessionEvictReason): Promise<void> {
+    async evict(conversationId: string, reason: RuntimeSessionEvictReason, providerSessionId?: string): Promise<void> {
+      const stored = entries.get(conversationId);
+      if (stored === undefined) {
+        return;
+      }
+      if (providerSessionId !== undefined && stored.record.providerSessionId !== providerSessionId) {
+        return;
+      }
       await evictStored(conversationId, reason);
     },
     async disposeAll(): Promise<void> {
+      disposed = true;
       const conversationIds = [...entries.keys()];
       for (const conversationId of conversationIds) {
         await evictStored(conversationId, "disposed");

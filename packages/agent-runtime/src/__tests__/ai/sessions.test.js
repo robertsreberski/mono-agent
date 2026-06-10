@@ -62,6 +62,28 @@ describe("createSessionRegistry", () => {
     expect(onEvict).toHaveBeenCalledWith(disposable, "disposed");
   });
 
+  it("honors a per-entry idle timeout over the registry default", async () => {
+    const onEvict = vi.fn();
+    const registry = createSessionRegistry({ idleTimeoutMs: 60_000, onEvict });
+    registry.set("short", { name: "short" }, { idleTimeoutMs: 5_000 });
+    registry.set("long", { name: "long" }, { idleTimeoutMs: 600_000 });
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(registry.get("short")).toBeUndefined();
+    expect(registry.get("long")).toEqual({ name: "long" });
+    await vi.advanceTimersByTimeAsync(595_000);
+    expect(registry.get("long")).toBeUndefined();
+  });
+
+  it("touch can extend an entry's idle timeout", async () => {
+    const registry = createSessionRegistry({ idleTimeoutMs: 60_000 });
+    registry.set("session-1", { name: "alpha" }, { idleTimeoutMs: 5_000 });
+    registry.touch("session-1", { idleTimeoutMs: 120_000 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(registry.get("session-1")).toEqual({ name: "alpha" });
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(registry.get("session-1")).toBeUndefined();
+  });
+
   it("touch re-arms the idle timer", async () => {
     const registry = createSessionRegistry({ idleTimeoutMs: 60_000 });
     registry.set("session-1", { name: "alpha" });

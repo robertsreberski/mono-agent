@@ -18,9 +18,15 @@ const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 const allRegistries = new Set();
 
+function normalizeTtl(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1_000) return fallback;
+  return n;
+}
+
 export function createSessionRegistry({ idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, onEvict, now = Date.now, isBusy } = {}) {
   const entries = new Map();
-  const ttlMs = Math.max(1_000, Number(idleTimeoutMs) || DEFAULT_IDLE_TIMEOUT_MS);
+  const defaultTtlMs = normalizeTtl(idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS);
 
   async function evict(id, reason) {
     const entry = entries.get(id);
@@ -49,7 +55,7 @@ export function createSessionRegistry({ idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
     clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
       void evict(id, "idle_timeout");
-    }, ttlMs);
+    }, entry.ttlMs);
     entry.timer.unref?.();
   }
 
@@ -57,22 +63,23 @@ export function createSessionRegistry({ idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
     get(id) {
       const entry = entries.get(id);
       if (!entry) return undefined;
-      if (now() - entry.lastActivityAt > ttlMs) {
+      if (now() - entry.lastActivityAt > entry.ttlMs && !isBusy?.(entry.value)) {
         void evict(id, "idle_timeout");
         return undefined;
       }
       return entry.value;
     },
-    set(id, value) {
+    set(id, value, { idleTimeoutMs: entryTtl } = {}) {
       const previous = entries.get(id);
       if (previous) clearTimeout(previous.timer);
-      const entry = { value, lastActivityAt: now(), timer: null };
+      const entry = { value, lastActivityAt: now(), timer: null, ttlMs: normalizeTtl(entryTtl, defaultTtlMs) };
       entries.set(id, entry);
       armTimer(id, entry);
     },
-    touch(id) {
+    touch(id, { idleTimeoutMs: entryTtl } = {}) {
       const entry = entries.get(id);
       if (!entry) return;
+      if (entryTtl !== undefined) entry.ttlMs = normalizeTtl(entryTtl, entry.ttlMs);
       entry.lastActivityAt = now();
       armTimer(id, entry);
     },
