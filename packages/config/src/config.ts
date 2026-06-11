@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -73,6 +73,10 @@ export interface LoadMonoAgentConfigInput {
 const DEFAULT_MAX_TURNS = 8;
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
+const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
+  ollama: "nomic-embed-text",
+  openai: "text-embedding-3-small",
+};
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
 const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
@@ -89,6 +93,8 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const soulPath = readOptionalPath(input.env.MONO_AGENT_SOUL_PATH, cwd);
   const skillsRoot = readOptionalPath(input.env.MONO_AGENT_SKILLS_ROOT, cwd);
   const selectedSkills = readCsv(input.env.MONO_AGENT_SELECTED_SKILLS);
+  // The skills loader rejects caps below 256 bytes; validate at the same floor.
+  const skillMaxBytes = readOptionalInteger(input.env.MONO_AGENT_SKILL_MAX_BYTES, "MONO_AGENT_SKILL_MAX_BYTES", { min: 256, max: 1_000_000 });
   const memory = readMemoryConfig(input.env, cwd);
   const mcpConfigPath = readOptionalPath(input.env.MONO_AGENT_MCP_CONFIG_PATH, cwd);
   const sandbox = readSandboxConfig(input.env, workspace);
@@ -119,6 +125,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     selectedSkills,
     ...(soulPath === undefined ? {} : { soulPath }),
     ...(skillsRoot === undefined ? {} : { skillsRoot }),
+    ...(skillMaxBytes === undefined ? {} : { skillMaxBytes }),
   };
 
   const tools: MonoAgentConfig["tools"] = {
@@ -162,7 +169,21 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     traceability: { ...config.traceability },
   };
   if (config.memory !== undefined) {
-    return withRedactedProviders({ ...redacted, memory: { ...config.memory } }, config);
+    const { embeddings, ...memory } = config.memory;
+    if (embeddings === undefined) {
+      return withRedactedProviders({ ...redacted, memory }, config);
+    }
+    const { apiKey, ...safeEmbeddings } = embeddings;
+    return withRedactedProviders({
+      ...redacted,
+      memory: {
+        ...memory,
+        embeddings: {
+          ...safeEmbeddings,
+          ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
+        },
+      },
+    }, config);
   }
   return withRedactedProviders(redacted, config);
 }
@@ -229,10 +250,18 @@ function readSandboxConfig(env: Record<string, string | undefined>, workspace: s
   const mode = readChoice<SandboxMode>(env.MONO_AGENT_SANDBOX_MODE, "MONO_AGENT_SANDBOX_MODE", SANDBOX_MODES, "native", invalidEnv);
   const networkMode = readChoice<SandboxNetworkMode>(env.MONO_AGENT_SANDBOX_NETWORK, "MONO_AGENT_SANDBOX_NETWORK", SANDBOX_NETWORK_MODES, "none", invalidEnv);
   const fallback = readChoice<SandboxFallback>(env.MONO_AGENT_SANDBOX_FALLBACK, "MONO_AGENT_SANDBOX_FALLBACK", SANDBOX_FALLBACKS, "fail-closed", invalidEnv);
+  // Filesystem scope entries are resolved by the sandbox against `root` (the
+  // workspace), so relative entries here mean "relative to the workspace".
+  const readableRoots = readCsv(env.MONO_AGENT_SANDBOX_READABLE_ROOTS);
+  const writableRoots = readCsv(env.MONO_AGENT_SANDBOX_WRITABLE_ROOTS);
+  const denyWrite = readCsv(env.MONO_AGENT_SANDBOX_DENY_WRITE);
   try {
     return createSandboxPolicy({
       mode,
       root: workspace,
+      ...(readableRoots.length === 0 ? {} : { readableRoots }),
+      ...(writableRoots.length === 0 ? {} : { writableRoots }),
+      ...(denyWrite.length === 0 ? {} : { denyWrite }),
       network: {
         mode: networkMode,
         allowlist: readCsv(env.MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST),
@@ -261,6 +290,15 @@ function sandboxPolicyErrorEnv(error: SandboxPolicyError): string {
   if (field === "unsafeAllowHostProcess") {
     return "MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS";
   }
+  if (field === "readableRoots" || field?.startsWith("readableRoots[")) {
+    return "MONO_AGENT_SANDBOX_READABLE_ROOTS";
+  }
+  if (field === "writableRoots" || field?.startsWith("writableRoots[")) {
+    return "MONO_AGENT_SANDBOX_WRITABLE_ROOTS";
+  }
+  if (field === "denyWrite" || field?.startsWith("denyWrite[")) {
+    return "MONO_AGENT_SANDBOX_DENY_WRITE";
+  }
   if (field === "network.allowlist" || field?.startsWith("network.allowlist[")) {
     return "MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST";
   }
@@ -281,6 +319,9 @@ function hasSandboxEnv(env: Record<string, string | undefined>): boolean {
     env.MONO_AGENT_SANDBOX_MODE,
     env.MONO_AGENT_SANDBOX_NETWORK,
     env.MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST,
+    env.MONO_AGENT_SANDBOX_READABLE_ROOTS,
+    env.MONO_AGENT_SANDBOX_WRITABLE_ROOTS,
+    env.MONO_AGENT_SANDBOX_DENY_WRITE,
     env.MONO_AGENT_SANDBOX_FALLBACK,
     env.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS,
   ].some((value) => normalizeOptionalString(value) !== undefined);
@@ -304,6 +345,19 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
 function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {
   const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
   if (rawPath === undefined) {
+    const orphaned = [
+      "MONO_AGENT_MEMORY_GRAPH_PATH",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
+    ].find((name) => normalizeOptionalString(env[name]) !== undefined);
+    if (orphaned !== undefined) {
+      throw new MonoAgentConfigError("invalid_env", `${orphaned} requires MONO_AGENT_MEMORY_PATH (or memory.path) to be set.`, {
+        env: orphaned,
+      });
+    }
     return undefined;
   }
 
@@ -320,6 +374,8 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     "per-conversation",
   ], "single-file", invalidEnv);
   const tools = readMemoryToolsConfig(env);
+  const graphPath = readOptionalPath(env.MONO_AGENT_MEMORY_GRAPH_PATH, cwd);
+  const embeddings = readMemoryEmbeddingsConfig(env);
 
   return {
     mode,
@@ -328,6 +384,48 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     scope,
     writeMode,
     ...(tools === undefined ? {} : { tools }),
+    ...(graphPath === undefined ? {} : { graphPath }),
+    ...(embeddings === undefined ? {} : { embeddings }),
+  };
+}
+
+function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): MemoryEmbeddingsConfig | undefined {
+  const hasEmbeddingsEnv = [
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER,
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL,
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT,
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY,
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV,
+  ].some((value) => normalizeOptionalString(value) !== undefined);
+  if (!hasEmbeddingsEnv) {
+    return undefined;
+  }
+
+  const provider = readChoice<MemoryEmbeddingsProvider>(
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER,
+    "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
+    ["ollama", "openai"],
+    "ollama",
+    invalidEnv,
+  );
+  const model = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL) ?? DEFAULT_EMBEDDINGS_MODELS[provider];
+  const endpoint = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT);
+  const apiKeyEnv = normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV);
+  const apiKey = (apiKeyEnv === undefined ? undefined : normalizeOptionalString(env[apiKeyEnv]))
+    ?? normalizeOptionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY);
+  if (provider === "openai" && apiKey === undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "openai memory embeddings require MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY (or apiKeyEnv pointing at a set variable).",
+      { env: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY" },
+    );
+  }
+  return {
+    provider,
+    model,
+    ...(endpoint === undefined ? {} : { endpoint }),
+    ...(apiKey === undefined ? {} : { apiKey }),
+    ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
   };
 }
 
@@ -569,6 +667,17 @@ function readReasoningSummary(raw: string | undefined): ReasoningSummary | undef
     return undefined;
   }
   return readChoice<ReasoningSummary>(normalized, "MONO_AGENT_REASONING_SUMMARY", REASONING_SUMMARIES, REASONING_SUMMARIES[0], invalidEnv);
+}
+
+function readOptionalInteger(
+  raw: string | undefined,
+  name: string,
+  bounds: { readonly min: number; readonly max: number },
+): number | undefined {
+  if (normalizeOptionalString(raw) === undefined) {
+    return undefined;
+  }
+  return readInteger(raw, name, bounds.min, invalidEnv, bounds);
 }
 
 function readPath(raw: string | undefined, cwd: string, defaultPath?: string): string {

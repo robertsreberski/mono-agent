@@ -52,6 +52,28 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "channel:telegram").status).toBe("waiting");
   });
 
+  it("reports the operator console section", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      console: { port: 4321 },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+    const consoleSection = sectionById(report, "console");
+    expect(consoleSection.status).toBe("ok");
+    expect(consoleSection.details.join("\n")).toContain("4321");
+
+    const disabledPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      console: { enabled: false },
+    });
+    const disabledReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: disabledPath });
+    expect(sectionById(disabledReport, "console").status).toBe("disabled");
+  });
+
   it("fails when the identity file is missing", async () => {
     const configPath = await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },

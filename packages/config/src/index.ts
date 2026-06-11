@@ -10,12 +10,16 @@ export type {
 } from "./config.js";
 export type {
   EffortLevel,
+  MemoryEmbeddingsConfig,
+  MemoryEmbeddingsProvider,
   MemoryScope,
   MemoryToolsConfig,
   MemoryWriteMode,
   MonoAgentConfig,
   PermissionMode,
   ReasoningSummary,
+  RedactedMemoryConfig,
+  RedactedMemoryEmbeddingsConfig,
   RedactedMonoAgentConfig,
   RedactedLocalProviderDefinition,
   SessionMode,
@@ -45,6 +49,7 @@ export {
   memoryFieldGroup,
   providersFieldGroup,
   runtimeFieldGroup,
+  sandboxFieldGroup,
   traceabilityFieldGroup,
   toolsFieldGroup,
 } from "./field-groups.js";

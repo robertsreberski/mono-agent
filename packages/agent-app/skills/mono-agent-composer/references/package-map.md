@@ -50,9 +50,9 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | Selected skill bodies | `@mono-agent/skills` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
 | Markdown memory | `@mono-agent/memory-md` | Read capped memory blocks and optionally append host summaries |
 | Daily journal memory | `@mono-agent/memory-journal` | Keep a today note in context and persist continuous local journaling |
-| Entity graph memory | `@mono-agent/memory-graph` | Store local JSONL entities, relations, and observations |
-| Searchable memory | `@mono-agent/memory-search` | Chunk and semantically search local memory with embeddings |
-| Runtime memory tools | `@mono-agent/memory-mcp` | Expose memory tools over MCP when the runtime should query memory itself |
+| Entity graph memory | `@mono-agent/memory-graph` | Store local JSONL entities, relations, and observations (`memory.graphPath`) |
+| Searchable memory | `@mono-agent/memory-search` | Chunk and semantically search local memory with embeddings (`memory.embeddings`) |
+| Runtime memory tools | `@mono-agent/memory-mcp` | Expose memory tools over MCP when the runtime should query memory itself (`memory.tools`); also ships host-side `entity_upsert`/`memory_reindex` consolidation tools |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
 
@@ -109,11 +109,15 @@ Adapters must not import the harness, runtime adapter, memory packages, or other
 
 Use:
 
-- `@mono-agent/operator-console` for local browser settings and traceability.
-- `@mono-agent/tui` for local terminal chat and redacted read-only config.
+- `@mono-agent/operator-console` for local browser settings and traceability (`console` config section; per-boot bearer token; saves re-apply live).
+- `@mono-agent/tui` for local terminal chat and redacted read-only config (`mono-agent-tui --config ./mono-agent.config.json`).
 - `@mono-agent/observability` for JSONL event artifacts, summaries, and trace-source registration.
 
 Traceability is local-first. A running host registers a source manifest; the operator console reads artifacts by `(sourceId, runId)` so duplicate run ids do not collide.
+
+## Evaluation Join
+
+Use `@mono-agent/agent-evals` to define end-to-end scenarios against a responder or harness: final-text assertions, trajectory/tool-call matching, cost/turn/duration budgets, and custom judges, with local JSON/markdown artifacts. Live-provider scenarios are skipped unless `MONO_AGENT_EVAL_LIVE=1`.
 
 ## Multi-Agent Join
 

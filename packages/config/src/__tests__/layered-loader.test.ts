@@ -144,6 +144,63 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_LOCAL_PROVIDER_ID).toBe("ollama");
   });
 
+  it("translates the JSON sandbox section to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        sandbox: {
+          mode: "native",
+          network: { mode: "allowlist", allowlist: ["github.com", "api.github.com"] },
+          readableRoots: [".", "../shared-docs"],
+          writableRoots: ["out"],
+          denyWrite: [".env", "secrets/**"],
+          fallback: "fail-closed",
+          unsafeAllowHostProcess: false,
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_SANDBOX_MODE).toBe("native");
+    expect(layered.MONO_AGENT_SANDBOX_NETWORK).toBe("allowlist");
+    expect(layered.MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST).toBe("github.com,api.github.com");
+    expect(layered.MONO_AGENT_SANDBOX_READABLE_ROOTS).toBe(".,../shared-docs");
+    expect(layered.MONO_AGENT_SANDBOX_WRITABLE_ROOTS).toBe("out");
+    expect(layered.MONO_AGENT_SANDBOX_DENY_WRITE).toBe(".env,secrets/**");
+    expect(layered.MONO_AGENT_SANDBOX_FALLBACK).toBe("fail-closed");
+    expect(layered.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS).toBe("false");
+  });
+
+  it("translates JSON memory graphPath and embeddings to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          graphPath: ".mono-agent/memory/entities.jsonl",
+          embeddings: {
+            provider: "ollama",
+            model: "nomic-embed-text",
+            endpoint: "http://localhost:11434",
+            apiKeyEnv: "EMBEDDINGS_KEY",
+          },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_GRAPH_PATH).toBe(".mono-agent/memory/entities.jsonl");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER).toBe("ollama");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL).toBe("nomic-embed-text");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT).toBe("http://localhost:11434");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV).toBe("EMBEDDINGS_KEY");
+  });
+
+  it("translates JSON context.skillMaxBytes to an env key", () => {
+    const layered = layerJsonOntoEnv(
+      { context: { identityPath: "IDENTITY.md", skillMaxBytes: 24000 } },
+      {},
+    );
+    expect(layered.MONO_AGENT_SKILL_MAX_BYTES).toBe("24000");
+  });
+
   it("treats empty env values as absent so JSON wins", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { maxTurns: 4 } },
@@ -254,6 +311,53 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: path,
     });
     expect(withEnv.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 5000 });
+  });
+
+  it("loads a sandbox policy from the JSON config file", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        sandbox: {
+          mode: "native",
+          network: { mode: "localhost" },
+          denyWrite: [".env", "secrets/**"],
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.sandbox).toMatchObject({
+      mode: "native",
+      fallback: "fail-closed",
+      network: { mode: "localhost" },
+      denyWrite: [".env", "secrets/**"],
+    });
+  });
+
+  it("loads memory embeddings and graph path from the JSON config file", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          graphPath: ".mono-agent/memory/entities.jsonl",
+          embeddings: { provider: "ollama" },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.memory?.graphPath).toBe(join(dir, ".mono-agent", "memory", "entities.jsonl"));
+    expect(config.memory?.embeddings).toEqual({ provider: "ollama", model: "nomic-embed-text" });
   });
 
   it("works without a jsonPath (pure env loader behavior)", async () => {

@@ -88,6 +88,13 @@ export async function loadCronAdapterConfig(input: LoadCronAdapterConfigInput): 
   if (jobsJson !== undefined) {
     return { jobs: readJobsJson(jobsJson) };
   }
+  const section = readJsonSection(json, "cron");
+  if (section.jobs !== undefined) {
+    if (!Array.isArray(section.jobs)) {
+      throw invalidConfig("cron.jobs must be an array of job objects.");
+    }
+    return { jobs: section.jobs.map((entry, index) => normalizeJobConfig(entry, index)) };
+  }
   const env = layerCronJsonOntoEnv(json, input.env);
   const enabled = readBoolean(env.MONO_AGENT_CRON_ENABLED, "MONO_AGENT_CRON_ENABLED", false, invalidConfig);
   const expression = normalizeOptionalString(env.MONO_AGENT_CRON_EXPRESSION);

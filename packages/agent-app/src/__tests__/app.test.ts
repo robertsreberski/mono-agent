@@ -204,6 +204,70 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("disables the operator console from the config console section", async () => {
+    await writeConfig({ ...baseConfig(), console: { enabled: false } });
+    const consoleFactory = vi.fn(async () => ({
+      url: "http://127.0.0.1:7777",
+      token: "test-token",
+      stop: vi.fn(async () => undefined),
+    }));
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsoleFactory: consoleFactory,
+    });
+
+    expect(app.operatorConsole).toBeUndefined();
+    expect(consoleFactory).not.toHaveBeenCalled();
+    await app.stop();
+  });
+
+  it("uses the configured console port unless the host passes an explicit port", async () => {
+    await writeConfig({ ...baseConfig(), console: { port: 4321 } });
+    const consoleFactory = vi.fn(async () => ({
+      url: "http://127.0.0.1:7777",
+      token: "test-token",
+      stop: vi.fn(async () => undefined),
+    }));
+
+    const fromConfig = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsoleFactory: consoleFactory,
+    });
+    expect(consoleFactory).toHaveBeenLastCalledWith(expect.objectContaining({ port: 4321 }));
+    await fromConfig.stop();
+
+    const overridden = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsolePort: 9999,
+      operatorConsoleFactory: consoleFactory,
+    });
+    expect(consoleFactory).toHaveBeenLastCalledWith(expect.objectContaining({ port: 9999 }));
+    await overridden.stop();
+  });
+
+  it("lets env override the console config section", async () => {
+    await writeConfig({ ...baseConfig(), console: { enabled: true, port: 4321 } });
+    const consoleFactory = vi.fn(async () => ({
+      url: "http://127.0.0.1:7777",
+      token: "test-token",
+      stop: vi.fn(async () => undefined),
+    }));
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: { MONO_AGENT_CONSOLE_ENABLED: "false" },
+      operatorConsoleFactory: consoleFactory,
+    });
+
+    expect(app.operatorConsole).toBeUndefined();
+    expect(consoleFactory).not.toHaveBeenCalled();
+    await app.stop();
+  });
+
   it("runs headless when the operator console is disabled", async () => {
     await writeConfig(baseConfig());
 

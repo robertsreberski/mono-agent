@@ -1,15 +1,17 @@
 export {
+  consoleFieldGroup,
   isAppCoreConfigError,
   loadAppCoreConfig,
   MONO_AGENT_APP_FIELD_GROUPS,
   resolveAppArtifactDir,
+  resolveAppConsoleSettings,
   resolveAppTraceHeartbeatMs,
   resolveAppTraceRegistryDir,
   resolveAppTraceSourceId,
   resolveAppTraceSourceLabel,
   resolveAppTraceStaleAfterMs,
 } from "./app-config.js";
-export type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
+export type { AppConsoleSettings, AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
 export {
   createA2AChannelDriver,
   createCronChannelDriver,

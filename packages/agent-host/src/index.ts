@@ -122,6 +122,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     identityPath: config.context.identityPath,
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
+    ...(config.context.skillMaxBytes === undefined ? {} : { skillMaxBytes: config.context.skillMaxBytes }),
     selectedSkills: config.context.selectedSkills,
     runtime: options.runtime ?? createConfiguredAgentRuntime({ config, model, executionMode }),
     model,
@@ -166,7 +167,7 @@ function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefine
     // The entity graph lives next to the journal; its salient-entity digest is
     // folded into the always-in-context block so long-term memory is present
     // without loading the whole archive.
-    const graph = createEntityGraphStore({ path: join(config.memory.path, "graph.jsonl") });
+    const graph = createEntityGraphStore({ path: config.memory.graphPath ?? join(config.memory.path, "graph.jsonl") });
     return createJournalMemoryStore({
       rootDir: config.memory.path,
       maxBytes: config.memory.maxBytes,
@@ -197,6 +198,7 @@ function memoryMcpRuntimeOptions(config: MonoAgentConfig): StaticRuntimeOptions 
     ...(config.memory.tools.allowJournalAppend ? ["journal_append"] : []),
   ];
 
+  const embeddings = config.memory.embeddings;
   return {
     allowedTools,
     mcpServers: {
@@ -205,6 +207,21 @@ function memoryMcpRuntimeOptions(config: MonoAgentConfig): StaticRuntimeOptions 
         args: [resolveMemoryMcpMainPath()],
         env: {
           MONO_AGENT_MEMORY_PATH: config.memory.path,
+          ...(config.memory.graphPath === undefined
+            ? {}
+            : { MONO_AGENT_MEMORY_GRAPH_PATH: config.memory.graphPath }),
+          ...(embeddings === undefined
+            ? {}
+            : {
+                MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: embeddings.provider,
+                MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: embeddings.model,
+                ...(embeddings.endpoint === undefined
+                  ? {}
+                  : { MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: embeddings.endpoint }),
+                ...(embeddings.apiKey === undefined
+                  ? {}
+                  : { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: embeddings.apiKey }),
+              }),
         },
       },
     },

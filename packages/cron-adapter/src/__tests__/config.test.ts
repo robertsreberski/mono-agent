@@ -58,6 +58,62 @@ describe("loadCronAdapterConfig", () => {
     });
   });
 
+  it("loads multiple cron jobs from the cron.jobs array in the JSON config file", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        cron: {
+          jobs: [
+            { id: "daily", enabled: true, expression: "0 9 * * *", timezone: "UTC", prompt: "Morning summary." },
+            { id: "weekly", enabled: false, expression: "0 9 * * 1", prompt: "Weekly recap.", conversationId: "cron-weekly" },
+          ],
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadCronAdapterConfig({ env: {}, jsonPath: path });
+
+    expect(config.jobs).toEqual([
+      { id: "daily", enabled: true, expression: "0 9 * * *", timezone: "UTC", prompt: "Morning summary." },
+      { id: "weekly", enabled: false, expression: "0 9 * * 1", timezone: "UTC", prompt: "Weekly recap.", conversationId: "cron-weekly" },
+    ]);
+  });
+
+  it("lets the MONO_AGENT_CRON_JOBS_JSON env beat the cron.jobs JSON section", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({ cron: { jobs: [{ id: "from-json", expression: "0 9 * * *", prompt: "json" }] } })}\n`,
+      "utf8",
+    );
+
+    const config = await loadCronAdapterConfig({
+      env: {
+        MONO_AGENT_CRON_JOBS_JSON: JSON.stringify([
+          { id: "from-env", expression: "*/5 * * * *", prompt: "env" },
+        ]),
+      },
+      jsonPath: path,
+    });
+
+    expect(config.jobs.map((job) => job.id)).toEqual(["from-env"]);
+  });
+
+  it("rejects a cron.jobs section that is not an array of valid jobs", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({ cron: { jobs: [{ id: "broken" }] } })}\n`,
+      "utf8",
+    );
+
+    await expect(loadCronAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
   it("loads multiple cron jobs from JSON env", async () => {
     const config = await loadCronAdapterConfig({
       env: {

@@ -5,7 +5,7 @@ description: Construct a working mono-agent in the current folder from one mono-
 
 # Mono Agent Composer
 
-Construct a working mono-agent in the user's current folder — empty or already holding knowledge — from one `mono-agent.config.json`. Discover what the user wants (runtime with backup models, communication channels, skills, MCP servers, memory strategy, sandbox, observability), write the config, then make it run with the `mono-agent` CLI. No hand-written host code unless the user genuinely needs programmatic composition.
+Construct a working mono-agent in the user's current folder — empty or already holding knowledge — from one `mono-agent.config.json`. Discover what the user wants (runtime with backup models, communication channels incl. crons and webhooks, skills, MCP servers, memory strategy incl. semantic search, sandbox, operator console, observability), write the config, then make it run with the `mono-agent` CLI. No hand-written host code unless the user genuinely needs programmatic composition. `references/feature-coverage.md` maps every framework feature to a config key, CLI flag, or the programmatic escape hatch — consult it before declaring anything impossible or inventing keys.
 
 ## Operating Rules
 
@@ -63,12 +63,13 @@ Everything below runs in the user's agent folder, not the workspace.
 
 ## When Config Is Not Enough
 
-Config-first covers one responder served over any combination of the seven channels plus operator console and traceability. Drop to programmatic composition only for: custom runtimes (`MonoRuntimeLike`), request-scoped runtime extensions, multi-agent orchestration (`@mono-agent/agent-orchestrator`), or bespoke transports. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue.
+Config-first covers one responder served over any combination of the seven channels (webhook, OpenAI-compatible API, Telegram, Slack, WhatsApp, A2A, cron) plus the operator console, sandbox, memory (markdown or journal with entity graph and optional semantic search), and traceability. Drop to programmatic composition only for: custom runtimes (`MonoRuntimeLike`, incl. the OpenAI Agents SDK), request-scoped runtime extensions, tool approval gates, structured output schemas, multi-agent orchestration (`@mono-agent/agent-orchestrator`), custom channel message texts, or bespoke transports — `references/feature-coverage.md` lists which features are config keys and which are code-only. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue. For eval suites over the composed agent, use `@mono-agent/agent-evals`.
 
 ## Implementation References
 
 - `references/discovery-questions.md` — the question sequence and which config keys each answer fills.
 - `references/config-blueprint.md` — annotated `mono-agent.config.json` covering every section, plus the folder layout and programmatic escape hatch.
+- `references/feature-coverage.md` — every framework feature mapped to config / CLI / code / dev-tooling coverage; the answer to "can the config do X?".
 - `references/package-map.md` — which package owns what, for programmatic composition and troubleshooting.
 - `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
 
