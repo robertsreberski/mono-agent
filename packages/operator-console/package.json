@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/operator-console",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local browser operator console for core agent settings and recorded runs.",
   "type": "module",
   "license": "UNLICENSED",
@@ -28,8 +28,8 @@
     "test": "vitest run --config vitest.config.ts --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/observability": "workspace:0.1.0",
-    "@mono-agent/settings": "workspace:0.1.0"
+    "@mono-agent/observability": "workspace:0.2.0",
+    "@mono-agent/settings": "workspace:0.2.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",

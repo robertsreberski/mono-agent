@@ -118,10 +118,15 @@ describe("current launch manifest", () => {
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/agent-app");
   });
 
-  test("validates the repository for the first npm launch tag", () => {
-    const result = validateRelease({ tag: "v0.1.0", silent: true });
+  test("validates the repository for its current release tag", async () => {
+    // Derive the version from a workspace manifest so this test keeps
+    // validating the real repository state across version bumps.
+    const { readFileSync } = await import("node:fs");
+    const { version } = JSON.parse(readFileSync(new URL("../../../packages/agent-app/package.json", import.meta.url), "utf8"));
+
+    const result = validateRelease({ tag: `v${version}`, silent: true });
 
     expect(result.publishablePackages).toHaveLength(30);
-    expect(result.publishablePackages.every((pkg) => pkg.version === "0.1.0")).toBe(true);
+    expect(result.publishablePackages.every((pkg) => pkg.version === version)).toBe(true);
   });
 });
