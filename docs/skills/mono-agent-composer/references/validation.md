@@ -2,6 +2,24 @@
 
 Use validation that matches the chosen composition path. Do not claim the host works from a typecheck alone.
 
+## Config Validation (default path)
+
+In the user's agent folder:
+
+```bash
+mono-agent validate
+```
+
+The report covers core config, runtime support for the primary and every fallback model, identity/skills/memory/MCP paths, the sandbox policy, and every channel (`ok` / `waiting` / `off` / `error`). Exit 0 means the folder is ready to start. Fix every `[error]`; `[waiting]` channels are simply unconfigured.
+
+Then start and confirm the status lines:
+
+```bash
+mono-agent start
+```
+
+Every channel the user asked for must report `running` with its endpoint facts; anything `failed` is a blocker, not a footnote.
+
 ## Documentation Validation
 
 For this repository's bundled mono-agent composer skill:
