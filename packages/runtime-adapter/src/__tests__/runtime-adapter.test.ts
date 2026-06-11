@@ -120,6 +120,46 @@ describe("runtime adapter provider sessions", () => {
   });
 });
 
+describe("runtime adapter fallback chain", () => {
+  it("builds a router-backed runtime that still exposes session disposal", async () => {
+    const runtime = createMonoRuntime({
+      fallbackChain: [
+        { model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6") },
+        { model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5") },
+      ],
+    });
+    expect(typeof runtime.run).toBe("function");
+    expect(typeof runtime.configureTools).toBe("function");
+    await expect(runtime.disposeSession?.("no-such-session")).resolves.toBeFalsy();
+    await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
+  });
+
+  it("rejects an empty fallback chain", () => {
+    expect(() => createMonoRuntime({ fallbackChain: [] })).toThrow(RuntimeAdapterError);
+  });
+
+  it("rejects chain entries with incompatible execution modes at construction", () => {
+    expect(() =>
+      createMonoRuntime({
+        fallbackChain: [
+          {
+            model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
+            executionMode: "cli",
+          },
+        ],
+      }),
+    ).toThrow(RuntimeAdapterError);
+  });
+
+  it("rejects chain entries with unparsed model references", () => {
+    expect(() =>
+      createMonoRuntime({
+        fallbackChain: [{ model: { sdk: "", model: "" } }],
+      }),
+    ).toThrow(RuntimeAdapterError);
+  });
+});
+
 describe("runtime adapter local providers", () => {
   it("maps Ollama provider config to agent-runtime custom Pi options", () => {
     const options = runtimeOptionsForLocalProvider(

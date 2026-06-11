@@ -75,6 +75,44 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
+  it("loads ordered fallback models from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FALLBACK_MODELS: "claude:claude-sonnet-4-6, pi:ollama:gemma4:31b",
+      },
+    });
+
+    expect(config.runtime.fallbackModels).toEqual([
+      expect.objectContaining({ sdk: "claude", model: "claude-sonnet-4-6" }),
+      expect.objectContaining({ sdk: "pi", provider: "ollama", model: "gemma4:31b" }),
+    ]);
+  });
+
+  it("omits fallbackModels when the env is unset", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.runtime.fallbackModels).toBeUndefined();
+  });
+
+  it("rejects invalid fallback model references with the offending entry", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "claude:claude-sonnet-4-6,not-a-model" },
+      }),
+    ).toThrow(/not-a-model/u);
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "not-a-model" },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_model_reference" });
+    }
+  });
+
   it("loads the Pi OAuth auth path from env", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

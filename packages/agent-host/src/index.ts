@@ -25,7 +25,12 @@ import {
   createPiOAuthApiKeyResolver,
   runtimeOptionsForLocalProvider,
 } from "@mono-agent/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type {
+  MonoRuntimeFallbackChainEntry,
+  MonoRuntimeLike,
+  RuntimeExecutionMode,
+  RuntimeModelReference,
+} from "@mono-agent/runtime-adapter";
 import { createToolPolicy } from "@mono-agent/tool-policy";
 import type { ToolPolicyInput } from "@mono-agent/tool-policy";
 
@@ -74,7 +79,31 @@ export function createConfiguredAgentRuntime(
     ...(config.providers?.piAuthPath === undefined
       ? {}
       : { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: config.providers.piAuthPath }) }),
+    ...(fallbackChainForConfig(config, isRuntimeOptions(input) ? input : undefined)),
   });
+}
+
+/**
+ * When backup models are configured, runs go through the agent-runtime fallback
+ * router with the effective primary model first. Fallback entries use their
+ * default execution mode.
+ */
+function fallbackChainForConfig(
+  config: MonoAgentConfig,
+  options: ConfiguredAgentRuntimeOptions | undefined,
+): { fallbackChain?: readonly MonoRuntimeFallbackChainEntry[] } {
+  const fallbackModels = config.runtime.fallbackModels;
+  if (fallbackModels === undefined || fallbackModels.length === 0) {
+    return {};
+  }
+  const primaryModel = options?.model ?? config.runtime.model;
+  const primaryExecutionMode = options?.executionMode ?? config.runtime.executionMode;
+  return {
+    fallbackChain: [
+      { model: primaryModel, executionMode: primaryExecutionMode as RuntimeExecutionMode },
+      ...fallbackModels.map((model) => ({ model })),
+    ],
+  };
 }
 
 export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): AgentHarness {

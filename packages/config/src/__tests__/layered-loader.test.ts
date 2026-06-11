@@ -25,7 +25,11 @@ describe("layerJsonOntoEnv", () => {
   it("translates JSON sections to env keys", () => {
     const layered = layerJsonOntoEnv(
       {
-        runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 12 },
+        runtime: {
+          model: "pi:openai-codex:gpt-5.5",
+          fallbackModels: ["claude:claude-sonnet-4-6", "pi:ollama:gemma4:31b"],
+          maxTurns: 12,
+        },
         context: { identityPath: "IDENTITY.md", selectedSkills: ["a", "b"] },
         memory: {
           mode: "journal",
@@ -52,6 +56,7 @@ describe("layerJsonOntoEnv", () => {
       {},
     );
     expect(layered.MONO_AGENT_MODEL).toBe("pi:openai-codex:gpt-5.5");
+    expect(layered.MONO_AGENT_FALLBACK_MODELS).toBe("claude:claude-sonnet-4-6,pi:ollama:gemma4:31b");
     expect(layered.MONO_AGENT_MAX_TURNS).toBe("12");
     expect(layered.MONO_AGENT_IDENTITY_PATH).toBe("IDENTITY.md");
     expect(layered.MONO_AGENT_SELECTED_SKILLS).toBe("a,b");

@@ -45,6 +45,7 @@ export type MonoAgentProvidersJson = {
 export interface MonoAgentConfigJson extends SettingsJson {
   readonly runtime?: {
     readonly model?: string;
+    readonly fallbackModels?: readonly string[];
     readonly executionMode?: string;
     readonly effort?: string;
     readonly maxTurns?: number;

@@ -65,6 +65,15 @@ export const runtimeFieldGroup = defineFieldGroup({
       path: ["runtime", "model"],
     },
     {
+      id: "runtime.fallbackModels",
+      label: "Fallback models",
+      description:
+        "Comma-separated backup model references tried in order when the primary model fails with a retryable provider error.",
+      kind: "csv",
+      placeholder: "claude:claude-sonnet-4-6, pi:ollama:gemma4:31b",
+      path: ["runtime", "fallbackModels"],
+    },
+    {
       id: "runtime.executionMode",
       label: "Execution mode",
       description: "sdk talks to the provider over its SDK; cli shells out to a packaged binary.",

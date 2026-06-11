@@ -80,6 +80,7 @@ const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
   const cwd = normalizeCwd(input.cwd);
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
+  const fallbackModels = readFallbackModels(input.env);
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readInteger(input.env.MONO_AGENT_MAX_TURNS, "MONO_AGENT_MAX_TURNS", DEFAULT_MAX_TURNS, invalidEnv, { min: 1, max: 100 });
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
@@ -101,6 +102,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
+    ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
     executionMode,
     maxTurns,
     workspace,
@@ -171,6 +173,21 @@ function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
       reason,
     });
   }
+}
+
+function readFallbackModels(env: Record<string, string | undefined>): readonly MonoAgentConfig["runtime"]["model"][] {
+  return readCsv(env.MONO_AGENT_FALLBACK_MODELS).map((raw) => {
+    try {
+      return parseMonoRuntimeModelReference(raw);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new MonoAgentConfigError(
+        "invalid_model_reference",
+        `MONO_AGENT_FALLBACK_MODELS entry \`${raw}\` is not a valid runtime model reference.`,
+        { env: "MONO_AGENT_FALLBACK_MODELS", reason },
+      );
+    }
+  });
 }
 
 function parseExecutionMode(raw: string | undefined, model: MonoAgentConfig["runtime"]["model"]): RuntimeExecutionMode {

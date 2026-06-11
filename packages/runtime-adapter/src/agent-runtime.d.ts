@@ -25,7 +25,17 @@ declare module "@mono-agent/agent-runtime" {
     disposeAllSessions?(): Promise<void>;
   }
 
+  export interface AgentRuntimeRouterChainEntry {
+    readonly model: unknown;
+    readonly executionMode?: string | null;
+    readonly requires?: Record<string, unknown> | null;
+  }
+
   export function createRuntime(host?: AgentRuntimeHostOptions): AgentRuntimeInstance;
+  export function createRouterRuntime(options: {
+    readonly host?: AgentRuntimeHostOptions;
+    readonly chain: readonly AgentRuntimeRouterChainEntry[];
+  }): AgentRuntimeInstance;
   export function createPiOAuthApiKeyResolver(options: { readonly path: string }): (provider: string) => Promise<string | undefined>;
 }
 

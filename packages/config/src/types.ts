@@ -17,6 +17,12 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export interface MonoAgentConfig {
   readonly runtime: {
     readonly model: RuntimeModelReference;
+    /**
+     * Ordered backup models tried after `model` when a run fails with a
+     * retryable provider error. Each entry runs under its default execution
+     * mode.
+     */
+    readonly fallbackModels?: readonly RuntimeModelReference[];
     readonly executionMode: RuntimeExecutionMode;
     readonly effort?: EffortLevel;
     readonly maxTurns: number;

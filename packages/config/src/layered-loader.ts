@@ -48,6 +48,9 @@ export function layerJsonOntoEnv(
   if (json.runtime?.model !== undefined) {
     fromJson.MONO_AGENT_MODEL = json.runtime.model;
   }
+  if (json.runtime?.fallbackModels !== undefined) {
+    fromJson.MONO_AGENT_FALLBACK_MODELS = csv(json.runtime.fallbackModels);
+  }
   if (json.runtime?.executionMode !== undefined) {
     fromJson.MONO_AGENT_EXECUTION_MODE = json.runtime.executionMode;
   }
