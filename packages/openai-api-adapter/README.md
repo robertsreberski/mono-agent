@@ -27,6 +27,18 @@ const adapter = await startOpenAIApiAdapter({
 
 Point OpenWebUI at the printed base URL, for example `http://127.0.0.1:4311/v1`. If OpenWebUI runs in Docker while the host agent runs locally, use `http://host.docker.internal:4311/v1`. Configure an API key in OpenWebUI only when `openaiApi.apiKey` or `MONO_AGENT_OPENAI_API_KEY` is set.
 
+## Conversation Sessions (Open WebUI)
+
+The adapter derives a stable `conversationId` so the agent harness can reuse provider sessions and history across requests. Candidates, in priority order: `metadata.conversation_id` / `metadata.conversationId` / `metadata.chat_id` / `metadata.chatId`, top-level `conversation_id` / `conversationId`, the `X-OpenWebUI-Chat-Id` header, the generic `X-Conversation-Id` header, then `user`. Without any of these, every request becomes a fresh conversation (`openai-api:<requestId>`).
+
+Open WebUI strips `metadata` and other non-OpenAI fields from request bodies, so header forwarding is the path that works: set `ENABLE_FORWARD_USER_INFO_HEADERS=true` on the Open WebUI instance and it sends `X-OpenWebUI-Chat-Id` per chat. Other proxies can send `X-Conversation-Id`.
+
+When a conversation id comes from body metadata, top-level fields, or headers, the adapter sends only the user message(s) after the last assistant message as the turn text — the harness already carries the rest of the transcript via its history store and provider sessions, so resending the full transcript would double the context. The first turn (no assistant message in the transcript yet) is still sent whole, role-prefixed, so a client system prompt is delivered once at conversation start. Requests whose only identity is `user` keep full-transcript flattening: `user` identifies a person, not a chat, and collapsing all of their chats into one latest-message conversation would lose context.
+
+Behavior change note: clients that previously sent `metadata.conversation_id` together with full transcripts now get latest-message extraction. This is intentional — the harness owns per-conversation history. A client that mints a fresh "conversation id" per request while relying on transcript replay should stop sending an id; the fallback path preserves full-transcript semantics.
+
+Open WebUI caveat: title and tag generation requests go to the same backend and can carry the same chat id header, landing as extra turns in the conversation's session. Point Open WebUI's Task Model (Admin Settings → Interface) at a separate lightweight model, or disable automatic title/tag generation.
+
 Streaming responders may send structured stream events through `AgentMessageStream.event()`. Assistant thoughts are emitted as `delta.reasoning_content` so OpenWebUI can render them separately from the final answer. Internally executed tools are rendered as OpenWebUI `<details type="tool_calls">` content blocks after completion. The adapter intentionally does not emit `delta.tool_calls` or `finish_reason: "tool_calls"` for host-owned tools because those fields ask the client to execute tools.
 
 ## Public API
