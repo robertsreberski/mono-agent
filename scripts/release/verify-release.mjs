@@ -17,9 +17,11 @@ function cleanRegistryEnv() {
   };
 }
 
+// First-time publishes can take several minutes to propagate to the
+// public registry reads, so allow ~5 minutes per package.
 function retry(command, args) {
   let lastOutput = "";
-  for (let attempt = 1; attempt <= 30; attempt += 1) {
+  for (let attempt = 1; attempt <= 60; attempt += 1) {
     const result = spawnSync(command, args, {
       cwd: REPO_ROOT,
       encoding: "utf8",
@@ -27,7 +29,8 @@ function retry(command, args) {
     });
     lastOutput = `${result.stdout || ""}${result.stderr || ""}`;
     if (result.status === 0) {
-      return lastOutput.trim();
+      // Only stdout is machine output; npm config warnings land on stderr.
+      return (result.stdout || "").trim();
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
   }
