@@ -97,13 +97,18 @@ export function minInteger(value: number | undefined, fallback: number, min: num
   return value;
 }
 
+let atomicWriteSequence = 0;
+
 /**
  * Write a serialized artifact atomically via a temp file + rename, so readers
  * (list/read) never observe a half-written file. The registry already did this;
  * the recorder now shares the same primitive for its summary + events files.
+ * The temp name carries a per-process sequence (not a timestamp) so concurrent
+ * writers in the same millisecond never collide on the temp path.
  */
 export async function writeJsonAtomic(filePath: string, contents: string): Promise<void> {
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  atomicWriteSequence += 1;
+  const tempPath = `${filePath}.${process.pid}.${atomicWriteSequence}.tmp`;
   await writeFile(tempPath, contents, "utf8");
   await rename(tempPath, filePath);
 }
