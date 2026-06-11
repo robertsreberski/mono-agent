@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/cron-adapter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Cron-based scheduled invocation adapter for agent responders.",
   "type": "module",
   "license": "UNLICENSED",
@@ -23,8 +23,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.1.0",
-    "@mono-agent/settings": "workspace:0.1.0",
+    "@mono-agent/agent-contracts": "workspace:0.2.0",
+    "@mono-agent/settings": "workspace:0.2.0",
     "cron-parser": "^5.5.0"
   },
   "publishConfig": {
