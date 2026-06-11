@@ -65,7 +65,7 @@ jobs:
           NPM_CONFIG_USERCONFIG: /dev/null
         run: pnpm run release:verify -- --tag "$GITHUB_REF_NAME"
 
-      - name: Smoke test published TUI CLI
+      - name: Smoke test published CLIs
         env:
           NPM_CONFIG_USERCONFIG: /dev/null
         run: |
@@ -81,3 +81,5 @@ jobs:
           TMP_PREFIX="$(mktemp -d)"
           retry npm install -g --prefix "$TMP_PREFIX" --prefer-online "@mono-agent/tui@${VERSION}"
           "$TMP_PREFIX/bin/mono-agent-tui" --help
+          retry npm install -g --prefix "$TMP_PREFIX" --prefer-online "@mono-agent/agent-app@${VERSION}"
+          "$TMP_PREFIX/bin/mono-agent" --help

@@ -111,16 +111,17 @@ describe("current launch manifest", () => {
   test("discovers all catalog-publishable packages", () => {
     const publishable = discoverPackages().filter((pkg) => pkg.catalogEntry.publishable);
 
-    expect(publishable).toHaveLength(29);
+    expect(publishable).toHaveLength(30);
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/tui");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/agent-runtime");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/sandbox");
+    expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/agent-app");
   });
 
   test("validates the repository for the first npm launch tag", () => {
     const result = validateRelease({ tag: "v0.1.0", silent: true });
 
-    expect(result.publishablePackages).toHaveLength(29);
+    expect(result.publishablePackages).toHaveLength(30);
     expect(result.publishablePackages.every((pkg) => pkg.version === "0.1.0")).toBe(true);
   });
 });
