@@ -2,6 +2,7 @@ export {
   createToolPolicy,
   failClosedToolPolicy,
   loadToolPolicyFromJsonFile,
+  loadToolPolicyFromJsonFileSync,
   ToolPolicyError,
   toolPolicyToRuntimeOptions,
 } from "./policy.js";

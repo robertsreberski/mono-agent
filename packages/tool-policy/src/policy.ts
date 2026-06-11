@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -64,6 +65,23 @@ export async function loadToolPolicyFromJsonFile(filePath: string): Promise<Tool
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(resolvedPath, "utf8"));
+  } catch (error) {
+    throw new ToolPolicyError("tool_policy_read_failed", "Unable to read tool policy JSON.", {
+      path: resolvedPath,
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!isRecord(parsed)) {
+    throw new ToolPolicyError("invalid_tool_policy", "Tool policy JSON must be an object.", { path: resolvedPath });
+  }
+  return createToolPolicy(parsedToPolicyInput(parsed));
+}
+
+export function loadToolPolicyFromJsonFileSync(filePath: string): ToolPolicy {
+  const resolvedPath = resolveRequiredPath(filePath);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(resolvedPath, "utf8"));
   } catch (error) {
     throw new ToolPolicyError("tool_policy_read_failed", "Unable to read tool policy JSON.", {
       path: resolvedPath,

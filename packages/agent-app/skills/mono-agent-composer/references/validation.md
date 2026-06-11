@@ -22,22 +22,23 @@ Every channel the user asked for must report `running` with its endpoint facts; 
 
 ## Documentation Validation
 
-For this repository's bundled mono-agent composer skill:
+To confirm a skills folder is indexable (replace `<skillsRoot>` with the
+agent's configured skills root, e.g. `./skills`):
 
 ```bash
 node --input-type=module - <<'EOF'
-import { loadSkillIndexFromDirectory } from './packages/context/dist/index.js';
+import { loadSkillIndexFromDirectory } from '@mono-agent/context';
 
-const skills = await loadSkillIndexFromDirectory('docs/skills');
+const skills = await loadSkillIndexFromDirectory('<skillsRoot>');
 console.log(JSON.stringify(skills, null, 2));
 EOF
 ```
 
 Expected:
 
-- `mono-agent-composer` appears in the index.
-- The description is the first plain paragraph from `SKILL.md`.
-- The `mainFile` points at `docs/skills/mono-agent-composer/SKILL.md`.
+- Every selected skill appears in the index.
+- The description is the first plain paragraph from its `SKILL.md`.
+- The `mainFile` points at `<skillsRoot>/<skill-name>/SKILL.md`.
 
 ## Repo Validation
 

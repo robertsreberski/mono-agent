@@ -75,6 +75,41 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
+  it("loads permission mode and reasoning summary from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PERMISSION_MODE: "bypassPermissions",
+        MONO_AGENT_REASONING_SUMMARY: "detailed",
+      },
+    });
+
+    expect(config.runtime.permissionMode).toBe("bypassPermissions");
+    expect(config.runtime.reasoningSummary).toBe("detailed");
+  });
+
+  it("omits permission mode and reasoning summary when the env is unset", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.runtime.permissionMode).toBeUndefined();
+    expect(config.runtime.reasoningSummary).toBeUndefined();
+  });
+
+  it("rejects invalid permission mode and reasoning summary values", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_PERMISSION_MODE: "yolo" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_REASONING_SUMMARY: "verbose" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
   it("loads ordered fallback models from env", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
