@@ -11,6 +11,16 @@ export interface MemoryToolsConfig {
   readonly enabled: boolean;
   readonly allowJournalAppend: boolean;
 }
+export type MemoryEmbeddingsProvider = "ollama" | "openai";
+export interface MemoryEmbeddingsConfig {
+  readonly provider: MemoryEmbeddingsProvider;
+  readonly model: string;
+  readonly endpoint?: string;
+  /** Resolved key value (inline or read from `apiKeyEnv` at load time). */
+  readonly apiKey?: string;
+  /** Name of the env var the key was read from, kept for redacted display. */
+  readonly apiKeyEnv?: string;
+}
 export type SessionMode = "continuous" | "per-message";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
@@ -43,6 +53,8 @@ export interface MonoAgentConfig {
     readonly soulPath?: string;
     readonly skillsRoot?: string;
     readonly selectedSkills: readonly string[];
+    /** Hard byte cap per selected skill body (default 48000 in the harness). */
+    readonly skillMaxBytes?: number;
   };
   readonly memory?: {
     readonly mode: MemoryMode;
@@ -51,6 +63,10 @@ export interface MonoAgentConfig {
     readonly scope: MemoryScope;
     readonly writeMode: MemoryWriteMode;
     readonly tools?: MemoryToolsConfig;
+    /** Entity graph JSONL path (journal mode); defaults to `<path>/graph.jsonl`. */
+    readonly graphPath?: string;
+    /** Embedding provider for semantic memory_search; keyword fallback when unset. */
+    readonly embeddings?: MemoryEmbeddingsConfig;
   };
   readonly tools: {
     readonly allowedTools: readonly string[];
@@ -78,10 +94,18 @@ export type RedactedLocalProviderDefinition = Omit<LocalProviderDefinition, "api
   readonly apiKey?: RedactedSecretValue;
 };
 
+export type RedactedMemoryEmbeddingsConfig = Omit<MemoryEmbeddingsConfig, "apiKey"> & {
+  readonly apiKey?: RedactedSecretValue;
+};
+
+export type RedactedMemoryConfig = Omit<NonNullable<MonoAgentConfig["memory"]>, "embeddings"> & {
+  readonly embeddings?: RedactedMemoryEmbeddingsConfig;
+};
+
 export interface RedactedMonoAgentConfig {
   readonly runtime: MonoAgentConfig["runtime"];
   readonly context: MonoAgentConfig["context"];
-  readonly memory?: MonoAgentConfig["memory"];
+  readonly memory?: RedactedMemoryConfig;
   readonly tools: MonoAgentConfig["tools"];
   readonly sandbox?: MonoAgentConfig["sandbox"];
   readonly artifacts: MonoAgentConfig["artifacts"];

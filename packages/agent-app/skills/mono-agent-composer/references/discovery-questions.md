@@ -59,7 +59,7 @@ Should this agent load selected skills?
 3. No selected skills for the first pass
 ```
 
-Fills: `context.skillsRoot`, `context.selectedSkills`. Skill discovery loads immediate child directories only: `<skillsRoot>/<skill-name>/SKILL.md`. Skill files may carry YAML frontmatter (Claude Code style); the description is the first prose paragraph after it.
+Fills: `context.skillsRoot`, `context.selectedSkills`, optionally `context.skillMaxBytes` (per-skill byte cap, default 48000). Skill discovery loads immediate child directories only: `<skillsRoot>/<skill-name>/SKILL.md`. Skill files may carry YAML frontmatter (Claude Code style); the description is the first prose paragraph after it.
 
 ## 5. Tools And MCP Servers
 
@@ -86,9 +86,10 @@ Should the agent remember anything between conversations?
 1. No durable memory yet (recommended for first integration)
 2. Markdown memory file (read into context; optional host summaries appended)
 3. Journal memory (daily notes + entity graph, optional MCP recall tools)
+4. Journal memory with semantic search (adds an embedding index for memory_search)
 ```
 
-Fills: the `memory` section — `mode` (`markdown`/`journal`), `path`, `writeMode` (`disabled`/`append-host-summary`), `scope`, and for journal mode `tools.enabled` / `tools.allowJournalAppend` to give the runtime memory recall/append tools over MCP.
+Fills: the `memory` section — `mode` (`markdown`/`journal`), `path`, `writeMode` (`disabled`/`append-host-summary`), `scope`, and for journal mode `tools.enabled` / `tools.allowJournalAppend` to give the runtime memory recall/append tools over MCP. The entity graph defaults to `<path>/graph.jsonl` (`memory.graphPath` to relocate). For semantic search fill `memory.embeddings`: `provider` (`ollama` with local `nomic-embed-text` — pull it first with `ollama pull nomic-embed-text` — or `openai` which requires `apiKey`/`apiKeyEnv`), optional `model`/`endpoint`. Without embeddings, `memory_search` falls back to keyword search.
 
 ## 7. Sandbox
 
@@ -100,9 +101,10 @@ Should runtime commands run inside a sandbox?
 1. No sandbox for the first pass
 2. Native sandbox, no network (fail closed)
 3. Native sandbox with localhost or an explicit network allowlist
+4. Native sandbox with custom filesystem scopes (extra readable/writable roots)
 ```
 
-Fills: the `sandbox` section — `mode`, `network.mode` (`none`/`localhost`/`allowlist`/`all`), `network.allowlist`, `fallback` (`fail-closed` recommended; `unsafe-host-process` only with explicit consent).
+Fills: the `sandbox` section — `mode`, `network.mode` (`none`/`localhost`/`allowlist`/`all`), `network.allowlist`, `readableRoots`/`writableRoots` (relative entries resolve against the workspace; default: workspace only), `denyWrite` glob patterns (defaults already deny `.env*`, `.git/config`, `.git/hooks/**`), `fallback` (`fail-closed` recommended; `unsafe-host-process` only with explicit consent plus `unsafeAllowHostProcess: true`).
 
 ## 8. Observability
 
@@ -112,10 +114,11 @@ Question:
 Do you need browsable traceability or just local artifacts?
 
 1. JSONL artifacts and the operator console (recommended; console is on by default)
-2. JSONL artifacts only (start with --no-console)
+2. JSONL artifacts and the console on a fixed port
+3. JSONL artifacts only (headless)
 ```
 
-Fills: `artifacts.dir`, `traceability.registryDir` / `sourceId` / `sourceLabel`. Artifacts record runtime/tool/message events and summaries, not private chain-of-thought.
+Fills: `artifacts.dir`, `traceability.registryDir` / `sourceId` / `sourceLabel`, and the `console` section — `console.port` for a fixed loopback port, `console.enabled: false` (or `start --no-console`) for headless. Artifacts record runtime/tool/message events and summaries, not private chain-of-thought. For a local terminal chat instead of (or alongside) the browser console, mention `mono-agent-tui --config ./mono-agent.config.json`.
 
 ## 9. Acceptance Smoke Test
 

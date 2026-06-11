@@ -87,6 +87,9 @@ export function layerJsonOntoEnv(
   if (json.context?.selectedSkills !== undefined) {
     fromJson.MONO_AGENT_SELECTED_SKILLS = csv(json.context.selectedSkills);
   }
+  if (json.context?.skillMaxBytes !== undefined) {
+    fromJson.MONO_AGENT_SKILL_MAX_BYTES = String(json.context.skillMaxBytes);
+  }
   if (json.memory?.mode !== undefined) {
     fromJson.MONO_AGENT_MEMORY_MODE = json.memory.mode;
   }
@@ -108,6 +111,24 @@ export function layerJsonOntoEnv(
   if (json.memory?.tools?.allowJournalAppend !== undefined) {
     fromJson.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND = String(json.memory.tools.allowJournalAppend);
   }
+  if (json.memory?.graphPath !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_GRAPH_PATH = json.memory.graphPath;
+  }
+  if (json.memory?.embeddings?.provider !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER = json.memory.embeddings.provider;
+  }
+  if (json.memory?.embeddings?.model !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL = json.memory.embeddings.model;
+  }
+  if (json.memory?.embeddings?.endpoint !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT = json.memory.embeddings.endpoint;
+  }
+  if (json.memory?.embeddings?.apiKey !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY = json.memory.embeddings.apiKey;
+  }
+  if (json.memory?.embeddings?.apiKeyEnv !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV = json.memory.embeddings.apiKeyEnv;
+  }
   if (json.tools?.allowedTools !== undefined) {
     fromJson.MONO_AGENT_ALLOWED_TOOLS = csv(json.tools.allowedTools);
   }
@@ -116,6 +137,30 @@ export function layerJsonOntoEnv(
   }
   if (json.tools?.mcpConfigPath !== undefined) {
     fromJson.MONO_AGENT_MCP_CONFIG_PATH = json.tools.mcpConfigPath;
+  }
+  if (json.sandbox?.mode !== undefined) {
+    fromJson.MONO_AGENT_SANDBOX_MODE = json.sandbox.mode;
+  }
+  if (json.sandbox?.network?.mode !== undefined) {
+    fromJson.MONO_AGENT_SANDBOX_NETWORK = json.sandbox.network.mode;
+  }
+  if (json.sandbox?.network?.allowlist !== undefined) {
+    fromJson.MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST = csv(json.sandbox.network.allowlist);
+  }
+  if (json.sandbox?.readableRoots !== undefined) {
+    fromJson.MONO_AGENT_SANDBOX_READABLE_ROOTS = csv(json.sandbox.readableRoots);
+  }
+  if (json.sandbox?.writableRoots !== undefined) {
+    fromJson.MONO_AGENT_SANDBOX_WRITABLE_ROOTS = csv(json.sandbox.writableRoots);
+  }
+  if (json.sandbox?.denyWrite !== undefined) {
+    fromJson.MONO_AGENT_SANDBOX_DENY_WRITE = csv(json.sandbox.denyWrite);
+  }
+  if (json.sandbox?.fallback !== undefined) {
+    fromJson.MONO_AGENT_SANDBOX_FALLBACK = json.sandbox.fallback;
+  }
+  if (json.sandbox?.unsafeAllowHostProcess !== undefined) {
+    fromJson.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS = String(json.sandbox.unsafeAllowHostProcess);
   }
   if (json.artifacts?.dir !== undefined) {
     fromJson.MONO_AGENT_ARTIFACT_DIR = json.artifacts.dir;

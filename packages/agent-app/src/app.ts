@@ -20,6 +20,7 @@ import {
   loadAppCoreConfig,
   MONO_AGENT_APP_FIELD_GROUPS,
   resolveAppArtifactDir,
+  resolveAppConsoleSettings,
   resolveAppTraceHeartbeatMs,
   resolveAppTraceRegistryDir,
   resolveAppTraceSourceId,
@@ -93,7 +94,9 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
   let controller: MonoAgentAppController | undefined;
 
   let consoleServer: OperatorConsoleStartResult | undefined;
-  if (options.operatorConsole !== false) {
+  const consoleSettings = await resolveAppConsoleSettings(input);
+  const consolePort = options.operatorConsolePort ?? consoleSettings.port;
+  if (options.operatorConsole !== false && consoleSettings.enabled) {
     const consoleFactory = options.operatorConsoleFactory ?? startOperatorConsole;
     consoleServer = await consoleFactory({
       configPath,
@@ -120,7 +123,7 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
         }
         return await controller.applyConfigChange("operator-console-write");
       },
-      ...(options.operatorConsolePort === undefined ? {} : { port: options.operatorConsolePort }),
+      ...(consolePort === undefined ? {} : { port: consolePort }),
       log: (event) => {
         logOperatorConsoleEvent(options.logger, event);
       },
