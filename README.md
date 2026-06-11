@@ -1,15 +1,32 @@
 # Agent Framework Packages
 
-This repository is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages.
+This repository is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages. `@mono-agent/agent-app` composes them all from one config file.
+
+## Quickstart: An Agent Folder From One Config File
+
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a working agent with the `mono-agent` CLI from `@mono-agent/agent-app`:
+
+```bash
+# once, in this workspace
+corepack enable && pnpm install --frozen-lockfile && pnpm run build
+alias mono-agent="node $(pwd)/packages/agent-app/dist/cli.js"
+
+# in the agent folder
+mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
+mono-agent validate
+mono-agent start
+```
+
+`init` scaffolds `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs the operator console, traceability, and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status.
 
 ## Skill-Based Composition Guide
 
-The repo includes a mono-agent-native skill document for agents that need to help users compose these packages into a working host:
+The repo includes a composer skill that walks an agent (in mono-agent itself, Claude Code, or another harness that reads `SKILL.md` files) through constructing an agent folder with the flow above:
 
 - Skill: [`docs/skills/mono-agent-composer/SKILL.md`](./docs/skills/mono-agent-composer/SKILL.md)
 - References: [`docs/skills/mono-agent-composer/references/`](./docs/skills/mono-agent-composer/references/)
 
-Use it as a selected mono-agent skill by pointing `context.skillsRoot` at `./docs/skills` and adding `mono-agent-composer` to `context.selectedSkills`. The skill makes the agent ask discovery questions first, then walks through runtime, context, selected skills, optional memory, tool/MCP policy, communication adapters, operator surfaces, and validation.
+The skill asks discovery questions (runtime + backup models, channels, skills, MCP, memory strategy, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. To use it as a selected mono-agent skill, point `context.skillsRoot` at `./docs/skills` and add `mono-agent-composer` to `context.selectedSkills`; in Claude Code, copy the skill folder into your skills directory.
 
 ## Package Architecture
 
@@ -27,12 +44,14 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 | `evaluation` | `@mono-agent/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
 | `operator-surface` | `@mono-agent/operator-console`, `@mono-agent/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
-| `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition that load config, build responders, start surfaces/transports, and register local traces. |
+| `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus operator console and traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
+| `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
 
 ## Dependency Direction
 
 ```text
 demos/final-agent and demos/multi-agent (not workspace packages)
+  ├─ agent-app ── all of the below; config-first host + mono-agent CLI
   ├─ operator-console ── settings, observability
   ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
   ├─ cron-adapter ── agent-contracts, settings, cron-parser
@@ -40,6 +59,7 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ slack-adapter ── agent-contracts, settings, ws
   ├─ telegram-adapter ── agent-contracts, settings
   ├─ webhook-adapter ── agent-contracts, settings, express
+  ├─ whatsapp-adapter ── agent-contracts, settings, baileys
   ├─ agent-host
   │   ├─ config
   │   ├─ agent-harness ── agent-contracts, context, skills, memory-md, observability, runtime-adapter, sandbox, tool-policy
@@ -95,25 +115,13 @@ pnpm run build
 pnpm run demo:final
 ```
 
-The readable package-composition path is:
+The demo is a thin facade over `@mono-agent/agent-app`: it selects the five demo channels (Telegram, A2A, webhook, OpenAI API, cron), wires its test seams into channel driver overrides, and keeps its historical status shapes. The composition path it exercises is the same one the `mono-agent` CLI uses:
 
 ```ts
-const coreConfig = await loadFinalAgentCoreConfig({ env, cwd, configPath });
-const runtime = createConfiguredAgentRuntime(coreConfig);
-const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
+import { startMonoAgentApp } from "@mono-agent/agent-app";
+
+const app = await startMonoAgentApp({ cwd, configPath });
 ```
-
-The demo then passes that responder to whichever adapters are enabled:
-
-- `CORE_AGENT_FIELD_GROUPS` from `@mono-agent/config`
-- `createConfiguredAgentRuntime` and `createConfiguredAgentResponder` from `@mono-agent/agent-host`
-- `a2aFieldGroup`, `loadA2AAdapterConfig`, and `startA2AProvider` from `@mono-agent/a2a-adapter`
-- `telegramFieldGroup` and `loadTelegramAdapterConfig` from `@mono-agent/telegram-adapter`
-- `webhookFieldGroup`, `loadWebhookAdapterConfig`, and `startWebhookAdapter` from `@mono-agent/webhook-adapter`
-- `openAIApiFieldGroup`, `loadOpenAIApiAdapterConfig`, and `startOpenAIApiAdapter` from `@mono-agent/openai-api-adapter`
-- `cronFieldGroup`, `loadCronAdapterConfig`, and `startCronAdapter` from `@mono-agent/cron-adapter`
-- `startOperatorConsole` from `@mono-agent/operator-console`
-- `registerTraceSource` from `@mono-agent/observability`
 
 ### Host Traceability
 
@@ -168,6 +176,11 @@ Hosts can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime
 ```
 
 Run Ollama locally and pull the model first, for example `ollama pull qwen3:8b`. Standard local Ollama needs no provider API key. LM Studio and other OpenAI-compatible local gateways use the same `providers.local` shape with `type: "lmstudio"` or `type: "openai_compat"`; public URLs must be explicitly trusted and use HTTPS.
+
+Built-in Pi OAuth providers, such as `pi:openai-codex:gpt-5.5`, use the Pi auth
+file instead of `providers.local`. Core config defaults `providers.piAuthPath` to
+`~/.pi/agent/auth.json` and exposes `MONO_AGENT_PI_AUTH_PATH` for hosts that keep
+credentials elsewhere.
 
 ## Development Verification
 

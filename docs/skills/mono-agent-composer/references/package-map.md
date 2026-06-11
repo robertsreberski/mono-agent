@@ -2,6 +2,18 @@
 
 Use this map to select the smallest mono-agent package set for a host. Package categories are logical ownership boundaries; the physical workspace layout stays flat under `packages/<package-name>`.
 
+## App Join (default)
+
+`@mono-agent/agent-app` is the config-first host: it loads `mono-agent.config.json`, builds the responder through `agent-host`, and drives every configured channel plus the operator console and traceability. It ships the `mono-agent` CLI (`init`, `validate`, `start`) and is the only publishable package allowed to compose communication adapters.
+
+```ts
+import { startMonoAgentApp } from "@mono-agent/agent-app";
+
+const app = await startMonoAgentApp({ cwd: process.cwd() });
+```
+
+Reach below it (the joins that follow) only when config cannot express the host.
+
 ## Core Join
 
 Every real host needs these concepts:
@@ -91,7 +103,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
 
-Adapters must not import the harness, runtime adapter, memory packages, or other adapters. Compose those in the host or demo layer.
+Adapters must not import the harness, runtime adapter, memory packages, or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
 
 ## Operator And Observability Join
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { normalizeRunId, safeJoin } from "../artifact-fs.js";
+import { normalizeRunId, safeJoin, writeJsonAtomic } from "../artifact-fs.js";
 import {
   ObservabilityReadError,
   readRecordedRun,
@@ -83,6 +83,14 @@ describe("public coded-error rejection of path-like ids", () => {
         artifactDir: join(dir, "artifacts"),
       })).rejects.toMatchObject({ code: "invalid_source_id" });
     }
+  });
+
+  it("writeJsonAtomic tolerates concurrent writers on the same path", async () => {
+    const dir = await tempDir();
+    const path = join(dir, "manifest.json");
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) => writeJsonAtomic(path, JSON.stringify({ index }))),
+    );
   });
 
   it("readTraceRun rejects traversal source and run ids", async () => {

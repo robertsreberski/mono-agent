@@ -184,6 +184,23 @@ createRuntime({
 
 `runtimeBrand` lets an external host reskin the package without forking string-by-string.
 
+For Pi OAuth providers such as `openai-codex`, hosts can bind the standard Pi
+auth JSON file with `createPiOAuthApiKeyResolver()`:
+
+```js
+import { createPiOAuthApiKeyResolver, createRuntime } from "@mono-agent/agent-runtime";
+
+const runtime = createRuntime({
+  resolvePiApiKey: createPiOAuthApiKeyResolver({
+    path: `${process.env.HOME}/.pi/agent/auth.json`,
+  }),
+});
+```
+
+The resolver reads provider credentials from the configured file, delegates token
+refresh to `@earendil-works/pi-ai/oauth`, and writes refreshed credentials back
+with `0600` permissions.
+
 Returns:
 
 - `run(systemPrompt, options)` — async, runs one agent turn against the chosen backend.

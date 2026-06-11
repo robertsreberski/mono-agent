@@ -13,7 +13,9 @@
 //
 // API:
 //   createRouterRuntime({ host, chain })
-//     returns { run(systemPrompt, options) }
+//     returns { run(systemPrompt, options) } plus configureTools /
+//     disposeSession / disposeAllSessions delegated to the inner runtime,
+//     so the router is a drop-in replacement for createRuntime(host).
 //
 //   chain entries:
 //     { model: ModelRef, executionMode?: "sdk" | "cli", requires?: Capabilities }
@@ -154,6 +156,15 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
       };
     },
     chain: () => entries.slice(),
+    configureTools(next) {
+      inner.configureTools?.(next);
+    },
+    async disposeSession(providerSessionId) {
+      return inner.disposeSession?.(providerSessionId);
+    },
+    async disposeAllSessions() {
+      await inner.disposeAllSessions?.();
+    },
   };
 }
 

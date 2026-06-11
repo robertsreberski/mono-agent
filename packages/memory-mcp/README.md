@@ -37,13 +37,15 @@ config). It reads `MONO_AGENT_MEMORY_PATH` (memory root) and optional
 ```
 
 ```ts
-import { createMemoryMcpServerFromConfig } from "@mono-agent/memory-mcp";
+import { createMemoryMcpServerFromConfig, resolveMemoryMcpMainPath } from "@mono-agent/memory-mcp";
 const server = createMemoryMcpServerFromConfig({ rootDir: "./.mono-agent/memory" });
+const stdioEntrypoint = resolveMemoryMcpMainPath();
 ```
 
 ## Public API
 
 - `createMemoryMcpServer`, `createMemoryMcpServerFromConfig`, `createMemoryTools`
+- `resolveMemoryMcpMainPath`
 - `readDailyNote`, `listDailyNotes`, `grepMemory`, `isValidDay`
 - `MemoryMcpDependencies`, `MemoryMcpConfig`, `MemoryTools`, `ToolResult`, `EntityUpsertArgs`, `GrepHit`
 

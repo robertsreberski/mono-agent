@@ -1,0 +1,75 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { initMonoAgentFolder } from "../init.js";
+
+let dir: string;
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "agent-app-init-"));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+describe("initMonoAgentFolder", () => {
+  it("scaffolds config, identity, and working dirs in an empty folder", async () => {
+    const result = await initMonoAgentFolder({ dir, model: "pi:ollama:gemma4:31b" });
+
+    expect(result.created).toContain(result.configPath);
+    expect(result.created).toContain(result.identityPath);
+    expect(result.knowledgeFiles).toEqual([]);
+
+    const config = JSON.parse(await readFile(result.configPath, "utf8"));
+    expect(config.runtime.model).toBe("pi:ollama:gemma4:31b");
+    expect(config.context.identityPath).toBe("./IDENTITY.md");
+    expect(config.webhook.enabled).toBe(true);
+    expect(config.memory).toBeUndefined();
+
+    const identity = await readFile(result.identityPath, "utf8");
+    expect(identity).toContain("# Identity");
+  });
+
+  it("writes fallback models and memory when requested", async () => {
+    const result = await initMonoAgentFolder({
+      dir,
+      model: "claude:claude-sonnet-4-6",
+      fallbackModels: ["pi:ollama:gemma4:31b"],
+      memory: "journal",
+    });
+
+    const config = JSON.parse(await readFile(result.configPath, "utf8"));
+    expect(config.runtime.fallbackModels).toEqual(["pi:ollama:gemma4:31b"]);
+    expect(config.memory).toMatchObject({ mode: "journal", path: "./.mono-agent/memory" });
+  });
+
+  it("references existing knowledge files in the generated identity", async () => {
+    await writeFile(join(dir, "AGENTS.md"), "# Agents\n");
+    await writeFile(join(dir, "CLAUDE.md"), "# Claude\n");
+
+    const result = await initMonoAgentFolder({ dir });
+
+    expect(result.knowledgeFiles).toEqual(["AGENTS.md", "CLAUDE.md"]);
+    const identity = await readFile(result.identityPath, "utf8");
+    expect(identity).toContain("`AGENTS.md`");
+    expect(identity).toContain("`CLAUDE.md`");
+  });
+
+  it("never overwrites existing files", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify({ runtime: { model: "codex:gpt-5.5" } }));
+    await writeFile(join(dir, "IDENTITY.md"), "# Mine\n");
+
+    const result = await initMonoAgentFolder({ dir, model: "claude:claude-sonnet-4-6" });
+
+    expect(result.skipped).toContain(configPath);
+    expect(result.skipped).toContain(result.identityPath);
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    expect(config.runtime.model).toBe("codex:gpt-5.5");
+    expect(await readFile(result.identityPath, "utf8")).toBe("# Mine\n");
+  });
+});
