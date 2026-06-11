@@ -23,7 +23,10 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:^0.1.0",
-    "@mono-agent/settings": "workspace:^0.1.0"
+    "@mono-agent/agent-contracts": "workspace:0.1.0",
+    "@mono-agent/settings": "workspace:0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

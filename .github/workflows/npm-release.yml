@@ -1,0 +1,85 @@
+name: npm release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish npm packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release tag and package graph
+        run: pnpm run release:validate -- --tag "$GITHUB_REF_NAME"
+
+      - name: Check package architecture
+        run: pnpm run check:architecture
+
+      - name: Build packages and demos
+        run: pnpm run build
+
+      - name: Typecheck packages and demos
+        run: pnpm run typecheck
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Validate package contents
+        run: pnpm run release:pack -- --tag "$GITHUB_REF_NAME"
+
+      - name: Check whitespace
+        run: git diff --check
+
+      - name: Publish packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm run release:publish -- --tag "$GITHUB_REF_NAME"
+
+      - name: Verify public npm metadata
+        env:
+          NPM_CONFIG_USERCONFIG: /dev/null
+        run: pnpm run release:verify -- --tag "$GITHUB_REF_NAME"
+
+      - name: Smoke test published CLIs
+        env:
+          NPM_CONFIG_USERCONFIG: /dev/null
+        run: |
+          set -euo pipefail
+          retry() {
+            for _ in $(seq 1 30); do
+              "$@" && return 0
+              sleep 5
+            done
+            "$@"
+          }
+          VERSION="${GITHUB_REF_NAME#v}"
+          TMP_PREFIX="$(mktemp -d)"
+          retry npm install -g --prefix "$TMP_PREFIX" --prefer-online "@mono-agent/tui@${VERSION}"
+          "$TMP_PREFIX/bin/mono-agent-tui" --help
+          retry npm install -g --prefix "$TMP_PREFIX" --prefer-online "@mono-agent/agent-app@${VERSION}"
+          "$TMP_PREFIX/bin/mono-agent" --help
