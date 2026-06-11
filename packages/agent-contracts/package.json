@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/agent-contracts",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Shared structural request, response, stream, responder, and cancellation contracts for reusable packages.",
   "type": "module",
   "license": "UNLICENSED",
