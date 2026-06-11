@@ -426,6 +426,161 @@ describe("loadMonoAgentConfig", () => {
     })).toThrow(/public host/u);
   });
 
+  it("loads sandbox filesystem scopes from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_WORKSPACE: "workspace",
+        MONO_AGENT_SANDBOX_MODE: "native",
+        MONO_AGENT_SANDBOX_READABLE_ROOTS: ". , ../shared-docs",
+        MONO_AGENT_SANDBOX_WRITABLE_ROOTS: "out",
+        MONO_AGENT_SANDBOX_DENY_WRITE: ".env, secrets/**",
+      },
+    });
+
+    expect(config.sandbox).toMatchObject({
+      mode: "native",
+      readableRoots: ["/repo/workspace", "/repo/shared-docs"],
+      writableRoots: ["/repo/workspace/out"],
+      denyWrite: [".env", "secrets/**"],
+    });
+  });
+
+  it("loads the journal memory graph path from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_GRAPH_PATH: "memory/entities.jsonl",
+      },
+    });
+
+    expect(config.memory?.graphPath).toBe("/repo/memory/entities.jsonl");
+  });
+
+  it("loads memory embeddings from env with the Ollama default model", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:11434",
+      },
+    });
+
+    expect(config.memory?.embeddings).toEqual({
+      provider: "ollama",
+      model: "nomic-embed-text",
+      endpoint: "http://localhost:11434",
+    });
+  });
+
+  it("resolves the embeddings api key from apiKeyEnv", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+        MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "MY_OPENAI_KEY",
+        MY_OPENAI_KEY: "embeddings-secret",
+      },
+    });
+
+    expect(config.memory?.embeddings).toMatchObject({
+      provider: "openai",
+      model: "text-embedding-3-small",
+      apiKey: "embeddings-secret",
+      apiKeyEnv: "MY_OPENAI_KEY",
+    });
+  });
+
+  it("rejects openai embeddings without an api key", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory",
+          MONO_AGENT_MEMORY_MODE: "journal",
+          MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({
+        code: "invalid_env",
+        details: { env: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY" },
+      });
+      return;
+    }
+    throw new Error("Expected openai embeddings without an api key to fail.");
+  });
+
+  it("rejects memory embeddings and graph env without a memory path", () => {
+    for (const env of [
+      { MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama" },
+      { MONO_AGENT_MEMORY_GRAPH_PATH: "graph.jsonl" },
+    ]) {
+      try {
+        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
+      } catch (error) {
+        expect(error).toBeInstanceOf(MonoAgentConfigError);
+        expect(error).toMatchObject({ code: "invalid_env" });
+        continue;
+      }
+      throw new Error("Expected memory extras without MONO_AGENT_MEMORY_PATH to fail.");
+    }
+  });
+
+  it("redacts the embeddings api key", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+        MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "embeddings-secret",
+      },
+    });
+    const redacted = redactMonoAgentConfig(config);
+
+    expect(redacted.memory?.embeddings?.apiKey).toEqual({ present: true, redacted: true });
+    expect(JSON.stringify(redacted)).not.toContain("embeddings-secret");
+  });
+
+  it("loads context.skillMaxBytes from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_SKILL_MAX_BYTES: "24000" },
+    });
+
+    expect(config.context.skillMaxBytes).toBe(24000);
+  });
+
+  it("omits skillMaxBytes when the env is unset and rejects invalid values", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.context.skillMaxBytes).toBeUndefined();
+
+    for (const raw of ["not-a-number", "0", "1000001"]) {
+      try {
+        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SKILL_MAX_BYTES: raw } });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_SKILL_MAX_BYTES" } });
+        continue;
+      }
+      throw new Error(`Expected config load to fail for ${raw}.`);
+    }
+  });
+
   it("does not include adapter env values in validation errors", () => {
     try {
       loadMonoAgentConfig({

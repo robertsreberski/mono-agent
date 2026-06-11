@@ -10,7 +10,7 @@ In the user's agent folder:
 mono-agent validate
 ```
 
-The report covers core config, runtime support for the primary and every fallback model, identity/skills/memory/MCP paths, the sandbox policy, and every channel (`ok` / `waiting` / `off` / `error`). Exit 0 means the folder is ready to start. Fix every `[error]`; `[waiting]` channels are simply unconfigured.
+The report covers core config, runtime support for the primary and every fallback model, identity/skills/memory/MCP paths, the sandbox policy, the operator console section, and every channel (`ok` / `waiting` / `off` / `error`). Exit 0 means the folder is ready to start. Fix every `[error]`; `[waiting]` channels are simply unconfigured.
 
 Then start and confirm the status lines:
 
@@ -81,6 +81,8 @@ pnpm run test:demo
 | Webhook | `curl` the invocation path and inspect the response body/status. |
 | Cron | Run a one-off scheduled invocation or wait for one tick. |
 | Operator console | Open Settings and Traceability; confirm redaction and a visible run artifact. |
+| Journal memory tools | Ask the agent to recall yesterday (`memory_read_day`/`memory_grep` should appear in the run artifact). |
+| Semantic memory search | With `memory.embeddings` set (Ollama: `ollama pull nomic-embed-text` first), ask a paraphrased question about an old note and confirm `memory_search` returns it. |
 
 ## Failure Handling
 

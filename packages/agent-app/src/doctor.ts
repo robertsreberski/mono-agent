@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describeMonoRuntimeSupport } from "@mono-agent/runtime-adapter";
 import type { MonoAgentConfig } from "@mono-agent/config";
 
-import { isAppCoreConfigError, loadAppCoreConfig } from "./app-config.js";
+import { isAppCoreConfigError, loadAppCoreConfig, resolveAppConsoleSettings } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
@@ -57,6 +57,8 @@ export async function validateMonoAgentFolder(
     sections.push(await toolsSection(coreConfig));
     sections.push(sandboxSection(coreConfig));
   }
+
+  sections.push(await consoleSection(options));
 
   for (const driver of drivers) {
     sections.push(await channelSection(driver, options));
@@ -182,6 +184,35 @@ function sandboxSection(config: MonoAgentConfig): ValidationSection {
       `Mode: ${config.sandbox.mode}, network: ${config.sandbox.network.mode}, fallback: ${config.sandbox.fallback}.`,
     ],
   };
+}
+
+async function consoleSection(input: MonoAgentAppConfigInput): Promise<ValidationSection> {
+  try {
+    const settings = await resolveAppConsoleSettings(input);
+    if (!settings.enabled) {
+      return {
+        id: "console",
+        label: "Operator console",
+        status: "disabled",
+        details: ["Disabled via console.enabled; start stays headless."],
+      };
+    }
+    return {
+      id: "console",
+      label: "Operator console",
+      status: "ok",
+      details: [
+        settings.port === undefined
+          ? "Starts on a free loopback port."
+          : `Starts on loopback port ${settings.port}.`,
+      ],
+    };
+  } catch (error) {
+    if (!isAppCoreConfigError(error)) {
+      throw error;
+    }
+    return { id: "console", label: "Operator console", status: "error", details: [error.message] };
+  }
 }
 
 async function channelSection(

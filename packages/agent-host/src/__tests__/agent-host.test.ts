@@ -249,6 +249,127 @@ describe("agent host composition helpers", () => {
     });
   });
 
+  it("uses memory.graphPath for the entity digest and forwards it to the memory MCP server", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryRoot = join(dir, "memory");
+    const graphPath = join(dir, "custom-graph", "entities.jsonl");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(join(dir, "custom-graph"), { recursive: true });
+    await writeFile(
+      graphPath,
+      `${JSON.stringify({ type: "entity", name: "Custom Graph Person", entityType: "person", observations: ["lives in a custom path"] })}\n`,
+      "utf8",
+    );
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        memoryPath: memoryRoot,
+        memoryMode: "journal",
+        memoryGraphPath: graphPath,
+        memoryTools: { enabled: true, allowJournalAppend: false },
+        artifactDir,
+      }),
+      runtime: fake.runtime,
+    });
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.prompt).toContain("Custom Graph Person (person)");
+    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
+      memory: {
+        env: {
+          MONO_AGENT_MEMORY_PATH: memoryRoot,
+          MONO_AGENT_MEMORY_GRAPH_PATH: graphPath,
+        },
+      },
+    });
+  });
+
+  it("forwards memory embeddings config to the memory MCP server env", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryRoot = join(dir, "memory");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        memoryPath: memoryRoot,
+        memoryMode: "journal",
+        memoryTools: { enabled: true, allowJournalAppend: false },
+        memoryEmbeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+          endpoint: "https://api.example.com/v1",
+          apiKey: "embeddings-secret",
+        },
+        artifactDir,
+      }),
+      runtime: fake.runtime,
+    });
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
+      memory: {
+        env: {
+          MONO_AGENT_MEMORY_PATH: memoryRoot,
+          MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+          MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
+          MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "https://api.example.com/v1",
+          MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "embeddings-secret",
+        },
+      },
+    });
+  });
+
+  it("caps selected skill bodies at context.skillMaxBytes", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const skillsRoot = join(dir, "skills");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(join(skillsRoot, "big"), { recursive: true });
+    await writeFile(
+      join(skillsRoot, "big", "SKILL.md"),
+      `Big skill description.\n\n${"filler ".repeat(64)}SKILL_TAIL_MARKER`,
+      "utf8",
+    );
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const uncapped = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, skillsRoot, selectedSkills: ["big"], artifactDir }),
+      runtime: fake.runtime,
+    });
+    await uncapped.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+    expect(fake.calls[0]?.prompt).toContain("SKILL_TAIL_MARKER");
+
+    const capped = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, skillsRoot, selectedSkills: ["big"], skillMaxBytes: 256, artifactDir }),
+      runtime: fake.runtime,
+    });
+    await capped.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+    expect(fake.calls[1]?.prompt).not.toContain("SKILL_TAIL_MARKER");
+  });
+
   it("fails closed when tools.mcpConfigPath points at a missing file", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -522,6 +643,16 @@ function monoConfig(input: {
     readonly enabled: boolean;
     readonly allowJournalAppend: boolean;
   };
+  readonly memoryGraphPath?: string;
+  readonly memoryEmbeddings?: {
+    readonly provider: "ollama" | "openai";
+    readonly model: string;
+    readonly endpoint?: string;
+    readonly apiKey?: string;
+  };
+  readonly skillsRoot?: string;
+  readonly selectedSkills?: readonly string[];
+  readonly skillMaxBytes?: number;
   readonly artifactDir: string;
   readonly mcpConfigPath?: string;
   readonly permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
@@ -550,7 +681,9 @@ function monoConfig(input: {
     },
     context: {
       identityPath: input.identityPath,
-      selectedSkills: [],
+      selectedSkills: input.selectedSkills ?? [],
+      ...(input.skillsRoot === undefined ? {} : { skillsRoot: input.skillsRoot }),
+      ...(input.skillMaxBytes === undefined ? {} : { skillMaxBytes: input.skillMaxBytes }),
     },
     ...(input.memoryPath === undefined
       ? {}
@@ -562,6 +695,8 @@ function monoConfig(input: {
             scope: "single-file",
             writeMode: input.memoryWriteMode ?? "disabled",
             ...(input.memoryTools === undefined ? {} : { tools: input.memoryTools }),
+            ...(input.memoryGraphPath === undefined ? {} : { graphPath: input.memoryGraphPath }),
+            ...(input.memoryEmbeddings === undefined ? {} : { embeddings: input.memoryEmbeddings }),
           },
         }),
     tools: {

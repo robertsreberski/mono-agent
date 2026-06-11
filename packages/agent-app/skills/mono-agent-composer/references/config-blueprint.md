@@ -1,6 +1,6 @@
 # Config Blueprint
 
-One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; env vars (`MONO_AGENT_*`) override any field. Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional.
+One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; every field also has a `MONO_AGENT_*` env var that overrides it (env > JSON > defaults). Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
 
 ## Folder Layout
 
@@ -10,9 +10,12 @@ my-agent/
   IDENTITY.md              # role, boundaries, references to existing knowledge
   skills/                  # optional: <skill-name>/SKILL.md per selected skill
   mcp.json                 # optional: MCP server definitions
+  .env                     # optional: secrets; auto-loaded by the CLI, never committed
   .mono-agent/
     artifacts/             # JSONL run summaries + events
     workspace/             # runtime working directory (if not ".")
+    memory/                # journal memory root (daily notes, graph.jsonl, index/)
+    whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     trace-sources/         # traceability registry (if kept folder-local)
 ```
 
@@ -23,22 +26,28 @@ my-agent/
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {
-    "model": "claude:claude-sonnet-4-6",
+    "model": "claude:claude-sonnet-4-6",   // claude:* | codex:* | pi:<provider>:<model>
     "fallbackModels": ["pi:ollama:gemma4:31b"],
+    "executionMode": "sdk",                // sdk | cli (default inferred from model)
     "effort": "medium",                    // none|low|medium|high|xhigh|max
-    "maxTurns": 8,
+    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
+    "reasoningSummary": "auto",            // auto|concise|detailed|off|on
+    "maxTurns": 8,                         // 1-100
     "workspace": ".",
-    "session": { "mode": "continuous", "idleTimeoutMs": 1800000 }
+    "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } // or "per-message"
   },
 
   // Local/self-hosted providers for pi:<provider>:<model> references.
   "providers": {
+    "piAuthPath": "~/.pi/agent/auth.json", // Pi OAuth credentials (openai-codex, ...)
     "local": [
       {
         "id": "ollama",
-        "type": "ollama",
+        "type": "ollama",                  // ollama | lmstudio | openai_compat
         "baseUrl": "http://localhost:11434",
         "enabled": true,
+        "trustPublicUrl": false,           // explicit opt-in for non-private URLs
+        "apiKeyEnv": "MY_PROVIDER_KEY",    // or inline "apiKey" (untracked file only)
         "models": [{ "name": "gemma4:31b", "capabilities": { "context_window": 32768 } }]
       }
     ]
@@ -49,83 +58,146 @@ my-agent/
     "identityPath": "./IDENTITY.md",
     "soulPath": "./SOUL.md",
     "skillsRoot": "./skills",
-    "selectedSkills": ["research"]
+    "selectedSkills": ["research"],        // exact names; no auto-selection
+    "skillMaxBytes": 48000                 // per-skill byte cap (256-1,000,000)
   },
 
   // Memory strategy. Omit the section for no memory.
   "memory": {
     "mode": "journal",                     // markdown | journal
-    "path": "./.mono-agent/memory",        // file for markdown, dir for journal
+    "path": "./.mono-agent/memory",        // file for markdown, root dir for journal
     "writeMode": "append-host-summary",    // disabled | append-host-summary
-    "scope": "single-file",                // markdown only
+    "scope": "single-file",                // markdown only: single-file | per-conversation
     "maxBytes": 64000,
-    "tools": { "enabled": true, "allowJournalAppend": true } // journal only
+    "tools": { "enabled": true, "allowJournalAppend": true }, // journal only: MCP recall tools
+    "graphPath": "./.mono-agent/memory/graph.jsonl",          // journal only; this is the default
+    "embeddings": {                        // optional: semantic memory_search
+      "provider": "ollama",                // ollama | openai
+      "model": "nomic-embed-text",         // default per provider
+      "endpoint": "http://localhost:11434",
+      "apiKeyEnv": "OPENAI_API_KEY"        // or inline "apiKey"; required for openai
+    }
   },
 
-  // Fail-closed tool policy + MCP servers.
+  // Fail-closed tool policy + MCP servers. Deny wins; overlap is rejected.
   "tools": {
-    "allowedTools": ["Read", "Grep"],
+    "allowedTools": ["Read", "Grep"],      // built-ins: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
     "disallowedTools": ["Bash"],
-    "mcpConfigPath": "./mcp.json"
+    "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
   },
 
   // Sandbox for runtime commands. Omit for no sandboxing.
   "sandbox": {
-    "mode": "native",                      // native | off
-    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all
-    "fallback": "fail-closed"              // fail-closed | unsafe-host-process
+    "mode": "native",                      // native (srt-wrapped) | off
+    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards
+    "readableRoots": ["."],                // relative entries resolve against the workspace
+    "writableRoots": ["."],
+    "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], // these are the defaults
+    "fallback": "fail-closed",             // fail-closed | unsafe-host-process
+    "unsafeAllowHostProcess": false        // explicit opt-in required for the unsafe fallback
   },
 
+  // Observability: JSONL artifacts + the trace-source registry dashboards read.
   "artifacts": { "dir": "./.mono-agent/artifacts" },
   "traceability": {
     "registryDir": "./.mono-agent/trace-sources",
     "sourceId": "my-agent",
-    "sourceLabel": "My Agent"
+    "sourceLabel": "My Agent",
+    "heartbeatMs": 10000,
+    "staleAfterMs": 30000
   },
 
-  // ----- Channels: one section per channel; all independent. -----
+  // Local operator console (browser settings + traceability). On by default.
+  "console": {
+    "enabled": true,
+    "port": 0                              // 0 or omitted picks a free loopback port
+  },
+
+  // ----- Channels: one section per channel; all independent. An unconfigured
+  // ----- channel reports waiting_for_config and never blocks the others.
 
   "webhook": {
-    "enabled": true,                       // port 0 picks a free loopback port
+    "enabled": true,
+    "host": "127.0.0.1",                   // loopback-only unless allowNonLoopback
+    "port": 0,                             // 0 picks a free port
     "path": "/webhook/invoke",
-    "defaultMode": "sync"                  // sync | async
+    "allowNonLoopback": false,
+    "defaultMode": "sync",                 // sync | async (202 + status URL polling)
+    "retentionMs": 300000,                 // async status retention
+    "maxStoredRequests": 100
   },
 
   "openaiApi": {
     "enabled": true,
+    "host": "127.0.0.1",
     "port": 4040,
-    "modelId": "my-agent",
-    "apiKey": "..."                        // optional bearer for clients
+    "basePath": "/v1",                     // serves /v1/models + /v1/chat/completions (SSE)
+    "allowNonLoopback": false,
+    "modelId": "my-agent",                 // model id advertised to API clients
+    "apiKey": "..."                        // optional bearer required from clients
   },
 
   "telegram": {
     "botToken": "...",
-    "allowedChatIds": ["123456789"]        // or "allowAllChats": true
+    "allowedChatIds": ["123456789"],       // or "allowAllChats": true
+    "allowAllChats": false
   },
 
   "slack": {
-    "botToken": "xoxb-...",
+    "botToken": "xoxb-...",                // Socket Mode app
     "appToken": "xapp-...",
-    "allowedChannelIds": ["C0123"]         // or "allowAllChannels": true
+    "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
+    "allowAllChannels": false,
+    "botUserIds": ["U0BOT"],               // mention detection
+    "mentionTextAliases": ["@agent"],
+    "stripMentionText": true
   },
 
   "whatsapp": {
     "allowedChatJids": ["123@s.whatsapp.net"], // or "allowAllChats": true
-    "groupMode": "mention"                 // mention | any
+    "allowAllChats": false,
+    "groupMode": "mention",                // mention | any (group trigger rule)
+    "botJids": ["456@s.whatsapp.net"],
+    "mentionTextAliases": ["@agent"],
+    "stripMentionText": true
     // Baileys auth state lives in .mono-agent/whatsapp-auth; the start log
     // prints a QR code to scan on first login.
   },
 
   "a2a": {
-    "provider": { "enabled": true, "host": "127.0.0.1", "port": 4201 },
+    "provider": {
+      "enabled": true,
+      "host": "127.0.0.1",
+      "port": 4201,
+      "publicBaseUrl": "https://agent.example.com", // Agent Card URL when fronted by a proxy
+      "allowNonLoopback": false,
+      "requireBearer": false,
+      "bearerToken": "..."
+    },
     "agent": { "name": "My Agent", "description": "What it does.", "version": "0.1.0" },
-    "skill": { "id": "main", "name": "Main", "description": "Primary skill.", "tags": ["agent"] }
+    "skill": { "id": "main", "name": "Main", "description": "Primary skill.", "tags": ["agent"] },
+    "consumer": {                          // settings for calling remote A2A agents
+      "remoteAgentUrls": ["http://127.0.0.1:4202"],
+      "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
+      "bearerToken": "...",
+      "timeoutMs": 30000
+      // Consumed programmatically (createA2AConsumerResponder); the app's A2A
+      // channel runs the provider side.
+    }
   },
 
   "cron": {
     "jobs": [
-      { "id": "daily", "enabled": true, "expression": "0 9 * * *", "timezone": "UTC", "prompt": "Post the morning summary." }
+      {
+        "id": "daily",
+        "enabled": true,
+        "expression": "0 9 * * *",         // five-field cron
+        "timezone": "UTC",                 // IANA timezone
+        "prompt": "Post the morning summary.",
+        "conversationId": "cron-daily"     // optional: share memory/history across ticks
+      }
     ]
+    // Overlapping ticks of the same job are skipped, never queued.
   }
 }
 ```
@@ -133,26 +205,29 @@ my-agent/
 ## Lifecycle
 
 ```bash
-mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
-mono-agent validate     # per-section report; exit 0 means ready
+mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory markdown|journal]
+mono-agent validate     # per-section report incl. sandbox, console, every channel; exit 0 means ready
 mono-agent start        # console + traceability + every configured channel
-mono-agent start --no-console   # headless
+mono-agent start --no-console   # headless (or "console": { "enabled": false })
+mono-agent start --port 4400    # fixed console port (or "console": { "port": 4400 })
 ```
 
-`start` prints the operator console URL (config editing in the browser; saves re-apply live without restarting), the traceability source, and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
+A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `start` prints the operator console URL (config editing in the browser; saves re-apply live without restarting), the traceability source, and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
+
+For a local terminal chat against the same config, `@mono-agent/tui` ships a `mono-agent-tui` bin: `mono-agent-tui --config ./mono-agent.config.json`.
 
 ## Programmatic Escape Hatch
 
-When config cannot express the host (custom runtime, request-scoped runtime extensions, custom channels), compose on the same package the CLI uses:
+When config cannot express the host (custom runtime, request-scoped runtime extensions, custom channels, tool approval gates, structured output schemas), compose on the same package the CLI uses:
 
 ```ts
 import { startMonoAgentApp, defaultChannelDrivers } from "@mono-agent/agent-app";
 
 const app = await startMonoAgentApp({
   cwd: process.cwd(),
-  runtime: myCustomRuntime,            // any MonoRuntimeLike
+  runtime: myCustomRuntime,            // any MonoRuntimeLike (incl. createOpenAIAgentsRuntime)
   drivers: [...defaultChannelDrivers(), myCustomDriver],
 });
 ```
 
-For a bare responder without channels, use `@mono-agent/config` + `@mono-agent/agent-host` (`createConfiguredAgentResponder`). For multi-agent orchestration, add `@mono-agent/agent-orchestrator` — see `references/package-map.md`.
+For a bare responder without channels, use `@mono-agent/config` + `@mono-agent/agent-host` (`createConfiguredAgentResponder` — also takes `memory`, `historyStore`, `runtimeOptions`, `runtimeOptionsForRequest`). For multi-agent orchestration, add `@mono-agent/agent-orchestrator` (`createCollaboratorToolRuntimeExtension`) — see `references/package-map.md`. Channel message texts and stream tuning (welcome/help/error texts, edit debounce) are channel-driver overrides, not config keys.

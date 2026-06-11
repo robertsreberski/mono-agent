@@ -6,7 +6,7 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
-import type { MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode } from "./types.js";
+import type { MemoryEmbeddingsConfig, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode } from "./types.js";
 
 export type MonoAgentLocalProviderModelJson = {
   readonly name?: string;
@@ -62,6 +62,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly soulPath?: string;
     readonly skillsRoot?: string;
     readonly selectedSkills?: readonly string[];
+    readonly skillMaxBytes?: number;
   };
   readonly memory?: {
     readonly mode?: MemoryMode;
@@ -70,11 +71,25 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly scope?: MemoryScope;
     readonly writeMode?: MemoryWriteMode;
     readonly tools?: Partial<MemoryToolsConfig>;
+    readonly graphPath?: string;
+    readonly embeddings?: Partial<MemoryEmbeddingsConfig>;
   };
   readonly tools?: {
     readonly allowedTools?: readonly string[];
     readonly disallowedTools?: readonly string[];
     readonly mcpConfigPath?: string;
+  };
+  readonly sandbox?: {
+    readonly mode?: string;
+    readonly network?: {
+      readonly mode?: string;
+      readonly allowlist?: readonly string[];
+    };
+    readonly readableRoots?: readonly string[];
+    readonly writableRoots?: readonly string[];
+    readonly denyWrite?: readonly string[];
+    readonly fallback?: string;
+    readonly unsafeAllowHostProcess?: boolean;
   };
   readonly artifacts?: {
     readonly dir?: string;
