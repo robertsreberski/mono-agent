@@ -124,6 +124,51 @@ importers:
         specifier: ^5.0.2
         version: 5.0.6
 
+  packages/agent-app:
+    dependencies:
+      '@mono-agent/a2a-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../a2a-adapter
+      '@mono-agent/agent-contracts':
+        specifier: workspace:^0.1.0
+        version: link:../agent-contracts
+      '@mono-agent/agent-host':
+        specifier: workspace:^0.1.0
+        version: link:../agent-host
+      '@mono-agent/config':
+        specifier: workspace:^0.1.0
+        version: link:../config
+      '@mono-agent/cron-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../cron-adapter
+      '@mono-agent/observability':
+        specifier: workspace:^0.1.0
+        version: link:../observability
+      '@mono-agent/openai-api-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../openai-api-adapter
+      '@mono-agent/operator-console':
+        specifier: workspace:^0.1.0
+        version: link:../operator-console
+      '@mono-agent/runtime-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../runtime-adapter
+      '@mono-agent/settings':
+        specifier: workspace:^0.1.0
+        version: link:../settings
+      '@mono-agent/slack-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../slack-adapter
+      '@mono-agent/telegram-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../telegram-adapter
+      '@mono-agent/webhook-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../webhook-adapter
+      '@mono-agent/whatsapp-adapter':
+        specifier: workspace:^0.1.0
+        version: link:../whatsapp-adapter
+
   packages/agent-contracts: {}
 
   packages/agent-evals:
