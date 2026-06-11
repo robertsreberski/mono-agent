@@ -190,7 +190,7 @@ export async function startOpenAIApiAdapter(
   async function handleChatCompletion(req: Request, res: Response): Promise<void> {
     const requestId = randomUUID();
     const receivedAt = new Date().toISOString();
-    const body = normalizeChatBody(req.body, requestId, modelId);
+    const body = normalizeChatBody(req.body, req.headers, requestId, modelId);
     const controller = new AbortController();
     const request: OpenAIApiChatRequest = {
       conversationId: body.conversationId,
@@ -448,7 +448,12 @@ class SseChatMessageStream implements AgentMessageStream {
   }
 }
 
-function normalizeChatBody(body: unknown, requestId: string, expectedModel: string): NormalizedChatBody {
+function normalizeChatBody(
+  body: unknown,
+  headers: Record<string, string | string[] | undefined>,
+  requestId: string,
+  expectedModel: string,
+): NormalizedChatBody {
   if (!isRecord(body)) {
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion body must be a JSON object.");
   }
@@ -463,10 +468,15 @@ function normalizeChatBody(body: unknown, requestId: string, expectedModel: stri
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion body requires at least one message.");
   }
-  const text = body.messages
-    .map(normalizeMessage)
-    .filter((line) => line.length > 0)
-    .join("\n");
+  const messages = body.messages.map(parseChatMessage);
+  const conversationId = readConversationId(body, headers);
+  // A stable conversation id means the harness already carries the
+  // transcript (history store + provider sessions), so only the trailing
+  // user turn is sent; resending the full transcript would double the
+  // context. body.user is excluded below: it identifies a user, not a
+  // chat, so user-keyed transcripts keep full-flatten semantics.
+  const text = (conversationId === undefined ? undefined : latestUserTurnText(messages))
+    ?? flattenTranscript(messages);
   if (text.length === 0) {
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion messages must include text content.");
   }
@@ -474,12 +484,17 @@ function normalizeChatBody(body: unknown, requestId: string, expectedModel: stri
     model,
     text,
     stream: body.stream === true,
-    conversationId: readConversationId(body, requestId),
+    conversationId: conversationId ?? normalizeOptionalString(body.user) ?? `openai-api:${requestId}`,
     parameters: readParameters(body),
   };
 }
 
-function normalizeMessage(value: unknown): string {
+interface ParsedChatMessage {
+  readonly role: string;
+  readonly content: string;
+}
+
+function parseChatMessage(value: unknown): ParsedChatMessage {
   if (!isRecord(value)) {
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion messages must be JSON objects.");
   }
@@ -490,8 +505,36 @@ function normalizeMessage(value: unknown): string {
   if (hasOwn(value, "tool_calls") || hasOwn(value, "function_call")) {
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion message tool/function calls are not supported.");
   }
-  const content = normalizeContent(value.content);
-  return content.length === 0 ? "" : `${role}: ${content}`;
+  return { role, content: normalizeContent(value.content) };
+}
+
+function flattenTranscript(messages: readonly ParsedChatMessage[]): string {
+  return messages
+    .filter((message) => message.content.length > 0)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join("\n");
+}
+
+function latestUserTurnText(messages: readonly ParsedChatMessage[]): string | undefined {
+  let lastAssistant = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "assistant") {
+      lastAssistant = index;
+      break;
+    }
+  }
+  if (lastAssistant === -1) {
+    // First turn: no assistant reply yet, so the transcript (including any
+    // client system prompt) has never been delivered — send it whole once.
+    return undefined;
+  }
+  const trailing = messages
+    .slice(lastAssistant + 1)
+    .filter((message) => message.role === "user" && message.content.length > 0);
+  if (trailing.length === 0) {
+    return undefined;
+  }
+  return trailing.map((message) => message.content).join("\n");
 }
 
 function normalizeContent(value: unknown): string {
@@ -530,7 +573,16 @@ function assertNoUnsupportedChatRequestFields(body: Record<string, unknown>): vo
   }
 }
 
-function readConversationId(body: Record<string, unknown>, requestId: string): string {
+// Open WebUI strips metadata from bodies it sends to OpenAI-compatible
+// backends, but forwards the chat id as a header when
+// ENABLE_FORWARD_USER_INFO_HEADERS is enabled. x-conversation-id is the
+// generic equivalent for other proxies. Node lowercases incoming names.
+const CONVERSATION_ID_HEADERS = ["x-openwebui-chat-id", "x-conversation-id"] as const;
+
+function readConversationId(
+  body: Record<string, unknown>,
+  headers: Record<string, string | string[] | undefined>,
+): string | undefined {
   const metadata = isRecord(body.metadata) ? body.metadata : {};
   const candidates = [
     metadata.conversation_id,
@@ -539,7 +591,7 @@ function readConversationId(body: Record<string, unknown>, requestId: string): s
     metadata.chatId,
     body.conversation_id,
     body.conversationId,
-    body.user,
+    ...CONVERSATION_ID_HEADERS.map((name) => firstHeaderValue(headers[name])),
   ];
   for (const candidate of candidates) {
     const normalized = normalizeOptionalString(candidate);
@@ -547,7 +599,11 @@ function readConversationId(body: Record<string, unknown>, requestId: string): s
       return normalized;
     }
   }
-  return `openai-api:${requestId}`;
+  return undefined;
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function readParameters(body: Record<string, unknown>): Record<string, unknown> {

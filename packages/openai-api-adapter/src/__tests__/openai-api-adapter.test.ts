@@ -588,6 +588,247 @@ describe("OpenAI API adapter", () => {
       }),
     ).rejects.toMatchObject({ code: "unsafe_host" });
   });
+
+  describe("conversation session continuity", () => {
+    it("derives the conversation id from x-openwebui-chat-id and sends only the latest user message", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          messages: [
+            { role: "system", content: "You are concise." },
+            { role: "user", content: "A" },
+            { role: "assistant", content: "B" },
+            { role: "user", content: "C" },
+          ],
+        }, { "x-openwebui-chat-id": "owui-chat-1" });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([{ conversationId: "owui-chat-1", text: "C" }]);
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it("accepts the generic x-conversation-id header", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          messages: [
+            { role: "user", content: "A" },
+            { role: "assistant", content: "B" },
+            { role: "user", content: "C" },
+          ],
+        }, { "x-conversation-id": "generic-1" });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([{ conversationId: "generic-1", text: "C" }]);
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it("prefers body metadata conversation ids over headers", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          metadata: { conversation_id: "body-id" },
+          messages: [
+            { role: "user", content: "A" },
+            { role: "assistant", content: "B" },
+            { role: "user", content: "C" },
+          ],
+        }, { "x-openwebui-chat-id": "header-id" });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([{ conversationId: "body-id", text: "C" }]);
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it("keeps the full transcript on the first turn of a stable conversation", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          messages: [
+            { role: "system", content: "You are concise." },
+            { role: "user", content: "Hello" },
+          ],
+        }, { "x-openwebui-chat-id": "owui-first" });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([
+          { conversationId: "owui-first", text: "system: You are concise.\nuser: Hello" },
+        ]);
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it("joins multiple trailing user messages into one turn", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          messages: [
+            { role: "user", content: "A" },
+            { role: "assistant", content: "B" },
+            { role: "user", content: "X" },
+            { role: "user", content: "Y" },
+          ],
+        }, { "x-openwebui-chat-id": "owui-multi" });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([{ conversationId: "owui-multi", text: "X\nY" }]);
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it("falls back to the full transcript when no user message follows the last assistant message", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          messages: [
+            { role: "user", content: "A" },
+            { role: "assistant", content: "B" },
+          ],
+        }, { "x-openwebui-chat-id": "owui-continue" });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([
+          { conversationId: "owui-continue", text: "user: A\nassistant: B" },
+        ]);
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it("keeps full-transcript flattening for requests without any conversation id", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          messages: [
+            { role: "user", content: "A" },
+            { role: "assistant", content: "B" },
+            { role: "user", content: "C" },
+          ],
+        });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([
+          {
+            conversationId: expect.stringMatching(/^openai-api:/u),
+            text: "user: A\nassistant: B\nuser: C",
+          },
+        ]);
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it("treats body.user as a conversation id but keeps the full transcript", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          user: "owui-user",
+          messages: [
+            { role: "user", content: "A" },
+            { role: "assistant", content: "B" },
+            { role: "user", content: "C" },
+          ],
+        });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([
+          { conversationId: "owui-user", text: "user: A\nassistant: B\nuser: C" },
+        ]);
+      } finally {
+        await server.stop();
+      }
+    });
+
+    it("applies latest-message extraction to body metadata conversation ids", async () => {
+      const capture = capturingResponder();
+      const server = await startOpenAIApiAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        modelId: "agent",
+        responder: capture.responder,
+      });
+
+      try {
+        const response = await postChat(server.baseUrl, {
+          metadata: { conversation_id: "chat-2" },
+          messages: [
+            { role: "user", content: "Hi" },
+            { role: "assistant", content: "Hello" },
+            { role: "user", content: "Next" },
+          ],
+        });
+
+        expect(response.status).toBe(200);
+        expect(capture.seen).toEqual([{ conversationId: "chat-2", text: "Next" }]);
+      } finally {
+        await server.stop();
+      }
+    });
+  });
 });
 
 function echoResponder(): AgentResponder {
@@ -595,6 +836,35 @@ function echoResponder(): AgentResponder {
     async respond(request, stream) {
       await stream.append(`echo: ${request.text}`);
       return {};
+    },
+  };
+}
+
+async function postChat(
+  baseUrl: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<globalThis.Response> {
+  return fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify({ model: "agent", ...body }),
+  });
+}
+
+function capturingResponder(): {
+  readonly responder: AgentResponder;
+  readonly seen: Array<{ conversationId: string; text: string }>;
+} {
+  const seen: Array<{ conversationId: string; text: string }> = [];
+  return {
+    seen,
+    responder: {
+      async respond(request, stream) {
+        seen.push({ conversationId: request.conversationId, text: request.text });
+        await stream.append("ok");
+        return {};
+      },
     },
   };
 }
