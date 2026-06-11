@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/memory-journal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Global daily-journal memory store: continuous journaling and an always-in-context today note for agent hosts.",
   "type": "module",
   "license": "UNLICENSED",
@@ -23,7 +23,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/memory-md": "workspace:0.1.0"
+    "@mono-agent/memory-md": "workspace:0.2.0"
   },
   "publishConfig": {
     "access": "public"
