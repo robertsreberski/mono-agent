@@ -31,7 +31,7 @@ import type {
   RuntimeExecutionMode,
   RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
-import { createToolPolicy } from "@mono-agent/tool-policy";
+import { createToolPolicy, loadToolPolicyFromJsonFileSync } from "@mono-agent/tool-policy";
 import type { ToolPolicyInput } from "@mono-agent/tool-policy";
 
 const MEMORY_RECALL_TOOLS = [
@@ -114,6 +114,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     memoryMcpRuntimeOptions(config),
+    configRuntimeFlags(config),
     options.runtimeOptions,
   );
 
@@ -258,10 +259,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
+  if (config.tools.mcpConfigPath === undefined) {
+    return {
+      allowedTools: config.tools.allowedTools,
+      disallowedTools: config.tools.disallowedTools,
+    };
+  }
+  // SDK runtimes only consume inline mcpServers, so the referenced mcp.json is
+  // resolved here; the path is still forwarded for CLI runtimes that take it.
+  const filePolicy = loadToolPolicyFromJsonFileSync(config.tools.mcpConfigPath);
   return {
     allowedTools: config.tools.allowedTools,
     disallowedTools: config.tools.disallowedTools,
-    ...(config.tools.mcpConfigPath === undefined ? {} : { mcpConfigPath: config.tools.mcpConfigPath }),
+    mcpConfigPath: config.tools.mcpConfigPath,
+    ...(filePolicy.mcpServers === undefined ? {} : { mcpServers: filePolicy.mcpServers }),
+  };
+}
+
+function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
+  const { permissionMode, reasoningSummary } = config.runtime;
+  if (permissionMode === undefined && reasoningSummary === undefined) {
+    return undefined;
+  }
+  return {
+    ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(reasoningSummary === undefined ? {} : { piReasoningSummary: reasoningSummary }),
   };
 }
 

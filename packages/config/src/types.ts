@@ -2,7 +2,7 @@ import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReferen
 import type { SandboxPolicy } from "@mono-agent/sandbox";
 import type { RedactedSecretValue } from "@mono-agent/settings";
 
-import type { EFFORT_LEVELS } from "./field-groups.js";
+import type { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
@@ -13,6 +13,8 @@ export interface MemoryToolsConfig {
 }
 export type SessionMode = "continuous" | "per-message";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+export type PermissionMode = (typeof PERMISSION_MODES)[number];
+export type ReasoningSummary = (typeof REASONING_SUMMARIES)[number];
 
 export interface MonoAgentConfig {
   readonly runtime: {
@@ -25,6 +27,10 @@ export interface MonoAgentConfig {
     readonly fallbackModels?: readonly RuntimeModelReference[];
     readonly executionMode: RuntimeExecutionMode;
     readonly effort?: EffortLevel;
+    /** Tool-permission posture forwarded to the runtime (CLI execution modes). */
+    readonly permissionMode?: PermissionMode;
+    /** Verbosity of provider reasoning summaries surfaced by the runtime. */
+    readonly reasoningSummary?: ReasoningSummary;
     readonly maxTurns: number;
     readonly workspace: string;
     readonly session: {

@@ -34,6 +34,16 @@ async function tempDir(): Promise<string> {
   return dir;
 }
 
+// The shared config patch references ./mcp.json; the host fails closed when
+// the file is missing, so fixtures must provide it.
+async function writeDemoMcpJson(dir: string): Promise<void> {
+  await writeFile(
+    join(dir, "mcp.json"),
+    `${JSON.stringify({ mcpServers: { demo: { command: "demo-mcp" } } })}\n`,
+    "utf8",
+  );
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -92,6 +102,7 @@ describe("final agent demo", () => {
   it("restarts Telegram after operator console writes and uses the updated runtime config", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono from operator console.", "utf8");
+    await writeDemoMcpJson(dir);
 
     const fakeRuntime = createFakeRuntime();
     const fakeApi = createFakeTelegramApi();
@@ -188,6 +199,7 @@ describe("final agent demo", () => {
   it("starts an A2A provider independently when Telegram is not configured", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono over A2A.", "utf8");
+    await writeDemoMcpJson(dir);
     await writeFile(
       join(dir, "mono-agent.config.json"),
       `${JSON.stringify(validA2AOnlyConfigPatch(), null, 2)}\n`,
@@ -242,6 +254,7 @@ describe("final agent demo", () => {
   it("restarts the A2A provider after an operator console write", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono over a reloaded A2A provider.", "utf8");
+    await writeDemoMcpJson(dir);
     await writeFile(
       join(dir, "mono-agent.config.json"),
       `${JSON.stringify(validA2AOnlyConfigPatch(), null, 2)}\n`,
@@ -286,6 +299,7 @@ describe("final agent demo", () => {
   it("re-registers traceability after trace source config changes", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono with reloaded traceability.", "utf8");
+    await writeDemoMcpJson(dir);
     await writeFile(
       join(dir, "mono-agent.config.json"),
       `${JSON.stringify({
@@ -352,6 +366,7 @@ describe("final agent demo", () => {
   it("composes operator console, Telegram, harness, runtime, memory, tools, and artifacts", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono and you love small LEGO blocks.", "utf8");
+    await writeDemoMcpJson(dir);
     await writeFile(join(dir, "MEMORY.md"), "Remember: prefer small package boundaries.", "utf8");
     await writeFile(join(dir, "mono-agent.config.json"), `${JSON.stringify(validConfigPatch(), null, 2)}\n`, "utf8");
 
@@ -394,6 +409,7 @@ describe("final agent demo", () => {
       expect(call?.options.allowedTools).toEqual(["Read", "Grep"]);
       expect(call?.options.disallowedTools).toEqual(["Bash"]);
       expect(call?.options.mcpConfigPath).toBe(resolve(dir, "mcp.json"));
+      expect(call?.options.mcpServers).toMatchObject({ demo: { command: "demo-mcp" } });
 
       const memory = await readFile(join(dir, "MEMORY.md"), "utf8");
       expect(memory).toContain("Host-observed completed turn.");
@@ -431,6 +447,7 @@ describe("final agent demo", () => {
   it("starts webhook, OpenAI API, and cron adapters from demo config", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono from webhook, OpenAI API, and cron.", "utf8");
+    await writeDemoMcpJson(dir);
     await writeFile(
       join(dir, "mono-agent.config.json"),
       `${JSON.stringify({
@@ -558,6 +575,7 @@ describe("final agent demo", () => {
   it("passes configured local Pi provider context into runtime calls", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono with local runtime support.", "utf8");
+    await writeDemoMcpJson(dir);
     const patch = validConfigPatch();
     await writeFile(
       join(dir, "mono-agent.config.json"),
@@ -640,6 +658,7 @@ describe("final agent demo", () => {
   it("waits for config instead of starting Telegram when a local provider URL is unsafe", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono with local runtime support.", "utf8");
+    await writeDemoMcpJson(dir);
     const patch = validConfigPatch();
     await writeFile(
       join(dir, "mono-agent.config.json"),

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createToolPolicy, failClosedToolPolicy, loadToolPolicyFromJsonFile, ToolPolicyError, toolPolicyToRuntimeOptions } from "../index.js";
+import { createToolPolicy, failClosedToolPolicy, loadToolPolicyFromJsonFile, loadToolPolicyFromJsonFileSync, ToolPolicyError, toolPolicyToRuntimeOptions } from "../index.js";
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {
@@ -60,6 +60,46 @@ describe("tool policy", () => {
       disallowedTools: [],
       mcpServers: { fs: { command: "server" } },
       mcpConfigPath: "/repo/mcp.json",
+    });
+  });
+
+  describe("loadToolPolicyFromJsonFileSync", () => {
+    it("loads JSON policy files", async () => {
+      const dir = await tempDir();
+      const file = join(dir, "policy.json");
+      await writeFile(file, JSON.stringify({ allowedTools: ["Read"], mcpServers: { fs: { command: "server" } }, mcpConfigPath: "/repo/mcp.json" }), "utf8");
+
+      expect(loadToolPolicyFromJsonFileSync(file)).toMatchObject({
+        allowedTools: ["Read"],
+        disallowedTools: [],
+        mcpServers: { fs: { command: "server" } },
+        mcpConfigPath: "/repo/mcp.json",
+      });
+    });
+
+    it("throws tool_policy_read_failed for a missing file", async () => {
+      const dir = await tempDir();
+      expect(() => loadToolPolicyFromJsonFileSync(join(dir, "missing.json"))).toThrowError(
+        expect.objectContaining({ code: "tool_policy_read_failed" }),
+      );
+    });
+
+    it("throws tool_policy_read_failed for invalid JSON", async () => {
+      const dir = await tempDir();
+      const file = join(dir, "broken.json");
+      await writeFile(file, "{not json", "utf8");
+      expect(() => loadToolPolicyFromJsonFileSync(file)).toThrowError(
+        expect.objectContaining({ code: "tool_policy_read_failed" }),
+      );
+    });
+
+    it("throws invalid_tool_policy for a non-object document", async () => {
+      const dir = await tempDir();
+      const file = join(dir, "scalar.json");
+      await writeFile(file, JSON.stringify("just a string"), "utf8");
+      expect(() => loadToolPolicyFromJsonFileSync(file)).toThrowError(
+        expect.objectContaining({ code: "invalid_tool_policy" }),
+      );
     });
   });
 

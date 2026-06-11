@@ -8,6 +8,19 @@ import type { FieldGroupRegistry } from "@mono-agent/settings";
  */
 export const EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 
+/**
+ * Closed set of runtime permission modes, shared by the runtime field group's
+ * select options and the loader's `MONO_AGENT_PERMISSION_MODE` validation.
+ */
+export const PERMISSION_MODES = ["default", "plan", "acceptEdits", "bypassPermissions"] as const;
+
+/**
+ * Closed set of reasoning-summary verbosity hints, shared by the runtime field
+ * group's select options and the loader's `MONO_AGENT_REASONING_SUMMARY`
+ * validation.
+ */
+export const REASONING_SUMMARIES = ["auto", "concise", "detailed", "off", "on"] as const;
+
 export const identityFieldGroup = defineFieldGroup({
   id: "identity",
   label: "Identity",
@@ -91,6 +104,22 @@ export const runtimeFieldGroup = defineFieldGroup({
       kind: "select",
       options: EFFORT_LEVELS.map((level) => ({ value: level, label: level })),
       path: ["runtime", "effort"],
+    },
+    {
+      id: "runtime.permissionMode",
+      label: "Permission mode",
+      description: "Tool-permission posture forwarded to the runtime; consumed by CLI execution modes.",
+      kind: "select",
+      options: PERMISSION_MODES.map((mode) => ({ value: mode, label: mode })),
+      path: ["runtime", "permissionMode"],
+    },
+    {
+      id: "runtime.reasoningSummary",
+      label: "Reasoning summary",
+      description: "How verbosely the runtime surfaces provider reasoning summaries.",
+      kind: "select",
+      options: REASONING_SUMMARIES.map((summary) => ({ value: summary, label: summary })),
+      path: ["runtime", "reasoningSummary"],
     },
     {
       id: "runtime.maxTurns",
