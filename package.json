@@ -34,6 +34,7 @@
     "@types/node": "^22.15.18",
     "@vitest/coverage-v8": "3.2.4",
     "@mono-agent/a2a-adapter": "workspace:0.1.0",
+    "@mono-agent/agent-app": "workspace:0.1.0",
     "@mono-agent/agent-contracts": "workspace:0.1.0",
     "@mono-agent/agent-evals": "workspace:0.1.0",
     "@mono-agent/agent-harness": "workspace:0.1.0",

@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS } from "./field-groups.js";
-import type { EffortLevel, MemoryMode, MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -75,10 +75,12 @@ const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
+const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
   const cwd = normalizeCwd(input.cwd);
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
+  const fallbackModels = readFallbackModels(input.env);
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readInteger(input.env.MONO_AGENT_MAX_TURNS, "MONO_AGENT_MAX_TURNS", DEFAULT_MAX_TURNS, invalidEnv, { min: 1, max: 100 });
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
@@ -92,6 +94,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const sandbox = readSandboxConfig(input.env, workspace);
   const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
   const traceability = readTraceabilityConfig(input.env, cwd);
+  const piAuthPath = readPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
   const localProviders = readLocalProviders(input.env);
 
   assertModeCompatibility(model, executionMode);
@@ -99,6 +102,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
+    ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
     executionMode,
     maxTurns,
     workspace,
@@ -128,7 +132,10 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       dir: artifactDir,
     },
     traceability,
-    ...(localProviders.length === 0 ? {} : { providers: { local: localProviders } }),
+    providers: {
+      piAuthPath,
+      ...(localProviders.length === 0 ? {} : { local: localProviders }),
+    },
   };
 
   if (memory !== undefined) {
@@ -166,6 +173,21 @@ function parseModel(raw: string): MonoAgentConfig["runtime"]["model"] {
       reason,
     });
   }
+}
+
+function readFallbackModels(env: Record<string, string | undefined>): readonly MonoAgentConfig["runtime"]["model"][] {
+  return readCsv(env.MONO_AGENT_FALLBACK_MODELS).map((raw) => {
+    try {
+      return parseMonoRuntimeModelReference(raw);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new MonoAgentConfigError(
+        "invalid_model_reference",
+        `MONO_AGENT_FALLBACK_MODELS entry \`${raw}\` is not a valid runtime model reference.`,
+        { env: "MONO_AGENT_FALLBACK_MODELS", reason },
+      );
+    }
+  });
 }
 
 function parseExecutionMode(raw: string | undefined, model: MonoAgentConfig["runtime"]["model"]): RuntimeExecutionMode {
@@ -293,6 +315,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     "single-file",
     "per-conversation",
   ], "single-file", invalidEnv);
+  const tools = readMemoryToolsConfig(env);
 
   return {
     mode,
@@ -300,7 +323,33 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     maxBytes: readInteger(env.MONO_AGENT_MEMORY_MAX_BYTES, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, invalidEnv, { min: 1, max: 1_000_000 }),
     scope,
     writeMode,
+    ...(tools === undefined ? {} : { tools }),
   };
+}
+
+function readMemoryToolsConfig(env: Record<string, string | undefined>): MemoryToolsConfig | undefined {
+  const hasMemoryToolsEnv = [
+    env.MONO_AGENT_MEMORY_TOOLS_ENABLED,
+    env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
+  ].some((value) => normalizeOptionalString(value) !== undefined);
+  if (!hasMemoryToolsEnv) {
+    return undefined;
+  }
+  const enabled = readBoolean(env.MONO_AGENT_MEMORY_TOOLS_ENABLED, "MONO_AGENT_MEMORY_TOOLS_ENABLED", false, invalidEnv);
+  const allowJournalAppend = readBoolean(
+    env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
+    "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND",
+    false,
+    invalidEnv,
+  );
+  if (allowJournalAppend && !enabled) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND requires MONO_AGENT_MEMORY_TOOLS_ENABLED=true.",
+      { env: "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND" },
+    );
+  }
+  return { enabled, allowJournalAppend };
 }
 
 function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["traceability"] {
@@ -470,13 +519,18 @@ function withRedactedProviders(
   return {
     ...redacted,
     providers: {
-      local: config.providers.local.map((provider) => {
-        const { apiKey, ...safeProvider } = provider;
-        return {
-          ...safeProvider,
-          ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
-        };
-      }),
+      ...(config.providers.piAuthPath === undefined ? {} : { piAuthPath: config.providers.piAuthPath }),
+      ...(config.providers.local === undefined
+        ? {}
+        : {
+            local: config.providers.local.map((provider) => {
+              const { apiKey, ...safeProvider } = provider;
+              return {
+                ...safeProvider,
+                ...(apiKey === undefined ? {} : { apiKey: redactedSecret(apiKey) }),
+              };
+            }),
+          }),
     },
   };
 }

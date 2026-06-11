@@ -29,9 +29,30 @@ const config = await loadMonoAgentConfigWithSources({
 
 Environment variables win over JSON values. Missing or empty JSON is treated as an empty layer.
 
+## Pi OAuth Auth
+
+Built-in Pi OAuth providers such as `pi:openai-codex:gpt-5.5` read credentials
+through the configured Pi auth file. The default path is
+`~/.pi/agent/auth.json`; override it with JSON or env:
+
+```json
+{
+  "providers": {
+    "piAuthPath": ".worklab/auth.json"
+  }
+}
+```
+
+```bash
+MONO_AGENT_PI_AUTH_PATH=/Users/example/.pi/agent/auth.json
+```
+
+Only the path is stored in config. Token contents stay in the auth JSON file and
+are never included in `redactMonoAgentConfig()`.
+
 ## Local Providers
 
-Core config can define local Pi providers under `providers.local`. The primary supported path is Ollama:
+Core config can also define local Pi providers under `providers.local`. The primary supported path is Ollama:
 
 ```json
 {
@@ -80,6 +101,36 @@ MONO_AGENT_SESSION_IDLE_TIMEOUT_MS=1800000   # 30 min default; min 1s, max 24h
 
 In `continuous` mode (the default) consecutive messages in a conversation reuse one live provider session (codex app-server thread, claude resume, pi Session transcript) and conversation history is omitted from the prompt while the session lives; sessions die after the idle timeout and the next message falls back to history replay.
 
+## Memory Tools
+
+Journal memory can opt into runtime memory tools:
+
+```json
+{
+  "memory": {
+    "mode": "journal",
+    "path": "./.mono-agent/memory",
+    "tools": {
+      "enabled": true,
+      "allowJournalAppend": true
+    }
+  }
+}
+```
+
+Environment overrides:
+
+```bash
+MONO_AGENT_MEMORY_TOOLS_ENABLED=true
+MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND=true
+```
+
+`@mono-agent/agent-host` uses these flags to compose the memory MCP server. Recall
+tools are available when memory tools are enabled; manual journal appends are
+available only when `allowJournalAppend` is true. Setting `allowJournalAppend`
+without `enabled` is a config error — config fails closed instead of silently
+ignoring the append flag.
+
 ## Sandbox Policy
 
 Sandbox config is optional. When any `MONO_AGENT_SANDBOX_*` variable is present, config builds a fail-closed `@mono-agent/sandbox` policy rooted at `runtime.workspace`:
@@ -98,7 +149,7 @@ Supported network modes are `none`, `localhost`, `allowlist`, and `all`. `allowl
 - `redactMonoAgentConfig`
 - `readMonoAgentConfigJson`, `writeMonoAgentConfigJson`
 - `layerJsonOntoEnv`
-- `CORE_AGENT_FIELD_GROUPS`, plus individual identity/runtime/memory/tools/artifacts field groups
+- `CORE_AGENT_FIELD_GROUPS`, plus individual identity/runtime/memory/tools/providers/artifacts field groups
 - `MonoAgentConfig`, `MonoAgentConfigJson`, `RedactedMonoAgentConfig`, `MonoAgentConfigError`
 
 ## Dependency Boundary

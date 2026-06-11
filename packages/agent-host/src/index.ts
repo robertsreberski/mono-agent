@@ -16,16 +16,33 @@ import { join } from "node:path";
 
 import { createEntityGraphStore } from "@mono-agent/memory-graph";
 import { createJournalMemoryStore } from "@mono-agent/memory-journal";
+import { resolveMemoryMcpMainPath } from "@mono-agent/memory-mcp";
 import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
 import type { MemoryStore } from "@mono-agent/memory-md";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
   createMonoRuntime,
+  createPiOAuthApiKeyResolver,
   runtimeOptionsForLocalProvider,
 } from "@mono-agent/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type {
+  MonoRuntimeFallbackChainEntry,
+  MonoRuntimeLike,
+  RuntimeExecutionMode,
+  RuntimeModelReference,
+} from "@mono-agent/runtime-adapter";
 import { createToolPolicy } from "@mono-agent/tool-policy";
 import type { ToolPolicyInput } from "@mono-agent/tool-policy";
+
+const MEMORY_RECALL_TOOLS = [
+  "memory_read_day",
+  "memory_list_days",
+  "memory_grep",
+  "memory_search",
+  "entity_get",
+] as const;
+
+type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
 
 export interface ConfiguredAgentRuntimeOptions {
   readonly config: MonoAgentConfig;
@@ -59,7 +76,34 @@ export function createConfiguredAgentRuntime(
   return createMonoRuntime({
     workspace: config.runtime.workspace,
     qaOutputDir: config.artifacts.dir,
+    ...(config.providers?.piAuthPath === undefined
+      ? {}
+      : { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: config.providers.piAuthPath }) }),
+    ...(fallbackChainForConfig(config, isRuntimeOptions(input) ? input : undefined)),
   });
+}
+
+/**
+ * When backup models are configured, runs go through the agent-runtime fallback
+ * router with the effective primary model first. Fallback entries use their
+ * default execution mode.
+ */
+function fallbackChainForConfig(
+  config: MonoAgentConfig,
+  options: ConfiguredAgentRuntimeOptions | undefined,
+): { fallbackChain?: readonly MonoRuntimeFallbackChainEntry[] } {
+  const fallbackModels = config.runtime.fallbackModels;
+  if (fallbackModels === undefined || fallbackModels.length === 0) {
+    return {};
+  }
+  const primaryModel = options?.model ?? config.runtime.model;
+  const primaryExecutionMode = options?.executionMode ?? config.runtime.executionMode;
+  return {
+    fallbackChain: [
+      { model: primaryModel, executionMode: primaryExecutionMode as RuntimeExecutionMode },
+      ...fallbackModels.map((model) => ({ model })),
+    ],
+  };
 }
 
 export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): AgentHarness {
@@ -67,10 +111,11 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
   const memory = options.memory ?? createConfiguredMemory(config);
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
-  const runtimeOptions = {
-    ...runtimeOptionsForLocalProvider(model, config.providers?.local),
-    ...(options.runtimeOptions ?? {}),
-  };
+  const runtimeOptions = mergeStaticRuntimeOptions(
+    runtimeOptionsForLocalProvider(model, config.providers?.local),
+    memoryMcpRuntimeOptions(config),
+    options.runtimeOptions,
+  );
 
   return createAgentHarness({
     identityPath: config.context.identityPath,
@@ -135,6 +180,81 @@ function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefine
     maxBytes: config.memory.maxBytes,
     scope: config.memory.scope,
   });
+}
+
+function memoryMcpRuntimeOptions(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
+  if (
+    config.memory === undefined ||
+    config.memory.mode !== "journal" ||
+    config.memory.tools?.enabled !== true
+  ) {
+    return undefined;
+  }
+
+  const allowedTools = [
+    ...MEMORY_RECALL_TOOLS,
+    ...(config.memory.tools.allowJournalAppend ? ["journal_append"] : []),
+  ];
+
+  return {
+    allowedTools,
+    mcpServers: {
+      memory: {
+        command: "node",
+        args: [resolveMemoryMcpMainPath()],
+        env: {
+          MONO_AGENT_MEMORY_PATH: config.memory.path,
+        },
+      },
+    },
+  };
+}
+
+function mergeStaticRuntimeOptions(
+  ...optionsList: readonly (StaticRuntimeOptions | undefined)[]
+): StaticRuntimeOptions {
+  const merged: Record<string, unknown> = {};
+  for (const options of optionsList) {
+    if (options === undefined) {
+      continue;
+    }
+    for (const [key, value] of Object.entries(options)) {
+      if (value === undefined) {
+        continue;
+      }
+      if (key === "allowedTools" || key === "disallowedTools") {
+        merged[key] = mergeStringLists(merged[key], value);
+        continue;
+      }
+      if (key === "mcpServers") {
+        merged[key] = {
+          ...(isRecord(merged[key]) ? merged[key] : {}),
+          ...(isRecord(value) ? value : {}),
+        };
+        continue;
+      }
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function mergeStringLists(current: unknown, next: unknown): readonly string[] {
+  const out: string[] = [];
+  for (const value of [...stringList(current), ...stringList(next)]) {
+    if (!out.includes(value)) {
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+function stringList(value: unknown): readonly string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {

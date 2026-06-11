@@ -9,6 +9,7 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
       "runtime",
       "memory",
       "tools",
+      "providers",
       "artifacts",
       "traceability",
     ]);

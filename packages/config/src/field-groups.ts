@@ -65,6 +65,15 @@ export const runtimeFieldGroup = defineFieldGroup({
       path: ["runtime", "model"],
     },
     {
+      id: "runtime.fallbackModels",
+      label: "Fallback models",
+      description:
+        "Comma-separated backup model references tried in order when the primary model fails with a retryable provider error.",
+      kind: "csv",
+      placeholder: "claude:claude-sonnet-4-6, pi:ollama:gemma4:31b",
+      path: ["runtime", "fallbackModels"],
+    },
+    {
       id: "runtime.executionMode",
       label: "Execution mode",
       description: "sdk talks to the provider over its SDK; cli shells out to a packaged binary.",
@@ -184,6 +193,20 @@ export const memoryFieldGroup = defineFieldGroup({
       ],
       path: ["memory", "writeMode"],
     },
+    {
+      id: "memory.tools.enabled",
+      label: "Memory tools",
+      description: "Expose memory recall tools over MCP when journal memory is enabled.",
+      kind: "switch",
+      path: ["memory", "tools", "enabled"],
+    },
+    {
+      id: "memory.tools.allowJournalAppend",
+      label: "Manual notes",
+      description: "Allow the model to append notes only when the host exposes the journal_append tool.",
+      kind: "switch",
+      path: ["memory", "tools", "allowJournalAppend"],
+    },
   ],
 });
 
@@ -287,11 +310,28 @@ export const traceabilityFieldGroup = defineFieldGroup({
   ],
 });
 
+export const providersFieldGroup = defineFieldGroup({
+  id: "providers",
+  label: "Providers",
+  description: "Provider-specific credential and registry settings.",
+  fields: [
+    {
+      id: "providers.piAuthPath",
+      label: "Pi auth path",
+      description: "OAuth credential JSON used by Pi providers such as openai-codex.",
+      kind: "path",
+      placeholder: "~/.pi/agent/auth.json",
+      path: ["providers", "piAuthPath"],
+    },
+  ],
+});
+
 export const CORE_AGENT_FIELD_GROUPS: FieldGroupRegistry = [
   identityFieldGroup,
   runtimeFieldGroup,
   memoryFieldGroup,
   toolsFieldGroup,
+  providersFieldGroup,
   artifactsFieldGroup,
   traceabilityFieldGroup,
 ];

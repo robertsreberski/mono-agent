@@ -1,0 +1,75 @@
+---
+name: mono-agent-composer
+description: Construct a working mono-agent in the current folder from one mono-agent.config.json — discover the desired runtime (with backup models), channels, skills, MCP servers, memory strategy, and sandbox, then init, validate, and start it with the mono-agent CLI. Use when a user wants to build, configure, or troubleshoot an agent built from @mono-agent packages.
+---
+
+# Mono Agent Composer
+
+Construct a working mono-agent in the user's current folder — empty or already holding knowledge — from one `mono-agent.config.json`. Discover what the user wants (runtime with backup models, communication channels, skills, MCP servers, memory strategy, sandbox, observability), write the config, then make it run with the `mono-agent` CLI. No hand-written host code unless the user genuinely needs programmatic composition.
+
+## Operating Rules
+
+- The deliverable is a folder that works: `mono-agent.config.json` + `IDENTITY.md` (+ optional `skills/`, `mcp.json`), validated and started — not a tutorial.
+- Start by discovering the intended agent product, not by naming packages.
+- Ask one question at a time; skip anything the user already answered.
+- Respect existing knowledge: if the folder has `AGENTS.md`, `CLAUDE.md`, `README.md`, or an existing `IDENTITY.md`, reference it from the identity instead of replacing it. Never overwrite existing files.
+- Fail closed: no allowed tools, no memory writes, loopback-only network until the user opts in.
+- Do not fake runtime success, silently broaden tool access, or hide provider/MCP failures. Backup models are configured failover (`runtime.fallbackModels`), never silent substitution.
+- Secrets stay in env vars or the untracked config file; never commit tokens or `.env*` files.
+
+## Prerequisites
+
+The `mono-agent` CLI ships with `@mono-agent/agent-app`. Until the packages are on npm, run it from a clone of the mono-agent workspace:
+
+```bash
+git clone <mono-agent-repo> ~/mono-agent && cd ~/mono-agent
+corepack enable && pnpm install --frozen-lockfile && pnpm run build
+alias mono-agent="node ~/mono-agent/packages/agent-app/dist/cli.js"
+```
+
+Everything below runs in the user's agent folder, not the workspace.
+
+## Composition Flow
+
+1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test.
+2. **Scaffold.** In the user's folder run:
+
+   ```bash
+   mono-agent init --model <ref> [--fallback-models <csv>] [--memory markdown|journal]
+   ```
+
+   This writes a minimal `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories. It never overwrites existing files.
+3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models.
+4. **Validate.**
+
+   ```bash
+   mono-agent validate
+   ```
+
+   Fix every `[error]` section. `[waiting]` channels are fine — they are simply not configured yet. Re-run until the report says the config is ready.
+5. **Start and smoke.**
+
+   ```bash
+   mono-agent start
+   ```
+
+   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). The operator console URL printed at start lets the user edit config in the browser; saves re-apply live.
+
+## When Config Is Not Enough
+
+Config-first covers one responder served over any combination of the seven channels plus operator console and traceability. Drop to programmatic composition only for: custom runtimes (`MonoRuntimeLike`), request-scoped runtime extensions, multi-agent orchestration (`@mono-agent/agent-orchestrator`), or bespoke transports. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue.
+
+## Implementation References
+
+- `references/discovery-questions.md` — the question sequence and which config keys each answer fills.
+- `references/config-blueprint.md` — annotated `mono-agent.config.json` covering every section, plus the folder layout and programmatic escape hatch.
+- `references/package-map.md` — which package owns what, for programmatic composition and troubleshooting.
+- `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
+
+## Done Criteria
+
+- `mono-agent validate` exits 0 in the user's folder.
+- `mono-agent start` runs, and the chosen channel's smoke test passed with a real response from the configured runtime.
+- The config file matches what the user asked for: model + backups, channels, skills, MCP, memory, sandbox.
+- Existing knowledge files are referenced, not duplicated or overwritten.
+- No secrets are committed.

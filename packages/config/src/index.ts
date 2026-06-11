@@ -11,6 +11,7 @@ export type {
 export type {
   EffortLevel,
   MemoryScope,
+  MemoryToolsConfig,
   MemoryWriteMode,
   MonoAgentConfig,
   RedactedMonoAgentConfig,
@@ -38,6 +39,7 @@ export {
   EFFORT_LEVELS,
   identityFieldGroup,
   memoryFieldGroup,
+  providersFieldGroup,
   runtimeFieldGroup,
   traceabilityFieldGroup,
   toolsFieldGroup,

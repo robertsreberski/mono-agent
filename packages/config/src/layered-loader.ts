@@ -48,6 +48,9 @@ export function layerJsonOntoEnv(
   if (json.runtime?.model !== undefined) {
     fromJson.MONO_AGENT_MODEL = json.runtime.model;
   }
+  if (json.runtime?.fallbackModels !== undefined) {
+    fromJson.MONO_AGENT_FALLBACK_MODELS = csv(json.runtime.fallbackModels);
+  }
   if (json.runtime?.executionMode !== undefined) {
     fromJson.MONO_AGENT_EXECUTION_MODE = json.runtime.executionMode;
   }
@@ -93,6 +96,12 @@ export function layerJsonOntoEnv(
   if (json.memory?.writeMode !== undefined) {
     fromJson.MONO_AGENT_MEMORY_WRITE_MODE = json.memory.writeMode;
   }
+  if (json.memory?.tools?.enabled !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_TOOLS_ENABLED = String(json.memory.tools.enabled);
+  }
+  if (json.memory?.tools?.allowJournalAppend !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND = String(json.memory.tools.allowJournalAppend);
+  }
   if (json.tools?.allowedTools !== undefined) {
     fromJson.MONO_AGENT_ALLOWED_TOOLS = csv(json.tools.allowedTools);
   }
@@ -119,6 +128,9 @@ export function layerJsonOntoEnv(
   }
   if (json.traceability?.staleAfterMs !== undefined) {
     fromJson.MONO_AGENT_TRACE_STALE_AFTER_MS = String(json.traceability.staleAfterMs);
+  }
+  if (json.providers?.piAuthPath !== undefined) {
+    fromJson.MONO_AGENT_PI_AUTH_PATH = json.providers.piAuthPath;
   }
   if (json.providers?.local !== undefined && !hasLocalProviderEnv(env)) {
     fromJson.MONO_AGENT_LOCAL_PROVIDERS_JSON = JSON.stringify(json.providers.local);

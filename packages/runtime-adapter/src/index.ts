@@ -3,6 +3,7 @@ export {
   assertExecutionModeCompatible,
   assertParsedRuntimeModelReference,
   createMonoRuntime,
+  createPiOAuthApiKeyResolver,
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   isRuntimeExecutionMode,
@@ -14,7 +15,12 @@ export {
   RuntimeAdapterError,
   selectMonoRuntimeBackendId,
 } from "./runtime-adapter.js";
-export type { RuntimeAdapterErrorCode, RuntimeAdapterErrorDetails } from "./runtime-adapter.js";
+export type {
+  CreateMonoRuntimeOptions,
+  MonoRuntimeFallbackChainEntry,
+  RuntimeAdapterErrorCode,
+  RuntimeAdapterErrorDetails,
+} from "./runtime-adapter.js";
 export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
 export {
   applyTemporaryEnv,

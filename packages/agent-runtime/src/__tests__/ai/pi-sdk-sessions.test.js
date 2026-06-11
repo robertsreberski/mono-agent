@@ -8,7 +8,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { generatePiResponse } from "../../ai/providers/pi-sdk.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
 
@@ -38,28 +38,36 @@ function fakeAssistantMessage(model, spec) {
   if (spec.error) {
     return { ...base, content: [], stopReason: "error", errorMessage: spec.error };
   }
-  return { ...base, content: [{ type: "text", text: spec.text }], stopReason: "stop" };
+  const content = [
+    ...(spec.thinking ? [{ type: "thinking", thinking: spec.thinking }] : []),
+    { type: "text", text: spec.text },
+  ];
+  return { ...base, content, stopReason: "stop" };
 }
 
 // Returns a StreamFn-compatible fake: async-iterable over
 // AssistantMessageEvents with a result() resolving to the final message.
 // Each invocation consumes the next reply from `plan`; calls are recorded
 // with a snapshot of the LLM context for assertions.
-function makeStreamFn(plan, { gate } = {}) {
+function makeStreamFn(plan, { gate, eventsForSpec } = {}) {
   const calls = [];
   let index = 0;
-  const streamFn = (model, context) => {
-    calls.push({ model, context: { ...context, messages: [...context.messages] } });
+  const streamFn = (model, context, options = {}) => {
+    calls.push({
+      model,
+      context: { ...context, messages: [...context.messages] },
+      options: { ...options },
+    });
     const spec = plan[Math.min(index, plan.length - 1)];
     index += 1;
     const message = fakeAssistantMessage(model, spec);
     const events = spec.error
       ? [{ type: "error", reason: "error", error: message }]
-      : [
+      : (eventsForSpec?.(spec, message) || [
         { type: "start", partial: message },
-        { type: "text_end", contentIndex: 0, content: spec.text, partial: message },
+        { type: "text_end", contentIndex: spec.thinking ? 1 : 0, content: spec.text, partial: message },
         { type: "done", reason: "stop", message },
-      ];
+      ]);
     return {
       async *[Symbol.asyncIterator]() {
         if (gate) await gate;
@@ -99,6 +107,74 @@ function runOptions(overrides = {}) {
 describe("pi-sdk native sessions", () => {
   const sessionsRoot = mkdtempSync(join(tmpdir(), "pi-sdk-sessions-"));
   afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
+
+  it("requests configured OpenAI reasoning summaries and forwards streamed thinking once", async () => {
+    const onEvent = vi.fn();
+    const streamFn = makeStreamFn(
+      [{ text: "reply", thinking: "checking context" }],
+      {
+        eventsForSpec: (spec, message) => [
+          { type: "start", partial: message },
+          { type: "thinking_delta", contentIndex: 0, delta: "checking ", partial: message },
+          { type: "thinking_delta", contentIndex: 0, delta: "context", partial: message },
+          { type: "thinking_end", contentIndex: 0, content: spec.thinking, partial: message },
+          { type: "text_end", contentIndex: 1, content: spec.text, partial: message },
+          { type: "done", reason: "stop", message },
+        ],
+      },
+    );
+
+    const result = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-1" }],
+      effort: "medium",
+      piReasoningSummary: "detailed",
+      streamFn,
+      onEvent,
+    }));
+
+    expect(result.error).toBeNull();
+    expect(result.thinking).toBe("checking context");
+    expect(streamFn.calls[0].options).toMatchObject({
+      reasoning: "medium",
+      reasoningEffort: "medium",
+      reasoningSummary: "detailed",
+    });
+    const thinkingTexts = onEvent.mock.calls
+      .map(([event]) => event?.message?.content?.[0])
+      .filter((block) => block?.type === "thinking")
+      .map((block) => block.text);
+    expect(thinkingTexts).toEqual(["checking ", "context"]);
+  });
+
+  it("does not force OpenAI reasoning summaries by default", async () => {
+    const streamFn = makeStreamFn([{ text: "reply", thinking: "brief thought" }]);
+
+    const result = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-1" }],
+      effort: "medium",
+      streamFn,
+    }));
+
+    expect(result.error).toBeNull();
+    expect(streamFn.calls[0].options.reasoning).toBe("medium");
+    expect(streamFn.calls[0].options).not.toHaveProperty("reasoningEffort");
+    expect(streamFn.calls[0].options).not.toHaveProperty("reasoningSummary");
+  });
+
+  it("reports default Pi reasoning as enabled in per-run capabilities", async () => {
+    const streamFn = makeStreamFn([{ text: "reply", thinking: "brief thought" }]);
+
+    const result = await generatePiResponse("system", {
+      model: MODEL,
+      allowedTools: [],
+      messages: [{ role: "user", content: "turn-1" }],
+      streamFn,
+    });
+
+    expect(result.error).toBeNull();
+    expect(streamFn.calls[0].options.reasoning).toBe("medium");
+    expect(result.capabilitiesUsed.thinking_enabled).toBe(true);
+  });
 
   it("keeps a session alive and seeds a resumed run with the prior transcript", async () => {
     const streamFn = makeStreamFn([{ text: "reply-1" }, { text: "reply-2" }]);

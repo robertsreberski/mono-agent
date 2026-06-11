@@ -1,4 +1,4 @@
-import { createRuntime } from "@mono-agent/agent-runtime";
+import { createPiOAuthApiKeyResolver, createRouterRuntime, createRuntime } from "@mono-agent/agent-runtime";
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 
@@ -139,8 +139,29 @@ export function assertExecutionModeCompatible(
   }
 }
 
-export function createMonoRuntime(options: MonoRuntimeHostOptions = {}): MonoRuntimeLike {
-  const runtime = createRuntime({ ...options });
+export interface MonoRuntimeFallbackChainEntry {
+  readonly model: RuntimeModelReference;
+  readonly executionMode?: RuntimeExecutionMode;
+}
+
+export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
+  /**
+   * Ordered model chain for provider failover. When present, runs are served by
+   * the agent-runtime fallback router: the first entry is attempted first and
+   * each retryable provider failure advances to the next entry, so callers
+   * should put the primary model at index 0. The router overrides the per-run
+   * `model`/`executionMode` with chain entries; failover details are reported
+   * on the result as `failoverHistory`.
+   */
+  readonly fallbackChain?: readonly MonoRuntimeFallbackChainEntry[];
+}
+
+export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
+  const { fallbackChain, ...hostOptions } = options;
+  const chain = normalizeFallbackChain(fallbackChain);
+  const runtime = chain === undefined
+    ? createRuntime({ ...hostOptions })
+    : createRouterRuntime({ host: { ...hostOptions }, chain });
 
   return {
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {
@@ -171,6 +192,31 @@ export function createMonoRuntime(options: MonoRuntimeHostOptions = {}): MonoRun
       await runtime.disposeAllSessions?.();
     },
   };
+}
+
+export { createPiOAuthApiKeyResolver };
+
+function normalizeFallbackChain(
+  fallbackChain: readonly MonoRuntimeFallbackChainEntry[] | undefined,
+): readonly { model: RuntimeModelReference; executionMode: RuntimeExecutionMode }[] | undefined {
+  if (fallbackChain === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(fallbackChain) || fallbackChain.length === 0) {
+    throw new RuntimeAdapterError("invalid_runtime_options", "Runtime fallback chain must be a non-empty array.");
+  }
+  return fallbackChain.map((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new RuntimeAdapterError(
+        "invalid_runtime_options",
+        "Each runtime fallback chain entry must be an object with a model reference.",
+      );
+    }
+    assertParsedRuntimeModelReference(entry.model);
+    const executionMode = entry.executionMode ?? defaultExecutionModeForModel(entry.model);
+    assertExecutionModeCompatible(entry.model, executionMode);
+    return { model: entry.model, executionMode };
+  });
 }
 
 export function assertParsedRuntimeModelReference(value: unknown): asserts value is RuntimeModelReference {

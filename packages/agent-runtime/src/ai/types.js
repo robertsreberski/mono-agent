@@ -27,6 +27,7 @@
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
  * @property {Object} [liveInput]
+ * @property {"auto"|"concise"|"detailed"|"off"|"on"|null} [piReasoningSummary]
  * @property {Object} [settings]
  * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
  * @property {(event: RuntimeEvent) => void} [onEvent]

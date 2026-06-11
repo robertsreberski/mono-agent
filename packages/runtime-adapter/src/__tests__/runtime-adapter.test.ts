@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   assertExecutionModeCompatible,
+  createPiOAuthApiKeyResolver,
   createMonoRuntime,
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
@@ -91,6 +92,12 @@ describe("runtime adapter model references", () => {
   });
 });
 
+describe("runtime adapter Pi auth exports", () => {
+  it("re-exports the Pi OAuth API key resolver factory", () => {
+    expect(typeof createPiOAuthApiKeyResolver).toBe("function");
+  });
+});
+
 describe("runtime adapter provider sessions", () => {
   it("reports session resume support for every backend", () => {
     expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
@@ -110,6 +117,56 @@ describe("runtime adapter provider sessions", () => {
     expect(typeof runtime.disposeAllSessions).toBe("function");
     await expect(runtime.disposeSession?.("no-such-session")).resolves.toBeFalsy();
     await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
+  });
+});
+
+describe("runtime adapter fallback chain", () => {
+  it("builds a router-backed runtime that still exposes session disposal", async () => {
+    const runtime = createMonoRuntime({
+      fallbackChain: [
+        { model: parseMonoRuntimeModelReference("claude:claude-sonnet-4-6") },
+        { model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5") },
+      ],
+    });
+    expect(typeof runtime.run).toBe("function");
+    expect(typeof runtime.configureTools).toBe("function");
+    await expect(runtime.disposeSession?.("no-such-session")).resolves.toBeFalsy();
+    await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
+  });
+
+  it("rejects an empty fallback chain", () => {
+    expect(() => createMonoRuntime({ fallbackChain: [] })).toThrow(RuntimeAdapterError);
+  });
+
+  it("rejects chain entries with incompatible execution modes at construction", () => {
+    expect(() =>
+      createMonoRuntime({
+        fallbackChain: [
+          {
+            model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
+            executionMode: "cli",
+          },
+        ],
+      }),
+    ).toThrow(RuntimeAdapterError);
+  });
+
+  it("rejects chain entries with unparsed model references", () => {
+    expect(() =>
+      createMonoRuntime({
+        fallbackChain: [{ model: { sdk: "", model: "" } }],
+      }),
+    ).toThrow(RuntimeAdapterError);
+  });
+
+  it("rejects non-object chain entries with a typed error", () => {
+    for (const entry of [null, undefined, "claude:claude-sonnet-4-6", ["claude"]]) {
+      expect(() =>
+        createMonoRuntime({
+          fallbackChain: [entry as never],
+        }),
+      ).toThrow(RuntimeAdapterError);
+    }
   });
 });
 
