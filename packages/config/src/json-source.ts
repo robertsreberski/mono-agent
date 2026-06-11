@@ -6,7 +6,7 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
-import type { MemoryMode, MemoryScope, MemoryWriteMode } from "./types.js";
+import type { MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode } from "./types.js";
 
 export type MonoAgentLocalProviderModelJson = {
   readonly name?: string;
@@ -29,6 +29,7 @@ export type MonoAgentLocalProviderJson = {
 };
 
 export type MonoAgentProvidersJson = {
+  readonly piAuthPath?: string;
   readonly local?: readonly MonoAgentLocalProviderJson[];
 };
 
@@ -44,6 +45,7 @@ export type MonoAgentProvidersJson = {
 export interface MonoAgentConfigJson extends SettingsJson {
   readonly runtime?: {
     readonly model?: string;
+    readonly fallbackModels?: readonly string[];
     readonly executionMode?: string;
     readonly effort?: string;
     readonly maxTurns?: number;
@@ -65,6 +67,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly maxBytes?: number;
     readonly scope?: MemoryScope;
     readonly writeMode?: MemoryWriteMode;
+    readonly tools?: Partial<MemoryToolsConfig>;
   };
   readonly tools?: {
     readonly allowedTools?: readonly string[];

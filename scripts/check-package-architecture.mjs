@@ -99,8 +99,8 @@ for (const catalogEntry of packageCatalog) {
         `packages/${packageDir} (${catalogEntry.category}) may not depend on ${depName} (${depEntry.category}).`,
       );
     }
-    if (depEntry.category === "communication") {
-      errors.push(`packages/${packageDir} may not depend on communication adapter ${depName}; compose adapters only in hosts/demos.`);
+    if (depEntry.category === "communication" && catalogEntry.category !== "app") {
+      errors.push(`packages/${packageDir} may not depend on communication adapter ${depName}; compose adapters only in app hosts/demos.`);
     }
   }
 }

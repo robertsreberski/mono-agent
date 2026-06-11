@@ -161,7 +161,7 @@ function deriveSkillDescription(markdown: string): string {
     }
   };
 
-  for (const rawLine of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+  for (const rawLine of stripFrontmatter(markdown).replace(/\r\n?/g, '\n').split('\n')) {
     const line = rawLine.trim();
     if (line.length === 0) {
       flush();
@@ -176,6 +176,17 @@ function deriveSkillDescription(markdown: string): string {
   flush();
 
   return paragraphs.find((paragraph) => paragraph.length > 0) ?? '';
+}
+
+/**
+ * Skill files shared with other harnesses (e.g. Claude Code) open with a YAML
+ * frontmatter block. The block is metadata, not prose, so the derived
+ * description starts after it.
+ */
+function stripFrontmatter(markdown: string): string {
+  const normalized = markdown.replace(/\r\n?/g, '\n');
+  const match = /^---\n[\s\S]*?\n---[ \t]*(?:\n|$)/u.exec(normalized);
+  return match === null ? normalized : normalized.slice(match[0].length);
 }
 
 function isErrorWithCode(error: unknown, code: string): boolean {

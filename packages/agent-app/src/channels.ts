@@ -1,0 +1,495 @@
+import { resolve } from "node:path";
+
+import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import {
+  A2AConsumerError,
+  A2AProviderError,
+  startA2AProvider,
+} from "@mono-agent/a2a-adapter";
+import type { A2AAdapterConfig, A2AProviderOptions, A2AProviderStartResult } from "@mono-agent/a2a-adapter";
+import { loadA2AAdapterConfig } from "@mono-agent/a2a-adapter";
+import { CronAdapterError, loadCronAdapterConfig, startCronAdapter } from "@mono-agent/cron-adapter";
+import type { CronAdapterConfig, CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
+import {
+  loadOpenAIApiAdapterConfig,
+  OpenAIApiAdapterError,
+  startOpenAIApiAdapter,
+} from "@mono-agent/openai-api-adapter";
+import type {
+  OpenAIApiAdapterConfig,
+  OpenAIApiAdapterOptions,
+  OpenAIApiAdapterStartResult,
+} from "@mono-agent/openai-api-adapter";
+import {
+  loadSlackAdapterConfig,
+  SlackAdapterConfigError,
+  startSlackAdapter,
+} from "@mono-agent/slack-adapter";
+import type {
+  SlackAdapterConfig,
+  SlackAdapterStartOptions,
+  SlackAdapterStartResult,
+} from "@mono-agent/slack-adapter";
+import {
+  loadTelegramAdapterConfig,
+  TelegramAdapter,
+  TelegramAdapterConfigError,
+  TelegramBotApiClient,
+  TelegramLongPoller,
+} from "@mono-agent/telegram-adapter";
+import type {
+  TelegramAdapterConfig,
+  TelegramAdapterOptions,
+  TelegramBotApi,
+  TelegramLongPollerOptions,
+  TelegramLongPollerStartOptions,
+} from "@mono-agent/telegram-adapter";
+import {
+  loadWebhookAdapterConfig,
+  startWebhookAdapter,
+  WebhookAdapterError,
+} from "@mono-agent/webhook-adapter";
+import type {
+  WebhookAdapterConfig,
+  WebhookAdapterOptions,
+  WebhookAdapterStartResult,
+} from "@mono-agent/webhook-adapter";
+import {
+  loadWhatsAppAdapterConfig,
+  startWhatsAppAdapter,
+  WhatsAppAdapterConfigError,
+} from "@mono-agent/whatsapp-adapter";
+import type {
+  StartWhatsAppAdapterOptions,
+  WhatsAppAdapterConfig,
+  WhatsAppAdapterStartResult,
+  WhatsAppSocketFactory,
+} from "@mono-agent/whatsapp-adapter";
+
+import type { MonoAgentAppConfigInput } from "./app-config.js";
+
+export type ChannelId =
+  | "telegram"
+  | "slack"
+  | "a2a"
+  | "webhook"
+  | "openai-api"
+  | "cron"
+  | "whatsapp";
+
+export interface MonoAgentAppLogger {
+  debug?(message: string, metadata?: Record<string, unknown>): void;
+  info?(message: string, metadata?: Record<string, unknown>): void;
+  warn?(message: string, metadata?: Record<string, unknown>): void;
+  error?(message: string, metadata?: Record<string, unknown>): void;
+}
+
+export type ChannelStatus =
+  | { readonly kind: "disabled"; readonly reason: string }
+  | { readonly kind: "waiting_for_config"; readonly reason: string }
+  | { readonly kind: "running"; readonly summary: Record<string, unknown> }
+  | { readonly kind: "failed"; readonly reason: string };
+
+export interface RunningChannel {
+  /** Channel-specific connection facts (invoke URL, agent card URL, job count). */
+  readonly summary: Record<string, unknown>;
+  stop(): Promise<void>;
+}
+
+export interface ChannelStartInput<TConfig> {
+  readonly config: TConfig;
+  readonly coreConfig: MonoAgentConfig;
+  readonly responder: AgentResponder;
+  readonly cwd: string;
+  readonly logger?: MonoAgentAppLogger;
+  /** Reports a transport that died after a successful start (e.g. polling loop). */
+  readonly onFailure: (reason: string) => void;
+}
+
+/**
+ * One communication channel the app can run from config. Drivers stay thin:
+ * they reuse the adapter package's config loader and start function and add
+ * only the wiring an app host previously copied by hand.
+ */
+export interface ChannelDriver<TConfig = unknown> {
+  readonly id: ChannelId;
+  readonly label: string;
+  loadConfig(input: MonoAgentAppConfigInput): Promise<TConfig>;
+  /** True for the adapter's own typed config errors (incomplete config → waiting). */
+  isConfigError(error: unknown): boolean;
+  /** Reason the channel is explicitly disabled by its loaded config. */
+  disabledReason?(config: TConfig): string | undefined;
+  /** Reason a loaded, enabled config still cannot start (missing sub-section). */
+  waitingReason?(config: TConfig): string | undefined;
+  start(input: ChannelStartInput<TConfig>): Promise<RunningChannel>;
+}
+
+export interface TelegramChannelOverrides {
+  readonly api?: TelegramBotApi;
+  readonly pollerFactory?: (options: TelegramLongPollerOptions) => TelegramPollerLike;
+}
+
+export interface TelegramPollerLike {
+  start(options?: TelegramLongPollerStartOptions): Promise<void>;
+}
+
+export function createTelegramChannelDriver(
+  overrides: TelegramChannelOverrides = {},
+): ChannelDriver<TelegramAdapterConfig> {
+  return {
+    id: "telegram",
+    label: "Telegram",
+    async loadConfig(input) {
+      return await loadTelegramAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return error instanceof TelegramAdapterConfigError;
+    },
+    async start(input) {
+      const api = overrides.api ?? new TelegramBotApiClient({ token: input.config.botToken });
+      const adapter = new TelegramAdapter(telegramAdapterOptions(api, input));
+      const pollerOptions: TelegramLongPollerOptions = {
+        api,
+        adapter,
+        deleteWebhookOnStart: true,
+        allowedUpdates: ["message"],
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+      };
+      const poller = overrides.pollerFactory?.(pollerOptions) ?? new TelegramLongPoller(pollerOptions);
+      const controller = new AbortController();
+      const promise = poller.start({ signal: controller.signal }).catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          input.onFailure(reasonOf(error));
+        }
+      });
+      return {
+        summary: {},
+        async stop() {
+          controller.abort();
+          await promise.catch(() => undefined);
+        },
+      };
+    },
+  };
+}
+
+export interface SlackChannelOverrides {
+  readonly createApi?: SlackAdapterStartOptions["createApi"];
+  readonly webSocketFactory?: SlackAdapterStartOptions["webSocketFactory"];
+  readonly startAdapter?: (options: SlackAdapterStartOptions) => Promise<SlackAdapterStartResult>;
+}
+
+export function createSlackChannelDriver(
+  overrides: SlackChannelOverrides = {},
+): ChannelDriver<SlackAdapterConfig> {
+  return {
+    id: "slack",
+    label: "Slack",
+    async loadConfig(input) {
+      return await loadSlackAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return error instanceof SlackAdapterConfigError;
+    },
+    async start(input) {
+      const startAdapter = overrides.startAdapter ?? startSlackAdapter;
+      const result = await startAdapter({
+        botToken: input.config.botToken,
+        appToken: input.config.appToken,
+        allowedChannelIds: input.config.allowedChannelIds,
+        allowAllChannels: input.config.allowAllChannels,
+        botUserIds: input.config.botUserIds,
+        mentionTextAliases: input.config.mentionTextAliases,
+        stripMentionText: input.config.stripMentionText,
+        responder: input.responder,
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+        ...(overrides.createApi === undefined ? {} : { createApi: overrides.createApi }),
+        ...(overrides.webSocketFactory === undefined ? {} : { webSocketFactory: overrides.webSocketFactory }),
+      });
+      return {
+        summary: {},
+        stop: () => result.stop(),
+      };
+    },
+  };
+}
+
+export interface A2AChannelOverrides {
+  readonly providerFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
+}
+
+export function createA2AChannelDriver(
+  overrides: A2AChannelOverrides = {},
+): ChannelDriver<A2AAdapterConfig> {
+  return {
+    id: "a2a",
+    label: "A2A",
+    async loadConfig(input) {
+      return await loadA2AAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return error instanceof A2AProviderError || error instanceof A2AConsumerError;
+    },
+    disabledReason(config) {
+      return config.provider.enabled ? undefined : "A2A provider is disabled.";
+    },
+    waitingReason(config) {
+      if (config.agent === undefined || config.skill === undefined) {
+        return "A2A provider requires agent and skill configuration.";
+      }
+      return undefined;
+    },
+    async start(input) {
+      const config = input.config;
+      if (config.agent === undefined || config.skill === undefined) {
+        throw new A2AProviderError("missing_required_config", "A2A provider requires agent and skill configuration.");
+      }
+      const providerFactory = overrides.providerFactory ?? startA2AProvider;
+      const provider = await providerFactory({
+        host: config.provider.host,
+        port: config.provider.port,
+        ...(config.provider.publicBaseUrl === undefined ? {} : { publicBaseUrl: config.provider.publicBaseUrl }),
+        allowNonLoopback: config.provider.allowNonLoopback,
+        requireBearer: config.provider.requireBearer,
+        ...(config.provider.bearerToken === undefined ? {} : { bearerToken: config.provider.bearerToken }),
+        responder: input.responder,
+        agent: {
+          name: config.agent.name,
+          description: config.agent.description,
+          version: config.agent.version,
+          ...(config.agent.providerOrganization === undefined || config.agent.providerUrl === undefined
+            ? {}
+            : {
+                provider: {
+                  organization: config.agent.providerOrganization,
+                  url: config.agent.providerUrl,
+                },
+              }),
+        },
+        skill: config.skill,
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+      });
+      return {
+        summary: { agentCardUrl: provider.agentCardUrl },
+        stop: () => provider.stop(),
+      };
+    },
+  };
+}
+
+export interface WebhookChannelOverrides {
+  readonly adapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
+}
+
+export function createWebhookChannelDriver(
+  overrides: WebhookChannelOverrides = {},
+): ChannelDriver<WebhookAdapterConfig> {
+  return {
+    id: "webhook",
+    label: "Webhook",
+    async loadConfig(input) {
+      return await loadWebhookAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return error instanceof WebhookAdapterError;
+    },
+    disabledReason(config) {
+      return config.enabled ? undefined : "Webhook adapter is disabled.";
+    },
+    async start(input) {
+      const adapterFactory = overrides.adapterFactory ?? startWebhookAdapter;
+      const adapter = await adapterFactory({
+        host: input.config.host,
+        port: input.config.port,
+        path: input.config.path,
+        allowNonLoopback: input.config.allowNonLoopback,
+        defaultMode: input.config.defaultMode,
+        retentionMs: input.config.retentionMs,
+        maxStoredRequests: input.config.maxStoredRequests,
+        responder: input.responder,
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+      });
+      return {
+        summary: { invokeUrl: adapter.invokeUrl },
+        stop: () => adapter.stop(),
+      };
+    },
+  };
+}
+
+export interface OpenAIApiChannelOverrides {
+  readonly adapterFactory?: (options: OpenAIApiAdapterOptions) => Promise<OpenAIApiAdapterStartResult>;
+}
+
+export function createOpenAIApiChannelDriver(
+  overrides: OpenAIApiChannelOverrides = {},
+): ChannelDriver<OpenAIApiAdapterConfig> {
+  return {
+    id: "openai-api",
+    label: "OpenAI API",
+    async loadConfig(input) {
+      return await loadOpenAIApiAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return error instanceof OpenAIApiAdapterError;
+    },
+    disabledReason(config) {
+      return config.enabled ? undefined : "OpenAI API adapter is disabled.";
+    },
+    async start(input) {
+      const adapterFactory = overrides.adapterFactory ?? startOpenAIApiAdapter;
+      const adapter = await adapterFactory({
+        host: input.config.host,
+        port: input.config.port,
+        basePath: input.config.basePath,
+        allowNonLoopback: input.config.allowNonLoopback,
+        ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
+        modelId: input.config.modelId,
+        responder: input.responder,
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+      });
+      return {
+        summary: { baseUrl: adapter.baseUrl },
+        stop: () => adapter.stop(),
+      };
+    },
+  };
+}
+
+export interface CronChannelOverrides {
+  readonly adapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
+}
+
+export function createCronChannelDriver(
+  overrides: CronChannelOverrides = {},
+): ChannelDriver<CronAdapterConfig> {
+  return {
+    id: "cron",
+    label: "Cron",
+    async loadConfig(input) {
+      return await loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return error instanceof CronAdapterError;
+    },
+    disabledReason(config) {
+      const enabledJobs = config.jobs.filter((job) => job.enabled);
+      return enabledJobs.length > 0 ? undefined : "Cron adapter has no enabled jobs.";
+    },
+    async start(input) {
+      const jobs = input.config.jobs.filter((job) => job.enabled);
+      const adapterFactory = overrides.adapterFactory ?? startCronAdapter;
+      const adapter = adapterFactory({
+        responder: input.responder,
+        jobs: jobs.map((job) => ({
+          id: job.id,
+          expression: job.expression,
+          timezone: job.timezone,
+          prompt: job.prompt,
+          ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
+        })),
+        onResult: (result) => {
+          const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
+          input.logger?.[level]?.("Cron job finished.", { result });
+        },
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+      });
+      return {
+        summary: { jobs: adapter.jobs.length },
+        async stop() {
+          adapter.stop();
+        },
+      };
+    },
+  };
+}
+
+export interface WhatsAppChannelOverrides {
+  /** Baileys multi-file auth state directory. Defaults to .mono-agent/whatsapp-auth. */
+  readonly authDir?: string;
+  readonly socketFactory?: WhatsAppSocketFactory;
+  readonly startAdapter?: (options: StartWhatsAppAdapterOptions) => Promise<WhatsAppAdapterStartResult>;
+}
+
+export function createWhatsAppChannelDriver(
+  overrides: WhatsAppChannelOverrides = {},
+): ChannelDriver<WhatsAppAdapterConfig> {
+  return {
+    id: "whatsapp",
+    label: "WhatsApp",
+    async loadConfig(input) {
+      return await loadWhatsAppAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return error instanceof WhatsAppAdapterConfigError;
+    },
+    async start(input) {
+      const startAdapter = overrides.startAdapter ?? startWhatsAppAdapter;
+      const result = await startAdapter({
+        authDir: overrides.authDir ?? resolve(input.cwd, ".mono-agent", "whatsapp-auth"),
+        config: input.config,
+        responder: input.responder,
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+        onQr: (qr) => {
+          input.logger?.info?.("WhatsApp login QR code received; scan it with the WhatsApp app.", { qr });
+        },
+        ...(overrides.socketFactory === undefined ? {} : { createSocket: overrides.socketFactory }),
+      });
+      return {
+        summary: {},
+        stop: () => result.stop(),
+      };
+    },
+  };
+}
+
+export interface ChannelDriverOverrides {
+  readonly telegram?: TelegramChannelOverrides;
+  readonly slack?: SlackChannelOverrides;
+  readonly a2a?: A2AChannelOverrides;
+  readonly webhook?: WebhookChannelOverrides;
+  readonly openaiApi?: OpenAIApiChannelOverrides;
+  readonly cron?: CronChannelOverrides;
+  readonly whatsapp?: WhatsAppChannelOverrides;
+}
+
+/** Every channel the app can drive, in startup/status display order. */
+export function defaultChannelDrivers(overrides: ChannelDriverOverrides = {}): readonly ChannelDriver[] {
+  return [
+    createTelegramChannelDriver(overrides.telegram),
+    createSlackChannelDriver(overrides.slack),
+    createA2AChannelDriver(overrides.a2a),
+    createWebhookChannelDriver(overrides.webhook),
+    createOpenAIApiChannelDriver(overrides.openaiApi),
+    createCronChannelDriver(overrides.cron),
+    createWhatsAppChannelDriver(overrides.whatsapp),
+  ] as readonly ChannelDriver[];
+}
+
+function telegramAdapterOptions(
+  api: TelegramBotApi,
+  input: ChannelStartInput<TelegramAdapterConfig>,
+): TelegramAdapterOptions {
+  return {
+    api,
+    responder: input.responder,
+    allowedChatIds: [...input.config.allowedChatIds],
+    allowAllChats: input.config.allowAllChats,
+    stream: {
+      initialStatusText: "Agent is thinking...",
+      editDebounceMs: 350,
+    },
+    messages: {
+      welcomeText: "Agent is online. Send a message to run the configured runtime.",
+      helpText: "Send a message to talk to the agent. Use /cancel to stop an in-flight response.",
+      unauthorizedText: "This chat is not allowlisted for this agent.",
+      errorText: "The agent failed honestly; check the local artifact summary for details.",
+    },
+    ...(input.logger === undefined ? {} : { logger: input.logger }),
+  };
+}
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

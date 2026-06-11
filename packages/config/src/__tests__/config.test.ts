@@ -1,3 +1,6 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig } from "../index.js";
@@ -26,6 +29,8 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_MEMORY_WRITE_MODE: "append-host-summary",
         MONO_AGENT_MEMORY_SCOPE: "single-file",
         MONO_AGENT_MEMORY_MAX_BYTES: "2048",
+        MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
+        MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND: "true",
         MONO_AGENT_ARTIFACT_DIR: "artifacts",
         MONO_AGENT_TRACE_REGISTRY_DIR: "trace-registry",
         MONO_AGENT_TRACE_SOURCE_ID: "agent-one",
@@ -49,6 +54,10 @@ describe("loadMonoAgentConfig", () => {
       maxBytes: 2048,
       scope: "single-file",
       writeMode: "append-host-summary",
+      tools: {
+        enabled: true,
+        allowJournalAppend: true,
+      },
     });
     expect(config.tools).toEqual({
       allowedTools: ["Read", "Grep"],
@@ -56,6 +65,7 @@ describe("loadMonoAgentConfig", () => {
       mcpConfigPath: "/repo/mcp.json",
     });
     expect(config.artifacts.dir).toBe("/repo/artifacts");
+    expect(config.providers?.piAuthPath).toBe(join(homedir(), ".pi", "agent", "auth.json"));
     expect(config.traceability).toEqual({
       registryDir: "/repo/trace-registry",
       sourceId: "agent-one",
@@ -63,6 +73,70 @@ describe("loadMonoAgentConfig", () => {
       heartbeatMs: 5000,
       staleAfterMs: 15000,
     });
+  });
+
+  it("loads ordered fallback models from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FALLBACK_MODELS: "claude:claude-sonnet-4-6, pi:ollama:gemma4:31b",
+      },
+    });
+
+    expect(config.runtime.fallbackModels).toEqual([
+      expect.objectContaining({ sdk: "claude", model: "claude-sonnet-4-6" }),
+      expect.objectContaining({ sdk: "pi", provider: "ollama", model: "gemma4:31b" }),
+    ]);
+  });
+
+  it("omits fallbackModels when the env is unset", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.runtime.fallbackModels).toBeUndefined();
+  });
+
+  it("rejects invalid fallback model references with the offending entry", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "claude:claude-sonnet-4-6,not-a-model" },
+      }),
+    ).toThrow(/not-a-model/u);
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_FALLBACK_MODELS: "not-a-model" },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_model_reference" });
+    }
+  });
+
+  it("loads the Pi OAuth auth path from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PI_AUTH_PATH: "/tmp/pi-auth.json",
+      },
+    });
+
+    expect(config.providers?.piAuthPath).toBe("/tmp/pi-auth.json");
+  });
+
+  it("rejects journal append for memory tools that are not enabled", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory",
+          MONO_AGENT_MEMORY_MODE: "journal",
+          MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND: "true",
+        },
+      }),
+    ).toThrow(MonoAgentConfigError);
   });
 
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {
@@ -229,11 +303,12 @@ describe("loadMonoAgentConfig", () => {
 
     expect("telegram" in redacted).toBe(false);
     expect(redacted.runtime.model).toMatchObject({ sdk: "pi" });
-    expect(redacted.providers?.local[0]).toMatchObject({
+    expect(redacted.providers?.local?.[0]).toMatchObject({
       id: "ollama",
       type: "ollama",
       apiKey: { present: true, redacted: true },
     });
+    expect(redacted.providers?.piAuthPath).toBe(join(homedir(), ".pi", "agent", "auth.json"));
     expect(JSON.stringify(redacted)).not.toContain("redacted-value");
   });
 
@@ -261,7 +336,7 @@ describe("loadMonoAgentConfig", () => {
       },
     });
 
-    expect(config.providers?.local[0]).toMatchObject({
+    expect(config.providers?.local?.[0]).toMatchObject({
       id: "ollama",
       type: "ollama",
       baseUrl: "http://localhost:11434",
@@ -289,7 +364,7 @@ describe("loadMonoAgentConfig", () => {
       },
     });
 
-    expect(config.providers?.local[0]?.models?.[0]).toMatchObject({
+    expect(config.providers?.local?.[0]?.models?.[0]).toMatchObject({
       name: "qwen3:8b",
       capabilities: { context_window: 32768 },
     });

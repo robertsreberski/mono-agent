@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 export {
   createMemoryMcpServer,
   createMemoryMcpServerFromConfig,
@@ -12,3 +14,7 @@ export type {
 } from "./server.js";
 export { grepMemory, isValidDay, listDailyNotes, readDailyNote } from "./file-store.js";
 export type { GrepHit } from "./file-store.js";
+
+export function resolveMemoryMcpMainPath(): string {
+  return fileURLToPath(new URL("./main.js", import.meta.url));
+}

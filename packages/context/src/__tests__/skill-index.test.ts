@@ -46,6 +46,19 @@ describe('loadSkillIndexFromDirectory', () => {
     ]);
   });
 
+  it('skips YAML frontmatter when deriving the description', async () => {
+    const frontmatterSkillsRoot = join(fixturesRoot, 'skills-frontmatter');
+    const skills = await loadSkillIndexFromDirectory(frontmatterSkillsRoot);
+
+    expect(skills).toEqual([
+      {
+        name: 'frontmatter',
+        description: 'Works in harnesses that read YAML frontmatter and in mono-agent.',
+        mainFile: join(frontmatterSkillsRoot, 'frontmatter', 'SKILL.md'),
+      },
+    ]);
+  });
+
   it('rejects skill files without a description paragraph', async () => {
     await expect(loadSkillIndexFromDirectory(invalidSkillsRoot)).rejects.toThrow(ContextValidationError);
   });

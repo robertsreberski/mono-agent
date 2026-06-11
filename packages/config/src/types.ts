@@ -7,12 +7,22 @@ import type { EFFORT_LEVELS } from "./field-groups.js";
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
 export type MemoryMode = "markdown" | "journal";
+export interface MemoryToolsConfig {
+  readonly enabled: boolean;
+  readonly allowJournalAppend: boolean;
+}
 export type SessionMode = "continuous" | "per-message";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export interface MonoAgentConfig {
   readonly runtime: {
     readonly model: RuntimeModelReference;
+    /**
+     * Ordered backup models tried after `model` when a run fails with a
+     * retryable provider error. Each entry runs under its default execution
+     * mode.
+     */
+    readonly fallbackModels?: readonly RuntimeModelReference[];
     readonly executionMode: RuntimeExecutionMode;
     readonly effort?: EffortLevel;
     readonly maxTurns: number;
@@ -34,6 +44,7 @@ export interface MonoAgentConfig {
     readonly maxBytes: number;
     readonly scope: MemoryScope;
     readonly writeMode: MemoryWriteMode;
+    readonly tools?: MemoryToolsConfig;
   };
   readonly tools: {
     readonly allowedTools: readonly string[];
@@ -52,7 +63,8 @@ export interface MonoAgentConfig {
     readonly staleAfterMs?: number;
   };
   readonly providers?: {
-    readonly local: readonly LocalProviderDefinition[];
+    readonly piAuthPath?: string;
+    readonly local?: readonly LocalProviderDefinition[];
   };
 }
 
@@ -69,6 +81,7 @@ export interface RedactedMonoAgentConfig {
   readonly artifacts: MonoAgentConfig["artifacts"];
   readonly traceability: MonoAgentConfig["traceability"];
   readonly providers?: {
-    readonly local: readonly RedactedLocalProviderDefinition[];
+    readonly piAuthPath?: string;
+    readonly local?: readonly RedactedLocalProviderDefinition[];
   };
 }

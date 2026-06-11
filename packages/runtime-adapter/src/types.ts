@@ -117,6 +117,7 @@ export interface RuntimeRunOptions {
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
   readonly sandboxPolicy?: SandboxPolicy;
+  readonly piReasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
   readonly [key: string]: unknown;
 }
 

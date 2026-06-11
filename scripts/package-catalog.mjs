@@ -7,6 +7,7 @@ export const PACKAGE_CATEGORIES = [
   "evaluation",
   "communication",
   "operator-surface",
+  "app",
 ];
 
 export const packageCatalog = [
@@ -16,6 +17,22 @@ export const packageCatalog = [
     category: "communication",
     responsibility: "Exposes agent responders over A2A and consumes remote A2A agents through direct discovery.",
     allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
+    dir: "agent-app",
+    name: "@mono-agent/agent-app",
+    category: "app",
+    responsibility: "Runs a config-first agent host: loads mono-agent.config.json, builds the responder, and starts every configured channel, operator console, and traceability.",
+    allowedDependencyCategories: [
+      "core",
+      "context",
+      "runtime",
+      "execution",
+      "observability",
+      "communication",
+      "operator-surface",
+    ],
     publishable: true,
   },
   {
