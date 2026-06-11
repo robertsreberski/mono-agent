@@ -24,9 +24,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@mono-agent/memory-graph": "workspace:^0.1.0",
-    "@mono-agent/memory-journal": "workspace:^0.1.0",
-    "@mono-agent/memory-search": "workspace:^0.1.0",
+    "@mono-agent/memory-graph": "workspace:0.1.0",
+    "@mono-agent/memory-journal": "workspace:0.1.0",
+    "@mono-agent/memory-search": "workspace:0.1.0",
     "zod": "^4.4.3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

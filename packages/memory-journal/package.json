@@ -23,6 +23,9 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/memory-md": "workspace:^0.1.0"
+    "@mono-agent/memory-md": "workspace:0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

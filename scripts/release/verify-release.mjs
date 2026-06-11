@@ -1,0 +1,59 @@
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+import { REPO_ROOT } from "./package-graph.mjs";
+import { validateRelease } from "./validate-release.mjs";
+
+function argValue(name, argv = process.argv.slice(2)) {
+  const index = argv.indexOf(name);
+  return index === -1 ? null : argv[index + 1] || null;
+}
+
+function cleanRegistryEnv() {
+  return {
+    ...process.env,
+    NPM_CONFIG_USERCONFIG: "/dev/null",
+  };
+}
+
+function retry(command, args) {
+  let lastOutput = "";
+  for (let attempt = 1; attempt <= 30; attempt += 1) {
+    const result = spawnSync(command, args, {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+      env: cleanRegistryEnv(),
+    });
+    lastOutput = `${result.stdout || ""}${result.stderr || ""}`;
+    if (result.status === 0) {
+      return lastOutput.trim();
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+  }
+  throw new Error(`${command} ${args.join(" ")} failed after retries:\n${lastOutput.trim()}`);
+}
+
+async function main() {
+  const tag = argValue("--tag") || process.env.GITHUB_REF_NAME;
+  const { publishablePackages } = validateRelease({ tag, silent: true });
+
+  for (const pkg of publishablePackages) {
+    const version = retry("npm", [
+      "view",
+      `${pkg.name}@${pkg.version}`,
+      "version",
+      "--json",
+      "--registry",
+      "https://registry.npmjs.org/",
+    ]);
+    console.log(`${pkg.name}@${JSON.parse(version)} verified on npm`);
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  });
+}
