@@ -209,6 +209,107 @@ describe("agent host composition helpers", () => {
     expect(memoryServer?.args?.[0]).toMatch(/memory-mcp[/\\]dist[/\\]main\.js$/u);
   });
 
+  it("resolves tools.mcpConfigPath into inline mcpServers alongside the memory MCP server", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryRoot = join(dir, "memory");
+    const artifactDir = join(dir, "artifacts");
+    const mcpConfigPath = join(dir, "mcp.json");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await writeFile(
+      mcpConfigPath,
+      JSON.stringify({
+        mcpServers: { "context-a8c": { command: "npx", args: ["-y", "@automattic/mcp-context-a8c"] } },
+      }),
+      "utf8",
+    );
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        memoryPath: memoryRoot,
+        memoryMode: "journal",
+        memoryTools: { enabled: true, allowJournalAppend: false },
+        artifactDir,
+        mcpConfigPath,
+      }),
+      runtime: fake.runtime,
+    });
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.mcpConfigPath).toBe(mcpConfigPath);
+    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
+      "context-a8c": { command: "npx", args: ["-y", "@automattic/mcp-context-a8c"] },
+      memory: { command: "node" },
+    });
+  });
+
+  it("fails closed when tools.mcpConfigPath points at a missing file", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    expect(() =>
+      createConfiguredAgentHarness({
+        config: monoConfig({ dir, identityPath, artifactDir, mcpConfigPath: join(dir, "missing.json") }),
+        runtime: fake.runtime,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "tool_policy_read_failed" }));
+  });
+
+  it("forwards runtime.permissionMode and runtime.reasoningSummary to the runtime", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        permissionMode: "bypassPermissions",
+        reasoningSummary: "detailed",
+      }),
+      runtime: fake.runtime,
+    });
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
+    expect(fake.calls[0]?.options.piReasoningSummary).toBe("detailed");
+  });
+
+  it("lets host runtimeOptions override config runtime flags", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, artifactDir, reasoningSummary: "detailed" }),
+      runtime: fake.runtime,
+      runtimeOptions: { piReasoningSummary: "concise" },
+    });
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.piReasoningSummary).toBe("concise");
+  });
+
   it("allows journal_append only when memory tools permit manual notes", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -422,6 +523,9 @@ function monoConfig(input: {
     readonly allowJournalAppend: boolean;
   };
   readonly artifactDir: string;
+  readonly mcpConfigPath?: string;
+  readonly permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
+  readonly reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on";
 }): MonoAgentConfig {
   return {
     runtime: {
@@ -430,6 +534,8 @@ function monoConfig(input: {
       maxTurns: 4,
       workspace: input.dir,
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },
+      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
+      ...(input.reasoningSummary === undefined ? {} : { reasoningSummary: input.reasoningSummary }),
     },
     providers: {
       local: [
@@ -461,6 +567,7 @@ function monoConfig(input: {
     tools: {
       allowedTools: ["Read"],
       disallowedTools: ["Write"],
+      ...(input.mcpConfigPath === undefined ? {} : { mcpConfigPath: input.mcpConfigPath }),
     },
     artifacts: {
       dir: input.artifactDir,

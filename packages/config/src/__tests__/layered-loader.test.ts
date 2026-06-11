@@ -80,6 +80,27 @@ describe("layerJsonOntoEnv", () => {
     ]);
   });
 
+  it("translates JSON runtime permission mode and reasoning summary to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      { runtime: { permissionMode: "bypassPermissions", reasoningSummary: "detailed" } },
+      {},
+    );
+    expect(layered.MONO_AGENT_PERMISSION_MODE).toBe("bypassPermissions");
+    expect(layered.MONO_AGENT_REASONING_SUMMARY).toBe("detailed");
+  });
+
+  it("lets env override JSON permission mode and reasoning summary", () => {
+    const layered = layerJsonOntoEnv(
+      { runtime: { permissionMode: "bypassPermissions", reasoningSummary: "detailed" } },
+      {
+        MONO_AGENT_PERMISSION_MODE: "default",
+        MONO_AGENT_REASONING_SUMMARY: "concise",
+      },
+    );
+    expect(layered.MONO_AGENT_PERMISSION_MODE).toBe("default");
+    expect(layered.MONO_AGENT_REASONING_SUMMARY).toBe("concise");
+  });
+
   it("translates JSON runtime.session to env keys", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000 } } },

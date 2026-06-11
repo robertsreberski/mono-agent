@@ -28,8 +28,8 @@ import {
 } from "@mono-agent/settings";
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
-import { EFFORT_LEVELS } from "./field-groups.js";
-import type { EffortLevel, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
+import type { EffortLevel, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -100,6 +100,8 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   assertModeCompatibility(model, executionMode);
 
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
+  const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
+  const reasoningSummary = readReasoningSummary(input.env.MONO_AGENT_REASONING_SUMMARY);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
     ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
@@ -108,6 +110,8 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     workspace,
     session,
     ...(effort === undefined ? {} : { effort }),
+    ...(permissionMode === undefined ? {} : { permissionMode }),
+    ...(reasoningSummary === undefined ? {} : { reasoningSummary }),
   };
 
   const context: MonoAgentConfig["context"] = {
@@ -549,6 +553,22 @@ function readEffort(raw: string | undefined): EffortLevel | undefined {
     return undefined;
   }
   return readChoice<EffortLevel>(normalized, "MONO_AGENT_EFFORT", EFFORT_LEVELS, EFFORT_LEVELS[0], invalidEnv);
+}
+
+function readPermissionMode(raw: string | undefined): PermissionMode | undefined {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) {
+    return undefined;
+  }
+  return readChoice<PermissionMode>(normalized, "MONO_AGENT_PERMISSION_MODE", PERMISSION_MODES, PERMISSION_MODES[0], invalidEnv);
+}
+
+function readReasoningSummary(raw: string | undefined): ReasoningSummary | undefined {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) {
+    return undefined;
+  }
+  return readChoice<ReasoningSummary>(normalized, "MONO_AGENT_REASONING_SUMMARY", REASONING_SUMMARIES, REASONING_SUMMARIES[0], invalidEnv);
 }
 
 function readPath(raw: string | undefined, cwd: string, defaultPath?: string): string {

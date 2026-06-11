@@ -7,24 +7,29 @@ import type { MonoAgentApp } from "./app.js";
 import type { ChannelStatus } from "./channels.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import { initMonoAgentFolder } from "./init.js";
+import { installComposerSkill } from "./install-skill.js";
+import type { InstallSkillTarget } from "./install-skill.js";
 
 interface ParsedCliArgs {
-  readonly command: "init" | "validate" | "start" | "help";
+  readonly command: "init" | "validate" | "start" | "install-skill" | "help";
   readonly configPath?: string;
   readonly port?: number;
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
   readonly memory?: "markdown" | "journal";
+  readonly envFile?: string;
+  readonly target?: InstallSkillTarget;
   readonly noConsole: boolean;
+  readonly force: boolean;
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    return { command: "help", noConsole: false };
+    return { command: "help", noConsole: false, force: false };
   }
-  if (command !== "init" && command !== "validate" && command !== "start") {
-    throw new Error(`Unknown command \`${command}\`. Expected init, validate, or start.`);
+  if (command !== "init" && command !== "validate" && command !== "start" && command !== "install-skill") {
+    throw new Error(`Unknown command \`${command}\`. Expected init, validate, start, or install-skill.`);
   }
 
   let configPath: string | undefined;
@@ -32,7 +37,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let model: string | undefined;
   let fallbackModels: readonly string[] | undefined;
   let memory: "markdown" | "journal" | undefined;
+  let envFile: string | undefined;
+  let target: InstallSkillTarget | undefined;
   let noConsole = false;
+  let force = false;
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
@@ -66,6 +74,20 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         memory = raw;
         break;
       }
+      case "--env-file":
+        envFile = requireValue(rest, ++i, flag);
+        break;
+      case "--target": {
+        const raw = requireValue(rest, ++i, flag);
+        if (raw !== "claude" && raw !== "codex" && raw !== "both") {
+          throw new Error("--target must be claude, codex, or both.");
+        }
+        target = raw;
+        break;
+      }
+      case "--force":
+        force = true;
+        break;
       case "--no-console":
         noConsole = true;
         break;
@@ -81,8 +103,25 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(model === undefined ? {} : { model }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(memory === undefined ? {} : { memory }),
+    ...(envFile === undefined ? {} : { envFile }),
+    ...(target === undefined ? {} : { target }),
     noConsole,
+    force,
   };
+}
+
+/**
+ * Loads env vars from a dotenv file when it exists; already-set variables are
+ * never overwritten, so exported shell variables take precedence. Returns
+ * false when the file is missing or unreadable.
+ */
+export function loadCliEnvFile(path: string): boolean {
+  try {
+    process.loadEnvFile(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function requireValue(args: readonly string[], index: number, flag: string): string {
@@ -100,15 +139,22 @@ Usage:
       Scaffold mono-agent.config.json, IDENTITY.md, and .mono-agent/ in the
       current folder. Existing files are never overwritten.
 
-  mono-agent validate [--config <path>]
+  mono-agent validate [--config <path>] [--env-file <path>]
       Load every config section and report what would run, wait, or fail.
 
-  mono-agent start [--config <path>] [--port <n>] [--no-console]
+  mono-agent start [--config <path>] [--port <n>] [--no-console] [--env-file <path>]
       Build the responder and start every configured channel plus the local
       operator console and traceability.
 
+  mono-agent install-skill [--target claude|codex|both] [--force]
+      Copy the bundled mono-agent-composer skill into ~/.claude/skills and
+      ~/.codex/skills (default: both). Refuses to overwrite without --force.
+
 Model references look like claude:claude-sonnet-4-6, codex:gpt-5.5, or
 pi:<provider>:<model> (e.g. pi:ollama:gemma4:31b).
+
+A .env file in the current folder is loaded automatically when present;
+already-exported shell variables take precedence.
 `;
 
 export async function runCli(argv: readonly string[]): Promise<number> {
@@ -120,6 +166,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
+  loadCliEnvFile(resolve(process.cwd(), args.envFile ?? ".env"));
+
   switch (args.command) {
     case "help":
       process.stdout.write(HELP_TEXT);
@@ -130,6 +178,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runValidate(args);
     case "start":
       return await runStart(args);
+    case "install-skill":
+      return await runInstallSkill(args);
   }
 }
 
@@ -156,6 +206,23 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
       "  2. mono-agent validate\n" +
       "  3. mono-agent start\n",
   );
+  return 0;
+}
+
+async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
+  let result;
+  try {
+    result = await installComposerSkill({
+      target: args.target ?? "both",
+      force: args.force,
+    });
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+  for (const path of result.installed) {
+    process.stdout.write(`installed  ${path}\n`);
+  }
   return 0;
 }
 

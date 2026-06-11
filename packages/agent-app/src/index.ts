@@ -53,4 +53,6 @@ export type {
   ValidationSection,
   ValidationStatus,
 } from "./doctor.js";
-export { parseCliArgs, runCli } from "./cli.js";
+export { parseCliArgs, runCli, loadCliEnvFile } from "./cli.js";
+export { COMPOSER_SKILL_NAME, installComposerSkill } from "./install-skill.js";
+export type { InstallSkillOptions, InstallSkillResult, InstallSkillTarget } from "./install-skill.js";

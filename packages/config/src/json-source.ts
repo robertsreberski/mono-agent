@@ -48,6 +48,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly fallbackModels?: readonly string[];
     readonly executionMode?: string;
     readonly effort?: string;
+    readonly permissionMode?: string;
+    readonly reasoningSummary?: string;
     readonly maxTurns?: number;
     readonly workspace?: string;
     readonly session?: {

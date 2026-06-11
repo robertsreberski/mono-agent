@@ -19,7 +19,13 @@ Construct a working mono-agent in the user's current folder — empty or already
 
 ## Prerequisites
 
-The `mono-agent` CLI ships with `@mono-agent/agent-app`. Until the packages are on npm, run it from a clone of the mono-agent workspace:
+The `mono-agent` CLI ships with `@mono-agent/agent-app` on npm:
+
+```bash
+npm install -g @mono-agent/agent-app   # or: npx @mono-agent/agent-app …
+```
+
+To run an unreleased build instead, use a clone of the mono-agent workspace:
 
 ```bash
 git clone <mono-agent-repo> ~/mono-agent && cd ~/mono-agent

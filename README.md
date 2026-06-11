@@ -23,10 +23,16 @@ mono-agent start
 
 The repo includes a composer skill that walks an agent (in mono-agent itself, Claude Code, or another harness that reads `SKILL.md` files) through constructing an agent folder with the flow above:
 
-- Skill: [`docs/skills/mono-agent-composer/SKILL.md`](./docs/skills/mono-agent-composer/SKILL.md)
-- References: [`docs/skills/mono-agent-composer/references/`](./docs/skills/mono-agent-composer/references/)
+- Skill: [`packages/agent-app/skills/mono-agent-composer/SKILL.md`](./packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- References: [`packages/agent-app/skills/mono-agent-composer/references/`](./packages/agent-app/skills/mono-agent-composer/references/)
 
-The skill asks discovery questions (runtime + backup models, channels, skills, MCP, memory strategy, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. To use it as a selected mono-agent skill, point `context.skillsRoot` at `./docs/skills` and add `mono-agent-composer` to `context.selectedSkills`; in Claude Code, copy the skill folder into your skills directory.
+The skill asks discovery questions (runtime + backup models, channels, skills, MCP, memory strategy, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. It ships with `@mono-agent/agent-app`; install it into Claude Code and Codex with:
+
+```bash
+mono-agent install-skill   # copies into ~/.claude/skills and ~/.codex/skills
+```
+
+To use it as a selected mono-agent skill instead, point `context.skillsRoot` at `./packages/agent-app/skills` and add `mono-agent-composer` to `context.selectedSkills`.
 
 ## Package Architecture
 
