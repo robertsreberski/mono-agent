@@ -62,7 +62,7 @@ describe("final agent demo", () => {
       if (missingConfigStatus.kind !== "waiting_for_config") {
         throw new Error(`Expected waiting_for_config, got ${missingConfigStatus.kind}.`);
       }
-      expect(missingConfigStatus.reason).toMatch(/MONO_AGENT_MODEL/u);
+      expect(missingConfigStatus.reason).toMatch(/MONO_AGENT_TELEGRAM_BOT_TOKEN/u);
       expect(demo.a2aStatus).toMatchObject({ kind: "disabled" });
       expect(pollerConstructed).toBe(false);
 
