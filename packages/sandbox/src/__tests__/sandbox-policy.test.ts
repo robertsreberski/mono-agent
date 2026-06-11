@@ -207,7 +207,9 @@ describe("srt integration contract", () => {
         allowAllUnixSockets: false,
       },
       filesystem: {
-        denyRead: ["/Users"],
+        // The policy also denies the real home directory, which varies by
+        // platform (/Users/... on macOS, /home/... on Linux CI).
+        denyRead: expect.arrayContaining(["/Users"]),
         allowRead: ["/Users/example/project"],
         allowWrite: ["/Users/example/project"],
         denyWrite: [".env", ".env.*", ".git/config", ".git/hooks/**"],
