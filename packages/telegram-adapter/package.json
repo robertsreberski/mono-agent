@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/telegram-adapter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Telegram communication adapter for host-compatible runtimes.",
   "type": "module",
   "license": "UNLICENSED",
@@ -23,8 +23,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.2.0",
-    "@mono-agent/settings": "workspace:0.2.0"
+    "@mono-agent/agent-contracts": "workspace:0.2.1",
+    "@mono-agent/settings": "workspace:0.2.1"
   },
   "publishConfig": {
     "access": "public"
