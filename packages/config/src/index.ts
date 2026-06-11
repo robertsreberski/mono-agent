@@ -11,6 +11,7 @@ export type {
 export type {
   EffortLevel,
   MemoryScope,
+  MemoryToolsConfig,
   MemoryWriteMode,
   MonoAgentConfig,
   RedactedMonoAgentConfig,

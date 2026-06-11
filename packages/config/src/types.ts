@@ -7,6 +7,10 @@ import type { EFFORT_LEVELS } from "./field-groups.js";
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
 export type MemoryMode = "markdown" | "journal";
+export interface MemoryToolsConfig {
+  readonly enabled: boolean;
+  readonly allowJournalAppend: boolean;
+}
 export type SessionMode = "continuous" | "per-message";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
@@ -34,6 +38,7 @@ export interface MonoAgentConfig {
     readonly maxBytes: number;
     readonly scope: MemoryScope;
     readonly writeMode: MemoryWriteMode;
+    readonly tools?: MemoryToolsConfig;
   };
   readonly tools: {
     readonly allowedTools: readonly string[];

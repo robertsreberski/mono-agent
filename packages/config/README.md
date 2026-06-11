@@ -101,6 +101,34 @@ MONO_AGENT_SESSION_IDLE_TIMEOUT_MS=1800000   # 30 min default; min 1s, max 24h
 
 In `continuous` mode (the default) consecutive messages in a conversation reuse one live provider session (codex app-server thread, claude resume, pi Session transcript) and conversation history is omitted from the prompt while the session lives; sessions die after the idle timeout and the next message falls back to history replay.
 
+## Memory Tools
+
+Journal memory can opt into runtime memory tools:
+
+```json
+{
+  "memory": {
+    "mode": "journal",
+    "path": "./.mono-agent/memory",
+    "tools": {
+      "enabled": true,
+      "allowJournalAppend": true
+    }
+  }
+}
+```
+
+Environment overrides:
+
+```bash
+MONO_AGENT_MEMORY_TOOLS_ENABLED=true
+MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND=true
+```
+
+`@mono-agent/agent-host` uses these flags to compose the memory MCP server. Recall
+tools are available when memory tools are enabled; manual journal appends are
+available only when `allowJournalAppend` is true.
+
 ## Sandbox Policy
 
 Sandbox config is optional. When any `MONO_AGENT_SANDBOX_*` variable is present, config builds a fail-closed `@mono-agent/sandbox` policy rooted at `runtime.workspace`:

@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS } from "./field-groups.js";
-import type { EffortLevel, MemoryMode, MemoryScope, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -298,6 +298,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     "single-file",
     "per-conversation",
   ], "single-file", invalidEnv);
+  const tools = readMemoryToolsConfig(env);
 
   return {
     mode,
@@ -305,6 +306,26 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     maxBytes: readInteger(env.MONO_AGENT_MEMORY_MAX_BYTES, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, invalidEnv, { min: 1, max: 1_000_000 }),
     scope,
     writeMode,
+    ...(tools === undefined ? {} : { tools }),
+  };
+}
+
+function readMemoryToolsConfig(env: Record<string, string | undefined>): MemoryToolsConfig | undefined {
+  const hasMemoryToolsEnv = [
+    env.MONO_AGENT_MEMORY_TOOLS_ENABLED,
+    env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
+  ].some((value) => normalizeOptionalString(value) !== undefined);
+  if (!hasMemoryToolsEnv) {
+    return undefined;
+  }
+  return {
+    enabled: readBoolean(env.MONO_AGENT_MEMORY_TOOLS_ENABLED, "MONO_AGENT_MEMORY_TOOLS_ENABLED", false, invalidEnv),
+    allowJournalAppend: readBoolean(
+      env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
+      "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND",
+      false,
+      invalidEnv,
+    ),
   };
 }
 

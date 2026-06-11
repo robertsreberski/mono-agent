@@ -184,6 +184,20 @@ export const memoryFieldGroup = defineFieldGroup({
       ],
       path: ["memory", "writeMode"],
     },
+    {
+      id: "memory.tools.enabled",
+      label: "Memory tools",
+      description: "Expose memory recall tools over MCP when journal memory is enabled.",
+      kind: "switch",
+      path: ["memory", "tools", "enabled"],
+    },
+    {
+      id: "memory.tools.allowJournalAppend",
+      label: "Manual notes",
+      description: "Allow the model to append notes only when the host exposes the journal_append tool.",
+      kind: "switch",
+      path: ["memory", "tools", "allowJournalAppend"],
+    },
   ],
 });
 

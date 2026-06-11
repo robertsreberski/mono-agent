@@ -167,6 +167,77 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.prompt).toContain("Example Person (person)");
   });
 
+  it("injects memory MCP recall tools when journal memory tools are enabled", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryRoot = join(dir, "memory");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        memoryPath: memoryRoot,
+        memoryMode: "journal",
+        memoryTools: { enabled: true, allowJournalAppend: false },
+        artifactDir,
+      }),
+      runtime: fake.runtime,
+    });
+    await responder.respond(
+      { conversationId: "c", text: "recall prior context", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.allowedTools).toEqual([
+      "Read",
+      "memory_read_day",
+      "memory_list_days",
+      "memory_grep",
+      "memory_search",
+      "entity_get",
+    ]);
+    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
+      memory: {
+        command: "node",
+        env: { MONO_AGENT_MEMORY_PATH: memoryRoot },
+      },
+    });
+    const memoryServer = (fake.calls[0]?.options.mcpServers as Record<string, { readonly args?: readonly string[] }>).memory;
+    expect(memoryServer?.args?.[0]).toMatch(/memory-mcp[/\\]dist[/\\]main\.js$/u);
+  });
+
+  it("allows journal_append only when memory tools permit manual notes", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryRoot = join(dir, "memory");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        memoryPath: memoryRoot,
+        memoryMode: "journal",
+        memoryTools: { enabled: true, allowJournalAppend: true },
+        artifactDir,
+      }),
+      runtime: fake.runtime,
+    });
+    await responder.respond(
+      { conversationId: "c", text: "remember this", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.options.allowedTools).toContain("journal_append");
+    expect(fake.calls[0]?.options.allowedTools).not.toContain("entity_upsert");
+    expect(fake.calls[0]?.options.allowedTools).not.toContain("memory_reindex");
+  });
+
   it("creates a configured harness when a host wants to wrap the responder itself", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -346,6 +417,10 @@ function monoConfig(input: {
   readonly memoryPath?: string;
   readonly memoryMode?: "markdown" | "journal";
   readonly memoryWriteMode?: "disabled" | "append-host-summary";
+  readonly memoryTools?: {
+    readonly enabled: boolean;
+    readonly allowJournalAppend: boolean;
+  };
   readonly artifactDir: string;
 }): MonoAgentConfig {
   return {
@@ -380,6 +455,7 @@ function monoConfig(input: {
             maxBytes: 64_000,
             scope: "single-file",
             writeMode: input.memoryWriteMode ?? "disabled",
+            ...(input.memoryTools === undefined ? {} : { tools: input.memoryTools }),
           },
         }),
     tools: {
@@ -392,5 +468,5 @@ function monoConfig(input: {
     traceability: {
       registryDir: join(input.dir, "trace-sources"),
     },
-  };
+  } as unknown as MonoAgentConfig;
 }

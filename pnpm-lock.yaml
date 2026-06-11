@@ -185,6 +185,9 @@ importers:
       '@mono-agent/memory-journal':
         specifier: workspace:^0.1.0
         version: link:../memory-journal
+      '@mono-agent/memory-mcp':
+        specifier: workspace:^0.1.0
+        version: link:../memory-mcp
       '@mono-agent/memory-md':
         specifier: workspace:^0.1.0
         version: link:../memory-md

@@ -29,6 +29,8 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_MEMORY_WRITE_MODE: "append-host-summary",
         MONO_AGENT_MEMORY_SCOPE: "single-file",
         MONO_AGENT_MEMORY_MAX_BYTES: "2048",
+        MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
+        MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND: "true",
         MONO_AGENT_ARTIFACT_DIR: "artifacts",
         MONO_AGENT_TRACE_REGISTRY_DIR: "trace-registry",
         MONO_AGENT_TRACE_SOURCE_ID: "agent-one",
@@ -52,6 +54,10 @@ describe("loadMonoAgentConfig", () => {
       maxBytes: 2048,
       scope: "single-file",
       writeMode: "append-host-summary",
+      tools: {
+        enabled: true,
+        allowJournalAppend: true,
+      },
     });
     expect(config.tools).toEqual({
       allowedTools: ["Read", "Grep"],

@@ -28,6 +28,7 @@
     "@mono-agent/config": "workspace:^0.1.0",
     "@mono-agent/memory-graph": "workspace:^0.1.0",
     "@mono-agent/memory-journal": "workspace:^0.1.0",
+    "@mono-agent/memory-mcp": "workspace:^0.1.0",
     "@mono-agent/memory-md": "workspace:^0.1.0",
     "@mono-agent/observability": "workspace:^0.1.0",
     "@mono-agent/runtime-adapter": "workspace:^0.1.0",

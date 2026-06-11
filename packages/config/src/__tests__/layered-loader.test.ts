@@ -27,6 +27,14 @@ describe("layerJsonOntoEnv", () => {
       {
         runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 12 },
         context: { identityPath: "IDENTITY.md", selectedSkills: ["a", "b"] },
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          tools: {
+            enabled: true,
+            allowJournalAppend: true,
+          },
+        },
         tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
         traceability: { registryDir: ".mono-agent/traces", sourceId: "json-source", staleAfterMs: 60000 },
         providers: {
@@ -47,6 +55,10 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MAX_TURNS).toBe("12");
     expect(layered.MONO_AGENT_IDENTITY_PATH).toBe("IDENTITY.md");
     expect(layered.MONO_AGENT_SELECTED_SKILLS).toBe("a,b");
+    expect(layered.MONO_AGENT_MEMORY_MODE).toBe("journal");
+    expect(layered.MONO_AGENT_MEMORY_PATH).toBe(".mono-agent/memory");
+    expect(layered.MONO_AGENT_MEMORY_TOOLS_ENABLED).toBe("true");
+    expect(layered.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND).toBe("true");
     expect(layered.MONO_AGENT_ALLOWED_TOOLS).toBe("Read");
     expect(layered.MONO_AGENT_DISALLOWED_TOOLS).toBe("Bash");
     expect(layered.MONO_AGENT_TRACE_REGISTRY_DIR).toBe(".mono-agent/traces");
