@@ -65,10 +65,15 @@ async function readAuthFile(path) {
   throw new Error(`Unable to parse Pi auth file at ${path}: expected a JSON object`);
 }
 
+// The temp name carries a per-process sequence (not a timestamp) so concurrent
+// writers in the same millisecond never collide on the temp path.
+let atomicWriteSequence = 0;
+
 async function writeAuthFile(path, auth) {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  const tmpPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+  atomicWriteSequence += 1;
+  const tmpPath = `${path}.tmp-${process.pid}-${atomicWriteSequence}`;
   await writeFile(tmpPath, `${JSON.stringify(auth, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   await rename(tmpPath, path);
   await chmod(path, 0o600);

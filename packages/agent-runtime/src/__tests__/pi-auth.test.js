@@ -78,6 +78,25 @@ describe("createPiOAuthApiKeyResolver", () => {
     expect((await stat(authPath)).mode & 0o777).toBe(0o600);
   });
 
+  it("persists credentials when refreshes write concurrently", async () => {
+    const authPath = await writeAuth({ "openai-codex": oauthCredentials("old-token") });
+    getOAuthApiKeyMock.mockResolvedValue({
+      apiKey: "new-token",
+      newCredentials: {
+        access: "new-token",
+        refresh: "new-refresh",
+        expires: 4_200_000_000_000,
+      },
+    });
+    const resolver = createPiOAuthApiKeyResolver({ path: authPath });
+
+    const results = await Promise.all(Array.from({ length: 8 }, () => resolver("openai-codex")));
+
+    expect(results).toEqual(Array.from({ length: 8 }, () => "new-token"));
+    const auth = JSON.parse(await readFile(authPath, "utf8"));
+    expect(auth["openai-codex"]).toMatchObject({ access: "new-token" });
+  });
+
   it("throws when the auth file is not valid JSON", async () => {
     const dir = await tempDir();
     const authPath = join(dir, "auth.json");

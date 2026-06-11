@@ -335,15 +335,21 @@ function readMemoryToolsConfig(env: Record<string, string | undefined>): MemoryT
   if (!hasMemoryToolsEnv) {
     return undefined;
   }
-  return {
-    enabled: readBoolean(env.MONO_AGENT_MEMORY_TOOLS_ENABLED, "MONO_AGENT_MEMORY_TOOLS_ENABLED", false, invalidEnv),
-    allowJournalAppend: readBoolean(
-      env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
-      "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND",
-      false,
-      invalidEnv,
-    ),
-  };
+  const enabled = readBoolean(env.MONO_AGENT_MEMORY_TOOLS_ENABLED, "MONO_AGENT_MEMORY_TOOLS_ENABLED", false, invalidEnv);
+  const allowJournalAppend = readBoolean(
+    env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
+    "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND",
+    false,
+    invalidEnv,
+  );
+  if (allowJournalAppend && !enabled) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND requires MONO_AGENT_MEMORY_TOOLS_ENABLED=true.",
+      { env: "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND" },
+    );
+  }
+  return { enabled, allowJournalAppend };
 }
 
 function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["traceability"] {

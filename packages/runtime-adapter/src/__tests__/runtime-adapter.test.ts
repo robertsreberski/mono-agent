@@ -158,6 +158,16 @@ describe("runtime adapter fallback chain", () => {
       }),
     ).toThrow(RuntimeAdapterError);
   });
+
+  it("rejects non-object chain entries with a typed error", () => {
+    for (const entry of [null, undefined, "claude:claude-sonnet-4-6", ["claude"]]) {
+      expect(() =>
+        createMonoRuntime({
+          fallbackChain: [entry as never],
+        }),
+      ).toThrow(RuntimeAdapterError);
+    }
+  });
 });
 
 describe("runtime adapter local providers", () => {

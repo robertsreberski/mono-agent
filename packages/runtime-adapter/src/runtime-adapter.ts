@@ -206,6 +206,12 @@ function normalizeFallbackChain(
     throw new RuntimeAdapterError("invalid_runtime_options", "Runtime fallback chain must be a non-empty array.");
   }
   return fallbackChain.map((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new RuntimeAdapterError(
+        "invalid_runtime_options",
+        "Each runtime fallback chain entry must be an object with a model reference.",
+      );
+    }
     assertParsedRuntimeModelReference(entry.model);
     const executionMode = entry.executionMode ?? defaultExecutionModeForModel(entry.model);
     assertExecutionModeCompatible(entry.model, executionMode);

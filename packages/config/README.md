@@ -127,7 +127,9 @@ MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND=true
 
 `@mono-agent/agent-host` uses these flags to compose the memory MCP server. Recall
 tools are available when memory tools are enabled; manual journal appends are
-available only when `allowJournalAppend` is true.
+available only when `allowJournalAppend` is true. Setting `allowJournalAppend`
+without `enabled` is a config error — config fails closed instead of silently
+ignoring the append flag.
 
 ## Sandbox Policy
 

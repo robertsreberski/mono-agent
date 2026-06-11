@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import process from "node:process";
 
 import { startMonoAgentApp } from "./app.js";
@@ -259,8 +259,8 @@ function consoleLogger() {
   };
 }
 
-const isDirectCliInvocation = process.argv[1] !== undefined &&
-  (process.argv[1].endsWith("/cli.js") || process.argv[1].endsWith("mono-agent"));
+const cliEntryName = process.argv[1] === undefined ? undefined : basename(process.argv[1]);
+const isDirectCliInvocation = cliEntryName === "cli.js" || cliEntryName === "mono-agent";
 if (isDirectCliInvocation) {
   runCli(process.argv.slice(2))
     .then((code) => {

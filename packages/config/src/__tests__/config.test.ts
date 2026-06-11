@@ -125,6 +125,20 @@ describe("loadMonoAgentConfig", () => {
     expect(config.providers?.piAuthPath).toBe("/tmp/pi-auth.json");
   });
 
+  it("rejects journal append for memory tools that are not enabled", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory",
+          MONO_AGENT_MEMORY_MODE: "journal",
+          MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND: "true",
+        },
+      }),
+    ).toThrow(MonoAgentConfigError);
+  });
+
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
 
