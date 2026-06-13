@@ -1,4 +1,7 @@
-import type { AgentMessageStream as AgentMessageStreamBase } from "@mono-agent/agent-contracts";
+import type {
+  AgentMessageStream as AgentMessageStreamBase,
+  AgentStreamEvent,
+} from "@mono-agent/agent-contracts";
 import {
   DEFAULT_EMPTY_FINAL_TEXT,
   DEFAULT_MAX_MESSAGE_CHARS,
@@ -16,6 +19,7 @@ export interface AgentMessageStream extends AgentMessageStreamBase {
   status(text: string): Promise<void>;
   append(delta: string): Promise<void>;
   replace(text: string): Promise<void>;
+  event(event: AgentStreamEvent): Promise<void>;
   finish(finalText?: string): Promise<void>;
 }
 
@@ -55,6 +59,7 @@ export class TelegramMessageStream implements AgentMessageStream {
   private editTimer: ReturnType<typeof setTimeout> | undefined;
   private inFlightEdit: Promise<void> | undefined;
   private lastAsyncError: unknown;
+  private lastFlushedText: string | undefined;
   private finished = false;
 
   constructor(options: TelegramMessageStreamOptions) {
@@ -108,6 +113,39 @@ export class TelegramMessageStream implements AgentMessageStream {
     this.scheduleEdit();
   }
 
+  async event(event: AgentStreamEvent): Promise<void> {
+    this.assertOpen();
+    await this.throwIfAsyncError();
+
+    if (event.type === "assistant_thought") {
+      return;
+    }
+
+    if (event.type === "runtime_warning") {
+      this.logger?.warn?.("Telegram stream received runtime warning.", {
+        warningKind: event.warningKind,
+        message: event.message,
+      });
+      return;
+    }
+
+    if (event.type === "tool_call_started") {
+      this.logger?.debug?.("Telegram stream received tool start event.", {
+        id: event.id,
+        name: event.name,
+      });
+      return;
+    }
+
+    if (event.type === "tool_call_completed") {
+      this.logger?.debug?.("Telegram stream received tool completion event.", {
+        id: event.id,
+        name: event.name,
+        isError: event.isError === true,
+      });
+    }
+  }
+
   async finish(finalText?: string): Promise<void> {
     if (this.finished) {
       return;
@@ -139,6 +177,7 @@ export class TelegramMessageStream implements AgentMessageStream {
     }
 
     if (this.sendMessagePromise === undefined) {
+      const initialText = this.statusText;
       const params: {
         chat_id: TelegramChatId;
         text: string;
@@ -151,7 +190,10 @@ export class TelegramMessageStream implements AgentMessageStream {
         params.reply_to_message_id = this.replyToMessageId;
       }
 
-      this.sendMessagePromise = this.api.sendMessage(params);
+      this.sendMessagePromise = this.api.sendMessage(params).then((message) => {
+        this.lastFlushedText = initialText;
+        return message;
+      });
     }
 
     this.sentMessage = await this.sendMessagePromise;
@@ -185,12 +227,18 @@ export class TelegramMessageStream implements AgentMessageStream {
   }
 
   private async flushEdit(text: string): Promise<void> {
+    const normalizedText = normalizeTelegramText(text);
     const message = await this.ensureMessage();
+    if (normalizedText === this.lastFlushedText) {
+      return;
+    }
+
     await this.api.editMessageText({
       chat_id: this.chatId,
       message_id: message.message_id,
-      text: normalizeTelegramText(text),
+      text: normalizedText,
     });
+    this.lastFlushedText = normalizedText;
   }
 
   private cancelScheduledEdit(): void {
