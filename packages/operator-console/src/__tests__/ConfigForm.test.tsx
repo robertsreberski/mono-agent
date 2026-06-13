@@ -247,7 +247,7 @@ describe("<ConfigForm/>", () => {
     );
 
     const root = container.firstElementChild;
-    expect(root?.className).toContain("max-w-3xl");
+    expect(root?.className).toContain("max-w-5xl");
     const tabs = screen.getByLabelText("Settings sections");
     expect(tabs.className).toContain("overflow-x-auto");
     expect(tabs.className).toContain("max-w-full");
