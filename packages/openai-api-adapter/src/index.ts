@@ -5,10 +5,16 @@ export type {
 } from "./errors.js";
 export { startOpenAIApiAdapter } from "./server.js";
 export type {
+  OpenAIApiAttachment,
+  OpenAIApiAttachmentMetadata,
+  OpenAIApiAttachmentUrlKind,
   OpenAIApiAdapterLogger,
   OpenAIApiAdapterOptions,
   OpenAIApiAdapterStartResult,
   OpenAIApiChatRequest,
+  OpenAIApiImageAttachment,
+  OpenAIApiImageAttachmentMetadata,
+  OpenAIApiImageDetail,
   OpenAIApiRequestMetadata,
 } from "./server.js";
 
