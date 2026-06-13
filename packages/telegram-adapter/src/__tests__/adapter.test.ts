@@ -20,6 +20,8 @@ class FakeTelegramApi implements TelegramBotApi {
   readonly sendMessageCalls: TelegramSendMessageParams[] = [];
   readonly editMessageTextCalls: TelegramEditMessageTextParams[] = [];
   nextMessageId = 500;
+  rejectDuplicateEdits = false;
+  private readonly lastEditTextByMessageId = new Map<number, string>();
 
   async sendMessage(
     params: TelegramSendMessageParams,
@@ -37,6 +39,13 @@ class FakeTelegramApi implements TelegramBotApi {
     params: TelegramEditMessageTextParams,
     _options?: TelegramRequestOptions,
   ): Promise<TelegramSentMessage | true> {
+    if (this.rejectDuplicateEdits && params.message_id !== undefined) {
+      const previousText = this.lastEditTextByMessageId.get(params.message_id);
+      if (previousText === params.text) {
+        throw new Error("Bad Request: message is not modified");
+      }
+      this.lastEditTextByMessageId.set(params.message_id, params.text);
+    }
     this.editMessageTextCalls.push(params);
     return {
       message_id: params.message_id ?? 0,
@@ -158,6 +167,41 @@ describe("TelegramAdapter", () => {
       "partial",
       "final",
     ]);
+  });
+
+  it("keeps a successful run successful when the final streamed text is unchanged", async () => {
+    const api = new FakeTelegramApi();
+    api.rejectDuplicateEdits = true;
+    const bridge = new TelegramAdapter({
+      api,
+      allowAllChats: true,
+      stream: { editDebounceMs: 0 },
+      messages: {
+        errorText: "The agent failed honestly; check the local artifact summary for details.",
+      },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.event?.({ type: "assistant_thought", text: "I" });
+        await stream.event?.({ type: "assistant_thought", text: " see" });
+        await stream.append("Final answer.");
+        return {
+          text: "Final answer.",
+          metadata: { summary: { status: "succeeded" } },
+        };
+      }),
+    });
+
+    await expect(bridge.handleUpdate(textUpdate("hello"))).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+      metadata: { summary: { status: "succeeded" } },
+    });
+
+    expect(api.sendMessageCalls.map((call) => call.text)).toEqual(["Thinking…"]);
+    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
+      "Final answer.",
+    ]);
+    expect(api.sendMessageCalls.some((call) => call.text.includes("failed honestly"))).toBe(false);
+    expect(api.editMessageTextCalls.some((call) => call.text.includes("I see"))).toBe(false);
   });
 
   it("rejects unsupported messages without calling the responder", async () => {
