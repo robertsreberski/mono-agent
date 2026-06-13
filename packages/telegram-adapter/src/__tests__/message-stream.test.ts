@@ -106,6 +106,41 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls).toHaveLength(1);
   });
 
+  it("does not expose assistant thought events as Telegram edits", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      initialStatusText: "Working...",
+      editDebounceMs: 0,
+    });
+
+    await stream.status("Working...");
+    await stream.event({ type: "assistant_thought", text: "private reasoning" });
+    await stream.finish("final answer");
+
+    expect(api.sendMessageCalls).toEqual([{ chat_id: 42, text: "Working..." }]);
+    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
+      "final answer",
+    ]);
+  });
+
+  it("skips duplicate final edits after streamed content already reached Telegram", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      editDebounceMs: 0,
+    });
+
+    await stream.append("final answer");
+    await stream.finish("final answer");
+
+    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
+      "final answer",
+    ]);
+  });
+
   it("splits final output into Telegram-sized message chunks", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
