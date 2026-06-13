@@ -2,6 +2,7 @@
 node_modules/
 dist/
 coverage/
+.workflow/ultracode/
 .env
 .env.*
 !.env.example

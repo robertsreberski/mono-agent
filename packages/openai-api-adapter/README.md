@@ -41,6 +41,42 @@ Open WebUI caveat: title and tag generation requests go to the same backend and 
 
 Streaming responders may send structured stream events through `AgentMessageStream.event()`. Assistant thoughts are emitted as `delta.reasoning_content` so OpenWebUI can render them separately from the final answer. Internally executed tools are rendered as OpenWebUI `<details type="tool_calls">` content blocks after completion. The adapter intentionally does not emit `delta.tool_calls` or `finish_reason: "tool_calls"` for host-owned tools because those fields ask the client to execute tools.
 
+## OpenWebUI Upload Support
+
+OpenWebUI photo uploads arrive at OpenAI-compatible backends as standard Chat Completions content parts:
+
+```json
+{
+  "role": "user",
+  "content": [
+    { "type": "text", "text": "What is in this picture?" },
+    {
+      "type": "image_url",
+      "image_url": {
+        "url": "data:image/png;base64,...",
+        "detail": "high"
+      }
+    }
+  ]
+}
+```
+
+The adapter accepts `image_url` parts and exposes them on `OpenAIApiChatRequest.attachments` as typed image attachments. The text content still feeds `request.text`, so existing text-only responders keep working. Hosts with a vision-capable runtime can opt into the adapter-specific request type and read `request.attachments`; hosts that only use the generic `AgentResponder` contract will ignore the attachments.
+
+The adapter does not fetch remote image URLs, decode base64, validate image bytes, or claim model-level vision support. It preserves the attachment payload for the host responder. `metadata.openaiApi.attachments` contains only a small summary, excluding full image URLs and data payloads.
+
+### OpenWebUI Feature Triage
+
+| OpenWebUI feature | Possible to port here? | Worth porting now? | Decision |
+| --- | --- | --- | --- |
+| Photo/image upload in chat | Yes | Yes | Supported via Chat Completions `image_url` content parts and `request.attachments`. |
+| Multiple images in one message | Yes | Yes | Supported by preserving each `image_url` part as a separate attachment. |
+| Document/RAG file upload | Partly | No | OpenWebUI owns file ingestion with `/api/v1/files/`, file processing status, and knowledge collections. This Chat Completions bridge should consume the resulting prompt/context rather than reimplement OpenWebUI storage and retrieval. |
+| OpenAI Files API | Technically possible | No | Requires storage, lifecycle, purpose validation, and retrieval semantics outside this adapter's transport boundary. |
+| Image generation or editing | No, not in this API surface | No | This adapter serves Chat Completions; image generation/editing belongs to Images or Responses API support. |
+| Audio input/output | Possible later | No | The current shared responder contract is text-first plus optional image attachments; audio needs a separate contract decision. |
+| Client-executed OpenAI tool/function calls | Possible later | No | Host-owned tools already stream as OpenWebUI details blocks; emitting OpenAI tool calls would ask the client to execute tools and is intentionally unsupported. |
+
 ## Public API
 
 - `startOpenAIApiAdapter`
@@ -56,7 +92,7 @@ This adapter depends on Express plus shared contracts/settings primitives. It mu
 
 ## What This Package Does Not Own
 
-It does not build prompts, run models, persist conversations, implement the Responses API, embeddings, images, audio, OpenAI tool/function calling, TLS, or public deployment policy. The adapter binds to loopback by default; public deployment safety is host or reverse-proxy responsibility.
+It does not build prompts, run models, persist conversations, implement the Responses API, embeddings, image generation/editing, audio, OpenAI Files API storage, OpenAI tool/function calling, TLS, or public deployment policy. The adapter binds to loopback by default; public deployment safety is host or reverse-proxy responsibility.
 
 ## Verification
 
