@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
-import { startOpenAIApiAdapter } from "../index.js";
+import { startOpenAIApiAdapter, type OpenAIApiChatRequest } from "../index.js";
 
 describe("OpenAI API adapter", () => {
   it("serves OpenAI-compatible model discovery for OpenWebUI", async () => {
@@ -270,7 +270,101 @@ describe("OpenAI API adapter", () => {
     }
   });
 
-  it("rejects unsupported message content part types", async () => {
+  it("accepts OpenWebUI image_url content parts as structural attachments", async () => {
+    const seen: unknown[] = [];
+    const responder: AgentResponder<OpenAIApiChatRequest> = {
+      async respond(request, stream) {
+        seen.push({
+          text: request.text,
+          attachments: request.attachments,
+          metadata: request.metadata.openaiApi,
+        });
+        await stream.append("image received");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Describe this" },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: "data:image/png;base64,iVBORw0KGgo=",
+                    detail: "high",
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        choices: [
+          {
+            message: {
+              content: "image received",
+            },
+          },
+        ],
+      });
+      expect(seen).toEqual([
+        {
+          text: "user: Describe this",
+          attachments: [
+            {
+              type: "image",
+              source: "image_url",
+              url: "data:image/png;base64,iVBORw0KGgo=",
+              urlKind: "data",
+              mediaType: "image/png",
+              detail: "high",
+              messageRole: "user",
+              messageIndex: 0,
+              contentPartIndex: 1,
+            },
+          ],
+          metadata: expect.objectContaining({
+            attachments: {
+              count: 1,
+              images: [
+                {
+                  type: "image",
+                  source: "image_url",
+                  urlKind: "data",
+                  mediaType: "image/png",
+                  detail: "high",
+                  messageRole: "user",
+                  messageIndex: 0,
+                  contentPartIndex: 1,
+                },
+              ],
+            },
+          }),
+        },
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("rejects malformed image_url content parts", async () => {
     const responder = countingResponder();
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
@@ -290,7 +384,46 @@ describe("OpenAI API adapter", () => {
               role: "user",
               content: [
                 { type: "text", text: "Describe this" },
-                { type: "image_url", image_url: { url: "https://example.com/image.png" } },
+                { type: "image_url", image_url: { url: "" } },
+              ],
+            },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: {
+          type: "invalid_request_error",
+        },
+      });
+      expect(responder.calls).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("rejects unsupported message content part types other than text and image_url", async () => {
+    const responder = countingResponder();
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder: responder.responder,
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "Transcribe this" },
+                { type: "input_audio", input_audio: { data: "abc", format: "wav" } },
               ],
             },
           ],
