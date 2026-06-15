@@ -22,6 +22,13 @@ export interface TelegramApiErrorDetails {
   status?: number;
   errorCode?: number;
   telegramDescription?: string;
+  /**
+   * How long to wait before retrying, in milliseconds. Parsed from a Telegram
+   * `parameters.retry_after` value (or the HTTP `Retry-After` header) when
+   * present. Only the integer value is lifted — never the raw response body —
+   * so bot tokens cannot leak through this field.
+   */
+  retryAfterMs?: number;
   cause?: unknown;
 }
 
@@ -31,6 +38,7 @@ export class TelegramApiError extends Error {
   readonly status?: number;
   readonly errorCode?: number;
   readonly telegramDescription?: string;
+  readonly retryAfterMs?: number;
   override readonly cause?: unknown;
 
   constructor(message: string, details: TelegramApiErrorDetails) {
@@ -46,6 +54,9 @@ export class TelegramApiError extends Error {
     }
     if (details.telegramDescription !== undefined) {
       this.telegramDescription = details.telegramDescription;
+    }
+    if (details.retryAfterMs !== undefined) {
+      this.retryAfterMs = details.retryAfterMs;
     }
     if (details.cause !== undefined) {
       this.cause = details.cause;
@@ -69,6 +80,7 @@ interface TelegramErrorEnvelope {
   ok: false;
   error_code?: number;
   description?: string;
+  parameters?: { retry_after?: number };
 }
 
 type TelegramEnvelope<T> = TelegramOkEnvelope<T> | TelegramErrorEnvelope;
@@ -179,10 +191,18 @@ export class TelegramBotApiClient implements TelegramBotApi {
     cleanup();
 
     if (!response.ok) {
-      await safelyDrainResponse(response);
+      const retryAfterMs = await safelyReadRetryAfterMs(response);
+      const details: TelegramApiErrorDetails = {
+        kind: "http",
+        method,
+        status: response.status,
+      };
+      if (retryAfterMs !== undefined) {
+        details.retryAfterMs = retryAfterMs;
+      }
       throw new TelegramApiError(
         `Telegram API ${method} failed with HTTP ${response.status}.`,
-        { kind: "http", method, status: response.status },
+        details,
       );
     }
 
@@ -207,6 +227,10 @@ export class TelegramBotApiClient implements TelegramBotApi {
       }
       if (envelope.description !== undefined) {
         details.telegramDescription = envelope.description;
+      }
+      const retryAfter = envelope.parameters?.retry_after;
+      if (typeof retryAfter === "number" && Number.isFinite(retryAfter)) {
+        details.retryAfterMs = Math.max(0, retryAfter) * 1000;
       }
 
       throw new TelegramApiError(
@@ -237,6 +261,12 @@ function parseTelegramEnvelope<T>(
     }
     if (typeof payload.description === "string") {
       errorEnvelope.description = payload.description;
+    }
+    if (isRecord(payload.parameters)) {
+      const retryAfter = payload.parameters.retry_after;
+      if (typeof retryAfter === "number" && Number.isFinite(retryAfter)) {
+        errorEnvelope.parameters = { retry_after: retryAfter };
+      }
     }
     return errorEnvelope;
   }
@@ -306,10 +336,38 @@ function isAbortError(value: unknown): boolean {
   ) || (value instanceof Error && value.name === "AbortError");
 }
 
-async function safelyDrainResponse(response: Response): Promise<void> {
+/**
+ * Drain an errored HTTP response and best-effort extract a retry delay. Only
+ * the integer `parameters.retry_after` (or the `Retry-After` header) is lifted
+ * — the raw body is never surfaced, so bot tokens cannot leak. Returns the
+ * delay in milliseconds, or `undefined` when none is advertised.
+ */
+async function safelyReadRetryAfterMs(
+  response: Response,
+): Promise<number | undefined> {
+  let fromHeader: number | undefined;
+  const headerValue = response.headers.get("retry-after");
+  if (headerValue !== null) {
+    const parsed = Number.parseInt(headerValue, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      fromHeader = parsed * 1000;
+    }
+  }
+
   try {
-    await response.text();
+    const body = await response.text();
+    if (body.length > 0) {
+      const payload: unknown = JSON.parse(body);
+      if (isRecord(payload) && isRecord(payload.parameters)) {
+        const retryAfter = payload.parameters.retry_after;
+        if (typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter >= 0) {
+          return retryAfter * 1000;
+        }
+      }
+    }
   } catch {
     // Best effort only. Error messages intentionally avoid raw response bodies.
   }
+
+  return fromHeader;
 }

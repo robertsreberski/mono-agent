@@ -136,6 +136,62 @@ describe("TelegramBotApiClient", () => {
     expect(error.message).not.toContain(TOKEN);
   });
 
+  it("lifts retry_after from an ok=false rate-limit envelope", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        ok: false,
+        error_code: 429,
+        description: "Too Many Requests: retry after 7",
+        parameters: { retry_after: 7 },
+      }),
+    ) as unknown as typeof fetch;
+    const client = new TelegramBotApiClient({
+      token: TOKEN,
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    const error = await captureError(() =>
+      client.sendMessage({ chat_id: 1, text: "hello" }),
+    );
+
+    expect(error).toMatchObject({ kind: "telegram", errorCode: 429, retryAfterMs: 7000 });
+    expect(error.message).not.toContain(TOKEN);
+  });
+
+  it("lifts retry_after from an HTTP 429 response body and header", async () => {
+    const bodyClient = new TelegramBotApiClient({
+      token: TOKEN,
+      fetchImpl: vi.fn(async () =>
+        new Response(JSON.stringify({ ok: false, parameters: { retry_after: 3 } }), {
+          status: 429,
+        }),
+      ) as unknown as typeof fetch,
+      requestTimeoutMs: 0,
+    });
+    const headerClient = new TelegramBotApiClient({
+      token: TOKEN,
+      fetchImpl: vi.fn(async () =>
+        new Response(`rate limited ${TOKEN}`, {
+          status: 429,
+          headers: { "retry-after": "5" },
+        }),
+      ) as unknown as typeof fetch,
+      requestTimeoutMs: 0,
+    });
+
+    const bodyError = await captureError(() =>
+      bodyClient.sendMessage({ chat_id: 1, text: "hello" }),
+    );
+    const headerError = await captureError(() =>
+      headerClient.sendMessage({ chat_id: 1, text: "hello" }),
+    );
+
+    expect(bodyError).toMatchObject({ kind: "http", status: 429, retryAfterMs: 3000 });
+    expect(headerError).toMatchObject({ kind: "http", status: 429, retryAfterMs: 5000 });
+    expect(headerError.message).not.toContain(TOKEN);
+  });
+
   it("throws malformed errors for invalid JSON and response shapes", async () => {
     const invalidJsonClient = new TelegramBotApiClient({
       token: TOKEN,
