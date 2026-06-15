@@ -155,8 +155,17 @@ describe("<TraceabilityView/>", () => {
     render(<TraceabilityView client={makeStubClient({ fetchTraceabilityRuns, fetchTraceabilityRun })} />);
 
     expect((await screen.findAllByText("Agent A"))[0]).toBeInTheDocument();
+    expect(screen.getByText("Operations snapshot")).toBeInTheDocument();
+    expect(screen.getByText("2 sources")).toBeInTheDocument();
+    expect(screen.getByText("2 runs")).toBeInTheDocument();
+    expect(screen.getByText("1 warning")).toBeInTheDocument();
+    expect(screen.getByText("1 failing")).toBeInTheDocument();
     expect(screen.getAllByText("stale")[0]).toBeInTheDocument();
     await waitFor(() => expect(fetchTraceabilityRun).toHaveBeenCalledWith("agent-a", "run-a"));
+    expect(await screen.findByText("Event mix")).toBeInTheDocument();
+    expect(screen.getByText("3 thinking")).toBeInTheDocument();
+    expect(screen.getByText("1 tool")).toBeInTheDocument();
+    expect(screen.getByText("2 messages")).toBeInTheDocument();
     expect(await screen.findByText("Assistant thoughts")).toBeInTheDocument();
     expect(screen.getByText("I should inspect files.")).toBeInTheDocument();
     expect(screen.getByText("#1-#3 · 3 events")).toBeInTheDocument();
@@ -193,5 +202,19 @@ describe("<TraceabilityView/>", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(fetchTraceabilityRuns).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows an explicit empty run queue when traceability is enabled without runs", async () => {
+    const fetchTraceabilityRuns = vi.fn<OperatorConsoleClient["fetchTraceabilityRuns"]>().mockResolvedValue({
+      enabled: true,
+      sources: [sourceA],
+      runs: [],
+    } satisfies TraceabilityRunsResponse);
+    const fetchTraceabilityRun = vi.fn<OperatorConsoleClient["fetchTraceabilityRun"]>();
+
+    render(<TraceabilityView client={makeStubClient({ fetchTraceabilityRuns, fetchTraceabilityRun })} />);
+
+    expect(await screen.findByText("No runs have been recorded yet.")).toBeInTheDocument();
+    expect(fetchTraceabilityRun).not.toHaveBeenCalled();
   });
 });

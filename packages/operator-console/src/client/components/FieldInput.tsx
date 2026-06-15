@@ -34,6 +34,7 @@ export function FieldInput({
   onChange,
 }: FieldInputProps): React.JSX.Element {
   const labelId = `field-${field.id}`;
+  const descriptionId = field.description ? `${labelId}-description` : undefined;
   const isSecret = field.kind === "secret";
   const secretMarker =
     isSecret && isSecretMarker(currentValue) ? currentValue : null;
@@ -69,11 +70,19 @@ export function FieldInput({
         ) : null}
       </Label>
       {field.description ? (
-        <p className="text-xs text-muted-foreground">{field.description}</p>
+        <p id={descriptionId} className="text-xs text-muted-foreground">{field.description}</p>
       ) : null}
-      {renderControl(field, labelId, displayValue, onChange)}
+      {renderControl(field, labelId, displayValue, onChange, {
+        descriptionId,
+        required: field.required === true,
+      })}
     </div>
   );
+}
+
+interface ControlA11y {
+  readonly descriptionId: string | undefined;
+  readonly required: boolean;
 }
 
 function renderControl(
@@ -81,12 +90,18 @@ function renderControl(
   id: string,
   value: string,
   onChange: (next: string) => void,
+  a11y: ControlA11y,
 ): React.JSX.Element {
+  const controlA11y = {
+    ...(a11y.descriptionId === undefined ? {} : { "aria-describedby": a11y.descriptionId }),
+    ...(a11y.required ? { "aria-required": true } : {}),
+  } as const;
   switch (field.kind) {
     case "select":
       return (
         <Select
           id={id}
+          {...controlA11y}
           value={value}
           placeholder="— unset —"
           onChange={(e) => onChange(e.target.value)}
@@ -102,6 +117,7 @@ function renderControl(
       return (
         <Switch
           id={id}
+          {...controlA11y}
           checked={value === "true"}
           onCheckedChange={(next) => onChange(next ? "true" : "false")}
         />
@@ -110,6 +126,7 @@ function renderControl(
       return (
         <Input
           id={id}
+          {...controlA11y}
           type="number"
           inputMode="numeric"
           {...(field.min !== undefined ? { min: field.min } : {})}
@@ -125,6 +142,7 @@ function renderControl(
       return (
         <Input
           id={id}
+          {...controlA11y}
           type="password"
           autoComplete="new-password"
           placeholder="Set new value to replace"
@@ -139,6 +157,7 @@ function renderControl(
       return (
         <Input
           id={id}
+          {...controlA11y}
           type="text"
           {...(field.placeholder !== undefined
             ? { placeholder: field.placeholder }
