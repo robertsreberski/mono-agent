@@ -812,9 +812,9 @@ import { DEFAULT_WEIGHTS } from "../types.js";
 describe("rrfFuse", () => {
   it("rewards items ranked high in either list; top of both wins", () => {
     const vec = ["a", "b", "c"];
-    const kw = ["b", "d", "a"];
+    const kw = ["a", "d", "b"];
     const fused = rrfFuse([vec, kw], 60);
-    expect(fused[0]?.id).toBe("a"); // appears in both, high in both
+    expect(fused[0]?.id).toBe("a"); // rank-0 in both lists → unambiguously highest RRF
     expect(fused.map((f) => f.id)).toContain("d");
   });
 });
