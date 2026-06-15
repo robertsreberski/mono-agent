@@ -55,4 +55,17 @@ describe("BujoMemoryStore", () => {
     expect(block?.content).toContain("opt-in memory");
     await store.close();
   });
+
+  it("normalizes a multi-line host summary into one bullet line (does not throw)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-store-"));
+    const now = new Date("2026-06-15T09:00:00.000Z");
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
+    const multiline = "User asked about memory.\nAssistant proposed opt-in mode.\nAction: drafted the spec.";
+    await expect(store.appendHostSummary("s1", multiline)).resolves.toBeDefined();
+    const parsed = parseDailyFile(readFileSync(dailyFilePath(root, now), "utf8"));
+    expect(parsed.bullets).toHaveLength(1);
+    expect(parsed.bullets[0]?.text).not.toContain("\n");
+    expect(parsed.bullets[0]?.text).toContain("opt-in mode");
+    await store.close();
+  });
 });

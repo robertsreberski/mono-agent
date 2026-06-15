@@ -40,7 +40,10 @@ export class BujoMemoryStore implements MemoryStore {
       id: this.nextId(),
       type: "note",
       status: "open",
-      text: summary.trim(),
+      // Collapse whitespace/newlines to a single line: a bullet is one markdown line, and
+      // serializeBullet rejects newlines. The harness emits multi-line summaries; P2's distiller
+      // will split these into multiple atomic memories — for P1 we store one normalized line.
+      text: summary.trim().replace(/\s+/gu, " "),
       salience: 0.5,
       isInsight: false,
       createdAt: now.toISOString(),
