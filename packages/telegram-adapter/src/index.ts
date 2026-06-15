@@ -22,11 +22,17 @@ export type {
   TelegramApiErrorKind,
   TelegramBotApiClientOptions,
 } from "./telegram-client.js";
-export { TelegramMessageStream } from "./message-stream.js";
+export {
+  TelegramDeliveryError,
+  TelegramMessageStream,
+  classifyTelegramError,
+} from "./message-stream.js";
 export type {
   TelegramMessageStreamLogger,
   TelegramMessageStreamOptions,
+  TelegramSendOutcome,
 } from "./message-stream.js";
+export { escapeTelegramHtml, renderTelegramHtml } from "./telegram-html.js";
 export { TelegramAdapter } from "./adapter.js";
 export type {
   AgentRequest,

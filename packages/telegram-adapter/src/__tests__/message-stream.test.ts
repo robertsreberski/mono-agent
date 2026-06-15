@@ -4,6 +4,7 @@ import {
   splitTelegramText,
   TelegramMessageStream,
 } from "../message-stream.js";
+import { TelegramApiError } from "../telegram-client.js";
 import type {
   TelegramBotApi,
   TelegramEditMessageTextParams,
@@ -106,13 +107,14 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls).toHaveLength(1);
   });
 
-  it("does not expose assistant thought events as Telegram edits", async () => {
+  it("hides assistant thought events when showThoughts is disabled", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
       api,
       chatId: 42,
       initialStatusText: "Working...",
       editDebounceMs: 0,
+      showThoughts: false,
     });
 
     await stream.status("Working...");
@@ -123,6 +125,29 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
       "final answer",
     ]);
+  });
+
+  it("renders accumulated thoughts live and supersedes them with the answer", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({ type: "assistant_thought", text: "I" });
+    await stream.event({ type: "assistant_thought", text: " think" });
+    await stream.append("Final answer.");
+    await stream.finish("Final answer.");
+
+    // Thoughts accumulate into one "💭" message, then the answer replaces it.
+    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
+      "💭 I",
+      "💭 I think",
+      "Final answer.",
+    ]);
+    // No parse_mode is set for plain text without markup.
+    expect(api.editMessageTextCalls.every((call) => call.parse_mode === undefined)).toBe(true);
   });
 
   it("skips duplicate final edits after streamed content already reached Telegram", async () => {
@@ -206,21 +231,164 @@ describe("TelegramMessageStream", () => {
     ]);
   });
 
-  it("propagates send and edit failures", async () => {
-    const sendApi = new FakeTelegramApi();
-    sendApi.failSendWith = new Error("send failed");
-    const editApi = new FakeTelegramApi();
-    editApi.failEditWith = new Error("edit failed");
+  it("still rejects append when the initial placeholder send fails", async () => {
+    const api = new FakeTelegramApi();
+    api.failSendWith = new Error("send failed");
 
     await expect(
-      new TelegramMessageStream({ api: sendApi, chatId: 1 }).append("hello"),
+      new TelegramMessageStream({ api, chatId: 1 }).append("hello"),
     ).rejects.toThrow("send failed");
+  });
 
-    await expect(
-      new TelegramMessageStream({ api: editApi, chatId: 1 }).finish("done"),
-    ).rejects.toThrow("edit failed");
+  it("recovers a vanished edit target by sending a fresh message", async () => {
+    const sendCalls: TelegramSendMessageParams[] = [];
+    const editFailures = [
+      telegramApiError("Bad Request: message to edit not found"),
+    ];
+    let nextId = 200;
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        sendCalls.push(params);
+        return { message_id: nextId++, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText(params) {
+        const failure = editFailures.shift();
+        if (failure !== undefined) {
+          throw failure;
+        }
+        return { message_id: params.message_id ?? 0, chat: { id: params.chat_id ?? 0 }, text: params.text };
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+
+    const stream = new TelegramMessageStream({ api, chatId: 7, editDebounceMs: 0 });
+    await expect(stream.finish("recovered answer")).resolves.toBeUndefined();
+
+    expect(sendCalls.map((call) => call.text)).toEqual([
+      "Thinking…",
+      "recovered answer",
+    ]);
+  });
+
+  it("treats 'message is not modified' on the final edit as a success", async () => {
+    let editCalls = 0;
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        return { message_id: 300, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText() {
+        editCalls += 1;
+        throw telegramApiError("Bad Request: message is not modified");
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+
+    const stream = new TelegramMessageStream({ api, chatId: 1, editDebounceMs: 0 });
+    await expect(stream.finish("answer")).resolves.toBeUndefined();
+    expect(editCalls).toBe(1);
+  });
+
+  it("waits for retry_after then retries a rate-limited final edit", async () => {
+    let editCalls = 0;
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        return { message_id: 400, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText(params) {
+        editCalls += 1;
+        if (editCalls === 1) {
+          throw telegramApiError("Too Many Requests: retry after 2", {
+            errorCode: 429,
+            retryAfterMs: 2000,
+          });
+        }
+        return { message_id: params.message_id ?? 0, chat: { id: params.chat_id ?? 0 }, text: params.text };
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+
+    const stream = new TelegramMessageStream({ api, chatId: 1, editDebounceMs: 0 });
+    const finished = stream.finish("rate limited answer");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    await expect(finished).resolves.toBeUndefined();
+    expect(editCalls).toBe(2);
+  });
+
+  it("swallows a rate-limited interim edit without waiting or failing", async () => {
+    let editCalls = 0;
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        return { message_id: 500, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText(params) {
+        editCalls += 1;
+        if (editCalls === 1) {
+          throw telegramApiError("Too Many Requests", {
+            errorCode: 429,
+            retryAfterMs: 5000,
+          });
+        }
+        return { message_id: params.message_id ?? 0, chat: { id: params.chat_id ?? 0 }, text: params.text };
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+
+    const stream = new TelegramMessageStream({ api, chatId: 1, editDebounceMs: 0 });
+    await stream.append("partial");
+    await expect(stream.finish("done")).resolves.toBeUndefined();
+    expect(editCalls).toBe(2);
+  });
+
+  it("falls back to plain text when Telegram rejects the HTML entities", async () => {
+    const editParams: TelegramEditMessageTextParams[] = [];
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        return { message_id: 600, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText(params) {
+        editParams.push(params);
+        if (params.parse_mode === "HTML") {
+          throw telegramApiError("Bad Request: can't parse entities: unexpected tag");
+        }
+        return { message_id: params.message_id ?? 0, chat: { id: params.chat_id ?? 0 }, text: params.text };
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+
+    const stream = new TelegramMessageStream({ api, chatId: 1, editDebounceMs: 0 });
+    await expect(stream.finish("**bold** answer")).resolves.toBeUndefined();
+
+    expect(editParams).toHaveLength(2);
+    expect(editParams[0]?.parse_mode).toBe("HTML");
+    expect(editParams[0]?.text).toBe("<b>bold</b> answer");
+    expect(editParams[1]?.parse_mode).toBeUndefined();
+    expect(editParams[1]?.text).toBe("**bold** answer");
   });
 });
+
+function telegramApiError(
+  description: string,
+  overrides?: { errorCode?: number; retryAfterMs?: number },
+): TelegramApiError {
+  return new TelegramApiError("Telegram API editMessageText rejected the request.", {
+    kind: "telegram",
+    method: "editMessageText",
+    errorCode: overrides?.errorCode ?? 400,
+    telegramDescription: description,
+    ...(overrides?.retryAfterMs === undefined ? {} : { retryAfterMs: overrides.retryAfterMs }),
+  });
+}
 
 describe("splitTelegramText", () => {
   it("splits text without dropping characters", () => {

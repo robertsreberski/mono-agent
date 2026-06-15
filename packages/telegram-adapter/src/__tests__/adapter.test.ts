@@ -6,6 +6,7 @@ import {
   type AgentRequest,
   type AgentResponder,
 } from "../adapter.js";
+import { TelegramApiError } from "../telegram-client.js";
 import type {
   TelegramBotApi,
   TelegramEditMessageTextParams,
@@ -175,7 +176,7 @@ describe("TelegramAdapter", () => {
     const bridge = new TelegramAdapter({
       api,
       allowAllChats: true,
-      stream: { editDebounceMs: 0 },
+      stream: { editDebounceMs: 0, showThoughts: false },
       messages: {
         errorText: "The agent failed honestly; check the local artifact summary for details.",
       },
@@ -202,6 +203,88 @@ describe("TelegramAdapter", () => {
     ]);
     expect(api.sendMessageCalls.some((call) => call.text.includes("failed honestly"))).toBe(false);
     expect(api.editMessageTextCalls.some((call) => call.text.includes("I see"))).toBe(false);
+  });
+
+  it("keeps an AI success non-error when every Telegram delivery path fails", async () => {
+    const fatal = new TelegramApiError("Telegram API rejected the request.", {
+      kind: "telegram",
+      method: "sendMessage",
+      errorCode: 403,
+      telegramDescription: "Forbidden: bot was blocked by the user",
+    });
+    let sendCount = 0;
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        sendCount += 1;
+        if (sendCount === 1) {
+          return { message_id: 700, chat: { id: params.chat_id }, text: params.text };
+        }
+        throw fatal;
+      },
+      async editMessageText() {
+        throw fatal;
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+    const bridge = new TelegramAdapter({
+      api,
+      allowAllChats: true,
+      stream: { editDebounceMs: 0 },
+      messages: { errorText: "THE AGENT FAILED" },
+      responder: responderFrom(async () => ({
+        text: "the real answer",
+        metadata: { ok: true },
+      })),
+    });
+
+    // AI succeeded; even though no delivery path works, this is NOT an error.
+    await expect(bridge.handleUpdate(textUpdate("hello"))).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+      delivery: "degraded",
+      metadata: { ok: true },
+    });
+  });
+
+  it("keeps the run successful when an interim streamed edit fails", async () => {
+    let editCount = 0;
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        return { message_id: 800, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText(params) {
+        editCount += 1;
+        if (editCount === 1) {
+          throw new TelegramApiError("Telegram API editMessageText failed.", {
+            kind: "network",
+            method: "editMessageText",
+          });
+        }
+        return { message_id: params.message_id ?? 0, chat: { id: params.chat_id ?? 0 }, text: params.text };
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+    const bridge = new TelegramAdapter({
+      api,
+      allowAllChats: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.append("streaming partial");
+        return { text: "final answer" };
+      }),
+    });
+
+    await expect(bridge.handleUpdate(textUpdate("hello"))).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+      delivery: "ok",
+    });
+    // The interim edit failed (and was swallowed); the final edit succeeded.
+    expect(editCount).toBe(2);
   });
 
   it("rejects unsupported messages without calling the responder", async () => {

@@ -480,6 +480,10 @@ function telegramAdapterOptions(
     stream: {
       initialStatusText: "Agent is thinking...",
       editDebounceMs: 350,
+      maxSendRetries: 3,
+      retryCapMs: 60_000,
+      showThoughts: true,
+      formatHtml: true,
     },
     messages: {
       welcomeText: "Agent is online. Send a message to run the configured runtime.",
