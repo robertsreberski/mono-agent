@@ -45,6 +45,11 @@ export interface RecallHit {
   readonly score: number;
 }
 
+export interface SimilarHit {
+  readonly record: MemoryRecord;
+  readonly distance: number; // cosine distance from sqlite-vec (0 = identical)
+}
+
 export interface RecallWeights {
   readonly rrf: number;
   readonly recency: number;

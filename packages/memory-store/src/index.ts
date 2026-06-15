@@ -9,4 +9,5 @@ export type {
   RecallHit,
   RecallOptions,
   RecallWeights,
+  SimilarHit,
 } from "./types.js";

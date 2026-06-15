@@ -16,6 +16,7 @@ import {
   type RecallHit,
   type RecallOptions,
   type RecallWeights,
+  type SimilarHit,
 } from "./types.js";
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
 
@@ -214,6 +215,25 @@ export class MemoryDb {
     const placeholders = ids.map(() => "?").join(",");
     const rows = this.db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`).all(...ids) as Record<string, unknown>[];
     return rows.map((row) => this.fromRow(row));
+  }
+
+  async findSimilar(text: string, k = 5): Promise<SimilarHit[]> {
+    const [vector] = await this.embeddings.embed([`search_document: ${text}`]);
+    if (vector === undefined) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT m.id AS id, v.distance AS distance FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`,
+      )
+      .all(toBlob(vector), k + 8) as { id: string; distance: number }[]; // over-fetch, filter, then trim
+    const out: SimilarHit[] = [];
+    for (const row of rows) {
+      const record = this.get(row.id);
+      if (record === undefined) continue;
+      if (record.status === "invalidated" || record.status === "dropped") continue;
+      out.push({ record, distance: row.distance });
+      if (out.length >= k) break;
+    }
+    return out;
   }
 
   /**
