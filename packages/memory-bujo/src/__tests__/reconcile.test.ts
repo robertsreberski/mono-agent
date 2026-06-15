@@ -222,4 +222,30 @@ describe("reconcile", () => {
     const parsed = parseDailyFile(dailyContent(root));
     expect(parsed.bullets.find((b) => b.id === "UPD1")?.text).toBe(merged);
   });
+
+  it("case 5 — per-candidate isolation: a candidate whose write throws is skipped, others proceed", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    // Index record whose canonical daily file is MISSING (simulated index/markdown divergence).
+    await db.upsert({
+      id: "GHOST", type: "note", status: "open", text: "robert prefers opt in memory capture",
+      salience: 0.5, isInsight: false, createdAt: FIXED.toISOString(), accessCount: 0, tags: [],
+      source: { file: "daily/2099-01-01.md" },
+    });
+    // First candidate is similar to GHOST; LLM says "update" → rewriteBullet reads the missing file → throws.
+    // Second candidate is novel → must still be ADDed despite the first failing.
+    const llm = fakeLlm([["CLASSIFY", '{"action":"update","targetId":"GHOST","text":"merged text here"}']]);
+    const failing: CandidateMemory = { type: "note", text: "robert prefers opt in memory capture and review", salience: 0.6, isInsight: false };
+    const novel: CandidateMemory = { type: "task", text: "schedule the offsite logistics budget", salience: 0.7, isInsight: false };
+
+    const actions = await reconcile([failing, novel], makeDeps(db, root, llm));
+
+    // The failing candidate produced no action; the novel one was added — and reconcile did not throw.
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.kind).toBe("add");
+    const newId = actions[0]?.kind === "add" ? actions[0].id : "";
+    expect(db.get(newId)?.text).toBe(novel.text);
+    // GHOST was not partially mutated by the failed update (rewriteBullet threw before the index write).
+    expect(db.get("GHOST")?.status).toBe("open");
+  });
 });

@@ -49,16 +49,22 @@ export async function reconcile(
   const actions: ReconcileAction[] = [];
 
   for (const candidate of candidates) {
-    const similar = await deps.db.findSimilar(candidate.text, 5);
+    try {
+      const similar = await deps.db.findSimilar(candidate.text, 5);
 
-    // Clearly novel (nothing close enough) → ADD outright, no LLM.
-    if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
-      actions.push(await add(candidate, similar, deps, threadThreshold));
+      // Clearly novel (nothing close enough) → ADD outright, no LLM.
+      if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
+        actions.push(await add(candidate, similar, deps, threadThreshold));
+        continue;
+      }
+
+      const decision = await classify(candidate, similar, deps);
+      actions.push(await apply(candidate, decision, similar, deps, threadThreshold));
+    } catch {
+      // Per-candidate isolation: a failure on one candidate (e.g. a missing daily file during
+      // UPDATE/SUPERSEDE, or an embedding error) must not abort the rest of the batch. Skip it.
       continue;
     }
-
-    const decision = await classify(candidate, similar, deps);
-    actions.push(await apply(candidate, decision, similar, deps, threadThreshold));
   }
 
   return actions;
@@ -209,11 +215,13 @@ async function supersede(
     createdAt: now.toISOString(),
     refs: [],
   };
-  appendBullet(deps.root, bullet, now);
-  await deps.db.supersede(targetId, recordFor(bullet, deps.root, now));
+  // Canonical-markdown first (strike old, append new), then mirror to the index. If the index step
+  // throws, a rebuild from markdown still reproduces the correct state (old invalidated, new present).
   if (old.source.file !== undefined) {
     rewriteBullet(deps.root, old.source.file, targetId, { status: "invalidated" });
   }
+  appendBullet(deps.root, bullet, now);
+  await deps.db.supersede(targetId, recordFor(bullet, deps.root, now));
   return { kind: "supersede", oldId: targetId, newId: id };
 }
 
