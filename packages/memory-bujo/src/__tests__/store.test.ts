@@ -1,12 +1,14 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory-store";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { createBujoMemoryStore } from "../store.js";
-import { dailyFilePath } from "../daily.js";
+import { appendBullet, dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
+import type { Bullet } from "../types.js";
 
 describe("BujoMemoryStore", () => {
   it("appendHostSummary writes a canonical daily bullet and indexes it", async () => {
@@ -108,6 +110,139 @@ describe("BujoMemoryStore", () => {
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
     const result = await store.capture("s1", "some text that would be captured if llm was set");
     expect(result).toBeUndefined();
+    await store.close();
+  });
+
+  it("reflect() returns undefined when no llm configured", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-store-reflect-nollm-"));
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
+    const result = await store.reflect();
+    expect(result).toBeUndefined();
+    await store.close();
+  });
+
+  it("migrate() returns undefined when no llm configured", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-store-migrate-nollm-"));
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
+    const result = await store.migrate();
+    expect(result).toBeUndefined();
+    await store.close();
+  });
+
+  it("reflect() with llm: returns ReflectResult and writes future-log.md + index.md", async () => {
+    const DIM = 64;
+    const root = mkdtempSync(join(tmpdir(), "bujo-store-reflect-llm-"));
+    const now = new Date("2026-06-15T12:00:00.000Z");
+
+    // Seed 3+ memories directly into the db so reflect() can synthesize an insight
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(DIM), dim: DIM });
+    const sourceFile = relative(root, dailyFilePath(root, now));
+
+    interface SeedSpec { id: string; text: string; salience: number }
+    const seedSpecs: SeedSpec[] = [
+      { id: "S1", text: "Robert prefers morning focused work", salience: 0.7 },
+      { id: "S2", text: "Robert blocks calendar for deep work sessions", salience: 0.65 },
+      { id: "S3", text: "Robert avoids meetings before noon", salience: 0.6 },
+    ];
+    for (const spec of seedSpecs) {
+      const bullet: Bullet = {
+        id: spec.id,
+        type: "note",
+        status: "open",
+        text: spec.text,
+        salience: spec.salience,
+        isInsight: false,
+        createdAt: now.toISOString(),
+        refs: [],
+      };
+      appendBullet(root, bullet, now);
+      const record: MemoryRecord = {
+        id: spec.id,
+        type: "note",
+        status: "open",
+        text: spec.text,
+        salience: spec.salience,
+        isInsight: false,
+        createdAt: now.toISOString(),
+        accessCount: 0,
+        tags: [],
+        source: { file: sourceFile },
+      };
+      await db.upsert(record);
+    }
+    db.close();
+
+    const insightText = "Robert guards his morning focus hours";
+    const llm = fakeLlm([
+      ["insight", JSON.stringify([{ text: insightText, sourceIds: ["S1", "S2"] }])],
+    ]);
+
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(DIM), dim: DIM, clock: () => now, llm });
+
+    const result = await store.reflect();
+
+    expect(result).toBeDefined();
+    expect(result?.decayed).toBeGreaterThanOrEqual(0);
+    expect(result?.insights).toBe(1);
+    expect(result?.due).toBeGreaterThanOrEqual(0);
+
+    // future-log.md written by reflect()
+    expect(existsSync(join(root, "future-log.md"))).toBe(true);
+    // index.md written by reflect()
+    expect(existsSync(join(root, "index.md"))).toBe(true);
+
+    // index.md contains a memory entry
+    const indexContent = readFileSync(join(root, "index.md"), "utf8");
+    expect(indexContent).toContain("# Index");
+
+    await store.close();
+  });
+
+  it("migrate() with llm: returns MigrateResult and writes future-log.md", async () => {
+    const DIM = 64;
+    const root = mkdtempSync(join(tmpdir(), "bujo-store-migrate-llm-"));
+    const now = new Date("2026-06-15T12:00:00.000Z");
+    const sixtyDaysAgo = new Date(now.getTime() - 60 * 86_400_000);
+
+    // Seed an aging memory directly into the db
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(DIM), dim: DIM });
+    const bullet: Bullet = {
+      id: "STORE-MIG-1",
+      type: "note",
+      status: "open",
+      text: "buy milk from the corner store",
+      salience: 0.2,
+      isInsight: false,
+      createdAt: sixtyDaysAgo.toISOString(),
+      refs: [],
+    };
+    appendBullet(root, bullet, sixtyDaysAgo);
+    await db.upsert({
+      id: "STORE-MIG-1",
+      type: "note",
+      status: "open",
+      text: "buy milk from the corner store",
+      salience: 0.2,
+      isInsight: false,
+      createdAt: sixtyDaysAgo.toISOString(),
+      accessCount: 0,
+      tags: [],
+      source: { file: relative(root, dailyFilePath(root, sixtyDaysAgo)) },
+    });
+    db.close();
+
+    const llm = fakeLlm([["buy milk", JSON.stringify({ action: "forget" })]]);
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(DIM), dim: DIM, clock: () => now, llm });
+
+    const result = await store.migrate();
+
+    expect(result).toBeDefined();
+    expect(result?.reviewed).toBeGreaterThanOrEqual(1);
+    expect(result?.forgotten).toBe(1);
+
+    // future-log.md written by migrate()
+    expect(existsSync(join(root, "future-log.md"))).toBe(true);
+
     await store.close();
   });
 });

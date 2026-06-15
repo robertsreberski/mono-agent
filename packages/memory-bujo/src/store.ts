@@ -9,6 +9,9 @@ import { createIdFactory } from "./ids.js";
 import type { LlmComplete } from "./llm.js";
 import { captureTurn } from "./capture.js";
 import { composeRecallBlock } from "./recall.js";
+import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
+import { migrate as migrateFn, type MigrateResult } from "./migrate.js";
+import { writeFutureLog, writeIndex } from "./projections.js";
 import type { Bullet, BujoOptions } from "./types.js";
 
 export class BujoMemoryStore implements MemoryStore {
@@ -72,6 +75,45 @@ export class BujoMemoryStore implements MemoryStore {
     await this.db.upsert(record);
     // bytesWritten reflects the bullet line actually appended to the daily file, not the raw summary.
     return { conversationId, source: path, bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8") };
+  }
+
+  /**
+   * Run the nightly reflection ritual: decay salience, synthesize insights from top memories,
+   * and surface due intentions. Also writes future-log.md + index.md.
+   *
+   * Returns `undefined` when no `llm` was configured (matches `capture()` pattern).
+   */
+  async reflect(): Promise<ReflectResult | undefined> {
+    if (this.llm === undefined) return undefined;
+    const r = await reflectFn({
+      db: this.db,
+      root: this.root,
+      llm: this.llm,
+      nextId: this.nextId,
+      now: this.clock,
+    });
+    writeFutureLog(this.root, this.db, this.clock());
+    writeIndex(this.root, this.db, this.clock());
+    return r;
+  }
+
+  /**
+   * Run the monthly BuJo migration ritual: review aging open memories and apply LLM decisions
+   * (promote / reschedule / cluster / forget). Also writes future-log.md.
+   *
+   * Returns `undefined` when no `llm` was configured (matches `capture()` pattern).
+   */
+  async migrate(): Promise<MigrateResult | undefined> {
+    if (this.llm === undefined) return undefined;
+    const m = await migrateFn({
+      db: this.db,
+      root: this.root,
+      llm: this.llm,
+      nextId: this.nextId,
+      now: this.clock,
+    });
+    writeFutureLog(this.root, this.db, this.clock());
+    return m;
   }
 
   /**
