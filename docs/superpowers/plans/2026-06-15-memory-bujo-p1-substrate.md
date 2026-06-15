@@ -940,10 +940,10 @@ describe("recall", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     await db.upsert(note("a", "the cat sat on the mat"));
     await db.upsert(note("b", "stock market crash wiped out savings"));
-    await db.upsert(note("c", "a feline pricing plan for cats"));
-    const hits = await db.recall("cat", { topK: 3 });
-    expect(hits[0]?.record.id).toBe("a");
-    expect(hits.map((h) => h.record.id)).toContain("c");
+    await db.upsert(note("c", "a cat themed cafe downtown"));
+    const hits = await db.recall("cat mat", { topK: 3 });
+    expect(hits[0]?.record.id).toBe("a"); // shares both query tokens (cat, mat)
+    expect(hits.map((h) => h.record.id)).toContain("c"); // shares one (cat); b shares none
     db.close();
   });
 
