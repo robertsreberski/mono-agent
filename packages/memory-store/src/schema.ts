@@ -37,5 +37,20 @@ export function migrations(dim: number): readonly string[] {
     `CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(embedding float[${dim}] distance_metric=cosine)`,
     `CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status)`,
     `CREATE INDEX IF NOT EXISTS idx_memories_due ON memories(due_at)`,
+    `CREATE TABLE IF NOT EXISTS entities (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT,
+      summary TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT
+    )`,
+    `CREATE TABLE IF NOT EXISTS entity_relations (
+      src TEXT NOT NULL,
+      dst TEXT NOT NULL,
+      relation TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(src, dst, relation)
+    )`,
   ];
 }

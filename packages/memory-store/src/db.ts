@@ -11,6 +11,8 @@ import {
   DEFAULT_DECAY_GAMMA,
   DEFAULT_RRF_K,
   DEFAULT_WEIGHTS,
+  type EntityRecord,
+  type EntityRelationRecord,
   type MemoryDbOptions,
   type MemoryRecord,
   type RecallHit,
@@ -324,6 +326,59 @@ export class MemoryDb {
       ...(row.embedding_model != null && { embeddingModel: str(row.embedding_model) }),
       ...(row.dim != null && { dim: Number(row.dim) }),
       tags: JSON.parse(str(row.tags ?? "[]")) as string[],
+    };
+  }
+
+  upsertEntity(entity: EntityRecord): void {
+    this.db.prepare(
+      `INSERT INTO entities (id, name, type, summary, created_at, updated_at)
+       VALUES (@id, @name, @type, @summary, @created_at, @updated_at)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         type = excluded.type,
+         summary = excluded.summary,
+         updated_at = excluded.updated_at`,
+    ).run({
+      id: entity.id,
+      name: entity.name,
+      type: entity.type ?? null,
+      summary: entity.summary ?? null,
+      created_at: entity.createdAt,
+      updated_at: entity.updatedAt ?? null,
+    });
+  }
+
+  getEntity(id: string): EntityRecord | undefined {
+    const row = this.db.prepare(`SELECT * FROM entities WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    return row === undefined ? undefined : this.entityFromRow(row);
+  }
+
+  countEntities(): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM entities`).get() as { n: number }).n;
+  }
+
+  addEntityRelation(src: string, dst: string, relation: string): void {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO entity_relations (src, dst, relation, created_at) VALUES (?, ?, ?, ?)`,
+    ).run(src, dst, relation, this.clock().toISOString());
+  }
+
+  relationsFor(src: string): EntityRelationRecord[] {
+    const rows = this.db
+      .prepare(`SELECT src, dst, relation, created_at FROM entity_relations WHERE src = ?`)
+      .all(src) as { src: string; dst: string; relation: string; created_at: string }[];
+    return rows.map((r) => ({ src: r.src, dst: r.dst, relation: r.relation, createdAt: r.created_at }));
+  }
+
+  protected entityFromRow(row: Record<string, unknown>): EntityRecord {
+    const str = (v: unknown): string => String(v);
+    return {
+      id: str(row.id),
+      name: str(row.name),
+      ...(row.type != null && { type: str(row.type) }),
+      ...(row.summary != null && { summary: str(row.summary) }),
+      createdAt: str(row.created_at),
+      ...(row.updated_at != null && { updatedAt: str(row.updated_at) }),
     };
   }
 

@@ -1,5 +1,7 @@
 export { MemoryDb, openMemoryDb } from "./db.js";
 export type {
+  EntityRecord,
+  EntityRelationRecord,
   MemoryDbOptions,
   MemoryEdgeKind,
   MemoryRecord,

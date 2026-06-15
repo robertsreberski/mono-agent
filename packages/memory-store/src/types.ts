@@ -50,6 +50,22 @@ export interface SimilarHit {
   readonly distance: number; // cosine distance from sqlite-vec (0 = identical)
 }
 
+export interface EntityRecord {
+  readonly id: string;       // slug, e.g. "person:robert"
+  readonly name: string;
+  readonly type?: string;    // person | project | org | concept | ...
+  readonly summary?: string;
+  readonly createdAt: string;
+  readonly updatedAt?: string;
+}
+
+export interface EntityRelationRecord {
+  readonly src: string;
+  readonly dst: string;
+  readonly relation: string;
+  readonly createdAt: string;
+}
+
 export interface RecallWeights {
   readonly rrf: number;
   readonly recency: number;
