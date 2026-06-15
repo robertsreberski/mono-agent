@@ -361,6 +361,14 @@ export class MemoryDb {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM entities`).get() as { n: number }).n;
   }
 
+  /** All entities ordered by name, for index projections. */
+  listEntities(limit = 50): EntityRecord[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM entities ORDER BY name LIMIT ?`,
+    ).all(limit) as Record<string, unknown>[];
+    return rows.map((r) => this.entityFromRow(r));
+  }
+
   addEntityRelation(src: string, dst: string, relation: string): void {
     this.db.prepare(
       `INSERT OR IGNORE INTO entity_relations (src, dst, relation, created_at) VALUES (?, ?, ?, ?)`,
