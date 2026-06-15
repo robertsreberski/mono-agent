@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/skills",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Deterministic skill activation helpers for agent prompts.",
   "type": "module",
   "license": "UNLICENSED",
@@ -23,7 +23,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/context": "workspace:0.2.1"
+    "@mono-agent/context": "workspace:0.2.2"
   },
   "publishConfig": {
     "access": "public"

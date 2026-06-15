@@ -12,88 +12,88 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@mono-agent/a2a-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/a2a-adapter
       '@mono-agent/agent-app':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/agent-app
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/agent-contracts
       '@mono-agent/agent-evals':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/agent-evals
       '@mono-agent/agent-harness':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/agent-harness
       '@mono-agent/agent-host':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/agent-host
       '@mono-agent/agent-orchestrator':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/agent-orchestrator
       '@mono-agent/config':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/config
       '@mono-agent/context':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/context
       '@mono-agent/cron-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/cron-adapter
       '@mono-agent/memory-graph':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/memory-graph
       '@mono-agent/memory-journal':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/memory-journal
       '@mono-agent/memory-mcp':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/memory-mcp
       '@mono-agent/memory-md':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/memory-md
       '@mono-agent/memory-search':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/memory-search
       '@mono-agent/observability':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/observability
       '@mono-agent/openai-agents-runtime':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/openai-agents-runtime
       '@mono-agent/openai-api-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/openai-api-adapter
       '@mono-agent/operator-console':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/operator-console
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/runtime-adapter
       '@mono-agent/sandbox':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/sandbox
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/settings
       '@mono-agent/slack-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/slack-adapter
       '@mono-agent/telegram-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/telegram-adapter
       '@mono-agent/tool-policy':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/tool-policy
       '@mono-agent/tui':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/tui
       '@mono-agent/webhook-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/webhook-adapter
       '@mono-agent/whatsapp-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:packages/whatsapp-adapter
       '@types/node':
         specifier: ^22.15.18
@@ -114,10 +114,10 @@ importers:
         specifier: 1.0.0-alpha.0
         version: 1.0.0-alpha.0(express@5.2.1)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       express:
         specifier: ^5.1.0
@@ -130,46 +130,46 @@ importers:
   packages/agent-app:
     dependencies:
       '@mono-agent/a2a-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../a2a-adapter
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/agent-host':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-host
       '@mono-agent/config':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../config
       '@mono-agent/cron-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../cron-adapter
       '@mono-agent/observability':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../observability
       '@mono-agent/openai-api-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../openai-api-adapter
       '@mono-agent/operator-console':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../operator-console
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../runtime-adapter
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       '@mono-agent/slack-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../slack-adapter
       '@mono-agent/telegram-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../telegram-adapter
       '@mono-agent/webhook-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../webhook-adapter
       '@mono-agent/whatsapp-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../whatsapp-adapter
 
   packages/agent-contracts: {}
@@ -177,13 +177,13 @@ importers:
   packages/agent-evals:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/agent-harness':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-harness
       '@mono-agent/observability':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../observability
       agentevals:
         specifier: ^0.0.7
@@ -192,64 +192,64 @@ importers:
   packages/agent-harness:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/context':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../context
       '@mono-agent/memory-md':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-md
       '@mono-agent/observability':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../observability
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../runtime-adapter
       '@mono-agent/sandbox':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../sandbox
       '@mono-agent/skills':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../skills
       '@mono-agent/tool-policy':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../tool-policy
 
   packages/agent-host:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/agent-harness':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-harness
       '@mono-agent/config':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../config
       '@mono-agent/memory-graph':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-graph
       '@mono-agent/memory-journal':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-journal
       '@mono-agent/memory-mcp':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-mcp
       '@mono-agent/memory-md':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-md
       '@mono-agent/observability':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../observability
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../runtime-adapter
       '@mono-agent/sandbox':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../sandbox
       '@mono-agent/tool-policy':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../tool-policy
 
   packages/agent-orchestrator:
@@ -258,10 +258,10 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       zod:
         specifier: ^4.4.3
@@ -282,7 +282,7 @@ importers:
         specifier: ^1.12.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@mono-agent/sandbox':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../sandbox
       '@opencode-ai/sdk':
         specifier: ^1.15.13
@@ -294,13 +294,13 @@ importers:
   packages/config:
     dependencies:
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../runtime-adapter
       '@mono-agent/sandbox':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../sandbox
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
 
   packages/context: {}
@@ -308,10 +308,10 @@ importers:
   packages/cron-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       cron-parser:
         specifier: ^5.5.0
@@ -322,7 +322,7 @@ importers:
   packages/memory-journal:
     dependencies:
       '@mono-agent/memory-md':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-md
 
   packages/memory-mcp:
@@ -331,13 +331,13 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@mono-agent/memory-graph':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-graph
       '@mono-agent/memory-journal':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-journal
       '@mono-agent/memory-search':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../memory-search
       zod:
         specifier: ^4.4.3
@@ -352,7 +352,7 @@ importers:
   packages/openai-agents-runtime:
     dependencies:
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../runtime-adapter
       '@openai/agents':
         specifier: ^0.11.4
@@ -365,10 +365,10 @@ importers:
   packages/openai-api-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       express:
         specifier: ^5.1.0
@@ -381,10 +381,10 @@ importers:
   packages/operator-console:
     dependencies:
       '@mono-agent/observability':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../observability
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
     devDependencies:
       '@tailwindcss/vite':
@@ -442,19 +442,19 @@ importers:
   packages/runtime-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/agent-runtime':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-runtime
       '@mono-agent/sandbox':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../sandbox
 
   packages/sandbox:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
 
   packages/settings: {}
@@ -462,16 +462,16 @@ importers:
   packages/skills:
     dependencies:
       '@mono-agent/context':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../context
 
   packages/slack-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       ws:
         specifier: ^8.20.1
@@ -487,10 +487,10 @@ importers:
         specifier: ^2.0.3
         version: 2.0.3(grammy@1.44.0)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       grammy:
         specifier: ^1.44.0
@@ -504,10 +504,10 @@ importers:
   packages/tui:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/config':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../config
       ink:
         specifier: ^7.0.3
@@ -532,10 +532,10 @@ importers:
   packages/webhook-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       express:
         specifier: ^5.1.0
@@ -548,10 +548,10 @@ importers:
   packages/whatsapp-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../agent-contracts
       '@mono-agent/settings':
-        specifier: workspace:0.2.1
+        specifier: workspace:0.2.2
         version: link:../settings
       '@whiskeysockets/baileys':
         specifier: ^7.0.0-rc11
