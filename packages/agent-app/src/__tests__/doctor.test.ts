@@ -49,7 +49,7 @@ describe("validateMonoAgentFolder", () => {
     expect(runtime.details.join("\n")).toContain("Fallback model claude:claude-sonnet-4-6");
     expect(sectionById(report, "channel:webhook").status).toBe("ok");
     expect(sectionById(report, "channel:a2a").status).toBe("disabled");
-    expect(sectionById(report, "channel:telegram").status).toBe("waiting");
+    expect(sectionById(report, "channel:telegram").status).toBe("disabled");
   });
 
   it("reports the operator console section", async () => {

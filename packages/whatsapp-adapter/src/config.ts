@@ -22,12 +22,14 @@ export interface WhatsAppAdapterTriggerConfig {
 }
 
 export interface WhatsAppAdapterConfig {
+  readonly enabled: boolean;
   readonly allowedChatJids: readonly WhatsAppJid[];
   readonly allowAllChats: boolean;
   readonly trigger: WhatsAppAdapterTriggerConfig;
 }
 
 export interface RedactedWhatsAppAdapterConfig {
+  readonly enabled: boolean;
   readonly allowedChatJids: { readonly count: number };
   readonly allowAllChats: boolean;
   readonly trigger: {
@@ -89,6 +91,13 @@ export const whatsappFieldGroup: FieldGroup = defineFieldGroup({
   description: "Optional WhatsApp adapter allowlist and group trigger configuration.",
   fields: [
     {
+      id: "whatsapp.enabled",
+      label: "Enable WhatsApp",
+      description: "Start the WhatsApp adapter with the app. Off by default.",
+      kind: "switch",
+      path: ["whatsapp", "enabled"],
+    },
+    {
       id: "whatsapp.allowedChatJids",
       label: "Allowed chat JIDs",
       description: "Comma-separated list of chat JIDs the adapter will respond to.",
@@ -145,6 +154,12 @@ export async function loadWhatsAppAdapterConfig(
 ): Promise<WhatsAppAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerWhatsAppJsonOntoEnv(json, input.env);
+  const enabled = readBoolean(
+    env.MONO_AGENT_WHATSAPP_ENABLED,
+    "MONO_AGENT_WHATSAPP_ENABLED",
+    false,
+    invalidConfig,
+  );
   const allowedChatJids = readCsv(env.MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS);
   const allowAllChats = readBoolean(
     env.MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS,
@@ -168,6 +183,20 @@ export async function loadWhatsAppAdapterConfig(
     invalidConfig,
   );
 
+  const trigger: WhatsAppAdapterTriggerConfig = {
+    groupMode,
+    botJids,
+    mentionTextAliases,
+    stripMentionText,
+  };
+
+  // A disabled channel never validates its allowlist: the status surface reads
+  // it as "disabled", not "waiting for config". Only an enabled channel demands
+  // an allowlist (a missing one then becomes a real "waiting" reason).
+  if (!enabled) {
+    return { enabled: false, allowedChatJids, allowAllChats, trigger };
+  }
+
   if (!allowAllChats && allowedChatJids.length === 0) {
     throw missingRequiredConfig(
       "WhatsApp adapter requires MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS or MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS=true.",
@@ -175,22 +204,14 @@ export async function loadWhatsAppAdapterConfig(
     );
   }
 
-  return {
-    allowedChatJids,
-    allowAllChats,
-    trigger: {
-      groupMode,
-      botJids,
-      mentionTextAliases,
-      stripMentionText,
-    },
-  };
+  return { enabled: true, allowedChatJids, allowAllChats, trigger };
 }
 
 export function redactWhatsAppAdapterConfig(
   config: WhatsAppAdapterConfig,
 ): RedactedWhatsAppAdapterConfig {
   return {
+    enabled: config.enabled,
     allowedChatJids: { count: config.allowedChatJids.length },
     allowAllChats: config.allowAllChats,
     trigger: {
@@ -208,6 +229,7 @@ function layerWhatsAppJsonOntoEnv(
 ): Record<string, string | undefined> {
   const section = readJsonSection(json, "whatsapp");
   return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_WHATSAPP_ENABLED", value: section.enabled, kind: "boolean" },
     { env: "MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS", value: section.allowedChatJids, kind: "csv" },
     { env: "MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS", value: section.allowAllChats, kind: "boolean" },
     { env: "MONO_AGENT_WHATSAPP_GROUP_MODE", value: section.groupMode },

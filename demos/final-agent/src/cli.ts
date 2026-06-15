@@ -61,6 +61,10 @@ function printTelegramStatus(status: TelegramStatus): void {
     console.log("telegram:  running");
     return;
   }
+  if (status.kind === "disabled") {
+    console.log(`telegram:  disabled — ${status.reason}`);
+    return;
+  }
   if (status.kind === "waiting_for_config") {
     console.log(`telegram:  waiting_for_config — ${status.reason}`);
     return;

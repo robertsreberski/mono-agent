@@ -8,6 +8,8 @@ Category: `communication`
 
 WhatsApp communication adapter for agent hosts using Baileys-compatible sockets. It normalizes WhatsApp messages, handles direct and group mention triggers, streams replies, supports cancellation, and enforces explicit chat allowlists or allow-all mode.
 
+The adapter is opt-in: `whatsapp.enabled` / `MONO_AGENT_WHATSAPP_ENABLED` defaults to `false`. While disabled the loader skips allowlist validation and the channel reports `disabled` rather than `waiting_for_config`. Set `enabled: true` to turn it on; a missing allowlist (without allow-all) then surfaces as a real `waiting_for_config` reason.
+
 ## Install / Usage
 
 ```bash

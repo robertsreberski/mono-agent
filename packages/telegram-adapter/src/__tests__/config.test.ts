@@ -28,6 +28,7 @@ describe("loadTelegramAdapterConfig", () => {
       path,
       `${JSON.stringify({
         telegram: {
+          enabled: true,
           botToken: "123456:json-token",
           allowedChatIds: ["111", "222"],
         },
@@ -37,6 +38,7 @@ describe("loadTelegramAdapterConfig", () => {
 
     const config = await loadTelegramAdapterConfig({ env: {}, jsonPath: path });
     expect(config).toEqual({
+      enabled: true,
       botToken: "123456:json-token",
       allowedChatIds: ["111", "222"],
       allowAllChats: false,
@@ -58,6 +60,7 @@ describe("loadTelegramAdapterConfig", () => {
 
     const config = await loadTelegramAdapterConfig({
       env: {
+        MONO_AGENT_TELEGRAM_ENABLED: "true",
         MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:env-token",
         MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS: "",
         MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
@@ -66,24 +69,36 @@ describe("loadTelegramAdapterConfig", () => {
     });
 
     expect(config).toEqual({
+      enabled: true,
       botToken: "123456:env-token",
       allowedChatIds: [],
       allowAllChats: true,
     });
   });
 
-  it("requires either an explicit allowlist or explicit allow-all choice", async () => {
+  it("requires either an explicit allowlist or explicit allow-all choice when enabled", async () => {
     await expect(
       loadTelegramAdapterConfig({
-        env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:token" },
+        env: { MONO_AGENT_TELEGRAM_ENABLED: "true", MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:token" },
       }),
     ).rejects.toBeInstanceOf(TelegramAdapterConfigError);
+  });
+
+  it("is disabled by default and skips credential validation", async () => {
+    const config = await loadTelegramAdapterConfig({ env: {} });
+    expect(config).toEqual({
+      enabled: false,
+      botToken: "",
+      allowedChatIds: [],
+      allowAllChats: false,
+    });
   });
 });
 
 describe("redactTelegramAdapterConfig", () => {
   it("redacts bot tokens and reports chat ids by count", () => {
     const redacted = redactTelegramAdapterConfig({
+      enabled: true,
       botToken: "123456:test-token",
       allowedChatIds: ["111", "222"],
       allowAllChats: false,
@@ -92,6 +107,7 @@ describe("redactTelegramAdapterConfig", () => {
     expect(JSON.stringify(redacted)).not.toContain("secret-token");
     expect(JSON.stringify(redacted)).not.toContain("111");
     expect(redacted).toEqual({
+      enabled: true,
       botToken: { present: true, redacted: true },
       allowedChatIds: { count: 2 },
       allowAllChats: false,
@@ -102,6 +118,7 @@ describe("redactTelegramAdapterConfig", () => {
 describe("telegramFieldGroup", () => {
   it("declares Telegram adapter settings including the write-only token", () => {
     expect(telegramFieldGroup.id).toBe("telegram");
+    expect(telegramFieldGroup.fields.find((field) => field.id === "telegram.enabled")?.kind).toBe("switch");
     expect(telegramFieldGroup.fields.find((field) => field.id === "telegram.botToken")?.kind).toBe("secret");
     expect(telegramFieldGroup.fields.find((field) => field.id === "telegram.allowAllChats")?.kind).toBe("switch");
   });

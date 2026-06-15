@@ -33,11 +33,32 @@ const cron = startCronAdapter({
 
 Only future ticks after startup are scheduled. Overlapping runs for the same job are skipped, not queued or run concurrently.
 
+### Jobs as markdown files
+
+Besides `cron.jobs` JSON / `MONO_AGENT_CRON_*` env, jobs can be authored as one `*.md` file per job in a cron folder. Frontmatter holds the schedule metadata and the markdown body is the prompt — convenient for refining long prompt templates:
+
+```markdown
+---
+expression: 0 8 * * *
+timezone: Europe/Warsaw
+enabled: true
+conversationId: daily-digest
+---
+
+Summarize yesterday across my channels and post a short digest.
+```
+
+- `id` defaults to the filename stem; `timezone` defaults to `UTC`; `enabled` defaults to `true`. The body is required and `expression` is required.
+- The folder is resolved against the host working directory from `cron.dir` / `MONO_AGENT_CRON_DIR` (default `cron/`). A missing folder is not an error.
+- Folder jobs are merged with config jobs; a duplicate `id` across sources is a hard error.
+
 ## Public API
 
 - `startCronAdapter`
 - `CronAdapterError`
 - `loadCronAdapterConfig`
+- `loadCronJobsFromDirectory`
+- `parseCronJobMarkdown`
 - `redactCronAdapterConfig`
 - `cronFieldGroup`
 - Cron adapter, job, result, metadata, config, and logger types

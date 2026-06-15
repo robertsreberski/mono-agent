@@ -28,6 +28,7 @@ describe("loadWhatsAppAdapterConfig", () => {
       path,
       `${JSON.stringify({
         whatsapp: {
+          enabled: true,
           allowedChatJids: ["123@s.whatsapp.net", "456@g.us"],
           groupMode: "mention",
           botJids: ["999@s.whatsapp.net"],
@@ -39,6 +40,7 @@ describe("loadWhatsAppAdapterConfig", () => {
 
     const config = await loadWhatsAppAdapterConfig({ env: {}, jsonPath: path });
     expect(config).toEqual({
+      enabled: true,
       allowedChatJids: ["123@s.whatsapp.net", "456@g.us"],
       allowAllChats: false,
       trigger: {
@@ -65,6 +67,7 @@ describe("loadWhatsAppAdapterConfig", () => {
 
     const config = await loadWhatsAppAdapterConfig({
       env: {
+        MONO_AGENT_WHATSAPP_ENABLED: "true",
         MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS: "",
         MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS: "true",
         MONO_AGENT_WHATSAPP_GROUP_MODE: "any",
@@ -76,6 +79,7 @@ describe("loadWhatsAppAdapterConfig", () => {
     });
 
     expect(config).toEqual({
+      enabled: true,
       allowedChatJids: [],
       allowAllChats: true,
       trigger: {
@@ -87,10 +91,25 @@ describe("loadWhatsAppAdapterConfig", () => {
     });
   });
 
-  it("requires either an explicit allowlist or explicit allow-all choice", async () => {
+  it("requires either an explicit allowlist or explicit allow-all choice when enabled", async () => {
     await expect(
-      loadWhatsAppAdapterConfig({ env: {} }),
+      loadWhatsAppAdapterConfig({ env: { MONO_AGENT_WHATSAPP_ENABLED: "true" } }),
     ).rejects.toBeInstanceOf(WhatsAppAdapterConfigError);
+  });
+
+  it("is disabled by default and skips allowlist validation", async () => {
+    const config = await loadWhatsAppAdapterConfig({ env: {} });
+    expect(config).toEqual({
+      enabled: false,
+      allowedChatJids: [],
+      allowAllChats: false,
+      trigger: {
+        groupMode: "mention",
+        botJids: [],
+        mentionTextAliases: [],
+        stripMentionText: false,
+      },
+    });
   });
 
   it("rejects invalid group modes", async () => {
@@ -108,6 +127,7 @@ describe("loadWhatsAppAdapterConfig", () => {
 describe("redactWhatsAppAdapterConfig", () => {
   it("reports sensitive identifiers only by count", () => {
     const redacted = redactWhatsAppAdapterConfig({
+      enabled: true,
       allowedChatJids: ["123@s.whatsapp.net"],
       allowAllChats: false,
       trigger: {
@@ -121,6 +141,7 @@ describe("redactWhatsAppAdapterConfig", () => {
     expect(JSON.stringify(redacted)).not.toContain("123@s.whatsapp.net");
     expect(JSON.stringify(redacted)).not.toContain("bot@s.whatsapp.net");
     expect(redacted).toEqual({
+      enabled: true,
       allowedChatJids: { count: 1 },
       allowAllChats: false,
       trigger: {
@@ -136,6 +157,7 @@ describe("redactWhatsAppAdapterConfig", () => {
 describe("whatsappFieldGroup", () => {
   it("declares WhatsApp adapter allowlist and trigger settings", () => {
     expect(whatsappFieldGroup.id).toBe("whatsapp");
+    expect(whatsappFieldGroup.fields.find((field) => field.id === "whatsapp.enabled")?.kind).toBe("switch");
     expect(whatsappFieldGroup.fields.find((field) => field.id === "whatsapp.allowedChatJids")?.kind).toBe("csv");
     expect(whatsappFieldGroup.fields.find((field) => field.id === "whatsapp.groupMode")?.kind).toBe("select");
     expect(whatsappFieldGroup.fields.find((field) => field.id === "whatsapp.stripMentionText")?.kind).toBe("switch");

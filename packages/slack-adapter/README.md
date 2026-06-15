@@ -18,6 +18,8 @@ pnpm --filter @mono-agent/slack-adapter run build
 
 Adapter settings can be loaded from nested JSON under `slack` or explicit environment variables such as `MONO_AGENT_SLACK_BOT_TOKEN`, `MONO_AGENT_SLACK_APP_TOKEN`, and `MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS`.
 
+The adapter is opt-in: `slack.enabled` / `MONO_AGENT_SLACK_ENABLED` defaults to `false`. While disabled the loader skips token validation and the channel reports `disabled` rather than `waiting_for_config`. Set `enabled: true` to turn it on; missing tokens or allowlist then surface as a real `waiting_for_config` reason.
+
 ## Public API
 
 - `slackFieldGroup`
