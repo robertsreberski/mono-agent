@@ -35,4 +35,12 @@ describe("supersede", () => {
     expect(all.map((h) => h.record.id)).toContain("old");
     db.close();
   });
+
+  it("rejects an unknown oldId or a self-supersede", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    await db.upsert(note("old", "Berlin"));
+    await expect(db.supersede("missing", note("new", "Lisbon"))).rejects.toThrow(/unknown memory/);
+    await expect(db.supersede("old", note("old", "self"))).rejects.toThrow(/distinct id/);
+    db.close();
+  });
 });

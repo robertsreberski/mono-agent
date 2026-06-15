@@ -152,6 +152,12 @@ export class MemoryDb {
   }
 
   async supersede(oldId: string, replacement: MemoryRecord): Promise<void> {
+    if (oldId === replacement.id) {
+      throw new Error("memory-store: supersede requires a replacement with a distinct id.");
+    }
+    if (this.get(oldId) === undefined) {
+      throw new Error(`memory-store: cannot supersede unknown memory "${oldId}".`);
+    }
     const now = this.clock().toISOString();
     await this.upsert(replacement);
     const tx = this.db.transaction(() => {
