@@ -138,12 +138,14 @@ my-agent/
   },
 
   "telegram": {
+    "enabled": true,                       // opt-in; defaults to false (off → "disabled")
     "botToken": "...",
     "allowedChatIds": ["123456789"],       // or "allowAllChats": true
     "allowAllChats": false
   },
 
   "slack": {
+    "enabled": true,                       // opt-in; defaults to false (off → "disabled")
     "botToken": "xoxb-...",                // Socket Mode app
     "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
@@ -154,6 +156,7 @@ my-agent/
   },
 
   "whatsapp": {
+    "enabled": true,                       // opt-in; defaults to false (off → "disabled")
     "allowedChatJids": ["123@s.whatsapp.net"], // or "allowAllChats": true
     "allowAllChats": false,
     "groupMode": "mention",                // mention | any (group trigger rule)
@@ -187,6 +190,7 @@ my-agent/
   },
 
   "cron": {
+    "dir": "cron",                         // optional: folder of *.md jobs (frontmatter + prompt body), default "cron"
     "jobs": [
       {
         "id": "daily",
@@ -197,6 +201,7 @@ my-agent/
         "conversationId": "cron-daily"     // optional: share memory/history across ticks
       }
     ]
+    // Jobs here merge with cron/*.md files (duplicate ids error).
     // Overlapping ticks of the same job are skipped, never queued.
   }
 }

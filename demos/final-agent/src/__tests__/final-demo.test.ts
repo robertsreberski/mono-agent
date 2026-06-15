@@ -67,10 +67,10 @@ describe("final agent demo", () => {
       expect(demo.operatorConsole.token).toMatch(/^[0-9a-f]{64}$/u);
       expect(demo.operatorConsole.configPath).toBe(resolve(dir, "mono-agent.config.json"));
       const missingConfigStatus = demo.telegramStatus;
-      if (missingConfigStatus.kind !== "waiting_for_config") {
-        throw new Error(`Expected waiting_for_config, got ${missingConfigStatus.kind}.`);
+      if (missingConfigStatus.kind !== "disabled") {
+        throw new Error(`Expected disabled, got ${missingConfigStatus.kind}.`);
       }
-      expect(missingConfigStatus.reason).toMatch(/MONO_AGENT_TELEGRAM_BOT_TOKEN/u);
+      expect(missingConfigStatus.reason).toMatch(/disabled/iu);
       expect(demo.a2aStatus).toMatchObject({ kind: "disabled" });
       expect(telegram.starts).toHaveLength(0);
 
@@ -113,7 +113,7 @@ describe("final agent demo", () => {
     });
 
     try {
-      expect(demo.telegramStatus.kind).toBe("waiting_for_config");
+      expect(demo.telegramStatus.kind).toBe("disabled");
       const initial = await getConfig(demo.operatorConsole.url, demo.operatorConsole.token);
       const put = await putConfig(demo.operatorConsole.url, demo.operatorConsole.token, initial.version, validConfigPatch());
       expect(put.status).toBe(200);
@@ -197,7 +197,7 @@ describe("final agent demo", () => {
     });
 
     try {
-      expect(demo.telegramStatus.kind).toBe("waiting_for_config");
+      expect(demo.telegramStatus.kind).toBe("disabled");
       expect(telegram.starts).toHaveLength(0);
       const a2aStatus = demo.a2aStatus;
       if (a2aStatus.kind !== "running") {
@@ -660,6 +660,7 @@ describe("final agent demo", () => {
 function validConfigPatch() {
   return {
     telegram: {
+      enabled: true,
       botToken: "123456:test-token",
       allowedChatIds: ["987654321"],
     },

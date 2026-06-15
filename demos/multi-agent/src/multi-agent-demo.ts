@@ -505,6 +505,10 @@ class MultiAgentDemoController implements MultiAgentDemo {
       return { kind: "waiting_for_config", reason: reasonOf(error) };
     }
 
+    if (!telegramConfig.enabled) {
+      return { kind: "disabled", reason: "Telegram is disabled (set telegram.enabled to true)." };
+    }
+
     try {
       const startAdapter = this.telegramStartAdapter ?? startTelegramAdapter;
       const result = await startAdapter({

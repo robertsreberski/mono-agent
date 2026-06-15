@@ -142,6 +142,9 @@ export function createTelegramChannelDriver(
     isConfigError(error) {
       return error instanceof TelegramAdapterConfigError;
     },
+    disabledReason(config) {
+      return config.enabled ? undefined : "Telegram is disabled.";
+    },
     async start(input) {
       const startAdapter = overrides.startAdapter ?? startTelegramAdapter;
       const result = await startAdapter(telegramStartOptions(input, overrides));
@@ -170,6 +173,9 @@ export function createSlackChannelDriver(
     },
     isConfigError(error) {
       return error instanceof SlackAdapterConfigError;
+    },
+    disabledReason(config) {
+      return config.enabled ? undefined : "Slack is disabled.";
     },
     async start(input) {
       const startAdapter = overrides.startAdapter ?? startSlackAdapter;
@@ -347,7 +353,7 @@ export function createCronChannelDriver(
     id: "cron",
     label: "Cron",
     async loadConfig(input) {
-      return await loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath });
+      return await loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
     },
     isConfigError(error) {
       return error instanceof CronAdapterError;
@@ -402,6 +408,9 @@ export function createWhatsAppChannelDriver(
     },
     isConfigError(error) {
       return error instanceof WhatsAppAdapterConfigError;
+    },
+    disabledReason(config) {
+      return config.enabled ? undefined : "WhatsApp is disabled.";
     },
     async start(input) {
       const startAdapter = overrides.startAdapter ?? startWhatsAppAdapter;

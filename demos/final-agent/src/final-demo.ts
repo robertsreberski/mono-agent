@@ -76,6 +76,7 @@ export interface FinalAgentDemoOperatorConsole {
 }
 
 export type TelegramStatus =
+  | { readonly kind: "disabled"; readonly reason: string }
   | { readonly kind: "waiting_for_config"; readonly reason: string }
   | { readonly kind: "running"; readonly config: RedactedFinalAgentDemoConfig }
   | { readonly kind: "failed"; readonly reason: string };
@@ -223,9 +224,6 @@ class FinalAgentDemoFacade implements FinalAgentDemo {
     const status = this.app.channelStatus("telegram");
     if (status.kind === "running") {
       return { kind: "running", config: demoConfigOf(status) };
-    }
-    if (status.kind === "disabled") {
-      return { kind: "waiting_for_config", reason: status.reason };
     }
     return status;
   }

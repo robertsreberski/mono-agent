@@ -55,6 +55,7 @@ class FakeSocket implements WhatsAppSocketLike {
 
 function buildConfig(overrides: Partial<WhatsAppAdapterConfig> = {}): WhatsAppAdapterConfig {
   return {
+    enabled: true,
     allowedChatJids: ["123@s.whatsapp.net"],
     allowAllChats: false,
     trigger: {

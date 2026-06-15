@@ -72,9 +72,9 @@ describe("startMonoAgentApp", () => {
       kind: "running",
       summary: { invokeUrl: "http://127.0.0.1:9999/webhook/invoke" },
     });
-    expect(app.channelStatus("telegram").kind).toBe("waiting_for_config");
-    expect(app.channelStatus("slack").kind).toBe("waiting_for_config");
-    expect(app.channelStatus("whatsapp").kind).toBe("waiting_for_config");
+    expect(app.channelStatus("telegram").kind).toBe("disabled");
+    expect(app.channelStatus("slack").kind).toBe("disabled");
+    expect(app.channelStatus("whatsapp").kind).toBe("disabled");
     expect(app.channelStatus("a2a").kind).toBe("disabled");
     expect(app.channelStatus("openai-api").kind).toBe("disabled");
     expect(app.channelStatus("cron").kind).toBe("disabled");
@@ -306,7 +306,7 @@ describe("startMonoAgentApp", () => {
     });
 
     const running = await driver.start({
-      config: { botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
+      config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
       coreConfig: baseConfig() as never,
       responder,
       cwd: dir,
