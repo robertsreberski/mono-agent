@@ -18,20 +18,16 @@ export default function App() {
   const [view, setView] = useHashView();
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-5 px-4 py-6 pb-[calc(5rem+env(safe-area-inset-bottom))] sm:gap-6 sm:px-6 sm:py-10 lg:px-8">
-      <header className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-5 pb-[calc(5rem+env(safe-area-inset-bottom))] sm:gap-6 sm:px-6 sm:py-8 lg:px-8">
+      <header className="grid gap-4 border-b border-border pb-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
         <div className="min-w-0 space-y-1.5">
-          <h1 className="text-2xl font-medium tracking-tight sm:text-3xl">Agent Console</h1>
+          <p className="text-xs font-medium uppercase text-muted-foreground">mono-agent</p>
+          <h1 className="text-2xl font-medium sm:text-3xl">Operator Console</h1>
           <p className="max-w-3xl text-sm text-muted-foreground">
-            Local settings for this agent's runtime, identity, memory,
-            tools, adapters, and recorded request artifacts. Edits are persisted to{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-              mono-agent.config.json
-            </code>{" "}
-            via the local console.
+            Local runtime settings, registered sources, and recorded run traces.
           </p>
         </div>
-        <nav className="flex min-w-0 gap-2 overflow-x-auto rounded-xl bg-muted/60 p-1" aria-label="Primary views">
+        <nav className="flex min-w-0 gap-2 overflow-x-auto rounded-lg border border-border bg-muted/50 p-1" aria-label="Primary views">
           <NavButton active={view === "settings"} onClick={() => setView("settings")}>Settings</NavButton>
           <NavButton active={view === "traceability"} onClick={() => setView("traceability")}>Traceability</NavButton>
         </nav>
