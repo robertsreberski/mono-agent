@@ -6,7 +6,7 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
-import type { MemoryEmbeddingsConfig, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode } from "./types.js";
+import type { MemoryEmbeddingsConfig, MemoryLlmConfig, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode } from "./types.js";
 
 export type MonoAgentLocalProviderModelJson = {
   readonly name?: string;
@@ -73,6 +73,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly tools?: Partial<MemoryToolsConfig>;
     readonly graphPath?: string;
     readonly embeddings?: Partial<MemoryEmbeddingsConfig>;
+    readonly llm?: Partial<MemoryLlmConfig>;
   };
   readonly tools?: {
     readonly allowedTools?: readonly string[];

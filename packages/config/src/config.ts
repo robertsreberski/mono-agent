@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -368,6 +368,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   const mode = readChoice<MemoryMode>(env.MONO_AGENT_MEMORY_MODE, "MONO_AGENT_MEMORY_MODE", [
     "markdown",
     "journal",
+    "bujo",
   ], "markdown", invalidEnv);
   const writeMode = readChoice<MemoryWriteMode>(env.MONO_AGENT_MEMORY_WRITE_MODE, "MONO_AGENT_MEMORY_WRITE_MODE", [
     "disabled",
@@ -380,6 +381,15 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   const tools = readMemoryToolsConfig(env);
   const graphPath = readOptionalPath(env.MONO_AGENT_MEMORY_GRAPH_PATH, cwd);
   const embeddings = readMemoryEmbeddingsConfig(env);
+  const llm = readMemoryLlmConfig(env);
+  const dim = readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 });
+
+  const embeddingsWithDim =
+    embeddings === undefined
+      ? undefined
+      : dim === undefined
+        ? embeddings
+        : { ...embeddings, dim };
 
   return {
     mode,
@@ -389,7 +399,8 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     writeMode,
     ...(tools === undefined ? {} : { tools }),
     ...(graphPath === undefined ? {} : { graphPath }),
-    ...(embeddings === undefined ? {} : { embeddings }),
+    ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
+    ...(llm === undefined ? {} : { llm }),
   };
 }
 
@@ -430,6 +441,25 @@ function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): Me
     ...(endpoint === undefined ? {} : { endpoint }),
     ...(apiKey === undefined ? {} : { apiKey }),
     ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
+  };
+}
+
+function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlmConfig | undefined {
+  const model = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_MODEL);
+  if (model === undefined) {
+    return undefined;
+  }
+  const provider = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_PROVIDER) ?? "ollama";
+  if (provider !== "ollama") {
+    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_MEMORY_LLM_PROVIDER must be ollama.", {
+      env: "MONO_AGENT_MEMORY_LLM_PROVIDER",
+    });
+  }
+  const endpoint = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_ENDPOINT);
+  return {
+    provider: "ollama",
+    model,
+    ...(endpoint === undefined ? {} : { endpoint }),
   };
 }
 

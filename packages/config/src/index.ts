@@ -12,6 +12,8 @@ export type {
   EffortLevel,
   MemoryEmbeddingsConfig,
   MemoryEmbeddingsProvider,
+  MemoryLlmConfig,
+  MemoryMode,
   MemoryScope,
   MemoryToolsConfig,
   MemoryWriteMode,

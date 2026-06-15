@@ -193,6 +193,35 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV).toBe("EMBEDDINGS_KEY");
   });
 
+  it("translates JSON memory bujo mode and llm block to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text", dim: 768 },
+          llm: { provider: "ollama", model: "qwen3.6:latest", endpoint: "http://localhost:11434" },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_MODE).toBe("bujo");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_DIM).toBe("768");
+    expect(layered.MONO_AGENT_MEMORY_LLM_PROVIDER).toBe("ollama");
+    expect(layered.MONO_AGENT_MEMORY_LLM_MODEL).toBe("qwen3.6:latest");
+    expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBe("http://localhost:11434");
+  });
+
+  it("omits LLM env keys when llm block is absent in JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "bujo", path: ".mono-agent/memory" } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_LLM_MODEL).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_LLM_PROVIDER).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
+  });
+
   it("translates JSON context.skillMaxBytes to an env key", () => {
     const layered = layerJsonOntoEnv(
       { context: { identityPath: "IDENTITY.md", skillMaxBytes: 24000 } },
@@ -421,5 +450,44 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: join(dir, "absent.json"),
     });
     expect(config.runtime.model).toMatchObject({ sdk: "pi" });
+  });
+
+  it("loads bujo mode with llm block from a JSON config file", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          embeddings: {
+            provider: "ollama",
+            model: "nomic-embed-text:v1.5",
+            dim: 768,
+          },
+          llm: {
+            provider: "ollama",
+            model: "qwen3.6:latest",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+
+    expect(config.memory?.mode).toBe("bujo");
+    expect(config.memory?.path).toBe(join(dir, ".mono-agent", "memory"));
+    expect(config.memory?.embeddings).toMatchObject({
+      provider: "ollama",
+      model: "nomic-embed-text:v1.5",
+      dim: 768,
+    });
+    expect(config.memory?.llm).toEqual({
+      provider: "ollama",
+      model: "qwen3.6:latest",
+    });
   });
 });

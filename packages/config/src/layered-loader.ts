@@ -129,6 +129,18 @@ export function layerJsonOntoEnv(
   if (json.memory?.embeddings?.apiKeyEnv !== undefined) {
     fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV = json.memory.embeddings.apiKeyEnv;
   }
+  if (json.memory?.embeddings?.dim !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_DIM = String(json.memory.embeddings.dim);
+  }
+  if (json.memory?.llm?.provider !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_LLM_PROVIDER = json.memory.llm.provider;
+  }
+  if (json.memory?.llm?.model !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_LLM_MODEL = json.memory.llm.model;
+  }
+  if (json.memory?.llm?.endpoint !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_LLM_ENDPOINT = json.memory.llm.endpoint;
+  }
   if (json.tools?.allowedTools !== undefined) {
     fromJson.MONO_AGENT_ALLOWED_TOOLS = csv(json.tools.allowedTools);
   }

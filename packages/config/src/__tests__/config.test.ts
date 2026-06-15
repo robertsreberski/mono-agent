@@ -616,4 +616,142 @@ describe("loadMonoAgentConfig", () => {
     }
     throw new Error("Expected config load to fail.");
   });
+
+  it("loads memory.mode bujo from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+      },
+    });
+
+    expect(config.memory?.mode).toBe("bujo");
+    expect(config.memory?.path).toBe("/repo/memory-root");
+  });
+
+  it("loads memory.llm from env when model is set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+      },
+    });
+
+    expect(config.memory?.llm).toEqual({
+      provider: "ollama",
+      model: "qwen3.6:latest",
+      endpoint: "http://localhost:11434",
+    });
+  });
+
+  it("omits memory.llm when LLM model env is unset", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+      },
+    });
+
+    expect(config.memory?.llm).toBeUndefined();
+  });
+
+  it("omits memory.llm.endpoint when only provider and model are set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3:8b",
+      },
+    });
+
+    expect(config.memory?.llm).toEqual({ provider: "ollama", model: "qwen3:8b" });
+    expect(config.memory?.llm?.endpoint).toBeUndefined();
+  });
+
+  it("rejects an unsupported memory.llm provider from env", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_LLM_MODEL: "gpt-4o",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "openai",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
+  it("loads memory.embeddings.dim from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "768",
+      },
+    });
+
+    expect(config.memory?.embeddings?.dim).toBe(768);
+  });
+
+  it("omits embeddings.dim when the env is unset", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      },
+    });
+
+    expect(config.memory?.embeddings?.dim).toBeUndefined();
+  });
+
+  it("redacts bujo config without leaking llm model or endpoint (no secrets to redact)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+      },
+    });
+    const redacted = redactMonoAgentConfig(config);
+
+    expect(redacted.memory?.mode).toBe("bujo");
+    expect(redacted.memory?.llm).toEqual({
+      provider: "ollama",
+      model: "qwen3.6:latest",
+      endpoint: "http://localhost:11434",
+    });
+  });
+
+  it("rejects invalid memory mode from env", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "unknown-mode",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
 });
