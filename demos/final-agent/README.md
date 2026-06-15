@@ -102,6 +102,7 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
 ```json
 {
   "telegram": {
+    "enabled": true,
     "botToken": "123456:telegram-bot-token",
     "allowedChatIds": ["123456789"]
   },

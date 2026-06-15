@@ -28,6 +28,7 @@ describe("loadSlackAdapterConfig", () => {
       path,
       `${JSON.stringify({
         slack: {
+          enabled: true,
           botToken: "json-bot-token",
           appToken: "json-app-token",
           allowedChannelIds: ["D111", "C222"],
@@ -41,6 +42,7 @@ describe("loadSlackAdapterConfig", () => {
     const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
 
     expect(config).toEqual({
+      enabled: true,
       botToken: "json-bot-token",
       appToken: "json-app-token",
       allowedChannelIds: ["D111", "C222"],
@@ -68,6 +70,7 @@ describe("loadSlackAdapterConfig", () => {
 
     const config = await loadSlackAdapterConfig({
       env: {
+        MONO_AGENT_SLACK_ENABLED: "true",
         MONO_AGENT_SLACK_BOT_TOKEN: "env-bot-token",
         MONO_AGENT_SLACK_APP_TOKEN: "env-app-token",
         MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS: "",
@@ -80,6 +83,7 @@ describe("loadSlackAdapterConfig", () => {
     });
 
     expect(config).toEqual({
+      enabled: true,
       botToken: "env-bot-token",
       appToken: "env-app-token",
       allowedChannelIds: [],
@@ -90,19 +94,34 @@ describe("loadSlackAdapterConfig", () => {
     });
   });
 
-  it("requires tokens and an explicit allowlist or allow-all choice", async () => {
+  it("requires tokens and an explicit allowlist or allow-all choice when enabled", async () => {
     await expect(
-      loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_BOT_TOKEN: "bot-token" } }),
+      loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_ENABLED: "true", MONO_AGENT_SLACK_BOT_TOKEN: "bot-token" } }),
     ).rejects.toBeInstanceOf(SlackAdapterConfigError);
 
     await expect(
       loadSlackAdapterConfig({
         env: {
+          MONO_AGENT_SLACK_ENABLED: "true",
           MONO_AGENT_SLACK_BOT_TOKEN: "bot-token",
           MONO_AGENT_SLACK_APP_TOKEN: "app-token",
         },
       }),
     ).rejects.toBeInstanceOf(SlackAdapterConfigError);
+  });
+
+  it("is disabled by default and skips credential validation", async () => {
+    const config = await loadSlackAdapterConfig({ env: {} });
+    expect(config).toEqual({
+      enabled: false,
+      botToken: "",
+      appToken: "",
+      allowedChannelIds: [],
+      allowAllChannels: false,
+      botUserIds: [],
+      mentionTextAliases: [],
+      stripMentionText: false,
+    });
   });
 
   it("rejects invalid booleans", async () => {
@@ -121,6 +140,7 @@ describe("loadSlackAdapterConfig", () => {
 describe("redactSlackAdapterConfig", () => {
   it("redacts tokens and reports identifiers only by count", () => {
     const redacted = redactSlackAdapterConfig({
+      enabled: true,
       botToken: "redacted-bot-token",
       appToken: "redacted-app-token",
       allowedChannelIds: ["D111", "C222"],
@@ -134,6 +154,7 @@ describe("redactSlackAdapterConfig", () => {
     expect(JSON.stringify(redacted)).not.toContain("D111");
     expect(JSON.stringify(redacted)).not.toContain("Ubot");
     expect(redacted).toEqual({
+      enabled: true,
       botToken: { present: true, redacted: true },
       appToken: { present: true, redacted: true },
       allowedChannelIds: { count: 2 },
@@ -148,6 +169,7 @@ describe("redactSlackAdapterConfig", () => {
 describe("slackFieldGroup", () => {
   it("declares Slack adapter token, allowlist, and mention settings", () => {
     expect(slackFieldGroup.id).toBe("slack");
+    expect(slackFieldGroup.fields.find((field) => field.id === "slack.enabled")?.kind).toBe("switch");
     expect(slackFieldGroup.fields.find((field) => field.id === "slack.botToken")?.kind).toBe("secret");
     expect(slackFieldGroup.fields.find((field) => field.id === "slack.appToken")?.kind).toBe("secret");
     expect(slackFieldGroup.fields.find((field) => field.id === "slack.allowedChannelIds")?.kind).toBe("csv");
