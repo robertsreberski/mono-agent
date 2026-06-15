@@ -242,13 +242,17 @@ export class MemoryDb {
 
   /**
    * Wipe the index and rebuild it from the supplied records (used by rebuild-from-files). No LLM.
+   * Wipes ALL index tables — including entities/entity_relations — so the caller is responsible for
+   * repopulating the entity graph afterwards (memory-bujo's rebuildFromMarkdown re-ingests graph.jsonl).
    * Not atomic across records: the wipe is transactional, but if a re-upsert throws mid-way the index
    * is left partially rebuilt. Since the index is rebuildable from canonical files, callers should
    * treat a thrown rebuild as "index dirty — re-run" rather than relying on all-or-nothing semantics.
    */
   async rebuild(records: readonly MemoryRecord[]): Promise<{ indexed: number }> {
     const tx = this.db.transaction(() => {
-      this.db.exec(`DELETE FROM memories; DELETE FROM memories_fts; DELETE FROM memories_vec; DELETE FROM edges;`);
+      this.db.exec(
+        `DELETE FROM memories; DELETE FROM memories_fts; DELETE FROM memories_vec; DELETE FROM edges; DELETE FROM entities; DELETE FROM entity_relations;`,
+      );
     });
     tx();
     for (const record of records) {
