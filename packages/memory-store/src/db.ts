@@ -218,6 +218,8 @@ export class MemoryDb {
   }
 
   async findSimilar(text: string, k = 5): Promise<SimilarHit[]> {
+    // Deliberately the `search_document:` prefix (not `search_query:` like recall): dedup/reconciliation
+    // compares a candidate memory to stored memories document-to-document, not query-to-document.
     const [vector] = await this.embeddings.embed([`search_document: ${text}`]);
     if (vector === undefined) return [];
     const rows = this.db
