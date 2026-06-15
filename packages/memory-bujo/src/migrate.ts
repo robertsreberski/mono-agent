@@ -44,6 +44,8 @@ Decide what to do with it. Return ONLY a JSON object (no prose, no code fences):
 /** Monthly BuJo migration ritual: review aging open memories and apply LLM decisions. */
 export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
   const now = deps.now();
+  // Re-run safety: every action moves the item out of agingOpen's pool (promote raises salience above
+  // the threshold; reschedule/forget change status away from 'open'), so a repeated run won't re-process it.
   const aging = deps.db.agingOpen(now, { olderThanDays: 30, maxSalience: 0.4, limit: 50 });
 
   let promoted = 0;
@@ -97,9 +99,8 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
         rescheduled += 1;
         decisions.push({ action, id: item.id, text: item.text });
       } else if (action === "cluster") {
-        const slug = typeof parsed.collection === "string" && parsed.collection.length > 0
-          ? parsed.collection
-          : "uncategorized";
+        const slug = typeof parsed.collection === "string" ? parsed.collection.trim() : "";
+        if (slug.length === 0) continue; // cluster without a collection slug is malformed — skip, don't mint a catch-all
         await deps.db.upsert({ ...item, collection: slug });
         deps.db.upsertEntity({
           id: `collection:${slug}`,
