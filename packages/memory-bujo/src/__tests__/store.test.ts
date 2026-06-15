@@ -34,4 +34,25 @@ describe("BujoMemoryStore", () => {
     expect(block?.kind).toBe("markdown");
     await store.close();
   });
+
+  it("appends multiple summaries: both indexed, single daily header, bytesWritten counts the bullet line", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-store-"));
+    const now = new Date("2026-06-15T09:00:00.000Z");
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
+
+    const summary = "decided to adopt opt-in memory";
+    const r1 = await store.appendHostSummary("s1", summary);
+    await store.appendHostSummary("s2", "lunch was pizza on tuesday");
+
+    // bytesWritten reflects the serialized bullet line (incl. metadata comment), not the raw summary.
+    expect(r1.bytesWritten).toBeGreaterThan(Buffer.byteLength(summary, "utf8"));
+
+    const file = readFileSync(dailyFilePath(root, now), "utf8");
+    expect(parseDailyFile(file).bullets).toHaveLength(2);
+    expect((file.match(/^# 2026-06-15$/gmu) ?? []).length).toBe(1);
+
+    const block = await store.load("memory decision");
+    expect(block?.content).toContain("opt-in memory");
+    await store.close();
+  });
 });

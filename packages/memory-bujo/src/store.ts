@@ -1,9 +1,10 @@
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-md";
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "@mono-agent/memory-store";
 
 import { appendBullet, dailyFilePath } from "./daily.js";
+import { serializeBullet } from "./grammar.js";
 import { createIdFactory } from "./ids.js";
 import { composeRecallBlock } from "./recall.js";
 import type { Bullet, BujoOptions } from "./types.js";
@@ -57,10 +58,11 @@ export class BujoMemoryStore implements MemoryStore {
       createdAt: bullet.createdAt,
       accessCount: 0,
       tags: [],
-      source: { session: conversationId, file: dailyFilePath(this.root, now).replace(`${this.root}/`, "") },
+      source: { session: conversationId, file: relative(this.root, path) },
     };
     await this.db.upsert(record);
-    return { conversationId, source: path, bytesWritten: Buffer.byteLength(summary, "utf8") };
+    // bytesWritten reflects the bullet line actually appended to the daily file, not the raw summary.
+    return { conversationId, source: path, bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8") };
   }
 
   async close(): Promise<void> {
