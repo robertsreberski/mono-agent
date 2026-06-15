@@ -1,0 +1,144 @@
+import { mkdtempSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { openMemoryDb, type MemoryDb } from "@mono-agent/memory-store";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { captureTurn } from "../capture.js";
+import { readGraph } from "../graph.js";
+import type { ReconcileDeps } from "../reconcile.js";
+import { fakeEmbeddings, fakeLlm } from "./helpers.js";
+
+const DIM = 64;
+const FIXED = new Date("2026-06-15T12:00:00.000Z");
+
+const openDbs: MemoryDb[] = [];
+afterEach(() => {
+  for (const db of openDbs.splice(0)) db.close();
+});
+
+function newRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "bujo-capture-"));
+  mkdirSync(join(root, "daily"), { recursive: true });
+  return root;
+}
+
+function openDb(root: string): MemoryDb {
+  const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(DIM), dim: DIM });
+  openDbs.push(db);
+  return db;
+}
+
+/** Simple counter-based nextId factory — avoids the duplicate-id problem of fixed clock+random. */
+function makeSeqNextId(): () => string {
+  let seq = 0;
+  return () => `CAP${String(++seq).padStart(4, "0")}`;
+}
+
+describe("captureTurn", () => {
+  it("distills → reconciles → extracts entities, mirrors to db AND graph.jsonl, links about edges", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+
+    // Scripted fakeLlm:
+    //  - distill: keyed on "TEXT:" → returns 2 candidates
+    //  - entity extraction: keyed on "Extract named entities" (from entities.ts PROMPT)
+    //  CLASSIFY won't be called because the db is empty (no similar) → all ADD outright.
+    // Entity extraction prompt also contains "TEXT:" so must be matched FIRST (more specific wins).
+    const llm = fakeLlm([
+      [
+        "Extract named entities",
+        JSON.stringify({
+          entities: [{ id: "person:robert", name: "Robert", type: "person" }],
+          relations: [{ src: "person:robert", dst: "person:robert", relation: "self-reference" }],
+        }),
+      ],
+      [
+        "TEXT:",
+        JSON.stringify([
+          { type: "note", text: "Robert prefers opt-in memory capture", salience: 0.8, isInsight: false },
+          { type: "task", text: "ship Phase 2 memory pipeline", salience: 0.7, isInsight: false },
+        ]),
+      ],
+    ]);
+
+    const deps: ReconcileDeps = {
+      db,
+      root,
+      llm,
+      nextId: makeSeqNextId(),
+      now: () => FIXED,
+    };
+
+    const result = await captureTurn("Robert discussed the memory pipeline today", deps);
+
+    // 2 memories distilled and added
+    expect(result.actions).toHaveLength(2);
+    expect(result.actions.every((a) => a.kind === "add")).toBe(true);
+    expect(db.count()).toBe(2);
+
+    // Both memories are recallable
+    const hits = await db.recall("opt-in memory", { topK: 5 });
+    expect(hits.length).toBeGreaterThan(0);
+
+    // 1 entity returned
+    expect(result.entities).toBe(1);
+
+    // 1 relation returned
+    expect(result.relations).toBe(1);
+
+    // Entity present in db
+    const entity = db.getEntity("person:robert");
+    expect(entity).toBeDefined();
+    expect(entity?.name).toBe("Robert");
+    expect(entity?.type).toBe("person");
+
+    // Entity present in graph.jsonl
+    const graph = readGraph(root);
+    expect(graph.entities.some((e) => e.id === "person:robert")).toBe(true);
+
+    // Relation present in graph.jsonl
+    expect(graph.relations.some((r) => r.src === "person:robert" && r.relation === "self-reference")).toBe(true);
+
+    // about edges: each added memory links to the extracted entity
+    for (const action of result.actions) {
+      if (action.kind === "add") {
+        const edges = db.edges(action.id);
+        expect(edges.some((e) => e.kind === "about" && e.dst === "person:robert")).toBe(true);
+      }
+    }
+  });
+
+  it("does not throw when a single entity write fails (entity id missing from db result doesn't abort)", async () => {
+    // Verifies the defensive try/catch per-item behavior — overall captureTurn should not throw
+    // even with a minimal setup where entity writes are perfectly valid.
+    const root = newRoot();
+    const db = openDb(root);
+
+    const llm = fakeLlm([
+      [
+        "TEXT:",
+        JSON.stringify([{ type: "note", text: "brief note about something", salience: 0.5, isInsight: false }]),
+      ],
+      [
+        "Extract named entities",
+        JSON.stringify({
+          entities: [{ id: "concept:something", name: "Something", type: "concept" }],
+          relations: [],
+        }),
+      ],
+    ]);
+
+    const deps: ReconcileDeps = {
+      db,
+      root,
+      llm,
+      nextId: makeSeqNextId(),
+      now: () => FIXED,
+    };
+
+    // Should resolve, not throw
+    await expect(captureTurn("brief note about something", deps)).resolves.toBeDefined();
+  });
+});

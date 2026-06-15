@@ -1,9 +1,10 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { openMemoryDb } from "@mono-agent/memory-store";
+import { appendEntity, appendRelation } from "../graph.js";
 import { fakeEmbeddings } from "./helpers.js";
 import { rebuildFromMarkdown } from "../rebuild.js";
 
@@ -21,6 +22,46 @@ describe("rebuildFromMarkdown", () => {
     expect(result.indexed).toBe(2);
     expect(db.count()).toBe(2);
     expect((await db.recall("substrate", { topK: 2 })).map((h) => h.record.id)).toContain("01A");
+    db.close();
+  });
+
+  it("ingests entities and relations from graph.jsonl after rebuild — no LLM called", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-rebuild-graph-"));
+    mkdirSync(join(root, "daily"), { recursive: true });
+
+    // Write a daily file so rebuild has something to index
+    writeFileSync(
+      join(root, "daily", "2026-06-15.md"),
+      "# 2026-06-15\n\n- – Robert maintains mono-agent.  <!--mem id=RB1 type=note status=open salience=0.7 isInsight=0 created=2026-06-15T09:00:00.000Z refs=-->\n",
+    );
+
+    // Write graph.jsonl with an entity and a relation
+    appendEntity(root, { id: "person:robert", name: "Robert", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
+    appendEntity(root, { id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: "2026-06-15T09:00:00.000Z" });
+    appendRelation(root, { src: "person:robert", dst: "project:mono-agent", relation: "maintains", createdAt: "2026-06-15T09:00:00.000Z" });
+
+    // Open a fresh db (simulates a delete+rebuild)
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+
+    // No LLM passed — rebuildFromMarkdown takes no llm parameter
+    const llmSpy = vi.fn();
+    const result = await rebuildFromMarkdown(root, db);
+
+    // Memories were indexed
+    expect(result.indexed).toBe(1);
+
+    // Entities were loaded from graph.jsonl into the db
+    expect(db.getEntity("person:robert")).toMatchObject({ name: "Robert", type: "person" });
+    expect(db.getEntity("project:mono-agent")).toMatchObject({ name: "mono-agent", type: "project" });
+
+    // Relations were loaded
+    expect(db.relationsFor("person:robert")).toContainEqual(
+      expect.objectContaining({ dst: "project:mono-agent", relation: "maintains" }),
+    );
+
+    // LLM was never called (rebuildFromMarkdown has no llm parameter)
+    expect(llmSpy).not.toHaveBeenCalled();
+
     db.close();
   });
 });

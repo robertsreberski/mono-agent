@@ -5,3 +5,14 @@ export { parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from
 export { appendBullet, dailyFilePath } from "./daily.js";
 export { createIdFactory } from "./ids.js";
 export type { Bullet, BujoOptions } from "./types.js";
+
+// Phase 2 capture pipeline
+export { captureTurn } from "./capture.js";
+export type { CaptureTurnResult } from "./capture.js";
+export { distill } from "./distill.js";
+export type { CandidateMemory } from "./distill.js";
+export { reconcile } from "./reconcile.js";
+export type { ReconcileAction, ReconcileDeps } from "./reconcile.js";
+export { extractEntities } from "./entities.js";
+export type { Extraction, ExtractedEntity, ExtractedRelation } from "./entities.js";
+export { readGraph } from "./graph.js";
