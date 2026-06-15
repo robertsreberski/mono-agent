@@ -37,6 +37,8 @@ describe("parseCliArgs", () => {
       memory: "journal",
       noConsole: false,
       force: false,
+      foreground: false,
+      follow: false,
     });
   });
 
@@ -50,7 +52,31 @@ describe("parseCliArgs", () => {
       envFile: ".env.local",
       noConsole: true,
       force: false,
+      foreground: false,
+      follow: false,
     });
+  });
+
+  it("parses start --foreground and -f as the blocking worker", () => {
+    expect(parseCliArgs(["start", "--foreground"])).toMatchObject({ command: "start", foreground: true });
+    expect(parseCliArgs(["start", "-f"])).toMatchObject({ command: "start", foreground: true });
+    expect(parseCliArgs(["start"])).toMatchObject({ command: "start", foreground: false });
+  });
+
+  it("parses the background control commands with --config", () => {
+    for (const command of ["restart", "stop", "status"] as const) {
+      expect(parseCliArgs([command, "--config", "agent.json"])).toMatchObject({ command, configPath: "agent.json" });
+    }
+  });
+
+  it("parses logs follow and lines, with -f meaning follow", () => {
+    expect(parseCliArgs(["logs", "--follow"])).toMatchObject({ command: "logs", follow: true });
+    expect(parseCliArgs(["logs", "-f"])).toMatchObject({ command: "logs", follow: true });
+    expect(parseCliArgs(["logs", "--lines", "200"])).toMatchObject({ command: "logs", lines: 200, follow: false });
+    expect(parseCliArgs(["logs"])).toMatchObject({ command: "logs", follow: false });
+    expect(parseCliArgs(["logs"]).lines).toBeUndefined();
+    expect(() => parseCliArgs(["logs", "--lines", "x"])).toThrow(/--lines/u);
+    expect(() => parseCliArgs(["logs", "--lines", "0"])).toThrow(/--lines/u);
   });
 
   it("parses install-skill with target and force", () => {
@@ -59,6 +85,8 @@ describe("parseCliArgs", () => {
       target: "codex",
       noConsole: false,
       force: true,
+      foreground: false,
+      follow: false,
     });
     expect(parseCliArgs(["install-skill"])).toMatchObject({ command: "install-skill", force: false });
     expect(() => parseCliArgs(["install-skill", "--target", "browser"])).toThrow(/--target/u);

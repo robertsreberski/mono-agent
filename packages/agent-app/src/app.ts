@@ -511,6 +511,9 @@ class MonoAgentAppController implements MonoAgentApp {
         ? {}
         : {
             operatorConsole: {
+              // Only the base loopback URL is persisted — never the per-boot
+              // access token. A detached `status`/`start` reader surfaces this
+              // URL and points at the logs for the tokenized link.
               url: this.operatorConsole.url,
               configPath: this.operatorConsole.configPath,
             },
