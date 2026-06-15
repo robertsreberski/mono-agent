@@ -16,4 +16,8 @@ describe("distill", () => {
     const llm = fakeLlm([["TEXT:", '[{"text":""},{"type":"note","text":"valid one","salience":0.5,"isInsight":false}]']]);
     expect((await distill("x", llm)).map((c) => c.text)).toEqual(["valid one"]);
   });
+  it("returns [] when the LLM throws (never-throw contract)", async () => {
+    const throwingLlm = { id: "throws", complete: async () => { throw new Error("boom"); } };
+    await expect(distill("some text", throwingLlm)).resolves.toEqual([]);
+  });
 });

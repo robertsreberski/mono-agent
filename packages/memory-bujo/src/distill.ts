@@ -18,7 +18,12 @@ ${text}`;
 
 export async function distill(text: string, llm: LlmComplete): Promise<CandidateMemory[]> {
   if (text.trim().length === 0) return [];
-  const raw = await llm.complete(PROMPT(text));
+  let raw: string;
+  try {
+    raw = await llm.complete(PROMPT(text));
+  } catch {
+    return []; // LLM failure → no candidates (keeps distill, and captureTurn, never-throw)
+  }
   const parsed = parseJsonLoose<unknown[]>(raw);
   if (!Array.isArray(parsed)) return [];
   return parsed.flatMap((it) => normalizeCandidate(it));
