@@ -4,8 +4,12 @@ import { join } from "node:path";
 import { createEmbeddingProvider } from "@mono-agent/memory-search";
 import { openMemoryDb } from "@mono-agent/memory-store";
 
+import { createIdFactory } from "./ids.js";
+import { migrate } from "./migrate.js";
+import { createOllamaLlm } from "./ollama-llm.js";
+import { writeFutureLog, writeIndex } from "./projections.js";
 import { rebuildFromMarkdown } from "./rebuild.js";
-import { writeIndex } from "./projections.js";
+import { reflect } from "./reflect.js";
 
 async function main(): Promise<void> {
   const [command, root, ...rest] = process.argv.slice(2);
@@ -18,26 +22,22 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // reflect and migrate require an LLM — not wired until P4 (real chat adapter).
-  // Print a clear message and exit 2; do NOT fabricate an LLM.
-  if (command === "reflect") {
-    process.stderr.write(
-      "reflect requires an LLM; it runs via BujoMemoryStore with an injected llm (wired by the host in Phase 4). Not available from the CLI yet.\n",
-    );
-    process.exit(2);
-  }
-  if (command === "migrate") {
-    process.stderr.write(
-      "migrate requires an LLM; it runs via BujoMemoryStore with an injected llm (wired by the host in Phase 4). Not available from the CLI yet.\n",
-    );
-    process.exit(2);
-  }
-
   const query = rest.join(" ").trim();
   if (command === "recall" && query.length === 0) {
     process.stderr.write("error: recall requires a non-empty <query>\n");
     process.exit(2);
   }
+
+  if (command === "reflect" || command === "migrate") {
+    const chatModel = process.env.MONO_AGENT_LLM_MODEL;
+    if (chatModel === undefined) {
+      process.stderr.write(
+        "error: set MONO_AGENT_LLM_MODEL to a local Ollama chat model (e.g. qwen3.6:latest)\n",
+      );
+      process.exit(2);
+    }
+  }
+
   const model = process.env.MONO_AGENT_EMBED_MODEL ?? "nomic-embed-text:v1.5";
   const dim = Number(process.env.MONO_AGENT_EMBED_DIM ?? "768");
   const embeddings = createEmbeddingProvider({ provider: "ollama", model });
@@ -49,6 +49,29 @@ async function main(): Promise<void> {
     } else if (command === "index") {
       writeIndex(root, db, new Date());
       process.stdout.write(`wrote ${join(root, "index.md")}\n`);
+    } else if (command === "reflect") {
+      // MONO_AGENT_LLM_MODEL is guaranteed non-undefined here (guard above)
+      const chatModel = process.env.MONO_AGENT_LLM_MODEL as string;
+      const llm = createOllamaLlm({
+        model: chatModel,
+        ...(process.env.MONO_AGENT_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_LLM_ENDPOINT } : {}),
+      });
+      const r = await reflect({ db, root, llm, nextId: createIdFactory(), now: () => new Date() });
+      writeFutureLog(root, db, new Date());
+      writeIndex(root, db, new Date());
+      process.stdout.write(`reflected: decayed ${r.decayed}, insights ${r.insights}, due ${r.due}\n`);
+    } else if (command === "migrate") {
+      // MONO_AGENT_LLM_MODEL is guaranteed non-undefined here (guard above)
+      const chatModel = process.env.MONO_AGENT_LLM_MODEL as string;
+      const llm = createOllamaLlm({
+        model: chatModel,
+        ...(process.env.MONO_AGENT_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_LLM_ENDPOINT } : {}),
+      });
+      const m = await migrate({ db, root, llm, nextId: createIdFactory(), now: () => new Date() });
+      writeFutureLog(root, db, new Date());
+      process.stdout.write(
+        `migrated: promoted ${m.promoted}, rescheduled ${m.rescheduled}, clustered ${m.clustered}, forgotten ${m.forgotten}, reviewed ${m.reviewed}\n`,
+      );
     } else {
       const hits = await db.recall(query, { topK: 8 });
       for (const hit of hits) process.stdout.write(`${hit.score.toFixed(3)}  ${hit.record.text}\n`);
