@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import { appendBullet, dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
+import { createIdFactory } from "../ids.js";
+import type { Bullet } from "../types.js";
 
 describe("daily file", () => {
   it("computes the daily path from a date", () => {
@@ -21,5 +23,29 @@ describe("daily file", () => {
     const parsed = parseDailyFile(file);
     expect(parsed.bullets.map((b) => b.id)).toContain("01TESTID");
     expect(bullet.id).toBe("01TESTID");
+  });
+
+  it("does not duplicate the daily header on a second append", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-"));
+    const now = new Date("2026-06-15T09:00:00.000Z");
+    const note = (id: string): Bullet => ({
+      id, type: "note", status: "open", text: `fact ${id}`, salience: 0.5, isInsight: false, createdAt: now.toISOString(), refs: [],
+    });
+    appendBullet(root, note("01A"), now);
+    appendBullet(root, note("01B"), now);
+    const file = readFileSync(dailyFilePath(root, now), "utf8");
+    expect((file.match(/^# 2026-06-15$/gmu) ?? []).length).toBe(1);
+    expect(parseDailyFile(file).bullets.map((b) => b.id)).toEqual(["01A", "01B"]);
+  });
+});
+
+describe("createIdFactory", () => {
+  it("is deterministic with injected clock+random and time-sortable", () => {
+    const earlier = createIdFactory({ clock: () => new Date("2026-06-15T09:00:00.000Z"), random: () => 0 });
+    const later = createIdFactory({ clock: () => new Date("2026-06-15T10:00:00.000Z"), random: () => 0 });
+    const a = earlier();
+    expect(earlier()).toBe(a); // same clock + random → identical id
+    expect(a).toHaveLength(26); // 10 time chars + 16 random chars
+    expect(later() > a).toBe(true); // later timestamp → lexicographically larger
   });
 });

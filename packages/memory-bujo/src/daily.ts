@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { serializeBullet } from "./grammar.js";
@@ -13,12 +13,8 @@ export function dailyFilePath(root: string, when: Date): string {
 export function appendBullet(root: string, bullet: Bullet, when: Date): Bullet {
   const path = dailyFilePath(root, when);
   mkdirSync(dirname(path), { recursive: true });
-  let header = "";
-  try {
-    readFileSync(path, "utf8");
-  } catch {
-    header = `# ${when.toISOString().slice(0, 10)}\n\n`;
-  }
+  // existsSync (not read-and-catch) so a permission/IO error surfaces instead of being mistaken for a new file.
+  const header = existsSync(path) ? "" : `# ${when.toISOString().slice(0, 10)}\n\n`;
   appendFileSync(path, `${header}${serializeBullet(bullet)}\n`, "utf8");
   return bullet;
 }
