@@ -16,18 +16,26 @@ async function main(): Promise<void> {
     process.stderr.write("error: <root> is required\n");
     process.exit(2);
   }
+  const query = rest.join(" ").trim();
+  if (command === "recall" && query.length === 0) {
+    process.stderr.write("error: recall requires a non-empty <query>\n");
+    process.exit(2);
+  }
   const model = process.env.MONO_AGENT_EMBED_MODEL ?? "nomic-embed-text:v1.5";
   const dim = Number(process.env.MONO_AGENT_EMBED_DIM ?? "768");
   const embeddings = createEmbeddingProvider({ provider: "ollama", model });
   const db = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim });
-  if (command === "rebuild") {
-    const result = await rebuildFromMarkdown(root, db);
-    process.stdout.write(`rebuilt: indexed ${result.indexed} memories into ${join(root, "memory.db")}\n`);
-  } else {
-    const hits = await db.recall(rest.join(" "), { topK: 8 });
-    for (const hit of hits) process.stdout.write(`${hit.score.toFixed(3)}  ${hit.record.text}\n`);
+  try {
+    if (command === "rebuild") {
+      const result = await rebuildFromMarkdown(root, db);
+      process.stdout.write(`rebuilt: indexed ${result.indexed} memories into ${join(root, "memory.db")}\n`);
+    } else {
+      const hits = await db.recall(query, { topK: 8 });
+      for (const hit of hits) process.stdout.write(`${hit.score.toFixed(3)}  ${hit.record.text}\n`);
+    }
+  } finally {
+    db.close();
   }
-  db.close();
 }
 
 main().catch((error: unknown) => {
