@@ -40,6 +40,7 @@ import {
 } from "@mono-agent/telegram-adapter";
 import type {
   TelegramAdapterConfig,
+  TelegramAdapterErrorTextInput,
   TelegramAdapterOptions,
   TelegramBotApi,
   TelegramLongPollerOptions,
@@ -484,7 +485,7 @@ function telegramAdapterOptions(
       welcomeText: "Agent is online. Send a message to run the configured runtime.",
       helpText: "Send a message to talk to the agent. Use /cancel to stop an in-flight response.",
       unauthorizedText: "This chat is not allowlisted for this agent.",
-      errorText: "The agent failed honestly; check the local artifact summary for details.",
+      errorText: telegramErrorText,
     },
     ...(input.logger === undefined ? {} : { logger: input.logger }),
   };
@@ -492,4 +493,56 @@ function telegramAdapterOptions(
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function telegramErrorText(input: TelegramAdapterErrorTextInput): string {
+  const failure = failureFromUnknown(input.error);
+  if (failure?.kind === "usage_limit") {
+    const maxTurns = nestedNumber(failure.details, ["diagnostics", "max_turns"]);
+    return [
+      `I hit the runtime turn limit${maxTurns === undefined ? "" : ` (${maxTurns} turns)`} before I could finish.`,
+      "Send a narrower follow-up, or check the local artifact summary for the incomplete run.",
+    ].join(" ");
+  }
+  if (failure?.kind === "cancelled") {
+    return "Cancelled.";
+  }
+  if (failure?.message !== undefined && failure.message.trim().length > 0) {
+    return `I could not complete that message: ${failure.message}`;
+  }
+  return "I could not complete that message. Check the local artifact summary for details.";
+}
+
+function failureFromUnknown(error: unknown): {
+  readonly kind?: string;
+  readonly message?: string;
+  readonly details?: unknown;
+} | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+  const failure = error.failure;
+  if (!isRecord(failure)) {
+    return undefined;
+  }
+  return {
+    ...(typeof failure.kind === "string" ? { kind: failure.kind } : {}),
+    ...(typeof failure.message === "string" ? { message: failure.message } : {}),
+    ...(Object.prototype.hasOwnProperty.call(failure, "details") ? { details: failure.details } : {}),
+  };
+}
+
+function nestedNumber(value: unknown, path: readonly string[]): number | undefined {
+  let current = value;
+  for (const segment of path) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[segment];
+  }
+  return typeof current === "number" && Number.isFinite(current) ? current : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
