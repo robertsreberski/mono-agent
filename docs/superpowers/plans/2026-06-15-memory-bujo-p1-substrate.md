@@ -393,7 +393,7 @@ export function migrations(dim: number): readonly string[] {
   return [
     `CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
-      seq INTEGER UNIQUE,
+      seq INTEGER NOT NULL UNIQUE,
       type TEXT NOT NULL CHECK(type IN ('task','event','note')),
       status TEXT NOT NULL CHECK(status IN ('open','done','scheduled','migrated','dropped','invalidated')),
       text TEXT NOT NULL,

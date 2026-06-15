@@ -39,7 +39,8 @@ export class MemoryDb {
   }
 
   vecVersion(): string {
-    return (this.db.prepare("SELECT vec_version() AS v").get() as { v: string }).v;
+    const row = this.db.prepare("SELECT vec_version() AS v").get() as { v: string } | undefined;
+    return row?.v ?? "";
   }
 
   close(): void {

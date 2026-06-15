@@ -70,6 +70,10 @@ export interface MemoryDbOptions {
   readonly clock?: () => Date;
 }
 
+/**
+ * Re-score weights. `rrf` scales the (small, ~1/k) fused rank score; the others
+ * are added on top. These are independent scalars, NOT a distribution that sums to 1.
+ */
 export const DEFAULT_WEIGHTS: RecallWeights = {
   rrf: 1.0,
   recency: 0.3,
@@ -77,4 +81,5 @@ export const DEFAULT_WEIGHTS: RecallWeights = {
   insight: 0.2,
 };
 export const DEFAULT_RRF_K = 60;
+/** Exponential recency decay per day: score *= gamma^daysSinceLastAccess. 0.995 ≈ 16% weight after one year. */
 export const DEFAULT_DECAY_GAMMA = 0.995;
