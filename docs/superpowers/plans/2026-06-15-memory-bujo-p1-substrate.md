@@ -695,8 +695,9 @@ Add these methods to the `MemoryDb` class body:
       ).run(this.toRow(record, seq));
       this.db.prepare(`DELETE FROM memories_fts WHERE id = ?`).run(record.id);
       this.db.prepare(`INSERT INTO memories_fts (id, text) VALUES (?, ?)`).run(record.id, record.text);
-      this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(seq);
-      this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`).run(seq, toBlob(vector ?? []));
+      // NOTE (from Task 2 spike): sqlite-vec vec0 rejects float64-bound rowids — bind as BigInt.
+      this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(BigInt(seq));
+      this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`).run(BigInt(seq), toBlob(vector ?? []));
     });
     tx();
   }
