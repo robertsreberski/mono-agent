@@ -43,6 +43,14 @@ type DetailState =
 
 type SelectedRunKey = `${string}/${string}`;
 type StatusFilter = "all" | RunSummaryStatus;
+type EventCounts = Record<RecordedRunEventCategory, number>;
+
+interface OperationsSnapshot {
+  readonly sourceCount: number;
+  readonly runCount: number;
+  readonly warningCount: number;
+  readonly failingRunCount: number;
+}
 
 const CATEGORY_BADGES: Record<RecordedRunEventCategory, "default" | "secondary" | "outline" | "success" | "warning" | "destructive"> = {
   tool: "default",
@@ -124,6 +132,10 @@ export function TraceabilityView({ client }: TraceabilityViewProps): React.JSX.E
       return sourceMatches && statusMatches;
     });
   }, [listResponse?.runs, sourceFilter, statusFilter]);
+  const snapshot = useMemo(
+    () => listResponse === undefined ? undefined : operationsSnapshot(listResponse),
+    [listResponse],
+  );
 
   useEffect(() => {
     if (listState.kind !== "ready" || !listState.response.enabled) {
@@ -146,22 +158,28 @@ export function TraceabilityView({ client }: TraceabilityViewProps): React.JSX.E
   }, [filteredRuns, listState, loadDetail]);
 
   return (
-    <section className="grid min-w-0 gap-4 xl:grid-cols-[minmax(18rem,24rem)_minmax(21rem,28rem)_minmax(0,1fr)]" aria-labelledby="traceability-title">
-      <Card className="min-w-0">
-        <CardHeader className="gap-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between xl:flex-col">
-            <div className="min-w-0">
-              <CardTitle id="traceability-title">Traceability</CardTitle>
-              <CardDescription>
-                Host-registered agents, recent runs, and visible runtime events from local artifacts.
+    <section className="grid min-w-0 gap-4" aria-labelledby="traceability-title">
+      <Card className="min-w-0 border border-border/70 shadow-sm">
+        <CardHeader className="gap-4">
+          <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div className="min-w-0 space-y-1">
+              <CardTitle id="traceability-title" className="text-lg">Traceability workbench</CardTitle>
+              <CardDescription className="max-w-3xl">
+                Live source health, run outcomes, warning signals, and event flow from local trace artifacts.
               </CardDescription>
             </div>
-            <Button variant="outline" size="sm" className="w-full sm:w-auto xl:w-full" onClick={() => void refresh()} disabled={listState.kind === "loading"}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full md:w-auto"
+              onClick={() => void refresh()}
+              disabled={listState.kind === "loading"}
+            >
               {listState.kind === "loading" ? "Refreshing..." : "Refresh"}
             </Button>
           </div>
           {listResponse?.registryDir !== undefined ? (
-            <p className="truncate rounded-md bg-muted px-2 py-1 font-mono text-[0.7rem] text-muted-foreground" title={listResponse.registryDir}>
+            <p className="max-w-full break-all rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[0.7rem] text-muted-foreground" title={listResponse.registryDir}>
               {listResponse.registryDir}
             </p>
           ) : null}
@@ -171,77 +189,168 @@ export function TraceabilityView({ client }: TraceabilityViewProps): React.JSX.E
           {listResponse?.enabled === true ? listResponse.warnings?.map((warning) => (
             <WarningNotice key={warning} warning={warning} />
           )) : null}
-          {listResponse !== undefined && listResponse.enabled ? (
-            <SourceSummary sources={listResponse.sources} />
+          {snapshot !== undefined && listResponse?.enabled === true ? (
+            <OperationsOverview snapshot={snapshot} sources={listResponse.sources} />
           ) : null}
         </CardContent>
       </Card>
 
-      <Card className="min-w-0">
-        <CardHeader className="gap-3">
-          <div className="min-w-0">
-            <CardTitle>Runs</CardTitle>
-            <CardDescription>Globally sorted by latest artifact update.</CardDescription>
-          </div>
-          {listResponse !== undefined && listResponse.enabled ? (
-            <RunFilters
+      {listResponse !== undefined && listResponse.enabled ? (
+        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(20rem,24rem)_minmax(0,1fr)]">
+          <aside className="grid min-w-0 content-start gap-4">
+            <SourcesPanel sources={listResponse.sources} />
+            <RunsPanel
               sources={listResponse.sources}
+              runs={filteredRuns}
+              allRunsCount={listResponse.runs.length}
+              selectedRunKey={selectedRunKey}
               sourceFilter={sourceFilter}
               statusFilter={statusFilter}
               onSourceFilter={setSourceFilter}
               onStatusFilter={setStatusFilter}
+              onSelect={(sourceId, runId) => void loadDetail(sourceId, runId)}
             />
-          ) : null}
-        </CardHeader>
-        <CardContent className="min-w-0">
-          {listResponse !== undefined && listResponse.enabled && listResponse.runs.length > 0 && filteredRuns.length === 0 ? (
-            <StatusBox label="No runs match the current filters." />
-          ) : null}
-          {filteredRuns.length > 0 ? (
-            <RunList runs={filteredRuns} selectedRunKey={selectedRunKey} onSelect={(sourceId, runId) => void loadDetail(sourceId, runId)} />
-          ) : null}
-        </CardContent>
-      </Card>
+          </aside>
 
-      <RunDetailPanel state={detailState} />
+          <RunDetailPanel state={detailState} />
+        </div>
+      ) : null}
     </section>
   );
 }
 
-function SourceSummary({ sources }: { readonly sources: readonly TraceSourceListItem[] }): React.JSX.Element {
-  if (sources.length === 0) {
-    return <StatusBox label="No agents have registered in this trace registry yet." />;
-  }
-  const counts = countSources(sources);
+function OperationsOverview({
+  snapshot,
+  sources,
+}: {
+  readonly snapshot: OperationsSnapshot;
+  readonly sources: readonly TraceSourceListItem[];
+}): React.JSX.Element {
+  const healthCounts = countSources(sources);
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-2">
-        <SummaryTile label="Running" value={counts.running} />
-        <SummaryTile label="Stale" value={counts.stale} />
-        <SummaryTile label="Stopped" value={counts.stopped} />
-        <SummaryTile label="Failed" value={counts.failed} />
+    <div className="grid min-w-0 gap-3" aria-label="Operations snapshot">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <h3 className="text-xs font-medium uppercase text-muted-foreground">Operations snapshot</h3>
+        <span className="text-xs text-muted-foreground">{formatCount(snapshot.runCount, "run")} tracked</span>
       </div>
-      <div className="grid gap-2" aria-label="Trace sources">
+      <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(16rem,22rem)]">
+        <div className="grid min-w-0 grid-cols-2 gap-2 md:grid-cols-4">
+          <MetricTile label="Sources" value={formatCount(snapshot.sourceCount, "source")} tone="neutral" />
+          <MetricTile label="Runs" value={formatCount(snapshot.runCount, "run")} tone="neutral" />
+          <MetricTile label="Warnings" value={formatCount(snapshot.warningCount, "warning")} tone={snapshot.warningCount > 0 ? "warning" : "neutral"} />
+          <MetricTile label="Failures" value={formatCount(snapshot.failingRunCount, "failing")} tone={snapshot.failingRunCount > 0 ? "critical" : "neutral"} />
+        </div>
+        <div className="min-w-0 rounded-lg border border-border bg-muted/20 p-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-medium uppercase text-muted-foreground">Source health</h3>
+            <span className="text-xs text-muted-foreground">{snapshot.sourceCount} total</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <HealthCount label="Running" value={healthCounts.running} tone="success" />
+            <HealthCount label="Stale" value={healthCounts.stale} tone="warning" />
+            <HealthCount label="Stopped" value={healthCounts.stopped} tone="muted" />
+            <HealthCount label="Failed" value={healthCounts.failed} tone="critical" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SourcesPanel({ sources }: { readonly sources: readonly TraceSourceListItem[] }): React.JSX.Element {
+  if (sources.length === 0) {
+    return (
+      <Card className="min-w-0 border border-border/70 shadow-sm">
+        <CardHeader>
+          <CardTitle>Sources</CardTitle>
+          <CardDescription>Registered trace producers.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <StatusBox label="No agents have registered in this trace registry yet." />
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <Card className="min-w-0 border border-border/70 shadow-sm">
+      <CardHeader>
+        <CardTitle>Sources</CardTitle>
+        <CardDescription>Registered agents and artifact locations.</CardDescription>
+      </CardHeader>
+      <CardContent className="min-w-0">
+        <div className="grid gap-2" aria-label="Trace sources">
         {sources.map((source) => (
           <div key={source.sourceId} className="min-w-0 rounded-lg border border-border bg-background p-3">
             <div className="flex min-w-0 items-start justify-between gap-2">
               <div className="min-w-0">
-                <p className="truncate text-sm font-medium" title={source.label}>{source.label}</p>
-                <p className="truncate font-mono text-[0.7rem] text-muted-foreground" title={source.sourceId}>{source.sourceId}</p>
+                <p className="break-words text-sm font-medium" title={source.label}>{source.label}</p>
+                <p className="break-all font-mono text-[0.7rem] text-muted-foreground" title={source.sourceId}>{source.sourceId}</p>
               </div>
               <Badge variant={HEALTH_BADGES[source.health]}>{source.health}</Badge>
             </div>
-            <p className="mt-2 truncate font-mono text-[0.7rem] text-muted-foreground" title={source.artifactDir}>{source.artifactDir}</p>
+            <p className="mt-2 break-all font-mono text-[0.7rem] text-muted-foreground" title={source.artifactDir}>{source.artifactDir}</p>
             {source.transports !== undefined && source.transports.length > 0 ? (
-              <p className="mt-2 text-[0.7rem] text-muted-foreground">{source.transports.join(", ")}</p>
+              <p className="mt-2 break-words text-[0.7rem] text-muted-foreground">{source.transports.join(", ")}</p>
             ) : null}
             {source.warnings.map((warning) => (
               <p key={warning} className="mt-2 text-[0.7rem] [color:var(--warning)]">{warning}</p>
             ))}
           </div>
         ))}
-      </div>
-    </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RunsPanel({
+  sources,
+  runs,
+  allRunsCount,
+  selectedRunKey,
+  sourceFilter,
+  statusFilter,
+  onSourceFilter,
+  onStatusFilter,
+  onSelect,
+}: {
+  readonly sources: readonly TraceSourceListItem[];
+  readonly runs: readonly TraceRunListItem[];
+  readonly allRunsCount: number;
+  readonly selectedRunKey: SelectedRunKey | undefined;
+  readonly sourceFilter: string;
+  readonly statusFilter: StatusFilter;
+  readonly onSourceFilter: (value: string) => void;
+  readonly onStatusFilter: (value: StatusFilter) => void;
+  readonly onSelect: (sourceId: string, runId: string) => void;
+}): React.JSX.Element {
+  return (
+    <Card className="min-w-0 border border-border/70 shadow-sm">
+      <CardHeader className="gap-3">
+        <div className="min-w-0">
+          <CardTitle>Run queue</CardTitle>
+          <CardDescription>{formatCount(allRunsCount, "run")} sorted by latest artifact update.</CardDescription>
+        </div>
+        <RunFilters
+          sources={sources}
+          sourceFilter={sourceFilter}
+          statusFilter={statusFilter}
+          onSourceFilter={onSourceFilter}
+          onStatusFilter={onStatusFilter}
+        />
+      </CardHeader>
+      <CardContent className="min-w-0">
+        {allRunsCount === 0 ? (
+          <StatusBox label="No runs have been recorded yet." />
+        ) : null}
+        {allRunsCount > 0 && runs.length === 0 ? (
+          <StatusBox label="No runs match the current filters." />
+        ) : null}
+        {runs.length > 0 ? (
+          <RunList runs={runs} selectedRunKey={selectedRunKey} onSelect={onSelect} />
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -315,10 +424,10 @@ function RunList({
             key={key}
             type="button"
             onClick={() => onSelect(run.source.sourceId, run.runId)}
-            className={`min-w-0 rounded-lg border p-3 text-left transition hover:bg-muted/60 ${selected ? "border-primary bg-primary/5" : "border-border bg-background"}`}
+            className={`min-w-0 rounded-lg border p-3 text-left transition hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 ${selected ? "border-primary bg-primary/5" : "border-border bg-background"}`}
             aria-pressed={selected}
           >
-            <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between xl:flex-col 2xl:flex-row">
+            <div className="flex min-w-0 flex-col gap-3">
               <div className="min-w-0 space-y-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <Badge variant={statusBadge(run.status)}>{run.status}</Badge>
@@ -328,14 +437,19 @@ function RunList({
                 <p className="truncate font-mono text-xs text-foreground" title={run.runId}>{run.runId}</p>
                 <p className="truncate text-xs text-muted-foreground" title={run.conversationId}>{run.conversationId}</p>
               </div>
-              <div className="flex flex-wrap gap-1 text-[0.7rem] text-muted-foreground">
-                <span>{formatDuration(run.durationMs)}</span>
-                <span>- {run.eventCount} events</span>
-                {run.usage !== undefined || run.cost !== undefined ? <span>- usage/cost</span> : null}
-                {run.capabilitiesUsed !== undefined ? <span>- capabilities</span> : null}
+              <div className="grid gap-2 text-[0.7rem] text-muted-foreground min-[360px]:grid-cols-2">
+                <RunMiniStat label="Duration" value={formatDuration(run.durationMs)} />
+                <RunMiniStat label="Events" value={formatCount(run.eventCount, "event")} />
+                <RunMiniStat label="Updated" value={formatDate(run.updatedAt)} />
+                <RunMiniStat
+                  label="Signals"
+                  value={[
+                    run.usage !== undefined || run.cost !== undefined ? "usage" : undefined,
+                    run.capabilitiesUsed !== undefined ? "capabilities" : undefined,
+                  ].filter((value): value is string => value !== undefined).join(", ") || "basic"}
+                />
               </div>
             </div>
-            <p className="mt-2 text-[0.7rem] text-muted-foreground">Updated {formatDate(run.updatedAt)}</p>
           </button>
         );
       })}
@@ -372,8 +486,9 @@ function RunDetail({
 }): React.JSX.Element {
   const summary = detail.run.summary;
   const metadata = useMemo(() => runMetadata(summary), [summary]);
+  const eventCounts = useMemo(() => countEvents(detail.run.events), [detail.run.events]);
   return (
-    <Card className="min-w-0">
+    <Card className="min-w-0 border border-border/70 shadow-sm">
       <CardHeader className="gap-3">
         <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
@@ -397,15 +512,16 @@ function RunDetail({
         {warnings.map((warning) => (
           <WarningNotice key={warning} warning={warning} />
         ))}
+        <EventMixPanel counts={eventCounts} />
         <details className="rounded-lg border border-border bg-muted/30 p-3">
-          <summary className="cursor-pointer text-sm font-medium">Source metadata</summary>
+          <summary className="cursor-pointer rounded-sm text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">Source metadata</summary>
           <div className="mt-3">
             <JsonPreview value={detail.source} />
           </div>
         </details>
         {metadata.length > 0 ? (
           <details className="rounded-lg border border-border bg-muted/30 p-3">
-            <summary className="cursor-pointer text-sm font-medium">Summary metadata</summary>
+            <summary className="cursor-pointer rounded-sm text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">Summary metadata</summary>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               {metadata.map((entry) => (
                 <div key={entry.label} className="min-w-0 rounded-md bg-background p-3 ring-1 ring-border">
@@ -466,7 +582,7 @@ function EventRow({ event }: { readonly event: RecordedRunTimelineItem }): React
         </div>
       </div>
       <details className="mt-3 min-w-0 rounded-md bg-muted/40 p-3">
-        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">{isGrouped ? "Combined payload preview" : "Raw JSON payload"}</summary>
+        <summary className="cursor-pointer rounded-sm text-xs font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">{isGrouped ? "Combined payload preview" : "Raw JSON payload"}</summary>
         <div className="mt-2">
           <JsonPreview value={event.payload} />
         </div>
@@ -494,18 +610,105 @@ function DetailShell({
   );
 }
 
-function SummaryTile({ label, value }: { readonly label: string; readonly value: number }): React.JSX.Element {
+function MetricTile({
+  label,
+  value,
+  tone,
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly tone: "neutral" | "warning" | "critical";
+}): React.JSX.Element {
+  const toneClass = tone === "critical"
+    ? "border-destructive/30 bg-destructive/10 [color:var(--destructive)]"
+    : tone === "warning"
+      ? "border-warning/30 bg-warning/10 [color:var(--warning)]"
+      : "border-border bg-background text-foreground";
   return (
-    <div className="min-w-0 rounded-md bg-muted/40 px-3 py-2">
+    <div className={`min-w-0 rounded-lg border px-3 py-2 ${toneClass}`}>
       <p className="text-[0.7rem] uppercase text-muted-foreground">{label}</p>
-      <p className="text-lg font-medium">{value}</p>
+      <p className="truncate text-lg font-medium" title={value}>{value}</p>
+    </div>
+  );
+}
+
+function HealthCount({
+  label,
+  value,
+  tone,
+}: {
+  readonly label: string;
+  readonly value: number;
+  readonly tone: "success" | "warning" | "muted" | "critical";
+}): React.JSX.Element {
+  const dotClass = tone === "success"
+    ? "bg-success"
+    : tone === "warning"
+      ? "bg-warning"
+      : tone === "critical"
+        ? "bg-destructive"
+        : "bg-muted-foreground";
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2 rounded-md bg-background px-2 py-1.5 text-xs">
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className={`size-1.5 shrink-0 rounded-full ${dotClass}`} aria-hidden="true" />
+        <span className="truncate text-muted-foreground">{label}</span>
+      </span>
+      <span className="font-medium text-foreground">{value}</span>
+    </div>
+  );
+}
+
+function RunMiniStat({ label, value }: { readonly label: string; readonly value: string }): React.JSX.Element {
+  return (
+    <div className="min-w-0 rounded-md bg-muted/40 px-2 py-1.5">
+      <p className="uppercase text-muted-foreground">{label}</p>
+      <p className="truncate font-medium text-foreground" title={value}>{value}</p>
+    </div>
+  );
+}
+
+function EventMixPanel({ counts }: { readonly counts: EventCounts }): React.JSX.Element {
+  return (
+    <section className="rounded-lg border border-border bg-muted/20 p-3" aria-label="Event mix">
+      <div className="mb-3 flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <h3 className="text-sm font-medium">Event mix</h3>
+        <span className="text-xs text-muted-foreground">{formatCount(totalEvents(counts), "event")} recorded</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+        <EventMixItem label="thinking" value={counts.thinking} variant="warning" />
+        <EventMixItem label="tool" value={counts.tool} variant="default" />
+        <EventMixItem label="message" value={counts.message} variant="secondary" />
+        <EventMixItem label="runtime" value={counts.runtime} variant="outline" />
+        <EventMixItem label="error" value={counts.error} variant="destructive" />
+      </div>
+    </section>
+  );
+}
+
+function EventMixItem({
+  label,
+  value,
+  variant,
+}: {
+  readonly label: string;
+  readonly value: number;
+  readonly variant: "default" | "secondary" | "outline" | "warning" | "destructive";
+}): React.JSX.Element {
+  return (
+    <div className="min-w-0 rounded-md bg-background px-2 py-2">
+      <Badge variant={variant}>{formatCount(value, label)}</Badge>
     </div>
   );
 }
 
 function StatusBox({ label, tone = "normal" }: { readonly label: string; readonly tone?: "normal" | "error" }): React.JSX.Element {
   return (
-    <div className={`rounded-lg border px-3 py-2 text-sm ${tone === "error" ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-border bg-muted/40 text-muted-foreground"}`}>
+    <div
+      role={tone === "error" ? "alert" : "status"}
+      aria-live={tone === "error" ? "assertive" : "polite"}
+      className={`rounded-lg border px-3 py-2 text-sm ${tone === "error" ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-border bg-muted/40 text-muted-foreground"}`}
+    >
       {label}
     </div>
   );
@@ -513,7 +716,7 @@ function StatusBox({ label, tone = "normal" }: { readonly label: string; readonl
 
 function WarningNotice({ warning }: { readonly warning: string }): React.JSX.Element {
   return (
-    <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm [color:var(--warning)]">
+    <div role="alert" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm [color:var(--warning)]">
       {warning}
     </div>
   );
@@ -530,7 +733,11 @@ function MetaItem({ label, value }: { readonly label: string; readonly value: st
 
 function JsonPreview({ value }: { readonly value: unknown }): React.JSX.Element {
   return (
-    <pre className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs leading-relaxed text-muted-foreground">
+    <pre
+      tabIndex={0}
+      aria-label="JSON payload preview"
+      className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs leading-relaxed text-muted-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
       {JSON.stringify(value, null, 2)}
     </pre>
   );
@@ -541,6 +748,34 @@ function countSources(sources: readonly TraceSourceListItem[]): Record<TraceSour
     counts[source.health] += 1;
     return counts;
   }, { running: 0, stale: 0, stopped: 0, failed: 0 });
+}
+
+function operationsSnapshot(response: TraceabilityRunsResponse): OperationsSnapshot {
+  const sourceWarnings = response.sources.reduce((count, source) => count + source.warnings.length, 0);
+  return {
+    sourceCount: response.sources.length,
+    runCount: response.runs.length,
+    warningCount: sourceWarnings + (response.warnings?.length ?? 0),
+    failingRunCount: response.runs.filter((run) => run.status === "failed").length,
+  };
+}
+
+function countEvents(events: readonly RecordedRunEvent[]): EventCounts {
+  return events.reduce<EventCounts>((counts, event) => {
+    counts[event.category] += 1;
+    return counts;
+  }, { tool: 0, thinking: 0, message: 0, runtime: 0, error: 0 });
+}
+
+function totalEvents(counts: EventCounts): number {
+  return counts.tool + counts.thinking + counts.message + counts.runtime + counts.error;
+}
+
+function formatCount(count: number, singular: string): string {
+  if (singular === "thinking" || singular === "runtime" || singular === "failing") {
+    return `${count} ${singular}`;
+  }
+  return `${count} ${count === 1 ? singular : `${singular}s`}`;
 }
 
 function runMetadata(summary: TraceRunDetail["run"]["summary"]): readonly { readonly label: string; readonly value: unknown }[] {
