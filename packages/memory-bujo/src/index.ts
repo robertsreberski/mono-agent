@@ -17,6 +17,9 @@ export { extractEntities } from "./entities.js";
 export type { Extraction, ExtractedEntity, ExtractedRelation } from "./entities.js";
 export { readGraph } from "./graph.js";
 
+// Phase 4 built-in LLM adapter
+export { createOllamaLlm } from "./ollama-llm.js";
+
 // Phase 3 rituals
 export { reflect } from "./reflect.js";
 export type { ReflectDeps, ReflectResult } from "./reflect.js";
