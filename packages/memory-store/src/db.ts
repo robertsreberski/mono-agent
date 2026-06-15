@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 import BetterSqlite3, { type Database } from "better-sqlite3";
 
 import { ftsQuery } from "./fts.js";
@@ -28,6 +31,9 @@ export class MemoryDb {
   constructor(options: MemoryDbOptions) {
     if (!Number.isInteger(options.dim) || options.dim <= 0) {
       throw new Error("MemoryDb: dim must be a positive integer.");
+    }
+    if (options.path !== ":memory:") {
+      mkdirSync(dirname(options.path), { recursive: true });
     }
     this.db = new BetterSqlite3(options.path);
     this.db.pragma("journal_mode = WAL");
