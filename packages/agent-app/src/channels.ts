@@ -33,18 +33,14 @@ import type {
 } from "@mono-agent/slack-adapter";
 import {
   loadTelegramAdapterConfig,
-  TelegramAdapter,
+  startTelegramAdapter,
   TelegramAdapterConfigError,
-  TelegramBotApiClient,
-  TelegramLongPoller,
 } from "@mono-agent/telegram-adapter";
 import type {
   TelegramAdapterConfig,
   TelegramAdapterErrorTextInput,
-  TelegramAdapterOptions,
-  TelegramBotApi,
-  TelegramLongPollerOptions,
-  TelegramLongPollerStartOptions,
+  TelegramAdapterStartOptions,
+  TelegramAdapterStartResult,
 } from "@mono-agent/telegram-adapter";
 import {
   loadWebhookAdapterConfig,
@@ -127,12 +123,11 @@ export interface ChannelDriver<TConfig = unknown> {
 }
 
 export interface TelegramChannelOverrides {
-  readonly api?: TelegramBotApi;
-  readonly pollerFactory?: (options: TelegramLongPollerOptions) => TelegramPollerLike;
-}
-
-export interface TelegramPollerLike {
-  start(options?: TelegramLongPollerStartOptions): Promise<void>;
+  readonly botFactory?: TelegramAdapterStartOptions["botFactory"];
+  readonly runnerFactory?: TelegramAdapterStartOptions["runnerFactory"];
+  readonly startAdapter?: (
+    options: TelegramAdapterStartOptions,
+  ) => Promise<TelegramAdapterStartResult>;
 }
 
 export function createTelegramChannelDriver(
@@ -148,28 +143,11 @@ export function createTelegramChannelDriver(
       return error instanceof TelegramAdapterConfigError;
     },
     async start(input) {
-      const api = overrides.api ?? new TelegramBotApiClient({ token: input.config.botToken });
-      const adapter = new TelegramAdapter(telegramAdapterOptions(api, input));
-      const pollerOptions: TelegramLongPollerOptions = {
-        api,
-        adapter,
-        deleteWebhookOnStart: true,
-        allowedUpdates: ["message"],
-        ...(input.logger === undefined ? {} : { logger: input.logger }),
-      };
-      const poller = overrides.pollerFactory?.(pollerOptions) ?? new TelegramLongPoller(pollerOptions);
-      const controller = new AbortController();
-      const promise = poller.start({ signal: controller.signal }).catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          input.onFailure(reasonOf(error));
-        }
-      });
+      const startAdapter = overrides.startAdapter ?? startTelegramAdapter;
+      const result = await startAdapter(telegramStartOptions(input, overrides));
       return {
         summary: {},
-        async stop() {
-          controller.abort();
-          await promise.catch(() => undefined);
-        },
+        stop: () => result.stop(),
       };
     },
   };
@@ -468,22 +446,24 @@ export function defaultChannelDrivers(overrides: ChannelDriverOverrides = {}): r
   ] as readonly ChannelDriver[];
 }
 
-function telegramAdapterOptions(
-  api: TelegramBotApi,
+function telegramStartOptions(
   input: ChannelStartInput<TelegramAdapterConfig>,
-): TelegramAdapterOptions {
+  overrides: TelegramChannelOverrides,
+): TelegramAdapterStartOptions {
   return {
-    api,
-    responder: input.responder,
+    botToken: input.config.botToken,
     allowedChatIds: [...input.config.allowedChatIds],
     allowAllChats: input.config.allowAllChats,
+    responder: input.responder,
+    allowedUpdates: ["message"],
+    deleteWebhookOnStart: true,
     stream: {
       initialStatusText: "Agent is thinking...",
       editDebounceMs: 350,
       maxSendRetries: 3,
       retryCapMs: 60_000,
       showThoughts: true,
-      formatHtml: true,
+      formatMarkdown: true,
     },
     messages: {
       welcomeText: "Agent is online. Send a message to run the configured runtime.",
@@ -492,11 +472,9 @@ function telegramAdapterOptions(
       errorText: telegramErrorText,
     },
     ...(input.logger === undefined ? {} : { logger: input.logger }),
+    ...(overrides.botFactory === undefined ? {} : { botFactory: overrides.botFactory }),
+    ...(overrides.runnerFactory === undefined ? {} : { runnerFactory: overrides.runnerFactory }),
   };
-}
-
-function reasonOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function telegramErrorText(input: TelegramAdapterErrorTextInput): string {

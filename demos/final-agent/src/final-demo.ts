@@ -21,9 +21,8 @@ import type { CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cro
 import type { OpenAIApiAdapterOptions, OpenAIApiAdapterStartResult } from "@mono-agent/openai-api-adapter";
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import type {
-  TelegramBotApi,
-  TelegramLongPollerOptions,
-  TelegramLongPollerStartOptions,
+  TelegramAdapterStartOptions,
+  TelegramAdapterStartResult,
 } from "@mono-agent/telegram-adapter";
 import type { WebhookAdapterOptions, WebhookAdapterStartResult } from "@mono-agent/webhook-adapter";
 import type { FieldGroup } from "@mono-agent/settings";
@@ -43,10 +42,6 @@ export type { RedactedFinalAgentDemoConfig } from "./configuration.js";
 
 export type FinalAgentDemoLogger = MonoAgentAppLogger;
 
-export interface FinalAgentDemoPollerLike {
-  start(options?: TelegramLongPollerStartOptions): Promise<void>;
-}
-
 /**
  * The final demo is now a thin composition over @mono-agent/agent-app: it
  * selects the five demo channels, wires the demo's DI seams into channel
@@ -60,8 +55,9 @@ export interface FinalAgentDemoOptions {
   readonly operatorConsolePort?: number;
   readonly logger?: FinalAgentDemoLogger;
   readonly runtime?: MonoRuntimeLike;
-  readonly telegramApi?: TelegramBotApi;
-  readonly pollerFactory?: (options: TelegramLongPollerOptions) => FinalAgentDemoPollerLike;
+  readonly telegramStartAdapter?: (
+    options: TelegramAdapterStartOptions,
+  ) => Promise<TelegramAdapterStartResult>;
   readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
   readonly webhookAdapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
   readonly openAIApiAdapterFactory?: (options: OpenAIApiAdapterOptions) => Promise<OpenAIApiAdapterStartResult>;
@@ -146,10 +142,9 @@ export interface FinalAgentDemo {
 export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): Promise<FinalAgentDemo> {
   const drivers: readonly ChannelDriver[] = [
     withRedactedDemoConfig(
-      createTelegramChannelDriver({
-        ...(options.telegramApi === undefined ? {} : { api: options.telegramApi }),
-        ...(options.pollerFactory === undefined ? {} : { pollerFactory: options.pollerFactory }),
-      }),
+      createTelegramChannelDriver(
+        options.telegramStartAdapter === undefined ? {} : { startAdapter: options.telegramStartAdapter },
+      ),
       (config, coreConfig) => redactFinalAgentDemoConfig({ coreConfig, telegramConfig: config }),
     ),
     withRedactedDemoConfig(

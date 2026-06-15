@@ -11,9 +11,11 @@ import type {
   A2AProviderStartResult,
 } from "@mono-agent/a2a-adapter";
 import type {
-  TelegramBotApi,
-  TelegramLongPollerOptions,
-  TelegramLongPollerStartOptions,
+  AgentMessageStream,
+  AgentRequest,
+  AgentResponse,
+  TelegramAdapterStartOptions,
+  TelegramAdapterStartResult,
 } from "@mono-agent/telegram-adapter";
 import type {
   CronAdapterOptions,
@@ -51,16 +53,12 @@ afterEach(async () => {
 describe("final agent demo", () => {
   it("starts a loopback operator console and waits honestly when config is missing", async () => {
     const dir = await tempDir();
-    let pollerConstructed = false;
+    const telegram = createFakeTelegramAdapter();
     const demo = await startFinalAgentDemo({
       cwd: dir,
       env: testTraceEnv(),
       runtime: createFakeRuntime().runtime,
-      telegramApi: createFakeTelegramApi().api,
-      pollerFactory: () => {
-        pollerConstructed = true;
-        return createAbortableFakePoller().poller;
-      },
+      telegramStartAdapter: telegram.startAdapter,
     });
 
     try {
@@ -74,7 +72,7 @@ describe("final agent demo", () => {
       }
       expect(missingConfigStatus.reason).toMatch(/MONO_AGENT_TELEGRAM_BOT_TOKEN/u);
       expect(demo.a2aStatus).toMatchObject({ kind: "disabled" });
-      expect(pollerConstructed).toBe(false);
+      expect(telegram.starts).toHaveLength(0);
 
       const health = await fetch(`${demo.operatorConsole.url}/api/health`);
       expect(health.status).toBe(200);
@@ -105,21 +103,13 @@ describe("final agent demo", () => {
     await writeDemoMcpJson(dir);
 
     const fakeRuntime = createFakeRuntime();
-    const fakeApi = createFakeTelegramApi();
-    const started: TelegramLongPollerStartOptions[] = [];
-    let factoryCalls = 0;
-    let pollerOptions: TelegramLongPollerOptions | undefined;
+    const telegram = createFakeTelegramAdapter();
 
     const demo = await startFinalAgentDemo({
       cwd: dir,
       env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
-      telegramApi: fakeApi.api,
-      pollerFactory: (options) => {
-        factoryCalls += 1;
-        pollerOptions = options;
-        return createAbortableFakePoller(started).poller;
-      },
+      telegramStartAdapter: telegram.startAdapter,
     });
 
     try {
@@ -128,42 +118,33 @@ describe("final agent demo", () => {
       const put = await putConfig(demo.operatorConsole.url, demo.operatorConsole.token, initial.version, validConfigPatch());
       expect(put.status).toBe(200);
 
-      await waitFor(() => started.length === 1);
-      expect(factoryCalls).toBe(1);
-      expect(pollerOptions).toMatchObject({ deleteWebhookOnStart: true, allowedUpdates: ["message"] });
+      await waitFor(() => telegram.starts.length === 1);
+      expect(telegram.starts[0]).toMatchObject({ deleteWebhookOnStart: true, allowedUpdates: ["message"] });
       expect(demo.telegramStatus.kind).toBe("running");
       expect(demo.a2aStatus.kind).toBe("disabled");
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("secret-token");
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("987654321");
 
-      const firstSignal = started[0]?.signal;
       const second = await putConfig(demo.operatorConsole.url, demo.operatorConsole.token, put.body.version, {
         runtime: { maxTurns: 9 },
         tools: { allowedTools: ["Read"] },
       });
       expect(second.status).toBe(200);
       expect(second.body.apply?.kind).toBe("applied");
-      await waitFor(() => started.length === 2);
-      expect(firstSignal?.aborted).toBe(true);
-      expect(factoryCalls).toBe(2);
+      await waitFor(() => telegram.starts.length === 2);
+      // Applying config stops the prior adapter before starting the reloaded one.
+      expect(telegram.stops).toContain(0);
 
-      const result = await pollerOptions?.adapter.handleUpdate({
-        update_id: 2,
-        message: {
-          message_id: 20,
-          chat: { id: 987654321, type: "private" },
-          from: { id: 77, username: "tester" },
-          text: "Use the reloaded config",
-        },
-      });
-      expect(result).toMatchObject({ kind: "handled", action: "responded" });
+      const { response } = await respondViaTelegram(telegram.latest() as TelegramAdapterStartOptions, "Use the reloaded config", 2, 20);
+      expect(response.text).toBe("runtime ok");
       expect(fakeRuntime.calls[0]?.options.maxTurns).toBe(9);
       expect(fakeRuntime.calls[0]?.options.allowedTools).toEqual(["Read"]);
     } finally {
       await demo.stop();
     }
 
-    expect(started[1]?.signal?.aborted).toBe(true);
+    // Stopping the demo stops the live (second) adapter too.
+    expect(telegram.stops).toContain(1);
   });
 
   it("resolves the observability artifact directory without requiring a valid full config", async () => {
@@ -206,22 +187,18 @@ describe("final agent demo", () => {
       "utf8",
     );
 
-    let pollerConstructed = false;
+    const telegram = createFakeTelegramAdapter();
     const fakeRuntime = createFakeRuntime();
     const demo = await startFinalAgentDemo({
       cwd: dir,
       env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
-      telegramApi: createFakeTelegramApi().api,
-      pollerFactory: () => {
-        pollerConstructed = true;
-        return createAbortableFakePoller().poller;
-      },
+      telegramStartAdapter: telegram.startAdapter,
     });
 
     try {
       expect(demo.telegramStatus.kind).toBe("waiting_for_config");
-      expect(pollerConstructed).toBe(false);
+      expect(telegram.starts).toHaveLength(0);
       const a2aStatus = demo.a2aStatus;
       if (a2aStatus.kind !== "running") {
         throw new Error(`Expected A2A running, got ${a2aStatus.kind}.`);
@@ -266,7 +243,7 @@ describe("final agent demo", () => {
       cwd: dir,
       env: testTraceEnv(),
       runtime: createFakeRuntime().runtime,
-      telegramApi: createFakeTelegramApi().api,
+      telegramStartAdapter: createFakeTelegramAdapter().startAdapter,
       a2aProviderFactory: async (options) => createFakeA2AProvider(options, providers),
     });
 
@@ -314,17 +291,16 @@ describe("final agent demo", () => {
       }, null, 2)}\n`,
       "utf8",
     );
-    const started: TelegramLongPollerStartOptions[] = [];
+    const telegram = createFakeTelegramAdapter();
     const demo = await startFinalAgentDemo({
       cwd: dir,
       env: {},
       runtime: createFakeRuntime().runtime,
-      telegramApi: createFakeTelegramApi().api,
-      pollerFactory: () => createAbortableFakePoller(started).poller,
+      telegramStartAdapter: telegram.startAdapter,
     });
 
     try {
-      await waitFor(() => started.length === 1);
+      await waitFor(() => telegram.starts.length === 1);
       expect(demo.traceabilityStatus).toMatchObject({
         kind: "running",
         sourceId: "source-a",
@@ -371,33 +347,23 @@ describe("final agent demo", () => {
     await writeFile(join(dir, "mono-agent.config.json"), `${JSON.stringify(validConfigPatch(), null, 2)}\n`, "utf8");
 
     const fakeRuntime = createFakeRuntime();
-    const fakeApi = createFakeTelegramApi();
-    let pollerOptions: TelegramLongPollerOptions | undefined;
+    const telegram = createFakeTelegramAdapter();
     const demo = await startFinalAgentDemo({
       cwd: dir,
       env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
-      telegramApi: fakeApi.api,
-      pollerFactory: (options) => {
-        pollerOptions = options;
-        return createAbortableFakePoller().poller;
-      },
+      telegramStartAdapter: telegram.startAdapter,
     });
 
     try {
       expect(demo.telegramStatus.kind).toBe("running");
-      expect(pollerOptions).toBeDefined();
-      const result = await pollerOptions?.adapter.handleUpdate({
-        update_id: 1,
-        message: {
-          message_id: 10,
-          chat: { id: 987654321, type: "private" },
-          from: { id: 77, username: "tester" },
-          text: "Hello demo",
-        },
-      });
+      const telegramOptions = telegram.latest();
+      expect(telegramOptions).toBeDefined();
+      // The host wires the runtime+memory+artifacts responder into the adapter;
+      // drive it directly with the request the grammY handler would synthesize.
+      const { response } = await respondViaTelegram(telegramOptions as TelegramAdapterStartOptions, "Hello demo");
 
-      expect(result).toMatchObject({ kind: "handled", action: "responded" });
+      expect(response.text).toBe("runtime ok");
       expect(fakeRuntime.calls).toHaveLength(1);
       const call = fakeRuntime.calls[0];
       expect(call?.prompt).toContain("You are Mono and you love small LEGO blocks.");
@@ -438,7 +404,8 @@ describe("final agent demo", () => {
         traceability.runs[0]?.runId ?? "",
       );
       expect(traceDetail.detail?.run.events[0]).toMatchObject({ category: "runtime", type: "fake-event" });
-      expect(fakeApi.sentTexts.join("\n")).toContain("runtime ok");
+      // The responder returns the final answer for the channel to deliver.
+      expect(response.text).toContain("runtime ok");
     } finally {
       await demo.stop();
     }
@@ -483,8 +450,7 @@ describe("final agent demo", () => {
       cwd: dir,
       env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
-      telegramApi: createFakeTelegramApi().api,
-      pollerFactory: () => createAbortableFakePoller().poller,
+      telegramStartAdapter: createFakeTelegramAdapter().startAdapter,
       cronAdapterFactory: (options) => createFakeCronAdapter(options, cronStarts, stoppedCronAdapters),
     });
 
@@ -606,31 +572,19 @@ describe("final agent demo", () => {
     );
 
     const fakeRuntime = createFakeRuntime();
-    let pollerOptions: TelegramLongPollerOptions | undefined;
+    const telegram = createFakeTelegramAdapter();
     const demo = await startFinalAgentDemo({
       cwd: dir,
       env: testTraceEnv(),
       runtime: fakeRuntime.runtime,
-      telegramApi: createFakeTelegramApi().api,
-      pollerFactory: (options) => {
-        pollerOptions = options;
-        return createAbortableFakePoller().poller;
-      },
+      telegramStartAdapter: telegram.startAdapter,
     });
 
     try {
       expect(demo.telegramStatus.kind).toBe("running");
-      const result = await pollerOptions?.adapter.handleUpdate({
-        update_id: 2,
-        message: {
-          message_id: 20,
-          chat: { id: 987654321, type: "private" },
-          from: { id: 77, username: "tester" },
-          text: "Use local model",
-        },
-      });
+      const { response } = await respondViaTelegram(telegram.latest() as TelegramAdapterStartOptions, "Use local model", 2, 20);
 
-      expect(result).toMatchObject({ kind: "handled", action: "responded" });
+      expect(response.text).toBe("runtime ok");
       expect(fakeRuntime.calls).toHaveLength(1);
       const call = fakeRuntime.calls[0];
       expect(call?.options.model).toMatchObject({ sdk: "pi", provider: "ollama", model: "qwen3:8b" });
@@ -681,17 +635,13 @@ describe("final agent demo", () => {
       }, null, 2)}\n`,
       "utf8",
     );
-    let pollerConstructed = false;
+    const telegram = createFakeTelegramAdapter();
 
     const demo = await startFinalAgentDemo({
       cwd: dir,
       env: testTraceEnv(),
       runtime: createFakeRuntime().runtime,
-      telegramApi: createFakeTelegramApi().api,
-      pollerFactory: () => {
-        pollerConstructed = true;
-        return createAbortableFakePoller().poller;
-      },
+      telegramStartAdapter: telegram.startAdapter,
     });
 
     try {
@@ -700,7 +650,7 @@ describe("final agent demo", () => {
         throw new Error(`Expected waiting_for_config, got ${status.kind}.`);
       }
       expect(status.reason).toMatch(/public host/u);
-      expect(pollerConstructed).toBe(false);
+      expect(telegram.starts).toHaveLength(0);
     } finally {
       await demo.stop();
     }
@@ -897,45 +847,92 @@ function createFakeRuntime(): {
   };
 }
 
-function createFakeTelegramApi(): { readonly api: TelegramBotApi; readonly sentTexts: string[] } {
-  const sentTexts: string[] = [];
+/**
+ * A fake `startTelegramAdapter` seam. The grammY-backed adapter is no longer
+ * driven through a poller; the host now wires the responder + message copy into
+ * `startTelegramAdapter(options)` and gets back a `{ stop }`. The fake captures
+ * every start's options (so tests can assert the wiring the demo composed) and
+ * records start/stop without building a real bot.
+ */
+function createFakeTelegramAdapter(): {
+  readonly starts: TelegramAdapterStartOptions[];
+  readonly stops: number[];
+  readonly startAdapter: (options: TelegramAdapterStartOptions) => Promise<TelegramAdapterStartResult>;
+  /** The most recently captured start options, or undefined before first start. */
+  latest(): TelegramAdapterStartOptions | undefined;
+} {
+  const starts: TelegramAdapterStartOptions[] = [];
+  const stops: number[] = [];
   return {
-    sentTexts,
-    api: {
-      async sendMessage(params) {
-        sentTexts.push(params.text);
-        return { message_id: sentTexts.length, chat: { id: params.chat_id }, text: params.text };
-      },
-      async editMessageText(params) {
-        sentTexts.push(params.text);
-        return { message_id: params.message_id ?? sentTexts.length, chat: { id: params.chat_id ?? 987654321 }, text: params.text };
-      },
-      async getUpdates() {
-        return [];
-      },
-      async deleteWebhook() {
-        return true;
+    starts,
+    stops,
+    latest: () => starts.at(-1),
+    startAdapter: async (options) => {
+      const index = starts.length;
+      starts.push(options);
+      return {
+        async stop() {
+          stops.push(index);
+        },
+      };
+    },
+  };
+}
+
+/**
+ * A no-op Telegram-shaped {@link AgentMessageStream}. The grammY adapter (not
+ * the responder) is what delivers the final answer to Telegram, so driving the
+ * wired responder directly only needs a stream that accepts the streamed
+ * deltas/events; the final answer is the responder's return value.
+ */
+function createNoopTelegramStream(): AgentMessageStream {
+  return {
+    async status() {},
+    async append() {},
+    async replace() {},
+    async event() {},
+    async finish() {},
+  };
+}
+
+/**
+ * Build the responder-facing Telegram {@link AgentRequest} the grammY message
+ * handler would synthesize from an update, so tests can drive the wired
+ * responder directly (previously done via `poller.adapter.handleUpdate`).
+ */
+function buildTelegramRequest(text: string, updateId: number, messageId: number): AgentRequest {
+  return {
+    conversationId: "telegram:987654321",
+    chatId: 987654321,
+    messageId,
+    updateId,
+    userId: 77,
+    username: "tester",
+    text,
+    abortSignal: new AbortController().signal,
+    metadata: {
+      telegram: {
+        updateId,
+        chat: { id: 987654321, type: "private" },
+        message: { id: messageId },
+        from: { id: 77, username: "tester" },
       },
     },
   };
 }
 
-function createAbortableFakePoller(started: TelegramLongPollerStartOptions[] = []): {
-  readonly poller: { start(options?: TelegramLongPollerStartOptions): Promise<void> };
-} {
-  return {
-    poller: {
-      async start(options: TelegramLongPollerStartOptions = {}): Promise<void> {
-        started.push(options);
-        if (options.signal?.aborted === true) {
-          return;
-        }
-        await new Promise<void>((resolvePromise) => {
-          options.signal?.addEventListener("abort", () => resolvePromise(), { once: true });
-        });
-      },
-    },
-  };
+/** Drive the wired responder once and return its response. */
+async function respondViaTelegram(
+  options: TelegramAdapterStartOptions,
+  text: string,
+  updateId = 1,
+  messageId = 10,
+): Promise<{ response: AgentResponse }> {
+  const response = await options.responder.respond(
+    buildTelegramRequest(text, updateId, messageId),
+    createNoopTelegramStream(),
+  );
+  return { response };
 }
 
 function createFakeA2AProvider(

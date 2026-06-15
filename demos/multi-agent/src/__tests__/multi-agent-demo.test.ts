@@ -10,6 +10,11 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { sendA2AMessage } from "@mono-agent/a2a-adapter";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
+import type {
+  TelegramAdapterStartOptions,
+  TelegramAdapterStartResult,
+} from "@mono-agent/telegram-adapter";
+
 import { writeMultiAgentDeploymentFiles } from "../deployment.js";
 import { startMultiAgentDemo } from "../multi-agent-demo.js";
 import type { MultiAgentRole } from "../orchestrator-responder.js";
@@ -83,6 +88,72 @@ describe("multi-agent demo", () => {
     } finally {
       await demo.stop();
     }
+  });
+
+  it("starts Telegram through startTelegramAdapter with the collaborative orchestrator wiring", async () => {
+    const dir = await tempDir();
+    const files = await writeMultiAgentDeploymentFiles({ cwd: process.cwd(), configDir: dir });
+    const fakeRuntime = createFakeRuntime();
+    let captured: TelegramAdapterStartOptions | undefined;
+    let stopped = false;
+    const startResult: TelegramAdapterStartResult = {
+      async stop() {
+        stopped = true;
+      },
+    };
+
+    const demo = await startMultiAgentDemo({
+      cwd: process.cwd(),
+      configDir: files.configDir,
+      env: {
+        MONO_AGENT_TELEGRAM_BOT_TOKEN: "test-token",
+        MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS: "42,99",
+      },
+      runtimeFactory: (role) => fakeRuntime.runtimeFor(role),
+      telegramStartAdapter: async (options) => {
+        captured = options;
+        return startResult;
+      },
+    });
+
+    try {
+      expect(demo.telegramStatus).toMatchObject({
+        kind: "running",
+        allowedChatCount: 2,
+        allowAllChats: false,
+      });
+      expect(captured?.botToken).toBe("test-token");
+      expect(captured?.allowedChatIds).toEqual(["42", "99"]);
+      expect(captured?.allowAllChats).toBe(false);
+      expect(captured?.allowedUpdates).toEqual(["message"]);
+      expect(captured?.deleteWebhookOnStart).toBe(true);
+      expect(captured?.messages?.unauthorizedText).toContain("not allowlisted");
+
+      // The wired responder is the collaborative orchestrator: invoking it runs
+      // the orchestrator runtime, which fans out to researcher and worker.
+      const responder = captured?.responder;
+      if (responder === undefined) {
+        throw new Error("expected a responder to be wired into Telegram");
+      }
+      const controller = new AbortController();
+      const response = await responder.respond(
+        {
+          conversationId: "telegram:42",
+          text: "Research current context and inspect the workspace.",
+          abortSignal: controller.signal,
+        } as never,
+        {
+          async append() {
+            /* terminal stream is unused for this assertion */
+          },
+        } as never,
+      );
+      expect(response.text).toBe("Final synthesis used collaborator tool reports.");
+      expect(fakeRuntime.calls.map((call) => call.role)).toEqual(["orchestrator", "researcher", "worker"]);
+    } finally {
+      await demo.stop();
+    }
+    expect(stopped).toBe(true);
   });
 });
 
