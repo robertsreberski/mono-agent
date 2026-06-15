@@ -22,3 +22,4 @@ export { reflect } from "./reflect.js";
 export type { ReflectDeps, ReflectResult } from "./reflect.js";
 export { migrate } from "./migrate.js";
 export type { MigrateDeps, MigrateResult } from "./migrate.js";
+export { writeFutureLog, writeIndex } from "./projections.js";
