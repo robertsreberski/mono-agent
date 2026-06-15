@@ -32,6 +32,8 @@ export type {
   AgentRequest,
   AgentResponder,
   AgentResponse,
+  TelegramAdapterErrorText,
+  TelegramAdapterErrorTextInput,
   TelegramAdapterLogger,
   TelegramAdapterMessages,
   TelegramAdapterOptions,

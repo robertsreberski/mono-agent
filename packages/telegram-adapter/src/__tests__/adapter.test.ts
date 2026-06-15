@@ -272,6 +272,38 @@ describe("TelegramAdapter", () => {
     expect(api.editMessageTextCalls.at(-1)?.text).toBe("Cancelled.");
   });
 
+  it("lets hosts derive terminal error text from responder failure details", async () => {
+    const api = new FakeTelegramApi();
+    const bridge = new TelegramAdapter({
+      api,
+      allowAllChats: true,
+      stream: { editDebounceMs: 0 },
+      messages: {
+        errorText: ({ error, request }) => {
+          const failure = (error as { failure?: { kind?: string } }).failure;
+          return failure?.kind === "usage_limit"
+            ? `I hit the turn limit while handling "${request.text}".`
+            : "I could not complete that message.";
+        },
+      },
+      responder: responderFrom(async () => {
+        throw Object.assign(new Error("Provider limit"), {
+          failure: { kind: "usage_limit", message: "Provider limit" },
+        });
+      }),
+    });
+
+    await expect(bridge.handleUpdate(textUpdate("check calendar"))).resolves.toMatchObject({
+      kind: "error",
+      updateId: 1,
+      chatId: 42,
+    });
+
+    expect(api.editMessageTextCalls.at(-1)?.text).toBe(
+      'I hit the turn limit while handling "check calendar".',
+    );
+  });
+
   it("aborts the active run when /cancel is received", async () => {
     const api = new FakeTelegramApi();
     let capturedSignal: AbortSignal | undefined;

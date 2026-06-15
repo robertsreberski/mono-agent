@@ -4,8 +4,20 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type {
+  TelegramBotApi,
+  TelegramEditMessageTextParams,
+  TelegramGetUpdatesParams,
+  TelegramLongPollerOptions,
+  TelegramRequestOptions,
+  TelegramSendMessageParams,
+  TelegramSentMessage,
+  TelegramUpdate,
+} from "@mono-agent/telegram-adapter";
+
 import { startMonoAgentApp } from "../app.js";
-import { defaultChannelDrivers } from "../channels.js";
+import { createTelegramChannelDriver, defaultChannelDrivers } from "../channels.js";
 
 let dir: string;
 
@@ -39,6 +51,52 @@ const fakeConsoleFactory = vi.fn(async () => ({
   token: "test-token",
   stop: vi.fn(async () => undefined),
 }));
+
+class FakeTelegramApi implements TelegramBotApi {
+  readonly sendMessageCalls: TelegramSendMessageParams[] = [];
+  readonly editMessageTextCalls: TelegramEditMessageTextParams[] = [];
+  nextMessageId = 1200;
+
+  async sendMessage(
+    params: TelegramSendMessageParams,
+    _options?: TelegramRequestOptions,
+  ): Promise<TelegramSentMessage> {
+    this.sendMessageCalls.push(params);
+    return { message_id: this.nextMessageId++, chat: { id: params.chat_id }, text: params.text };
+  }
+
+  async editMessageText(
+    params: TelegramEditMessageTextParams,
+    _options?: TelegramRequestOptions,
+  ): Promise<TelegramSentMessage | true> {
+    this.editMessageTextCalls.push(params);
+    return { message_id: params.message_id ?? 0, chat: { id: params.chat_id ?? 0 }, text: params.text };
+  }
+
+  async getUpdates(
+    _params: TelegramGetUpdatesParams,
+    _options?: TelegramRequestOptions,
+  ): Promise<TelegramUpdate[]> {
+    return [];
+  }
+
+  async deleteWebhook(): Promise<true> {
+    return true;
+  }
+}
+
+function telegramTextUpdate(text: string): TelegramUpdate {
+  return {
+    update_id: 1,
+    message: {
+      message_id: 10,
+      date: 1234,
+      chat: { id: 42, type: "private" },
+      from: { id: 7, first_name: "Person A" },
+      text,
+    },
+  };
+}
 
 describe("startMonoAgentApp", () => {
   it("starts configured channels, reports waiting/disabled for the rest, and stops cleanly", async () => {
@@ -282,5 +340,46 @@ describe("startMonoAgentApp", () => {
     expect(app.operatorConsole).toBeUndefined();
     expect(consoleFactory).not.toHaveBeenCalled();
     await app.stop();
+  });
+
+  it("maps Telegram runtime turn-limit failures to actionable channel copy", async () => {
+    const api = new FakeTelegramApi();
+    let pollerOptions: TelegramLongPollerOptions | undefined;
+    const responder: AgentResponder = {
+      async respond() {
+        throw Object.assign(new Error("Agent runtime failed."), {
+          failure: {
+            kind: "usage_limit",
+            message: "Agent runtime failed.",
+            details: { diagnostics: { max_turns: 8 } },
+          },
+        });
+      },
+    };
+    const driver = createTelegramChannelDriver({
+      api,
+      pollerFactory: (options) => {
+        pollerOptions = options;
+        return { start: vi.fn(async () => undefined) };
+      },
+    });
+
+    const running = await driver.start({
+      config: { botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
+      coreConfig: baseConfig() as never,
+      responder,
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+
+    await expect(
+      pollerOptions?.adapter.handleUpdate(telegramTextUpdate("calendar lions")),
+    ).resolves.toMatchObject({ kind: "error", chatId: 42 });
+
+    const terminalText = api.editMessageTextCalls.at(-1)?.text ?? "";
+    expect(terminalText).toContain("turn limit");
+    expect(terminalText).not.toContain("failed honestly");
+
+    await running.stop();
   });
 });
