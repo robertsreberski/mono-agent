@@ -32,7 +32,7 @@ my-agent/
     "effort": "medium",                    // none|low|medium|high|xhigh|max
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "reasoningSummary": "auto",            // auto|concise|detailed|off|on
-    "maxTurns": 8,                         // 1-100
+    "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } // or "per-message"
   },

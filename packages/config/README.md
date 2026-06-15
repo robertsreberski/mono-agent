@@ -59,7 +59,6 @@ Core config can also define local Pi providers under `providers.local`. The prim
   "runtime": {
     "model": "pi:ollama:qwen3:8b",
     "executionMode": "sdk",
-    "maxTurns": 8,
     "workspace": "."
   },
   "providers": {
@@ -77,6 +76,8 @@ Core config can also define local Pi providers under `providers.local`. The prim
   }
 }
 ```
+
+`runtime.maxTurns` is optional. Omit it or set `0` for unlimited runs; set `1`-`100` to keep a hard cap.
 
 Environment overrides for the common one-provider case:
 

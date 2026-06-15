@@ -134,11 +134,11 @@ export const runtimeFieldGroup = defineFieldGroup({
     {
       id: "runtime.maxTurns",
       label: "Max turns",
-      description: "Upper bound on conversation turns per run (1-100).",
+      description: "Optional upper bound on conversation turns per run; blank or 0 means unlimited.",
       kind: "integer",
-      min: 1,
+      min: 0,
       max: 100,
-      placeholder: "8",
+      placeholder: "0",
       path: ["runtime", "maxTurns"],
     },
     {

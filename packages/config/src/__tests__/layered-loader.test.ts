@@ -288,6 +288,46 @@ describe("loadMonoAgentConfigWithSources", () => {
     expect(config.runtime.maxTurns).toBe(20);
   });
 
+  it("treats a JSON runtime maxTurns value of zero as unlimited", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 0 },
+        context: { identityPath: "IDENTITY.md" },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({
+      env: {},
+      cwd: dir,
+      jsonPath: path,
+    });
+
+    expect(config.runtime.maxTurns).toBeUndefined();
+  });
+
+  it("lets env runtime max turns of zero override JSON to unlimited", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 4 },
+        context: { identityPath: "IDENTITY.md" },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MAX_TURNS: "0" },
+      cwd: dir,
+      jsonPath: path,
+    });
+
+    expect(config.runtime.maxTurns).toBeUndefined();
+  });
+
   it("loads session settings from JSON and lets env win for overlaps", async () => {
     const path = join(dir, "config.json");
     await writeFile(

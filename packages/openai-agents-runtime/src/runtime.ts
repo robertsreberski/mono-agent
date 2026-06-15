@@ -185,7 +185,7 @@ function buildRunConfig(
   const runConfig: Record<string, unknown> = {
     ...(options.sdkOptions?.run ?? {}),
   };
-  if (typeof runOptions.maxTurns === "number") {
+  if (typeof runOptions.maxTurns === "number" && runOptions.maxTurns > 0) {
     runConfig.maxTurns = runOptions.maxTurns;
   }
   return runConfig;

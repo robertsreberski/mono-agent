@@ -129,7 +129,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     executionMode,
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
-    maxTurns: config.runtime.maxTurns,
+    ...(config.runtime.maxTurns === undefined ? {} : { maxTurns: config.runtime.maxTurns }),
     session: {
       mode: config.runtime.session.mode,
       idleTimeoutMs: config.runtime.session.idleTimeoutMs,
@@ -140,7 +140,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
       : { runtimeOptionsForRequest: options.runtimeOptionsForRequest }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
-    historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: config.runtime.maxTurns * 2 }),
+    historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: historyMaxMessages(config.runtime.maxTurns) }),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
     recorderFactory: ({ runId, conversationId }) => createJsonlRunRecorder({
@@ -157,6 +157,10 @@ export function createConfiguredAgentResponder(options: ConfiguredAgentResponder
   return createAgentResponder({
     harness: createConfiguredAgentHarness(options),
   }) as AgentResponder;
+}
+
+function historyMaxMessages(maxTurns: number | undefined): number {
+  return maxTurns === undefined || maxTurns <= 0 ? 0 : maxTurns * 2;
 }
 
 function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefined {

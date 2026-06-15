@@ -70,7 +70,6 @@ export interface LoadMonoAgentConfigInput {
   readonly cwd: string;
 }
 
-const DEFAULT_MAX_TURNS = 8;
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MEMORY_MAX_BYTES = 64_000;
 const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
@@ -86,7 +85,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
   const fallbackModels = readFallbackModels(input.env);
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
-  const maxTurns = readInteger(input.env.MONO_AGENT_MAX_TURNS, "MONO_AGENT_MAX_TURNS", DEFAULT_MAX_TURNS, invalidEnv, { min: 1, max: 100 });
+  const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
   const session = readSessionConfig(input.env);
   const identityPath = readPath(readRequired(input.env, "MONO_AGENT_IDENTITY_PATH"), cwd);
@@ -112,7 +111,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     model,
     ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
     executionMode,
-    maxTurns,
+    ...(maxTurns === undefined ? {} : { maxTurns }),
     workspace,
     session,
     ...(effort === undefined ? {} : { effort }),
@@ -213,6 +212,11 @@ function readFallbackModels(env: Record<string, string | undefined>): readonly M
       );
     }
   });
+}
+
+function readMaxTurns(raw: string | undefined): number | undefined {
+  const maxTurns = readInteger(raw, "MONO_AGENT_MAX_TURNS", 0, invalidEnv, { min: 0, max: 100 });
+  return maxTurns === 0 ? undefined : maxTurns;
 }
 
 function parseExecutionMode(raw: string | undefined, model: MonoAgentConfig["runtime"]["model"]): RuntimeExecutionMode {
