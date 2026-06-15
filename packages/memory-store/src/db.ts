@@ -151,6 +151,26 @@ export class MemoryDb {
     return rows.map((r) => r.id);
   }
 
+  async supersede(oldId: string, replacement: MemoryRecord): Promise<void> {
+    const now = this.clock().toISOString();
+    await this.upsert(replacement);
+    const tx = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE memories SET status = 'invalidated', superseded_by = ?, superseded_at = ?, valid_to = ? WHERE id = ?`,
+      ).run(replacement.id, now, now, oldId);
+      this.db.prepare(
+        `INSERT OR IGNORE INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supersedes', 1.0, ?)`,
+      ).run(oldId, replacement.id, now);
+    });
+    tx();
+  }
+
+  edges(src: string): { src: string; dst: string; kind: string; weight: number }[] {
+    return this.db.prepare(`SELECT src, dst, kind, weight FROM edges WHERE src = ?`).all(src) as {
+      src: string; dst: string; kind: string; weight: number;
+    }[];
+  }
+
   protected bumpAccess(ids: readonly string[], now: Date): void {
     if (ids.length === 0) return;
     const stmt = this.db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?`);
