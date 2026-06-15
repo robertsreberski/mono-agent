@@ -142,7 +142,7 @@ export function buildDownloadsCuratorConfigJson(input: DownloadsCuratorConfigInp
     runtime: {
       model: config.model.reference ?? `codex:${config.model.model}`,
       executionMode: "cli",
-      maxTurns: config.mono.runtime.maxTurns,
+      ...(config.mono.runtime.maxTurns === undefined ? {} : { maxTurns: config.mono.runtime.maxTurns }),
       workspace: config.downloadsRoot,
     },
     context: {

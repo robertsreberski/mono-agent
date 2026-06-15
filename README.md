@@ -170,7 +170,6 @@ Hosts can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime
   "runtime": {
     "model": "pi:ollama:qwen3:8b",
     "executionMode": "sdk",
-    "maxTurns": 8,
     "workspace": "."
   },
   "providers": {
@@ -181,7 +180,7 @@ Hosts can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime
 }
 ```
 
-Run Ollama locally and pull the model first, for example `ollama pull qwen3:8b`. Standard local Ollama needs no provider API key. LM Studio and other OpenAI-compatible local gateways use the same `providers.local` shape with `type: "lmstudio"` or `type: "openai_compat"`; public URLs must be explicitly trusted and use HTTPS.
+Run Ollama locally and pull the model first, for example `ollama pull qwen3:8b`. Standard local Ollama needs no provider API key. LM Studio and other OpenAI-compatible local gateways use the same `providers.local` shape with `type: "lmstudio"` or `type: "openai_compat"`; public URLs must be explicitly trusted and use HTTPS. `runtime.maxTurns` is optional; omit it or set `0` for unlimited runs, or set `1`-`100` for a hard cap.
 
 Built-in Pi OAuth providers, such as `pi:openai-codex:gpt-5.5`, use the Pi auth
 file instead of `providers.local`. Core config defaults `providers.piAuthPath` to

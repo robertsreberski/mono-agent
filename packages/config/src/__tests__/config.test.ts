@@ -89,6 +89,24 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.reasoningSummary).toBe("detailed");
   });
 
+  it("treats an omitted runtime max turns value as unlimited", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+
+    expect(config.runtime.maxTurns).toBeUndefined();
+  });
+
+  it("treats runtime max turns of zero as unlimited", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MAX_TURNS: "0",
+      },
+    });
+
+    expect(config.runtime.maxTurns).toBeUndefined();
+  });
+
   it("omits permission mode and reasoning summary when the env is unset", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.runtime.permissionMode).toBeUndefined();

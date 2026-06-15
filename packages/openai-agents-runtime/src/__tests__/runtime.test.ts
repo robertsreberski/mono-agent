@@ -185,6 +185,25 @@ describe("createOpenAIAgentsRuntime", () => {
     expect(received?.runConfig.tracing).toEqual({ disabled: true });
   });
 
+  it("does not forward maxTurns to the SDK when it is unlimited", async () => {
+    let received: OpenAIRunFactoryInput | undefined;
+    const runtime = createOpenAIAgentsRuntime({
+      runFactory: async (input) => {
+        received = input;
+        return buildHandle([], { finalText: "ok", numTurns: 1 });
+      },
+    });
+
+    await runtime.run("system", {
+      model: { sdk: "openai", model: "gpt-5" },
+      messages: [{ role: "user", content: "Hi" }],
+      abortSignal: new AbortController().signal,
+      maxTurns: 0,
+    });
+
+    expect(received?.runConfig).not.toHaveProperty("maxTurns");
+  });
+
   it("applies a deny-only MCP tool filter in the default SDK adapter", async () => {
     openAiMock.agentInputs.length = 0;
     const runtime = createOpenAIAgentsRuntime();

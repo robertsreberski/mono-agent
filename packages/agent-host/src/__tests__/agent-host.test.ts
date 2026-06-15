@@ -483,6 +483,30 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.maxTurns).toBe(4);
   });
 
+  it("omits maxTurns from runtime options when the config leaves it unlimited", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Unlimited answer" }));
+    const config = monoConfig({ dir, identityPath, artifactDir });
+    const { maxTurns: _maxTurns, ...runtime } = config.runtime;
+
+    const harness = createConfiguredAgentHarness({
+      config: { ...config, runtime } as MonoAgentConfig,
+      runtime: fake.runtime,
+    });
+
+    const response = await harness.run({
+      conversationId: "conversation-unlimited",
+      userMessage: "Hello",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(response.text).toBe("Unlimited answer");
+    expect(fake.calls[0]?.options.maxTurns).toBeUndefined();
+  });
+
   it("overrides config model and executionMode when supplied at composition time", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

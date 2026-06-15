@@ -41,7 +41,8 @@ export interface MonoAgentConfig {
     readonly permissionMode?: PermissionMode;
     /** Verbosity of provider reasoning summaries surfaced by the runtime. */
     readonly reasoningSummary?: ReasoningSummary;
-    readonly maxTurns: number;
+    /** Optional hard cap per run; omitted means unlimited. */
+    readonly maxTurns?: number;
     readonly workspace: string;
     readonly session: {
       readonly mode: SessionMode;

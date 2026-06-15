@@ -69,4 +69,16 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
       path: ["runtime", "session", "idleTimeoutMs"],
     });
   });
+
+  it("documents runtime maxTurns as optional with zero meaning unlimited", () => {
+    const maxTurns = runtimeFieldGroup.fields.find((field) => field.id === "runtime.maxTurns");
+
+    expect(maxTurns).toMatchObject({
+      kind: "integer",
+      min: 0,
+      max: 100,
+      placeholder: "0",
+      path: ["runtime", "maxTurns"],
+    });
+  });
 });

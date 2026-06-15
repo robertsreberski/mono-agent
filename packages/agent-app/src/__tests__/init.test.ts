@@ -26,6 +26,7 @@ describe("initMonoAgentFolder", () => {
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
     expect(config.runtime.model).toBe("pi:ollama:gemma4:31b");
+    expect(config.runtime.maxTurns).toBeUndefined();
     expect(config.context.identityPath).toBe("./IDENTITY.md");
     expect(config.webhook.enabled).toBe(true);
     expect(config.memory).toBeUndefined();

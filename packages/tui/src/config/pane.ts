@@ -137,7 +137,7 @@ export function buildTuiConfigSummary(
         label: "maxTurns",
         envKey: ENV_KEYS.runtimeMaxTurns,
         jsonPresent: json.runtime?.maxTurns !== undefined,
-        value: String(redacted.runtime.maxTurns),
+        value: redacted.runtime.maxTurns === undefined ? "unlimited" : String(redacted.runtime.maxTurns),
       }),
       toField(env, {
         label: "workspace",

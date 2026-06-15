@@ -90,7 +90,6 @@ function configTemplate(
     runtime: {
       model: options.model ?? DEFAULT_MODEL,
       ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
-      maxTurns: 8,
       workspace: ".",
     },
     context: {

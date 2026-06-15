@@ -20,7 +20,7 @@ export interface LoadMonoAgentConfigWithSourcesInput {
  * Precedence (highest first):
  *   1. process env
  *   2. mono-agent.config.json
- *   3. built-in defaults from loadMonoAgentConfig (executionMode, maxTurns, etc.)
+ *   3. built-in defaults from loadMonoAgentConfig (executionMode, sessions, etc.)
  *
  * Returns the same `MonoAgentConfig` shape as `loadMonoAgentConfig` so
  * existing call sites only need to swap the loader.

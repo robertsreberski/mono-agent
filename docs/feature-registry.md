@@ -27,7 +27,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.effort` | Reasoning effort hint | `config` | `runtime.effort` (`MONO_AGENT_EFFORT`): none/low/medium/high/xhigh/max |
 | `runtime.permission-mode` | Tool-permission posture for CLI backends | `config` | `runtime.permissionMode` (`MONO_AGENT_PERMISSION_MODE`): default/plan/acceptEdits/bypassPermissions |
 | `runtime.reasoning-summary` | Provider reasoning-summary verbosity | `config` | `runtime.reasoningSummary` (`MONO_AGENT_REASONING_SUMMARY`): auto/concise/detailed/off/on |
-| `runtime.max-turns` | Turn cap per run | `config` | `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) |
+| `runtime.max-turns` | Optional turn cap per run; omitted or `0` means unlimited | `config` | `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) |
 | `runtime.workspace` | Working directory for runtime tools | `config` | `runtime.workspace` (`MONO_AGENT_WORKSPACE`) |
 | `runtime.provider-sessions` | Continuous provider session per conversation with idle eviction | `config` | `runtime.session.mode` + `runtime.session.idleTimeoutMs` (`MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`) |
 | `runtime.local-providers` | Ollama / LM Studio / OpenAI-compatible local model providers | `config` | `providers.local[]` (`MONO_AGENT_LOCAL_PROVIDERS_JSON` or `MONO_AGENT_LOCAL_PROVIDER_*`): id, type, baseUrl, apiKey/apiKeyEnv, models with capabilities/pricing |
@@ -58,7 +58,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | --- | --- | --- | --- |
 | `context.identity` | Identity markdown loaded into every prompt | `config` | `context.identityPath` (`MONO_AGENT_IDENTITY_PATH`) |
 | `context.soul` | Optional secondary voice/guardrail doc | `config` | `context.soulPath` (`MONO_AGENT_SOUL_PATH`) |
-| `context.history` | Conversation history assembly (in-memory store, capped) | `auto` | Sized from `runtime.maxTurns`; custom store via `code` (`createConfiguredAgentResponder({ historyStore })`) |
+| `context.history` | Conversation history assembly (in-memory store, capped only when turns are capped) | `auto` | Sized from `runtime.maxTurns`; unlimited when `runtime.maxTurns` is omitted or `0`; custom store via `code` (`createConfiguredAgentResponder({ historyStore })`) |
 | `skills.selected-activation` | Explicitly selected skills loaded from `<skillsRoot>/<name>/SKILL.md` | `config` | `context.skillsRoot`, `context.selectedSkills` (`MONO_AGENT_SKILLS_ROOT`, `MONO_AGENT_SELECTED_SKILLS`) |
 | `skills.byte-capping` | Per-skill instruction byte cap (default 48000) | `config` | `context.skillMaxBytes` (`MONO_AGENT_SKILL_MAX_BYTES`) |
 | `memory.markdown` | Single-file or per-conversation capped markdown memory | `config` | `memory.mode: "markdown"`, `memory.path`, `memory.maxBytes`, `memory.scope` |
