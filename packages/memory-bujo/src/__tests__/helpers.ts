@@ -1,4 +1,5 @@
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
+import type { LlmComplete } from "../llm.js";
 
 /** Deterministic bag-of-words embedding for tests: shared words → similar vectors. */
 export function fakeEmbeddings(dim: number): EmbeddingProvider {
@@ -27,4 +28,15 @@ function hash(token: string): number {
     h = Math.imul(h, 16777619);
   }
   return Math.abs(h);
+}
+
+/** Deterministic fake LLM: returns the first canned response whose key substring appears in the prompt. */
+export function fakeLlm(responses: ReadonlyArray<readonly [match: string, reply: string]>): LlmComplete {
+  return {
+    id: "fake-llm",
+    complete: async (prompt: string) => {
+      for (const [match, reply] of responses) if (prompt.includes(match)) return reply;
+      return "[]";
+    },
+  };
 }
