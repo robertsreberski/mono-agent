@@ -65,8 +65,17 @@ export interface TelegramAdapterMessages {
   busyText?: string;
   unauthorizedText?: string;
   cancelledText?: string;
-  errorText?: string;
+  errorText?: TelegramAdapterErrorText;
   unsupportedText?: string;
+}
+
+export type TelegramAdapterErrorText =
+  | string
+  | ((input: TelegramAdapterErrorTextInput) => string | Promise<string>);
+
+export interface TelegramAdapterErrorTextInput {
+  readonly error: unknown;
+  readonly request: AgentRequest;
 }
 
 export interface TelegramAdapterStreamOptions {
@@ -134,6 +143,8 @@ interface NormalizedCommand {
   name: string;
 }
 
+const DEFAULT_ERROR_TEXT = "The agent failed while processing your message.";
+
 const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
   welcomeText:
     "Hello! Send me a text message and I will pass it to the configured agent.",
@@ -142,7 +153,7 @@ const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
   busyText: "I am still working on your previous message. Use /cancel to stop it.",
   unauthorizedText: "This Telegram chat is not authorized to use this bot.",
   cancelledText: "Cancelled.",
-  errorText: "The agent failed while processing your message.",
+  errorText: DEFAULT_ERROR_TEXT,
   unsupportedText: "I can only handle text messages in this adapter for now.",
 };
 
@@ -273,6 +284,7 @@ export class TelegramAdapter {
     const controller = new AbortController();
     const activeRun: ActiveRun = { controller };
     this.activeRuns.set(runKey, activeRun);
+    const request = buildAgentRequest(update, message, text, controller.signal);
 
     const telegramStreamOptions: TelegramMessageStreamOptions = {
       api: this.api,
@@ -301,7 +313,6 @@ export class TelegramAdapter {
         return { kind: "cancelled", updateId: update.update_id, chatId };
       }
 
-      const request = buildAgentRequest(update, message, text, controller.signal);
       const response = await this.responder.respond(request, stream);
 
       if (controller.signal.aborted) {
@@ -329,7 +340,13 @@ export class TelegramAdapter {
       this.logger?.error?.("Telegram adapter responder failed.", {
         error: error instanceof Error ? error.message : String(error),
       });
-      await finishSafely(stream, this.messages.errorText, this.logger);
+      const errorText = await resolveErrorText({
+        configured: this.messages.errorText,
+        error,
+        request,
+        logger: this.logger,
+      });
+      await finishSafely(stream, errorText, this.logger);
       return { kind: "error", updateId: update.update_id, chatId, error };
     } finally {
       if (this.activeRuns.get(runKey) === activeRun) {
@@ -450,4 +467,32 @@ async function finishSafely(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+async function resolveErrorText(input: {
+  readonly configured: TelegramAdapterErrorText;
+  readonly error: unknown;
+  readonly request: AgentRequest;
+  readonly logger: TelegramAdapterLogger | undefined;
+}): Promise<string> {
+  if (typeof input.configured === "string") {
+    return input.configured;
+  }
+
+  try {
+    const resolved = await input.configured({
+      error: input.error,
+      request: input.request,
+    });
+    if (typeof resolved === "string" && resolved.trim().length > 0) {
+      return resolved;
+    }
+    input.logger?.warn?.("Telegram adapter error text callback returned empty text.");
+  } catch (error) {
+    input.logger?.error?.("Telegram adapter error text callback failed.", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  return DEFAULT_ERROR_TEXT;
 }
