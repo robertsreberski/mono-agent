@@ -1298,7 +1298,6 @@ describe("rebuild", () => {
     const second = await build();
     expect(first.count).toBe(3);
     expect(second).toEqual(first);
-    db: void 0;
   });
 });
 ```
