@@ -42,4 +42,17 @@ describe("recall", () => {
     expect(got?.lastAccessedAt).toBe("2026-06-16T00:00:00.000Z");
     db.close();
   });
+
+  it("excludes memories whose validTo has passed, unless includeInvalid", async () => {
+    const now = new Date("2026-06-15T00:00:00.000Z");
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
+    await db.upsert(note("expired", "cat expired note", { validTo: "2026-01-01T00:00:00.000Z" }));
+    await db.upsert(note("future", "cat future note", { validTo: "2026-12-31T00:00:00.000Z" }));
+    expect((await db.recall("cat", { topK: 5 })).map((h) => h.record.id)).toEqual(["future"]);
+    expect((await db.recall("cat", { topK: 5, includeInvalid: true })).map((h) => h.record.id).sort()).toEqual([
+      "expired",
+      "future",
+    ]);
+    db.close();
+  });
 });
