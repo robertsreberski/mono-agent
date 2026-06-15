@@ -105,7 +105,10 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
  * and `#` comment lines are ignored, as are lines without a colon.
  */
 function parseFrontmatter(frontmatter: string): Record<string, string | undefined> {
-  const meta: Record<string, string | undefined> = {};
+  // Null-prototype so a `__proto__` (or `constructor`) key is stored as plain
+  // data and can never pollute the prototype or shadow a real reader like
+  // `meta.expression`.
+  const meta: Record<string, string | undefined> = Object.create(null);
   for (const rawLine of frontmatter.split("\n")) {
     const line = rawLine.trim();
     if (line.length === 0 || line.startsWith("#")) {

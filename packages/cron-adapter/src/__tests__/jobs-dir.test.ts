@@ -94,6 +94,16 @@ describe("parseCronJobMarkdown", () => {
       /enabled/u,
     );
   });
+
+  it("treats a __proto__ frontmatter key as inert data without polluting the prototype", () => {
+    const job = parseCronJobMarkdown(
+      "p.md",
+      ["---", "__proto__: polluted", "expression: 0 0 * * *", "---", "Body."].join("\n"),
+    );
+    expect(job.expression).toBe("0 0 * * *");
+    expect(({} as Record<string, unknown>).expression).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, "polluted")).toBe(false);
+  });
 });
 
 describe("loadCronJobsFromDirectory", () => {
@@ -186,5 +196,14 @@ describe("loadCronAdapterConfig with a cron folder", () => {
   it("skips the folder scan when no base directory is provided", async () => {
     const config = await loadCronAdapterConfig({ env: {} });
     expect(config.jobs).toEqual([]);
+  });
+
+  it("rejects a non-string cron.dir instead of silently using the default", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, `${JSON.stringify({ cron: { dir: true } })}\n`, "utf8");
+
+    await expect(loadCronAdapterConfig({ env: {}, jsonPath: path, cwd: dir })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
   });
 });

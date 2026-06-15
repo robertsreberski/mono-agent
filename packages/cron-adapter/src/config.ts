@@ -162,6 +162,9 @@ async function loadDirectoryJobs(
     return [];
   }
   const section = readJsonSection(json, "cron");
+  if (section.dir !== undefined && typeof section.dir !== "string") {
+    throw invalidConfig("cron.dir must be a string.");
+  }
   const dirName =
     normalizeOptionalString(input.dir) ??
     normalizeOptionalString(input.env.MONO_AGENT_CRON_DIR) ??
