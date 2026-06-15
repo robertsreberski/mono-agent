@@ -1,125 +1,120 @@
+import type { RunnerHandle } from "@grammyjs/runner";
+import { Bot } from "grammy";
 import { describe, expect, it, vi } from "vitest";
 
-import { startTelegramAdapter, type TelegramPollerLike } from "../start.js";
 import type { AgentResponder } from "../adapter.js";
-import type {
-  TelegramBotApi,
-  TelegramEditMessageTextParams,
-  TelegramGetUpdatesParams,
-  TelegramRequestOptions,
-  TelegramSendMessageParams,
-  TelegramSentMessage,
-  TelegramUpdate,
-} from "../types.js";
-import type {
-  TelegramLongPollerOptions,
-  TelegramLongPollerStartOptions,
-  TelegramUpdateHandler,
-} from "../long-poller.js";
+import { startTelegramAdapter } from "../start.js";
 
-class FakeTelegramApi implements TelegramBotApi {
-  readonly sendMessageCalls: TelegramSendMessageParams[] = [];
-  readonly editMessageTextCalls: TelegramEditMessageTextParams[] = [];
-  nextMessageId = 900;
+const FAKE_BOT_INFO = {
+  id: 1,
+  is_bot: true as const,
+  first_name: "Example Bot",
+  username: "ExampleBot",
+  can_join_groups: true,
+  can_read_all_group_messages: false,
+  supports_inline_queries: false,
+  can_connect_to_business: false,
+  has_main_web_app: false,
+  has_topics_enabled: false,
+  allows_users_to_create_topics: false,
+  can_manage_bots: false,
+  supports_join_request_queries: false,
+};
 
-  async sendMessage(
-    params: TelegramSendMessageParams,
-    _options?: TelegramRequestOptions,
-  ): Promise<TelegramSentMessage> {
-    this.sendMessageCalls.push(params);
-    return { message_id: this.nextMessageId++, chat: { id: params.chat_id }, text: params.text };
+interface RecordedCall {
+  method: string;
+  payload: Record<string, unknown>;
+}
+
+function recordingBot(): { bot: Bot; calls: RecordedCall[] } {
+  const calls: RecordedCall[] = [];
+  let nextMessageId = 900;
+  const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+  bot.api.config.use(async (_prev, method, payload) => {
+    const typedPayload = payload as Record<string, unknown>;
+    calls.push({ method, payload: typedPayload });
+    if (method === "sendMessage") {
+      return {
+        ok: true,
+        result: {
+          message_id: nextMessageId++,
+          date: 0,
+          chat: { id: typedPayload.chat_id, type: "private" },
+          text: typedPayload.text,
+        },
+      } as never;
+    }
+    return { ok: true, result: true } as never;
+  });
+  return { bot, calls };
+}
+
+class FakeRunner implements RunnerHandle {
+  running = true;
+  stopCalls = 0;
+  start(): void {
+    this.running = true;
   }
-
-  async editMessageText(
-    params: TelegramEditMessageTextParams,
-    _options?: TelegramRequestOptions,
-  ): Promise<TelegramSentMessage | true> {
-    this.editMessageTextCalls.push(params);
-    return { message_id: params.message_id ?? 0, chat: { id: params.chat_id ?? 0 }, text: params.text };
+  stop(): Promise<void> {
+    this.stopCalls += 1;
+    this.running = false;
+    return Promise.resolve();
   }
-
-  async getUpdates(
-    _params: TelegramGetUpdatesParams,
-    _options?: TelegramRequestOptions,
-  ): Promise<TelegramUpdate[]> {
-    return [];
+  size(): number {
+    return 0;
   }
-
-  async deleteWebhook(): Promise<true> {
-    return true;
+  task(): Promise<void> | undefined {
+    return this.running ? Promise.resolve() : undefined;
+  }
+  isRunning(): boolean {
+    return this.running;
   }
 }
 
-/**
- * Fake poller that captures the wired adapter and start signal without ever
- * touching Telegram. start() resolves once the injected signal aborts, so
- * stop() can prove the poll loop settles.
- */
-class FakePoller implements TelegramPollerLike {
-  startCalls = 0;
-  capturedSignal: AbortSignal | undefined;
-  readonly options: TelegramLongPollerOptions;
-
-  constructor(options: TelegramLongPollerOptions) {
-    this.options = options;
-  }
-
-  get adapter(): TelegramUpdateHandler {
-    return this.options.adapter;
-  }
-
-  start(options: TelegramLongPollerStartOptions = {}): Promise<void> {
-    this.startCalls += 1;
-    this.capturedSignal = options.signal;
-    return new Promise<void>((resolve) => {
-      if (options.signal?.aborted === true) {
-        resolve();
-        return;
-      }
-      options.signal?.addEventListener("abort", () => resolve(), { once: true });
-    });
-  }
-}
-
-function messageUpdate(text: string, chatId = 42, updateId = 1): TelegramUpdate {
+function messageUpdate(text: string, chatId = 42, updateId = 1): Parameters<Bot["handleUpdate"]>[0] {
   return {
     update_id: updateId,
-    message: { message_id: 10, chat: { id: chatId }, from: { id: 7 }, text },
-  };
+    message: {
+      message_id: 10,
+      date: 1234,
+      chat: { id: chatId, type: "private" },
+      from: { id: 7, is_bot: false, first_name: "Person A" },
+      text,
+    },
+  } as Parameters<Bot["handleUpdate"]>[0];
 }
 
 describe("startTelegramAdapter", () => {
-  it("wires the client + adapter + poller and starts polling", async () => {
-    const api = new FakeTelegramApi();
+  it("wires the grammY bot + runner and starts polling", async () => {
+    const { bot, calls } = recordingBot();
     let capturedToken: string | undefined;
-    let fakePoller: FakePoller | undefined;
+    let runner: FakeRunner | undefined;
 
     const result = await startTelegramAdapter({
       botToken: "test-token",
       allowAllChats: true,
       responder: { respond: vi.fn() } satisfies AgentResponder,
-      clientFactory: (options) => {
-        capturedToken = options.token;
-        return api;
+      botFactory: (token) => {
+        capturedToken = token;
+        return bot;
       },
-      pollerFactory: (options) => {
-        fakePoller = new FakePoller(options);
-        return fakePoller;
+      runnerFactory: () => {
+        runner = new FakeRunner();
+        return runner;
       },
     });
 
     expect(capturedToken).toBe("test-token");
-    expect(fakePoller?.startCalls).toBe(1);
-    expect(fakePoller?.capturedSignal).toBeInstanceOf(AbortSignal);
-    expect(fakePoller?.options.api).toBe(api);
-    expect(fakePoller?.options.deleteWebhookOnStart).toBe(true);
-    expect(fakePoller?.options.allowedUpdates).toEqual(["message"]);
+    expect(runner?.isRunning()).toBe(true);
+    expect(calls.some((call) => call.method === "deleteWebhook")).toBe(true);
 
     await result.stop();
+    expect(runner?.stopCalls).toBe(1);
+    expect(runner?.isRunning()).toBe(false);
   });
 
-  it("routes a fake update through the wired adapter to the responder", async () => {
-    const api = new FakeTelegramApi();
+  it("routes a fake update through the wired bot to the responder", async () => {
+    const { bot } = recordingBot();
     const respondCalls: Array<{ text: string; chatId: unknown }> = [];
     const responder: AgentResponder = {
       async respond(request) {
@@ -127,49 +122,34 @@ describe("startTelegramAdapter", () => {
         return { text: "pong" };
       },
     };
-    let fakePoller: FakePoller | undefined;
 
     const result = await startTelegramAdapter({
       botToken: "test-token",
       allowedChatIds: [42],
       responder,
       stream: { editDebounceMs: 0 },
-      clientFactory: () => api,
-      pollerFactory: (options) => {
-        fakePoller = new FakePoller(options);
-        return fakePoller;
-      },
+      botFactory: () => bot,
+      runnerFactory: () => new FakeRunner(),
     });
 
-    const handled = await fakePoller!.adapter.handleUpdate(messageUpdate("ping"));
+    await bot.handleUpdate(messageUpdate("ping"));
 
-    expect(handled).toMatchObject({ kind: "handled", action: "responded", chatId: 42 });
     expect(respondCalls).toEqual([{ text: "ping", chatId: 42 }]);
 
     await result.stop();
   });
 
-  it("stop() aborts the poll signal and settles the start promise", async () => {
-    const api = new FakeTelegramApi();
-    let fakePoller: FakePoller | undefined;
-
+  it("stop() is idempotent", async () => {
+    const { bot } = recordingBot();
     const result = await startTelegramAdapter({
       botToken: "test-token",
       allowAllChats: true,
       responder: { respond: vi.fn() } satisfies AgentResponder,
-      clientFactory: () => api,
-      pollerFactory: (options) => {
-        fakePoller = new FakePoller(options);
-        return fakePoller;
-      },
+      botFactory: () => bot,
+      runnerFactory: () => new FakeRunner(),
     });
 
-    expect(fakePoller?.capturedSignal?.aborted).toBe(false);
-
     await result.stop();
-
-    expect(fakePoller?.capturedSignal?.aborted).toBe(true);
-    // Second stop is a no-op and still resolves.
     await expect(result.stop()).resolves.toBeUndefined();
   });
 
@@ -178,8 +158,8 @@ describe("startTelegramAdapter", () => {
       startTelegramAdapter({
         botToken: "test-token",
         responder: { respond: vi.fn() } satisfies AgentResponder,
-        clientFactory: () => new FakeTelegramApi(),
-        pollerFactory: (options) => new FakePoller(options),
+        botFactory: () => recordingBot().bot,
+        runnerFactory: () => new FakeRunner(),
       }),
     ).rejects.toThrow(/allowedChatIds/);
   });

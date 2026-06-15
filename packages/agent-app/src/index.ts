@@ -35,7 +35,6 @@ export type {
   RunningChannel,
   SlackChannelOverrides,
   TelegramChannelOverrides,
-  TelegramPollerLike,
   WebhookChannelOverrides,
   WhatsAppChannelOverrides,
 } from "./channels.js";

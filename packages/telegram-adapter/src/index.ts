@@ -6,6 +6,7 @@ export type {
   TelegramEditMessageTextParams,
   TelegramGetUpdatesParams,
   TelegramMessage,
+  TelegramMessageSender,
   TelegramRequestOptions,
   TelegramSendMessageParams,
   TelegramSentMessage,
@@ -13,27 +14,33 @@ export type {
   TelegramUser,
 } from "./types.js";
 
-export {
-  TelegramApiError,
-  TelegramBotApiClient,
-} from "./telegram-client.js";
+export { TelegramApiError } from "./telegram-error.js";
 export type {
   TelegramApiErrorDetails,
   TelegramApiErrorKind,
-  TelegramBotApiClientOptions,
-} from "./telegram-client.js";
+} from "./telegram-error.js";
+
 export {
   TelegramDeliveryError,
   TelegramMessageStream,
   classifyTelegramError,
 } from "./message-stream.js";
 export type {
+  AgentMessageStream,
   TelegramMessageStreamLogger,
   TelegramMessageStreamOptions,
   TelegramSendOutcome,
 } from "./message-stream.js";
-export { escapeTelegramHtml, renderTelegramHtml } from "./telegram-html.js";
-export { TelegramAdapter } from "./adapter.js";
+
+export { renderTelegramMarkdown } from "./telegram-markdown.js";
+export { createGrammyTelegramApi } from "./grammy-client.js";
+
+export { createTelegramBot } from "./bot.js";
+export type {
+  CreateTelegramBotOptions,
+  TelegramBotController,
+} from "./bot.js";
+
 export type {
   AgentRequest,
   AgentResponder,
@@ -42,26 +49,16 @@ export type {
   TelegramAdapterErrorTextInput,
   TelegramAdapterLogger,
   TelegramAdapterMessages,
-  TelegramAdapterOptions,
   TelegramAdapterStreamOptions,
   TelegramRequestMetadata,
-  TelegramUpdateHandlingResult,
 } from "./adapter.js";
-export { TelegramLongPoller } from "./long-poller.js";
-export type {
-  TelegramLongPollerBackoffOptions,
-  TelegramLongPollerLogger,
-  TelegramLongPollerOptions,
-  TelegramLongPollerPollOptions,
-  TelegramLongPollerStartOptions,
-  TelegramUpdateHandler,
-} from "./long-poller.js";
+
 export { startTelegramAdapter } from "./start.js";
 export type {
   TelegramAdapterStartOptions,
   TelegramAdapterStartResult,
-  TelegramPollerLike,
 } from "./start.js";
+
 export {
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,
