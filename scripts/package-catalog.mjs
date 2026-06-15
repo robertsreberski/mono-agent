@@ -124,6 +124,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "memory-bujo",
+    name: "@mono-agent/memory-bujo",
+    category: "context",
+    responsibility: "Provides the Bullet-Journal memory engine: markdown bullet grammar, canonical daily files, curated recall, and a MemoryStore implementation over the SQLite substrate.",
+    allowedDependencyCategories: ["core", "context"],
+    publishable: true,
+  },
+  {
     dir: "memory-graph",
     name: "@mono-agent/memory-graph",
     category: "context",
@@ -137,6 +145,14 @@ export const packageCatalog = [
     category: "context",
     responsibility: "Provides local semantic search via embeddings and a brute-force cosine vector index over memory.",
     allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
+    dir: "memory-store",
+    name: "@mono-agent/memory-store",
+    category: "context",
+    responsibility: "Provides the local SQLite memory substrate: bi-temporal records, sqlite-vec + FTS5 hybrid retrieval, incremental upsert, and rebuild-from-records.",
+    allowedDependencyCategories: ["core", "context"],
     publishable: true,
   },
   {
