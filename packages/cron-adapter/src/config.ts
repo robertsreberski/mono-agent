@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import {
   defineFieldGroup,
   layerJsonOntoEnv,
@@ -8,6 +10,7 @@ import {
 } from "@mono-agent/settings";
 import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
 
+import { loadCronJobsFromDirectory } from "./jobs-dir.js";
 import { CronAdapterError, type CronJob } from "./scheduler.js";
 
 export interface CronJobConfig {
@@ -29,10 +32,15 @@ export interface LoadCronAdapterConfigInput {
   readonly env: Record<string, string | undefined>;
   readonly json?: SettingsJson;
   readonly jsonPath?: string;
+  /** Base directory the cron jobs folder resolves against (usually the app cwd). */
+  readonly cwd?: string;
+  /** Overrides the cron jobs folder; defaults to `cron.dir` / `MONO_AGENT_CRON_DIR` / `cron`. */
+  readonly dir?: string;
 }
 
 const DEFAULT_JOB_ID = "default";
 const DEFAULT_TIMEZONE = "UTC";
+const DEFAULT_CRON_DIR = "cron";
 
 const invalidConfig = (message: string, details?: Record<string, unknown>): CronAdapterError =>
   new CronAdapterError("invalid_config", message, details);
@@ -40,8 +48,16 @@ const invalidConfig = (message: string, details?: Record<string, unknown>): Cron
 export const cronFieldGroup: FieldGroup = defineFieldGroup({
   id: "cron",
   label: "Cron",
-  description: "Optional single-job cron invocation configuration. Use JSON for multiple jobs.",
+  description: "Optional single-job cron invocation configuration. Use JSON for multiple jobs, or `*.md` files in the cron folder.",
   fields: [
+    {
+      id: "cron.dir",
+      label: "Cron folder",
+      description: "Folder of `*.md` cron jobs (frontmatter + prompt body), resolved against the app working directory.",
+      kind: "string",
+      placeholder: "cron",
+      path: ["cron", "dir"],
+    },
     {
       id: "cron.enabled",
       label: "Enable cron",
@@ -84,23 +100,37 @@ export const cronFieldGroup: FieldGroup = defineFieldGroup({
 
 export async function loadCronAdapterConfig(input: LoadCronAdapterConfigInput): Promise<CronAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
-  const jobsJson = normalizeOptionalString(input.env.MONO_AGENT_CRON_JOBS_JSON);
+  const configJobs = loadConfigJobs(json, input.env);
+  const directoryJobs = await loadDirectoryJobs(json, input);
+  return { jobs: mergeJobs(configJobs, directoryJobs) };
+}
+
+/**
+ * Jobs defined inline in config: `MONO_AGENT_CRON_JOBS_JSON` (highest), then the
+ * `cron.jobs` array, then the single-job `MONO_AGENT_CRON_*` fields. Returns an
+ * empty list when nothing is configured (the cron folder may still add jobs).
+ */
+function loadConfigJobs(
+  json: SettingsJson,
+  env: Record<string, string | undefined>,
+): CronJobConfig[] {
+  const jobsJson = normalizeOptionalString(env.MONO_AGENT_CRON_JOBS_JSON);
   if (jobsJson !== undefined) {
-    return { jobs: readJobsJson(jobsJson) };
+    return [...readJobsJson(jobsJson)];
   }
   const section = readJsonSection(json, "cron");
   if (section.jobs !== undefined) {
     if (!Array.isArray(section.jobs)) {
       throw invalidConfig("cron.jobs must be an array of job objects.");
     }
-    return { jobs: section.jobs.map((entry, index) => normalizeJobConfig(entry, index)) };
+    return section.jobs.map((entry, index) => normalizeJobConfig(entry, index));
   }
-  const env = layerCronJsonOntoEnv(json, input.env);
-  const enabled = readBoolean(env.MONO_AGENT_CRON_ENABLED, "MONO_AGENT_CRON_ENABLED", false, invalidConfig);
-  const expression = normalizeOptionalString(env.MONO_AGENT_CRON_EXPRESSION);
-  const prompt = normalizeOptionalString(env.MONO_AGENT_CRON_PROMPT);
+  const layered = layerCronJsonOntoEnv(json, env);
+  const enabled = readBoolean(layered.MONO_AGENT_CRON_ENABLED, "MONO_AGENT_CRON_ENABLED", false, invalidConfig);
+  const expression = normalizeOptionalString(layered.MONO_AGENT_CRON_EXPRESSION);
+  const prompt = normalizeOptionalString(layered.MONO_AGENT_CRON_PROMPT);
   if (!enabled && expression === undefined && prompt === undefined) {
-    return { jobs: [] };
+    return [];
   }
   if (expression === undefined) {
     throw invalidConfig("Cron expression is required when cron is configured.");
@@ -108,17 +138,57 @@ export async function loadCronAdapterConfig(input: LoadCronAdapterConfigInput): 
   if (prompt === undefined) {
     throw invalidConfig("Cron prompt is required when cron is configured.");
   }
-  const conversationId = normalizeOptionalString(env.MONO_AGENT_CRON_CONVERSATION_ID);
-  return {
-    jobs: [{
-      id: DEFAULT_JOB_ID,
-      enabled,
-      expression,
-      timezone: normalizeOptionalString(env.MONO_AGENT_CRON_TIMEZONE) ?? DEFAULT_TIMEZONE,
-      prompt,
-      ...(conversationId === undefined ? {} : { conversationId }),
-    }],
+  const conversationId = normalizeOptionalString(layered.MONO_AGENT_CRON_CONVERSATION_ID);
+  return [{
+    id: DEFAULT_JOB_ID,
+    enabled,
+    expression,
+    timezone: normalizeOptionalString(layered.MONO_AGENT_CRON_TIMEZONE) ?? DEFAULT_TIMEZONE,
+    prompt,
+    ...(conversationId === undefined ? {} : { conversationId }),
+  }];
+}
+
+/**
+ * Jobs authored as `*.md` files in the cron folder. Skipped unless a base
+ * directory (`input.cwd`) is known, so a loader called without a host (e.g. a
+ * unit test) never scans the process working directory implicitly.
+ */
+async function loadDirectoryJobs(
+  json: SettingsJson,
+  input: LoadCronAdapterConfigInput,
+): Promise<CronJobConfig[]> {
+  if (input.cwd === undefined) {
+    return [];
+  }
+  const section = readJsonSection(json, "cron");
+  const dirName =
+    normalizeOptionalString(input.dir) ??
+    normalizeOptionalString(input.env.MONO_AGENT_CRON_DIR) ??
+    asOptionalString(section.dir) ??
+    DEFAULT_CRON_DIR;
+  return await loadCronJobsFromDirectory(resolve(input.cwd, dirName));
+}
+
+/** Combine inline-config jobs with cron-folder jobs; a duplicate id is a hard error. */
+function mergeJobs(configJobs: CronJobConfig[], directoryJobs: CronJobConfig[]): CronJobConfig[] {
+  const merged: CronJobConfig[] = [];
+  const sourceById = new Map<string, string>();
+  const append = (job: CronJobConfig, source: string): void => {
+    const prior = sourceById.get(job.id);
+    if (prior !== undefined) {
+      throw invalidConfig(`Duplicate cron job id "${job.id}" from ${prior} and ${source}.`, { id: job.id });
+    }
+    sourceById.set(job.id, source);
+    merged.push(job);
   };
+  for (const job of configJobs) {
+    append(job, "config");
+  }
+  for (const job of directoryJobs) {
+    append(job, "cron folder");
+  }
+  return merged;
 }
 
 /**
