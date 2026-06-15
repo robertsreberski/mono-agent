@@ -177,6 +177,51 @@ export class MemoryDb {
     }[];
   }
 
+  addEdge(src: string, dst: string, kind: "thread" | "about" | "supports" | "supersedes", weight = 1.0): void {
+    this.db.prepare(
+      `INSERT INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(src, dst, kind) DO UPDATE SET weight = excluded.weight`,
+    ).run(src, dst, kind, weight, this.clock().toISOString());
+  }
+
+  expand(seedIds: readonly string[], hops = 1): MemoryRecord[] {
+    const seeds = new Set(seedIds);
+    let frontier = new Set(seedIds);
+    const reached = new Set<string>();
+    for (let hop = 0; hop < hops; hop += 1) {
+      const next = new Set<string>();
+      for (const id of frontier) {
+        const rows = this.db
+          .prepare(`SELECT dst FROM edges WHERE src = ? AND kind IN ('thread','about')`)
+          .all(id) as { dst: string }[];
+        for (const { dst } of rows) {
+          if (!seeds.has(dst) && !reached.has(dst)) {
+            next.add(dst);
+            reached.add(dst);
+          }
+        }
+      }
+      frontier = next;
+    }
+    const ids = [...reached];
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`).all(...ids) as Record<string, unknown>[];
+    return rows.map((row) => this.fromRow(row));
+  }
+
+  /** Wipe the index and rebuild it from the supplied records (used by rebuild-from-files). No LLM. */
+  async rebuild(records: readonly MemoryRecord[]): Promise<{ indexed: number }> {
+    const tx = this.db.transaction(() => {
+      this.db.exec(`DELETE FROM memories; DELETE FROM memories_fts; DELETE FROM memories_vec; DELETE FROM edges;`);
+    });
+    tx();
+    for (const record of records) {
+      await this.upsert(record);
+    }
+    return { indexed: records.length };
+  }
+
   protected bumpAccess(ids: readonly string[], now: Date): void {
     if (ids.length === 0) return;
     const stmt = this.db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?`);
