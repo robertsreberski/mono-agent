@@ -1,6 +1,8 @@
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { MemoryStatus, MemoryType } from "@mono-agent/memory-store";
 
+export type { CandidateMemory } from "./distill.js";
+
 /** One parsed markdown bullet line: a visible part + structured metadata from the trailing comment. */
 export interface Bullet {
   readonly id: string;
