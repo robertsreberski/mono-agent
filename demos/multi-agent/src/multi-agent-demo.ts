@@ -512,6 +512,10 @@ class MultiAgentDemoController implements MultiAgentDemo {
       return { kind: "waiting_for_config", reason: reasonOf(error) };
     }
 
+    if (!telegramConfig.enabled) {
+      return { kind: "disabled", reason: "Telegram is disabled (set telegram.enabled to true)." };
+    }
+
     try {
       const api = this.telegramApi ?? new TelegramBotApiClient({ token: telegramConfig.botToken });
       const adapterOptions: TelegramAdapterOptions = {

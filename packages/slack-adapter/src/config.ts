@@ -15,6 +15,7 @@ import type {
 } from "@mono-agent/settings";
 
 export interface SlackAdapterConfig {
+  readonly enabled: boolean;
   readonly botToken: string;
   readonly appToken: string;
   readonly allowedChannelIds: readonly string[];
@@ -25,6 +26,7 @@ export interface SlackAdapterConfig {
 }
 
 export interface RedactedSlackAdapterConfig {
+  readonly enabled: boolean;
   readonly botToken: RedactedSecretValue;
   readonly appToken: RedactedSecretValue;
   readonly allowedChannelIds: { readonly count: number };
@@ -72,6 +74,13 @@ export const slackFieldGroup: FieldGroup = defineFieldGroup({
   label: "Slack",
   description: "Optional Slack Socket Mode adapter configuration. Tokens are write-only.",
   fields: [
+    {
+      id: "slack.enabled",
+      label: "Enable Slack",
+      description: "Start the Slack adapter with the app. Off by default.",
+      kind: "switch",
+      path: ["slack", "enabled"],
+    },
     {
       id: "slack.botToken",
       label: "Bot token",
@@ -144,8 +153,7 @@ export async function loadSlackAdapterConfig(
 ): Promise<SlackAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerSlackJsonOntoEnv(json, input.env);
-  const botToken = readRequired(env.MONO_AGENT_SLACK_BOT_TOKEN, "MONO_AGENT_SLACK_BOT_TOKEN", missingConfig);
-  const appToken = readRequired(env.MONO_AGENT_SLACK_APP_TOKEN, "MONO_AGENT_SLACK_APP_TOKEN", missingConfig);
+  const enabled = readBoolean(env.MONO_AGENT_SLACK_ENABLED, "MONO_AGENT_SLACK_ENABLED", false, invalidConfig);
   const allowedChannelIds = readCsv(env.MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS);
   const allowAllChannels = readBoolean(
     env.MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS,
@@ -162,6 +170,25 @@ export async function loadSlackAdapterConfig(
     invalidConfig,
   );
 
+  // A disabled channel never validates its credentials: the status surface reads
+  // it as "disabled", not "waiting for config". Only an enabled channel demands
+  // its tokens (a missing token then becomes a real "waiting" reason).
+  if (!enabled) {
+    return {
+      enabled: false,
+      botToken: "",
+      appToken: "",
+      allowedChannelIds,
+      allowAllChannels,
+      botUserIds,
+      mentionTextAliases,
+      stripMentionText,
+    };
+  }
+
+  const botToken = readRequired(env.MONO_AGENT_SLACK_BOT_TOKEN, "MONO_AGENT_SLACK_BOT_TOKEN", missingConfig);
+  const appToken = readRequired(env.MONO_AGENT_SLACK_APP_TOKEN, "MONO_AGENT_SLACK_APP_TOKEN", missingConfig);
+
   if (!allowAllChannels && allowedChannelIds.length === 0) {
     throw missingConfig(
       "Slack adapter requires MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS or MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS=true.",
@@ -170,6 +197,7 @@ export async function loadSlackAdapterConfig(
   }
 
   return {
+    enabled: true,
     botToken,
     appToken,
     allowedChannelIds,
@@ -184,6 +212,7 @@ export function redactSlackAdapterConfig(
   config: SlackAdapterConfig,
 ): RedactedSlackAdapterConfig {
   return {
+    enabled: config.enabled,
     botToken: redactedSecret(config.botToken),
     appToken: redactedSecret(config.appToken),
     allowedChannelIds: { count: config.allowedChannelIds.length },
@@ -200,6 +229,7 @@ function layerSlackJsonOntoEnv(
 ): Record<string, string | undefined> {
   const section = readJsonSection(json, "slack");
   return layerJsonOntoEnv(env, [
+    { env: "MONO_AGENT_SLACK_ENABLED", value: section.enabled, kind: "boolean" },
     { env: "MONO_AGENT_SLACK_BOT_TOKEN", value: section.botToken },
     { env: "MONO_AGENT_SLACK_APP_TOKEN", value: section.appToken },
     { env: "MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS", value: section.allowedChannelIds, kind: "csv" },

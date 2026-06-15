@@ -81,20 +81,21 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 
 ## Channels (`@mono-agent/*-adapter`, composed by `@mono-agent/agent-app`)
 
-All channels are independent JSON sections; an unconfigured channel reports
-`waiting_for_config` and never blocks the rest. Every field also has a
-`MONO_AGENT_<CHANNEL>_*` env var.
+All channels are independent JSON sections and opt-in via an `enabled` flag
+(default off). A channel that is off reports `disabled`; an enabled channel with
+incomplete config reports `waiting_for_config`. Either way it never blocks the
+rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
 
 | Feature id | What it is | Coverage | Config section / keys |
 | --- | --- | --- | --- |
-| `telegram.long-polling` | Telegram bot via long polling | `config` | `telegram.botToken`, `telegram.allowedChatIds` or `telegram.allowAllChats` |
-| `slack.socket-mode` | Slack Socket Mode bot | `config` | `slack.botToken`, `slack.appToken`, `slack.allowedChannelIds` or `slack.allowAllChannels`, `slack.botUserIds`, `slack.mentionTextAliases`, `slack.stripMentionText` |
-| `whatsapp.baileys` | WhatsApp via Baileys socket (QR login; auth state in `.mono-agent/whatsapp-auth`) | `config` | `whatsapp.allowedChatJids` or `whatsapp.allowAllChats`, `whatsapp.groupMode` (mention/any), `whatsapp.botJids`, `whatsapp.mentionTextAliases`, `whatsapp.stripMentionText` |
+| `telegram.long-polling` | Telegram bot via long polling | `config` | `telegram.enabled`, `telegram.botToken`, `telegram.allowedChatIds` or `telegram.allowAllChats` |
+| `slack.socket-mode` | Slack Socket Mode bot | `config` | `slack.enabled`, `slack.botToken`, `slack.appToken`, `slack.allowedChannelIds` or `slack.allowAllChannels`, `slack.botUserIds`, `slack.mentionTextAliases`, `slack.stripMentionText` |
+| `whatsapp.baileys` | WhatsApp via Baileys socket (QR login; auth state in `.mono-agent/whatsapp-auth`) | `config` | `whatsapp.enabled`, `whatsapp.allowedChatJids` or `whatsapp.allowAllChats`, `whatsapp.groupMode` (mention/any), `whatsapp.botJids`, `whatsapp.mentionTextAliases`, `whatsapp.stripMentionText` |
 | `webhook.http-invoke` | HTTP POST invocation, sync or async with status polling | `config` | `webhook.enabled`, `host`, `port`, `path`, `allowNonLoopback`, `defaultMode` (sync/async), `retentionMs`, `maxStoredRequests` |
 | `openai-api.chat-completions` | OpenAI-compatible `/v1/models` + `/v1/chat/completions` (SSE streaming, optional bearer key; session continuity via `X-OpenWebUI-Chat-Id`/`X-Conversation-Id` headers with latest-message extraction) | `config` | `openaiApi.enabled`, `host`, `port`, `basePath`, `allowNonLoopback`, `apiKey`, `modelId` |
 | `a2a.provider` | A2A provider with Agent Card discovery, JSON-RPC + REST, streaming, optional bearer | `config` | `a2a.provider.{enabled,host,port,publicBaseUrl,allowNonLoopback,requireBearer,bearerToken}`, `a2a.agent.{name,description,version,providerOrganization,providerUrl}`, `a2a.skill.{id,name,description,tags,examples}` |
 | `a2a.consumer` | Calling remote A2A agents (discovery + sendMessage) | `config`+`code` | `a2a.consumer.{remoteAgentUrls,defaultRemoteAgentUrl,bearerToken,timeoutMs}` holds the settings; invoking remote agents is programmatic (`createA2AConsumerResponder`, used by multi-agent hosts) |
-| `cron.scheduled-prompts` | Five-field cron jobs (timezone-aware, overlap-skipping) invoking the responder | `config` | `cron.jobs[]: {id, enabled, expression, timezone, prompt, conversationId}` (`MONO_AGENT_CRON_JOBS_JSON` or single-job `MONO_AGENT_CRON_*`) |
+| `cron.scheduled-prompts` | Five-field cron jobs (timezone-aware, overlap-skipping) invoking the responder | `config` | `cron.jobs[]: {id, enabled, expression, timezone, prompt, conversationId}` (`MONO_AGENT_CRON_JOBS_JSON` or single-job `MONO_AGENT_CRON_*`), or one `*.md` file per job in the cron folder (frontmatter metadata + prompt body) at `cron.dir` / `MONO_AGENT_CRON_DIR` (default `cron/`) — folder and config jobs merge, duplicate ids error |
 | `channel.stream-tuning` | Status text, edit debounce, max message chars, welcome/help/error texts per chat channel | `code` | Adapter `stream`/`messages` options via custom channel drivers (`createTelegramChannelDriver` etc.) |
 | `channel.custom` | Bespoke transports | `code` | Implement `ChannelDriver`, pass via `startMonoAgentApp({ drivers })` |
 
