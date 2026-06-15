@@ -39,6 +39,11 @@ export interface CreateTelegramBotOptions {
   readonly deleteWebhookOnStart?: boolean;
   /** Drop updates queued before start. Defaults to false. */
   readonly dropPendingUpdates?: boolean;
+  /**
+   * Called when polling crashes after a successful start (the runner's task
+   * rejects). Lets a host mark the channel failed instead of leaving it running.
+   */
+  readonly onPollingError?: (error: unknown) => void;
   /** Test seam: build the grammY Bot (e.g. with a fake botInfo + transformer). */
   readonly botFactory?: (token: string) => Bot;
   /** Test seam: build the polling runner. Defaults to `@grammyjs/runner`'s `run`. */
@@ -265,12 +270,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         await bot.api.deleteWebhook({ drop_pending_updates: options.dropPendingUpdates ?? false });
       }
       runnerHandle = (options.runnerFactory ?? defaultRunnerFactory)(bot);
-      // Surface a late polling crash to the shared logger without leaving an
-      // unhandled rejection; stop() still settles the runner independently.
+      // Surface a late polling crash to the shared logger and the host's
+      // onPollingError callback without leaving an unhandled rejection; stop()
+      // still settles the runner independently.
       runnerHandle.task?.()?.catch((error: unknown) => {
         logger?.error?.("Telegram polling stopped with an error.", {
           error: errorMessage(error),
         });
+        options.onPollingError?.(error);
       });
     },
     async stop(): Promise<void> {

@@ -354,10 +354,16 @@ export class TelegramMessageStream implements AgentMessageStream {
     const normalizedSource = normalizeTelegramText(sourceText);
     let useMarkdown = options.final && this.formatMarkdown && (options.format ?? true);
     let renderedText = useMarkdown ? renderTelegramMarkdown(normalizedSource) : normalizedSource;
-    if (useMarkdown && renderedText === normalizedSource) {
-      // telegramify made no changes — the text needs no escaping or markup, so
-      // send it as plain text and skip parse_mode entirely.
+    if (useMarkdown && countCodePoints(renderedText) > this.maxMessageChars) {
+      // MarkdownV2 escaping can expand a chunk past Telegram's size limit, but
+      // chunks are split on the source length. The plain source is within the
+      // limit, so deliver it as plain text rather than fail with
+      // "message is too long". (We never test renderedText === source to decide
+      // this: telegramify renders inline code / links back to identical bytes
+      // that still need parse_mode to render, so equality is not a plain-text
+      // signal.)
       useMarkdown = false;
+      renderedText = normalizedSource;
     }
 
     if (renderedText === this.lastFlushedText && useMarkdown === this.lastFlushedMarkdown) {
@@ -627,6 +633,11 @@ function buildStreamingPreview(text: string, maxChars: number): string {
 
 function normalizeTelegramText(text: string): string {
   return text.trimEnd();
+}
+
+/** Count Unicode code points — Telegram's message length is measured in them. */
+function countCodePoints(text: string): number {
+  return [...text].length;
 }
 
 function errorMessage(error: unknown): string {

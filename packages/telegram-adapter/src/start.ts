@@ -31,6 +31,8 @@ export interface TelegramAdapterStartOptions {
   readonly deleteWebhookOnStart?: boolean;
   /** Drop updates queued before start. Defaults to false. */
   readonly dropPendingUpdates?: boolean;
+  /** Called when polling crashes after a successful start (lets the host mark the channel failed). */
+  readonly onPollingError?: (error: unknown) => void;
   /** Test seam: build the grammY {@link Bot}. */
   readonly botFactory?: (token: string) => Bot;
   /** Test seam: build the polling runner. */
@@ -77,6 +79,7 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.dropPendingUpdates === undefined
       ? {}
       : { dropPendingUpdates: options.dropPendingUpdates }),
+    ...(options.onPollingError === undefined ? {} : { onPollingError: options.onPollingError }),
     ...(options.botFactory === undefined ? {} : { botFactory: options.botFactory }),
     ...(options.runnerFactory === undefined ? {} : { runnerFactory: options.runnerFactory }),
   };

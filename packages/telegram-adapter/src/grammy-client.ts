@@ -55,24 +55,33 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
       params: TelegramEditMessageTextParams,
       options?: TelegramRequestOptions,
     ): Promise<TelegramSentMessage | true> {
-      if (params.chat_id === undefined || params.message_id === undefined) {
-        throw new TelegramApiError(
-          "grammY editMessageText requires chat_id and message_id.",
-          { kind: "telegram", method: "editMessageText" },
-        );
-      }
       try {
-        const result = await api.editMessageText(
-          params.chat_id,
-          params.message_id,
-          params.text,
-          buildEditOther(params),
-          asGrammySignal(options?.signal),
-        );
-        return result === true ? true : (result as unknown as TelegramSentMessage);
+        if (params.inline_message_id !== undefined) {
+          const result = await api.editMessageTextInline(
+            params.inline_message_id,
+            params.text,
+            buildEditOther(params),
+            asGrammySignal(options?.signal),
+          );
+          return result === true ? true : (result as unknown as TelegramSentMessage);
+        }
+        if (params.chat_id !== undefined && params.message_id !== undefined) {
+          const result = await api.editMessageText(
+            params.chat_id,
+            params.message_id,
+            params.text,
+            buildEditOther(params),
+            asGrammySignal(options?.signal),
+          );
+          return result === true ? true : (result as unknown as TelegramSentMessage);
+        }
       } catch (error) {
         throw toTelegramApiError("editMessageText", error, options?.signal);
       }
+      throw new TelegramApiError(
+        "grammY editMessageText requires inline_message_id, or chat_id and message_id.",
+        { kind: "telegram", method: "editMessageText" },
+      );
     },
   };
 }

@@ -106,6 +106,7 @@ describe("multi-agent demo", () => {
       cwd: process.cwd(),
       configDir: files.configDir,
       env: {
+        MONO_AGENT_TELEGRAM_ENABLED: "true",
         MONO_AGENT_TELEGRAM_BOT_TOKEN: "test-token",
         MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS: "42,99",
       },

@@ -101,7 +101,7 @@ describe("TelegramMessageStream", () => {
     await stream.finish("final answer");
 
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: "chat-a", message_id: 100, text: "final answer" },
+      { chat_id: "chat-a", message_id: 100, text: "final answer", parse_mode: "MarkdownV2" },
     ]);
     await vi.runOnlyPendingTimersAsync();
     expect(api.editMessageTextCalls).toHaveLength(1);
@@ -154,7 +154,7 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls.at(-1)?.parse_mode).toBe("MarkdownV2");
   });
 
-  it("skips duplicate final edits after streamed content already reached Telegram", async () => {
+  it("re-renders the streamed answer as MarkdownV2 on the final edit", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
       api,
@@ -165,8 +165,11 @@ describe("TelegramMessageStream", () => {
     await stream.append("final answer");
     await stream.finish("final answer");
 
-    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
-      "final answer",
+    // The interim edit streams plain text; the final edit re-applies MarkdownV2
+    // (the formatting that interim streaming intentionally skips).
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 42, message_id: 100, text: "final answer" },
+      { chat_id: 42, message_id: 100, text: "final answer", parse_mode: "MarkdownV2" },
     ]);
   });
 
@@ -253,6 +256,40 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls).toEqual([
       { chat_id: 5, message_id: 100, text: "Cancelled." },
     ]);
+  });
+
+  it("keeps parse_mode for markdown telegramify leaves byte-identical (inline code)", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({ api, chatId: 9, editDebounceMs: 0 });
+
+    // telegramify renders an inline code span back to the same bytes; without
+    // parse_mode Telegram would show the literal backticks, so it must still be
+    // sent as MarkdownV2 (a string-equality "is it plain?" check is unsafe).
+    await stream.finish("Run `npm i` now");
+
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 9, message_id: 100, text: "Run `npm i` now", parse_mode: "MarkdownV2" },
+    ]);
+  });
+
+  it("falls back to plain text when MarkdownV2 escaping overflows the size limit", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 3,
+      editDebounceMs: 0,
+      maxMessageChars: 40,
+    });
+
+    // 30 dots fit the limit, but MarkdownV2 escapes each "." to "\." (60 chars),
+    // overflowing it. The plain source is within the limit, so deliver it plain
+    // rather than fail with "message is too long".
+    const dots = ".".repeat(30);
+    await stream.finish(dots);
+
+    const call = api.editMessageTextCalls.at(-1);
+    expect(call?.parse_mode).toBeUndefined();
+    expect(call?.text).toBe(dots);
   });
 
   it("still rejects append when the initial placeholder send fails", async () => {

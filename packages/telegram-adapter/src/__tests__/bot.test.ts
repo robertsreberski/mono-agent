@@ -249,7 +249,11 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("hello"));
 
-    expect(texts(calls, "editMessageText")).toEqual(["the answer"]);
+    // The thought is hidden; the answer streams as plain text and the final edit
+    // re-renders it as MarkdownV2.
+    expect(texts(calls, "editMessageText")).toEqual(["the answer", "the answer"]);
+    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
+    expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
     expect(calls.some((call) => String(call.payload.text).includes("secret"))).toBe(false);
   });
 
@@ -387,5 +391,36 @@ describe("createTelegramBot", () => {
     // The AI run succeeded, so a delivery failure must not throw out of the handler.
     await expect(bot.handleUpdate(textUpdate("hello"))).resolves.toBeUndefined();
     expect(errors.some((message) => message.includes("final delivery"))).toBe(true);
+  });
+
+  it("reports a post-start polling crash via onPollingError", async () => {
+    const crashes: unknown[] = [];
+    const failure = new Error("polling crashed");
+    const controller = createTelegramBot({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder: responderFrom(async () => ({ text: "ok" })),
+      onPollingError: (error) => crashes.push(error),
+      botFactory: () => {
+        const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+        bot.api.config.use(async () => ok(true));
+        return bot;
+      },
+      runnerFactory: () => ({
+        start: () => undefined,
+        stop: () => Promise.resolve(),
+        size: () => 0,
+        isRunning: () => true,
+        task: () => Promise.reject(failure),
+      }),
+    });
+
+    await controller.start();
+    // Let the task().catch microtask run.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(crashes).toEqual([failure]);
+    await controller.stop();
   });
 });

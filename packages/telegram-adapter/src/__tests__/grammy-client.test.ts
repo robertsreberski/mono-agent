@@ -13,6 +13,7 @@ function recordingApi(
   handlers: {
     sendMessage?: (...args: unknown[]) => unknown;
     editMessageText?: (...args: unknown[]) => unknown;
+    editMessageTextInline?: (...args: unknown[]) => unknown;
   },
 ): { api: Api; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
@@ -24,6 +25,10 @@ function recordingApi(
     async editMessageText(...args: unknown[]) {
       calls.push({ args });
       return handlers.editMessageText?.(...args);
+    },
+    async editMessageTextInline(...args: unknown[]) {
+      calls.push({ args });
+      return handlers.editMessageTextInline?.(...args);
     },
   } as unknown as Api;
   return { api, calls };
@@ -71,6 +76,21 @@ describe("createGrammyTelegramApi", () => {
 
     expect(calls[0]?.args.slice(0, 3)).toEqual([1, 9, "x"]);
     expect(calls[0]?.args[3]).toEqual({ parse_mode: "MarkdownV2" });
+    expect(result).toBe(true);
+  });
+
+  it("routes inline-message edits to editMessageTextInline", async () => {
+    const { api, calls } = recordingApi({ editMessageTextInline: () => true });
+    const client = createGrammyTelegramApi(api);
+
+    const result = await client.editMessageText({
+      inline_message_id: "inline-1",
+      text: "x",
+      parse_mode: "MarkdownV2",
+    });
+
+    expect(calls[0]?.args.slice(0, 2)).toEqual(["inline-1", "x"]);
+    expect(calls[0]?.args[2]).toEqual({ parse_mode: "MarkdownV2" });
     expect(result).toBe(true);
   });
 

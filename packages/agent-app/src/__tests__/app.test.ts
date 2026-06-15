@@ -332,4 +332,28 @@ describe("startMonoAgentApp", () => {
 
     await running.stop();
   });
+
+  it("reports a post-start Telegram polling crash to onFailure", async () => {
+    const onFailure = vi.fn();
+    const driver = createTelegramChannelDriver({
+      // Simulate the adapter starting, then its polling loop crashing later.
+      startAdapter: async (options: TelegramAdapterStartOptions) => {
+        queueMicrotask(() => options.onPollingError?.(new Error("getUpdates died")));
+        return { stop: async () => undefined };
+      },
+    });
+
+    const running = await driver.start({
+      config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
+      coreConfig: baseConfig() as never,
+      responder: { async respond() { return { text: "ok" }; } },
+      cwd: dir,
+      onFailure,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onFailure).toHaveBeenCalledWith("getUpdates died");
+
+    await running.stop();
+  });
 });

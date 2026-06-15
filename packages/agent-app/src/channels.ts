@@ -480,6 +480,10 @@ function telegramStartOptions(
       unauthorizedText: "This chat is not allowlisted for this agent.",
       errorText: telegramErrorText,
     },
+    // A polling crash after a successful start must flip the channel to failed,
+    // not leave it reported as running.
+    onPollingError: (error) =>
+      input.onFailure(error instanceof Error ? error.message : String(error)),
     ...(input.logger === undefined ? {} : { logger: input.logger }),
     ...(overrides.botFactory === undefined ? {} : { botFactory: overrides.botFactory }),
     ...(overrides.runnerFactory === undefined ? {} : { runnerFactory: overrides.runnerFactory }),
