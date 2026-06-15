@@ -411,6 +411,28 @@ export class MemoryDb {
     return rows.map((r) => this.fromRow(r));
   }
 
+  /** Decay salience toward `floor` by time since last access (half-life in days). Returns count adjusted.
+   *  Frequently-accessed memories (recent last_accessed_at) decay little; stale ones fade toward floor. */
+  applyDecay(now: Date, opts: { halfLifeDays?: number; floor?: number } = {}): { decayed: number } {
+    const halfLife = opts.halfLifeDays ?? 30;
+    const floor = opts.floor ?? 0.05;
+    const rows = this.db.prepare(
+      `SELECT id, salience, COALESCE(last_accessed_at, created_at) AS ref FROM memories WHERE status NOT IN ('invalidated','dropped')`,
+    ).all() as { id: string; salience: number; ref: string }[];
+    const stmt = this.db.prepare(`UPDATE memories SET salience = ? WHERE id = ?`);
+    let decayed = 0;
+    const tx = this.db.transaction(() => {
+      for (const r of rows) {
+        const days = Math.max(0, (now.getTime() - new Date(r.ref).getTime()) / 86_400_000);
+        const factor = 0.5 ** (days / halfLife);
+        const next = Math.max(floor, r.salience * factor);
+        if (Math.abs(next - r.salience) > 1e-9) { stmt.run(next, r.id); decayed += 1; }
+      }
+    });
+    tx();
+    return { decayed };
+  }
+
   close(): void {
     this.db.close();
   }
