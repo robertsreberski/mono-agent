@@ -155,7 +155,7 @@ if (errors.length > 0) {
 console.log(`Package architecture check passed for ${packageCatalog.length} workspace packages.`);
 
 function walkTextFiles(dir) {
-  const ignoredDirs = new Set([".git", "node_modules", "dist", ".mono-agent"]);
+  const ignoredDirs = new Set([".git", ".mono-agent", ".workflow", "node_modules", "dist"]);
   const files = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (ignoredDirs.has(entry.name)) {

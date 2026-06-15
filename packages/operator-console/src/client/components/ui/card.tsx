@@ -10,7 +10,7 @@ export function Card({
     <div
       data-slot="card"
       className={cn(
-        "flex flex-col gap-4 overflow-hidden rounded-xl bg-card py-5 text-sm text-card-foreground ring-1 ring-foreground/10",
+        "flex flex-col gap-4 overflow-hidden rounded-lg bg-card py-4 text-sm text-card-foreground ring-1 ring-foreground/10",
         className,
       )}
       {...props}
@@ -39,7 +39,7 @@ export function CardTitle({
     <h2
       data-slot="card-title"
       className={cn(
-        "text-base leading-snug font-medium tracking-tight",
+        "text-base leading-snug font-medium",
         className,
       )}
       {...props}
