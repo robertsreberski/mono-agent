@@ -1,5 +1,7 @@
 import BetterSqlite3, { type Database } from "better-sqlite3";
 
+import { ftsQuery } from "./fts.js";
+import { rrfFuse, reScore } from "./ranking.js";
 import { migrations } from "./schema.js";
 import { loadVec, toBlob } from "./vec.js";
 import {
@@ -8,6 +10,8 @@ import {
   DEFAULT_WEIGHTS,
   type MemoryDbOptions,
   type MemoryRecord,
+  type RecallHit,
+  type RecallOptions,
   type RecallWeights,
 } from "./types.js";
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
@@ -87,6 +91,73 @@ export class MemoryDb {
 
   count(): number {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM memories`).get() as { n: number }).n;
+  }
+
+  async recall(query: string, options: RecallOptions = {}): Promise<RecallHit[]> {
+    const topK = options.topK ?? 8;
+    const candidates = options.candidates ?? Math.max(topK * 4, 20);
+    const now = options.now ?? this.clock();
+
+    const vecIds = await this.vectorCandidates(query, candidates);
+    const ftsIds = this.keywordCandidates(query, candidates);
+    const fused = rrfFuse([vecIds, ftsIds], this.k);
+    if (fused.length === 0) return [];
+
+    const byId = new Map(fused.map((f) => [f.id, f.rrfScore]));
+    const placeholders = fused.map(() => "?").join(",");
+    const rows = this.db
+      .prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`)
+      .all(...fused.map((f) => f.id)) as Record<string, unknown>[];
+
+    const scored: RecallHit[] = [];
+    for (const row of rows) {
+      const record = this.fromRow(row);
+      if (!options.includeInvalid && (record.status === "invalidated" || record.status === "dropped")) continue;
+      if (!options.includeInvalid && record.validTo !== undefined && new Date(record.validTo) < now) continue;
+      const score = reScore(
+        {
+          rrfScore: byId.get(record.id) ?? 0,
+          salience: record.salience,
+          isInsight: record.isInsight,
+          ...(record.lastAccessedAt !== undefined && { lastAccessedAt: record.lastAccessedAt }),
+        },
+        this.weights,
+        this.decayGamma,
+        now,
+      );
+      scored.push({ record, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, topK);
+    this.bumpAccess(top.map((h) => h.record.id), now);
+    return top.map((h) => ({ ...h, record: { ...h.record, accessCount: h.record.accessCount + 1, lastAccessedAt: now.toISOString() } }));
+  }
+
+  protected async vectorCandidates(query: string, limit: number): Promise<string[]> {
+    const [vector] = await this.embeddings.embed([`search_query: ${query}`]);
+    if (vector === undefined) return [];
+    const rows = this.db
+      .prepare(`SELECT m.id AS id FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`)
+      .all(toBlob(vector), limit) as { id: string }[];
+    return rows.map((r) => r.id);
+  }
+
+  protected keywordCandidates(query: string, limit: number): string[] {
+    const match = ftsQuery(query);
+    if (match.length === 0) return [];
+    const rows = this.db
+      .prepare(`SELECT id FROM memories_fts WHERE memories_fts MATCH ? ORDER BY bm25(memories_fts) LIMIT ?`)
+      .all(match, limit) as { id: string }[];
+    return rows.map((r) => r.id);
+  }
+
+  protected bumpAccess(ids: readonly string[], now: Date): void {
+    if (ids.length === 0) return;
+    const stmt = this.db.prepare(`UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?`);
+    const tx = this.db.transaction(() => {
+      for (const id of ids) stmt.run(now.toISOString(), id);
+    });
+    tx();
   }
 
   protected nextSeq(id: string): number {
