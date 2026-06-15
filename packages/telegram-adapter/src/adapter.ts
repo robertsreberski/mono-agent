@@ -1,19 +1,15 @@
-import {
-  isAgentResponseCancelledError,
-  type AgentRequestBase,
-  type AgentResponder as SharedAgentResponder,
-  type AgentResponse,
+import type {
+  AgentRequestBase,
+  AgentResponder as SharedAgentResponder,
+  AgentResponse,
 } from "@mono-agent/agent-contracts";
 
 import {
-  TelegramDeliveryError,
   TelegramMessageStream,
   type AgentMessageStream,
   type TelegramMessageStreamLogger,
-  type TelegramMessageStreamOptions,
 } from "./message-stream.js";
 import type {
-  TelegramBotApi,
   TelegramChatId,
   TelegramMessage,
   TelegramUpdate,
@@ -87,77 +83,16 @@ export interface TelegramAdapterStreamOptions {
   retryCapMs?: number;
   retryBaseDelayMs?: number;
   showThoughts?: boolean;
-  formatHtml?: boolean;
+  formatMarkdown?: boolean;
 }
 
 export interface TelegramAdapterLogger extends TelegramMessageStreamLogger {
   info?(message: string, metadata?: Record<string, unknown>): void;
 }
 
-export interface TelegramAdapterOptions {
-  api: TelegramBotApi;
-  responder: AgentResponder;
-  allowedChatIds?: TelegramChatId[];
-  allowAllChats?: boolean;
-  stream?: TelegramAdapterStreamOptions;
-  messages?: TelegramAdapterMessages;
-  logger?: TelegramAdapterLogger;
-}
+export const DEFAULT_ERROR_TEXT = "The agent failed while processing your message.";
 
-export type TelegramUpdateHandlingResult =
-  | {
-      kind: "handled";
-      updateId: number;
-      chatId: TelegramChatId;
-      action: "command" | "responded";
-      command?: "start" | "help";
-      /**
-       * For `action: "responded"`: whether the final message reached Telegram.
-       * `"degraded"` means the AI run succeeded but delivery ultimately failed
-       * after retries — the run is NEVER reported as an error in that case.
-       */
-      delivery?: "ok" | "degraded";
-      metadata?: Record<string, unknown>;
-    }
-  | {
-      kind: "ignored";
-      updateId: number;
-      reason: "non_message_update" | "unsupported_message" | "empty_text";
-      chatId?: TelegramChatId;
-    }
-  | {
-      kind: "unauthorized";
-      updateId: number;
-      chatId: TelegramChatId;
-    }
-  | {
-      kind: "busy";
-      updateId: number;
-      chatId: TelegramChatId;
-    }
-  | {
-      kind: "cancelled";
-      updateId: number;
-      chatId: TelegramChatId;
-    }
-  | {
-      kind: "error";
-      updateId: number;
-      chatId?: TelegramChatId;
-      error: unknown;
-    };
-
-interface ActiveRun {
-  controller: AbortController;
-}
-
-interface NormalizedCommand {
-  name: string;
-}
-
-const DEFAULT_ERROR_TEXT = "The agent failed while processing your message.";
-
-const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
+export const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
   welcomeText:
     "Hello! Send me a text message and I will pass it to the configured agent.",
   helpText:
@@ -169,262 +104,12 @@ const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
   unsupportedText: "I can only handle text messages in this adapter for now.",
 };
 
-export class TelegramAdapter {
-  private readonly api: TelegramBotApi;
-  private readonly responder: AgentResponder;
-  private readonly allowAllChats: boolean;
-  private readonly allowedChatIds: Set<string>;
-  private readonly streamOptions: TelegramAdapterStreamOptions;
-  private readonly messages: Required<TelegramAdapterMessages>;
-  private readonly logger: TelegramAdapterLogger | undefined;
-  private readonly activeRuns = new Map<string, ActiveRun>();
-
-  constructor(options: TelegramAdapterOptions) {
-    this.api = options.api;
-    this.responder = options.responder;
-    this.allowAllChats = options.allowAllChats === true;
-    this.allowedChatIds = new Set(
-      options.allowedChatIds?.map((chatId) => String(chatId)) ?? [],
-    );
-    this.streamOptions = options.stream ?? {};
-    this.messages = { ...DEFAULT_MESSAGES, ...options.messages };
-    this.logger = options.logger;
-
-    if (!this.allowAllChats && this.allowedChatIds.size === 0) {
-      throw new TypeError(
-        "TelegramAdapter requires allowedChatIds or allowAllChats: true.",
-      );
-    }
-  }
-
-  async handleUpdate(
-    update: TelegramUpdate,
-  ): Promise<TelegramUpdateHandlingResult> {
-    const message = update.message;
-    if (message === undefined) {
-      return { kind: "ignored", updateId: update.update_id, reason: "non_message_update" };
-    }
-
-    const chatId = message.chat.id;
-    if (!this.isAuthorized(chatId)) {
-      await this.api.sendMessage({
-        chat_id: chatId,
-        text: this.messages.unauthorizedText,
-      });
-      return { kind: "unauthorized", updateId: update.update_id, chatId };
-    }
-
-    const text = message.text;
-    if (typeof text !== "string") {
-      await this.api.sendMessage({
-        chat_id: chatId,
-        text: this.messages.unsupportedText,
-      });
-      return {
-        kind: "ignored",
-        updateId: update.update_id,
-        chatId,
-        reason: "unsupported_message",
-      };
-    }
-
-    const trimmedText = text.trim();
-    if (trimmedText.length === 0) {
-      await this.api.sendMessage({
-        chat_id: chatId,
-        text: this.messages.unsupportedText,
-      });
-      return {
-        kind: "ignored",
-        updateId: update.update_id,
-        chatId,
-        reason: "empty_text",
-      };
-    }
-
-    const command = parseCommand(trimmedText);
-    if (command?.name === "start") {
-      await this.api.sendMessage({ chat_id: chatId, text: this.messages.welcomeText });
-      return {
-        kind: "handled",
-        updateId: update.update_id,
-        chatId,
-        action: "command",
-        command: "start",
-      };
-    }
-
-    if (command?.name === "help") {
-      await this.api.sendMessage({ chat_id: chatId, text: this.messages.helpText });
-      return {
-        kind: "handled",
-        updateId: update.update_id,
-        chatId,
-        action: "command",
-        command: "help",
-      };
-    }
-
-    const runKey = String(chatId);
-    const activeRun = this.activeRuns.get(runKey);
-    if (command?.name === "cancel") {
-      if (activeRun !== undefined) {
-        activeRun.controller.abort(new Error("Cancelled by Telegram user."));
-      }
-      await this.api.sendMessage({
-        chat_id: chatId,
-        text: this.messages.cancelledText,
-      });
-      return { kind: "cancelled", updateId: update.update_id, chatId };
-    }
-
-    if (activeRun !== undefined) {
-      await this.api.sendMessage({ chat_id: chatId, text: this.messages.busyText });
-      return { kind: "busy", updateId: update.update_id, chatId };
-    }
-
-    return await this.respondToMessage(update, message, trimmedText, runKey);
-  }
-
-  private async respondToMessage(
-    update: TelegramUpdate,
-    message: TelegramMessage,
-    text: string,
-    runKey: string,
-  ): Promise<TelegramUpdateHandlingResult> {
-    const chatId = message.chat.id;
-    const controller = new AbortController();
-    const activeRun: ActiveRun = { controller };
-    this.activeRuns.set(runKey, activeRun);
-    const request = buildAgentRequest(update, message, text, controller.signal);
-
-    const telegramStreamOptions: TelegramMessageStreamOptions = {
-      api: this.api,
-      chatId,
-      replyToMessageId: message.message_id,
-      abortSignal: controller.signal,
-    };
-    if (this.streamOptions.initialStatusText !== undefined) {
-      telegramStreamOptions.initialStatusText = this.streamOptions.initialStatusText;
-    }
-    if (this.streamOptions.editDebounceMs !== undefined) {
-      telegramStreamOptions.editDebounceMs = this.streamOptions.editDebounceMs;
-    }
-    if (this.streamOptions.maxMessageChars !== undefined) {
-      telegramStreamOptions.maxMessageChars = this.streamOptions.maxMessageChars;
-    }
-    if (this.streamOptions.maxSendRetries !== undefined) {
-      telegramStreamOptions.maxSendRetries = this.streamOptions.maxSendRetries;
-    }
-    if (this.streamOptions.retryCapMs !== undefined) {
-      telegramStreamOptions.retryCapMs = this.streamOptions.retryCapMs;
-    }
-    if (this.streamOptions.retryBaseDelayMs !== undefined) {
-      telegramStreamOptions.retryBaseDelayMs = this.streamOptions.retryBaseDelayMs;
-    }
-    if (this.streamOptions.showThoughts !== undefined) {
-      telegramStreamOptions.showThoughts = this.streamOptions.showThoughts;
-    }
-    if (this.streamOptions.formatHtml !== undefined) {
-      telegramStreamOptions.formatHtml = this.streamOptions.formatHtml;
-    }
-    if (this.logger !== undefined) {
-      telegramStreamOptions.logger = this.logger;
-    }
-
-    const stream = new TelegramMessageStream(telegramStreamOptions);
-
-    try {
-      let response: AgentResponse;
-      try {
-        // The initial "Thinking…" placeholder is best-effort: a transient send
-        // failure here must not be mistaken for an AI failure. The AI still
-        // runs, and the resilient final delivery re-establishes the message.
-        try {
-          await stream.status(this.streamOptions.initialStatusText ?? "Thinking…");
-        } catch (statusError) {
-          this.logger?.warn?.(
-            "Telegram initial status send failed; continuing to the agent run.",
-            { error: statusError instanceof Error ? statusError.message : String(statusError) },
-          );
-        }
-        if (controller.signal.aborted) {
-          await finishSafely(stream, this.messages.cancelledText, this.logger);
-          return { kind: "cancelled", updateId: update.update_id, chatId };
-        }
-
-        response = await this.responder.respond(request, stream);
-      } catch (error) {
-        // The AI request itself failed (or was cancelled) before producing a
-        // result. This is the ONLY path that reports a hard error to the user.
-        if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          await finishSafely(stream, this.messages.cancelledText, this.logger);
-          return { kind: "cancelled", updateId: update.update_id, chatId };
-        }
-
-        this.logger?.error?.("Telegram adapter responder failed.", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        const errorText = await resolveErrorText({
-          configured: this.messages.errorText,
-          error,
-          request,
-          logger: this.logger,
-        });
-        await finishSafely(stream, errorText, this.logger);
-        return { kind: "error", updateId: update.update_id, chatId, error };
-      }
-
-      // The AI request SUCCEEDED. From here, delivery is best-effort: a Telegram
-      // hiccup must never be reported as an agent failure.
-      if (controller.signal.aborted) {
-        await finishSafely(stream, this.messages.cancelledText, this.logger);
-        return { kind: "cancelled", updateId: update.update_id, chatId };
-      }
-
-      const result: TelegramUpdateHandlingResult = {
-        kind: "handled",
-        updateId: update.update_id,
-        chatId,
-        action: "responded",
-        delivery: "ok",
-      };
-      if (response.metadata !== undefined) {
-        result.metadata = response.metadata;
-      }
-
-      try {
-        await stream.finish(response.text);
-      } catch (error) {
-        if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          return { kind: "cancelled", updateId: update.update_id, chatId };
-        }
-        // AI succeeded but every delivery path failed. Surface a degraded
-        // result for operators; the user is never told the agent failed.
-        this.logger?.error?.(
-          "Telegram final delivery failed after a successful AI run.",
-          {
-            error: error instanceof Error ? error.message : String(error),
-            isDeliveryError: error instanceof TelegramDeliveryError,
-          },
-        );
-        result.delivery = "degraded";
-      }
-
-      return result;
-    } finally {
-      if (this.activeRuns.get(runKey) === activeRun) {
-        this.activeRuns.delete(runKey);
-      }
-    }
-  }
-
-  private isAuthorized(chatId: TelegramChatId): boolean {
-    return this.allowAllChats || this.allowedChatIds.has(String(chatId));
-  }
-}
-
-function buildAgentRequest(
+/**
+ * Build the responder-facing {@link AgentRequest} from a Telegram update. The
+ * grammY message handler passes `ctx.update` and `ctx.message`, which are
+ * structurally compatible with the wire types this reads.
+ */
+export function buildAgentRequest(
   update: TelegramUpdate,
   message: TelegramMessage,
   text: string,
@@ -510,22 +195,19 @@ function metadataFromUser(
   return metadata;
 }
 
-function parseCommand(text: string): NormalizedCommand | undefined {
-  const match = text.match(/^\/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s|$)/u);
-  if (match?.[1] === undefined) {
-    return undefined;
-  }
-
-  return { name: match[1].toLowerCase() };
-}
-
-async function finishSafely(
-  stream: AgentMessageStream,
+/**
+ * Deliver a terminal/system message (cancelled, error, …) in place. Such copy is
+ * fixed text we author, not model output, so it is delivered as plain text
+ * (`format: false`) — no MarkdownV2 escaping — while still reusing the stream's
+ * resilient edit-or-recreate delivery.
+ */
+export async function finishSafely(
+  stream: TelegramMessageStream,
   text: string,
   logger: TelegramAdapterLogger | undefined,
 ): Promise<void> {
   try {
-    await stream.finish(text);
+    await stream.finish(text, { format: false });
   } catch (error) {
     logger?.error?.("Failed to send Telegram terminal stream message.", {
       error: error instanceof Error ? error.message : String(error),
@@ -533,7 +215,7 @@ async function finishSafely(
   }
 }
 
-async function resolveErrorText(input: {
+export async function resolveErrorText(input: {
   readonly configured: TelegramAdapterErrorText;
   readonly error: unknown;
   readonly request: AgentRequest;

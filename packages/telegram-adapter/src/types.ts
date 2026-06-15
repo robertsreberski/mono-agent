@@ -68,7 +68,12 @@ export interface TelegramDeleteWebhookParams {
   drop_pending_updates?: boolean;
 }
 
-export interface TelegramBotApi {
+/**
+ * The minimal Telegram surface the streaming delivery layer needs: sending a
+ * message and editing it in place. Update polling lives in the grammY runner, so
+ * the delivery layer depends only on these two calls.
+ */
+export interface TelegramMessageSender {
   sendMessage(
     params: TelegramSendMessageParams,
     options?: TelegramRequestOptions,
@@ -77,6 +82,9 @@ export interface TelegramBotApi {
     params: TelegramEditMessageTextParams,
     options?: TelegramRequestOptions,
   ): Promise<TelegramSentMessage | true>;
+}
+
+export interface TelegramBotApi extends TelegramMessageSender {
   getUpdates(
     params: TelegramGetUpdatesParams,
     options?: TelegramRequestOptions,

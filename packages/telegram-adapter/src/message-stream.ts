@@ -9,12 +9,12 @@ import {
   normalizeTrailing,
   splitTextByCodePoints,
 } from "@mono-agent/agent-contracts";
-import { TelegramApiError } from "./telegram-client.js";
-import { renderTelegramHtml } from "./telegram-html.js";
+import { TelegramApiError } from "./telegram-error.js";
+import { renderTelegramMarkdown } from "./telegram-markdown.js";
 import type {
-  TelegramBotApi,
   TelegramChatId,
   TelegramEditMessageTextParams,
+  TelegramMessageSender,
   TelegramSendMessageParams,
   TelegramSentMessage,
 } from "./types.js";
@@ -28,7 +28,7 @@ export interface AgentMessageStream extends AgentMessageStreamBase {
 }
 
 export interface TelegramMessageStreamOptions {
-  api: TelegramBotApi;
+  api: TelegramMessageSender;
   chatId: TelegramChatId;
   initialStatusText?: string;
   editDebounceMs?: number;
@@ -42,8 +42,8 @@ export interface TelegramMessageStreamOptions {
   retryBaseDelayMs?: number;
   /** Render accumulated reasoning as a live "💭" message. Default true. */
   showThoughts?: boolean;
-  /** Render the final answer's Markdown as Telegram HTML (plain fallback). Default true. */
-  formatHtml?: boolean;
+  /** Render the final answer as Telegram MarkdownV2 (plain fallback). Default true. */
+  formatMarkdown?: boolean;
   /** Aborts in-flight retry waits (e.g. on /cancel). */
   abortSignal?: AbortSignal;
   logger?: TelegramMessageStreamLogger;
@@ -89,7 +89,7 @@ const EMPTY_FINAL_TEXT = DEFAULT_EMPTY_FINAL_TEXT;
 const THOUGHT_PREFIX = "💭 ";
 
 export class TelegramMessageStream implements AgentMessageStream {
-  private readonly api: TelegramBotApi;
+  private readonly api: TelegramMessageSender;
   private readonly chatId: TelegramChatId;
   private readonly initialStatusText: string;
   private readonly editDebounceMs: number;
@@ -99,7 +99,7 @@ export class TelegramMessageStream implements AgentMessageStream {
   private readonly retryCapMs: number;
   private readonly retryBaseDelayMs: number;
   private readonly showThoughts: boolean;
-  private readonly formatHtml: boolean;
+  private readonly formatMarkdown: boolean;
   private readonly abortSignal: AbortSignal | undefined;
   private readonly logger: TelegramMessageStreamLogger | undefined;
 
@@ -112,7 +112,7 @@ export class TelegramMessageStream implements AgentMessageStream {
   private editTimer: ReturnType<typeof setTimeout> | undefined;
   private inFlightEdit: Promise<void> | undefined;
   private lastFlushedText: string | undefined;
-  private lastFlushedHtml = false;
+  private lastFlushedMarkdown = false;
   private finished = false;
 
   constructor(options: TelegramMessageStreamOptions) {
@@ -129,7 +129,7 @@ export class TelegramMessageStream implements AgentMessageStream {
     this.retryCapMs = options.retryCapMs ?? DEFAULT_RETRY_CAP_MS;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
     this.showThoughts = options.showThoughts ?? true;
-    this.formatHtml = options.formatHtml ?? true;
+    this.formatMarkdown = options.formatMarkdown ?? true;
     this.abortSignal = options.abortSignal;
     this.logger = options.logger;
 
@@ -228,7 +228,7 @@ export class TelegramMessageStream implements AgentMessageStream {
     }
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(finalText?: string, options?: { format?: boolean }): Promise<void> {
     if (this.finished) {
       return;
     }
@@ -249,7 +249,10 @@ export class TelegramMessageStream implements AgentMessageStream {
 
     await this.ensureMessage();
     try {
-      await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, { final: true });
+      await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, {
+        final: true,
+        format: options?.format ?? true,
+      });
     } catch (error) {
       if (this.abortSignal?.aborted === true) {
         // Cancelled: deliver in place if we can, but never post a brand-new
@@ -297,7 +300,7 @@ export class TelegramMessageStream implements AgentMessageStream {
 
       this.sendMessagePromise = this.api.sendMessage(params).then((message) => {
         this.lastFlushedText = initialText;
-        this.lastFlushedHtml = false;
+        this.lastFlushedMarkdown = false;
         return message;
       });
     }
@@ -346,17 +349,24 @@ export class TelegramMessageStream implements AgentMessageStream {
    */
   private async deliverText(
     sourceText: string,
-    options: { final: boolean },
+    options: { final: boolean; format?: boolean },
   ): Promise<void> {
     const normalizedSource = normalizeTelegramText(sourceText);
-    let useHtml = options.final && this.formatHtml;
-    let renderedText = useHtml ? renderTelegramHtml(normalizedSource) : normalizedSource;
-    if (useHtml && renderedText === normalizedSource) {
-      // No markup survived rendering — avoid parse_mode entirely.
-      useHtml = false;
+    let useMarkdown = options.final && this.formatMarkdown && (options.format ?? true);
+    let renderedText = useMarkdown ? renderTelegramMarkdown(normalizedSource) : normalizedSource;
+    if (useMarkdown && countCodePoints(renderedText) > this.maxMessageChars) {
+      // MarkdownV2 escaping can expand a chunk past Telegram's size limit, but
+      // chunks are split on the source length. The plain source is within the
+      // limit, so deliver it as plain text rather than fail with
+      // "message is too long". (We never test renderedText === source to decide
+      // this: telegramify renders inline code / links back to identical bytes
+      // that still need parse_mode to render, so equality is not a plain-text
+      // signal.)
+      useMarkdown = false;
+      renderedText = normalizedSource;
     }
 
-    if (renderedText === this.lastFlushedText && useHtml === this.lastFlushedHtml) {
+    if (renderedText === this.lastFlushedText && useMarkdown === this.lastFlushedMarkdown) {
       return;
     }
 
@@ -367,25 +377,25 @@ export class TelegramMessageStream implements AgentMessageStream {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
         if (recreate) {
-          const sent = await this.api.sendMessage(this.buildSendParams(renderedText, useHtml));
+          const sent = await this.api.sendMessage(this.buildSendParams(renderedText, useMarkdown));
           this.sentMessage = sent;
         } else {
           const message = await this.ensureMessage();
-          await this.api.editMessageText(this.buildEditParams(message, renderedText, useHtml));
+          await this.api.editMessageText(this.buildEditParams(message, renderedText, useMarkdown));
         }
         this.lastFlushedText = renderedText;
-        this.lastFlushedHtml = useHtml;
+        this.lastFlushedMarkdown = useMarkdown;
         return;
       } catch (error) {
         lastError = error;
         const outcome = classifyTelegramError(error);
         if (outcome.kind === "not_modified") {
           this.lastFlushedText = renderedText;
-          this.lastFlushedHtml = useHtml;
+          this.lastFlushedMarkdown = useMarkdown;
           return;
         }
-        if (outcome.kind === "reformat_plain" && useHtml) {
-          useHtml = false;
+        if (outcome.kind === "reformat_plain" && useMarkdown) {
+          useMarkdown = false;
           renderedText = normalizedSource;
           continue;
         }
@@ -431,7 +441,7 @@ export class TelegramMessageStream implements AgentMessageStream {
         const sent = await this.api.sendMessage(this.buildSendParams(normalized, false));
         this.sentMessage = sent;
         this.lastFlushedText = normalized;
-        this.lastFlushedHtml = false;
+        this.lastFlushedMarkdown = false;
         return;
       } catch (error) {
         lastError = error;
@@ -482,23 +492,23 @@ export class TelegramMessageStream implements AgentMessageStream {
   private buildEditParams(
     message: TelegramSentMessage,
     text: string,
-    useHtml: boolean,
+    useMarkdown: boolean,
   ): TelegramEditMessageTextParams {
     const params: TelegramEditMessageTextParams = {
       chat_id: this.chatId,
       message_id: message.message_id,
       text,
     };
-    if (useHtml) {
-      params.parse_mode = "HTML";
+    if (useMarkdown) {
+      params.parse_mode = "MarkdownV2";
     }
     return params;
   }
 
-  private buildSendParams(text: string, useHtml: boolean): TelegramSendMessageParams {
+  private buildSendParams(text: string, useMarkdown: boolean): TelegramSendMessageParams {
     const params: TelegramSendMessageParams = { chat_id: this.chatId, text };
-    if (useHtml) {
-      params.parse_mode = "HTML";
+    if (useMarkdown) {
+      params.parse_mode = "MarkdownV2";
     }
     return params;
   }
@@ -623,6 +633,11 @@ function buildStreamingPreview(text: string, maxChars: number): string {
 
 function normalizeTelegramText(text: string): string {
   return text.trimEnd();
+}
+
+/** Count Unicode code points — Telegram's message length is measured in them. */
+function countCodePoints(text: string): number {
+  return [...text].length;
 }
 
 function errorMessage(error: unknown): string {

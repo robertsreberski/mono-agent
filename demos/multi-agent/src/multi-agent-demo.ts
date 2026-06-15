@@ -40,18 +40,15 @@ import {
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import {
-  TelegramAdapter,
-  TelegramBotApiClient,
-  TelegramLongPoller,
   loadTelegramAdapterConfig,
+  startTelegramAdapter,
   telegramFieldGroup,
 } from "@mono-agent/telegram-adapter";
 import type {
   TelegramAdapterConfig,
-  TelegramAdapterOptions,
-  TelegramBotApi,
-  TelegramLongPollerOptions,
-  TelegramLongPollerStartOptions,
+  TelegramAdapterMessages,
+  TelegramAdapterStartOptions,
+  TelegramAdapterStartResult,
 } from "@mono-agent/telegram-adapter";
 import type { FieldGroup } from "@mono-agent/settings";
 
@@ -77,10 +74,6 @@ export interface MultiAgentDemoLogger {
   error?(message: string, metadata?: Record<string, unknown>): void;
 }
 
-export interface MultiAgentDemoPollerLike {
-  start(options?: TelegramLongPollerStartOptions): Promise<void>;
-}
-
 export interface MultiAgentDemoOptions {
   readonly env?: Record<string, string | undefined>;
   readonly cwd?: string;
@@ -91,8 +84,9 @@ export interface MultiAgentDemoOptions {
   readonly logger?: MultiAgentDemoLogger;
   readonly runtime?: MonoRuntimeLike;
   readonly runtimeFactory?: (role: MultiAgentRole, config: MonoAgentConfig) => MonoRuntimeLike;
-  readonly telegramApi?: TelegramBotApi;
-  readonly pollerFactory?: (options: TelegramLongPollerOptions) => MultiAgentDemoPollerLike;
+  readonly telegramStartAdapter?: (
+    options: TelegramAdapterStartOptions,
+  ) => Promise<TelegramAdapterStartResult>;
   readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
   readonly operatorConsoleFactory?: (options: OperatorConsoleOptions) => Promise<OperatorConsoleStartResult>;
   readonly fieldGroups?: readonly FieldGroup[];
@@ -160,8 +154,7 @@ interface RunningRole {
 }
 
 interface RunningTelegram {
-  readonly controller: AbortController;
-  readonly promise: Promise<void>;
+  readonly result: TelegramAdapterStartResult;
 }
 
 export async function startMultiAgentDemo(options: MultiAgentDemoOptions = {}): Promise<MultiAgentDemo> {
@@ -215,8 +208,7 @@ export async function startMultiAgentDemo(options: MultiAgentDemoOptions = {}): 
     startA2A: options.startA2A !== false,
     startTelegram: options.startTelegram !== false,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
-    ...(options.telegramApi === undefined ? {} : { telegramApi: options.telegramApi }),
-    ...(options.pollerFactory === undefined ? {} : { pollerFactory: options.pollerFactory }),
+    ...(options.telegramStartAdapter === undefined ? {} : { telegramStartAdapter: options.telegramStartAdapter }),
     ...(options.a2aProviderFactory === undefined ? {} : { a2aProviderFactory: options.a2aProviderFactory }),
   });
 
@@ -235,8 +227,9 @@ class MultiAgentDemoController implements MultiAgentDemo {
   private readonly shouldStartA2A: boolean;
   private readonly shouldStartTelegram: boolean;
   private readonly logger: MultiAgentDemoLogger | undefined;
-  private readonly telegramApi: TelegramBotApi | undefined;
-  private readonly pollerFactory: ((options: TelegramLongPollerOptions) => MultiAgentDemoPollerLike) | undefined;
+  private readonly telegramStartAdapter:
+    | ((options: TelegramAdapterStartOptions) => Promise<TelegramAdapterStartResult>)
+    | undefined;
   private readonly a2aProviderFactory: ((options: A2AProviderOptions) => Promise<A2AProviderStartResult>) | undefined;
 
   private running: Partial<Record<MultiAgentRole, RunningRole>> = {};
@@ -256,8 +249,9 @@ class MultiAgentDemoController implements MultiAgentDemo {
     readonly startA2A: boolean;
     readonly startTelegram: boolean;
     readonly logger?: MultiAgentDemoLogger;
-    readonly telegramApi?: TelegramBotApi;
-    readonly pollerFactory?: (options: TelegramLongPollerOptions) => MultiAgentDemoPollerLike;
+    readonly telegramStartAdapter?: (
+      options: TelegramAdapterStartOptions,
+    ) => Promise<TelegramAdapterStartResult>;
     readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
   }) {
     this.env = input.env;
@@ -268,8 +262,7 @@ class MultiAgentDemoController implements MultiAgentDemo {
     this.shouldStartA2A = input.startA2A;
     this.shouldStartTelegram = input.startTelegram;
     this.logger = input.logger;
-    this.telegramApi = input.telegramApi;
-    this.pollerFactory = input.pollerFactory;
+    this.telegramStartAdapter = input.telegramStartAdapter;
     this.a2aProviderFactory = input.a2aProviderFactory;
     this.operatorConsole = {
       url: input.operatorConsole.url,
@@ -517,37 +510,22 @@ class MultiAgentDemoController implements MultiAgentDemo {
     }
 
     try {
-      const api = this.telegramApi ?? new TelegramBotApiClient({ token: telegramConfig.botToken });
-      const adapterOptions: TelegramAdapterOptions = {
-        api,
+      const startAdapter = this.telegramStartAdapter ?? startTelegramAdapter;
+      const result = await startAdapter({
+        botToken: telegramConfig.botToken,
         responder,
         allowedChatIds: [...telegramConfig.allowedChatIds],
         allowAllChats: telegramConfig.allowAllChats,
+        allowedUpdates: ["message"],
+        deleteWebhookOnStart: true,
         stream: {
           initialStatusText: "Multi-Agent orchestrator is thinking...",
           editDebounceMs: 350,
         },
         messages: multiAgentTelegramMessages(),
         ...(this.logger === undefined ? {} : { logger: this.logger }),
-      };
-      const adapter = new TelegramAdapter(adapterOptions);
-      const pollerOptions: TelegramLongPollerOptions = {
-        api,
-        adapter,
-        deleteWebhookOnStart: true,
-        allowedUpdates: ["message"],
-        ...(this.logger === undefined ? {} : { logger: this.logger }),
-      };
-      const poller = this.pollerFactory?.(pollerOptions) ?? new TelegramLongPoller(pollerOptions);
-      const controller = new AbortController();
-      const promise = poller.start({ signal: controller.signal })
-        .catch((error: unknown) => {
-          if (!controller.signal.aborted) {
-            this.telegramStatusValue = { kind: "failed", reason: reasonOf(error) };
-            this.logger?.error?.("Multi-agent Telegram polling stopped with an error.", { reason: reasonOf(error) });
-          }
-        });
-      this.runningTelegram = { controller, promise };
+      });
+      this.runningTelegram = { result };
       return {
         kind: "running",
         allowedChatCount: telegramConfig.allowedChatIds.length,
@@ -564,8 +542,7 @@ class MultiAgentDemoController implements MultiAgentDemo {
       return;
     }
     this.runningTelegram = undefined;
-    running.controller.abort();
-    await running.promise.catch((error: unknown) => {
+    await running.result.stop().catch((error: unknown) => {
       this.logger?.warn?.("Telegram polling did not stop cleanly.", { reason: reasonOf(error) });
     });
   }
@@ -680,7 +657,7 @@ async function loadRoles(input: {
   return Object.fromEntries(entries) as Record<MultiAgentRole, LoadedRole>;
 }
 
-function multiAgentTelegramMessages(): NonNullable<TelegramAdapterOptions["messages"]> {
+function multiAgentTelegramMessages(): TelegramAdapterMessages {
   return {
     welcomeText: "Multi-Agent Demo is online. Send a request and the orchestrator will ask the researcher and worker before answering.",
     helpText: "Send a text request to run the multi-agent demo. Use /cancel to stop an in-flight response.",
