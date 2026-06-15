@@ -672,8 +672,12 @@ Add these methods to the `MemoryDb` class body:
 ```ts
   async upsert(record: MemoryRecord): Promise<void> {
     const [vector] = await this.embeddings.embed([`search_document: ${record.text}`]);
-    const seq = this.nextSeq(record.id);
+    if (vector === undefined) {
+      throw new Error("memory-store: embedding provider returned no vector for upsert.");
+    }
     const tx = this.db.transaction(() => {
+      // seq computed inside the tx so concurrent upserts of new ids cannot collide on MAX(seq)+1.
+      const seq = this.nextSeq(record.id);
       this.db.prepare(
         `INSERT INTO memories (
            id, seq, type, status, text, salience, is_insight, created_at, last_accessed_at,
@@ -697,7 +701,7 @@ Add these methods to the `MemoryDb` class body:
       this.db.prepare(`INSERT INTO memories_fts (id, text) VALUES (?, ?)`).run(record.id, record.text);
       // NOTE (from Task 2 spike): sqlite-vec vec0 rejects float64-bound rowids — bind as BigInt.
       this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(BigInt(seq));
-      this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`).run(BigInt(seq), toBlob(vector ?? []));
+      this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`).run(BigInt(seq), toBlob(vector));
     });
     tx();
   }

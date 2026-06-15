@@ -29,8 +29,11 @@ describe("upsert/get", () => {
       id: "m1",
       type: "note",
       status: "open",
+      text: "Robert prefers opt-in memory, never silent fallback.",
       salience: 0.8,
       isInsight: true,
+      createdAt: "2026-06-15T09:00:00.000Z",
+      accessCount: 0,
       tags: ["preference", "memory"],
       source: { session: "s1", file: "daily/2026-06-15.md", line: 4 },
     });
