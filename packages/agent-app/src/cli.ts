@@ -372,6 +372,7 @@ async function runBackgroundCommand(
   const target = await resolveInstanceTarget({
     args: {
       ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
+      ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
       ...(args.port === undefined ? {} : { port: args.port }),
       noConsole: args.noConsole,
     },

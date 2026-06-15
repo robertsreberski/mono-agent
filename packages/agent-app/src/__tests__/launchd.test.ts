@@ -94,6 +94,13 @@ describe("buildPlistXml", () => {
     expect(without).not.toContain("--no-console");
   });
 
+  it("passes --env-file to the worker when set", () => {
+    const xml = buildPlistXml(plistInput({ envFile: "/work/demo/.env.local" }));
+    expect(xml).toContain("<string>--env-file</string>");
+    expect(xml).toContain("<string>/work/demo/.env.local</string>");
+    expect(buildPlistXml(plistInput())).not.toContain("--env-file");
+  });
+
   it("restarts only on crash and runs at load", () => {
     const xml = buildPlistXml(plistInput());
     expect(xml).toContain("<key>RunAtLoad</key>\n  <true/>");

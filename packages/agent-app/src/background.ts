@@ -30,6 +30,7 @@ import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "./launchd.j
 
 export interface BackgroundCliArgs {
   readonly configPath?: string;
+  readonly envFile?: string;
   readonly port?: number;
   readonly noConsole: boolean;
 }
@@ -43,6 +44,7 @@ export interface InstanceTarget {
   readonly paths: LaunchdPaths;
   readonly nodePath: string;
   readonly cliPath: string;
+  readonly envFile?: string;
   readonly port?: number;
   readonly noConsole: boolean;
   readonly pathEnv: string;
@@ -79,6 +81,9 @@ export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): 
     paths: launchdPathsFor(label),
     nodePath: process.execPath,
     cliPath: input.cliPath,
+    // Bake an explicit --env-file (resolved absolute) into the plist so the
+    // launchd worker loads the same env file the launcher did.
+    ...(input.args.envFile === undefined ? {} : { envFile: resolve(cwd, input.args.envFile) }),
     ...(input.args.port === undefined ? {} : { port: input.args.port }),
     noConsole: input.args.noConsole,
     pathEnv: defaultPathEnv(input.env),
@@ -189,6 +194,7 @@ async function writePlist(target: InstanceTarget, deps: BackgroundDeps): Promise
     cliPath: target.cliPath,
     configPath: target.configPath,
     cwd: target.cwd,
+    ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
     ...(target.port === undefined ? {} : { port: target.port }),
     noConsole: target.noConsole,
     stdoutPath: target.paths.stdoutPath,
@@ -234,16 +240,30 @@ async function bootstrapOrRestart(target: InstanceTarget, deps: BackgroundDeps, 
 export async function stopBackground(target: InstanceTarget, deps: BackgroundDeps): Promise<number> {
   const uid = deps.getuid();
   const existing = await findInstance(target, deps);
+  const wasLoaded = await isLoaded(deps.runner, target.label, uid);
   const result = await bootout(deps.runner, target.label, uid);
   // Removing the plist stops it from relaunching at the next login.
   await deps.rm(target.paths.plistPath);
   await maybeUnlinkDeadManifest(target, deps, existing);
 
-  if (result.code === 0) {
-    deps.stdout(`Stopped ${target.label} and removed its LaunchAgent.\n`);
-  } else {
-    deps.stdout(`${target.label} was not running; removed its LaunchAgent if present.\n`);
+  // `bootout` also exits non-zero when the service was never loaded, which is
+  // fine. A non-zero exit is only a real failure if the service is still loaded
+  // afterwards — otherwise we'd silently swallow genuine stop failures.
+  if (result.code !== 0 && (await isLoaded(deps.runner, target.label, uid))) {
+    deps.stderr(`Failed to stop ${target.label}: launchctl bootout exited ${result.code}.\n`);
+    const detail = (result.stderr || result.stdout).trim();
+    if (detail.length > 0) {
+      deps.stderr(`${detail}\n`);
+    }
+    deps.stderr(`The plist was removed, but the service is still running.\n`);
+    return 1;
   }
+
+  deps.stdout(
+    wasLoaded
+      ? `Stopped ${target.label} and removed its LaunchAgent.\n`
+      : `${target.label} was not running; removed its LaunchAgent if present.\n`,
+  );
   deps.stdout(`config  ${target.configPath}\n`);
   return 0;
 }
@@ -254,7 +274,7 @@ export async function statusBackground(target: InstanceTarget, deps: BackgroundD
 
   if (current === undefined) {
     deps.stdout(`No running mono-agent instance for ${target.configPath}.\n`);
-    deps.stdout(`Start it with: mono-agent start\n`);
+    deps.stdout(`Start it with: mono-agent start${configFlag(target)}\n`);
   } else {
     writeInstanceDetail(current, target, deps);
   }
@@ -315,9 +335,10 @@ export function printInstanceInfo(
   deps: BackgroundDeps,
   verb: string,
 ): void {
+  const flag = configFlag(target);
   deps.stdout(`mono-agent ${verb} in the background.\n`);
   writeInstanceDetail(source, target, deps);
-  deps.stdout(`\nStop with: mono-agent stop   ·   Logs: mono-agent logs --follow\n`);
+  deps.stdout(`\nStop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow\n`);
 }
 
 async function findInstance(target: InstanceTarget, deps: BackgroundDeps): Promise<TraceSourceListItem | undefined> {
@@ -354,22 +375,25 @@ function failLaunch(
 }
 
 function reportTimeout(target: InstanceTarget, deps: BackgroundDeps): number {
+  const flag = configFlag(target);
   deps.stderr(
     "mono-agent did not report ready within the timeout.\n" +
       "It may still be starting, or it may have failed. Inspect:\n" +
       `  logs:   ${target.paths.stderrPath}\n` +
       `          ${target.paths.stdoutPath}\n` +
-      "  follow: mono-agent logs --follow\n" +
-      "  status: mono-agent status\n" +
-      "  stop:   mono-agent stop\n",
+      `  follow: mono-agent logs${flag} --follow\n` +
+      `  status: mono-agent status${flag}\n` +
+      `  stop:   mono-agent stop${flag}\n`,
   );
   return 1;
 }
 
 function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget, deps: BackgroundDeps): void {
-  const appUrl = consoleAppUrl(source);
-  if (appUrl !== undefined) {
-    deps.stdout(`operator console  ${appUrl}\n`);
+  const consoleUrl = consoleBaseUrl(source);
+  if (consoleUrl !== undefined) {
+    // The console's per-boot access token is not persisted to disk; the worker
+    // prints the full tokenized URL to its log at startup.
+    deps.stdout(`operator console  ${consoleUrl} (tokenized link in \`mono-agent logs${configFlag(target)}\`)\n`);
   }
   deps.stdout(`config            ${target.configPath}\n`);
   deps.stdout(`label             ${target.label}\n`);
@@ -411,13 +435,19 @@ function startedAtMs(source: TraceSourceListItem): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function consoleAppUrl(source: TraceSourceListItem): string | undefined {
+function consoleBaseUrl(source: TraceSourceListItem): string | undefined {
   const console = source.metadata?.operatorConsole;
   if (console === null || typeof console !== "object") {
     return undefined;
   }
-  const appUrl = (console as Record<string, unknown>).appUrl;
-  return typeof appUrl === "string" && appUrl.length > 0 ? appUrl : undefined;
+  const url = (console as Record<string, unknown>).url;
+  return typeof url === "string" && url.length > 0 ? url : undefined;
+}
+
+/** ` --config <path>` when a non-default config is in play, else empty. */
+function configFlag(target: InstanceTarget): string {
+  const defaultPath = resolve(target.cwd, "mono-agent.config.json");
+  return target.configPath === defaultPath ? "" : ` --config ${target.configPath}`;
 }
 
 function formatChannels(source: TraceSourceListItem): string[] {

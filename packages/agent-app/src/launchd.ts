@@ -32,6 +32,7 @@ export interface PlistInput {
   readonly cliPath: string;
   readonly configPath: string;
   readonly cwd: string;
+  readonly envFile?: string;
   readonly port?: number;
   readonly noConsole: boolean;
   readonly stdoutPath: string;
@@ -97,6 +98,7 @@ export function buildPlistXml(input: PlistInput): string {
     "--foreground",
     "--config",
     input.configPath,
+    ...(input.envFile === undefined ? [] : ["--env-file", input.envFile]),
     ...(input.port === undefined ? [] : ["--port", String(input.port)]),
     ...(input.noConsole ? ["--no-console"] : []),
   ];

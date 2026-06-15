@@ -55,9 +55,9 @@ function makeSource(target: InstanceTarget, overrides: Partial<TraceSourceListIt
     warnings: [],
     metadata: {
       reason: "startup-complete",
+      // The worker persists only the base console URL — never the access token.
       operatorConsole: {
         url: "http://127.0.0.1:7777",
-        appUrl: "http://127.0.0.1:7777/?t=tok",
         configPath: target.configPath,
       },
       channels: {
@@ -75,6 +75,8 @@ interface RunnerOptions {
   readonly loadsAfterBootstrap?: boolean;
   readonly kickstartCode?: number;
   readonly bootoutCode?: number;
+  /** Simulate a bootout that fails and leaves the service still loaded. */
+  readonly bootoutKeepsLoaded?: boolean;
 }
 
 function makeRunner(opts: RunnerOptions): { runner: LaunchctlRunner; calls: string[][] } {
@@ -95,8 +97,10 @@ function makeRunner(opts: RunnerOptions): { runner: LaunchctlRunner; calls: stri
       case "kickstart":
         return { code: opts.kickstartCode ?? 0, stdout: "", stderr: "" };
       case "bootout":
-        state.loaded = false;
-        return { code: opts.bootoutCode ?? 0, stdout: "", stderr: "" };
+        if (!opts.bootoutKeepsLoaded) {
+          state.loaded = false;
+        }
+        return { code: opts.bootoutCode ?? 0, stdout: "", stderr: "bootout detail" };
       default:
         return { code: 0, stdout: "", stderr: "" };
     }
@@ -180,7 +184,9 @@ describe("startBackground", () => {
     expect(harness.written[0]?.data).toContain(target.label);
     const stdout = harness.out.join("");
     expect(stdout).toContain("started in the background");
-    expect(stdout).toContain("http://127.0.0.1:7777/?t=tok");
+    expect(stdout).toContain("http://127.0.0.1:7777");
+    // The per-boot token is never surfaced from the persisted manifest.
+    expect(stdout).not.toContain("?t=");
     expect(stdout).toContain("4321");
     expect(stdout).toContain(target.label);
   });
@@ -278,6 +284,19 @@ describe("stopBackground", () => {
     expect(harness.removed).toContain(resolve(target.registryDir, `${existing.sourceId}.json`));
     expect(harness.out.join("")).toContain("was not running");
   });
+
+  it("reports failure when bootout errors and the service is still loaded", async () => {
+    const { runner } = makeRunner({ loaded: true, bootoutCode: 1, bootoutKeepsLoaded: true });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]), isAlive: () => true });
+
+    const code = await stopBackground(target, harness.deps);
+
+    expect(code).toBe(1);
+    // The plist is still removed even when the running process won't stop.
+    expect(harness.removed).toContain(target.paths.plistPath);
+    expect(harness.err.join("")).toContain("Failed to stop");
+  });
 });
 
 describe("statusBackground", () => {
@@ -311,6 +330,16 @@ describe("statusBackground", () => {
 
     expect(code).toBe(1);
     expect(harness.out.join("")).toContain("No running mono-agent instance");
+  });
+
+  it("includes --config in the start hint for a non-default config", async () => {
+    const { runner } = makeRunner({ loaded: false });
+    const target = makeTarget({ configPath: "/work/demo/custom.json" });
+    const harness = makeHarness({ runner, list: listReturning(() => []) });
+
+    await statusBackground(target, harness.deps);
+
+    expect(harness.out.join("")).toContain("mono-agent start --config /work/demo/custom.json");
   });
 });
 
