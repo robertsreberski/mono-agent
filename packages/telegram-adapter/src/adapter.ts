@@ -337,7 +337,17 @@ export class TelegramAdapter {
     try {
       let response: AgentResponse;
       try {
-        await stream.status(this.streamOptions.initialStatusText ?? "Thinking…");
+        // The initial "Thinking…" placeholder is best-effort: a transient send
+        // failure here must not be mistaken for an AI failure. The AI still
+        // runs, and the resilient final delivery re-establishes the message.
+        try {
+          await stream.status(this.streamOptions.initialStatusText ?? "Thinking…");
+        } catch (statusError) {
+          this.logger?.warn?.(
+            "Telegram initial status send failed; continuing to the agent run.",
+            { error: statusError instanceof Error ? statusError.message : String(statusError) },
+          );
+        }
         if (controller.signal.aborted) {
           await finishSafely(stream, this.messages.cancelledText, this.logger);
           return { kind: "cancelled", updateId: update.update_id, chatId };

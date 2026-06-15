@@ -251,7 +251,19 @@ export class TelegramMessageStream implements AgentMessageStream {
     try {
       await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, { final: true });
     } catch (error) {
+      if (this.abortSignal?.aborted === true) {
+        // Cancelled: deliver in place if we can, but never post a brand-new
+        // message carrying content the user has already asked us to drop.
+        this.logger?.warn?.("Telegram final delivery skipped after cancellation.", {
+          error: errorMessage(error),
+        });
+        return;
+      }
       await this.lastResortSend(firstChunk ?? EMPTY_FINAL_TEXT, error);
+    }
+    if (this.abortSignal?.aborted === true) {
+      // Do not spray overflow continuation messages onto a cancelled run.
+      return;
     }
     for (const chunk of remainingChunks) {
       await this.sendOverflowChunk(chunk);
@@ -377,7 +389,7 @@ export class TelegramMessageStream implements AgentMessageStream {
           renderedText = normalizedSource;
           continue;
         }
-        if (outcome.kind === "recreate") {
+        if (outcome.kind === "recreate" && this.abortSignal?.aborted !== true) {
           recreate = true;
           this.sentMessage = undefined;
           this.lastFlushedText = undefined;

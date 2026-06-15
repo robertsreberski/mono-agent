@@ -375,6 +375,36 @@ describe("TelegramMessageStream", () => {
     expect(editParams[1]?.parse_mode).toBeUndefined();
     expect(editParams[1]?.text).toBe("**bold** answer");
   });
+
+  it("does not post a fresh message with the answer once aborted", async () => {
+    const controller = new AbortController();
+    const sendCalls: TelegramSendMessageParams[] = [];
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        sendCalls.push(params);
+        return { message_id: 950, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText() {
+        // Edit target is gone — without the abort guard this would recreate or
+        // last-resort a brand-new message carrying the now-unwanted answer.
+        throw telegramApiError("Bad Request: message to edit not found");
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 1,
+      editDebounceMs: 0,
+      abortSignal: controller.signal,
+    });
+    controller.abort(new Error("cancelled by user"));
+
+    await expect(stream.finish("unwanted answer")).resolves.toBeUndefined();
+    expect(sendCalls.map((call) => call.text)).toEqual(["Thinking…"]);
+  });
 });
 
 function telegramApiError(

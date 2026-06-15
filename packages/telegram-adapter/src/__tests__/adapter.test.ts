@@ -248,6 +248,48 @@ describe("TelegramAdapter", () => {
     });
   });
 
+  it("recovers when the initial placeholder send fails but the agent still answers", async () => {
+    let sendCount = 0;
+    const editTexts: string[] = [];
+    const api: TelegramBotApi = {
+      async sendMessage(params) {
+        sendCount += 1;
+        if (sendCount === 1) {
+          throw new TelegramApiError("Telegram API sendMessage failed.", {
+            kind: "network",
+            method: "sendMessage",
+          });
+        }
+        return { message_id: 900, chat: { id: params.chat_id }, text: params.text };
+      },
+      async editMessageText(params) {
+        editTexts.push(params.text);
+        return { message_id: params.message_id ?? 0, chat: { id: params.chat_id ?? 0 }, text: params.text };
+      },
+      async getUpdates() {
+        return [];
+      },
+    };
+    const bridge = new TelegramAdapter({
+      api,
+      allowAllChats: true,
+      stream: { editDebounceMs: 0 },
+      messages: { errorText: "THE AGENT FAILED" },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.append("the answer");
+        return { text: "the answer" };
+      }),
+    });
+
+    // A transient placeholder-send failure must not be reported as an AI error.
+    await expect(bridge.handleUpdate(textUpdate("hello"))).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+    });
+    expect(editTexts).toContain("the answer");
+    expect(editTexts).not.toContain("THE AGENT FAILED");
+  });
+
   it("keeps the run successful when an interim streamed edit fails", async () => {
     let editCount = 0;
     const api: TelegramBotApi = {
