@@ -210,7 +210,12 @@ export class MemoryDb {
     return rows.map((row) => this.fromRow(row));
   }
 
-  /** Wipe the index and rebuild it from the supplied records (used by rebuild-from-files). No LLM. */
+  /**
+   * Wipe the index and rebuild it from the supplied records (used by rebuild-from-files). No LLM.
+   * Not atomic across records: the wipe is transactional, but if a re-upsert throws mid-way the index
+   * is left partially rebuilt. Since the index is rebuildable from canonical files, callers should
+   * treat a thrown rebuild as "index dirty — re-run" rather than relying on all-or-nothing semantics.
+   */
   async rebuild(records: readonly MemoryRecord[]): Promise<{ indexed: number }> {
     const tx = this.db.transaction(() => {
       this.db.exec(`DELETE FROM memories; DELETE FROM memories_fts; DELETE FROM memories_vec; DELETE FROM edges;`);
