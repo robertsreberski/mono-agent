@@ -386,6 +386,31 @@ export class MemoryDb {
     };
   }
 
+  /** Open memories with a due date at/under `now`, soonest first (the future-log queue). */
+  dueItems(now: Date, limit = 50): MemoryRecord[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM memories WHERE status IN ('open','scheduled') AND due_at IS NOT NULL AND due_at <= ? ORDER BY due_at LIMIT ?`,
+    ).all(now.toISOString(), limit) as Record<string, unknown>[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
+  /** Live, low-salience, old, infrequently-accessed open memories — migration candidates. */
+  agingOpen(now: Date, opts: { olderThanDays?: number; maxSalience?: number; limit?: number } = {}): MemoryRecord[] {
+    const olderThan = new Date(now.getTime() - (opts.olderThanDays ?? 30) * 86_400_000).toISOString();
+    const rows = this.db.prepare(
+      `SELECT * FROM memories WHERE status = 'open' AND created_at <= ? AND salience <= ? ORDER BY salience ASC, created_at ASC LIMIT ?`,
+    ).all(olderThan, opts.maxSalience ?? 0.4, opts.limit ?? 50) as Record<string, unknown>[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
+  /** Highest-salience live memories (for promotion / always-in-context / index). */
+  topSalient(limit = 20): MemoryRecord[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM memories WHERE status NOT IN ('invalidated','dropped') ORDER BY salience DESC, created_at DESC LIMIT ?`,
+    ).all(limit) as Record<string, unknown>[];
+    return rows.map((r) => this.fromRow(r));
+  }
+
   close(): void {
     this.db.close();
   }
