@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { fakeEmbeddings } from "./helpers.js";
+import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { createBujoMemoryStore } from "../store.js";
 import { dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
@@ -66,6 +66,48 @@ describe("BujoMemoryStore", () => {
     expect(parsed.bullets).toHaveLength(1);
     expect(parsed.bullets[0]?.text).not.toContain("\n");
     expect(parsed.bullets[0]?.text).toContain("opt-in mode");
+    await store.close();
+  });
+
+  it("capture() with llm: distills+reconciles+extracts; memories are recallable and entity present", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-store-capture-"));
+    const now = new Date("2026-06-15T10:00:00.000Z");
+
+    // Entity extraction prompt contains "type:name-kebab" — match BEFORE "TEXT:" to avoid the
+    // distill reply being routed to extractEntities (both prompts end with TEXT:\n<input>).
+    const llm = fakeLlm([
+      [
+        "type:name-kebab",
+        JSON.stringify({
+          entities: [{ id: "person:robert", name: "Robert", type: "person" }],
+          relations: [],
+        }),
+      ],
+      [
+        "TEXT:",
+        JSON.stringify([{ type: "note", text: "Robert prefers opt-in memory", salience: 0.8, isInsight: false }]),
+      ],
+    ]);
+
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now, llm });
+
+    const result = await store.capture("s1", "Robert prefers opt-in memory, never silent fallback.");
+    expect(result).toBeDefined();
+    expect(result?.actions).toBeGreaterThanOrEqual(1);
+    expect(result?.entities).toBe(1);
+
+    // Captured memory must be recallable via load()
+    const block = await store.load("s1");
+    expect(block?.content).toContain("opt-in memory");
+
+    await store.close();
+  });
+
+  it("capture() without llm returns undefined", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-store-nollm-"));
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
+    const result = await store.capture("s1", "some text that would be captured if llm was set");
+    expect(result).toBeUndefined();
     await store.close();
   });
 });
