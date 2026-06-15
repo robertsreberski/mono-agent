@@ -1644,6 +1644,8 @@ git commit -m "feat(memory-bujo): lossless bullet grammar (parse/serialize round
 
 ---
 
+> **Implementation note (Task 10, applied during review):** the built grammar diverges from the draft above — it adds a `STATUS_MARKER` lookup (done/migrated/scheduled/dropped/invalidated → checkbox markers, checked *before* the type-based fallback) so `(note,done)`/`(event,done)`/`(task,invalidated)` round-trip; `serializeBullet` throws if text contains a newline or `<!--mem` (canonical-store corruption guard); empty metadata values fall back via `||`; non-finite salience defaults to 0.5. Authoritative source: `packages/memory-bujo/src/grammar.ts`.
+
 ## Task 11: Id generator + daily-file append
 
 **Files:**

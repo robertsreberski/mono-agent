@@ -34,6 +34,35 @@ describe("parseBullet/serializeBullet", () => {
     expect(parseBullet("## 2026-06-15")).toBeUndefined();
     expect(parseBullet("just prose")).toBeUndefined();
   });
+
+  it("round-trips due, invalidated, and (event,done) via serialize→parse", () => {
+    const bullets: Bullet[] = [
+      { id: "01F", type: "task", status: "scheduled", text: "Review backlog.", salience: 0.6, isInsight: false, createdAt: "2026-06-15T13:00:00.000Z", refs: [], dueAt: "2026-07-01T09:00:00.000Z" },
+      { id: "01G", type: "task", status: "invalidated", text: "Old plan.", salience: 0.2, isInsight: false, createdAt: "2026-06-15T14:00:00.000Z", refs: [] },
+      { id: "01H", type: "event", status: "done", text: "Shipped P1.", salience: 0.7, isInsight: false, createdAt: "2026-06-15T15:00:00.000Z", refs: ["01F", "01G"] },
+    ];
+    for (const b of bullets) {
+      expect(parseBullet(serializeBullet(b))).toEqual(b);
+    }
+  });
+
+  it("serializes invalidated with a struck marker, not the note marker", () => {
+    const line = serializeBullet({ id: "01G", type: "task", status: "invalidated", text: "Old plan.", salience: 0.2, isInsight: false, createdAt: "2026-06-15T14:00:00.000Z", refs: [] });
+    expect(line.startsWith("- [~] ")).toBe(true);
+  });
+
+  it("throws when bullet text contains the metadata delimiter or a newline", () => {
+    const base: Bullet = { id: "01Z", type: "note", status: "open", text: "", salience: 0.5, isInsight: false, createdAt: "2026-06-15T16:00:00.000Z", refs: [] };
+    expect(() => serializeBullet({ ...base, text: "evil  <!--mem id=x-->" })).toThrow(/delimiter/);
+    expect(() => serializeBullet({ ...base, text: "line one\nline two" })).toThrow(/newline/);
+  });
+
+  it("falls back to the marker's status when metadata status is empty", () => {
+    const b = parseBullet(
+      "- [x] Done thing.  <!--mem id=01K type=task status= salience=0.5 isInsight=0 created=2026-06-15T17:00:00.000Z refs=-->",
+    );
+    expect(b?.status).toBe("done");
+  });
 });
 
 describe("parseDailyFile/serializeDailyFile", () => {
@@ -41,6 +70,20 @@ describe("parseDailyFile/serializeDailyFile", () => {
     const file = ["# 2026-06-15", "", LINE, "", "Some freeform note.", ""].join("\n");
     const parsed = parseDailyFile(file);
     expect(parsed.bullets).toHaveLength(1);
+    expect(serializeDailyFile(parsed)).toBe(file);
+  });
+
+  it("round-trips multiple bullets interleaved with prose, verbatim", () => {
+    const file = [
+      "# 2026-06-15",
+      "",
+      LINE,
+      "Some prose between bullets.",
+      "- ◦ Standup.  <!--mem id=01M type=event status=open salience=0.3 isInsight=0 created=2026-06-15T18:00:00.000Z refs=-->",
+      "",
+    ].join("\n");
+    const parsed = parseDailyFile(file);
+    expect(parsed.bullets).toHaveLength(2);
     expect(serializeDailyFile(parsed)).toBe(file);
   });
 });

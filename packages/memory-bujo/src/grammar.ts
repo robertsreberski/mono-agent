@@ -17,6 +17,7 @@ const STATUS_MARKER: Partial<Record<MemoryStatus, string>> = {
   migrated: "[>]",
   scheduled: "[<]",
   dropped: "[~]",
+  invalidated: "[~]", // rendered struck like dropped; the comment metadata stays authoritative for the real status
 };
 
 const MARKER_FOR = (type: MemoryType, status: MemoryStatus): string => {
@@ -41,14 +42,16 @@ export function parseBullet(line: string): Bullet | undefined {
   const fields = parseMeta(meta ?? "");
   const base = MARKERS[marker ?? ""];
   if (base === undefined) return undefined;
-  const status = (fields.status as MemoryStatus | undefined) ?? base.status;
-  const type = (fields.type as MemoryType | undefined) ?? base.type;
+  // `||` (not `??`) so an empty metadata value (e.g. `status=`) also falls back to the marker-derived value.
+  const status = (fields.status as MemoryStatus | undefined) || base.status;
+  const type = (fields.type as MemoryType | undefined) || base.type;
+  const salienceNum = Number(fields.salience);
   const bullet: Bullet = {
     id: fields.id ?? "",
     type,
     status,
     text: text ?? "",
-    salience: fields.salience === undefined ? 0.5 : Number(fields.salience),
+    salience: fields.salience !== undefined && Number.isFinite(salienceNum) ? salienceNum : 0.5,
     isInsight: fields.isInsight === "1",
     createdAt: fields.created ?? "",
     refs: fields.refs === undefined || fields.refs.length === 0 ? [] : fields.refs.split(","),
@@ -58,6 +61,9 @@ export function parseBullet(line: string): Bullet | undefined {
 }
 
 export function serializeBullet(bullet: Bullet): string {
+  if (bullet.text.includes("\n") || bullet.text.includes("<!--mem")) {
+    throw new Error("memory-bujo: bullet text must not contain a newline or the '<!--mem' delimiter.");
+  }
   const marker = MARKER_FOR(bullet.type, bullet.status);
   const meta = [
     `id=${bullet.id}`,
