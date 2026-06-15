@@ -1,17 +1,33 @@
 #!/usr/bin/env node
 import { basename, resolve } from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { startMonoAgentApp } from "./app.js";
 import type { MonoAgentApp } from "./app.js";
+import {
+  defaultBackgroundDeps,
+  resolveInstanceTarget,
+  restartBackground,
+  startBackground,
+  statusBackground,
+  stopBackground,
+  tailLogs,
+} from "./background.js";
 import type { ChannelStatus } from "./channels.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import { initMonoAgentFolder } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
 
+const DEFAULT_LOG_LINES = 200;
+const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
+const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill"] as const;
+
+type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
+
 interface ParsedCliArgs {
-  readonly command: "init" | "validate" | "start" | "install-skill" | "help";
+  readonly command: CliCommand;
   readonly configPath?: string;
   readonly port?: number;
   readonly model?: string;
@@ -21,16 +37,24 @@ interface ParsedCliArgs {
   readonly target?: InstallSkillTarget;
   readonly noConsole: boolean;
   readonly force: boolean;
+  /** start: run the blocking foreground worker instead of backgrounding. */
+  readonly foreground: boolean;
+  /** logs: keep streaming new output (tail -F). */
+  readonly follow: boolean;
+  /** logs: number of trailing lines to print. */
+  readonly lines?: number;
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    return { command: "help", noConsole: false, force: false };
+    return { command: "help", noConsole: false, force: false, foreground: false, follow: false };
   }
-  if (command !== "init" && command !== "validate" && command !== "start" && command !== "install-skill") {
-    throw new Error(`Unknown command \`${command}\`. Expected init, validate, start, or install-skill.`);
+  if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
+    throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
   }
+  const cmd = command as CliCommand;
+  const isLogs = cmd === "logs";
 
   let configPath: string | undefined;
   let port: number | undefined;
@@ -41,6 +65,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let target: InstallSkillTarget | undefined;
   let noConsole = false;
   let force = false;
+  let foreground = false;
+  let follow = false;
+  let lines: number | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
@@ -91,13 +118,36 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--no-console":
         noConsole = true;
         break;
+      case "--foreground":
+        foreground = true;
+        break;
+      case "--follow":
+        follow = true;
+        break;
+      // `-f` is foreground for start, follow for logs.
+      case "-f":
+        if (isLogs) {
+          follow = true;
+        } else {
+          foreground = true;
+        }
+        break;
+      case "--lines": {
+        const raw = requireValue(rest, ++i, flag);
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100_000) {
+          throw new Error("--lines must be a positive integer between 1 and 100000.");
+        }
+        lines = parsed;
+        break;
+      }
       default:
         throw new Error(`Unknown flag \`${flag}\` for \`mono-agent ${command}\`.`);
     }
   }
 
   return {
-    command,
+    command: cmd,
     ...(configPath === undefined ? {} : { configPath }),
     ...(port === undefined ? {} : { port }),
     ...(model === undefined ? {} : { model }),
@@ -107,6 +157,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(target === undefined ? {} : { target }),
     noConsole,
     force,
+    foreground,
+    follow,
+    ...(lines === undefined ? {} : { lines }),
   };
 }
 
@@ -142,13 +195,31 @@ Usage:
   mono-agent validate [--config <path>] [--env-file <path>]
       Load every config section and report what would run, wait, or fail.
 
-  mono-agent start [--config <path>] [--port <n>] [--no-console] [--env-file <path>]
-      Build the responder and start every configured channel plus the local
-      operator console and traceability.
+  mono-agent start [--config <path>] [--port <n>] [--no-console] [--env-file <path>] [--foreground|-f]
+      Start the agent as a background macOS service (launchd), print its
+      instance info, and return. Re-running restarts the running instance.
+      Use --foreground (-f) to run in the blocking foreground instead.
+
+  mono-agent restart [--config <path>] [--port <n>] [--no-console]
+      Restart the background instance for this config (starts it if stopped).
+
+  mono-agent stop [--config <path>]
+      Stop the background instance and remove its LaunchAgent.
+
+  mono-agent status [--config <path>]
+      Show this config's instance plus any other running instances.
+
+  mono-agent logs [--config <path>] [--follow|-f] [--lines <n>]
+      Print (and optionally follow) the background instance's log files.
 
   mono-agent install-skill [--target claude|codex|both] [--force]
       Copy the bundled mono-agent-composer skill into ~/.claude/skills and
       ~/.codex/skills (default: both). Refuses to overwrite without --force.
+
+Background mode runs the agent under launchd, keeping it alive across logins
+(auto-restarting only on crash) until you run stop. Secrets are read from the
+.env file in the working directory, the same as foreground mode. The background
+commands require macOS; elsewhere use start --foreground.
 
 Model references look like claude:claude-sonnet-4-6, codex:gpt-5.5, or
 pi:<provider>:<model> (e.g. pi:ollama:gemma4:31b).
@@ -178,6 +249,11 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runValidate(args);
     case "start":
       return await runStart(args);
+    case "restart":
+    case "stop":
+    case "status":
+    case "logs":
+      return await runBackgroundCommand(args, args.command);
     case "install-skill":
       return await runInstallSkill(args);
   }
@@ -258,6 +334,19 @@ function statusIcon(status: "ok" | "waiting" | "disabled" | "error"): string {
 }
 
 async function runStart(args: ParsedCliArgs): Promise<number> {
+  if (args.foreground) {
+    return await runForeground(args);
+  }
+  return await runBackgroundCommand(args, "start");
+}
+
+/**
+ * The blocking worker: builds the responder, starts every configured channel
+ * plus the operator console and traceability, and stays alive until a signal.
+ * This is what launchd invokes (via `start --foreground`) and what users get
+ * with `--foreground`/`-f`.
+ */
+async function runForeground(args: ParsedCliArgs): Promise<number> {
   const app = await startMonoAgentApp({
     cwd: process.cwd(),
     ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
@@ -269,6 +358,57 @@ async function runStart(args: ParsedCliArgs): Promise<number> {
   printAppStatus(app);
   installSignalHandlers(app);
   return 0;
+}
+
+async function runBackgroundCommand(
+  args: ParsedCliArgs,
+  command: (typeof BACKGROUND_COMMANDS)[number],
+): Promise<number> {
+  const guard = requireDarwin(command);
+  if (guard !== undefined) {
+    return guard;
+  }
+
+  const target = await resolveInstanceTarget({
+    args: {
+      ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
+      ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
+      ...(args.port === undefined ? {} : { port: args.port }),
+      noConsole: args.noConsole,
+    },
+    env: process.env,
+    cwd: process.cwd(),
+    cliPath: fileURLToPath(import.meta.url),
+  });
+  const deps = defaultBackgroundDeps();
+
+  switch (command) {
+    case "start":
+      return await startBackground(target, deps);
+    case "restart":
+      return await restartBackground(target, deps);
+    case "stop":
+      return await stopBackground(target, deps);
+    case "status":
+      return await statusBackground(target, deps);
+    case "logs":
+      return await tailLogs(target, deps, { follow: args.follow, lines: args.lines ?? DEFAULT_LOG_LINES });
+  }
+}
+
+/**
+ * Background service mode is launchd-specific. On other platforms point the
+ * user at the still-supported blocking foreground path.
+ */
+function requireDarwin(command: string): number | undefined {
+  if (process.platform === "darwin") {
+    return undefined;
+  }
+  process.stderr.write(
+    `Background service mode (mono-agent ${command}) requires macOS (launchd).\n` +
+      "Run `mono-agent start --foreground` to run in the foreground on this platform.\n",
+  );
+  return 1;
 }
 
 function printAppStatus(app: MonoAgentApp): void {
