@@ -26,7 +26,7 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Identity + optional soul documents | config | `context.identityPath`, `context.soulPath` |
 | Selected skills from a skills root | config | `context.skillsRoot`, `context.selectedSkills` |
 | Per-skill byte cap | config | `context.skillMaxBytes` |
-| Conversation history (in-memory, capped) | auto | sized from `runtime.maxTurns`; custom store via code |
+| Conversation history (in-memory; unlimited unless turns are capped) | auto | sized from `runtime.maxTurns`; custom store via code |
 | Markdown memory (single-file / per-conversation, capped) | config | `memory.mode: "markdown"`, `path`, `maxBytes`, `scope` |
 | Journal memory (daily notes always in context) | config | `memory.mode: "journal"`, `path` |
 | Host summaries appended after runs | config | `memory.writeMode: "append-host-summary"` |

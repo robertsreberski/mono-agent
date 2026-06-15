@@ -129,4 +129,33 @@ describe("buildTuiConfigSummary", () => {
     expect(fieldByLabel("executionMode")?.source).toBe("env");
     expect(fieldByLabel("workspace")?.source).toBe("default");
   });
+
+  it("renders an unlimited maxTurns when the runtime leaves it uncapped", () => {
+    const sections = buildTuiConfigSummary({
+      redacted: {
+        runtime: {
+          model: { sdk: "codex", model: "gpt-5.5", reference: "codex:gpt-5.5" },
+          executionMode: "cli",
+          workspace: "/tmp/work",
+          session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
+        },
+        context: {
+          identityPath: "/tmp/IDENTITY.md",
+          selectedSkills: [],
+        },
+        tools: { allowedTools: [], disallowedTools: [] },
+        artifacts: { dir: "/tmp/artifacts" },
+        traceability: { registryDir: "/tmp/trace-sources" },
+      },
+      json: {
+        runtime: { model: "codex:gpt-5.5" },
+        context: { identityPath: "/tmp/IDENTITY.md" },
+      },
+      env: {},
+    });
+
+    const runtime = sections.find((section) => section.heading === "runtime");
+    const maxTurns = runtime?.fields.find((field) => field.label === "maxTurns");
+    expect(maxTurns?.value).toBe("unlimited");
+  });
 });
