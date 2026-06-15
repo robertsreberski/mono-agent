@@ -1,0 +1,336 @@
+import { resolve } from "node:path";
+
+import { describe, expect, it } from "vitest";
+
+import type { TraceSourceListItem } from "@mono-agent/observability";
+
+import {
+  restartBackground,
+  startBackground,
+  statusBackground,
+  stopBackground,
+  tailLogs,
+} from "../background.js";
+import type { BackgroundDeps, InstanceTarget } from "../background.js";
+import type { LaunchctlRunner } from "../launchd.js";
+
+const POLL = { timeoutMs: 5_000, intervalMs: 100 };
+const CLOCK_START = 1_000_000;
+
+function makeTarget(overrides: Partial<InstanceTarget> = {}): InstanceTarget {
+  const label = "com.mono-agent.demo-0a1b2c3d";
+  return {
+    cwd: "/work/demo",
+    configPath: "/work/demo/mono-agent.config.json",
+    label,
+    registryDir: "/home/u/.mono-agent/trace-sources",
+    staleAfterMs: 30_000,
+    paths: {
+      launchAgentsDir: "/home/u/Library/LaunchAgents",
+      logDir: "/home/u/.mono-agent/logs",
+      plistPath: `/home/u/Library/LaunchAgents/${label}.plist`,
+      stdoutPath: `/home/u/.mono-agent/logs/${label}.out.log`,
+      stderrPath: `/home/u/.mono-agent/logs/${label}.err.log`,
+    },
+    nodePath: "/usr/local/bin/node",
+    cliPath: "/opt/app/dist/cli.js",
+    noConsole: false,
+    pathEnv: "/usr/bin:/bin",
+    ...overrides,
+  };
+}
+
+function makeSource(target: InstanceTarget, overrides: Partial<TraceSourceListItem> = {}): TraceSourceListItem {
+  return {
+    schema: "agent-runtime.trace-source.v1",
+    sourceId: "mono-agent-abcdef012345",
+    label: "Mono Agent",
+    artifactDir: "/work/demo/.mono-agent/artifacts",
+    pid: 4321,
+    status: "running",
+    startedAt: new Date(CLOCK_START).toISOString(),
+    updatedAt: new Date(CLOCK_START).toISOString(),
+    configPath: target.configPath,
+    health: "running",
+    warnings: [],
+    metadata: {
+      reason: "startup-complete",
+      operatorConsole: {
+        url: "http://127.0.0.1:7777",
+        appUrl: "http://127.0.0.1:7777/?t=tok",
+        configPath: target.configPath,
+      },
+      channels: {
+        telegram: { kind: "running" },
+        slack: { kind: "waiting_for_config", reason: "Missing appToken" },
+      },
+    },
+    ...overrides,
+  } as TraceSourceListItem;
+}
+
+interface RunnerOptions {
+  readonly loaded: boolean;
+  readonly bootstrapCode?: number;
+  readonly loadsAfterBootstrap?: boolean;
+  readonly kickstartCode?: number;
+  readonly bootoutCode?: number;
+}
+
+function makeRunner(opts: RunnerOptions): { runner: LaunchctlRunner; calls: string[][] } {
+  const calls: string[][] = [];
+  const state = { loaded: opts.loaded };
+  const runner: LaunchctlRunner = async (args) => {
+    calls.push([...args]);
+    switch (args[0]) {
+      case "print":
+        return { code: state.loaded ? 0 : 113, stdout: "", stderr: "" };
+      case "bootstrap": {
+        const code = opts.bootstrapCode ?? 0;
+        if (opts.loadsAfterBootstrap ?? code === 0) {
+          state.loaded = true;
+        }
+        return { code, stdout: "", stderr: "bootstrap detail" };
+      }
+      case "kickstart":
+        return { code: opts.kickstartCode ?? 0, stdout: "", stderr: "" };
+      case "bootout":
+        state.loaded = false;
+        return { code: opts.bootoutCode ?? 0, stdout: "", stderr: "" };
+      default:
+        return { code: 0, stdout: "", stderr: "" };
+    }
+  };
+  return { runner, calls };
+}
+
+function listReturning(getSources: () => readonly TraceSourceListItem[]): BackgroundDeps["listTraceSources"] {
+  return (async (options: { registryDir: string }) => ({
+    registryDir: options.registryDir,
+    sources: [...getSources()],
+    warnings: [],
+  })) as unknown as BackgroundDeps["listTraceSources"];
+}
+
+interface Harness {
+  readonly deps: BackgroundDeps;
+  readonly out: string[];
+  readonly err: string[];
+  readonly written: { path: string; data: string }[];
+  readonly removed: string[];
+  readonly mkdirs: string[];
+  readonly tailCalls: string[][];
+}
+
+function makeHarness(opts: {
+  runner: LaunchctlRunner;
+  list: BackgroundDeps["listTraceSources"];
+  isAlive?: (pid: number) => boolean;
+}): Harness {
+  const out: string[] = [];
+  const err: string[] = [];
+  const written: { path: string; data: string }[] = [];
+  const removed: string[] = [];
+  const mkdirs: string[] = [];
+  const tailCalls: string[][] = [];
+  let clock = CLOCK_START;
+  const deps: BackgroundDeps = {
+    runner: opts.runner,
+    getuid: () => 501,
+    now: () => clock,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    listTraceSources: opts.list,
+    writeFile: async (path, data) => {
+      written.push({ path, data });
+    },
+    mkdir: async (path) => {
+      mkdirs.push(path);
+    },
+    rm: async (path) => {
+      removed.push(path);
+    },
+    isAlive: opts.isAlive ?? (() => false),
+    stdout: (text) => out.push(text),
+    stderr: (text) => err.push(text),
+    spawnTail: async (args) => {
+      tailCalls.push([...args]);
+      return 0;
+    },
+  };
+  return { deps, out, err, written, removed, mkdirs, tailCalls };
+}
+
+describe("startBackground", () => {
+  it("bootstraps a fresh instance, writes the plist, and prints its info", async () => {
+    const { runner, calls } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]) });
+
+    const code = await startBackground(target, harness.deps, POLL);
+
+    expect(code).toBe(0);
+    const verbs = calls.map((call) => call[0]);
+    expect(verbs).toContain("bootstrap");
+    expect(verbs).not.toContain("kickstart");
+    expect(harness.mkdirs).toContain(target.paths.logDir);
+    expect(harness.mkdirs).toContain(target.paths.launchAgentsDir);
+    expect(harness.written[0]?.path).toBe(target.paths.plistPath);
+    expect(harness.written[0]?.data).toContain(target.label);
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("started in the background");
+    expect(stdout).toContain("http://127.0.0.1:7777/?t=tok");
+    expect(stdout).toContain("4321");
+    expect(stdout).toContain(target.label);
+  });
+
+  it("tolerates a bootstrap that reports already-loaded", async () => {
+    const { runner, calls } = makeRunner({ loaded: false, bootstrapCode: 37, loadsAfterBootstrap: true });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]) });
+
+    const code = await startBackground(target, harness.deps, POLL);
+
+    expect(code).toBe(0);
+    expect(calls.map((call) => call[0])).toContain("bootstrap");
+  });
+
+  it("returns non-zero and points at the logs when the worker never reports ready", async () => {
+    const { runner } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => []) });
+
+    const code = await startBackground(target, harness.deps, { timeoutMs: 1_000, intervalMs: 200 });
+
+    expect(code).toBe(1);
+    const stderr = harness.err.join("");
+    expect(stderr).toContain("did not report ready");
+    expect(stderr).toContain(target.paths.stderrPath);
+  });
+});
+
+describe("restartBackground", () => {
+  it("kickstarts an already-loaded service instead of bootstrapping again", async () => {
+    const { runner, calls } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => [makeSource(target)]) });
+
+    const code = await restartBackground(target, harness.deps, POLL);
+
+    expect(code).toBe(0);
+    const verbs = calls.map((call) => call[0]);
+    expect(verbs).toContain("kickstart");
+    expect(verbs).not.toContain("bootstrap");
+    expect(harness.out.join("")).toContain("restarted in the background");
+  });
+
+  it("waits for the new worker and ignores the previous instance's manifest", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const oldSource = makeSource(target, { startedAt: new Date(CLOCK_START - 10_000).toISOString(), pid: 1111 });
+    const newSource = makeSource(target, { startedAt: new Date(CLOCK_START + 50).toISOString(), pid: 2222 });
+    let polls = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => {
+        polls += 1;
+        return polls < 2 ? [oldSource] : [newSource];
+      }),
+    });
+
+    const code = await restartBackground(target, harness.deps, POLL);
+
+    expect(code).toBe(0);
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("2222");
+    expect(stdout).not.toContain("1111");
+  });
+});
+
+describe("stopBackground", () => {
+  it("boots the service out and removes the plist", async () => {
+    const { runner, calls } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const existing = makeSource(target, { pid: 4321 });
+    const harness = makeHarness({ runner, list: listReturning(() => [existing]), isAlive: () => true });
+
+    const code = await stopBackground(target, harness.deps);
+
+    expect(code).toBe(0);
+    expect(calls.map((call) => call[0])).toContain("bootout");
+    expect(harness.removed).toContain(target.paths.plistPath);
+    // A live worker marks its own manifest stopped; we must not delete it.
+    expect(harness.removed).not.toContain(resolve(target.registryDir, `${existing.sourceId}.json`));
+    expect(harness.out.join("")).toContain("Stopped");
+  });
+
+  it("tolerates a not-loaded bootout and unlinks a dead instance's manifest", async () => {
+    const { runner } = makeRunner({ loaded: false, bootoutCode: 3 });
+    const target = makeTarget();
+    const existing = makeSource(target, { pid: 4321, health: "stale" });
+    const harness = makeHarness({ runner, list: listReturning(() => [existing]), isAlive: () => false });
+
+    const code = await stopBackground(target, harness.deps);
+
+    expect(code).toBe(0);
+    expect(harness.removed).toContain(target.paths.plistPath);
+    expect(harness.removed).toContain(resolve(target.registryDir, `${existing.sourceId}.json`));
+    expect(harness.out.join("")).toContain("was not running");
+  });
+});
+
+describe("statusBackground", () => {
+  it("prints this config's instance plus a brief list of others", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target, { pid: 4321 });
+    const other = makeSource(target, {
+      configPath: "/work/other/mono-agent.config.json",
+      sourceId: "mono-agent-999999999999",
+      pid: 9999,
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [current, other]) });
+
+    const code = await statusBackground(target, harness.deps);
+
+    expect(code).toBe(0);
+    const stdout = harness.out.join("");
+    expect(stdout).toContain(target.label);
+    expect(stdout).toContain("4321");
+    expect(stdout).toContain("Other mono-agent instances");
+    expect(stdout).toContain("/work/other/mono-agent.config.json");
+  });
+
+  it("returns non-zero when no instance is running for this config", async () => {
+    const { runner } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => []) });
+
+    const code = await statusBackground(target, harness.deps);
+
+    expect(code).toBe(1);
+    expect(harness.out.join("")).toContain("No running mono-agent instance");
+  });
+});
+
+describe("tailLogs", () => {
+  it("tails the error then output log, following when asked", async () => {
+    const target = makeTarget();
+    const harness = makeHarness({ runner: makeRunner({ loaded: true }).runner, list: listReturning(() => []) });
+
+    const code = await tailLogs(target, harness.deps, { follow: true, lines: 50 });
+
+    expect(code).toBe(0);
+    expect(harness.tailCalls[0]).toEqual(["-n", "50", "-F", target.paths.stderrPath, target.paths.stdoutPath]);
+  });
+
+  it("omits -F when not following", async () => {
+    const target = makeTarget();
+    const harness = makeHarness({ runner: makeRunner({ loaded: true }).runner, list: listReturning(() => []) });
+
+    await tailLogs(target, harness.deps, { follow: false, lines: 200 });
+
+    expect(harness.tailCalls[0]).toEqual(["-n", "200", target.paths.stderrPath, target.paths.stdoutPath]);
+  });
+});
