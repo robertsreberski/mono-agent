@@ -325,6 +325,12 @@ importers:
 
   packages/memory-bujo:
     dependencies:
+      '@mono-agent/memory-md':
+        specifier: workspace:0.2.2
+        version: link:../memory-md
+      '@mono-agent/memory-search':
+        specifier: workspace:0.2.2
+        version: link:../memory-search
       '@mono-agent/memory-store':
         specifier: workspace:0.2.2
         version: link:../memory-store
