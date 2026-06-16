@@ -87,9 +87,19 @@ Should the agent remember anything between conversations?
 2. Markdown memory file (read into context; optional host summaries appended)
 3. Journal memory (daily notes + entity graph, optional MCP recall tools)
 4. Journal memory with semantic search (adds an embedding index for memory_search)
+5. BuJo memory (SQLite-indexed hybrid recall + reflection/migration — requires local Ollama)
 ```
 
-Fills: the `memory` section — `mode` (`markdown`/`journal`), `path`, `writeMode` (`disabled`/`append-host-summary`), `scope`, and for journal mode `tools.enabled` / `tools.allowJournalAppend` to give the runtime memory recall/append tools over MCP. The entity graph defaults to `<path>/graph.jsonl` (`memory.graphPath` to relocate). For semantic search fill `memory.embeddings`: `provider` (`ollama` with local `nomic-embed-text` — pull it first with `ollama pull nomic-embed-text` — or `openai` which requires `apiKey`/`apiKeyEnv`), optional `model`/`endpoint`. Without embeddings, `memory_search` falls back to keyword search.
+Fills: the `memory` section — `mode` (`markdown`/`journal`/`bujo`), `path`, `writeMode` (`disabled`/`append-host-summary`), `scope`, and for journal mode `tools.enabled` / `tools.allowJournalAppend` to give the runtime memory recall/append tools over MCP. The entity graph defaults to `<path>/graph.jsonl` (`memory.graphPath` to relocate). For semantic search (journal) or bujo fill `memory.embeddings`: `provider` (`ollama` — pull the model first — or `openai` which requires `apiKey`/`apiKeyEnv`), `model`, optional `endpoint`. Without embeddings, `memory_search` falls back to keyword search.
+
+**BuJo-specific follow-ups (option 5):**
+
+- Proactively explain what bujo does: capture → reconcile (ADD/UPDATE/SUPERSEDE/NOOP), hybrid BM25+vector recall, reflection (decay + insight synthesis), monthly migration, future-log + living index.
+- Ask: which local Ollama embeddings model? (default `nomic-embed-text:v1.5` — use the exact `:v1.5` tag; pull with `ollama pull nomic-embed-text:v1.5`).
+- Ask: do you also want a local chat model for reflection and migration pipelines? (e.g. `qwen3.6:latest`; set `memory.llm.{provider,model}`). Omit to skip LLM-augmented pipelines.
+- Default `memory.embeddings.dim` to `768` for `nomic-embed-text:v1.5`.
+- After writing the config, remind the user to run `mono-agent validate` (it checks Ollama reachability, model presence, and root writability — warns loudly on any failure, never silently falls back).
+- See `docs/memory.md` for the complete bujo config block and CLI subcommands (`memory-bujo rebuild|recall|index|reflect|migrate`).
 
 ## 7. Sandbox
 

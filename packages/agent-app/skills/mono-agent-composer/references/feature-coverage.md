@@ -29,6 +29,9 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Conversation history (in-memory; unlimited unless turns are capped) | auto | sized from `runtime.maxTurns`; custom store via code |
 | Markdown memory (single-file / per-conversation, capped) | config | `memory.mode: "markdown"`, `path`, `maxBytes`, `scope` |
 | Journal memory (daily notes always in context) | config | `memory.mode: "journal"`, `path` |
+| BuJo memory (SQLite-indexed hybrid recall; capture→reconcile; reflection; monthly migration; future-log + living index) | config | `memory.mode: "bujo"`, `path`, `memory.embeddings.{provider,model,dim}`, optional `memory.llm.{provider,model}` — see `docs/memory.md` |
+| BuJo out-of-band maintenance (rebuild/recall/index/reflect/migrate) | cli | `memory-bujo <subcommand> <root>`; `MONO_AGENT_LLM_MODEL` required for reflect/migrate |
+| BuJo liveness check (Ollama reachable, model pulled, root writable — loud warn, no silent fallback) | cli | `mono-agent validate` |
 | Host summaries appended after runs | config | `memory.writeMode: "append-host-summary"` |
 | Entity graph + salience digest in context (journal) | config | automatic; path override `memory.graphPath` |
 | MCP recall tools (`memory_read_day`, `memory_list_days`, `memory_grep`, `memory_search`, `entity_get`) | config | `memory.tools.enabled` |

@@ -64,18 +64,24 @@ my-agent/
 
   // Memory strategy. Omit the section for no memory.
   "memory": {
-    "mode": "journal",                     // markdown | journal
-    "path": "./.mono-agent/memory",        // file for markdown, root dir for journal
+    "mode": "journal",                     // markdown | journal | bujo
+    "path": "./.mono-agent/memory",        // file for markdown, root dir for journal/bujo
     "writeMode": "append-host-summary",    // disabled | append-host-summary
     "scope": "single-file",                // markdown only: single-file | per-conversation
     "maxBytes": 64000,
     "tools": { "enabled": true, "allowJournalAppend": true }, // journal only: MCP recall tools
     "graphPath": "./.mono-agent/memory/graph.jsonl",          // journal only; this is the default
-    "embeddings": {                        // optional: semantic memory_search
+    "embeddings": {                        // optional for journal; required for bujo
       "provider": "ollama",                // ollama | openai
-      "model": "nomic-embed-text",         // default per provider
+      "model": "nomic-embed-text:v1.5",   // bujo: use exact :v1.5 tag (pull first); journal: bare alias ok
       "endpoint": "http://localhost:11434",
-      "apiKeyEnv": "OPENAI_API_KEY"        // or inline "apiKey"; required for openai
+      "apiKeyEnv": "OPENAI_API_KEY",       // or inline "apiKey"; required for openai
+      "dim": 768                           // bujo: nomic-embed-text:v1.5 output dimension
+    },
+    "llm": {                               // bujo only: optional chat model for reflect/migrate pipelines
+      "provider": "ollama",
+      "model": "qwen3.6:latest",           // any local Ollama chat model; also set MONO_AGENT_LLM_MODEL for CLI
+      "endpoint": "http://localhost:11434" // optional; defaults to http://localhost:11434
     }
   },
 
@@ -210,7 +216,7 @@ my-agent/
 ## Lifecycle
 
 ```bash
-mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory markdown|journal]
+mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory markdown|journal|bujo]
 mono-agent validate     # per-section report incl. sandbox, console, every channel; exit 0 means ready
 mono-agent start        # console + traceability + every configured channel
 mono-agent start --no-console   # headless (or "console": { "enabled": false })
