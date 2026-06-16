@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { appendFile, lstat, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
@@ -28,6 +28,7 @@ export interface SelfCapabilitiesSettings {
   readonly skillsRootEnvOverride: boolean;
   readonly cronDirEnvOverride: boolean;
   readonly confirmationToken?: string;
+  readonly reloadNonce?: string;
 }
 
 export interface SelfSkillInput {
@@ -47,6 +48,13 @@ export interface SelfCronInput {
   readonly enabled?: boolean;
 }
 
+export interface SelfProposalApplyInput {
+  readonly proposalId: string;
+}
+
+export type SelfSkillApplyInput = SelfSkillInput | SelfProposalApplyInput;
+export type SelfCronApplyInput = SelfCronInput | SelfProposalApplyInput;
+
 export interface SelfCapabilityPlan {
   readonly kind: SelfCapabilityKind;
   readonly id: string;
@@ -56,11 +64,40 @@ export interface SelfCapabilityPlan {
   readonly reloadRequired: boolean;
   readonly warnings: readonly string[];
   readonly preview?: string;
+  readonly proposalId?: string;
+  readonly proposalPath?: string;
 }
 
 export interface SelfCapabilityApplyResult extends SelfCapabilityPlan {
   readonly action: "created";
   readonly auditPath: string;
+}
+
+export type SelfCapabilityProposalRecord = SelfSkillProposalRecord | SelfCronProposalRecord;
+
+export interface SelfSkillProposalRecord extends SelfCapabilityProposalRecordBase {
+  readonly kind: "skill";
+  readonly input: SelfSkillInput;
+}
+
+export interface SelfCronProposalRecord extends SelfCapabilityProposalRecordBase {
+  readonly kind: "cron";
+  readonly input: SelfCronInput;
+}
+
+interface SelfCapabilityProposalRecordBase {
+  readonly version: 1;
+  readonly proposalId: string;
+  readonly contentHash: string;
+  readonly timestamp: string;
+  readonly cwd: string;
+  readonly configPath: string;
+  readonly id: string;
+  readonly files: readonly string[];
+  readonly configPatch?: MonoAgentConfigJson;
+  readonly reloadRequired: false;
+  readonly warnings: readonly string[];
+  readonly preview: string;
 }
 
 export interface SelfCapabilitiesRuntimeExtension {
@@ -71,7 +108,7 @@ export interface SelfCapabilitiesRuntimeExtension {
 }
 
 export class SelfCapabilityError extends Error {
-  readonly code: "invalid_config" | "invalid_input" | "not_enabled" | "conflict" | "write_failed";
+  readonly code: "invalid_config" | "invalid_input" | "not_enabled" | "not_found" | "conflict" | "write_failed";
   readonly details: Record<string, unknown>;
 
   constructor(
@@ -88,12 +125,14 @@ export class SelfCapabilityError extends Error {
 
 export const SELF_CAPABILITIES_MCP_SERVER_NAME = "mono-agent-self-capabilities";
 export const SELF_CAPABILITIES_RELOAD_FILE = "reload-requests.jsonl";
+export const SELF_CAPABILITIES_PROPOSALS_DIR = "proposals";
 
 const DEFAULT_SELF_CAPABILITIES_MODE: SelfCapabilitiesMode = "propose";
 const DEFAULT_SKILLS_ROOT = "skills";
 const DEFAULT_CRON_DIR = "cron";
 const DEFAULT_AUDIT_DIR = ".mono-agent/self-capabilities";
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
+const PROPOSAL_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,160}[a-z0-9])?$/u;
 
 export const selfCapabilitiesFieldGroup: FieldGroup = defineFieldGroup({
   id: "selfCapabilities",
@@ -218,15 +257,16 @@ export function createSelfCapabilitiesRuntimeExtension(
   onReloadRequested: (token: string) => void,
 ): () => Promise<SelfCapabilitiesRuntimeExtension> {
   return async () => {
-    const before = await readSelfCapabilitiesReloadToken(settings.auditDir);
+    const requestSettings = { ...settings, reloadNonce: randomUUID() };
+    const before = await readSelfCapabilitiesReloadToken(settings.auditDir, requestSettings.reloadNonce);
     return {
       runtimeOptions: {
         mcpServers: {
-          [SELF_CAPABILITIES_MCP_SERVER_NAME]: selfCapabilitiesMcpServerSpec(settings),
+          [SELF_CAPABILITIES_MCP_SERVER_NAME]: selfCapabilitiesMcpServerSpec(requestSettings),
         },
       },
       cleanup: async () => {
-        const after = await readSelfCapabilitiesReloadToken(settings.auditDir);
+        const after = await readSelfCapabilitiesReloadToken(settings.auditDir, requestSettings.reloadNonce);
         if (after.length > 0 && after !== before) {
           onReloadRequested(after);
         }
@@ -258,7 +298,17 @@ export function selfCapabilitiesMcpEnv(settings: SelfCapabilitiesSettings): Reco
     MONO_AGENT_SELF_CAPABILITIES_SKILLS_ROOT_ENV_OVERRIDE: String(settings.skillsRootEnvOverride),
     MONO_AGENT_SELF_CAPABILITIES_CRON_DIR_ENV_OVERRIDE: String(settings.cronDirEnvOverride),
     ...(settings.confirmationToken === undefined ? {} : { MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN: settings.confirmationToken }),
+    ...(settings.reloadNonce === undefined ? {} : { MONO_AGENT_SELF_CAPABILITIES_RELOAD_NONCE: settings.reloadNonce }),
   };
+}
+
+export function selfCapabilityConfirmationToken(settings: SelfCapabilitiesSettings, proposalId: string): string | undefined {
+  if (settings.confirmationToken === undefined) {
+    return undefined;
+  }
+  return createHmac("sha256", settings.confirmationToken)
+    .update(normalizeProposalId(proposalId))
+    .digest("hex");
 }
 
 export function selfCapabilitiesSettingsFromEnv(
@@ -271,6 +321,7 @@ export function selfCapabilitiesSettingsFromEnv(
   const cronDir = envValue(env.MONO_AGENT_SELF_CAPABILITIES_CRON_DIR);
   const auditDir = envValue(env.MONO_AGENT_SELF_CAPABILITIES_AUDIT_DIR);
   const confirmationToken = envValue(env.MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN);
+  const reloadNonce = envValue(env.MONO_AGENT_SELF_CAPABILITIES_RELOAD_NONCE);
   if (cwd === undefined || configPath === undefined || mode === undefined || skillsRoot === undefined || cronDir === undefined || auditDir === undefined) {
     throw new SelfCapabilityError("invalid_config", "Self-capability MCP server is missing required environment.", {
       required: [
@@ -297,168 +348,249 @@ export function selfCapabilitiesSettingsFromEnv(
     skillsRootEnvOverride: readBooleanish(env.MONO_AGENT_SELF_CAPABILITIES_SKILLS_ROOT_ENV_OVERRIDE, "MONO_AGENT_SELF_CAPABILITIES_SKILLS_ROOT_ENV_OVERRIDE") ?? false,
     cronDirEnvOverride: readBooleanish(env.MONO_AGENT_SELF_CAPABILITIES_CRON_DIR_ENV_OVERRIDE, "MONO_AGENT_SELF_CAPABILITIES_CRON_DIR_ENV_OVERRIDE") ?? false,
     ...(confirmationToken === undefined ? {} : { confirmationToken }),
+    ...(reloadNonce === undefined ? {} : { reloadNonce: normalizeReloadNonce(reloadNonce) }),
   };
 }
 
 export async function proposeSelfSkill(
   settings: SelfCapabilitiesSettings,
   input: SelfSkillInput,
+  deps: { readonly now?: () => Date } = {},
 ): Promise<SelfCapabilityPlan> {
   const id = normalizeSlug(input.name, "name");
   const content = skillMarkdown(id, input);
   const file = resolveSkillFile(settings, id);
   const { patch, warnings } = await skillConfigPatch(settings, id, input.activate ?? true);
   const exists = await pathExists(file);
-  return {
+  const plan = {
     kind: "skill",
     id,
     action: "proposed",
     files: [file],
     ...(patch === undefined ? {} : { configPatch: patch }),
-    reloadRequired: true,
+    reloadRequired: false,
     warnings: exists ? [`Skill ${id} already exists at ${file}.`] : warnings,
     preview: content,
-  };
+  } satisfies Omit<SelfCapabilityPlan, "proposalId" | "proposalPath">;
+  const proposal = await writeProposal(settings, {
+    kind: "skill",
+    id,
+    input,
+    files: plan.files,
+    ...(patch === undefined ? {} : { configPatch: patch }),
+    warnings: plan.warnings,
+    preview: content,
+  }, deps.now);
+  return { ...plan, proposalId: proposal.proposalId, proposalPath: proposal.path };
 }
 
 export async function applySelfSkill(
   settings: SelfCapabilitiesSettings,
-  input: SelfSkillInput,
+  input: SelfSkillApplyInput,
   deps: { readonly now?: () => Date } = {},
 ): Promise<SelfCapabilityApplyResult> {
   assertApplyMode(settings);
+  if (isProposalApplyInput(input)) {
+    const proposal = await readSkillProposal(settings, input.proposalId);
+    return await applySelfSkillInput(settings, proposal.input, deps, proposal);
+  }
+  return await applySelfSkillInput(settings, input, deps, undefined);
+}
+
+async function applySelfSkillInput(
+  settings: SelfCapabilitiesSettings,
+  input: SelfSkillInput,
+  deps: { readonly now?: () => Date },
+  proposal: SelfSkillProposalRecord | undefined,
+): Promise<SelfCapabilityApplyResult> {
   const id = normalizeSlug(input.name, "name");
   const content = skillMarkdown(id, input);
   return await withSelfCapabilityMutation(settings, async () => {
     const file = resolveSkillFile(settings, id);
     const skillDir = resolve(settings.skillsRoot, id);
     const { patch, warnings } = await skillConfigPatch(settings, id, input.activate ?? true);
+    if (proposal !== undefined) {
+      assertProposalMatchesCurrent(proposal, {
+        kind: "skill",
+        id,
+        input,
+        files: [file],
+        ...(patch === undefined ? {} : { configPatch: patch }),
+        warnings,
+        preview: content,
+      });
+    }
 
+    await preflightSelfCapabilityWriteTargets(settings);
     await assertNoSymlinkAncestors(settings.cwd, settings.skillsRoot, "selfCapabilities.skillsRoot");
     await mkdir(skillDir, { recursive: true });
     await assertNoSymlinkAncestors(settings.cwd, skillDir, "skill directory");
-    try {
-      await writeFile(file, content, { encoding: "utf8", flag: "wx" });
-    } catch (error) {
-      if (isErrno(error, "EEXIST")) {
-        throw new SelfCapabilityError("conflict", `Skill ${id} already exists.`, { file });
-      }
-      throw new SelfCapabilityError("write_failed", "Unable to write skill file.", { file, reason: errorToMessage(error) });
-    }
+    const originalConfig = patch === undefined ? undefined : await readFile(settings.configPath, "utf8");
+    let fileWritten = false;
     let configWritten = false;
     try {
+      await writeFile(file, content, { encoding: "utf8", flag: "wx" });
+      fileWritten = true;
       if (patch !== undefined) {
         await writeMonoAgentConfigJson({ path: settings.configPath, patch });
         configWritten = true;
       }
+      const auditPath = await writeAudit(settings, {
+        kind: "skill",
+        id,
+        files: [file],
+        ...(patch === undefined ? {} : { configPatch: patch }),
+        warnings,
+        ...(proposal === undefined ? {} : { proposalId: proposal.proposalId, proposalPath: proposalPath(settings, proposal.proposalId) }),
+      }, deps.now);
+      await requestSelfCapabilitiesReload(settings, "skill", id, deps.now, proposal?.proposalId);
+      return {
+        kind: "skill",
+        id,
+        action: "created",
+        files: [file],
+        ...(patch === undefined ? {} : { configPatch: patch }),
+        reloadRequired: true,
+        warnings,
+        ...(proposal === undefined ? {} : { proposalId: proposal.proposalId, proposalPath: proposalPath(settings, proposal.proposalId) }),
+        auditPath,
+      };
     } catch (error) {
-      if (!configWritten) {
-        await rm(file, { force: true });
+      if (isErrno(error, "EEXIST")) {
+        throw new SelfCapabilityError("conflict", `Skill ${id} already exists.`, { file });
       }
+      if (!fileWritten) {
+        throw new SelfCapabilityError("write_failed", "Unable to write skill file.", { file, reason: errorToMessage(error) });
+      }
+      await rollbackSelfCapabilityWrite(settings, file, fileWritten, originalConfig, configWritten);
       throw error;
     }
-    const auditPath = await writeAudit(settings, {
-      kind: "skill",
-      id,
-      files: [file],
-      ...(patch === undefined ? {} : { configPatch: patch }),
-      warnings,
-    }, deps.now);
-    await requestSelfCapabilitiesReload(settings, "skill", id, deps.now);
-    return {
-      kind: "skill",
-      id,
-      action: "created",
-      files: [file],
-      ...(patch === undefined ? {} : { configPatch: patch }),
-      reloadRequired: true,
-      warnings,
-      auditPath,
-    };
   });
 }
 
 export async function proposeSelfCron(
   settings: SelfCapabilitiesSettings,
   input: SelfCronInput,
+  deps: { readonly now?: () => Date } = {},
 ): Promise<SelfCapabilityPlan> {
   const id = normalizeSlug(input.id, "id");
   const { content } = validatedCronMarkdown(id, input);
   const file = resolveCronFile(settings, id);
   const patch = cronConfigPatch(settings);
   const exists = await pathExists(file);
-  return {
+  const plan = {
     kind: "cron",
     id,
     action: "proposed",
     files: [file],
     ...(patch === undefined ? {} : { configPatch: patch }),
-    reloadRequired: true,
+    reloadRequired: false,
     warnings: exists ? [`Cron job ${id} already exists at ${file}.`] : cronWarnings(settings, patch),
     preview: content,
-  };
+  } satisfies Omit<SelfCapabilityPlan, "proposalId" | "proposalPath">;
+  const proposal = await writeProposal(settings, {
+    kind: "cron",
+    id,
+    input,
+    files: plan.files,
+    ...(patch === undefined ? {} : { configPatch: patch }),
+    warnings: plan.warnings,
+    preview: content,
+  }, deps.now);
+  return { ...plan, proposalId: proposal.proposalId, proposalPath: proposal.path };
 }
 
 export async function applySelfCron(
   settings: SelfCapabilitiesSettings,
-  input: SelfCronInput,
+  input: SelfCronApplyInput,
   deps: { readonly now?: () => Date } = {},
 ): Promise<SelfCapabilityApplyResult> {
   assertApplyMode(settings);
+  if (isProposalApplyInput(input)) {
+    const proposal = await readCronProposal(settings, input.proposalId);
+    return await applySelfCronInput(settings, proposal.input, deps, proposal);
+  }
+  return await applySelfCronInput(settings, input, deps, undefined);
+}
+
+async function applySelfCronInput(
+  settings: SelfCapabilitiesSettings,
+  input: SelfCronInput,
+  deps: { readonly now?: () => Date },
+  proposal: SelfCronProposalRecord | undefined,
+): Promise<SelfCapabilityApplyResult> {
   const id = normalizeSlug(input.id, "id");
   const { content } = validatedCronMarkdown(id, input);
   return await withSelfCapabilityMutation(settings, async () => {
     const file = resolveCronFile(settings, id);
     const patch = cronConfigPatch(settings);
     const warnings = cronWarnings(settings, patch);
+    if (proposal !== undefined) {
+      assertProposalMatchesCurrent(proposal, {
+        kind: "cron",
+        id,
+        input,
+        files: [file],
+        ...(patch === undefined ? {} : { configPatch: patch }),
+        warnings,
+        preview: content,
+      });
+    }
 
+    await preflightSelfCapabilityWriteTargets(settings);
     await assertNoSymlinkAncestors(settings.cwd, settings.cronDir, "selfCapabilities.cronDir");
     await mkdir(settings.cronDir, { recursive: true });
     await assertNoSymlinkAncestors(settings.cwd, settings.cronDir, "cron directory");
-    try {
-      await writeFile(file, content, { encoding: "utf8", flag: "wx" });
-    } catch (error) {
-      if (isErrno(error, "EEXIST")) {
-        throw new SelfCapabilityError("conflict", `Cron job ${id} already exists.`, { file });
-      }
-      throw new SelfCapabilityError("write_failed", "Unable to write cron job file.", { file, reason: errorToMessage(error) });
-    }
+    const originalConfig = patch === undefined ? undefined : await readFile(settings.configPath, "utf8");
+    let fileWritten = false;
     let configWritten = false;
     try {
+      await writeFile(file, content, { encoding: "utf8", flag: "wx" });
+      fileWritten = true;
       if (patch !== undefined) {
         await writeMonoAgentConfigJson({ path: settings.configPath, patch });
         configWritten = true;
       }
+      const auditPath = await writeAudit(settings, {
+        kind: "cron",
+        id,
+        files: [file],
+        ...(patch === undefined ? {} : { configPatch: patch }),
+        warnings,
+        ...(proposal === undefined ? {} : { proposalId: proposal.proposalId, proposalPath: proposalPath(settings, proposal.proposalId) }),
+      }, deps.now);
+      await requestSelfCapabilitiesReload(settings, "cron", id, deps.now, proposal?.proposalId);
+      return {
+        kind: "cron",
+        id,
+        action: "created",
+        files: [file],
+        ...(patch === undefined ? {} : { configPatch: patch }),
+        reloadRequired: true,
+        warnings,
+        ...(proposal === undefined ? {} : { proposalId: proposal.proposalId, proposalPath: proposalPath(settings, proposal.proposalId) }),
+        auditPath,
+      };
     } catch (error) {
-      if (!configWritten) {
-        await rm(file, { force: true });
+      if (isErrno(error, "EEXIST")) {
+        throw new SelfCapabilityError("conflict", `Cron job ${id} already exists.`, { file });
       }
+      if (!fileWritten) {
+        throw new SelfCapabilityError("write_failed", "Unable to write cron job file.", { file, reason: errorToMessage(error) });
+      }
+      await rollbackSelfCapabilityWrite(settings, file, fileWritten, originalConfig, configWritten);
       throw error;
     }
-    const auditPath = await writeAudit(settings, {
-      kind: "cron",
-      id,
-      files: [file],
-      ...(patch === undefined ? {} : { configPatch: patch }),
-      warnings,
-    }, deps.now);
-    await requestSelfCapabilitiesReload(settings, "cron", id, deps.now);
-    return {
-      kind: "cron",
-      id,
-      action: "created",
-      files: [file],
-      ...(patch === undefined ? {} : { configPatch: patch }),
-      reloadRequired: true,
-      warnings,
-      auditPath,
-    };
   });
 }
 
-export async function readSelfCapabilitiesReloadToken(auditDir: string): Promise<string> {
+export async function readSelfCapabilitiesReloadToken(auditDir: string, reloadNonce?: string): Promise<string> {
   try {
-    const content = await readFile(join(auditDir, SELF_CAPABILITIES_RELOAD_FILE), "utf8");
+    const raw = await readFile(join(auditDir, SELF_CAPABILITIES_RELOAD_FILE), "utf8");
+    const content = reloadNonce === undefined ? raw : reloadRecordsForNonce(raw, reloadNonce);
+    if (content.length === 0) {
+      return "";
+    }
     return createHash("sha256").update(content).digest("hex");
   } catch (error) {
     if (isErrno(error, "ENOENT")) {
@@ -468,20 +600,271 @@ export async function readSelfCapabilitiesReloadToken(auditDir: string): Promise
   }
 }
 
+async function writeProposal(
+  settings: SelfCapabilitiesSettings,
+  record: {
+    readonly kind: SelfCapabilityKind;
+    readonly id: string;
+    readonly input: SelfSkillInput | SelfCronInput;
+    readonly files: readonly string[];
+    readonly configPatch?: MonoAgentConfigJson;
+    readonly warnings: readonly string[];
+    readonly preview: string;
+  },
+  now: (() => Date) | undefined,
+): Promise<{ readonly proposalId: string; readonly path: string }> {
+  return await withSelfCapabilityMutation(settings, async () => {
+    const stamp = timestamp(now);
+    const proposalsDir = proposalsPath(settings);
+    await mkdir(proposalsDir, { recursive: true });
+    await assertNoSymlinkAncestors(settings.cwd, proposalsDir, "selfCapabilities.proposalsDir");
+    const contentHash = proposalContentHash(record);
+    const baseId = proposalIdBase(stamp, record, contentHash);
+    const hashSuffix = contentHash.slice(0, 12);
+    const retryPrefix = baseId.slice(0, -hashSuffix.length - 1);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const proposalId = attempt === 0 ? baseId : normalizeProposalId(`${retryPrefix}-${attempt + 1}-${hashSuffix}`);
+      const path = proposalPath(settings, proposalId);
+      await assertNoSymlinkAncestors(settings.cwd, path, "selfCapabilities.proposalFile");
+      const proposalBase = {
+        version: 1,
+        proposalId,
+        contentHash,
+        timestamp: stamp,
+        cwd: settings.cwd,
+        configPath: settings.configPath,
+        id: record.id,
+        files: record.files,
+        ...(record.configPatch === undefined ? {} : { configPatch: record.configPatch }),
+        reloadRequired: false,
+        warnings: record.warnings,
+        preview: record.preview,
+      } satisfies SelfCapabilityProposalRecordBase;
+      const proposalRecord: SelfCapabilityProposalRecord = record.kind === "skill"
+        ? { ...proposalBase, kind: "skill", input: record.input as SelfSkillInput }
+        : { ...proposalBase, kind: "cron", input: record.input as SelfCronInput };
+      try {
+        await writeFile(path, `${JSON.stringify(proposalRecord, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+        return { proposalId, path };
+      } catch (error) {
+        if (isErrno(error, "EEXIST")) {
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw new SelfCapabilityError("conflict", "Unable to allocate a unique self-capability proposal id.", {
+      proposalsDir,
+      baseId,
+    });
+  });
+}
+
+async function readSkillProposal(settings: SelfCapabilitiesSettings, proposalId: string): Promise<SelfSkillProposalRecord> {
+  const proposal = await readProposal(settings, proposalId);
+  if (proposal.kind !== "skill") {
+    throw new SelfCapabilityError("invalid_input", `Proposal ${proposalId} is a ${proposal.kind} proposal, not a skill proposal.`, {
+      proposalId,
+      kind: proposal.kind,
+    });
+  }
+  return proposal;
+}
+
+async function readCronProposal(settings: SelfCapabilitiesSettings, proposalId: string): Promise<SelfCronProposalRecord> {
+  const proposal = await readProposal(settings, proposalId);
+  if (proposal.kind !== "cron") {
+    throw new SelfCapabilityError("invalid_input", `Proposal ${proposalId} is a ${proposal.kind} proposal, not a cron proposal.`, {
+      proposalId,
+      kind: proposal.kind,
+    });
+  }
+  return proposal;
+}
+
+async function readProposal(settings: SelfCapabilitiesSettings, proposalId: string): Promise<SelfCapabilityProposalRecord> {
+  const normalized = normalizeProposalId(proposalId);
+  const path = proposalPath(settings, normalized);
+  await assertNoSymlinkAncestors(settings.cwd, proposalsPath(settings), "selfCapabilities.proposalsDir");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      throw new SelfCapabilityError("not_found", `Self-capability proposal ${normalized} does not exist.`, {
+        proposalId: normalized,
+        path,
+      });
+    }
+    throw new SelfCapabilityError("invalid_input", `Unable to read self-capability proposal ${normalized}.`, {
+      proposalId: normalized,
+      path,
+      reason: errorToMessage(error),
+    });
+  }
+  return normalizeProposalRecord(settings, parsed, normalized);
+}
+
+function normalizeProposalRecord(
+  settings: SelfCapabilitiesSettings,
+  value: unknown,
+  expectedProposalId: string,
+): SelfCapabilityProposalRecord {
+  const record = asRecord(value, "proposal");
+  const proposalId = stringField(record, "proposalId");
+  if (proposalId !== expectedProposalId) {
+    throw new SelfCapabilityError("invalid_input", "Self-capability proposal id does not match its file name.", {
+      expectedProposalId,
+      proposalId,
+    });
+  }
+  if (record.version !== 1) {
+    throw new SelfCapabilityError("invalid_input", "Unsupported self-capability proposal version.", {
+      proposalId,
+      version: record.version,
+    });
+  }
+  if (record.reloadRequired !== false) {
+    throw new SelfCapabilityError("invalid_input", "Self-capability proposal reloadRequired must be false.", {
+      proposalId,
+    });
+  }
+  const kind = stringField(record, "kind");
+  const id = normalizeSlug(stringField(record, "id"), "id");
+  const files = stringArrayField(record, "files");
+  const warnings = stringArrayField(record, "warnings");
+  const contentHash = stringField(record, "contentHash");
+  const timestampValue = stringField(record, "timestamp");
+  assertProposalIdMatchesFields(proposalId, timestampValue, kind, id, contentHash);
+  const cwd = stringField(record, "cwd");
+  const configPath = stringField(record, "configPath");
+  if (resolve(cwd) !== settings.cwd || resolve(configPath) !== settings.configPath) {
+    throw new SelfCapabilityError("invalid_input", "Self-capability proposal belongs to a different agent folder or config file.", {
+      proposalId,
+      cwd,
+      configPath,
+    });
+  }
+  const base = {
+    version: 1,
+    proposalId: normalizeProposalId(proposalId),
+    contentHash,
+    timestamp: timestampValue,
+    cwd,
+    configPath,
+    id,
+    files,
+    ...(isRecord(record.configPatch) ? { configPatch: record.configPatch as MonoAgentConfigJson } : {}),
+    reloadRequired: false,
+    warnings,
+    preview: stringField(record, "preview"),
+  } satisfies SelfCapabilityProposalRecordBase;
+  if (kind === "skill") {
+    const input = skillInputFromProposal(record.input);
+    if (normalizeSlug(input.name, "name") !== id) {
+      throw new SelfCapabilityError("invalid_input", "Skill proposal id does not match its input name.", {
+        proposalId,
+        id,
+      });
+    }
+    assertProposalIntegrity({
+      proposalId,
+      contentHash,
+      kind,
+      id,
+      input,
+      files,
+      ...(base.configPatch === undefined ? {} : { configPatch: base.configPatch }),
+      warnings,
+      preview: base.preview,
+    });
+    return {
+      ...base,
+      kind,
+      input,
+    };
+  }
+  if (kind === "cron") {
+    const input = cronInputFromProposal(record.input);
+    if (normalizeSlug(input.id, "id") !== id) {
+      throw new SelfCapabilityError("invalid_input", "Cron proposal id does not match its input id.", {
+        proposalId,
+        id,
+      });
+    }
+    assertProposalIntegrity({
+      proposalId,
+      contentHash,
+      kind,
+      id,
+      input,
+      files,
+      ...(base.configPatch === undefined ? {} : { configPatch: base.configPatch }),
+      warnings,
+      preview: base.preview,
+    });
+    return {
+      ...base,
+      kind,
+      input,
+    };
+  }
+  throw new SelfCapabilityError("invalid_input", "Self-capability proposal kind must be skill or cron.", {
+    proposalId,
+    kind,
+  });
+}
+
 async function requestSelfCapabilitiesReload(
   settings: SelfCapabilitiesSettings,
   kind: SelfCapabilityKind,
   id: string,
   now: (() => Date) | undefined,
+  proposalId: string | undefined,
 ): Promise<void> {
+  await assertNoSymlinkAncestors(settings.cwd, settings.auditDir, "selfCapabilities.auditDir");
   await mkdir(settings.auditDir, { recursive: true });
+  await assertNoSymlinkAncestors(settings.cwd, settings.auditDir, "selfCapabilities.auditDir");
+  const reloadPath = join(settings.auditDir, SELF_CAPABILITIES_RELOAD_FILE);
+  await assertNoSymlinkAncestors(settings.cwd, reloadPath, "selfCapabilities.reloadFile");
   const record = {
     timestamp: timestamp(now),
     kind,
     id,
     reason: `${kind}:${id}`,
+    ...(proposalId === undefined ? {} : { proposalId }),
+    ...(settings.reloadNonce === undefined ? {} : { reloadNonce: settings.reloadNonce }),
   };
-  await appendFile(join(settings.auditDir, SELF_CAPABILITIES_RELOAD_FILE), `${JSON.stringify(record)}\n`, "utf8");
+  await appendFile(reloadPath, `${JSON.stringify(record)}\n`, "utf8");
+}
+
+async function preflightSelfCapabilityWriteTargets(settings: SelfCapabilitiesSettings): Promise<void> {
+  await assertNoSymlinkAncestors(settings.cwd, settings.auditDir, "selfCapabilities.auditDir");
+  await mkdir(settings.auditDir, { recursive: true });
+  await assertNoSymlinkAncestors(settings.cwd, settings.auditDir, "selfCapabilities.auditDir");
+  const auditDir = join(settings.auditDir, "audit");
+  await mkdir(auditDir, { recursive: true });
+  await assertNoSymlinkAncestors(settings.cwd, auditDir, "selfCapabilities.auditDir");
+  await assertNoSymlinkAncestors(
+    settings.cwd,
+    join(settings.auditDir, SELF_CAPABILITIES_RELOAD_FILE),
+    "selfCapabilities.reloadFile",
+  );
+}
+
+async function rollbackSelfCapabilityWrite(
+  settings: SelfCapabilitiesSettings,
+  file: string,
+  fileWritten: boolean,
+  originalConfig: string | undefined,
+  configWritten: boolean,
+): Promise<void> {
+  if (fileWritten) {
+    await rm(file, { force: true });
+  }
+  if (configWritten && originalConfig !== undefined) {
+    await writeFile(settings.configPath, originalConfig, "utf8");
+  }
 }
 
 async function writeAudit(
@@ -492,13 +875,18 @@ async function writeAudit(
     readonly files: readonly string[];
     readonly configPatch?: MonoAgentConfigJson;
     readonly warnings: readonly string[];
+    readonly proposalId?: string;
+    readonly proposalPath?: string;
   },
   now: (() => Date) | undefined,
 ): Promise<string> {
   const stamp = timestamp(now);
   const auditDir = join(settings.auditDir, "audit");
+  await assertNoSymlinkAncestors(settings.cwd, auditDir, "selfCapabilities.auditDir");
   await mkdir(auditDir, { recursive: true });
+  await assertNoSymlinkAncestors(settings.cwd, auditDir, "selfCapabilities.auditDir");
   const auditPath = join(auditDir, `${stamp.replace(/[:.]/gu, "-")}-${record.kind}-${record.id}.json`);
+  await assertNoSymlinkAncestors(settings.cwd, auditPath, "selfCapabilities.auditFile");
   const audit = {
     timestamp: stamp,
     cwd: settings.cwd,
@@ -615,6 +1003,133 @@ function resolveCronFile(settings: SelfCapabilitiesSettings, id: string): string
   return file;
 }
 
+function proposalsPath(settings: SelfCapabilitiesSettings): string {
+  const dir = resolve(settings.auditDir, SELF_CAPABILITIES_PROPOSALS_DIR);
+  assertInside(settings.auditDir, dir, "self-capability proposals directory");
+  return dir;
+}
+
+function proposalPath(settings: SelfCapabilitiesSettings, proposalId: string): string {
+  const normalized = normalizeProposalId(proposalId);
+  const file = resolve(proposalsPath(settings), `${normalized}.json`);
+  assertInside(proposalsPath(settings), file, "self-capability proposal file");
+  return file;
+}
+
+function proposalIdBase(
+  stamp: string,
+  record: { readonly kind: SelfCapabilityKind; readonly id: string },
+  contentHash: string,
+): string {
+  const safeStamp = stamp
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  return normalizeProposalId(`${safeStamp}-${record.kind}-${record.id}-${contentHash.slice(0, 12)}`);
+}
+
+function assertProposalIdMatchesFields(
+  proposalId: string,
+  stamp: string,
+  kind: string,
+  id: string,
+  contentHash: string,
+): void {
+  const hashSuffix = contentHash.slice(0, 12);
+  const baseId = proposalIdBase(stamp, { kind: kind as SelfCapabilityKind, id }, contentHash);
+  const retryPattern = new RegExp(`^${escapeRegExp(baseId.slice(0, -hashSuffix.length - 1))}-[0-9]+-${hashSuffix}$`, "u");
+  if (proposalId !== baseId && !retryPattern.test(proposalId)) {
+    throw new SelfCapabilityError("invalid_input", "Self-capability proposal id does not match its saved metadata.", {
+      proposalId,
+    });
+  }
+}
+
+function proposalContentHash(record: {
+  readonly kind: SelfCapabilityKind;
+  readonly id: string;
+  readonly input: SelfSkillInput | SelfCronInput;
+  readonly files: readonly string[];
+  readonly configPatch?: MonoAgentConfigJson;
+  readonly warnings: readonly string[];
+  readonly preview: string;
+}): string {
+  const payload = {
+    kind: record.kind,
+    id: record.id,
+    input: record.kind === "skill"
+      ? canonicalSkillInput(record.input as SelfSkillInput)
+      : canonicalCronInput(record.input as SelfCronInput),
+    files: record.files,
+    configPatch: record.configPatch ?? null,
+    warnings: record.warnings,
+    preview: record.preview,
+  };
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
+function canonicalSkillInput(input: SelfSkillInput): SelfSkillInput {
+  return {
+    name: input.name,
+    description: input.description,
+    instructions: input.instructions,
+    ...(input.title === undefined ? {} : { title: input.title }),
+    ...(input.activate === undefined ? {} : { activate: input.activate }),
+  };
+}
+
+function canonicalCronInput(input: SelfCronInput): SelfCronInput {
+  return {
+    id: input.id,
+    expression: input.expression,
+    prompt: input.prompt,
+    ...(input.timezone === undefined ? {} : { timezone: input.timezone }),
+    ...(input.conversationId === undefined ? {} : { conversationId: input.conversationId }),
+    ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+  };
+}
+
+function assertProposalIntegrity(record: {
+  readonly proposalId: string;
+  readonly contentHash: string;
+  readonly kind: SelfCapabilityKind;
+  readonly id: string;
+  readonly input: SelfSkillInput | SelfCronInput;
+  readonly files: readonly string[];
+  readonly configPatch?: MonoAgentConfigJson;
+  readonly warnings: readonly string[];
+  readonly preview: string;
+}): void {
+  const expected = proposalContentHash(record);
+  if (record.contentHash !== expected) {
+    throw new SelfCapabilityError("invalid_input", "Self-capability proposal content hash does not match its saved payload.", {
+      proposalId: record.proposalId,
+    });
+  }
+}
+
+function assertProposalMatchesCurrent(
+  proposal: SelfCapabilityProposalRecord,
+  current: {
+    readonly kind: SelfCapabilityKind;
+    readonly id: string;
+    readonly input: SelfSkillInput | SelfCronInput;
+    readonly files: readonly string[];
+    readonly configPatch?: MonoAgentConfigJson;
+    readonly warnings: readonly string[];
+    readonly preview: string;
+  },
+): void {
+  const currentHash = proposalContentHash(current);
+  if (proposal.kind !== current.kind || proposal.id !== current.id || proposal.contentHash !== currentHash) {
+    throw new SelfCapabilityError("invalid_input", "Self-capability proposal no longer matches the current config and write targets.", {
+      proposalId: proposal.proposalId,
+      kind: proposal.kind,
+      id: proposal.id,
+    });
+  }
+}
+
 function assertApplyMode(settings: SelfCapabilitiesSettings): void {
   if (settings.mode !== "apply") {
     throw new SelfCapabilityError("not_enabled", "Self-capability writes require selfCapabilities.mode = apply.", {
@@ -658,6 +1173,77 @@ function normalizeSlug(value: unknown, field: string): string {
     throw new SelfCapabilityError("invalid_input", `${field} must resolve to a path-safe slug.`, { field, value });
   }
   return slug;
+}
+
+function normalizeProposalId(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new SelfCapabilityError("invalid_input", "proposalId must be a string.", { field: "proposalId" });
+  }
+  const proposalId = value.trim().toLowerCase();
+  if (!PROPOSAL_ID_PATTERN.test(proposalId)) {
+    throw new SelfCapabilityError("invalid_input", "proposalId must be a path-safe proposal id.", {
+      field: "proposalId",
+      value,
+    });
+  }
+  return proposalId;
+}
+
+function normalizeReloadNonce(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new SelfCapabilityError("invalid_config", "reload nonce must be a string.", { field: "reloadNonce" });
+  }
+  const nonce = value.trim().toLowerCase();
+  if (!PROPOSAL_ID_PATTERN.test(nonce)) {
+    throw new SelfCapabilityError("invalid_config", "reload nonce must be path-safe.", { field: "reloadNonce" });
+  }
+  return nonce;
+}
+
+function reloadRecordHasNonce(line: string, reloadNonce: string): boolean {
+  if (line.trim().length === 0) {
+    return false;
+  }
+  try {
+    const record = JSON.parse(line) as unknown;
+    return isRecord(record) && record.reloadNonce === reloadNonce && typeof record.proposalId === "string";
+  } catch {
+    return false;
+  }
+}
+
+function reloadRecordsForNonce(raw: string, reloadNonce: string): string {
+  return raw
+    .split("\n")
+    .filter((line) => reloadRecordHasNonce(line, reloadNonce))
+    .join("\n");
+}
+
+function isProposalApplyInput(value: SelfSkillApplyInput | SelfCronApplyInput): value is SelfProposalApplyInput {
+  return typeof (value as { proposalId?: unknown }).proposalId === "string";
+}
+
+function skillInputFromProposal(value: unknown): SelfSkillInput {
+  const input = asRecord(value, "input");
+  return {
+    name: stringField(input, "name"),
+    description: stringField(input, "description"),
+    instructions: stringField(input, "instructions"),
+    ...(input.title === undefined ? {} : { title: stringField(input, "title") }),
+    ...(input.activate === undefined ? {} : { activate: booleanField(input, "activate") }),
+  };
+}
+
+function cronInputFromProposal(value: unknown): SelfCronInput {
+  const input = asRecord(value, "input");
+  return {
+    id: stringField(input, "id"),
+    expression: stringField(input, "expression"),
+    prompt: stringField(input, "prompt"),
+    ...(input.timezone === undefined ? {} : { timezone: stringField(input, "timezone") }),
+    ...(input.conversationId === undefined ? {} : { conversationId: stringField(input, "conversationId") }),
+    ...(input.enabled === undefined ? {} : { enabled: booleanField(input, "enabled") }),
+  };
 }
 
 function titleFromSlug(id: string): string {
@@ -758,6 +1344,45 @@ function appendUnique(values: readonly string[], next: string): readonly string[
     out.push(next);
   }
   return out;
+}
+
+function asRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new SelfCapabilityError("invalid_input", `${field} must be an object.`, { field });
+  }
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: Record<string, unknown>, field: string): string {
+  const value = record[field];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new SelfCapabilityError("invalid_input", `${field} must be a non-empty string.`, { field });
+  }
+  return value;
+}
+
+function stringArrayField(record: Record<string, unknown>, field: string): readonly string[] {
+  const value = record[field];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    throw new SelfCapabilityError("invalid_input", `${field} must be an array of strings.`, { field });
+  }
+  return value as readonly string[];
+}
+
+function booleanField(record: Record<string, unknown>, field: string): boolean {
+  const value = record[field];
+  if (typeof value !== "boolean") {
+    throw new SelfCapabilityError("invalid_input", `${field} must be a boolean.`, { field });
+  }
+  return value;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 async function withSelfCapabilityMutation<T>(

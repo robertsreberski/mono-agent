@@ -70,6 +70,8 @@ export {
   proposeSelfCron,
   proposeSelfSkill,
   resolveSelfCapabilitiesSettings,
+  SELF_CAPABILITIES_PROPOSALS_DIR,
+  selfCapabilityConfirmationToken,
   selfCapabilitiesFieldGroup,
 } from "./self-capabilities.js";
 export type {
@@ -78,6 +80,10 @@ export type {
   SelfCapabilityApplyResult,
   SelfCapabilityKind,
   SelfCapabilityPlan,
+  SelfCapabilityProposalRecord,
+  SelfCronApplyInput,
   SelfCronInput,
+  SelfProposalApplyInput,
+  SelfSkillApplyInput,
   SelfSkillInput,
 } from "./self-capabilities.js";

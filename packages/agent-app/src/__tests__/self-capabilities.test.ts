@@ -19,6 +19,7 @@ import {
   proposeSelfSkill,
   readSelfCapabilitiesReloadToken,
   resolveSelfCapabilitiesSettings,
+  selfCapabilityConfirmationToken,
   selfCapabilitiesFieldGroup,
   selfCapabilitiesMcpEnv,
   selfCapabilitiesSettingsFromEnv,
@@ -78,7 +79,18 @@ describe("self capability authoring", () => {
       instructions: "Search local project notes first and cite the exact files used.",
     });
     expect(proposal.action).toBe("proposed");
+    expect(proposal.reloadRequired).toBe(false);
+    expect(proposal.proposalId).toMatch(/research-notes/u);
+    expect(proposal.proposalPath).toBe(join(dir, ".mono-agent", "self-capabilities", "proposals", `${proposal.proposalId}.json`));
     expect(proposal.preview).toContain("Collect source-grounded notes");
+    const savedProposal = await readJson(proposal.proposalPath!);
+    expect(savedProposal).toMatchObject({
+      kind: "skill",
+      id: "research-notes",
+      proposalId: proposal.proposalId,
+      reloadRequired: false,
+    });
+    expect(await readSelfCapabilitiesReloadToken(settings.auditDir)).toBe("");
 
     await expect(applySelfSkill(settings, {
       name: "Research Notes",
@@ -86,6 +98,146 @@ describe("self capability authoring", () => {
       instructions: "Search local project notes first and cite the exact files used.",
     })).rejects.toMatchObject({ code: "not_enabled" });
     await expect(readFile(join(dir, "skills", "research-notes", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("applies persisted skill proposals by id and links audit/reload records", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    const proposal = await proposeSelfSkill(settings, {
+      name: "Follow Up",
+      description: "Track promised follow-ups after conversations.",
+      instructions: "Review the latest turn and capture any promised follow-up.",
+    }, { now: () => new Date("2026-06-16T10:00:00.000Z") });
+
+    expect(proposal.proposalId).toMatch(/^2026-06-16t10-00-00-000z-skill-follow-up-[a-f0-9]{12}$/u);
+    expect(await readSelfCapabilitiesReloadToken(settings.auditDir)).toBe("");
+
+    const result = await applySelfSkill(settings, {
+      proposalId: proposal.proposalId!,
+    }, { now: () => new Date("2026-06-16T10:01:00.000Z") });
+
+    expect(result).toMatchObject({
+      kind: "skill",
+      id: "follow-up",
+      action: "created",
+      proposalId: proposal.proposalId,
+      proposalPath: proposal.proposalPath,
+      reloadRequired: true,
+    });
+    expect(await readFile(join(dir, "skills", "follow-up", "SKILL.md"), "utf8")).toContain("Track promised follow-ups");
+    const audit = await readJson(result.auditPath);
+    expect(audit).toMatchObject({
+      kind: "skill",
+      id: "follow-up",
+      proposalId: proposal.proposalId,
+      proposalPath: proposal.proposalPath,
+    });
+    const reloadLog = await readFile(join(settings.auditDir, "reload-requests.jsonl"), "utf8");
+    expect(reloadLog).toContain(`"proposalId":"${proposal.proposalId}"`);
+  });
+
+  it("applies persisted cron proposals by id", async () => {
+    const configPath = await writeConfig(baseConfig({
+      selfCapabilities: { enabled: true, mode: "apply", cronDir: "./custom-cron" },
+    }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply", cronDir: join(dir, "custom-cron") });
+    const proposal = await proposeSelfCron(settings, {
+      id: "Daily Digest",
+      expression: "0 8 * * *",
+      timezone: "Europe/Rome",
+      prompt: "Prepare the daily digest.",
+    }, { now: () => new Date("2026-06-16T10:00:00.000Z") });
+
+    expect(proposal).toMatchObject({
+      kind: "cron",
+      id: "daily-digest",
+      reloadRequired: false,
+    });
+    expect(await readSelfCapabilitiesReloadToken(settings.auditDir)).toBe("");
+
+    const result = await applySelfCron(settings, {
+      proposalId: proposal.proposalId!,
+    }, { now: () => new Date("2026-06-16T10:01:00.000Z") });
+
+    expect(result).toMatchObject({
+      kind: "cron",
+      id: "daily-digest",
+      proposalId: proposal.proposalId,
+      proposalPath: proposal.proposalPath,
+    });
+    const job = await readFile(join(dir, "custom-cron", "daily-digest.md"), "utf8");
+    expect(job).toContain("expression: 0 8 * * *");
+    expect(job).toContain("Prepare the daily digest.");
+    expect((await readJson(result.auditPath)).proposalId).toBe(proposal.proposalId);
+  });
+
+  it("rejects malformed, missing, wrong-kind, and tampered proposal ids before writing", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    const cronProposal = await proposeSelfCron(settings, {
+      id: "Daily Digest",
+      expression: "0 8 * * *",
+      prompt: "Prepare the daily digest.",
+    });
+
+    await expect(applySelfSkill(settings, { proposalId: "../daily-digest" })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(applySelfSkill(settings, { proposalId: "2026-missing-skill" })).rejects.toMatchObject({ code: "not_found" });
+    await expect(applySelfSkill(settings, { proposalId: cronProposal.proposalId! })).rejects.toMatchObject({ code: "invalid_input" });
+
+    const skillProposal = await proposeSelfSkill(settings, {
+      name: "Research Notes",
+      description: "Collect source-grounded notes before answering.",
+      instructions: "Search local project notes first and cite the exact files used.",
+    });
+    const savedProposal = await readJson(skillProposal.proposalPath!);
+    const tampered = {
+      ...savedProposal,
+      input: {
+        ...(savedProposal.input as Record<string, unknown>),
+        instructions: "A changed instruction should not apply under the same proposal id.",
+      },
+    };
+    await writeFile(skillProposal.proposalPath!, `${JSON.stringify(tampered, null, 2)}\n`, "utf8");
+    await expect(applySelfSkill(settings, { proposalId: skillProposal.proposalId! })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(readFile(join(dir, "skills", "research-notes", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readSelfCapabilitiesReloadToken(settings.auditDir)).toBe("");
+  });
+
+  it("rejects applying saved proposals when current write targets drift", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    const proposal = await proposeSelfSkill(settings, {
+      name: "Research Notes",
+      description: "Collect source-grounded notes before answering.",
+      instructions: "Search local project notes first and cite the exact files used.",
+    });
+
+    const driftedSettings = { ...settings, skillsRoot: join(dir, "other-skills") };
+    await expect(applySelfSkill(driftedSettings, { proposalId: proposal.proposalId! })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(readFile(join(dir, "other-skills", "research-notes", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readSelfCapabilitiesReloadToken(settings.auditDir)).toBe("");
+  });
+
+  it("keeps same-millisecond proposal collision ids applyable", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    const input = {
+      name: "Research Notes",
+      description: "Collect source-grounded notes before answering.",
+      instructions: "Search local project notes first and cite the exact files used.",
+    };
+    const now = () => new Date("2026-06-16T10:00:00.000Z");
+
+    const first = await proposeSelfSkill(settings, input, { now });
+    const second = await proposeSelfSkill(settings, input, { now });
+
+    expect(first.proposalId).not.toBe(second.proposalId);
+    expect(second.proposalId).toMatch(/-2-[a-f0-9]{12}$/u);
+    const result = await applySelfSkill(settings, { proposalId: second.proposalId! }, {
+      now: () => new Date("2026-06-16T10:01:00.000Z"),
+    });
+    expect(result.proposalId).toBe(second.proposalId);
+    expect(await readFile(join(dir, "skills", "research-notes", "SKILL.md"), "utf8")).toContain("Collect source-grounded notes");
   });
 
   it("creates markdown cron jobs and validates the schedule before writing", async () => {
@@ -143,6 +295,8 @@ describe("self capability authoring", () => {
     expect(settings.cronDir).toBe(join(dir, "env-cron"));
     expect(settings.confirmationToken).toBe("confirm-me");
     expect(selfCapabilitiesMcpEnv(settings).MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN).toBe("confirm-me");
+    expect(selfCapabilityConfirmationToken(settings, "proposal-1")).toMatch(/^[a-f0-9]{64}$/u);
+    expect(selfCapabilityConfirmationToken(settings, "proposal-1")).not.toBe("confirm-me");
   });
 
   it("rejects newline injection in cron frontmatter scalars", async () => {
@@ -171,6 +325,23 @@ describe("self capability authoring", () => {
       instructions: "This should fail before writing.",
     })).rejects.toMatchObject({ code: "invalid_config" });
     await expect(readFile(join(outside, "escaping-skill", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects symlinked audit folders before creating capability files", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const outside = join(dir, "outside-audit");
+    await mkdir(outside, { recursive: true });
+    await mkdir(join(dir, ".mono-agent", "self-capabilities"), { recursive: true });
+    await symlink(outside, join(dir, ".mono-agent", "self-capabilities", "audit"), "dir");
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+
+    await expect(applySelfSkill(settings, {
+      name: "Audit Escape",
+      description: "Attempt to write through a symlinked audit folder.",
+      instructions: "This should fail before writing the skill.",
+    })).rejects.toMatchObject({ code: "invalid_config" });
+    await expect(readFile(join(dir, "skills", "audit-escape", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readSelfCapabilitiesReloadToken(settings.auditDir)).toBe("");
   });
 
   it("reports cron env overrides and rejects direct MCP env paths outside the agent folder", async () => {
@@ -202,12 +373,17 @@ describe("self capability authoring", () => {
       reloads.push(token);
     });
     const extension = await extensionFactory();
+    const server = extension.runtimeOptions.mcpServers[SELF_CAPABILITIES_MCP_SERVER_NAME] as { env: Record<string, string> };
+    const mcpSettings = selfCapabilitiesSettingsFromEnv(server.env);
 
-    await applySelfSkill(settings, {
+    const proposal = await proposeSelfSkill(mcpSettings, {
       name: "Follow Up",
       description: "Track promised follow-ups after conversations.",
       instructions: "Review the latest turn and capture any promised follow-up.",
     }, { now: () => new Date("2026-06-16T10:00:00.000Z") });
+    await applySelfSkill(mcpSettings, {
+      proposalId: proposal.proposalId!,
+    }, { now: () => new Date("2026-06-16T10:01:00.000Z") });
     await extension.cleanup();
 
     expect(reloads).toHaveLength(1);
@@ -215,6 +391,26 @@ describe("self capability authoring", () => {
       type: "stdio",
       command: process.execPath,
     });
+  });
+
+  it("ignores reload records without the current request nonce", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "propose" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "propose" });
+    const reloads: string[] = [];
+    const extensionFactory = createSelfCapabilitiesRuntimeExtension(settings, (token) => {
+      reloads.push(token);
+    });
+    const extension = await extensionFactory();
+
+    await mkdir(join(dir, ".mono-agent", "self-capabilities"), { recursive: true });
+    await writeFile(
+      join(dir, ".mono-agent", "self-capabilities", "reload-requests.jsonl"),
+      `${JSON.stringify({ kind: "skill", id: "x", proposalId: "proposal-x", reloadNonce: "wrong-nonce" })}\n`,
+      { flag: "a" },
+    );
+    await extension.cleanup();
+
+    expect(reloads).toEqual([]);
   });
 
   it("injects the self-capability MCP server into app-served runtime requests only when enabled", async () => {
@@ -328,10 +524,13 @@ describe("self capability authoring", () => {
     };
 
     fake.beforeReturn = async () => {
+      const server = fake.calls[0]?.options.mcpServers?.[SELF_CAPABILITIES_MCP_SERVER_NAME] as { env?: Record<string, string> } | undefined;
+      const reloadNonce = server?.env?.MONO_AGENT_SELF_CAPABILITIES_RELOAD_NONCE;
+      expect(reloadNonce).toBeDefined();
       await mkdir(join(dir, ".mono-agent", "self-capabilities"), { recursive: true });
       await writeFile(
         join(dir, ".mono-agent", "self-capabilities", "reload-requests.jsonl"),
-        "{\"kind\":\"skill\",\"id\":\"x\"}\n",
+        JSON.stringify({ kind: "skill", id: "x", proposalId: "proposal-x", reloadNonce }) + "\n",
         { flag: "a" },
       );
       expect(applyReasons).toEqual([]);

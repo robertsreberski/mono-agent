@@ -71,7 +71,7 @@ Should this agent be allowed to propose or create new local skills and cron jobs
 3. Apply tools after explicit user confirmation
 ```
 
-Fills: `selfCapabilities.enabled`, `selfCapabilities.mode`, and optionally `selfCapabilities.skillsRoot`, `selfCapabilities.cronDir`, `selfCapabilities.auditDir`. Default to `mode: "propose"` unless the user explicitly asks for write tools. Apply-mode create tools also require the host env var `MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN`; the operator must provide that token in the confirming request. Generated skills are ordinary `<skillsRoot>/<name>/SKILL.md` files; generated cron jobs are ordinary `<cronDir>/<id>.md` files. Writes are audited and the app reloads after the current response.
+Fills: `selfCapabilities.enabled`, `selfCapabilities.mode`, and optionally `selfCapabilities.skillsRoot`, `selfCapabilities.cronDir`, `selfCapabilities.auditDir`. Default to `mode: "propose"` unless the user explicitly asks for write tools. Propose-mode tools persist immutable drafts under `.mono-agent/self-capabilities/proposals/` and return a `proposalId`. Apply-mode create tools also require the host env var `MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN`; the operator must provide the saved `proposalId` plus a proposal-scoped approval token derived from that host secret in the confirming request. Generated skills are ordinary `<skillsRoot>/<name>/SKILL.md` files; generated cron jobs are ordinary `<cronDir>/<id>.md` files. Applies are audited and the app reloads after the current response.
 
 ## 5. Tools And MCP Servers
 

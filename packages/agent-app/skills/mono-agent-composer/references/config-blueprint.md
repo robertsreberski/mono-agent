@@ -102,10 +102,11 @@ my-agent/
     "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
   },
 
-  // Optional self-capability tools. Off by default. "propose" exposes only
-  // preview tools; "apply" exposes create tools only when the host process also
-  // sets MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN. Create tool calls must
-  // include that operator-provided token.
+  // Optional self-capability tools. Off by default. "propose" persists draft
+  // proposal records and previews them; "apply" exposes create tools only when
+  // the host process also sets MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN.
+  // Create tool calls must include a saved proposalId plus a proposal-scoped
+  // approval token derived from that host secret.
   "selfCapabilities": {
     "enabled": false,
     "mode": "propose",                    // propose | apply

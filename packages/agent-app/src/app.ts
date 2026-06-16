@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve } from "node:path";
 
 import { startOperatorConsole } from "@mono-agent/operator-console";
@@ -197,7 +198,7 @@ class MonoAgentAppController implements MonoAgentApp {
   private sharedMemoryBuilt = false;
   private configApplyTail: Promise<void> = Promise.resolve();
   private selfCapabilitiesReloadScheduled = false;
-  private selfCapabilitiesPendingReloadToken: string | undefined;
+  private readonly selfCapabilitiesReloadScope = new AsyncLocalStorage<{ token?: string }>();
   private stopped = false;
 
   constructor(input: MonoAgentAppControllerInput) {
@@ -542,7 +543,10 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     this.logger?.info?.("Self-capability authoring tools enabled.", { mode: settings.mode });
     return createSelfCapabilitiesRuntimeExtension(settings, (token) => {
-      this.selfCapabilitiesPendingReloadToken = token;
+      const scope = this.selfCapabilitiesReloadScope.getStore();
+      if (scope !== undefined) {
+        scope.token = token;
+      }
     });
   }
 
@@ -552,15 +556,16 @@ class MonoAgentAppController implements MonoAgentApp {
         request: AgentRequestBase,
         stream: AgentMessageStream,
       ): Promise<AgentResponse> => {
-        try {
-          return await responder.respond(request, stream);
-        } finally {
-          const token = this.selfCapabilitiesPendingReloadToken;
-          this.selfCapabilitiesPendingReloadToken = undefined;
-          if (token !== undefined) {
-            this.scheduleSelfCapabilitiesReload(token);
+        return await this.selfCapabilitiesReloadScope.run({}, async () => {
+          try {
+            return await responder.respond(request, stream);
+          } finally {
+            const token = this.selfCapabilitiesReloadScope.getStore()?.token;
+            if (token !== undefined) {
+              this.scheduleSelfCapabilitiesReload(token);
+            }
           }
-        }
+        });
       },
     };
   }

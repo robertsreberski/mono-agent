@@ -6,9 +6,10 @@ import {
   applySelfSkill,
   proposeSelfCron,
   proposeSelfSkill,
+  selfCapabilityConfirmationToken,
 } from "./self-capabilities.js";
 import type { SelfCapabilitiesSettings } from "./self-capabilities.js";
-import type { SelfCronInput, SelfSkillInput } from "./self-capabilities.js";
+import type { SelfCronInput, SelfProposalApplyInput, SelfSkillInput } from "./self-capabilities.js";
 
 export interface ToolResult {
   [key: string]: unknown;
@@ -26,8 +27,8 @@ const skillSchema = {
   activate: z.boolean().optional().describe("Whether to add the skill to context.selectedSkills. Defaults to true."),
 };
 const skillWriteSchema = {
-  ...skillSchema,
-  confirmationToken: nonBlank.describe("Operator-supplied token required for persistent self-capability writes."),
+  proposalId: nonBlank.describe("Proposal id returned by self_skill_propose."),
+  confirmationToken: nonBlank.describe("Operator-supplied proposal-scoped approval token required for persistent self-capability writes."),
 };
 const cronSchema = {
   id: nonBlank.describe("Path-safe cron job id. It is normalized to a lowercase slug and used as the file name."),
@@ -38,18 +39,18 @@ const cronSchema = {
   enabled: z.boolean().optional().describe("Whether the job should be enabled. Defaults to true."),
 };
 const cronWriteSchema = {
-  ...cronSchema,
-  confirmationToken: nonBlank.describe("Operator-supplied token required for persistent self-capability writes."),
+  proposalId: nonBlank.describe("Proposal id returned by self_cron_propose."),
+  confirmationToken: nonBlank.describe("Operator-supplied proposal-scoped approval token required for persistent self-capability writes."),
 };
 
 export function createSelfCapabilitiesMcpServer(settings: SelfCapabilitiesSettings): McpServer {
-  const server = new McpServer({ name: "mono-agent-self-capabilities", version: "0.3.0" });
+  const server = new McpServer({ name: "mono-agent-self-capabilities", version: "0.4.0" });
 
   server.registerTool(
     "self_skill_propose",
     {
       title: "Propose a local skill",
-      description: "Preview the files and config changes for a local skill. Use this when the user has not explicitly confirmed a write.",
+      description: "Persist and preview an immutable local skill proposal. Use this when the user has not explicitly confirmed a write.",
       inputSchema: skillSchema,
     },
     async (args) => result(await proposeSelfSkill(settings, normalizeSkillArgs(args))),
@@ -59,7 +60,7 @@ export function createSelfCapabilitiesMcpServer(settings: SelfCapabilitiesSettin
     "self_cron_propose",
     {
       title: "Propose a cron job",
-      description: "Preview the markdown cron job and config changes. Use this when the user has not explicitly confirmed a write.",
+      description: "Persist and preview an immutable markdown cron proposal. Use this when the user has not explicitly confirmed a write.",
       inputSchema: cronSchema,
     },
     async (args) => result(await proposeSelfCron(settings, normalizeCronArgs(args))),
@@ -70,7 +71,7 @@ export function createSelfCapabilitiesMcpServer(settings: SelfCapabilitiesSettin
       "self_skill_create",
       {
         title: "Create a local skill",
-        description: "Create a local SKILL.md, update config when requested, write an audit record, and request app reload. Requires the operator-provided confirmation token.",
+        description: "Create a local SKILL.md from a saved proposal, update config when requested, write an audit record, and request app reload. Requires the operator-provided proposal-scoped confirmation token.",
         inputSchema: skillWriteSchema,
       },
       async (args) => result(await applySelfSkill(settings, normalizeSkillWriteArgs(settings, args))),
@@ -80,7 +81,7 @@ export function createSelfCapabilitiesMcpServer(settings: SelfCapabilitiesSettin
       "self_cron_create",
       {
         title: "Create a cron job",
-        description: "Create a markdown cron job, write an audit record, and request app reload. Requires the operator-provided confirmation token.",
+        description: "Create a markdown cron job from a saved proposal, write an audit record, and request app reload. Requires the operator-provided proposal-scoped confirmation token.",
         inputSchema: cronWriteSchema,
       },
       async (args) => result(await applySelfCron(settings, normalizeCronWriteArgs(settings, args))),
@@ -108,10 +109,10 @@ function normalizeSkillArgs(args: {
 
 function normalizeSkillWriteArgs(
   settings: SelfCapabilitiesSettings,
-  args: Parameters<typeof normalizeSkillArgs>[0] & { readonly confirmationToken: string },
-): SelfSkillInput {
-  assertConfirmationToken(settings, args.confirmationToken);
-  return normalizeSkillArgs(args);
+  args: { readonly proposalId: string; readonly confirmationToken: string },
+): SelfProposalApplyInput {
+  assertConfirmationToken(settings, args.proposalId, args.confirmationToken);
+  return { proposalId: args.proposalId };
 }
 
 function normalizeCronArgs(args: {
@@ -134,14 +135,15 @@ function normalizeCronArgs(args: {
 
 function normalizeCronWriteArgs(
   settings: SelfCapabilitiesSettings,
-  args: Parameters<typeof normalizeCronArgs>[0] & { readonly confirmationToken: string },
-): SelfCronInput {
-  assertConfirmationToken(settings, args.confirmationToken);
-  return normalizeCronArgs(args);
+  args: { readonly proposalId: string; readonly confirmationToken: string },
+): SelfProposalApplyInput {
+  assertConfirmationToken(settings, args.proposalId, args.confirmationToken);
+  return { proposalId: args.proposalId };
 }
 
-function assertConfirmationToken(settings: SelfCapabilitiesSettings, value: string): void {
-  if (settings.confirmationToken === undefined || value !== settings.confirmationToken) {
+function assertConfirmationToken(settings: SelfCapabilitiesSettings, proposalId: string, value: string): void {
+  const expected = selfCapabilityConfirmationToken(settings, proposalId);
+  if (expected === undefined || value !== expected) {
     throw new Error("Invalid self-capability confirmation token.");
   }
 }
