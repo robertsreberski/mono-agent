@@ -144,13 +144,17 @@ export class BujoMemoryStore implements MemoryStore {
    */
   scheduleCapture(conversationId: string, text: string): void {
     if (this.llm === undefined) return;
-    this.captureChain = this.captureChain.then(async () => {
-      try {
-        await this.capture(conversationId, text);
-      } catch (error) {
-        this.logger.warn(`bujo capture failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    });
+    this.captureChain = this.captureChain
+      .then(async () => {
+        try {
+          await this.capture(conversationId, text);
+        } catch (error) {
+          this.logger.warn(`bujo capture failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      })
+      // Terminal guard: if even the logging path throws, the chain must not settle rejected —
+      // otherwise every future scheduleCapture would silently stop (`.then` skips a rejected promise).
+      .catch(() => undefined);
   }
 
   /** Await all captures queued before this call (graceful shutdown / one-shot exit). */

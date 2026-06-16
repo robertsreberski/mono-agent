@@ -197,7 +197,7 @@ export const memoryFieldGroup = defineFieldGroup({
       description:
         "Memory root directory. lite/journal/bujo modes: the directory holding memory.db and daily/ rapid-log files. Leave empty to disable memory.",
       kind: "path",
-      placeholder: "./MEMORY.md",
+      placeholder: "./memory",
       path: ["memory", "path"],
     },
     {

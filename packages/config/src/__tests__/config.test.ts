@@ -517,9 +517,17 @@ describe("loadMonoAgentConfig", () => {
     throw new Error("Expected openai embeddings without an api key to fail.");
   });
 
-  it("rejects memory embeddings env without a memory path", () => {
+  it("rejects any memory env var set without a memory path", () => {
     for (const env of [
       { MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama" },
+      { MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "768" },
+      { MONO_AGENT_MEMORY_MODE: "bujo" },
+      { MONO_AGENT_MEMORY_WRITE_MODE: "capture" },
+      { MONO_AGENT_MEMORY_MAX_BYTES: "8000" },
+      { MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama" },
+      { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
+      { MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true" },
+      { MONO_AGENT_MEMORY_MIGRATION_CRON: "0 3 * * *" },
     ]) {
       try {
         loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });

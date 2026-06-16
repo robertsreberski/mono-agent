@@ -401,6 +401,28 @@ describe("BujoMemoryStore async capture queue", () => {
     await store.close();
   });
 
+  it("a throw in the logging path does not permanently disable the capture chain", async () => {
+    const order: string[] = [];
+    const store = createBujoMemoryStore({
+      root: tmpRoot(), tier: "bujo",
+      llm: recordingLlm(order),
+      // The logger itself throws — without the terminal guard this would reject captureChain and
+      // silently stop every future capture.
+      logger: { warn: () => { throw new Error("logger exploded"); } },
+    });
+    const original = store.capture.bind(store);
+    store.capture = async (convId: string, text: string) => {
+      if (text.includes("POISON")) throw new Error("boom"); // reaches the catch → logger.warn throws
+      order.push(`capture:HEALTHY`);
+      return original(convId, text);
+    };
+    store.scheduleCapture("c1", "POISON text");
+    store.scheduleCapture("c1", "HEALTHY text");
+    await expect(store.flush()).resolves.toBeUndefined();
+    expect(order.some((t) => t.includes("HEALTHY"))).toBe(true);
+    await store.close();
+  });
+
   it("scheduleCapture is a no-op without an llm (lite/journal)", async () => {
     const store = createBujoMemoryStore({ root: tmpRoot() }); // lite
     expect(() => store.scheduleCapture("c1", "x")).not.toThrow();

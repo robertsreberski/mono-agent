@@ -349,12 +349,27 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
 function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {
   const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
   if (rawPath === undefined) {
+    // Any memory env var set without a path is a misconfiguration — fail closed rather than
+    // silently ignoring it. Covers every behavior-configuring var (not just embeddings). The
+    // retired _GRAPH_PATH/_SCOPE/_TOOLS_ENABLED keys are deliberately omitted: the loader tolerates
+    // them for backward-compat with pre-v2 configs.
     const orphaned = [
+      "MONO_AGENT_MEMORY_MODE",
+      "MONO_AGENT_MEMORY_WRITE_MODE",
+      "MONO_AGENT_MEMORY_MAX_BYTES",
       "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
       "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
       "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
       "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
       "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
+      "MONO_AGENT_MEMORY_LLM_PROVIDER",
+      "MONO_AGENT_MEMORY_LLM_MODEL",
+      "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+      "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
+      "MONO_AGENT_MEMORY_REFLECTION_CRON",
+      "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
+      "MONO_AGENT_MEMORY_MIGRATION_CRON",
     ].find((name) => normalizeOptionalString(env[name]) !== undefined);
     if (orphaned !== undefined) {
       throw new MonoAgentConfigError("invalid_env", `${orphaned} requires MONO_AGENT_MEMORY_PATH (or memory.path) to be set.`, {

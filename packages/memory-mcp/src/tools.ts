@@ -39,6 +39,9 @@ export function createMemoryTools(deps: MemoryToolDeps): MemoryTools {
     },
 
     async capture(args) {
+      // Defense in depth: the zod schema rejects blank text for MCP clients, but a direct caller
+      // could still pass whitespace-only, which would distil to nothing / write an empty bullet.
+      if (args.text.trim().length === 0) return errorResult("memory_capture requires non-empty text.");
       const result = await deps.store.capture("mcp", args.text);
       if (result === undefined) {
         return errorResult("memory_capture requires the bujo tier (a chat LLM). This store has no LLM configured.");
@@ -50,6 +53,7 @@ export function createMemoryTools(deps: MemoryToolDeps): MemoryTools {
     },
 
     async note(args) {
+      if (args.text.trim().length === 0) return errorResult("memory_note requires non-empty text.");
       const res = await deps.store.appendHostSummary("mcp", args.text);
       return textResult(`Noted to ${res.source}.`, { source: res.source, bytesWritten: res.bytesWritten });
     },

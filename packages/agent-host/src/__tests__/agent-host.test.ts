@@ -495,7 +495,6 @@ function monoConfig(input: {
             mode: input.memoryMode ?? "lite",
             path: input.memoryPath,
             maxBytes: 64_000,
-            scope: "single-file",
             writeMode: input.memoryWriteMode ?? "disabled",
             ...(input.memoryEmbeddings === undefined ? {} : { embeddings: input.memoryEmbeddings }),
           },
@@ -511,5 +510,5 @@ function monoConfig(input: {
     traceability: {
       registryDir: join(input.dir, "trace-sources"),
     },
-  } as unknown as MonoAgentConfig;
+  };
 }

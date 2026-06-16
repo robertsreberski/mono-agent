@@ -100,11 +100,10 @@ function bujoConfig(input: { readonly dir: string; readonly identityPath: string
       path: input.memoryRoot,
       writeMode: "disabled",
       maxBytes: 8_000,
-      scope: "single-file",
       embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
     },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(input.dir, "artifacts") },
     traceability: { registryDir: join(input.dir, "trace-sources") },
-  } as unknown as MonoAgentConfig;
+  };
 }

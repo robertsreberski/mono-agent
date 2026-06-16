@@ -29,6 +29,25 @@ describe("memory-mcp tools", () => {
     await store.close();
   });
 
+  it("note rejects whitespace-only text instead of writing an empty bullet", async () => {
+    const store = createBujoMemoryStore({ root: root() });
+    const tools = createMemoryTools({ store });
+    const res = await tools.note({ text: "   \n\t " });
+    expect(res.isError).toBe(true);
+    // Nothing should have been written: recall finds no memories.
+    const recalled = await tools.recall({ query: "anything" });
+    expect(recalled.structuredContent).toMatchObject({ hits: [] });
+    await store.close();
+  });
+
+  it("capture rejects whitespace-only text", async () => {
+    const store = createBujoMemoryStore({ root: root(), tier: "bujo", llm: fakeLlm });
+    const tools = createMemoryTools({ store });
+    const res = await tools.capture({ text: "   " });
+    expect(res.isError).toBe(true);
+    await store.close();
+  });
+
   it("capture returns an explicit error when the store has no llm (non-bujo)", async () => {
     const store = createBujoMemoryStore({ root: root() }); // lite — no llm
     const tools = createMemoryTools({ store });
