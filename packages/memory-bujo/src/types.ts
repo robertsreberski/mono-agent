@@ -18,13 +18,20 @@ export interface Bullet {
   readonly dueAt?: string;
 }
 
+export type BujoTier = "lite" | "journal" | "bujo";
+
 export interface BujoOptions {
   readonly root: string;
-  readonly embeddings: EmbeddingProvider;
-  readonly dim: number;
+  /** Embedding provider. When absent, the store runs in `lite` tier (FTS-only recall). */
+  readonly embeddings?: EmbeddingProvider;
+  /** Vector dimension. Required when `embeddings` is provided; ignored in the `lite` tier. */
+  readonly dim?: number;
   readonly maxBytes?: number;
   readonly clock?: () => Date;
   /** Optional LLM for the intelligent capture path (distill + reconcile + entity extraction).
    * When absent, `capture()` returns `undefined` and `appendHostSummary` is the only write path. */
   readonly llm?: LlmComplete;
+  /** Explicit tier override. When absent, the tier is derived from the options:
+   * no embeddings → `"lite"`; embeddings + no llm → `"journal"`; embeddings + llm → `"bujo"`. */
+  readonly tier?: BujoTier;
 }

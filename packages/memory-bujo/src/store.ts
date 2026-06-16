@@ -12,7 +12,7 @@ import { composeRecallBlock } from "./recall.js";
 import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
 import { migrate as migrateFn, type MigrateResult } from "./migrate.js";
 import { writeFutureLog, writeIndex } from "./projections.js";
-import type { Bullet, BujoOptions } from "./types.js";
+import type { Bullet, BujoOptions, BujoTier } from "./types.js";
 
 export class BujoMemoryStore implements MemoryStore {
   private readonly root: string;
@@ -21,6 +21,7 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly clock: () => Date;
   private readonly nextId: () => string;
   private readonly llm?: LlmComplete;
+  private readonly _tier: BujoTier;
 
   constructor(options: BujoOptions) {
     this.root = options.root;
@@ -29,12 +30,24 @@ export class BujoMemoryStore implements MemoryStore {
     this.nextId = createIdFactory({ clock: this.clock });
     this.db = openMemoryDb({
       path: join(options.root, "memory.db"),
-      embeddings: options.embeddings,
-      dim: options.dim,
+      ...(options.embeddings !== undefined && { embeddings: options.embeddings }),
+      ...(options.dim !== undefined && { dim: options.dim }),
     });
     if (options.llm !== undefined) {
       this.llm = options.llm;
     }
+    this._tier =
+      options.tier ??
+      (options.embeddings === undefined
+        ? "lite"
+        : options.llm === undefined
+          ? "journal"
+          : "bujo");
+  }
+
+  /** The effective tier of this store (lite / journal / bujo). */
+  tier(): BujoTier {
+    return this._tier;
   }
 
   async load(conversationId: string): Promise<MemoryBlock | undefined> {
@@ -136,6 +149,16 @@ export class BujoMemoryStore implements MemoryStore {
       now: this.clock,
     });
     return { actions: res.actions.length, entities: res.entities };
+  }
+
+  /**
+   * Apply salience decay to all memories in the store.
+   *
+   * Usable in all tiers (lite, journal, bujo) — no LLM required. In the `journal` and `bujo`
+   * tiers this is the primary maintenance call; in the `lite` tier it still runs harmlessly.
+   */
+  async decay(): Promise<{ decayed: number }> {
+    return this.db.applyDecay(this.clock());
   }
 
   async close(): Promise<void> {

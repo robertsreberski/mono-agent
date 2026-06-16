@@ -10,6 +10,94 @@ import { appendBullet, dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import type { Bullet } from "../types.js";
 
+describe("BujoMemoryStore — tier derivation", () => {
+  it("lite tier: no embeddings → tier() === 'lite'; appendHostSummary + load work; capture() returns undefined", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-tier-lite-"));
+    const now = new Date("2026-06-16T09:00:00.000Z");
+    // No embeddings — FTS-only store
+    const store = createBujoMemoryStore({ root, clock: () => now });
+
+    expect(store.tier()).toBe("lite");
+
+    await store.appendHostSummary("s1", "Robert prefers opt-in memory.");
+    const block = await store.load("opt-in");
+    // FTS recall: keyword must appear in the block
+    expect(block?.content).toContain("opt-in memory");
+
+    expect(await store.capture("s1", "some text")).toBeUndefined();
+
+    await store.close();
+  });
+
+  it("journal tier: embeddings + no llm → tier() === 'journal'; load works; decay() returns {decayed}; capture() undefined", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-tier-journal-"));
+    const now = new Date("2026-06-16T09:00:00.000Z");
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
+
+    expect(store.tier()).toBe("journal");
+
+    await store.appendHostSummary("s1", "Weekly review complete.");
+    const block = await store.load("review");
+    expect(block?.content).toContain("Weekly review");
+
+    const decayResult = await store.decay();
+    expect(decayResult).toHaveProperty("decayed");
+    expect(typeof decayResult.decayed).toBe("number");
+
+    expect(await store.capture("s1", "some text")).toBeUndefined();
+
+    await store.close();
+  });
+
+  it("bujo tier: embeddings + llm → tier() === 'bujo'; capture() returns {actions, entities}", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-tier-bujo-"));
+    const now = new Date("2026-06-16T09:00:00.000Z");
+    const llm = fakeLlm([
+      [
+        "type:name-kebab",
+        JSON.stringify({ entities: [{ id: "person:robert", name: "Robert", type: "person" }], relations: [] }),
+      ],
+      [
+        "TEXT:",
+        JSON.stringify([{ type: "note", text: "Robert prefers morning routines", salience: 0.8, isInsight: false }]),
+      ],
+    ]);
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, llm, clock: () => now });
+
+    expect(store.tier()).toBe("bujo");
+
+    const result = await store.capture("s1", "Robert prefers morning routines for focus.");
+    expect(result).toBeDefined();
+    expect(result?.actions).toBeGreaterThanOrEqual(1);
+
+    await store.close();
+  });
+
+  it("explicit tier override is respected (overrides derivation)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-tier-override-"));
+    // embeddings provided but explicit tier=lite overrides the derivation
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, tier: "lite" });
+
+    expect(store.tier()).toBe("lite");
+
+    await store.close();
+  });
+
+  it("decay() works in lite tier (no embeddings, no throw)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-tier-lite-decay-"));
+    const store = createBujoMemoryStore({ root });
+
+    expect(store.tier()).toBe("lite");
+
+    await store.appendHostSummary("s1", "Something to decay.");
+    const result = await store.decay();
+    expect(result).toHaveProperty("decayed");
+    expect(typeof result.decayed).toBe("number");
+
+    await store.close();
+  });
+});
+
 describe("BujoMemoryStore", () => {
   it("appendHostSummary writes a canonical daily bullet and indexes it", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-"));
