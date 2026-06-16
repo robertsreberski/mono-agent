@@ -6,7 +6,7 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
-import type { MemoryEmbeddingsConfig, MemoryLlmConfig, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode } from "./types.js";
+import type { MemoryEmbeddingsConfig, MemoryLlmConfig, MemoryMode, MemoryWriteMode } from "./types.js";
 
 /** JSON-serialisable shape for a ritual config block (reflection or migration). */
 export type MonoAgentMemoryRitualJson = {
@@ -74,10 +74,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly mode?: MemoryMode;
     readonly path?: string;
     readonly maxBytes?: number;
-    readonly scope?: MemoryScope;
     readonly writeMode?: MemoryWriteMode;
-    readonly tools?: Partial<MemoryToolsConfig>;
-    readonly graphPath?: string;
     readonly embeddings?: Partial<MemoryEmbeddingsConfig>;
     readonly llm?: Partial<MemoryLlmConfig>;
     readonly reflection?: MonoAgentMemoryRitualJson;

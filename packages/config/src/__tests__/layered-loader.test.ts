@@ -34,10 +34,6 @@ describe("layerJsonOntoEnv", () => {
         memory: {
           mode: "journal",
           path: ".mono-agent/memory",
-          tools: {
-            enabled: true,
-            allowJournalAppend: true,
-          },
         },
         tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
         traceability: { registryDir: ".mono-agent/traces", sourceId: "json-source", staleAfterMs: 60000 },
@@ -62,8 +58,6 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_SELECTED_SKILLS).toBe("a,b");
     expect(layered.MONO_AGENT_MEMORY_MODE).toBe("journal");
     expect(layered.MONO_AGENT_MEMORY_PATH).toBe(".mono-agent/memory");
-    expect(layered.MONO_AGENT_MEMORY_TOOLS_ENABLED).toBe("true");
-    expect(layered.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND).toBe("true");
     expect(layered.MONO_AGENT_ALLOWED_TOOLS).toBe("Read");
     expect(layered.MONO_AGENT_DISALLOWED_TOOLS).toBe("Bash");
     expect(layered.MONO_AGENT_TRACE_REGISTRY_DIR).toBe(".mono-agent/traces");
@@ -169,13 +163,12 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS).toBe("false");
   });
 
-  it("translates JSON memory graphPath and embeddings to env keys", () => {
+  it("translates JSON memory embeddings to env keys (graphPath is a no-op — retired)", () => {
     const layered = layerJsonOntoEnv(
       {
         memory: {
           mode: "journal",
           path: ".mono-agent/memory",
-          graphPath: ".mono-agent/memory/entities.jsonl",
           embeddings: {
             provider: "ollama",
             model: "nomic-embed-text",
@@ -186,7 +179,7 @@ describe("layerJsonOntoEnv", () => {
       },
       {},
     );
-    expect(layered.MONO_AGENT_MEMORY_GRAPH_PATH).toBe(".mono-agent/memory/entities.jsonl");
+    expect(layered.MONO_AGENT_MEMORY_GRAPH_PATH).toBeUndefined();
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER).toBe("ollama");
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL).toBe("nomic-embed-text");
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT).toBe("http://localhost:11434");
@@ -445,7 +438,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
-  it("loads memory embeddings and graph path from the JSON config file", async () => {
+  it("loads memory embeddings from the JSON config file (graphPath is retired — ignored)", async () => {
     const path = join(dir, "config.json");
     await writeFile(
       path,
@@ -455,7 +448,6 @@ describe("loadMonoAgentConfigWithSources", () => {
         memory: {
           mode: "journal",
           path: ".mono-agent/memory",
-          graphPath: ".mono-agent/memory/entities.jsonl",
           embeddings: { provider: "ollama" },
         },
       }),
@@ -463,7 +455,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     );
 
     const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
-    expect(config.memory?.graphPath).toBe(join(dir, ".mono-agent", "memory", "entities.jsonl"));
+    expect(config.memory).not.toHaveProperty("graphPath");
     expect(config.memory?.embeddings).toEqual({ provider: "ollama", model: "nomic-embed-text" });
   });
 

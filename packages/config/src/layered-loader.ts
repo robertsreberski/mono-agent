@@ -99,20 +99,8 @@ export function layerJsonOntoEnv(
   if (json.memory?.maxBytes !== undefined) {
     fromJson.MONO_AGENT_MEMORY_MAX_BYTES = String(json.memory.maxBytes);
   }
-  if (json.memory?.scope !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_SCOPE = json.memory.scope;
-  }
   if (json.memory?.writeMode !== undefined) {
     fromJson.MONO_AGENT_MEMORY_WRITE_MODE = json.memory.writeMode;
-  }
-  if (json.memory?.tools?.enabled !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_TOOLS_ENABLED = String(json.memory.tools.enabled);
-  }
-  if (json.memory?.tools?.allowJournalAppend !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND = String(json.memory.tools.allowJournalAppend);
-  }
-  if (json.memory?.graphPath !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_GRAPH_PATH = json.memory.graphPath;
   }
   if (json.memory?.embeddings?.provider !== undefined) {
     fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER = json.memory.embeddings.provider;

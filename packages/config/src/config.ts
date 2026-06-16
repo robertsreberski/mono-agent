@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryMode, MemoryRitualConfig, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -350,7 +350,6 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
   if (rawPath === undefined) {
     const orphaned = [
-      "MONO_AGENT_MEMORY_GRAPH_PATH",
       "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
       "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
       "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
@@ -374,12 +373,6 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     "disabled",
     "append-host-summary",
   ], "disabled", invalidEnv);
-  const scope = readChoice<MemoryScope>(env.MONO_AGENT_MEMORY_SCOPE, "MONO_AGENT_MEMORY_SCOPE", [
-    "single-file",
-    "per-conversation",
-  ], "single-file", invalidEnv);
-  const tools = readMemoryToolsConfig(env);
-  const graphPath = readOptionalPath(env.MONO_AGENT_MEMORY_GRAPH_PATH, cwd);
   const embeddings = readMemoryEmbeddingsConfig(env);
   const llm = readMemoryLlmConfig(env);
   const dim = readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 });
@@ -397,10 +390,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     mode,
     path: readPath(rawPath, cwd),
     maxBytes: readInteger(env.MONO_AGENT_MEMORY_MAX_BYTES, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, invalidEnv, { min: 1, max: 1_000_000 }),
-    scope,
     writeMode,
-    ...(tools === undefined ? {} : { tools }),
-    ...(graphPath === undefined ? {} : { graphPath }),
     ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
     ...(llm === undefined ? {} : { llm }),
     ...(reflection === undefined ? {} : { reflection }),
@@ -465,31 +455,6 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
     model,
     ...(endpoint === undefined ? {} : { endpoint }),
   };
-}
-
-function readMemoryToolsConfig(env: Record<string, string | undefined>): MemoryToolsConfig | undefined {
-  const hasMemoryToolsEnv = [
-    env.MONO_AGENT_MEMORY_TOOLS_ENABLED,
-    env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
-  ].some((value) => normalizeOptionalString(value) !== undefined);
-  if (!hasMemoryToolsEnv) {
-    return undefined;
-  }
-  const enabled = readBoolean(env.MONO_AGENT_MEMORY_TOOLS_ENABLED, "MONO_AGENT_MEMORY_TOOLS_ENABLED", false, invalidEnv);
-  const allowJournalAppend = readBoolean(
-    env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
-    "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND",
-    false,
-    invalidEnv,
-  );
-  if (allowJournalAppend && !enabled) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND requires MONO_AGENT_MEMORY_TOOLS_ENABLED=true.",
-      { env: "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND" },
-    );
-  }
-  return { enabled, allowJournalAppend };
 }
 
 /**

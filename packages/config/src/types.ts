@@ -5,12 +5,7 @@ import type { RedactedSecretValue } from "@mono-agent/settings";
 import type { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
-export type MemoryScope = "single-file" | "per-conversation";
 export type MemoryMode = "lite" | "journal" | "bujo";
-export interface MemoryToolsConfig {
-  readonly enabled: boolean;
-  readonly allowJournalAppend: boolean;
-}
 /** Configuration for a bujo-tier auto-ritual (reflection or migration). */
 export interface MemoryRitualConfig {
   readonly enabled?: boolean;
@@ -73,11 +68,7 @@ export interface MonoAgentConfig {
     readonly mode: MemoryMode;
     readonly path: string;
     readonly maxBytes: number;
-    readonly scope: MemoryScope;
     readonly writeMode: MemoryWriteMode;
-    readonly tools?: MemoryToolsConfig;
-    /** Entity graph JSONL path (journal mode); defaults to `<path>/graph.jsonl`. */
-    readonly graphPath?: string;
     /** Embedding provider for semantic memory_search; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** Local LLM for bujo capture/reflect/migrate (optional; ollama only for now). */

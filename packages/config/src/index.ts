@@ -15,8 +15,6 @@ export type {
   MemoryLlmConfig,
   MemoryMode,
   MemoryRitualConfig,
-  MemoryScope,
-  MemoryToolsConfig,
   MemoryWriteMode,
   MonoAgentConfig,
   PermissionMode,

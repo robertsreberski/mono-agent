@@ -27,10 +27,7 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_MCP_CONFIG_PATH: "mcp.json",
         MONO_AGENT_MEMORY_PATH: "memory.md",
         MONO_AGENT_MEMORY_WRITE_MODE: "append-host-summary",
-        MONO_AGENT_MEMORY_SCOPE: "single-file",
         MONO_AGENT_MEMORY_MAX_BYTES: "2048",
-        MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
-        MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND: "true",
         MONO_AGENT_ARTIFACT_DIR: "artifacts",
         MONO_AGENT_TRACE_REGISTRY_DIR: "trace-registry",
         MONO_AGENT_TRACE_SOURCE_ID: "agent-one",
@@ -48,17 +45,10 @@ describe("loadMonoAgentConfig", () => {
       skillsRoot: "/repo/skills",
       selectedSkills: ["research", "review"],
     });
-    expect(config.memory).toEqual({
-      mode: "lite",
-      path: "/repo/memory.md",
-      maxBytes: 2048,
-      scope: "single-file",
-      writeMode: "append-host-summary",
-      tools: {
-        enabled: true,
-        allowJournalAppend: true,
-      },
-    });
+    expect(config.memory).toMatchObject({ mode: "lite", path: "/repo/memory.md", writeMode: "append-host-summary" });
+    expect(config.memory).not.toHaveProperty("scope");
+    expect(config.memory).not.toHaveProperty("graphPath");
+    expect(config.memory).not.toHaveProperty("tools");
     expect(config.tools).toEqual({
       allowedTools: ["Read", "Grep"],
       disallowedTools: ["Bash"],
@@ -178,18 +168,17 @@ describe("loadMonoAgentConfig", () => {
     expect(config.providers?.piAuthPath).toBe("/tmp/pi-auth.json");
   });
 
-  it("rejects journal append for memory tools that are not enabled", () => {
-    expect(() =>
-      loadMonoAgentConfig({
-        cwd: "/repo",
-        env: {
-          ...baseEnv,
-          MONO_AGENT_MEMORY_PATH: "memory",
-          MONO_AGENT_MEMORY_MODE: "journal",
-          MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND: "true",
-        },
-      }),
-    ).toThrow(MonoAgentConfigError);
+  it("ignores the retired MONO_AGENT_MEMORY_SCOPE / _TOOLS_* / _GRAPH_PATH env vars", () => {
+    const config = loadMonoAgentConfig({
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem",
+        MONO_AGENT_MEMORY_SCOPE: "per-conversation",
+        MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
+        MONO_AGENT_MEMORY_GRAPH_PATH: "g.jsonl" },
+      cwd: "/repo",
+    });
+    expect(config.memory).not.toHaveProperty("scope");
+    expect(config.memory).not.toHaveProperty("tools");
+    expect(config.memory).not.toHaveProperty("graphPath");
   });
 
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {
@@ -465,20 +454,6 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
-  it("loads the journal memory graph path from env", () => {
-    const config = loadMonoAgentConfig({
-      cwd: "/repo",
-      env: {
-        ...baseEnv,
-        MONO_AGENT_MEMORY_PATH: "memory",
-        MONO_AGENT_MEMORY_MODE: "journal",
-        MONO_AGENT_MEMORY_GRAPH_PATH: "memory/entities.jsonl",
-      },
-    });
-
-    expect(config.memory?.graphPath).toBe("/repo/memory/entities.jsonl");
-  });
-
   it("loads memory embeddings from env with the Ollama default model", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -542,10 +517,9 @@ describe("loadMonoAgentConfig", () => {
     throw new Error("Expected openai embeddings without an api key to fail.");
   });
 
-  it("rejects memory embeddings and graph env without a memory path", () => {
+  it("rejects memory embeddings env without a memory path", () => {
     for (const env of [
       { MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama" },
-      { MONO_AGENT_MEMORY_GRAPH_PATH: "graph.jsonl" },
     ]) {
       try {
         loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
