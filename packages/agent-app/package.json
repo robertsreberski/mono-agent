@@ -14,7 +14,8 @@
     }
   },
   "bin": {
-    "mono-agent": "./dist/cli.js"
+    "mono-agent": "./dist/cli.js",
+    "mono-agent-self-capabilities": "./dist/self-capabilities-main.js"
   },
   "files": [
     "dist",
@@ -27,6 +28,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@mono-agent/a2a-adapter": "workspace:0.3.0",
     "@mono-agent/agent-contracts": "workspace:0.3.0",
     "@mono-agent/agent-host": "workspace:0.3.0",
@@ -40,7 +42,8 @@
     "@mono-agent/slack-adapter": "workspace:0.3.0",
     "@mono-agent/telegram-adapter": "workspace:0.3.0",
     "@mono-agent/webhook-adapter": "workspace:0.3.0",
-    "@mono-agent/whatsapp-adapter": "workspace:0.3.0"
+    "@mono-agent/whatsapp-adapter": "workspace:0.3.0",
+    "zod": "^4.4.3"
   },
   "publishConfig": {
     "access": "public"

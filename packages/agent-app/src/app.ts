@@ -14,6 +14,7 @@ import {
   createConfiguredMemory,
 } from "@mono-agent/agent-host";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, AgentRequestBase, AgentResponse } from "@mono-agent/agent-contracts";
 import { registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
@@ -36,6 +37,10 @@ import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import { startMemoryRituals } from "./memory-rituals.js";
 import type { RunningRituals } from "./memory-rituals.js";
+import {
+  createSelfCapabilitiesRuntimeExtension,
+  resolveSelfCapabilitiesSettings,
+} from "./self-capabilities.js";
 
 export interface MonoAgentAppOptions {
   readonly env?: Record<string, string | undefined>;
@@ -191,6 +196,8 @@ class MonoAgentAppController implements MonoAgentApp {
   private sharedMemory: ReturnType<typeof createConfiguredMemory> = undefined;
   private sharedMemoryBuilt = false;
   private configApplyTail: Promise<void> = Promise.resolve();
+  private selfCapabilitiesReloadScheduled = false;
+  private selfCapabilitiesPendingReloadToken: string | undefined;
   private stopped = false;
 
   constructor(input: MonoAgentAppControllerInput) {
@@ -467,7 +474,7 @@ class MonoAgentAppController implements MonoAgentApp {
     }
 
     try {
-      const responder = this.buildResponder(coreConfig);
+      const responder = await this.buildResponder(coreConfig);
       const runningChannel = await driver.start({
         config,
         coreConfig,
@@ -509,17 +516,69 @@ class MonoAgentAppController implements MonoAgentApp {
     }
   }
 
-  private buildResponder(coreConfig: MonoAgentConfig): AgentResponder {
+  private async buildResponder(coreConfig: MonoAgentConfig): Promise<AgentResponder> {
     const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
     const memory = this.memoryStore(coreConfig, runtime);
-    return createConfiguredAgentResponder({
+    const runtimeOptionsForRequest = await this.selfCapabilitiesRuntimeOptions(coreConfig);
+    const responder = createConfiguredAgentResponder({
       config: coreConfig,
       runtime,
       ...(memory !== undefined && { memory }),
+      ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
     });
+    return runtimeOptionsForRequest === undefined
+      ? responder
+      : this.wrapResponderForSelfCapabilitiesReload(responder);
+  }
+
+  private async selfCapabilitiesRuntimeOptions(coreConfig: MonoAgentConfig): Promise<Parameters<typeof createConfiguredAgentResponder>[0]["runtimeOptionsForRequest"] | undefined> {
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const settings = await resolveSelfCapabilitiesSettings(input, coreConfig);
+    if (!settings.enabled) {
+      return undefined;
+    }
+    this.logger?.info?.("Self-capability authoring tools enabled.", { mode: settings.mode });
+    return createSelfCapabilitiesRuntimeExtension(settings, (token) => {
+      this.selfCapabilitiesPendingReloadToken = token;
+    });
+  }
+
+  private wrapResponderForSelfCapabilitiesReload(responder: AgentResponder): AgentResponder {
+    return {
+      respond: async (
+        request: AgentRequestBase,
+        stream: AgentMessageStream,
+      ): Promise<AgentResponse> => {
+        try {
+          return await responder.respond(request, stream);
+        } finally {
+          const token = this.selfCapabilitiesPendingReloadToken;
+          this.selfCapabilitiesPendingReloadToken = undefined;
+          if (token !== undefined) {
+            this.scheduleSelfCapabilitiesReload(token);
+          }
+        }
+      },
+    };
+  }
+
+  private scheduleSelfCapabilitiesReload(token: string): void {
+    if (this.stopped || this.selfCapabilitiesReloadScheduled) {
+      return;
+    }
+    this.selfCapabilitiesReloadScheduled = true;
+    setTimeout(() => {
+      this.selfCapabilitiesReloadScheduled = false;
+      if (this.stopped) {
+        return;
+      }
+      void this.applyConfigChange(`self-capabilities:${token.slice(0, 12)}`).catch((error: unknown) => {
+        this.logger?.error?.("Self-capability reload failed.", { reason: reasonOf(error) });
+      });
+    }, 0);
   }
 
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */

@@ -17,7 +17,7 @@ mono-agent validate
 mono-agent start
 ```
 
-`init` scaffolds `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs the operator console, traceability, and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status.
+`init` scaffolds `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, guarded self-capability authoring, and observability. `validate` reports every section before anything starts; `start` runs the operator console, traceability, and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status.
 
 ## Skill-Based Composition Guide
 
@@ -217,6 +217,11 @@ pnpm --filter @mono-agent/<package> run test
 - Tool policy is explicit and fail-closed.
 - Sandbox policy is explicit, fail-closed by default, and routes runtime-owned process execution through a native sandbox engine when configured.
 - Memory writes are host-owned and optional.
+- Self-capability authoring is opt-in, proposal-first by default, limited to the
+  agent folder, audited under `.mono-agent/self-capabilities/`, and reloaded
+  after the current response rather than mid-turn. Model-visible create tools
+  require both `mode: "apply"` and
+  `MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN`.
 - Fixtures and fake runtimes are for tests only, not product-runtime substitutes.
 
 ## Layered Workflow
