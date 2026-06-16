@@ -60,6 +60,15 @@ describe("initMonoAgentFolder", () => {
     expect(identity).toContain("`CLAUDE.md`");
   });
 
+  it("writes bujo memory config when memory is 'bujo'", async () => {
+    const result = await initMonoAgentFolder({ dir, memory: "bujo" });
+
+    const config = JSON.parse(await readFile(result.configPath, "utf8"));
+    expect(config.memory).toMatchObject({ mode: "bujo" });
+    // bujo uses a directory path (like journal), not a single file
+    expect(config.memory.path).toContain(".mono-agent/memory");
+  });
+
   it("never overwrites existing files", async () => {
     const configPath = join(dir, "mono-agent.config.json");
     await writeFile(configPath, JSON.stringify({ runtime: { model: "codex:gpt-5.5" } }));

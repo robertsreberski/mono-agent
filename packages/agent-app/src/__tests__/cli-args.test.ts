@@ -100,6 +100,12 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--port", "no"])).toThrow(/--port/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
   });
+
+  it("accepts --memory bujo", () => {
+    const result = parseCliArgs(["init", "--memory", "bujo"]);
+    expect(result.command).toBe("init");
+    expect(result.memory).toBe("bujo");
+  });
 });
 
 describe("loadCliEnvFile", () => {

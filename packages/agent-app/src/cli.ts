@@ -32,7 +32,7 @@ interface ParsedCliArgs {
   readonly port?: number;
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
-  readonly memory?: "markdown" | "journal";
+  readonly memory?: "markdown" | "journal" | "bujo";
   readonly envFile?: string;
   readonly target?: InstallSkillTarget;
   readonly noConsole: boolean;
@@ -60,7 +60,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let port: number | undefined;
   let model: string | undefined;
   let fallbackModels: readonly string[] | undefined;
-  let memory: "markdown" | "journal" | undefined;
+  let memory: "markdown" | "journal" | "bujo" | undefined;
   let envFile: string | undefined;
   let target: InstallSkillTarget | undefined;
   let noConsole = false;
@@ -95,8 +95,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--memory": {
         const raw = requireValue(rest, ++i, flag);
-        if (raw !== "markdown" && raw !== "journal") {
-          throw new Error("--memory must be markdown or journal.");
+        if (raw !== "markdown" && raw !== "journal" && raw !== "bujo") {
+          throw new Error("--memory must be markdown, journal, or bujo.");
         }
         memory = raw;
         break;
@@ -188,7 +188,7 @@ function requireValue(args: readonly string[], index: number, flag: string): str
 const HELP_TEXT = `mono-agent — config-first agent host
 
 Usage:
-  mono-agent init [--model <ref>] [--fallback-models <csv>] [--memory markdown|journal]
+  mono-agent init [--model <ref>] [--fallback-models <csv>] [--memory markdown|journal|bujo]
       Scaffold mono-agent.config.json, IDENTITY.md, and .mono-agent/ in the
       current folder. Existing files are never overwritten.
 

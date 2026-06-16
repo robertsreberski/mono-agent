@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describeMonoRuntimeSupport } from "@mono-agent/runtime-adapter";
@@ -53,7 +53,7 @@ export async function validateMonoAgentFolder(
   if (coreConfig !== undefined) {
     sections.push(runtimeSection(coreConfig));
     sections.push(await contextSection(coreConfig));
-    sections.push(memorySection(coreConfig));
+    sections.push(await memorySection(coreConfig));
     sections.push(await toolsSection(coreConfig));
     sections.push(sandboxSection(coreConfig));
   }
@@ -135,17 +135,90 @@ async function contextSection(config: MonoAgentConfig): Promise<ValidationSectio
   return { id: "context", label: "Context & skills", status, details };
 }
 
-function memorySection(config: MonoAgentConfig): ValidationSection {
+async function memorySection(config: MonoAgentConfig): Promise<ValidationSection> {
   if (config.memory === undefined) {
     return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
   }
-  const details = [
+  const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,
   ];
   if (config.memory.tools?.enabled === true) {
     details.push(`Memory MCP tools enabled${config.memory.tools.allowJournalAppend ? " (journal append allowed)" : ""}.`);
   }
+
+  if (config.memory.mode === "bujo") {
+    const warns = await bujoLivenessWarnings(config.memory);
+    if (warns.length > 0) {
+      return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...warns] };
+    }
+  }
+
   return { id: "memory", label: "Memory", status: "ok", details };
+}
+
+const BUJO_PROBE_TIMEOUT_MS = 3_000;
+
+/** Probes Ollama /api/tags and returns a sorted list of model names, or throws. */
+async function fetchOllamaModels(endpoint: string): Promise<string[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => { ctrl.abort(); }, BUJO_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${endpoint}/api/tags`, { signal: ctrl.signal });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as { models?: { name?: unknown }[] };
+    return (data.models ?? []).flatMap((m) => (typeof m.name === "string" ? [m.name] : []));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function bujoLivenessWarnings(
+  memory: NonNullable<MonoAgentConfig["memory"]>,
+): Promise<string[]> {
+  const warns: string[] = [];
+  const endpoint = (memory.embeddings?.endpoint ?? "http://localhost:11434").replace(/\/$/u, "");
+  const embeddingsModel = memory.embeddings?.model ?? "nomic-embed-text:v1.5";
+
+  // 1. Memory root writable
+  try {
+    await mkdir(memory.path, { recursive: true });
+  } catch (err) {
+    warns.push(
+      `[WARN] bujo memory root is not writable: ${memory.path} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
+    );
+  }
+
+  // 2. Embeddings reachable + model pulled
+  let ollamaModels: string[] | undefined;
+  try {
+    ollamaModels = await fetchOllamaModels(endpoint);
+  } catch (err) {
+    warns.push(
+      `[WARN] Ollama not reachable at ${endpoint}; bujo memory cannot embed and will fail at runtime (${err instanceof Error ? err.message : String(err)}). Start Ollama or fix the endpoint.`,
+    );
+  }
+
+  if (ollamaModels !== undefined) {
+    if (!ollamaModels.includes(embeddingsModel)) {
+      warns.push(
+        `[WARN] Embeddings model ${embeddingsModel} not pulled — run \`ollama pull ${embeddingsModel}\`.`,
+      );
+    }
+
+    // 3. Chat LLM model (if configured)
+    if (memory.llm?.provider === "ollama") {
+      const chatModel = memory.llm.model;
+      if (!ollamaModels.includes(chatModel)) {
+        warns.push(
+          `[WARN] Chat LLM model ${chatModel} not pulled — run \`ollama pull ${chatModel}\`.`,
+        );
+      }
+    }
+  }
+
+  return warns;
 }
 
 async function toolsSection(config: MonoAgentConfig): Promise<ValidationSection> {
