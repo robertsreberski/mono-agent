@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/memory-mcp",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "MCP stdio server exposing the Bullet-Journal memory engine: recall, capture, and note over the SQLite substrate.",
   "type": "module",
   "license": "UNLICENSED",
@@ -17,9 +17,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@mono-agent/memory-bujo": "workspace:0.2.2",
-    "@mono-agent/memory-search": "workspace:0.2.2",
-    "@mono-agent/memory-store": "workspace:0.2.2",
+    "@mono-agent/memory-bujo": "workspace:0.3.0",
+    "@mono-agent/memory-search": "workspace:0.3.0",
+    "@mono-agent/memory-store": "workspace:0.3.0",
     "zod": "^4.4.3"
   },
   "publishConfig": { "access": "public" }

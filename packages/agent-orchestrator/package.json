@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/agent-orchestrator",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Reusable collaborator tool orchestration for agent runtimes.",
   "type": "module",
   "license": "UNLICENSED",
@@ -24,8 +24,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@mono-agent/agent-contracts": "workspace:0.2.2",
-    "@mono-agent/settings": "workspace:0.2.2",
+    "@mono-agent/agent-contracts": "workspace:0.3.0",
+    "@mono-agent/settings": "workspace:0.3.0",
     "zod": "^4.4.3"
   },
   "publishConfig": {

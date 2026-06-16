@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/openai-agents-runtime",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Adapts @openai/agents to the runtime contract.",
   "type": "module",
   "license": "UNLICENSED",
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@openai/agents": "^0.11.4",
-    "@mono-agent/runtime-adapter": "workspace:0.2.2"
+    "@mono-agent/runtime-adapter": "workspace:0.3.0"
   },
   "devDependencies": {
     "vitest": "^3.2.4"
