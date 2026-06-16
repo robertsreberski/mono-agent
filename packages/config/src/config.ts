@@ -372,7 +372,15 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   const writeMode = readChoice<MemoryWriteMode>(env.MONO_AGENT_MEMORY_WRITE_MODE, "MONO_AGENT_MEMORY_WRITE_MODE", [
     "disabled",
     "append-host-summary",
+    "capture",
   ], "disabled", invalidEnv);
+  if (writeMode === "capture" && mode !== "bujo") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `MONO_AGENT_MEMORY_WRITE_MODE "capture" requires MONO_AGENT_MEMORY_MODE "bujo" (it needs a chat LLM).`,
+      { env: "MONO_AGENT_MEMORY_WRITE_MODE" },
+    );
+  }
   const embeddings = readMemoryEmbeddingsConfig(env);
   const llm = readMemoryLlmConfig(env);
   const dim = readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 });

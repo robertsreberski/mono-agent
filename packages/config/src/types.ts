@@ -4,7 +4,7 @@ import type { RedactedSecretValue } from "@mono-agent/settings";
 
 import type { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
 
-export type MemoryWriteMode = "disabled" | "append-host-summary";
+export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
 export type MemoryMode = "lite" | "journal" | "bujo";
 /** Configuration for a bujo-tier auto-ritual (reflection or migration). */
 export interface MemoryRitualConfig {

@@ -856,4 +856,32 @@ describe("loadMonoAgentConfig", () => {
     expect(config.memory?.migration).toEqual({ enabled: true });
     expect(config.memory?.migration?.cron).toBeUndefined();
   });
+
+  it("accepts memory.writeMode 'capture' with mode 'bujo'", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "./mem",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_WRITE_MODE: "capture",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+      },
+    });
+    expect(config.memory?.writeMode).toBe("capture");
+  });
+
+  it("rejects memory.writeMode 'capture' unless mode is 'bujo'", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "./mem",
+          MONO_AGENT_MEMORY_MODE: "journal",
+          MONO_AGENT_MEMORY_WRITE_MODE: "capture",
+        },
+      }),
+    ).toThrow(/capture.*requires.*bujo/i);
+  });
 });

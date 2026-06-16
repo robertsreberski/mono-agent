@@ -219,6 +219,7 @@ export const memoryFieldGroup = defineFieldGroup({
       options: [
         { value: "disabled", label: "disabled" },
         { value: "append-host-summary", label: "append-host-summary" },
+        { value: "capture", label: "capture (bujo)" },
       ],
       path: ["memory", "writeMode"],
     },
