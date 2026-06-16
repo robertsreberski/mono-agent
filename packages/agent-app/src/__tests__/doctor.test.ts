@@ -329,4 +329,75 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
     expect(report.ok).toBe(true);
   });
+
+  it("reports ritual cadence for bujo with a chat LLM (auto-scheduled)", async () => {
+    stubFetch(["nomic-embed-text:v1.5", "qwen3:6b"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/rituals/iu);
+    expect(text).toContain("0 3 * * *"); // default reflection cron
+    expect(text).toContain("0 4 1 * *"); // default migration cron
+    expect(text).toMatch(/auto/iu);
+  });
+
+  it("reports manual rituals for bujo without a chat LLM", async () => {
+    stubFetch(["nomic-embed-text:v1.5"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        // No llm config
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/rituals/iu);
+    expect(text).toMatch(/manual/iu);
+    expect(text).toMatch(/no chat model/iu);
+  });
+
+  it("reports custom ritual crons when configured", async () => {
+    stubFetch(["nomic-embed-text:v1.5", "qwen3:6b"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+        reflection: { cron: "0 2 * * *" },
+        migration: { enabled: false },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toContain("0 2 * * *"); // custom reflection cron
+    expect(text).toMatch(/migration disabled/iu);
+  });
 });

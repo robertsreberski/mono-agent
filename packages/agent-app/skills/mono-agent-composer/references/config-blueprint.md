@@ -63,26 +63,32 @@ my-agent/
   },
 
   // Memory strategy. Omit the section for no memory.
+  // Three tiers over one substrate (memory-store + memory-bujo):
+  //   lite    — FTS keyword recall + rapid-log; no external deps.
+  //   journal — + hybrid recall (BM25+vector) + decay; needs Ollama embeddings.
+  //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled
+  //             reflection/migration; needs Ollama embeddings + chat model.
   "memory": {
-    "mode": "journal",                     // markdown | journal | bujo
-    "path": "./.mono-agent/memory",        // file for markdown, root dir for journal/bujo
+    "mode": "bujo",                        // lite | journal | bujo
+    "path": "./.mono-agent/memory",        // root directory for all tiers
     "writeMode": "append-host-summary",    // disabled | append-host-summary
-    "scope": "single-file",                // markdown only: single-file | per-conversation
     "maxBytes": 64000,
-    "tools": { "enabled": true, "allowJournalAppend": true }, // journal only: MCP recall tools
-    "graphPath": "./.mono-agent/memory/graph.jsonl",          // journal only; this is the default
-    "embeddings": {                        // optional for journal; required for bujo
+    "embeddings": {                        // required for journal and bujo
       "provider": "ollama",                // ollama | openai
-      "model": "nomic-embed-text:v1.5",   // bujo: use exact :v1.5 tag (pull first); journal: bare alias ok
+      "model": "nomic-embed-text:v1.5",   // use exact :v1.5 tag (pull first with ollama pull)
       "endpoint": "http://localhost:11434",
       "apiKeyEnv": "OPENAI_API_KEY",       // or inline "apiKey"; required for openai
-      "dim": 768                           // bujo: nomic-embed-text:v1.5 output dimension
+      "dim": 768                           // nomic-embed-text:v1.5 output dimension
     },
-    "llm": {                               // bujo only: optional chat model for reflect/migrate pipelines
+    "llm": {                               // required for bujo; omit for lite/journal
       "provider": "ollama",
       "model": "qwen3.6:latest",           // any local Ollama chat model; also set MONO_AGENT_LLM_MODEL for CLI
       "endpoint": "http://localhost:11434" // optional; defaults to http://localhost:11434
-    }
+    },
+    // Bujo auto-scheduler — override defaults or disable per-ritual.
+    // Rituals run in-app; no external cron or launchd needed.
+    "reflection": { "enabled": true, "cron": "0 3 * * *" },  // default: nightly 03:00
+    "migration":  { "enabled": true, "cron": "0 4 1 * *" }   // default: 1st of month 04:00
   },
 
   // Fail-closed tool policy + MCP servers. Deny wins; overlap is rejected.
@@ -216,7 +222,7 @@ my-agent/
 ## Lifecycle
 
 ```bash
-mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory markdown|journal|bujo]
+mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory lite|journal|bujo]
 mono-agent validate     # per-section report incl. sandbox, console, every channel; exit 0 means ready
 mono-agent start        # console + traceability + every configured channel
 mono-agent start --no-console   # headless (or "console": { "enabled": false })

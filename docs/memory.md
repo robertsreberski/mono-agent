@@ -1,71 +1,127 @@
 # Memory — Operator Guide
 
-This guide covers the three memory modes available in mono-agent, with complete setup
-instructions for the new **bujo** mode.
+This guide covers the three memory tiers available in mono-agent, all backed by the
+same `@mono-agent/memory-store` + `@mono-agent/memory-bujo` substrate. Pick the tier
+that matches your external-dependency budget; all tiers share the same config shape —
+only `memory.mode` and the optional embeddings/LLM blocks differ.
 
-## Memory Modes
+## Memory Tiers
 
-### `markdown` (default)
+| Capability | `lite` | `journal` | `bujo` |
+| --- | --- | --- | --- |
+| FTS keyword recall | yes | yes | yes |
+| Rapid-log capture (host summaries appended) | yes | yes | yes |
+| Hybrid recall (BM25 + vector RRF) | — | yes | yes |
+| Salience decay | — | yes | yes |
+| LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP) | — | — | yes |
+| Entity graph | — | — | yes |
+| Reflection (decay + insight synthesis) | — | — | yes |
+| Monthly migration (promote/reschedule/cluster/forget) | — | — | yes |
+| Auto-scheduled rituals (in-app scheduler) | — | — | yes |
+| Living `index.md` + `future-log.md` | — | — | yes |
+| **Requires Ollama embeddings** | no | **yes** | **yes** |
+| **Requires chat model** | no | no | **yes** |
 
-A single markdown file (or one per conversation when `scope: "per-conversation"`) is
-loaded into every prompt. Host summaries can be appended after each run
-(`writeMode: "append-host-summary"`). Suitable when you want lightweight, predictable
-context injection and don't need cross-conversation recall. No external dependencies.
+### `lite`
+
+FTS keyword recall plus rapid-log daily capture. No external dependencies — SQLite
+is bundled. Suitable when you want lightweight, predictable context injection without
+running Ollama. Host summaries can be appended after each run
+(`writeMode: "append-host-summary"`).
 
 ### `journal`
 
-A daily markdown note (today's note always in context) plus a JSONL entity graph whose
-salience digest folds into context. Optional MCP recall tools (`memory_read_day`,
-`memory_list_days`, `memory_grep`, `memory_search`, `entity_get`) let the runtime query
-past notes. Semantic `memory_search` is available when `memory.embeddings` is configured.
-Good for personal agents that should remember past conversations without structured indexing.
+Adds hybrid recall (BM25 + vector RRF) and salience decay on top of the lite tier.
+Requires a locally running Ollama instance with the
+`nomic-embed-text:v1.5` embeddings model. No chat model needed.
 
 ### `bujo` (BuJo — Bullet Journal memory)
 
-A fully intelligent memory system backed by a SQLite index. Captures agent observations
+The full tier: everything in `journal` plus an LLM-augmented capture-and-reconcile
+pipeline, entity graph, reflection, and migration rituals. Captures agent observations
 and conversation summaries into daily markdown notes, reconciles them against existing
 memories (classifying each entry as ADD / UPDATE / SUPERSEDE / NOOP to avoid
 duplication), and maintains hybrid recall via BM25 full-text + vector RRF with recency
-and salience weighting. A **reflection** pass applies temporal decay, synthesises
-cross-entry insights (with provenance links), and surfaces overdue future-log items; a
-**migration** pass promotes active memories, reschedules recurring patterns, clusters
-related entries, and forgets stale ones (bi-temporal — never deleted). Both produce a
-living `index.md` and `future-log.md` at the memory root.
+and salience weighting.
 
-Bujo mode requires a locally running Ollama instance for embeddings. An optional local
-chat model (also via Ollama) powers the capture-reconcile, reflection, and migration
-pipelines; without it the recall + rapid-log capture still work but the LLM-augmented
-steps are skipped.
+A **reflection** pass applies temporal decay, synthesises cross-entry insights (with
+provenance links), and surfaces overdue future-log items. A **migration** pass promotes
+active memories, reschedules recurring patterns, clusters related entries, and forgets
+stale ones (bi-temporal — never deleted). Both produce a living `index.md` and
+`future-log.md` at the memory root.
 
-> **Runtime scope (current).** At runtime, `mode: "bujo"` provides **hybrid recall** (an
-> always-in-context curated block) plus **rapid-log capture** (each turn's host summary is
-> appended to today's daily note when `writeMode: "append-host-summary"`). The
-> **intelligent write path** (distill → reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity
-> extraction) and the **reflection/migration rituals** run **via the `memory-bujo` CLI**
-> (or the `BujoMemoryStore.capture()/reflect()/migrate()` API) — they are not yet
-> auto-invoked per turn or auto-scheduled. See [Automating the Rituals](#automating-the-rituals)
-> to run them on a schedule.
+The reflection and migration rituals are **auto-scheduled in-app** for the `bujo` tier:
+the agent-app scheduler runs them at the configured cron cadence (default: nightly
+reflect at `0 3 * * *`, monthly migrate at `0 4 1 * *`). No external cron or launchd
+setup is required. Run `mono-agent validate` to confirm the cadence being used.
+
+Requires Ollama for embeddings (`nomic-embed-text:v1.5`, dim 768) and a local chat
+model for the LLM pipelines.
 
 ## Config
+
+### Lite tier (no external deps)
 
 ```jsonc
 {
   "memory": {
-    "mode": "bujo",
+    "mode": "lite",
     "path": "./.mono-agent/memory",      // root directory; created on first run
     "writeMode": "append-host-summary",  // disabled | append-host-summary
-    "maxBytes": 64000,                   // context-load byte cap
+    "maxBytes": 64000                    // context-load byte cap
+  }
+}
+```
+
+### Journal tier (embeddings, no chat model)
+
+```jsonc
+{
+  "memory": {
+    "mode": "journal",
+    "path": "./.mono-agent/memory",
+    "writeMode": "append-host-summary",
+    "maxBytes": 64000,
     "embeddings": {
       "provider": "ollama",
       "model": "nomic-embed-text:v1.5",  // IMPORTANT: use the exact :v1.5 tag — the
                                          // bare "nomic-embed-text" alias may not exist
       "endpoint": "http://localhost:11434",
       "dim": 768                         // nomic-embed-text:v1.5 output dimension
-    },
-    "llm": {                             // optional; omit to disable LLM-augmented pipelines
+    }
+  }
+}
+```
+
+### Bujo tier (embeddings + chat model + auto-rituals)
+
+```jsonc
+{
+  "memory": {
+    "mode": "bujo",
+    "path": "./.mono-agent/memory",
+    "writeMode": "append-host-summary",
+    "maxBytes": 64000,
+    "embeddings": {
       "provider": "ollama",
-      "model": "qwen3.6:latest",         // any local chat model; set MONO_AGENT_LLM_MODEL
+      "model": "nomic-embed-text:v1.5",
+      "endpoint": "http://localhost:11434",
+      "dim": 768
+    },
+    "llm": {                             // required for bujo LLM pipelines
+      "provider": "ollama",
+      "model": "qwen3.6:latest",         // any local chat model; set MONO_AGENT_LLM_MODEL for CLI
       "endpoint": "http://localhost:11434"
+    },
+    // Reflection and migration are auto-scheduled in-app for the bujo tier.
+    // Override the default cron expressions here if needed:
+    "reflection": {
+      "enabled": true,
+      "cron": "0 3 * * *"              // nightly at 03:00 (default)
+    },
+    "migration": {
+      "enabled": true,
+      "cron": "0 4 1 * *"             // 1st of each month at 04:00 (default)
     }
   }
 }
@@ -73,29 +129,72 @@ steps are skipped.
 
 ## Prerequisites
 
+### Lite tier
+
+No external prerequisites. SQLite is bundled.
+
+### Journal tier
+
 **Embeddings model (required):**
 
 ```bash
 ollama pull nomic-embed-text:v1.5
 ```
 
-Use the exact `:v1.5` tag. The bare alias `nomic-embed-text` (without a tag) may not be
-present in your Ollama installation and will cause the embeddings provider to fail at
-startup. `mono-agent validate` checks for this exact tag.
+Use the exact `:v1.5` tag. The bare alias `nomic-embed-text` (without a tag) may not
+be present in your Ollama installation and will cause the embeddings provider to fail
+at startup. `mono-agent validate` checks for this exact tag.
 
-**Chat model (optional — for capture/reflection/migration):**
+### Bujo tier
+
+**Embeddings model (required):**
+
+```bash
+ollama pull nomic-embed-text:v1.5
+```
+
+**Chat model (required for LLM pipelines):**
 
 ```bash
 ollama pull qwen3.6:latest   # or any local chat model you prefer
 ```
 
 Set `MONO_AGENT_LLM_MODEL` to the model name when running the CLI reflect/migrate
-commands. Without a chat model the bujo store still captures and indexes entries; it
-just skips LLM-augmented reconciliation, insight synthesis, and migration clustering.
+commands manually. Without a chat model the `bujo` tier cannot start the LLM-augmented
+reconciliation, insight synthesis, and migration steps.
+
+## Auto-Scheduler (bujo tier)
+
+When `memory.mode` is `"bujo"` the agent-app starts an **in-app ritual scheduler**
+alongside the other channels. It runs:
+
+- `reflect` at the `memory.reflection.cron` cadence (default `0 3 * * *` — nightly at
+  03:00). Decay + insight synthesis; never throws — failures are logged and the
+  scheduler carries on.
+- `migrate` at the `memory.migration.cron` cadence (default `0 4 1 * *` — 1st of each
+  month at 04:00). Promote/reschedule/cluster/forget; same error isolation.
+
+Overlap protection: a new run is skipped if the previous one is still in flight.
+The scheduler starts with the app and stops cleanly on shutdown.
+
+`mono-agent validate` reports the configured cadence in the Memory section:
+
+```
+[ok] memory.mode     bujo
+[ok] reflection      0 3 * * * (next: …)
+[ok] migration       0 4 1 * * (next: …)
+```
+
+To disable a ritual while keeping the tier, set `memory.reflection.enabled: false` or
+`memory.migration.enabled: false`. Env overrides: `MONO_AGENT_MEMORY_REFLECTION_CRON`,
+`MONO_AGENT_MEMORY_REFLECTION_ENABLED`, `MONO_AGENT_MEMORY_MIGRATION_CRON`,
+`MONO_AGENT_MEMORY_MIGRATION_ENABLED`.
 
 ## CLI Subcommands
 
-The `memory-bujo` binary provides out-of-band maintenance against a bujo root:
+The `memory-bujo` binary provides out-of-band maintenance against a bujo root. It is
+available for all tiers (lite/journal/bujo) for manual runs — the auto-scheduler
+handles the routine cadence for `bujo` automatically.
 
 ```bash
 # Rebuild the SQLite index from the markdown files on disk
@@ -117,103 +216,44 @@ MONO_AGENT_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 `MONO_AGENT_LLM_ENDPOINT` overrides the Ollama endpoint for the chat model (default
 `http://localhost:11434`). The CLI reads the embeddings model from `MONO_AGENT_EMBED_MODEL`
 (default `nomic-embed-text:v1.5`) and `MONO_AGENT_EMBED_DIM` (default 768). If
-`MONO_AGENT_LLM_MODEL` is unset when running `reflect` or `migrate`, the command prints a
-clear error and exits 2.
-
-## Automating the Rituals
-
-The reflection and migration rituals are **not auto-scheduled yet** — the agent does not
-run them on its own. To get the BuJo cadence (nightly reflect, monthly migrate), schedule
-the CLI from system `cron`/`launchd` against your memory root. With `crontab -e`:
-
-```cron
-# nightly reflection (decay + insight synthesis) at 03:00
-0 3 * * *  MONO_AGENT_LLM_MODEL=qwen3.6:latest /path/to/memory-bujo reflect /path/to/memory
-# monthly migration (promote/reschedule/cluster/forget) on the 1st at 04:00
-0 4 1 * *  MONO_AGENT_LLM_MODEL=qwen3.6:latest /path/to/memory-bujo migrate /path/to/memory
-```
-
-`/path/to/memory-bujo` is the package bin (e.g. `node packages/memory-bujo/dist/cli.js`).
-Likewise, the intelligent per-turn capture (`distill`/`reconcile`) is invoked via
-`BujoMemoryStore.capture()` from the host or a scheduled job, not automatically on every
-turn — wiring it into the live turn path is a planned follow-up.
+`MONO_AGENT_LLM_MODEL` is unset when running `reflect` or `migrate`, the command prints
+a clear error and exits 2.
 
 ## Liveness Check — `mono-agent validate`
 
-When `memory.mode` is `"bujo"`, `mono-agent validate` (the agent-app doctor) runs a
-bujo-specific liveness check that confirms:
+`mono-agent validate` (the agent-app doctor) runs a memory liveness check that scales
+with the configured tier:
 
+**lite:** confirms the memory root is creatable and writable.
+
+**journal / bujo:**
 1. **Ollama reachable** — probes `GET <endpoint>/api/tags` with a short timeout.
 2. **Embeddings model pulled** — confirms `nomic-embed-text:v1.5` (or whichever
    `memory.embeddings.model` you set) appears in `/api/tags`. If absent it emits:
-   `⚠  bujo embeddings model "nomic-embed-text:v1.5" not found — run: ollama pull nomic-embed-text:v1.5`
-3. **Chat model pulled** (if `memory.llm` is configured) — same check for the chat model.
-4. **Memory root writable** — confirms `memory.path` is creatable and writable.
+   `⚠  memory embeddings model "nomic-embed-text:v1.5" not found — run: ollama pull nomic-embed-text:v1.5`
+3. **Memory root writable** — confirms `memory.path` is creatable and writable.
+
+**bujo (additional):**
+4. **Chat model pulled** (if `memory.llm` is configured) — same check for the chat
+   model.
+5. **Ritual cadence** — reports the reflection/migration cron expressions and whether
+   the scheduler will run (tier is bujo with an llm configured).
 
 Any failure emits a loud `[warn]` in the validate report's Memory section (status
-`waiting`, so the bujo warnings do not flip the overall result to `error` — run
-`validate` and read the Memory section). There is **no silent fallback**: the host owns
-`mode: "bujo"` and never downgrades to markdown. Run `mono-agent validate` before cutover
-(and after pulling models) to confirm bujo is live.
+`waiting`, so warnings do not flip the overall result to `error` — run `validate` and
+read the Memory section). There is **no silent fallback**: the host never downgrades the
+configured tier. Run `mono-agent validate` before cutover (and after pulling models) to
+confirm the tier is live.
 
 ## Composer Integration
 
-When composing an agent with `mono-agent-composer`, the composer proactively explains the
-bujo option during the memory strategy step (question 6). The following covers what the
-composer should ask and the config block it should write.
-
-### Questions the composer asks
-
-1. "Do you want intelligent, indexed memory that recalls past conversations by content and
-   recency (bujo mode), or would you prefer the simpler markdown or journal mode?"
-2. If bujo: "Which local Ollama embeddings model should power recall?
-   (default: `nomic-embed-text:v1.5` — pull it first with `ollama pull nomic-embed-text:v1.5`)"
-3. If bujo: "Do you also want a local chat model for reflection and migration
-   (e.g. `qwen3.6:latest`)? This enables LLM-augmented insight synthesis and monthly
-   cleanup. Omit to skip those pipelines for now."
-4. If bujo + chat model: "Should I configure the Ollama endpoint, or is it on the default
-   `http://localhost:11434`?"
-
-Default: if the user does not opt into bujo, write `mode: "markdown"`.
-
-### Config block written by the composer
-
-```jsonc
-// Bujo mode with embeddings only (no LLM pipeline):
-"memory": {
-  "mode": "bujo",
-  "path": "./.mono-agent/memory",
-  "writeMode": "append-host-summary",
-  "embeddings": {
-    "provider": "ollama",
-    "model": "nomic-embed-text:v1.5",
-    "dim": 768
-  }
-}
-
-// Bujo mode with embeddings + local chat model:
-"memory": {
-  "mode": "bujo",
-  "path": "./.mono-agent/memory",
-  "writeMode": "append-host-summary",
-  "embeddings": {
-    "provider": "ollama",
-    "model": "nomic-embed-text:v1.5",
-    "dim": 768
-  },
-  "llm": {
-    "provider": "ollama",
-    "model": "qwen3.6:latest"
-  }
-}
-```
-
-After writing the config, the composer appends a prerequisite note reminding the user to
-run `ollama pull nomic-embed-text:v1.5` (and the chat model pull if configured) before
-running `mono-agent validate`.
+When composing an agent with `mono-agent-composer`, the composer explains the three
+tiers during the memory strategy step (question 6). See
+`packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md` for
+the full question flow and config blocks the composer writes.
 
 ## References
 
 - Design spec: `docs/superpowers/specs/2026-06-15-memory-bujo-design.md`
-- Phase 1–4 implementation plans: `docs/superpowers/plans/2026-06-15-memory-bujo-p*.md`
-- Feature registry row: `docs/feature-registry.md` — `memory.bujo`, `memory.bujo-cli`, `memory.bujo-validate`
+- Phase 1–5 implementation plans: `docs/superpowers/plans/2026-06-15-memory-bujo-p*.md`, `docs/superpowers/plans/2026-06-16-memory-bujo-p5-tiered-offering.md`
+- Feature registry rows: `docs/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`
