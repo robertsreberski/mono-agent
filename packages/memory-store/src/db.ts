@@ -43,6 +43,10 @@ export class MemoryDb {
     }
     this.db = new BetterSqlite3(options.path);
     this.db.pragma("journal_mode = WAL");
+    // WAL gives concurrent readers + a single writer. better-sqlite3 (v11) already defaults
+    // busy_timeout to 5000ms, so a second writer (e.g. the memory-mcp process running next to a
+    // live agent) retries on a locked db instead of throwing SQLITE_BUSY. open.test.ts pins this
+    // invariant — if an upgrade ever drops the default, the test fails and we set it explicitly here.
     loadVec(this.db);
     for (const statement of migrations(vecDim)) {
       this.db.exec(statement);
@@ -58,6 +62,11 @@ export class MemoryDb {
   vecVersion(): string {
     const row = this.db.prepare("SELECT vec_version() AS v").get() as { v: string } | undefined;
     return row?.v ?? "";
+  }
+
+  /** Configured busy_timeout in ms — how long a blocked writer waits before SQLITE_BUSY. */
+  busyTimeoutMs(): number {
+    return Number(this.db.pragma("busy_timeout", { simple: true }));
   }
 
   async upsert(record: MemoryRecord): Promise<void> {
