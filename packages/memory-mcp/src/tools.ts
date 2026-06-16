@@ -12,7 +12,7 @@ export interface MemoryToolDeps {
 }
 
 export interface MemoryTools {
-  recall(args: { query: string; limit?: number }): Promise<ToolResult>;
+  recall(args: { query: string; limit?: number | undefined }): Promise<ToolResult>;
   capture(args: { text: string }): Promise<ToolResult>;
   note(args: { text: string }): Promise<ToolResult>;
 }
