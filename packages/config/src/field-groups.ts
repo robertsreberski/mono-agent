@@ -182,10 +182,10 @@ export const memoryFieldGroup = defineFieldGroup({
       id: "memory.mode",
       label: "Mode",
       description:
-        "markdown = one capped file (or per-conversation files). journal = a global daily journal whose today note is always in context, with older notes searched via tools. bujo = BuJo memory store with capture/reconcile/reflect/migrate and hybrid vector+keyword recall.",
+        "lite = FTS keyword recall only, no external dependencies. journal = hybrid vector+keyword recall with decay, needs Ollama embeddings. bujo = full BuJo store with LLM capture/reconcile/reflect/migrate + auto-scheduled rituals, needs embeddings and a local LLM.",
       kind: "select",
       options: [
-        { value: "markdown", label: "markdown" },
+        { value: "lite", label: "lite" },
         { value: "journal", label: "journal" },
         { value: "bujo", label: "bujo" },
       ],
@@ -195,7 +195,7 @@ export const memoryFieldGroup = defineFieldGroup({
       id: "memory.path",
       label: "Memory path",
       description:
-        "markdown mode: the Markdown file read/written. journal mode: the memory root directory holding daily/ notes. bujo mode: the memory root directory holding daily/ + memory.db. Leave empty to disable memory.",
+        "Memory root directory. lite/journal/bujo modes: the directory holding memory.db and daily/ rapid-log files. Leave empty to disable memory.",
       kind: "path",
       placeholder: "./MEMORY.md",
       path: ["memory", "path"],
@@ -322,6 +322,36 @@ export const memoryFieldGroup = defineFieldGroup({
       kind: "string",
       placeholder: "http://localhost:11434",
       path: ["memory", "llm", "endpoint"],
+    },
+    {
+      id: "memory.reflection.enabled",
+      label: "Reflection enabled",
+      description: "Enable the nightly bujo-tier reflection ritual (summarise and compress older memories).",
+      kind: "switch",
+      path: ["memory", "reflection", "enabled"],
+    },
+    {
+      id: "memory.reflection.cron",
+      label: "Reflection cron",
+      description: "Cron expression for the nightly reflection ritual (default `0 3 * * *` — 03:00 daily).",
+      kind: "string",
+      placeholder: "0 3 * * *",
+      path: ["memory", "reflection", "cron"],
+    },
+    {
+      id: "memory.migration.enabled",
+      label: "Migration enabled",
+      description: "Enable the monthly bujo-tier migration ritual (archive and rebalance memory).",
+      kind: "switch",
+      path: ["memory", "migration", "enabled"],
+    },
+    {
+      id: "memory.migration.cron",
+      label: "Migration cron",
+      description: "Cron expression for the monthly migration ritual (default `0 4 1 * *` — 04:00 on the 1st).",
+      kind: "string",
+      placeholder: "0 4 1 * *",
+      path: ["memory", "migration", "cron"],
     },
   ],
 });

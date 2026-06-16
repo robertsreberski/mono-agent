@@ -6,10 +6,15 @@ import type { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./fie
 
 export type MemoryWriteMode = "disabled" | "append-host-summary";
 export type MemoryScope = "single-file" | "per-conversation";
-export type MemoryMode = "markdown" | "journal" | "bujo";
+export type MemoryMode = "lite" | "journal" | "bujo";
 export interface MemoryToolsConfig {
   readonly enabled: boolean;
   readonly allowJournalAppend: boolean;
+}
+/** Configuration for a bujo-tier auto-ritual (reflection or migration). */
+export interface MemoryRitualConfig {
+  readonly enabled?: boolean;
+  readonly cron?: string;
 }
 export type MemoryEmbeddingsProvider = "ollama" | "openai";
 export interface MemoryEmbeddingsConfig {
@@ -77,6 +82,10 @@ export interface MonoAgentConfig {
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** Local LLM for bujo capture/reflect/migrate (optional; ollama only for now). */
     readonly llm?: MemoryLlmConfig;
+    /** Bujo-tier reflection ritual (nightly summarise/compress). Default cron: `0 3 * * *`. */
+    readonly reflection?: MemoryRitualConfig;
+    /** Bujo-tier migration ritual (monthly archive/rebalance). Default cron: `0 4 1 * *`. */
+    readonly migration?: MemoryRitualConfig;
   };
   readonly tools: {
     readonly allowedTools: readonly string[];

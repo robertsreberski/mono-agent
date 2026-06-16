@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryMode, MemoryRitualConfig, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -366,10 +366,10 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   }
 
   const mode = readChoice<MemoryMode>(env.MONO_AGENT_MEMORY_MODE, "MONO_AGENT_MEMORY_MODE", [
-    "markdown",
+    "lite",
     "journal",
     "bujo",
-  ], "markdown", invalidEnv);
+  ], "lite", invalidEnv);
   const writeMode = readChoice<MemoryWriteMode>(env.MONO_AGENT_MEMORY_WRITE_MODE, "MONO_AGENT_MEMORY_WRITE_MODE", [
     "disabled",
     "append-host-summary",
@@ -383,6 +383,8 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   const embeddings = readMemoryEmbeddingsConfig(env);
   const llm = readMemoryLlmConfig(env);
   const dim = readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 });
+  const reflection = readMemoryRitualConfig(env, "REFLECTION");
+  const migration = readMemoryRitualConfig(env, "MIGRATION");
 
   const embeddingsWithDim =
     embeddings === undefined
@@ -401,6 +403,8 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     ...(graphPath === undefined ? {} : { graphPath }),
     ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
     ...(llm === undefined ? {} : { llm }),
+    ...(reflection === undefined ? {} : { reflection }),
+    ...(migration === undefined ? {} : { migration }),
   };
 }
 
@@ -486,6 +490,34 @@ function readMemoryToolsConfig(env: Record<string, string | undefined>): MemoryT
     );
   }
   return { enabled, allowJournalAppend };
+}
+
+/**
+ * Reads an optional ritual config block (reflection or migration) from env.
+ * Returns undefined when neither `_ENABLED` nor `_CRON` is present — the
+ * object is only added to memory config when the user explicitly configures it.
+ *
+ * @param suffix - uppercase discriminator: "REFLECTION" or "MIGRATION"
+ */
+function readMemoryRitualConfig(
+  env: Record<string, string | undefined>,
+  suffix: "REFLECTION" | "MIGRATION",
+): MemoryRitualConfig | undefined {
+  const enabledKey = `MONO_AGENT_MEMORY_${suffix}_ENABLED`;
+  const cronKey = `MONO_AGENT_MEMORY_${suffix}_CRON`;
+  const hasEnabled = normalizeOptionalString(env[enabledKey]) !== undefined;
+  const hasCron = normalizeOptionalString(env[cronKey]) !== undefined;
+  if (!hasEnabled && !hasCron) {
+    return undefined;
+  }
+  const enabled = hasEnabled
+    ? readBoolean(env[enabledKey], enabledKey, true, invalidEnv)
+    : undefined;
+  const cron = normalizeOptionalString(env[cronKey]);
+  return {
+    ...(enabled === undefined ? {} : { enabled }),
+    ...(cron === undefined ? {} : { cron }),
+  };
 }
 
 function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["traceability"] {

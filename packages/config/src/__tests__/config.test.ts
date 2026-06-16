@@ -49,7 +49,7 @@ describe("loadMonoAgentConfig", () => {
       selectedSkills: ["research", "review"],
     });
     expect(config.memory).toEqual({
-      mode: "markdown",
+      mode: "lite",
       path: "/repo/memory.md",
       maxBytes: 2048,
       scope: "single-file",
@@ -753,5 +753,133 @@ describe("loadMonoAgentConfig", () => {
         },
       }),
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
+  it("rejects the removed 'markdown' mode from env", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "markdown",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
+  it("loads memory.mode lite from env (FTS-only, no embeddings required)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "lite",
+      },
+    });
+
+    expect(config.memory?.mode).toBe("lite");
+    expect(config.memory?.embeddings).toBeUndefined();
+    expect(config.memory?.llm).toBeUndefined();
+  });
+
+  it("defaults memory mode to lite when path is set but mode is unset", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+      },
+    });
+
+    expect(config.memory?.mode).toBe("lite");
+  });
+
+  it("loads memory.mode journal from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      },
+    });
+
+    expect(config.memory?.mode).toBe("journal");
+  });
+
+  it("loads memory.reflection from env when enabled and cron are set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
+        MONO_AGENT_MEMORY_REFLECTION_CRON: "0 3 * * *",
+      },
+    });
+
+    expect(config.memory?.reflection).toEqual({ enabled: true, cron: "0 3 * * *" });
+  });
+
+  it("loads memory.migration from env when enabled and cron are set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_MIGRATION_ENABLED: "false",
+        MONO_AGENT_MEMORY_MIGRATION_CRON: "0 4 1 * *",
+      },
+    });
+
+    expect(config.memory?.migration).toEqual({ enabled: false, cron: "0 4 1 * *" });
+  });
+
+  it("omits ritual blocks when neither enabled nor cron env vars are set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+      },
+    });
+
+    expect(config.memory?.reflection).toBeUndefined();
+    expect(config.memory?.migration).toBeUndefined();
+  });
+
+  it("loads a ritual block with only cron set (enabled omitted)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_REFLECTION_CRON: "30 2 * * *",
+      },
+    });
+
+    expect(config.memory?.reflection).toEqual({ cron: "30 2 * * *" });
+    expect(config.memory?.reflection?.enabled).toBeUndefined();
+  });
+
+  it("loads a ritual block with only enabled set (cron omitted)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_MIGRATION_ENABLED: "true",
+      },
+    });
+
+    expect(config.memory?.migration).toEqual({ enabled: true });
+    expect(config.memory?.migration?.cron).toBeUndefined();
   });
 });

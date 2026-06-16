@@ -141,6 +141,18 @@ export function layerJsonOntoEnv(
   if (json.memory?.llm?.endpoint !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_ENDPOINT = json.memory.llm.endpoint;
   }
+  if (json.memory?.reflection?.enabled !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_REFLECTION_ENABLED = String(json.memory.reflection.enabled);
+  }
+  if (json.memory?.reflection?.cron !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_REFLECTION_CRON = json.memory.reflection.cron;
+  }
+  if (json.memory?.migration?.enabled !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_MIGRATION_ENABLED = String(json.memory.migration.enabled);
+  }
+  if (json.memory?.migration?.cron !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_MIGRATION_CRON = json.memory.migration.cron;
+  }
   if (json.tools?.allowedTools !== undefined) {
     fromJson.MONO_AGENT_ALLOWED_TOOLS = csv(json.tools.allowedTools);
   }

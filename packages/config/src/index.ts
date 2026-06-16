@@ -14,6 +14,7 @@ export type {
   MemoryEmbeddingsProvider,
   MemoryLlmConfig,
   MemoryMode,
+  MemoryRitualConfig,
   MemoryScope,
   MemoryToolsConfig,
   MemoryWriteMode,

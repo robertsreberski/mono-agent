@@ -222,6 +222,44 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
   });
 
+  it("translates JSON memory reflection and migration ritual blocks to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          reflection: { enabled: true, cron: "0 3 * * *" },
+          migration: { enabled: false, cron: "0 4 1 * *" },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_REFLECTION_ENABLED).toBe("true");
+    expect(layered.MONO_AGENT_MEMORY_REFLECTION_CRON).toBe("0 3 * * *");
+    expect(layered.MONO_AGENT_MEMORY_MIGRATION_ENABLED).toBe("false");
+    expect(layered.MONO_AGENT_MEMORY_MIGRATION_CRON).toBe("0 4 1 * *");
+  });
+
+  it("omits ritual env keys when ritual blocks are absent in JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "bujo", path: ".mono-agent/memory" } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_REFLECTION_ENABLED).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_REFLECTION_CRON).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_MIGRATION_ENABLED).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_MIGRATION_CRON).toBeUndefined();
+  });
+
+  it("uses lite as the default memory mode when mode is omitted from JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { path: ".mono-agent/memory" } },
+      {},
+    );
+    // mode not set from JSON — the loader supplies the lite default
+    expect(layered.MONO_AGENT_MEMORY_MODE).toBeUndefined();
+  });
+
   it("translates JSON context.skillMaxBytes to an env key", () => {
     const layered = layerJsonOntoEnv(
       { context: { identityPath: "IDENTITY.md", skillMaxBytes: 24000 } },
@@ -450,6 +488,100 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: join(dir, "absent.json"),
     });
     expect(config.runtime.model).toMatchObject({ sdk: "pi" });
+  });
+
+  it("loads lite mode from a JSON config file (no embeddings, no llm)", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "lite",
+          path: ".mono-agent/memory",
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.memory?.mode).toBe("lite");
+    expect(config.memory?.embeddings).toBeUndefined();
+    expect(config.memory?.llm).toBeUndefined();
+    expect(config.memory?.reflection).toBeUndefined();
+    expect(config.memory?.migration).toBeUndefined();
+  });
+
+  it("loads journal mode from a JSON config file", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text", dim: 768 },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.memory?.mode).toBe("journal");
+    expect(config.memory?.embeddings).toMatchObject({ provider: "ollama", model: "nomic-embed-text", dim: 768 });
+    expect(config.memory?.llm).toBeUndefined();
+  });
+
+  it("loads bujo mode with reflection and migration ritual blocks from a JSON config file", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text", dim: 768 },
+          llm: { provider: "ollama", model: "qwen3:8b" },
+          reflection: { enabled: true, cron: "0 3 * * *" },
+          migration: { enabled: true, cron: "0 4 1 * *" },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.memory?.mode).toBe("bujo");
+    expect(config.memory?.reflection).toEqual({ enabled: true, cron: "0 3 * * *" });
+    expect(config.memory?.migration).toEqual({ enabled: true, cron: "0 4 1 * *" });
+  });
+
+  it("env ritual cron beats JSON ritual cron", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          reflection: { enabled: true, cron: "0 3 * * *" },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MEMORY_REFLECTION_CRON: "0 2 * * *" },
+      cwd: dir,
+      jsonPath: path,
+    });
+    expect(config.memory?.reflection?.cron).toBe("0 2 * * *");
   });
 
   it("loads bujo mode with llm block from a JSON config file", async () => {

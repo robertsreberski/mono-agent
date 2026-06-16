@@ -8,6 +8,12 @@ import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryEmbeddingsConfig, MemoryLlmConfig, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode } from "./types.js";
 
+/** JSON-serialisable shape for a ritual config block (reflection or migration). */
+export type MonoAgentMemoryRitualJson = {
+  readonly enabled?: boolean;
+  readonly cron?: string;
+};
+
 export type MonoAgentLocalProviderModelJson = {
   readonly name?: string;
   readonly alias?: string;
@@ -74,6 +80,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly graphPath?: string;
     readonly embeddings?: Partial<MemoryEmbeddingsConfig>;
     readonly llm?: Partial<MemoryLlmConfig>;
+    readonly reflection?: MonoAgentMemoryRitualJson;
+    readonly migration?: MonoAgentMemoryRitualJson;
   };
   readonly tools?: {
     readonly allowedTools?: readonly string[];
