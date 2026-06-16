@@ -8,7 +8,11 @@ import type {
   OperatorConsoleStartResult,
 } from "@mono-agent/operator-console";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createConfiguredAgentResponder, createConfiguredAgentRuntime } from "@mono-agent/agent-host";
+import {
+  createConfiguredAgentResponder,
+  createConfiguredAgentRuntime,
+  createConfiguredMemory,
+} from "@mono-agent/agent-host";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
@@ -30,6 +34,8 @@ import {
 import type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import { startMemoryRituals } from "./memory-rituals.js";
+import type { RunningRituals } from "./memory-rituals.js";
 
 export interface MonoAgentAppOptions {
   readonly env?: Record<string, string | undefined>;
@@ -143,6 +149,7 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
 
   await controller.startTraceability("startup");
   await Promise.all(drivers.map((driver) => controller?.startChannelIfConfigured(driver.id, "startup")));
+  await controller.startMemoryRitualsIfConfigured("startup");
   await controller.refreshTraceSource("startup-complete");
   return controller;
 }
@@ -178,6 +185,7 @@ class MonoAgentAppController implements MonoAgentApp {
     reason: "Traceability has not started yet.",
   };
   private traceSource: TraceSourceHandle | undefined;
+  private memoryRituals: RunningRituals | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
 
@@ -235,9 +243,11 @@ class MonoAgentAppController implements MonoAgentApp {
       for (const driver of this.drivers) {
         await this.stopChannel(driver.id, `${reason}:reload`);
       }
+      this.stopMemoryRituals();
       await this.stopTraceSource(`${reason}:reload`);
       await this.startTraceability(reason);
       await Promise.all(this.drivers.map((driver) => this.startChannelIfConfigured(driver.id, reason)));
+      await this.startMemoryRitualsIfConfigured(reason);
       await this.refreshTraceSource(`${reason}:complete`);
       return this.applyResult();
     };
@@ -334,11 +344,73 @@ class MonoAgentAppController implements MonoAgentApp {
     for (const driver of this.drivers) {
       await this.stopChannel(driver.id, "stop");
     }
+    this.stopMemoryRituals();
     await this.stopTraceSource("stop");
     await this.consoleServer?.stop();
     for (const runtime of this.activeRuntimes.splice(0)) {
       await runtime.disposeAllSessions?.().catch(() => undefined);
     }
+  }
+
+  async startMemoryRitualsIfConfigured(reason: string): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    let coreConfig: MonoAgentConfig;
+    try {
+      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      coreConfig = await loadAppCoreConfig(input);
+    } catch {
+      // Config not ready yet — rituals will start on the next applyConfigChange.
+      return;
+    }
+
+    if (coreConfig.memory?.mode !== "bujo") {
+      return;
+    }
+
+    const store = createConfiguredMemory(coreConfig);
+    // Duck-type: only bujo-tier BujoMemoryStore has reflect/migrate.
+    // Cast through unknown to bypass the MemoryStore contract's type mismatch.
+    const storeAsAny = store as unknown as Record<string, unknown>;
+    if (
+      store === undefined ||
+      typeof storeAsAny["reflect"] !== "function" ||
+      typeof storeAsAny["migrate"] !== "function" ||
+      typeof storeAsAny["tier"] !== "function"
+    ) {
+      return;
+    }
+
+    const bujoStore = store as unknown as {
+      tier(): string;
+      reflect(): Promise<unknown>;
+      migrate(): Promise<unknown>;
+    };
+
+    this.memoryRituals = startMemoryRituals({
+      store: bujoStore,
+      ...(coreConfig.memory.reflection !== undefined && { reflection: coreConfig.memory.reflection }),
+      ...(coreConfig.memory.migration !== undefined && { migration: coreConfig.memory.migration }),
+      ...(this.logger !== undefined && {
+        logger: {
+          info: (m: string) => this.logger?.info?.(m),
+          warn: (m: string) => this.logger?.warn?.(m),
+        },
+      }),
+    });
+
+    this.logger?.info?.("Memory ritual scheduler started.", { reason, mode: "bujo" });
+  }
+
+  private stopMemoryRituals(): void {
+    const rituals = this.memoryRituals;
+    if (rituals === undefined) {
+      return;
+    }
+    this.memoryRituals = undefined;
+    rituals.stop();
+    this.logger?.info?.("Memory ritual scheduler stopped.");
   }
 
   private async startChannel(driver: ChannelDriver, reason: string): Promise<ChannelStatus> {

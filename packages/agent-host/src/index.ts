@@ -150,7 +150,7 @@ function historyMaxMessages(maxTurns: number | undefined): number {
   return maxTurns === undefined || maxTurns <= 0 ? 0 : maxTurns * 2;
 }
 
-function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefined {
+export function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
   }

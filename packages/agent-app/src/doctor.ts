@@ -135,6 +135,9 @@ async function contextSection(config: MonoAgentConfig): Promise<ValidationSectio
   return { id: "context", label: "Context & skills", status, details };
 }
 
+const DEFAULT_REFLECTION_CRON = "0 3 * * *";
+const DEFAULT_MIGRATION_CRON = "0 4 1 * *";
+
 async function memorySection(config: MonoAgentConfig): Promise<ValidationSection> {
   if (config.memory === undefined) {
     return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
@@ -144,6 +147,32 @@ async function memorySection(config: MonoAgentConfig): Promise<ValidationSection
   ];
   if (config.memory.tools?.enabled === true) {
     details.push(`Memory MCP tools enabled${config.memory.tools.allowJournalAppend ? " (journal append allowed)" : ""}.`);
+  }
+
+  if (config.memory.mode === "bujo") {
+    // Report ritual scheduler cadence
+    const reflectionEnabled = config.memory.reflection?.enabled !== false;
+    const migrationEnabled = config.memory.migration?.enabled !== false;
+    const reflectionCron = config.memory.reflection?.cron ?? DEFAULT_REFLECTION_CRON;
+    const migrationCron = config.memory.migration?.cron ?? DEFAULT_MIGRATION_CRON;
+    const hasLlm = config.memory.llm !== undefined;
+
+    if (hasLlm) {
+      const ritualParts: string[] = [];
+      if (reflectionEnabled) {
+        ritualParts.push(`reflection ${reflectionCron}`);
+      } else {
+        ritualParts.push("reflection disabled");
+      }
+      if (migrationEnabled) {
+        ritualParts.push(`migration ${migrationCron}`);
+      } else {
+        ritualParts.push("migration disabled");
+      }
+      details.push(`Rituals: ${ritualParts.join(" / ")} (auto).`);
+    } else {
+      details.push("Rituals: manual (no chat model — reflect/migrate need a local LLM).");
+    }
   }
 
   if (config.memory.mode === "journal" || config.memory.mode === "bujo") {

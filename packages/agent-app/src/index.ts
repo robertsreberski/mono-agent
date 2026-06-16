@@ -57,3 +57,9 @@ export type {
 export { parseCliArgs, runCli, loadCliEnvFile } from "./cli.js";
 export { COMPOSER_SKILL_NAME, installComposerSkill } from "./install-skill.js";
 export type { InstallSkillOptions, InstallSkillResult, InstallSkillTarget } from "./install-skill.js";
+export { startMemoryRituals } from "./memory-rituals.js";
+export type {
+  MemoryRitualSchedule,
+  RunningRituals,
+  StartMemoryRitualsInput,
+} from "./memory-rituals.js";
