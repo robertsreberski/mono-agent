@@ -19,7 +19,7 @@ import { createJournalMemoryStore } from "@mono-agent/memory-journal";
 import { resolveMemoryMcpMainPath } from "@mono-agent/memory-mcp";
 import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
 import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
-import type { MemoryStore } from "@mono-agent/memory-md";
+import type { MemoryStore } from "@mono-agent/memory-store";
 import { createEmbeddingProvider } from "@mono-agent/memory-search";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {

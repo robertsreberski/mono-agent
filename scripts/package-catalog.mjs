@@ -112,7 +112,7 @@ export const packageCatalog = [
     name: "@mono-agent/memory-md",
     category: "context",
     responsibility: "Provides optional Markdown memory storage for host-owned summaries.",
-    allowedDependencyCategories: ["core"],
+    allowedDependencyCategories: ["core", "context"],
     publishable: true,
   },
   {

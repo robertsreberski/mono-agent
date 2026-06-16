@@ -1,6 +1,6 @@
 import { join, relative } from "node:path";
 
-import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-md";
+import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-store";
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "@mono-agent/memory-store";
 
 import { appendBullet, dailyFilePath } from "./daily.js";

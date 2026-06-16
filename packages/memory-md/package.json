@@ -22,6 +22,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },
+  "dependencies": {
+    "@mono-agent/memory-store": "workspace:0.2.2"
+  },
   "publishConfig": {
     "access": "public"
   }

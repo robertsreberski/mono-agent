@@ -1,4 +1,4 @@
-import type { MemoryBlock } from "@mono-agent/memory-md";
+import type { MemoryBlock } from "@mono-agent/memory-store";
 import type { MemoryDb } from "@mono-agent/memory-store";
 
 const MARKER: Record<string, string> = { task: "- [ ]", event: "- ◦", note: "- –" };
