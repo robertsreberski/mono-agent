@@ -33,6 +33,12 @@ const MARKER_FOR = (type: MemoryType, status: MemoryStatus): string => {
   return "–";
 };
 
+// Allowed enum members (must mirror the SQLite CHECK constraints in @mono-agent/memory-store).
+// A malformed daily line (`type=bogus`, `status=invalid`) must NOT produce an out-of-enum Bullet,
+// or rebuild/upsert would fail the CHECK constraint.
+const VALID_TYPES = new Set<string>(["task", "event", "note"]);
+const VALID_STATUSES = new Set<string>(["open", "done", "scheduled", "migrated", "dropped", "invalidated"]);
+
 const LINE_RE = /^- (\[[ x><~]\]|◦|–) (.*?)  <!--mem (.*)-->$/u;
 
 export function parseBullet(line: string): Bullet | undefined {
@@ -42,9 +48,10 @@ export function parseBullet(line: string): Bullet | undefined {
   const fields = parseMeta(meta ?? "");
   const base = MARKERS[marker ?? ""];
   if (base === undefined) return undefined;
-  // `||` (not `??`) so an empty metadata value (e.g. `status=`) also falls back to the marker-derived value.
-  const status = (fields.status as MemoryStatus | undefined) || base.status;
-  const type = (fields.type as MemoryType | undefined) || base.type;
+  // Validate enum membership before trusting metadata; an empty OR invalid value (e.g. `status=` or
+  // `status=bogus`) falls back to the marker-derived base value rather than corrupting the Bullet.
+  const status = (VALID_STATUSES.has(fields.status ?? "") ? (fields.status as MemoryStatus) : undefined) ?? base.status;
+  const type = (VALID_TYPES.has(fields.type ?? "") ? (fields.type as MemoryType) : undefined) ?? base.type;
   const salienceNum = Number(fields.salience);
   const bullet: Bullet = {
     id: fields.id ?? "",

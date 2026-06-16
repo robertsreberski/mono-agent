@@ -1,3 +1,4 @@
+import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import { describe, expect, it } from "vitest";
 
 import { openMemoryDb } from "../db.js";
@@ -47,6 +48,16 @@ describe("upsert/get", () => {
     expect(db.get("m1")?.text).toBe("second");
     expect(db.get("m1")?.salience).toBe(0.2);
     expect(db.count()).toBe(1);
+    db.close();
+  });
+
+  it("rejects an embedding whose length does not match the configured dim (clear error)", async () => {
+    const wrongDim: EmbeddingProvider = {
+      id: "wrong-dim",
+      embed: async (texts) => texts.map(() => new Array(16).fill(0.1) as number[]),
+    };
+    const db = openMemoryDb({ path: ":memory:", embeddings: wrongDim, dim: 8 });
+    await expect(db.upsert(record())).rejects.toThrow(/dimension mismatch.*expected 8.*got 16/iu);
     db.close();
   });
 });

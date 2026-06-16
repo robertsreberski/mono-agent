@@ -17,3 +17,6 @@ demos/*/dist/
 memory.db
 *.db-wal
 *.db-shm
+
+# Superpowers working docs (specs/plans) — local-only, not tracked in git
+docs/superpowers/

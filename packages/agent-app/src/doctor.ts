@@ -173,7 +173,7 @@ async function memorySection(config: MonoAgentConfig): Promise<ValidationSection
   }
 
   if (config.memory.mode === "journal" || config.memory.mode === "bujo") {
-    const warns = await bujoLivenessWarnings(config.memory);
+    const warns = await memoryLivenessWarnings(config.memory);
     if (warns.length > 0) {
       return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...warns] };
     }
@@ -218,46 +218,51 @@ async function fetchOllamaModels(endpoint: string): Promise<string[]> {
   }
 }
 
-async function bujoLivenessWarnings(
+async function memoryLivenessWarnings(
   memory: NonNullable<MonoAgentConfig["memory"]>,
 ): Promise<string[]> {
   const warns: string[] = [];
-  const endpoint = (memory.embeddings?.endpoint ?? "http://localhost:11434").replace(/\/$/u, "");
-  const embeddingsModel = memory.embeddings?.model ?? "nomic-embed-text:v1.5";
+  const mode = memory.mode;
+  const embeddingsUsesOllama = (memory.embeddings?.provider ?? "ollama") === "ollama";
+  const llmUsesOllama = memory.llm?.provider === "ollama";
 
-  // 1. Memory root writable
+  // 1. Memory root writable (every embedded tier)
   try {
     await mkdir(memory.path, { recursive: true });
   } catch (err) {
     warns.push(
-      `[WARN] bujo memory root is not writable: ${memory.path} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
+      `[WARN] ${mode} memory root is not writable: ${memory.path} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
     );
   }
 
-  // 2. Embeddings reachable + model pulled
-  let ollamaModels: string[] | undefined;
-  try {
-    ollamaModels = await fetchOllamaModels(endpoint);
-  } catch (err) {
-    warns.push(
-      `[WARN] Ollama not reachable at ${endpoint}; bujo memory cannot embed and will fail at runtime (${err instanceof Error ? err.message : String(err)}). Start Ollama or fix the endpoint.`,
-    );
-  }
+  // 2. Ollama liveness — only probe when embeddings and/or the chat LLM actually use Ollama. With
+  // OpenAI embeddings there is nothing local to probe, so we must not tell the user to start Ollama.
+  if (embeddingsUsesOllama || llmUsesOllama) {
+    const endpoint = (
+      (embeddingsUsesOllama ? memory.embeddings?.endpoint : memory.llm?.endpoint) ?? "http://localhost:11434"
+    ).replace(/\/$/u, "");
 
-  if (ollamaModels !== undefined) {
-    if (!ollamaModels.includes(embeddingsModel)) {
+    let ollamaModels: string[] | undefined;
+    try {
+      ollamaModels = await fetchOllamaModels(endpoint);
+    } catch (err) {
       warns.push(
-        `[WARN] Embeddings model ${embeddingsModel} not pulled — run \`ollama pull ${embeddingsModel}\`.`,
+        `[WARN] Ollama not reachable at ${endpoint}; ${mode} memory cannot embed and will fail at runtime (${err instanceof Error ? err.message : String(err)}). Start Ollama or fix the endpoint.`,
       );
     }
 
-    // 3. Chat LLM model (if configured)
-    if (memory.llm?.provider === "ollama") {
-      const chatModel = memory.llm.model;
-      if (!ollamaModels.includes(chatModel)) {
-        warns.push(
-          `[WARN] Chat LLM model ${chatModel} not pulled — run \`ollama pull ${chatModel}\`.`,
-        );
+    if (ollamaModels !== undefined) {
+      if (embeddingsUsesOllama) {
+        const embeddingsModel = memory.embeddings?.model ?? "nomic-embed-text:v1.5";
+        if (!ollamaModels.includes(embeddingsModel)) {
+          warns.push(`[WARN] Embeddings model ${embeddingsModel} not pulled — run \`ollama pull ${embeddingsModel}\`.`);
+        }
+      }
+      if (llmUsesOllama && memory.llm !== undefined) {
+        const chatModel = memory.llm.model;
+        if (!ollamaModels.includes(chatModel)) {
+          warns.push(`[WARN] Chat LLM model ${chatModel} not pulled — run \`ollama pull ${chatModel}\`.`);
+        }
       }
     }
   }

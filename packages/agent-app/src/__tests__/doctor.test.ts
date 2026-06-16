@@ -293,6 +293,26 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(memory.details.join("\n")).toContain("journal");
   });
 
+  it("does NOT probe Ollama when embeddings provider is openai", async () => {
+    // fetch is NOT stubbed — if the Ollama probe were attempted it would fail and warn.
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).not.toMatch(/ollama/iu);
+    expect(text).not.toMatch(/WARN/iu);
+  });
+
   it("passes lite mode without any Ollama probe (lite needs no embeddings)", async () => {
     // fetch is NOT stubbed — if the probe were attempted it would throw
     const configPath = await writeMinimalConfig({

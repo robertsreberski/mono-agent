@@ -141,4 +141,45 @@ describe("captureTurn", () => {
     // Should resolve, not throw
     await expect(captureTurn("brief note about something", deps)).resolves.toBeDefined();
   });
+
+  it("writes entities/relations to canonical graph.jsonl even when the db mirror fails (canonical-first)", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+
+    // Wrap the db so the *index mirror* (upsertEntity/addEntityRelation) throws. Canonical-first ordering
+    // means graph.jsonl is written before the mirror, so the data survives a mirror failure.
+    const failingDb = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "upsertEntity" || prop === "addEntityRelation") {
+          return () => { throw new Error("index mirror down"); };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as unknown as MemoryDb;
+
+    const llm = fakeLlm([
+      [
+        "Extract named entities",
+        JSON.stringify({
+          entities: [
+            { id: "person:robert", name: "Robert", type: "person" },
+            { id: "project:mono-agent", name: "mono-agent", type: "project" },
+          ],
+          relations: [{ src: "person:robert", dst: "project:mono-agent", relation: "maintains" }],
+        }),
+      ],
+      [
+        "TEXT:",
+        JSON.stringify([{ type: "note", text: "Robert maintains mono-agent", salience: 0.7, isInsight: false }]),
+      ],
+    ]);
+
+    const deps: ReconcileDeps = { db: failingDb, root, llm, nextId: makeSeqNextId(), now: () => FIXED };
+    await expect(captureTurn("Robert maintains mono-agent", deps)).resolves.toBeDefined();
+
+    const graph = readGraph(root);
+    expect(graph.entities.some((e) => e.id === "person:robert")).toBe(true);
+    expect(graph.relations.some((r) => r.src === "person:robert" && r.relation === "maintains")).toBe(true);
+  });
 });

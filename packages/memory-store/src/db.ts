@@ -69,6 +69,20 @@ export class MemoryDb {
     return Number(this.db.pragma("busy_timeout", { simple: true }));
   }
 
+  /**
+   * Guard that an embedding vector matches the configured `dim` before it reaches sqlite-vec.
+   * Surfaces a clear error (e.g. when the embedding model changed but `dim` was left stale) instead
+   * of the opaque sqlite-vec failure on INSERT/MATCH.
+   */
+  protected assertVectorDim(vector: readonly number[], context: string): void {
+    if (vector.length !== this.dim) {
+      throw new Error(
+        `memory-store: embedding dimension mismatch in ${context} — expected ${this.dim}, got ${vector.length}. ` +
+          "Ensure the embedding model matches the configured `dim`.",
+      );
+    }
+  }
+
   async upsert(record: MemoryRecord): Promise<void> {
     // Only embed when a provider is configured; lite tier skips vec entirely.
     const vector = this.embeddings !== undefined
@@ -77,6 +91,7 @@ export class MemoryDb {
           if (v === undefined) {
             throw new Error("memory-store: embedding provider returned no vector for upsert.");
           }
+          this.assertVectorDim(v, "upsert");
           return v;
         })()
       : undefined;
@@ -170,6 +185,7 @@ export class MemoryDb {
     if (this.embeddings === undefined) return [];
     const [vector] = await this.embeddings.embed([`search_query: ${query}`]);
     if (vector === undefined) return [];
+    this.assertVectorDim(vector, "recall");
     const rows = this.db
       .prepare(`SELECT m.id AS id FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`)
       .all(toBlob(vector), limit) as { id: string }[];
@@ -250,6 +266,7 @@ export class MemoryDb {
     // compares a candidate memory to stored memories document-to-document, not query-to-document.
     const [vector] = await this.embeddings.embed([`search_document: ${text}`]);
     if (vector === undefined) return [];
+    this.assertVectorDim(vector, "findSimilar");
     const rows = this.db
       .prepare(
         `SELECT m.id AS id, v.distance AS distance FROM memories_vec v JOIN memories m ON m.seq = v.rowid WHERE v.embedding MATCH ? AND k = ? ORDER BY v.distance`,

@@ -14,8 +14,8 @@ export interface CaptureTurnResult {
  *  1. distill(text) → candidate memories
  *  2. reconcile(candidates) → ADD / UPDATE / SUPERSEDE / NOOP actions (writes markdown + index)
  *  3. extractEntities(text) → typed entities + relations
- *  4. Mirror each entity to BOTH db.upsertEntity AND graph.jsonl
- *  5. Mirror each relation to BOTH db.addEntityRelation AND graph.jsonl
+ *  4. Persist each entity canonical-first: graph.jsonl, THEN mirror to the db index
+ *  5. Persist each relation canonical-first: graph.jsonl, THEN mirror to the db index
  *  6. Link this turn's ADDed memories to extracted entities via `about` edges (coarse co-occurrence)
  *
  * Never throws on a single bad entity/relation item — each write is wrapped defensively.
@@ -32,7 +32,9 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
   const now = deps.now();
   const createdAt = now.toISOString();
 
-  // Step 4: mirror each entity to db + graph.jsonl
+  // Step 4: persist each entity canonical-first (graph.jsonl), then mirror to the rebuildable db
+  // index. graph.jsonl is the canonical source rebuildFromMarkdown reads; writing it first means a
+  // crash between the two writes still recovers the entity on the next rebuild.
   for (const entity of extraction.entities) {
     try {
       const record = {
@@ -41,23 +43,23 @@ export async function captureTurn(text: string, deps: ReconcileDeps): Promise<Ca
         ...(entity.type !== undefined ? { type: entity.type } : {}),
         createdAt,
       };
-      deps.db.upsertEntity(record);
       appendEntity(deps.root, record);
+      deps.db.upsertEntity(record);
     } catch {
       // Per-item isolation: a single bad entity must not abort the turn
     }
   }
 
-  // Step 5: mirror each relation to db + graph.jsonl
+  // Step 5: persist each relation canonical-first (graph.jsonl), then mirror to the db index.
   for (const relation of extraction.relations) {
     try {
-      deps.db.addEntityRelation(relation.src, relation.dst, relation.relation);
       appendRelation(deps.root, {
         src: relation.src,
         dst: relation.dst,
         relation: relation.relation,
         createdAt,
       });
+      deps.db.addEntityRelation(relation.src, relation.dst, relation.relation);
     } catch {
       // Per-item isolation: a single bad relation must not abort the turn
     }

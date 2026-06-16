@@ -357,6 +357,61 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
+  it("logs an accurate skip (not 'started') when bujo mode has no chat LLM (tier downgrades to journal)", async () => {
+    const infos: string[] = [];
+    const logger = { info: (m: string) => { infos.push(m); } };
+
+    await writeConfig({
+      ...baseConfig(),
+      memory: {
+        mode: "bujo",
+        path: join(dir, "mem"),
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        // no llm → runtime tier is "journal" → rituals are a no-op
+      },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsole: false,
+      operatorConsoleFactory: fakeConsoleFactory,
+      logger,
+    });
+
+    expect(infos.some((m) => /ritual scheduler skipped/iu.test(m))).toBe(true);
+    expect(infos.some((m) => /ritual scheduler started/iu.test(m))).toBe(false);
+    await app.stop();
+  });
+
+  it("logs 'scheduler started' when bujo mode has a chat LLM (tier=bujo)", async () => {
+    const infos: string[] = [];
+    const logger = { info: (m: string) => { infos.push(m); } };
+
+    await writeConfig({
+      ...baseConfig(),
+      memory: {
+        mode: "bujo",
+        path: join(dir, "mem"),
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+      },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsole: false,
+      operatorConsoleFactory: fakeConsoleFactory,
+      logger,
+    });
+
+    expect(infos.some((m) => /ritual scheduler started/iu.test(m))).toBe(true);
+    await app.stop();
+  });
+
   it("drains pending captures (flush) before closing memory on stop", async () => {
     await writeConfig(baseConfig());
 

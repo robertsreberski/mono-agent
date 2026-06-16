@@ -63,7 +63,31 @@ describe("parseBullet/serializeBullet", () => {
     );
     expect(b?.status).toBe("done");
   });
+
+  it("falls back to marker-derived values when metadata status/type are not valid enum members", () => {
+    // Invalid status falls back to the marker ([x] => done); valid type is kept.
+    const b1 = parseBullet(
+      "- [x] Thing.  <!--mem id=01L type=task status=bogus salience=0.5 isInsight=0 created=2026-06-15T17:00:00.000Z refs=-->",
+    );
+    expect(b1?.type).toBe("task");
+    expect(b1?.status).toBe("done");
+    expect(VALID_ENUM_VALUES.statuses).toContain(b1?.status ?? "");
+
+    // Invalid type falls back to the marker (◦ => event); valid status is kept.
+    const b2 = parseBullet(
+      "- ◦ Met.  <!--mem id=01M type=invalid status=open salience=0.5 isInsight=0 created=2026-06-15T17:00:00.000Z refs=-->",
+    );
+    expect(b2?.type).toBe("event");
+    expect(b2?.status).toBe("open");
+    expect(VALID_ENUM_VALUES.types).toContain(b2?.type ?? "");
+  });
 });
+
+// Mirrors the SQLite CHECK constraints — a parsed Bullet must never escape these sets.
+const VALID_ENUM_VALUES = {
+  types: ["task", "event", "note"],
+  statuses: ["open", "done", "scheduled", "migrated", "dropped", "invalidated"],
+};
 
 describe("parseDailyFile/serializeDailyFile", () => {
   it("round-trips a daily file, preserving non-bullet lines verbatim", () => {

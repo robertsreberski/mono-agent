@@ -10,8 +10,10 @@ The Bullet-Journal memory engine. It owns the markdown bullet grammar (lossless
 parse/serialize), writes daily files as the canonical source of truth, mirrors
 them into the SQLite substrate (`@mono-agent/memory-store`), composes a curated
 always-in-context recall block, and rebuilds the index from markdown with no LLM.
-It implements the `MemoryStore` contract so agent hosts can adopt it as a drop-in
-memory mode.
+In the `bujo` tier it also owns the LLM-driven capture pipeline (distill →
+reconcile → entity/relation extraction into `graph.jsonl`) and the reflection /
+migration rituals. It implements the `MemoryStore` contract so agent hosts can
+adopt it as a drop-in memory mode.
 
 ## Install / Usage
 
@@ -36,20 +38,26 @@ const block = await store.load("global");
 
 - `createBujoMemoryStore`, `BujoMemoryStore`
 - `parseBullet`, `serializeBullet`, `parseDailyFile`, `serializeDailyFile`
+- `appendBullet`, `dailyFilePath`, `createIdFactory`, `composeRecallBlock`
 - `rebuildFromMarkdown`
-- `Bullet`, `BujoOptions`
+- Capture (bujo tier): `captureTurn`, `distill`, `reconcile`, `extractEntities`, `readGraph`
+- Rituals (bujo tier): `reflect`, `migrate`, `writeIndex`, `writeFutureLog`
+- Built-in LLM adapter: `createOllamaLlm`
+- `Bullet`, `BujoOptions`, `BujoTier`, `LlmComplete`, `CandidateMemory`, `ReconcileAction`, `ReconcileDeps`
 
 ## Dependency Boundary
 
 Depends on `@mono-agent/memory-store` (SQLite substrate + `MemoryStore` contract) and
 `@mono-agent/memory-search` (embedding provider). It performs no LLM calls in the
-lite/journal tiers — writes are deterministic rapid-log appends.
+lite/journal tiers — writes are deterministic rapid-log appends. LLM calls happen
+only in the `bujo` tier (capture + rituals) via the injected `LlmComplete`.
 
 ## What This Package Does Not Own
 
-It does not own SQLite storage or ranking (that is `memory-store`), embedding
-implementations (that is `memory-search`), entity extraction, reflection, or
-migration scheduling (later phases).
+It does not own SQLite storage or ranking (that is `memory-store`) or embedding
+implementations (that is `memory-search`). It defines the entity-extraction,
+reflection, and migration *logic*, but the in-app cron wiring that triggers
+rituals on a schedule lives in `@mono-agent/agent-app` (`startMemoryRituals`).
 
 ## Verification
 

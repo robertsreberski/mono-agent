@@ -64,4 +64,37 @@ describe("rebuildFromMarkdown", () => {
 
     db.close();
   });
+
+  it("records the real 1-based markdown line number for each bullet (not the bullet ordinal)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-rebuild-line-"));
+    mkdirSync(join(root, "daily"), { recursive: true });
+    // line 1: heading, line 2: blank, line 3: bullet 01A, line 4: blank, line 5: bullet 01B
+    writeFileSync(
+      join(root, "daily", "2026-06-14.md"),
+      "# 2026-06-14\n\n- [ ] First.  <!--mem id=01A type=task status=open salience=0.8 isInsight=0 created=2026-06-14T09:00:00.000Z refs=-->\n\n- – Second.  <!--mem id=01B type=note status=open salience=0.5 isInsight=0 created=2026-06-14T10:00:00.000Z refs=-->\n",
+    );
+
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    await rebuildFromMarkdown(root, db);
+    expect(db.get("01A")?.source.line).toBe(3);
+    expect(db.get("01B")?.source.line).toBe(5);
+    db.close();
+  });
+
+  it("treats a missing daily directory as empty (indexed 0, no throw)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-rebuild-noenoent-")); // no daily/ created
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    const result = await rebuildFromMarkdown(root, db);
+    expect(result.indexed).toBe(0);
+    db.close();
+  });
+
+  it("re-throws non-ENOENT readdir errors instead of silently wiping the index", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-rebuild-enotdir-"));
+    // Make `daily` a FILE, so readdirSync throws ENOTDIR (not ENOENT) → must propagate.
+    writeFileSync(join(root, "daily"), "not a directory");
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    await expect(rebuildFromMarkdown(root, db)).rejects.toThrow();
+    db.close();
+  });
 });

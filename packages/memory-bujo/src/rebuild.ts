@@ -19,14 +19,21 @@ export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{
   let files: string[];
   try {
     files = readdirSync(dailyDir).filter((f) => f.endsWith(".md")).sort();
-  } catch {
+  } catch (err) {
+    // Only a missing directory means "empty". Re-throw permission/IO errors (EACCES, EIO, …) so a
+    // transient fault can't silently produce an empty rebuild — db.rebuild() deletes every row first.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     files = [];
   }
   const records: MemoryRecord[] = [];
   for (const file of files) {
     const parsed = parseDailyFile(readFileSync(join(dailyDir, file), "utf8"));
-    parsed.bullets.forEach((bullet, index) => {
-      records.push(toRecord(bullet, `daily/${file}`, index));
+    // Use the real 1-based file line number (not the bullet ordinal) so source.line points at the
+    // actual markdown line for provenance / jump-to-source.
+    parsed.lines.forEach((line, index) => {
+      if (line.bullet !== undefined) {
+        records.push(toRecord(line.bullet, `daily/${file}`, index + 1));
+      }
     });
   }
   const result = await db.rebuild(records);

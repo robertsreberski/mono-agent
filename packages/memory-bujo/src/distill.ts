@@ -35,10 +35,12 @@ function normalizeCandidate(it: unknown): CandidateMemory[] {
   if (it === null || typeof it !== "object") return [];
   const obj = it as Record<string, unknown>;
 
-  // Require non-empty trimmed text, capped at ~280 chars
-  const rawText = typeof obj["text"] === "string" ? obj["text"].trim() : "";
-  if (rawText.length === 0) return [];
-  const text = rawText.slice(0, 280);
+  // Require non-empty text, then normalize to a bullet-safe single line so it round-trips through
+  // serializeBullet (which rejects newlines and the `<!--mem` delimiter) instead of being silently
+  // dropped by reconcile's per-candidate isolation. Collapse whitespace, strip the delimiter, cap ~280.
+  const rawText = typeof obj["text"] === "string" ? obj["text"] : "";
+  const text = rawText.replace(/\s+/gu, " ").replace(/<!--mem/gu, "").trim().slice(0, 280);
+  if (text.length === 0) return [];
 
   // Coerce type to one of task/event/note (default "note")
   const rawType = typeof obj["type"] === "string" ? obj["type"] : "";

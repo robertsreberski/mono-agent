@@ -394,6 +394,15 @@ class MonoAgentAppController implements MonoAgentApp {
       migrate(): Promise<unknown>;
     };
 
+    // `memory.mode` is "bujo", but the store derives the runtime tier from its options: without a
+    // `memory.llm` it downgrades to "journal", where startMemoryRituals is a no-op. Don't claim the
+    // scheduler started in that case — log an accurate skip instead.
+    const tier = bujoStore.tier();
+    if (tier !== "bujo") {
+      this.logger?.info?.("Memory ritual scheduler skipped — store tier is not bujo (reflect/migrate need a local chat LLM).", { reason, tier });
+      return;
+    }
+
     this.memoryRituals = startMemoryRituals({
       store: bujoStore,
       ...(coreConfig.memory.reflection !== undefined && { reflection: coreConfig.memory.reflection }),

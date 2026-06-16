@@ -351,7 +351,7 @@ MONO_AGENT_TRACE_SOURCE_LABEL="Final Agent Demo"
 
 The agent supports three memory tiers, all sharing a single global brain across every channel. The tier is selected by `memory.mode` in `mono-agent.config.json`. See [`docs/memory.md`](../../docs/memory.md) for the full reference.
 
-| Tier | `memory.mode` | What it needs |
+| Tier (`memory.mode`) | Description | What it needs |
 |---|---|---|
 | `lite` | FTS-only recall, no deps | Just a writable path |
 | `journal` | Hybrid FTS + vector recall with daily rolling notes | Ollama `nomic-embed-text:v1.5` |
