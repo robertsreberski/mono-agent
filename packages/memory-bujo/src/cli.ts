@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { join } from "node:path";
 
-import { createEmbeddingProvider } from "@mono-agent/memory-search";
 import { openMemoryDb } from "@mono-agent/memory-store";
 
+import { readEmbeddings } from "./cli-env.js";
 import { createIdFactory } from "./ids.js";
 import { migrate } from "./migrate.js";
 import { createOllamaLlm } from "./ollama-llm.js";
@@ -29,19 +29,22 @@ async function main(): Promise<void> {
   }
 
   if (command === "reflect" || command === "migrate") {
-    const chatModel = process.env.MONO_AGENT_LLM_MODEL;
+    const chatModel = process.env.MONO_AGENT_MEMORY_LLM_MODEL;
     if (chatModel === undefined) {
       process.stderr.write(
-        "error: set MONO_AGENT_LLM_MODEL to a local Ollama chat model (e.g. qwen3.6:latest)\n",
+        "error: set MONO_AGENT_MEMORY_LLM_MODEL to a local Ollama chat model (e.g. qwen3.6:latest)\n",
       );
       process.exit(2);
     }
   }
 
-  const model = process.env.MONO_AGENT_EMBED_MODEL ?? "nomic-embed-text:v1.5";
-  const dim = Number(process.env.MONO_AGENT_EMBED_DIM ?? "768");
-  const embeddings = createEmbeddingProvider({ provider: "ollama", model });
-  const db = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim });
+  // Embeddings are opt-in (matching the agent/MCP): only enabled when an embeddings provider is
+  // configured. A lite-tier (FTS-only) recall/rebuild then needs no embedding service running.
+  const embeddingsConfig = readEmbeddings();
+  const db = openMemoryDb({
+    path: join(root, "memory.db"),
+    ...(embeddingsConfig !== undefined ? { embeddings: embeddingsConfig.provider, dim: embeddingsConfig.dim } : {}),
+  });
   try {
     if (command === "rebuild") {
       const result = await rebuildFromMarkdown(root, db);
@@ -50,22 +53,22 @@ async function main(): Promise<void> {
       writeIndex(root, db, new Date());
       process.stdout.write(`wrote ${join(root, "index.md")}\n`);
     } else if (command === "reflect") {
-      // MONO_AGENT_LLM_MODEL is guaranteed non-undefined here (guard above)
-      const chatModel = process.env.MONO_AGENT_LLM_MODEL as string;
+      // MONO_AGENT_MEMORY_LLM_MODEL is guaranteed non-undefined here (guard above)
+      const chatModel = process.env.MONO_AGENT_MEMORY_LLM_MODEL as string;
       const llm = createOllamaLlm({
         model: chatModel,
-        ...(process.env.MONO_AGENT_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_LLM_ENDPOINT } : {}),
+        ...(process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT } : {}),
       });
       const r = await reflect({ db, root, llm, nextId: createIdFactory(), now: () => new Date() });
       writeFutureLog(root, db, new Date());
       writeIndex(root, db, new Date());
       process.stdout.write(`reflected: decayed ${r.decayed}, insights ${r.insights}, due ${r.due}\n`);
     } else if (command === "migrate") {
-      // MONO_AGENT_LLM_MODEL is guaranteed non-undefined here (guard above)
-      const chatModel = process.env.MONO_AGENT_LLM_MODEL as string;
+      // MONO_AGENT_MEMORY_LLM_MODEL is guaranteed non-undefined here (guard above)
+      const chatModel = process.env.MONO_AGENT_MEMORY_LLM_MODEL as string;
       const llm = createOllamaLlm({
         model: chatModel,
-        ...(process.env.MONO_AGENT_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_LLM_ENDPOINT } : {}),
+        ...(process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT } : {}),
       });
       const m = await migrate({ db, root, llm, nextId: createIdFactory(), now: () => new Date() });
       writeFutureLog(root, db, new Date());

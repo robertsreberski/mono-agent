@@ -18,7 +18,7 @@ Rituals (reflection / migration) are intentionally **not** exposed as tools — 
 
 ## Install / Usage
 
-The server reads its configuration from the environment (the same `MONO_AGENT_MEMORY_*` vars the agent and the `memory-bujo` CLI use), so pointing a client at it means running the `memory-mcp` bin in an environment with at least `MONO_AGENT_MEMORY_PATH` set.
+The server reads its configuration from the environment — the same `MONO_AGENT_MEMORY_EMBEDDINGS_*` and `MONO_AGENT_MEMORY_LLM_*` vars the agent and the `memory-bujo` CLI use (the CLI takes the memory root as a positional `<root>` argument rather than `MONO_AGENT_MEMORY_PATH`). Pointing a client at it means running the `memory-mcp` bin in an environment with at least `MONO_AGENT_MEMORY_PATH` set.
 
 ```bash
 pnpm --filter @mono-agent/memory-mcp run build

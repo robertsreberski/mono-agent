@@ -82,7 +82,7 @@ my-agent/
     },
     "llm": {                               // required for bujo; omit for lite/journal
       "provider": "ollama",
-      "model": "qwen3.6:latest",           // any local Ollama chat model; also set MONO_AGENT_LLM_MODEL for CLI
+      "model": "qwen3.6:latest",           // any local Ollama chat model; also set MONO_AGENT_MEMORY_LLM_MODEL for CLI
       "endpoint": "http://localhost:11434" // optional; defaults to http://localhost:11434
     },
     // Bujo auto-scheduler — override defaults or disable per-ritual.

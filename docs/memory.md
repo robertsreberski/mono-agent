@@ -110,7 +110,7 @@ model for the LLM pipelines.
     },
     "llm": {                             // required for bujo LLM pipelines
       "provider": "ollama",
-      "model": "qwen3.6:latest",         // any local chat model; set MONO_AGENT_LLM_MODEL for CLI
+      "model": "qwen3.6:latest",         // any local chat model; set MONO_AGENT_MEMORY_LLM_MODEL for CLI
       "endpoint": "http://localhost:11434"
     },
     // Reflection and migration are auto-scheduled in-app for the bujo tier.
@@ -171,7 +171,7 @@ ollama pull nomic-embed-text:v1.5
 ollama pull qwen3.6:latest   # or any local chat model you prefer
 ```
 
-Set `MONO_AGENT_LLM_MODEL` to the model name when running the CLI reflect/migrate
+Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the CLI reflect/migrate
 commands manually. Without a chat model the `bujo` tier cannot start the LLM-augmented
 reconciliation, insight synthesis, and migration steps.
 
@@ -218,18 +218,21 @@ memory-bujo recall <root> "<query>"
 # Write the living index.md (table of contents: counts, top memories, entities)
 memory-bujo index <root>
 
-# Reflection pass: decay + insight synthesis (requires MONO_AGENT_LLM_MODEL)
-MONO_AGENT_LLM_MODEL=qwen3.6:latest memory-bujo reflect <root>
+# Reflection pass: decay + insight synthesis (requires MONO_AGENT_MEMORY_LLM_MODEL)
+MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo reflect <root>
 
-# Monthly migration: promote/reschedule/cluster/forget (requires MONO_AGENT_LLM_MODEL)
-MONO_AGENT_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
+# Monthly migration: promote/reschedule/cluster/forget (requires MONO_AGENT_MEMORY_LLM_MODEL)
+MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 ```
 
-`MONO_AGENT_LLM_ENDPOINT` overrides the Ollama endpoint for the chat model (default
-`http://localhost:11434`). The CLI reads the embeddings model from `MONO_AGENT_EMBED_MODEL`
-(default `nomic-embed-text:v1.5`) and `MONO_AGENT_EMBED_DIM` (default 768). If
-`MONO_AGENT_LLM_MODEL` is unset when running `reflect` or `migrate`, the command prints
-a clear error and exits 2.
+The CLI reads the **same `MONO_AGENT_MEMORY_*` env vars** as the agent and the `memory-mcp`
+server (the memory root is the positional `<root>` argument). Embeddings are **opt-in**: set
+`MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama`/`openai`) to enable semantic recall — without
+it, `recall`/`rebuild` run FTS-only and need no embedding service. When enabled, the model
+defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and dim to 768
+(`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama
+endpoint for the chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL`
+is unset when running `reflect` or `migrate`, the command prints a clear error and exits 2.
 
 ## Liveness Check — `mono-agent validate`
 

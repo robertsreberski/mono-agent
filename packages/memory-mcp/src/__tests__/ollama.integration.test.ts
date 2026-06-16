@@ -12,8 +12,8 @@ import { createMemoryTools } from "../tools.js";
 // Run with: MONO_AGENT_OLLAMA_E2E=1 pnpm --filter @mono-agent/memory-mcp test (needs
 // nomic-embed-text:v1.5 + a chat model pulled). Skipped by default.
 const OLLAMA = process.env.MONO_AGENT_OLLAMA_E2E === "1";
-const EMBED = process.env.MONO_AGENT_EMBED_MODEL ?? "nomic-embed-text:v1.5";
-const CHAT = process.env.MONO_AGENT_LLM_MODEL ?? "qwen3.6:latest";
+const EMBED = process.env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL ?? "nomic-embed-text:v1.5";
+const CHAT = process.env.MONO_AGENT_MEMORY_LLM_MODEL ?? "qwen3.6:latest";
 
 describe.skipIf(!OLLAMA)("memory-mcp @ real Ollama (bujo tier)", () => {
   function bujoStore(): { root: string; store: ReturnType<typeof createBujoMemoryStore> } {
