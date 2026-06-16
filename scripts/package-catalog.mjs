@@ -116,6 +116,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "memory-mcp",
+    name: "@mono-agent/memory-mcp",
+    category: "context",
+    responsibility: "Exposes the Bullet-Journal memory engine over MCP (stdio): recall, capture, and note tools backed by the SQLite substrate.",
+    allowedDependencyCategories: ["core", "context"],
+    publishable: true,
+  },
+  {
     dir: "memory-search",
     name: "@mono-agent/memory-search",
     category: "context",
