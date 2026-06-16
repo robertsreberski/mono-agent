@@ -3,6 +3,7 @@ node_modules/
 dist/
 coverage/
 .workflow/ultracode/
+.ultrawork/
 .env
 .env.*
 !.env.example
