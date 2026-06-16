@@ -146,14 +146,32 @@ async function memorySection(config: MonoAgentConfig): Promise<ValidationSection
     details.push(`Memory MCP tools enabled${config.memory.tools.allowJournalAppend ? " (journal append allowed)" : ""}.`);
   }
 
-  if (config.memory.mode === "bujo") {
+  if (config.memory.mode === "journal" || config.memory.mode === "bujo") {
     const warns = await bujoLivenessWarnings(config.memory);
     if (warns.length > 0) {
       return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...warns] };
     }
   }
 
+  if (config.memory.mode === "lite") {
+    const liteWarns = await liteRootWritableWarning(config.memory.path);
+    if (liteWarns.length > 0) {
+      return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...liteWarns] };
+    }
+  }
+
   return { id: "memory", label: "Memory", status: "ok", details };
+}
+
+async function liteRootWritableWarning(memoryPath: string): Promise<string[]> {
+  try {
+    await mkdir(memoryPath, { recursive: true });
+    return [];
+  } catch (err) {
+    return [
+      `[WARN] lite memory root is not writable: ${memoryPath} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
+    ];
+  }
 }
 
 const BUJO_PROBE_TIMEOUT_MS = 3_000;

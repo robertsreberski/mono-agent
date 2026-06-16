@@ -251,4 +251,82 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
     expect(report.ok).toBe(true);
   });
+
+  it("warns on journal mode when Ollama is unreachable (journal also needs embeddings)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/not reachable|unreachable|ECONNREFUSED/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("passes journal mode when Ollama is reachable and embeddings model is present", async () => {
+    stubFetch(["nomic-embed-text:v1.5"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
+    expect(memory.details.join("\n")).toContain("journal");
+  });
+
+  it("passes lite mode without any Ollama probe (lite needs no embeddings)", async () => {
+    // fetch is NOT stubbed — if the probe were attempted it would throw
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "lite",
+        path: dir,
+        writeMode: "append-host-summary",
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    expect(memory.details.join("\n")).toContain("lite");
+    expect(report.ok).toBe(true);
+  });
+
+  it("warns for lite mode when the memory root is not writable", async () => {
+    const unwritablePath = "/proc/mono-agent-test-unwritable-lite-root";
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "lite",
+        path: unwritablePath,
+        writeMode: "append-host-summary",
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
+    expect(report.ok).toBe(true);
+  });
 });

@@ -236,18 +236,6 @@ importers:
       '@mono-agent/memory-bujo':
         specifier: workspace:0.2.2
         version: link:../memory-bujo
-      '@mono-agent/memory-graph':
-        specifier: workspace:0.2.2
-        version: link:../memory-graph
-      '@mono-agent/memory-journal':
-        specifier: workspace:0.2.2
-        version: link:../memory-journal
-      '@mono-agent/memory-mcp':
-        specifier: workspace:0.2.2
-        version: link:../memory-mcp
-      '@mono-agent/memory-md':
-        specifier: workspace:0.2.2
-        version: link:../memory-md
       '@mono-agent/memory-search':
         specifier: workspace:0.2.2
         version: link:../memory-search

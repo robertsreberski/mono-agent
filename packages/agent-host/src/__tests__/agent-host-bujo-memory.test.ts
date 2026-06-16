@@ -13,7 +13,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
-import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
 
 import { createConfiguredAgentHarness } from "../index.js";
 
@@ -60,19 +59,29 @@ describe("createConfiguredMemory — bujo mode", () => {
     expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}\.md$/u);
   });
 
-  it("BujoMemoryStore exposes capture(); MarkdownMemoryStore does not (differentiates the branches)", async () => {
+  it("BujoMemoryStore exposes load, appendHostSummary, and capture (full contract)", async () => {
     const dir = await tempDir();
-    const memoryMd = join(dir, "MEMORY.md");
-    await writeFile(memoryMd, "", "utf8");
 
     const bujoStore = createBujoMemoryStore({ root: join(dir, "bujo-memory"), embeddings: fakeEmbeddings, dim: 768 });
-    const mdStore = createMarkdownMemoryStore({ path: memoryMd, maxBytes: 8_000 });
 
     expect(typeof bujoStore.load).toBe("function");
     expect(typeof bujoStore.appendHostSummary).toBe("function");
     expect(typeof bujoStore.capture).toBe("function");
-    expect("capture" in mdStore).toBe(false);
     await bujoStore.close();
+  });
+
+  it("lite-tier BujoMemoryStore (no embeddings) exposes the same contract, capture returns undefined", async () => {
+    const dir = await tempDir();
+
+    // lite tier: no embeddings — FTS only
+    const liteStore = createBujoMemoryStore({ root: join(dir, "lite-memory") });
+
+    expect(typeof liteStore.load).toBe("function");
+    expect(typeof liteStore.appendHostSummary).toBe("function");
+    // capture with no LLM returns undefined (not throws)
+    const result = await liteStore.capture("conv-1", "summary text");
+    expect(result).toBeUndefined();
+    await liteStore.close();
   });
 });
 

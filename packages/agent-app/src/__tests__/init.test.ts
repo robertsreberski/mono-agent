@@ -69,6 +69,15 @@ describe("initMonoAgentFolder", () => {
     expect(config.memory.path).toContain(".mono-agent/memory");
   });
 
+  it("writes lite memory config when memory is 'lite' (directory path, no Ollama needed)", async () => {
+    const result = await initMonoAgentFolder({ dir, memory: "lite" });
+
+    const config = JSON.parse(await readFile(result.configPath, "utf8"));
+    expect(config.memory).toMatchObject({ mode: "lite" });
+    // lite uses a directory path (all bujo-backed tiers do)
+    expect(config.memory.path).toContain(".mono-agent/memory");
+  });
+
   it("never overwrites existing files", async () => {
     const configPath = join(dir, "mono-agent.config.json");
     await writeFile(configPath, JSON.stringify({ runtime: { model: "codex:gpt-5.5" } }));
