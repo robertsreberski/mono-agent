@@ -13,18 +13,24 @@ import type {
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
+import type { LlmComplete } from "@mono-agent/memory-bujo";
 import { createEmbeddingProvider } from "@mono-agent/memory-search";
 import type { MemoryStore } from "@mono-agent/memory-store";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
+  assertExecutionModeCompatible,
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
+  defaultExecutionModeForModel,
+  parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
 } from "@mono-agent/runtime-adapter";
 import type {
   MonoRuntimeFallbackChainEntry,
   MonoRuntimeLike,
   RuntimeExecutionMode,
+  RuntimeResult,
+  RuntimeRunOptions,
   RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import { createToolPolicy, loadToolPolicyFromJsonFileSync } from "@mono-agent/tool-policy";
@@ -62,11 +68,7 @@ export function createConfiguredAgentRuntime(
 ): MonoRuntimeLike {
   const config = isRuntimeOptions(input) ? input.config : input;
   return createMonoRuntime({
-    workspace: config.runtime.workspace,
-    qaOutputDir: config.artifacts.dir,
-    ...(config.providers?.piAuthPath === undefined
-      ? {}
-      : { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: config.providers.piAuthPath }) }),
+    ...runtimeHostOptionsForConfig(config),
     ...(fallbackChainForConfig(config, isRuntimeOptions(input) ? input : undefined)),
   });
 }
@@ -96,9 +98,10 @@ function fallbackChainForConfig(
 
 export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): AgentHarness {
   const config = options.config;
-  const memory = options.memory ?? createConfiguredMemory(config);
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
+  const runtime = options.runtime ?? createConfiguredAgentRuntime({ config, model, executionMode });
+  const memory = options.memory ?? createConfiguredMemory(config, { runtime });
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),
@@ -111,7 +114,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
     ...(config.context.skillMaxBytes === undefined ? {} : { skillMaxBytes: config.context.skillMaxBytes }),
     selectedSkills: config.context.selectedSkills,
-    runtime: options.runtime ?? createConfiguredAgentRuntime({ config, model, executionMode }),
+    runtime,
     model,
     executionMode,
     cwd: config.runtime.workspace,
@@ -152,7 +155,7 @@ function historyMaxMessages(maxTurns: number | undefined): number {
 
 export function createConfiguredMemory(
   config: MonoAgentConfig,
-  deps: { logger?: { warn(message: string): void } } = {},
+  deps: { logger?: { warn(message: string): void }; runtime?: MonoRuntimeLike } = {},
 ): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
@@ -189,19 +192,116 @@ export function createConfiguredMemory(
   }
 
   // bujo tier: full stack — embeddings + optional chat LLM for capture/reflect/migrate.
+  const llm = configuredMemoryLlm(config, llmConfig, deps.runtime);
   return createBujoMemoryStore({
     root,
     embeddings,
     dim,
     ...(maxBytes !== undefined && { maxBytes }),
-    ...(llmConfig?.provider === "ollama" && {
-      llm: createOllamaLlm({
-        model: llmConfig.model,
-        ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
-      }),
-    }),
+    ...(llm === undefined ? {} : { llm }),
     ...(deps.logger !== undefined && { logger: deps.logger }),
   });
+}
+
+function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof createMonoRuntime>[0] {
+  return {
+    workspace: config.runtime.workspace,
+    qaOutputDir: config.artifacts.dir,
+    ...(config.providers?.piAuthPath === undefined
+      ? {}
+      : { resolvePiApiKey: createPiOAuthApiKeyResolver({ path: config.providers.piAuthPath }) }),
+  };
+}
+
+function configuredMemoryLlm(
+  config: MonoAgentConfig,
+  llmConfig: NonNullable<MonoAgentConfig["memory"]>["llm"],
+  runtimeOverride: MonoRuntimeLike | undefined,
+): LlmComplete | undefined {
+  if (llmConfig === undefined) {
+    return undefined;
+  }
+  if (llmConfig.provider === "ollama") {
+    return createOllamaLlm({
+      model: llmConfig.model,
+      ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
+    });
+  }
+  const model = parseMonoRuntimeModelReference(llmConfig.model);
+  const executionMode = llmConfig.executionMode ?? defaultExecutionModeForModel(model);
+  assertExecutionModeCompatible(model, executionMode);
+  if (executionMode !== "sdk") {
+    throw new Error("memory.llm provider agent-host supports SDK execution mode only.");
+  }
+  const runtime = runtimeOverride ?? createMonoRuntime(runtimeHostOptionsForConfig(config));
+  return createAgentHostMemoryLlm({
+    runtime,
+    model,
+    executionMode,
+    cwd: config.runtime.workspace,
+    runtimeOptions: mergeStaticRuntimeOptions(
+      runtimeOptionsForLocalProvider(model, config.providers?.local),
+      configRuntimeFlags(config),
+    ),
+  });
+}
+
+const MEMORY_LLM_SYSTEM_PROMPT = [
+  "You are the private memory maintenance LLM for mono-agent.",
+  "Return only the requested JSON or plain text.",
+  "Do not use tools, inspect files, or perform external actions.",
+].join(" ");
+
+function createAgentHostMemoryLlm(options: {
+  readonly runtime: MonoRuntimeLike;
+  readonly model: RuntimeModelReference;
+  readonly executionMode: RuntimeExecutionMode;
+  readonly cwd: string;
+  readonly runtimeOptions?: StaticRuntimeOptions;
+  readonly timeoutMs?: number;
+}): LlmComplete {
+  const timeoutMs = options.timeoutMs ?? 60_000;
+  return {
+    id: `agent-host:${referenceOf(options.model)}`,
+    async complete(prompt: string): Promise<string> {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => { ctrl.abort(); }, timeoutMs);
+      try {
+        const result = await options.runtime.run(MEMORY_LLM_SYSTEM_PROMPT, {
+          ...options.runtimeOptions,
+          model: options.model,
+          messages: [{ role: "user", content: prompt }],
+          abortSignal: ctrl.signal,
+          executionMode: options.executionMode,
+          cwd: options.cwd,
+          maxTurns: 1,
+          allowedTools: [],
+          disallowedTools: [],
+          mcpServers: {},
+        } satisfies RuntimeRunOptions);
+        return textFromMemoryRuntimeResult(result);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+function textFromMemoryRuntimeResult(result: RuntimeResult): string {
+  if (result.cancelled === true) {
+    throw new Error("agent-host memory LLM run was cancelled.");
+  }
+  if (typeof result.failureKind === "string" && result.failureKind.length > 0) {
+    throw new Error(`agent-host memory LLM failed (${result.failureKind}): ${result.error ?? "unknown error"}`);
+  }
+  if (typeof result.error === "string" && result.error.length > 0) {
+    throw new Error(`agent-host memory LLM failed: ${result.error}`);
+  }
+  return typeof result.text === "string" ? result.text : "";
+}
+
+function referenceOf(model: RuntimeModelReference): string {
+  return model.reference ?? `${model.sdk}:${model.provider === undefined ? "" : `${model.provider}:`}${model.model}`;
 }
 
 function mergeStaticRuntimeOptions(
