@@ -211,17 +211,6 @@ export const memoryFieldGroup = defineFieldGroup({
       path: ["memory", "maxBytes"],
     },
     {
-      id: "memory.scope",
-      label: "Scope",
-      description: "Whether memory is one shared file or one per conversation.",
-      kind: "select",
-      options: [
-        { value: "single-file", label: "single-file" },
-        { value: "per-conversation", label: "per-conversation" },
-      ],
-      path: ["memory", "scope"],
-    },
-    {
       id: "memory.writeMode",
       label: "Write mode",
       description:
@@ -232,28 +221,6 @@ export const memoryFieldGroup = defineFieldGroup({
         { value: "append-host-summary", label: "append-host-summary" },
       ],
       path: ["memory", "writeMode"],
-    },
-    {
-      id: "memory.tools.enabled",
-      label: "Memory tools",
-      description: "Expose memory recall tools over MCP when journal memory is enabled.",
-      kind: "switch",
-      path: ["memory", "tools", "enabled"],
-    },
-    {
-      id: "memory.tools.allowJournalAppend",
-      label: "Manual notes",
-      description: "Allow the model to append notes only when the host exposes the journal_append tool.",
-      kind: "switch",
-      path: ["memory", "tools", "allowJournalAppend"],
-    },
-    {
-      id: "memory.graphPath",
-      label: "Entity graph path",
-      description: "JSONL entity graph file (journal mode). Defaults to <memory path>/graph.jsonl.",
-      kind: "path",
-      placeholder: "./.mono-agent/memory/graph.jsonl",
-      path: ["memory", "graphPath"],
     },
     {
       id: "memory.embeddings.provider",
