@@ -34,6 +34,13 @@ const store = createBujoMemoryStore({
 const block = await store.load("global");
 ```
 
+Standalone CLI commands that need an LLM (`reflect`, `migrate`) are Ollama-only:
+
+```bash
+MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest \
+node packages/memory-bujo/dist/cli.js reflect ./memory
+```
+
 ## Public API
 
 - `createBujoMemoryStore`, `BujoMemoryStore`
@@ -52,12 +59,27 @@ Depends on `@mono-agent/memory-store` (SQLite substrate + `MemoryStore` contract
 lite/journal tiers — writes are deterministic rapid-log appends. LLM calls happen
 only in the `bujo` tier (capture + rituals) via the injected `LlmComplete`.
 
+The core package only receives `llm?: LlmComplete`; it does not parse provider
+names, model references, or app config such as `memory.llm`. Hosts may adapt any
+runtime model to `LlmComplete` before calling `createBujoMemoryStore`, but that
+adapter is outside this package.
+
+The built-in adapter is `createOllamaLlm`, and the standalone `memory-bujo` CLI
+uses that adapter directly. Both are Ollama-only: `MONO_AGENT_MEMORY_LLM_MODEL`
+is a local Ollama chat model string, and `MONO_AGENT_MEMORY_LLM_ENDPOINT` is an
+optional Ollama endpoint.
+
 ## What This Package Does Not Own
 
 It does not own SQLite storage or ranking (that is `memory-store`) or embedding
 implementations (that is `memory-search`). It defines the entity-extraction,
 reflection, and migration *logic*, but the in-app cron wiring that triggers
 rituals on a schedule lives in `@mono-agent/agent-app` (`startMemoryRituals`).
+App-level `memory.llm` provider routing also lives outside this package. In
+particular, `memory.llm.provider: "agent-host"` and SDK runtime model references such
+as `pi:openai-codex:gpt-5.5` belong to `@mono-agent/config` /
+`@mono-agent/agent-host`; they should be documented and implemented there, then
+injected here as an ordinary `LlmComplete`.
 
 ## Verification
 

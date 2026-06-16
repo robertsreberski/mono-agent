@@ -1,6 +1,8 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -23,6 +25,7 @@ import {
 } from "../index.js";
 
 const tempDirs: string[] = [];
+const servers: Server[] = [];
 
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "agent-host-test-"));
@@ -31,6 +34,7 @@ async function tempDir(): Promise<string> {
 }
 
 afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => closeServer(server)));
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -146,6 +150,63 @@ describe("agent host composition helpers", () => {
     );
     expect(fake.calls[1]?.prompt).toContain("## Memory (recalled)");
     expect(fake.calls[1]?.prompt).toContain("Logged answer");
+  });
+
+  it("uses the injected harness runtime for agent-host memory LLM capture", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const memoryRoot = join(dir, "memory");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const embeddingsEndpoint = await startEmbeddingServer();
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      if (options.model.provider === "openai-codex") {
+        return { text: "[]" };
+      }
+      return { text: "Harness answer" };
+    });
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        memoryPath: memoryRoot,
+        memoryMode: "bujo",
+        memoryWriteMode: "capture",
+        memoryEmbeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+          apiKey: "sk-test",
+          endpoint: embeddingsEndpoint,
+        },
+        memoryLlm: {
+          provider: "agent-host",
+          model: "pi:openai-codex:gpt-5.5",
+          executionMode: "sdk",
+        },
+        artifactDir,
+      }),
+      runtime: fake.runtime,
+    });
+
+    const response = await responder.respond({
+      conversationId: "channel-a",
+      text: "Remember that memory capture should reuse the injected runtime.",
+      abortSignal: new AbortController().signal,
+    }, { append: async () => {} });
+
+    expect(response.text).toBe("Harness answer");
+    for (let i = 0; i < 20 && fake.calls.length < 3; i += 1) {
+      await delay(5);
+    }
+    const memoryCalls = fake.calls.filter((call) => call.options.model.provider === "openai-codex");
+    expect(memoryCalls.length).toBeGreaterThanOrEqual(2);
+    for (const call of memoryCalls) {
+      expect(call.options.allowedTools).toEqual([]);
+      expect(call.options.disallowedTools).toEqual([]);
+      expect(call.options.mcpServers).toEqual({});
+      expect(call.options.maxTurns).toBe(1);
+    }
   });
 
   it("caps selected skill bodies at context.skillMaxBytes", async () => {
@@ -441,18 +502,59 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
   };
 }
 
+async function startEmbeddingServer(): Promise<string> {
+  const server = createServer((req, res) => {
+    if (req.method !== "POST" || req.url !== "/embeddings") {
+      res.writeHead(404).end();
+      return;
+    }
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      const parsed = JSON.parse(body) as { input?: unknown };
+      const input = Array.isArray(parsed.input) ? parsed.input : [];
+      const data = input.map(() => ({ embedding: Array.from({ length: 768 }, () => 0.01) }));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data }));
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  servers.push(server);
+  const address = server.address();
+  if (typeof address !== "object" || address === null) {
+    throw new Error("Failed to start embeddings test server.");
+  }
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error === undefined) {
+        resolve();
+      } else {
+        reject(error);
+      }
+    });
+  });
+}
+
 function monoConfig(input: {
   readonly dir: string;
   readonly identityPath: string;
   readonly memoryPath?: string;
   readonly memoryMode?: "lite" | "journal" | "bujo";
-  readonly memoryWriteMode?: "disabled" | "append-host-summary";
+  readonly memoryWriteMode?: "disabled" | "append-host-summary" | "capture";
   readonly memoryEmbeddings?: {
     readonly provider: "ollama" | "openai";
     readonly model: string;
     readonly endpoint?: string;
     readonly apiKey?: string;
   };
+  readonly memoryLlm?: NonNullable<MonoAgentConfig["memory"]>["llm"];
   readonly skillsRoot?: string;
   readonly selectedSkills?: readonly string[];
   readonly skillMaxBytes?: number;
@@ -497,6 +599,7 @@ function monoConfig(input: {
             maxBytes: 64_000,
             writeMode: input.memoryWriteMode ?? "disabled",
             ...(input.memoryEmbeddings === undefined ? {} : { embeddings: input.memoryEmbeddings }),
+            ...(input.memoryLlm === undefined ? {} : { llm: input.memoryLlm }),
           },
         }),
     tools: {

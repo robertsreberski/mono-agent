@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -365,6 +365,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
       "MONO_AGENT_MEMORY_LLM_PROVIDER",
       "MONO_AGENT_MEMORY_LLM_MODEL",
+      "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
       "MONO_AGENT_MEMORY_LLM_ENDPOINT",
       "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
       "MONO_AGENT_MEMORY_REFLECTION_CRON",
@@ -462,22 +463,99 @@ function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): Me
 }
 
 function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlmConfig | undefined {
-  const model = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_MODEL);
-  if (model === undefined) {
+  const rawModel = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_MODEL);
+  if (rawModel === undefined) {
     return undefined;
   }
-  const provider = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_PROVIDER) ?? "ollama";
-  if (provider !== "ollama") {
-    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_MEMORY_LLM_PROVIDER must be ollama.", {
-      env: "MONO_AGENT_MEMORY_LLM_PROVIDER",
-    });
-  }
+  const provider = readChoice<MemoryLlmProvider>(
+    env.MONO_AGENT_MEMORY_LLM_PROVIDER,
+    "MONO_AGENT_MEMORY_LLM_PROVIDER",
+    ["ollama", "agent-host"],
+    "ollama",
+    invalidEnv,
+  );
   const endpoint = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_ENDPOINT);
+  if (provider === "agent-host") {
+    if (endpoint !== undefined) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        "MONO_AGENT_MEMORY_LLM_ENDPOINT is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is ollama.",
+        { env: "MONO_AGENT_MEMORY_LLM_ENDPOINT" },
+      );
+    }
+    let model: MonoAgentConfig["runtime"]["model"];
+    try {
+      model = parseMonoRuntimeModelReference(rawModel);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new MonoAgentConfigError(
+        "invalid_model_reference",
+        "MONO_AGENT_MEMORY_LLM_MODEL is not a valid runtime model reference for agent-host memory LLM.",
+        { env: "MONO_AGENT_MEMORY_LLM_MODEL", reason },
+      );
+    }
+    const executionMode = readMemoryLlmExecutionMode(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE, model);
+    return {
+      provider,
+      model: rawModel,
+      executionMode,
+    };
+  }
+  if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE) !== undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
+      { env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE" },
+    );
+  }
   return {
-    provider: "ollama",
-    model,
+    provider,
+    model: rawModel,
     ...(endpoint === undefined ? {} : { endpoint }),
   };
+}
+
+function readMemoryLlmExecutionMode(
+  raw: string | undefined,
+  model: MonoAgentConfig["runtime"]["model"],
+): RuntimeExecutionMode {
+  const normalized = normalizeOptionalString(raw);
+  let executionMode: RuntimeExecutionMode;
+  if (normalized === undefined) {
+    executionMode = defaultExecutionModeForModel(model);
+  } else {
+    if (!isRuntimeExecutionMode(normalized)) {
+      throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE must be sdk or cli.", {
+        env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+      });
+    }
+    executionMode = normalized;
+  }
+  try {
+    assertExecutionModeCompatible(model, executionMode);
+  } catch (error) {
+    if (error instanceof RuntimeAdapterError && error.code === "incompatible_execution_mode") {
+      throw new MonoAgentConfigError(
+        "incompatible_execution_mode",
+        "memory.llm agent-host model and execution mode are incompatible.",
+        {
+          env: normalized === undefined ? "MONO_AGENT_MEMORY_LLM_MODEL" : "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+          reason: error.message,
+        },
+      );
+    }
+    throw error;
+  }
+  if (executionMode !== "sdk") {
+    throw new MonoAgentConfigError(
+      "incompatible_execution_mode",
+      "memory.llm provider agent-host currently supports SDK execution mode only; CLI-backed memory LLMs are rejected because they cannot yet enforce no external actions.",
+      {
+        env: normalized === undefined ? "MONO_AGENT_MEMORY_LLM_MODEL" : "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+      },
+    );
+  }
+  return executionMode;
 }
 
 /**

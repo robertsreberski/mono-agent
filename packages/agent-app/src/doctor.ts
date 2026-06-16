@@ -145,6 +145,9 @@ async function memorySection(config: MonoAgentConfig): Promise<ValidationSection
   const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,
   ];
+  if (config.memory.llm !== undefined) {
+    details.push(`Chat LLM: ${memoryLlmLabel(config.memory.llm)}.`);
+  }
 
   if (config.memory.mode === "bujo") {
     // Report ritual scheduler cadence
@@ -168,7 +171,7 @@ async function memorySection(config: MonoAgentConfig): Promise<ValidationSection
       }
       details.push(`Rituals: ${ritualParts.join(" / ")} (auto).`);
     } else {
-      details.push("Rituals: manual (no chat model — reflect/migrate need a local LLM).");
+      details.push("Rituals: manual (no chat model — reflect/migrate need an LLM).");
     }
   }
 
@@ -225,6 +228,7 @@ async function memoryLivenessWarnings(
   const mode = memory.mode;
   const embeddingsUsesOllama = (memory.embeddings?.provider ?? "ollama") === "ollama";
   const llmUsesOllama = memory.llm?.provider === "ollama";
+  const ollamaModelsByEndpoint = new Map<string, string[] | undefined>();
 
   // 1. Memory root writable (every embedded tier)
   try {
@@ -235,39 +239,57 @@ async function memoryLivenessWarnings(
     );
   }
 
-  // 2. Ollama liveness — only probe when embeddings and/or the chat LLM actually use Ollama. With
-  // OpenAI embeddings there is nothing local to probe, so we must not tell the user to start Ollama.
-  if (embeddingsUsesOllama || llmUsesOllama) {
-    const endpoint = (
-      (embeddingsUsesOllama ? memory.embeddings?.endpoint : memory.llm?.endpoint) ?? "http://localhost:11434"
-    ).replace(/\/$/u, "");
-
-    let ollamaModels: string[] | undefined;
-    try {
-      ollamaModels = await fetchOllamaModels(endpoint);
-    } catch (err) {
-      warns.push(
-        `[WARN] Ollama not reachable at ${endpoint}; ${mode} memory cannot embed and will fail at runtime (${err instanceof Error ? err.message : String(err)}). Start Ollama or fix the endpoint.`,
-      );
+  async function modelsForOllamaEndpoint(endpoint: string): Promise<string[] | undefined> {
+    const normalizedEndpoint = endpoint.replace(/\/$/u, "");
+    if (ollamaModelsByEndpoint.has(normalizedEndpoint)) {
+      return ollamaModelsByEndpoint.get(normalizedEndpoint);
     }
+    try {
+      const models = await fetchOllamaModels(normalizedEndpoint);
+      ollamaModelsByEndpoint.set(normalizedEndpoint, models);
+      return models;
+    } catch (err) {
+      ollamaModelsByEndpoint.set(normalizedEndpoint, undefined);
+      warns.push(
+        `[WARN] Ollama not reachable at ${normalizedEndpoint}; ${mode} memory components configured for that endpoint will fail at runtime (${err instanceof Error ? err.message : String(err)}). Start Ollama or fix the endpoint.`,
+      );
+      return undefined;
+    }
+  }
 
+  // 2. Ollama liveness — only probe components that actually use Ollama. OpenAI embeddings and
+  // agent-host chat LLMs have no local model list to validate here.
+  if (embeddingsUsesOllama) {
+    const endpoint = memory.embeddings?.endpoint ?? "http://localhost:11434";
+    const ollamaModels = await modelsForOllamaEndpoint(endpoint);
     if (ollamaModels !== undefined) {
-      if (embeddingsUsesOllama) {
-        const embeddingsModel = memory.embeddings?.model ?? "nomic-embed-text:v1.5";
-        if (!ollamaModels.includes(embeddingsModel)) {
-          warns.push(`[WARN] Embeddings model ${embeddingsModel} not pulled — run \`ollama pull ${embeddingsModel}\`.`);
-        }
+      const embeddingsModel = memory.embeddings?.model ?? "nomic-embed-text:v1.5";
+      if (!ollamaModels.includes(embeddingsModel)) {
+        warns.push(`[WARN] Embeddings model ${embeddingsModel} not pulled — run \`ollama pull ${embeddingsModel}\`.`);
       }
-      if (llmUsesOllama && memory.llm !== undefined) {
-        const chatModel = memory.llm.model;
-        if (!ollamaModels.includes(chatModel)) {
-          warns.push(`[WARN] Chat LLM model ${chatModel} not pulled — run \`ollama pull ${chatModel}\`.`);
-        }
+    }
+  }
+  if (llmUsesOllama && memory.llm !== undefined) {
+    const endpoint = memory.llm.endpoint ?? "http://localhost:11434";
+    const ollamaModels = await modelsForOllamaEndpoint(endpoint);
+    if (ollamaModels !== undefined) {
+      const chatModel = memory.llm.model;
+      if (!ollamaModels.includes(chatModel)) {
+        warns.push(`[WARN] Chat LLM model ${chatModel} not pulled — run \`ollama pull ${chatModel}\`.`);
       }
     }
   }
 
   return warns;
+}
+
+function memoryLlmLabel(llm: NonNullable<MonoAgentConfig["memory"]>["llm"]): string {
+  if (llm === undefined) {
+    return "none";
+  }
+  return llm.provider === "ollama"
+    ? `ollama:${llm.model}`
+    : `agent-host:${llm.model}${llm.executionMode === undefined ? "" : ` (${llm.executionMode})`}`;
 }
 
 async function toolsSection(config: MonoAgentConfig): Promise<ValidationSection> {

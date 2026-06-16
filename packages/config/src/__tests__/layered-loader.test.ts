@@ -205,6 +205,61 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBe("http://localhost:11434");
   });
 
+  it("translates JSON agent-host memory llm block to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5", executionMode: "sdk" },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_LLM_PROVIDER).toBe("agent-host");
+    expect(layered.MONO_AGENT_MEMORY_LLM_MODEL).toBe("pi:openai-codex:gpt-5.5");
+    expect(layered.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE).toBe("sdk");
+    expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
+  });
+
+  it("drops a stale JSON Ollama LLM endpoint when env switches memory llm to agent-host", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          llm: { provider: "ollama", model: "qwen3.6:latest", endpoint: "http://localhost:11434" },
+        },
+      },
+      {
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+      },
+    );
+    expect(layered.MONO_AGENT_MEMORY_LLM_PROVIDER).toBe("agent-host");
+    expect(layered.MONO_AGENT_MEMORY_LLM_MODEL).toBe("pi:openai-codex:gpt-5.5");
+    expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
+  });
+
+  it("preserves an explicit env endpoint so invalid agent-host env config can fail validation", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          llm: { provider: "ollama", model: "qwen3.6:latest", endpoint: "http://localhost:11434" },
+        },
+      },
+      {
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+      },
+    );
+    expect(layered.MONO_AGENT_MEMORY_LLM_PROVIDER).toBe("agent-host");
+    expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBe("http://localhost:11434");
+  });
+
   it("omits LLM env keys when llm block is absent in JSON", () => {
     const layered = layerJsonOntoEnv(
       { memory: { mode: "bujo", path: ".mono-agent/memory" } },

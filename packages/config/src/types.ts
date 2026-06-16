@@ -23,11 +23,19 @@ export interface MemoryEmbeddingsConfig {
   /** Embedding vector dimension (bujo mode default: 768 for nomic-embed-text). */
   readonly dim?: number;
 }
-export interface MemoryLlmConfig {
+export type MemoryLlmProvider = "ollama" | "agent-host";
+export interface MemoryOllamaLlmConfig {
   readonly provider: "ollama";
   readonly model: string;
   readonly endpoint?: string;
 }
+export interface MemoryAgentHostLlmConfig {
+  readonly provider: "agent-host";
+  /** Runtime model reference string, parsed by the host when constructing the LLM. */
+  readonly model: string;
+  readonly executionMode?: RuntimeExecutionMode;
+}
+export type MemoryLlmConfig = MemoryOllamaLlmConfig | MemoryAgentHostLlmConfig;
 export type SessionMode = "continuous" | "per-message";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
@@ -71,7 +79,7 @@ export interface MonoAgentConfig {
     readonly writeMode: MemoryWriteMode;
     /** Embedding provider for semantic memory_search; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
-    /** Local LLM for bujo capture/reflect/migrate (optional; ollama only for now). */
+    /** LLM for bujo capture/reflect/migrate. */
     readonly llm?: MemoryLlmConfig;
     /** Bujo-tier reflection ritual (nightly summarise/compress). Default cron: `0 3 * * *`. */
     readonly reflection?: MemoryRitualConfig;
