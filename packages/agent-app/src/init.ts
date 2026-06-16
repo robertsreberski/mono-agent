@@ -12,7 +12,7 @@ export interface InitMonoAgentFolderOptions {
   /** Ordered backup model references written into the config. */
   readonly fallbackModels?: readonly string[];
   /** Memory strategy: omitted = no memory section. */
-  readonly memory?: "markdown" | "journal";
+  readonly memory?: "lite" | "journal" | "bujo";
 }
 
 export interface InitMonoAgentFolderResult {
@@ -102,7 +102,7 @@ function configTemplate(
       : {
           memory: {
             mode: options.memory,
-            path: options.memory === "journal" ? "./.mono-agent/memory" : "./MEMORY.md",
+            path: "./.mono-agent/memory",
             writeMode: "append-host-summary" as const,
           },
         }),

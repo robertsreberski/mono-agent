@@ -10,7 +10,8 @@ export const DEFAULT_FINAL_DEMO_OLLAMA_BASE_URL = "http://localhost:11434";
 export const DEFAULT_FINAL_DEMO_DEPLOY_CONFIG_PATH = ".mono-agent/deploy/final-agent-gemma4.config.json";
 
 const DEPLOY_WORKSPACE_DIR = "./.mono-agent/deploy/workspace";
-const DEPLOY_MEMORY_PATH = "./.mono-agent/deploy/MEMORY.md";
+// Memory v2: `memory.path` is a root *directory* (holds memory.db + daily/), not a markdown file.
+const DEPLOY_MEMORY_PATH = "./.mono-agent/deploy/memory";
 const DEPLOY_ARTIFACT_DIR = "./.mono-agent/deploy/artifacts";
 const DEPLOY_TRACE_REGISTRY_DIR = "./.mono-agent/trace-sources";
 const DEPLOY_TRACE_SOURCE_ID = "final-agent-gemma4";
@@ -104,9 +105,9 @@ export function buildFinalDemoDeploymentConfig(
       selectedSkills: [],
     },
     memory: {
+      mode: "lite",
       path: DEPLOY_MEMORY_PATH,
       maxBytes: 64_000,
-      scope: "single-file",
       writeMode: "disabled",
     },
     tools: {
@@ -204,16 +205,13 @@ export async function writeFinalDemoDeploymentFiles(
 
   await Promise.all([
     mkdir(dirname(configPath), { recursive: true }),
-    mkdir(dirname(memoryPath), { recursive: true }),
+    // memoryPath is now the memory root directory itself; the engine creates memory.db inside it.
+    mkdir(memoryPath, { recursive: true }),
     mkdir(workspaceDir, { recursive: true }),
     mkdir(artifactDir, { recursive: true }),
     mkdir(traceRegistryDir, { recursive: true }),
   ]);
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8" });
-  await writeFileIfMissing(
-    memoryPath,
-    "# Final Agent Demo deployment memory\n\nThis file is local deployment state and is ignored by git.\n",
-  );
   return { configPath, memoryPath, workspaceDir, artifactDir, traceRegistryDir };
 }
 
@@ -281,21 +279,6 @@ function modelNamesFromTagsResponse(value: unknown): string[] {
   return names;
 }
 
-async function writeFileIfMissing(path: string, contents: string): Promise<void> {
-  try {
-    await writeFile(path, contents, { encoding: "utf8", flag: "wx" });
-  } catch (error) {
-    if (isNodeError(error) && error.code === "EEXIST") {
-      return;
-    }
-    throw error;
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }

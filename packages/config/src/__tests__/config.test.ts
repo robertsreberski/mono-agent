@@ -27,10 +27,7 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_MCP_CONFIG_PATH: "mcp.json",
         MONO_AGENT_MEMORY_PATH: "memory.md",
         MONO_AGENT_MEMORY_WRITE_MODE: "append-host-summary",
-        MONO_AGENT_MEMORY_SCOPE: "single-file",
         MONO_AGENT_MEMORY_MAX_BYTES: "2048",
-        MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
-        MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND: "true",
         MONO_AGENT_ARTIFACT_DIR: "artifacts",
         MONO_AGENT_TRACE_REGISTRY_DIR: "trace-registry",
         MONO_AGENT_TRACE_SOURCE_ID: "agent-one",
@@ -48,17 +45,10 @@ describe("loadMonoAgentConfig", () => {
       skillsRoot: "/repo/skills",
       selectedSkills: ["research", "review"],
     });
-    expect(config.memory).toEqual({
-      mode: "markdown",
-      path: "/repo/memory.md",
-      maxBytes: 2048,
-      scope: "single-file",
-      writeMode: "append-host-summary",
-      tools: {
-        enabled: true,
-        allowJournalAppend: true,
-      },
-    });
+    expect(config.memory).toMatchObject({ mode: "lite", path: "/repo/memory.md", writeMode: "append-host-summary" });
+    expect(config.memory).not.toHaveProperty("scope");
+    expect(config.memory).not.toHaveProperty("graphPath");
+    expect(config.memory).not.toHaveProperty("tools");
     expect(config.tools).toEqual({
       allowedTools: ["Read", "Grep"],
       disallowedTools: ["Bash"],
@@ -178,18 +168,17 @@ describe("loadMonoAgentConfig", () => {
     expect(config.providers?.piAuthPath).toBe("/tmp/pi-auth.json");
   });
 
-  it("rejects journal append for memory tools that are not enabled", () => {
-    expect(() =>
-      loadMonoAgentConfig({
-        cwd: "/repo",
-        env: {
-          ...baseEnv,
-          MONO_AGENT_MEMORY_PATH: "memory",
-          MONO_AGENT_MEMORY_MODE: "journal",
-          MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND: "true",
-        },
-      }),
-    ).toThrow(MonoAgentConfigError);
+  it("ignores the retired MONO_AGENT_MEMORY_SCOPE / _TOOLS_* / _GRAPH_PATH env vars", () => {
+    const config = loadMonoAgentConfig({
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem",
+        MONO_AGENT_MEMORY_SCOPE: "per-conversation",
+        MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
+        MONO_AGENT_MEMORY_GRAPH_PATH: "g.jsonl" },
+      cwd: "/repo",
+    });
+    expect(config.memory).not.toHaveProperty("scope");
+    expect(config.memory).not.toHaveProperty("tools");
+    expect(config.memory).not.toHaveProperty("graphPath");
   });
 
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {
@@ -465,20 +454,6 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
-  it("loads the journal memory graph path from env", () => {
-    const config = loadMonoAgentConfig({
-      cwd: "/repo",
-      env: {
-        ...baseEnv,
-        MONO_AGENT_MEMORY_PATH: "memory",
-        MONO_AGENT_MEMORY_MODE: "journal",
-        MONO_AGENT_MEMORY_GRAPH_PATH: "memory/entities.jsonl",
-      },
-    });
-
-    expect(config.memory?.graphPath).toBe("/repo/memory/entities.jsonl");
-  });
-
   it("loads memory embeddings from env with the Ollama default model", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -542,10 +517,17 @@ describe("loadMonoAgentConfig", () => {
     throw new Error("Expected openai embeddings without an api key to fail.");
   });
 
-  it("rejects memory embeddings and graph env without a memory path", () => {
+  it("rejects any memory env var set without a memory path", () => {
     for (const env of [
       { MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama" },
-      { MONO_AGENT_MEMORY_GRAPH_PATH: "graph.jsonl" },
+      { MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "768" },
+      { MONO_AGENT_MEMORY_MODE: "bujo" },
+      { MONO_AGENT_MEMORY_WRITE_MODE: "capture" },
+      { MONO_AGENT_MEMORY_MAX_BYTES: "8000" },
+      { MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama" },
+      { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
+      { MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true" },
+      { MONO_AGENT_MEMORY_MIGRATION_CRON: "0 3 * * *" },
     ]) {
       try {
         loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
@@ -615,5 +597,299 @@ describe("loadMonoAgentConfig", () => {
       return;
     }
     throw new Error("Expected config load to fail.");
+  });
+
+  it("loads memory.mode bujo from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+      },
+    });
+
+    expect(config.memory?.mode).toBe("bujo");
+    expect(config.memory?.path).toBe("/repo/memory-root");
+  });
+
+  it("loads memory.llm from env when model is set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+      },
+    });
+
+    expect(config.memory?.llm).toEqual({
+      provider: "ollama",
+      model: "qwen3.6:latest",
+      endpoint: "http://localhost:11434",
+    });
+  });
+
+  it("omits memory.llm when LLM model env is unset", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+      },
+    });
+
+    expect(config.memory?.llm).toBeUndefined();
+  });
+
+  it("omits memory.llm.endpoint when only provider and model are set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3:8b",
+      },
+    });
+
+    expect(config.memory?.llm).toEqual({ provider: "ollama", model: "qwen3:8b" });
+    expect(config.memory?.llm?.endpoint).toBeUndefined();
+  });
+
+  it("rejects an unsupported memory.llm provider from env", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_LLM_MODEL: "gpt-4o",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "openai",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
+  it("loads memory.embeddings.dim from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "768",
+      },
+    });
+
+    expect(config.memory?.embeddings?.dim).toBe(768);
+  });
+
+  it("omits embeddings.dim when the env is unset", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      },
+    });
+
+    expect(config.memory?.embeddings?.dim).toBeUndefined();
+  });
+
+  it("redacts bujo config without leaking llm model or endpoint (no secrets to redact)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+        MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+      },
+    });
+    const redacted = redactMonoAgentConfig(config);
+
+    expect(redacted.memory?.mode).toBe("bujo");
+    expect(redacted.memory?.llm).toEqual({
+      provider: "ollama",
+      model: "qwen3.6:latest",
+      endpoint: "http://localhost:11434",
+    });
+  });
+
+  it("rejects invalid memory mode from env", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "unknown-mode",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
+  it("rejects the removed 'markdown' mode from env", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "markdown",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
+  it("loads memory.mode lite from env (FTS-only, no embeddings required)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "lite",
+      },
+    });
+
+    expect(config.memory?.mode).toBe("lite");
+    expect(config.memory?.embeddings).toBeUndefined();
+    expect(config.memory?.llm).toBeUndefined();
+  });
+
+  it("defaults memory mode to lite when path is set but mode is unset", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+      },
+    });
+
+    expect(config.memory?.mode).toBe("lite");
+  });
+
+  it("loads memory.mode journal from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      },
+    });
+
+    expect(config.memory?.mode).toBe("journal");
+  });
+
+  it("loads memory.reflection from env when enabled and cron are set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
+        MONO_AGENT_MEMORY_REFLECTION_CRON: "0 3 * * *",
+      },
+    });
+
+    expect(config.memory?.reflection).toEqual({ enabled: true, cron: "0 3 * * *" });
+  });
+
+  it("loads memory.migration from env when enabled and cron are set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_MIGRATION_ENABLED: "false",
+        MONO_AGENT_MEMORY_MIGRATION_CRON: "0 4 1 * *",
+      },
+    });
+
+    expect(config.memory?.migration).toEqual({ enabled: false, cron: "0 4 1 * *" });
+  });
+
+  it("omits ritual blocks when neither enabled nor cron env vars are set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+      },
+    });
+
+    expect(config.memory?.reflection).toBeUndefined();
+    expect(config.memory?.migration).toBeUndefined();
+  });
+
+  it("loads a ritual block with only cron set (enabled omitted)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_REFLECTION_CRON: "30 2 * * *",
+      },
+    });
+
+    expect(config.memory?.reflection).toEqual({ cron: "30 2 * * *" });
+    expect(config.memory?.reflection?.enabled).toBeUndefined();
+  });
+
+  it("loads a ritual block with only enabled set (cron omitted)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_MIGRATION_ENABLED: "true",
+      },
+    });
+
+    expect(config.memory?.migration).toEqual({ enabled: true });
+    expect(config.memory?.migration?.cron).toBeUndefined();
+  });
+
+  it("accepts memory.writeMode 'capture' with mode 'bujo'", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "./mem",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_WRITE_MODE: "capture",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+      },
+    });
+    expect(config.memory?.writeMode).toBe("capture");
+  });
+
+  it("rejects memory.writeMode 'capture' unless mode is 'bujo'", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "./mem",
+          MONO_AGENT_MEMORY_MODE: "journal",
+          MONO_AGENT_MEMORY_WRITE_MODE: "capture",
+        },
+      }),
+    ).toThrow(/capture.*requires.*bujo/i);
   });
 });

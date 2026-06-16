@@ -31,10 +31,13 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
     ]);
   });
 
-  it("exposes memory graph and embeddings fields", () => {
+  it("exposes memory embeddings fields but not retired scope/graphPath/tools fields", () => {
     const memory = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "memory");
     const ids = memory?.fields.map((field) => field.id) ?? [];
-    expect(ids).toContain("memory.graphPath");
+    expect(ids).not.toContain("memory.scope");
+    expect(ids).not.toContain("memory.graphPath");
+    expect(ids).not.toContain("memory.tools.enabled");
+    expect(ids).not.toContain("memory.tools.allowJournalAppend");
     expect(ids).toContain("memory.embeddings.provider");
     expect(ids).toContain("memory.embeddings.model");
     expect(ids).toContain("memory.embeddings.endpoint");

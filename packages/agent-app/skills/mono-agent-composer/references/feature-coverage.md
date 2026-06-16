@@ -27,14 +27,14 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Selected skills from a skills root | config | `context.skillsRoot`, `context.selectedSkills` |
 | Per-skill byte cap | config | `context.skillMaxBytes` |
 | Conversation history (in-memory; unlimited unless turns are capped) | auto | sized from `runtime.maxTurns`; custom store via code |
-| Markdown memory (single-file / per-conversation, capped) | config | `memory.mode: "markdown"`, `path`, `maxBytes`, `scope` |
-| Journal memory (daily notes always in context) | config | `memory.mode: "journal"`, `path` |
+| Lite memory (FTS keyword recall + rapid-log capture; no external deps) | config | `memory.mode: "lite"`, `path`, `maxBytes`, `writeMode` |
+| Journal memory (hybrid recall BM25+vector + salience decay; needs Ollama embeddings) | config | `memory.mode: "journal"`, `path`, `memory.embeddings.{provider,model,dim}` |
+| BuJo memory (journal + LLM capture/reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity graph + auto-scheduled reflection/migration; needs Ollama embeddings + chat model) | config | `memory.mode: "bujo"`, `path`, `memory.embeddings.{provider,model,dim}`, `memory.llm.{provider,model,endpoint}` — see `docs/memory.md` |
+| BuJo reflection auto-scheduler (nightly decay + insight synthesis; in-app, no external cron needed) | config | `memory.reflection.{enabled,cron}` (default `0 3 * * *`); env `MONO_AGENT_MEMORY_REFLECTION_CRON`, `MONO_AGENT_MEMORY_REFLECTION_ENABLED` |
+| BuJo migration auto-scheduler (monthly promote/reschedule/cluster/forget; in-app) | config | `memory.migration.{enabled,cron}` (default `0 4 1 * *`); env `MONO_AGENT_MEMORY_MIGRATION_CRON`, `MONO_AGENT_MEMORY_MIGRATION_ENABLED` |
+| Memory out-of-band maintenance CLI (rebuild/recall/index/reflect/migrate) | cli | `memory-bujo <subcommand> <root>`; opt-in `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER`/`_MODEL`/`_DIM` for semantic recall; `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT` required for reflect/migrate |
+| Memory liveness check (root writable; Ollama + models for journal/bujo; ritual cadence for bujo — loud warn, no silent fallback) | cli | `mono-agent validate` |
 | Host summaries appended after runs | config | `memory.writeMode: "append-host-summary"` |
-| Entity graph + salience digest in context (journal) | config | automatic; path override `memory.graphPath` |
-| MCP recall tools (`memory_read_day`, `memory_list_days`, `memory_grep`, `memory_search`, `entity_get`) | config | `memory.tools.enabled` |
-| Model-initiated notes (`journal_append`) | config | `memory.tools.allowJournalAppend` |
-| Semantic `memory_search` (Ollama nomic-embed-text or OpenAI embeddings; keyword fallback when unset) | config | `memory.embeddings.{provider,model,endpoint,apiKey,apiKeyEnv}` |
-| Consolidation tools (`entity_upsert`, `memory_reindex`) | code | exposed by `@mono-agent/memory-mcp`, not in the default allowlist |
 
 ## Tools, MCP, sandbox
 

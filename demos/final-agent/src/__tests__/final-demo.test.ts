@@ -677,7 +677,6 @@ function validConfigPatch() {
     memory: {
       path: "./MEMORY.md",
       maxBytes: 64_000,
-      scope: "single-file" as const,
       writeMode: "append-host-summary" as const,
     },
     tools: {

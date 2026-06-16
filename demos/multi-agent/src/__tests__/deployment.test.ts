@@ -39,7 +39,8 @@ describe("multi-agent deployment files", () => {
     for (const role of ["orchestrator", "researcher", "worker"] as const) {
       await expect(stat(files.roles[role].workspaceDir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
       await expect(stat(files.roles[role].artifactDir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
-      await expect(stat(files.roles[role].memoryPath)).resolves.toMatchObject({ isFile: expect.any(Function) });
+      // Memory v2: memoryPath is a root directory (holds memory.db + daily/), not a markdown file.
+      expect((await stat(files.roles[role].memoryPath)).isDirectory()).toBe(true);
     }
 
     const researcher = JSON.parse(await readFile(files.roles.researcher.configPath, "utf8")) as {

@@ -5,9 +5,16 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { journalDayFor } from "@mono-agent/memory-journal";
+import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
+import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { createSandboxPolicy } from "@mono-agent/sandbox";
+
+/** Deterministic non-zero fake embeddings (dim 64) — keeps journal/bujo-tier tests hermetic (no Ollama). */
+const fakeEmbeddings: EmbeddingProvider = {
+  id: "fake",
+  embed: async (texts) => texts.map(() => Array.from({ length: 64 }, () => 0.01)),
+};
 
 import {
   createConfiguredAgentHarness,
@@ -28,13 +35,11 @@ afterEach(async () => {
 });
 
 describe("agent host composition helpers", () => {
-  it("creates a responder from MonoAgentConfig with runtime, memory, tools, local providers, request extensions, and recording", async () => {
+  it("creates a responder from MonoAgentConfig with runtime, tools, local providers, request extensions, and recording", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
-    const memoryPath = join(dir, "MEMORY.md");
     const artifactDir = join(dir, "artifacts");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    await writeFile(memoryPath, "Remember: answer briefly.", "utf8");
     const fake = createFakeRuntime(async (_prompt, options) => {
       options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "streamed " }] } });
       return {
@@ -47,7 +52,7 @@ describe("agent host composition helpers", () => {
     });
 
     const responder = createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, memoryPath, artifactDir }),
+      config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       createRunId: () => "run-host",
       runtimeOptionsForRequest: ({ request, runId }) => {
@@ -74,7 +79,6 @@ describe("agent host composition helpers", () => {
     expect(streamText).toEqual(["streamed "]);
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0]?.prompt).toContain("You are Mono.");
-    expect(fake.calls[0]?.prompt).toContain("Remember: answer briefly.");
     expect(fake.calls[0]?.options).toMatchObject({
       cwd: dir,
       maxTurns: 4,
@@ -100,7 +104,7 @@ describe("agent host composition helpers", () => {
     expect(await readFile(join(artifactDir, summaryFile as string), "utf8")).toContain("run-host");
   });
 
-  it("journals each turn into today's note (journal mode) and injects it on the next turn", async () => {
+  it("records each turn into today's daily file (journal tier) and surfaces it on the next turn", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const memoryRoot = join(dir, "memory");
@@ -118,6 +122,8 @@ describe("agent host composition helpers", () => {
         artifactDir,
       }),
       runtime: fake.runtime,
+      // Inject a fake-embeddings journal-tier store so the test is hermetic (no live Ollama in CI).
+      memory: createBujoMemoryStore({ root: memoryRoot, embeddings: fakeEmbeddings, dim: 64 }),
     });
 
     await responder.respond(
@@ -125,214 +131,21 @@ describe("agent host composition helpers", () => {
       { append: async () => {} },
     );
 
-    // The completed turn is journaled into today's global daily note.
-    const dailyPath = join(memoryRoot, "daily", `${journalDayFor(new Date())}.md`);
-    const dailyContent = await readFile(dailyPath, "utf8");
-    expect(dailyContent).toContain("Conversation: `channel-a`");
+    // The completed turn is appended as a bullet in today's daily file.
+    const dailyFiles = await readdir(join(memoryRoot, "daily"));
+    expect(dailyFiles.length).toBeGreaterThan(0);
+    const todayFile = dailyFiles.find((f) => /^\d{4}-\d{2}-\d{2}\.md$/u.test(f));
+    expect(todayFile).toBeDefined();
+    const dailyContent = await readFile(join(memoryRoot, "daily", todayFile!), "utf8");
     expect(dailyContent).toContain("Logged answer");
 
-    // A second turn (different conversation — one global brain) sees today's note in context.
+    // A second turn sees the stored memory in context via FTS/semantic recall.
     await responder.respond(
-      { conversationId: "channel-b", text: "Second message", abortSignal: new AbortController().signal },
+      { conversationId: "channel-b", text: "Logged answer", abortSignal: new AbortController().signal },
       { append: async () => {} },
     );
-    expect(fake.calls[1]?.prompt).toContain("## Memory");
+    expect(fake.calls[1]?.prompt).toContain("## Memory (recalled)");
     expect(fake.calls[1]?.prompt).toContain("Logged answer");
-  });
-
-  it("folds the entity-graph digest into the always-in-context block (journal mode)", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const memoryRoot = join(dir, "memory");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    await mkdir(memoryRoot, { recursive: true });
-    await writeFile(
-      join(memoryRoot, "graph.jsonl"),
-      `${JSON.stringify({ type: "entity", name: "Example Person", entityType: "person", observations: ["prefers concise answers"] })}\n`,
-      "utf8",
-    );
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const responder = createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, memoryPath: memoryRoot, memoryMode: "journal", artifactDir }),
-      runtime: fake.runtime,
-    });
-    await responder.respond(
-      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(fake.calls[0]?.prompt).toContain("Long-term memory (entity digest)");
-    expect(fake.calls[0]?.prompt).toContain("Example Person (person)");
-  });
-
-  it("injects memory MCP recall tools when journal memory tools are enabled", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const memoryRoot = join(dir, "memory");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const responder = createConfiguredAgentResponder({
-      config: monoConfig({
-        dir,
-        identityPath,
-        memoryPath: memoryRoot,
-        memoryMode: "journal",
-        memoryTools: { enabled: true, allowJournalAppend: false },
-        artifactDir,
-      }),
-      runtime: fake.runtime,
-    });
-    await responder.respond(
-      { conversationId: "c", text: "recall prior context", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(fake.calls[0]?.options.allowedTools).toEqual([
-      "Read",
-      "memory_read_day",
-      "memory_list_days",
-      "memory_grep",
-      "memory_search",
-      "entity_get",
-    ]);
-    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
-      memory: {
-        command: "node",
-        env: { MONO_AGENT_MEMORY_PATH: memoryRoot },
-      },
-    });
-    const memoryServer = (fake.calls[0]?.options.mcpServers as Record<string, { readonly args?: readonly string[] }>).memory;
-    expect(memoryServer?.args?.[0]).toMatch(/memory-mcp[/\\]dist[/\\]main\.js$/u);
-  });
-
-  it("resolves tools.mcpConfigPath into inline mcpServers alongside the memory MCP server", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const memoryRoot = join(dir, "memory");
-    const artifactDir = join(dir, "artifacts");
-    const mcpConfigPath = join(dir, "mcp.json");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    await writeFile(
-      mcpConfigPath,
-      JSON.stringify({
-        mcpServers: { "context-a8c": { command: "npx", args: ["-y", "@automattic/mcp-context-a8c"] } },
-      }),
-      "utf8",
-    );
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const responder = createConfiguredAgentResponder({
-      config: monoConfig({
-        dir,
-        identityPath,
-        memoryPath: memoryRoot,
-        memoryMode: "journal",
-        memoryTools: { enabled: true, allowJournalAppend: false },
-        artifactDir,
-        mcpConfigPath,
-      }),
-      runtime: fake.runtime,
-    });
-    await responder.respond(
-      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(fake.calls[0]?.options.mcpConfigPath).toBe(mcpConfigPath);
-    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
-      "context-a8c": { command: "npx", args: ["-y", "@automattic/mcp-context-a8c"] },
-      memory: { command: "node" },
-    });
-  });
-
-  it("uses memory.graphPath for the entity digest and forwards it to the memory MCP server", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const memoryRoot = join(dir, "memory");
-    const graphPath = join(dir, "custom-graph", "entities.jsonl");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    await mkdir(join(dir, "custom-graph"), { recursive: true });
-    await writeFile(
-      graphPath,
-      `${JSON.stringify({ type: "entity", name: "Custom Graph Person", entityType: "person", observations: ["lives in a custom path"] })}\n`,
-      "utf8",
-    );
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const responder = createConfiguredAgentResponder({
-      config: monoConfig({
-        dir,
-        identityPath,
-        memoryPath: memoryRoot,
-        memoryMode: "journal",
-        memoryGraphPath: graphPath,
-        memoryTools: { enabled: true, allowJournalAppend: false },
-        artifactDir,
-      }),
-      runtime: fake.runtime,
-    });
-    await responder.respond(
-      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(fake.calls[0]?.prompt).toContain("Custom Graph Person (person)");
-    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
-      memory: {
-        env: {
-          MONO_AGENT_MEMORY_PATH: memoryRoot,
-          MONO_AGENT_MEMORY_GRAPH_PATH: graphPath,
-        },
-      },
-    });
-  });
-
-  it("forwards memory embeddings config to the memory MCP server env", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const memoryRoot = join(dir, "memory");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const responder = createConfiguredAgentResponder({
-      config: monoConfig({
-        dir,
-        identityPath,
-        memoryPath: memoryRoot,
-        memoryMode: "journal",
-        memoryTools: { enabled: true, allowJournalAppend: false },
-        memoryEmbeddings: {
-          provider: "openai",
-          model: "text-embedding-3-small",
-          endpoint: "https://api.example.com/v1",
-          apiKey: "embeddings-secret",
-        },
-        artifactDir,
-      }),
-      runtime: fake.runtime,
-    });
-    await responder.respond(
-      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(fake.calls[0]?.options.mcpServers).toMatchObject({
-      memory: {
-        env: {
-          MONO_AGENT_MEMORY_PATH: memoryRoot,
-          MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
-          MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
-          MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "https://api.example.com/v1",
-          MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "embeddings-secret",
-        },
-      },
-    });
   });
 
   it("caps selected skill bodies at context.skillMaxBytes", async () => {
@@ -429,35 +242,6 @@ describe("agent host composition helpers", () => {
     );
 
     expect(fake.calls[0]?.options.piReasoningSummary).toBe("concise");
-  });
-
-  it("allows journal_append only when memory tools permit manual notes", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const memoryRoot = join(dir, "memory");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "ok" }));
-
-    const responder = createConfiguredAgentResponder({
-      config: monoConfig({
-        dir,
-        identityPath,
-        memoryPath: memoryRoot,
-        memoryMode: "journal",
-        memoryTools: { enabled: true, allowJournalAppend: true },
-        artifactDir,
-      }),
-      runtime: fake.runtime,
-    });
-    await responder.respond(
-      { conversationId: "c", text: "remember this", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(fake.calls[0]?.options.allowedTools).toContain("journal_append");
-    expect(fake.calls[0]?.options.allowedTools).not.toContain("entity_upsert");
-    expect(fake.calls[0]?.options.allowedTools).not.toContain("memory_reindex");
   });
 
   it("creates a configured harness when a host wants to wrap the responder itself", async () => {
@@ -661,13 +445,8 @@ function monoConfig(input: {
   readonly dir: string;
   readonly identityPath: string;
   readonly memoryPath?: string;
-  readonly memoryMode?: "markdown" | "journal";
+  readonly memoryMode?: "lite" | "journal" | "bujo";
   readonly memoryWriteMode?: "disabled" | "append-host-summary";
-  readonly memoryTools?: {
-    readonly enabled: boolean;
-    readonly allowJournalAppend: boolean;
-  };
-  readonly memoryGraphPath?: string;
   readonly memoryEmbeddings?: {
     readonly provider: "ollama" | "openai";
     readonly model: string;
@@ -713,13 +492,10 @@ function monoConfig(input: {
       ? {}
       : {
           memory: {
-            mode: input.memoryMode ?? "markdown",
+            mode: input.memoryMode ?? "lite",
             path: input.memoryPath,
             maxBytes: 64_000,
-            scope: "single-file",
             writeMode: input.memoryWriteMode ?? "disabled",
-            ...(input.memoryTools === undefined ? {} : { tools: input.memoryTools }),
-            ...(input.memoryGraphPath === undefined ? {} : { graphPath: input.memoryGraphPath }),
             ...(input.memoryEmbeddings === undefined ? {} : { embeddings: input.memoryEmbeddings }),
           },
         }),
@@ -734,5 +510,5 @@ function monoConfig(input: {
     traceability: {
       registryDir: join(input.dir, "trace-sources"),
     },
-  } as unknown as MonoAgentConfig;
+  };
 }

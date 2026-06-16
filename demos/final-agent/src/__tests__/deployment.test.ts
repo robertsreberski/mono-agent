@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, mkdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -101,14 +101,15 @@ describe("final demo deployment", () => {
     const result = await writeFinalDemoDeploymentFiles({ cwd: dir });
 
     expect(result.configPath).toBe(resolve(dir, ".mono-agent/deploy/final-agent-gemma4.config.json"));
-    expect(result.memoryPath).toBe(resolve(dir, ".mono-agent/deploy/MEMORY.md"));
+    expect(result.memoryPath).toBe(resolve(dir, ".mono-agent/deploy/memory"));
     expect(result.artifactDir).toBe(resolve(dir, ".mono-agent/deploy/artifacts"));
     expect(result.traceRegistryDir).toBe(resolve(dir, ".mono-agent/trace-sources"));
 
     const config = JSON.parse(await readFile(result.configPath, "utf8")) as unknown;
     expect(JSON.stringify(config)).toContain(DEFAULT_FINAL_DEMO_DEPLOY_MODEL_REFERENCE);
     expect(JSON.stringify(config)).not.toMatch(/token|secret|apiKey/iu);
-    expect(await readFile(result.memoryPath, "utf8")).toContain("Final Agent Demo deployment memory");
+    // Memory v2: the path is a root directory the engine populates, not a seeded markdown file.
+    expect((await stat(result.memoryPath)).isDirectory()).toBe(true);
   });
 
   it("starts the generated deployment config through A2A and exposes traceability runs", async () => {
