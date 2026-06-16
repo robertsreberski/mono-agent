@@ -182,7 +182,7 @@ export const memoryFieldGroup = defineFieldGroup({
       id: "memory.mode",
       label: "Mode",
       description:
-        "lite = FTS keyword recall only, no external dependencies. journal = hybrid vector+keyword recall with decay, needs Ollama embeddings. bujo = full BuJo store with LLM capture/reconcile/reflect/migrate + auto-scheduled rituals, needs embeddings and a local LLM.",
+        "lite = FTS keyword recall only, no external dependencies. journal = hybrid vector+keyword recall with decay, needs embeddings. bujo = full BuJo store with LLM capture/reconcile/reflect/migrate + auto-scheduled rituals, needs embeddings and a memory LLM.",
       kind: "select",
       options: [
         { value: "lite", label: "lite" },
@@ -270,23 +270,37 @@ export const memoryFieldGroup = defineFieldGroup({
     {
       id: "memory.llm.provider",
       label: "LLM provider",
-      description: "Local LLM provider for bujo capture/reflect/migrate (ollama only).",
+      description: "LLM provider for bujo capture/reflect/migrate.",
       kind: "select",
-      options: [{ value: "ollama", label: "ollama" }],
+      options: [
+        { value: "ollama", label: "ollama" },
+        { value: "agent-host", label: "agent-host" },
+      ],
       path: ["memory", "llm", "provider"],
     },
     {
       id: "memory.llm.model",
       label: "LLM model",
-      description: "Ollama chat model for bujo intelligence (e.g. qwen3:8b, qwen3.6:latest).",
+      description: "Chat model for bujo intelligence. Use an Ollama model for provider ollama or a runtime model reference for provider agent-host.",
       kind: "string",
-      placeholder: "qwen3:8b",
+      placeholder: "qwen3:8b or pi:openai-codex:gpt-5.5",
       path: ["memory", "llm", "model"],
+    },
+    {
+      id: "memory.llm.executionMode",
+      label: "LLM execution mode",
+      description: "Execution mode for provider agent-host. SDK is currently required; CLI-backed memory LLMs are rejected until runtimes can enforce no external actions.",
+      kind: "select",
+      options: [
+        { value: "sdk", label: "sdk" },
+        { value: "cli", label: "cli (not allowed for memory LLM yet)" },
+      ],
+      path: ["memory", "llm", "executionMode"],
     },
     {
       id: "memory.llm.endpoint",
       label: "LLM endpoint",
-      description: "Ollama endpoint for the chat LLM (default http://localhost:11434).",
+      description: "Ollama endpoint for provider ollama (default http://localhost:11434). Clear this when switching the LLM provider to agent-host.",
       kind: "string",
       placeholder: "http://localhost:11434",
       path: ["memory", "llm", "endpoint"],

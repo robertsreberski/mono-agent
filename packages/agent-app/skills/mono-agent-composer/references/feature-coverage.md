@@ -28,12 +28,12 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Per-skill byte cap | config | `context.skillMaxBytes` |
 | Conversation history (in-memory; unlimited unless turns are capped) | auto | sized from `runtime.maxTurns`; custom store via code |
 | Lite memory (FTS keyword recall + rapid-log capture; no external deps) | config | `memory.mode: "lite"`, `path`, `maxBytes`, `writeMode` |
-| Journal memory (hybrid recall BM25+vector + salience decay; needs Ollama embeddings) | config | `memory.mode: "journal"`, `path`, `memory.embeddings.{provider,model,dim}` |
-| BuJo memory (journal + LLM capture/reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity graph + auto-scheduled reflection/migration; needs Ollama embeddings + chat model) | config | `memory.mode: "bujo"`, `path`, `memory.embeddings.{provider,model,dim}`, `memory.llm.{provider,model,endpoint}` — see `docs/memory.md` |
+| Journal memory (hybrid recall BM25+vector + salience decay; needs configured embeddings) | config | `memory.mode: "journal"`, `path`, `memory.embeddings.{provider,model,dim}` (`provider: "ollama" | "openai"`) |
+| BuJo memory (journal + LLM capture/reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity graph + auto-scheduled reflection/migration; needs embeddings + an app-level `memory.llm`) | config | `memory.mode: "bujo"`, `path`, `memory.embeddings.{provider,model,dim}`, `memory.llm` with `provider: "ollama"` (`model`, optional `endpoint`) or `provider: "agent-host"` (`model` is an SDK runtime model ref, e.g. `pi:openai-codex:gpt-5.5`, optional `executionMode: "sdk"`) — see `docs/memory.md` |
 | BuJo reflection auto-scheduler (nightly decay + insight synthesis; in-app, no external cron needed) | config | `memory.reflection.{enabled,cron}` (default `0 3 * * *`); env `MONO_AGENT_MEMORY_REFLECTION_CRON`, `MONO_AGENT_MEMORY_REFLECTION_ENABLED` |
 | BuJo migration auto-scheduler (monthly promote/reschedule/cluster/forget; in-app) | config | `memory.migration.{enabled,cron}` (default `0 4 1 * *`); env `MONO_AGENT_MEMORY_MIGRATION_CRON`, `MONO_AGENT_MEMORY_MIGRATION_ENABLED` |
-| Memory out-of-band maintenance CLI (rebuild/recall/index/reflect/migrate) | cli | `memory-bujo <subcommand> <root>`; opt-in `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER`/`_MODEL`/`_DIM` for semantic recall; `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT` required for reflect/migrate |
-| Memory liveness check (root writable; Ollama + models for journal/bujo; ritual cadence for bujo — loud warn, no silent fallback) | cli | `mono-agent validate` |
+| Memory out-of-band maintenance CLI (rebuild/recall/index/reflect/migrate) | cli | `memory-bujo <subcommand> <root>`; opt-in `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER`/`_MODEL`/`_DIM` for semantic recall; reflect/migrate are Ollama-only and require `MONO_AGENT_MEMORY_LLM_MODEL` (optional `MONO_AGENT_MEMORY_LLM_ENDPOINT`) |
+| Memory liveness check (root writable; provider-specific Ollama checks only when embeddings/chat use Ollama; BuJo LLM config + ritual cadence — loud warn, no silent fallback) | cli | `mono-agent validate` |
 | Host summaries appended after runs | config | `memory.writeMode: "append-host-summary"` |
 
 ## Tools, MCP, sandbox

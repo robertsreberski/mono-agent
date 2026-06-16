@@ -42,8 +42,14 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
     expect(ids).toContain("memory.embeddings.model");
     expect(ids).toContain("memory.embeddings.endpoint");
     expect(ids).toContain("memory.embeddings.apiKey");
+    expect(ids).toContain("memory.llm.executionMode");
     const apiKey = memory?.fields.find((field) => field.id === "memory.embeddings.apiKey");
     expect(apiKey?.kind).toBe("secret");
+    const llmExecutionMode = memory?.fields.find((field) => field.id === "memory.llm.executionMode");
+    expect(llmExecutionMode).toMatchObject({
+      kind: "select",
+      path: ["memory", "llm", "executionMode"],
+    });
   });
 
   it("exposes the skill byte cap on the identity group", () => {

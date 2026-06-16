@@ -126,7 +126,10 @@ export function layerJsonOntoEnv(
   if (json.memory?.llm?.model !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_MODEL = json.memory.llm.model;
   }
-  if (json.memory?.llm?.endpoint !== undefined) {
+  if (json.memory?.llm?.executionMode !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE = json.memory.llm.executionMode;
+  }
+  if (json.memory?.llm?.endpoint !== undefined && json.memory.llm.provider !== "agent-host") {
     fromJson.MONO_AGENT_MEMORY_LLM_ENDPOINT = json.memory.llm.endpoint;
   }
   if (json.memory?.reflection?.enabled !== undefined) {
@@ -205,6 +208,12 @@ export function layerJsonOntoEnv(
     if (value !== undefined && value.trim().length > 0) {
       layered[key] = value;
     }
+  }
+  if (
+    layered.MONO_AGENT_MEMORY_LLM_PROVIDER === "agent-host" &&
+    (env.MONO_AGENT_MEMORY_LLM_ENDPOINT === undefined || env.MONO_AGENT_MEMORY_LLM_ENDPOINT.trim().length === 0)
+  ) {
+    delete layered.MONO_AGENT_MEMORY_LLM_ENDPOINT;
   }
   return layered;
 }

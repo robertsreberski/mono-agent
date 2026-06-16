@@ -633,6 +633,123 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
+  it("loads agent-host memory.llm with a runtime model reference", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+      },
+    });
+
+    expect(config.memory?.llm).toEqual({
+      provider: "agent-host",
+      model: "pi:openai-codex:gpt-5.5",
+      executionMode: "sdk",
+    });
+  });
+
+  it("loads agent-host memory.llm execution mode when explicitly set to sdk", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+        MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: "sdk",
+      },
+    });
+
+    expect(config.memory?.llm).toEqual({
+      provider: "agent-host",
+      model: "pi:openai-codex:gpt-5.5",
+      executionMode: "sdk",
+    });
+  });
+
+  it("rejects agent-host memory.llm endpoint because runtime models do not use Ollama endpoints", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "bujo",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+          MONO_AGENT_MEMORY_LLM_MODEL: "pi:openai-codex:gpt-5.5",
+          MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://localhost:11434",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
+  it("rejects invalid agent-host memory.llm model references", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "bujo",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+          MONO_AGENT_MEMORY_LLM_MODEL: "not-a-runtime-model",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_model_reference" }));
+  });
+
+  it("rejects CLI-backed agent-host memory.llm model references", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "bujo",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+          MONO_AGENT_MEMORY_LLM_MODEL: "codex:gpt-5.5",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "incompatible_execution_mode" }));
+  });
+
+  it("rejects explicit cli execution mode for agent-host memory.llm", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "bujo",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+          MONO_AGENT_MEMORY_LLM_MODEL: "claude:claude-sonnet-4-6",
+          MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: "cli",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "incompatible_execution_mode" }));
+  });
+
+  it("rejects memory.llm execution mode for the ollama provider", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "bujo",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+          MONO_AGENT_MEMORY_LLM_MODEL: "qwen3:8b",
+          MONO_AGENT_MEMORY_LLM_EXECUTION_MODE: "sdk",
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
   it("omits memory.llm when LLM model env is unset", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -658,7 +775,11 @@ describe("loadMonoAgentConfig", () => {
     });
 
     expect(config.memory?.llm).toEqual({ provider: "ollama", model: "qwen3:8b" });
-    expect(config.memory?.llm?.endpoint).toBeUndefined();
+    expect(config.memory?.llm?.provider).toBe("ollama");
+    if (config.memory?.llm?.provider !== "ollama") {
+      throw new Error("Expected ollama memory LLM config.");
+    }
+    expect(config.memory.llm.endpoint).toBeUndefined();
   });
 
   it("rejects an unsupported memory.llm provider from env", () => {

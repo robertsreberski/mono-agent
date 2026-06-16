@@ -317,6 +317,90 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(text).not.toMatch(/WARN/iu);
   });
 
+  it("does NOT probe Ollama for an agent-host chat LLM when embeddings provider is openai", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
+        llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toContain("agent-host:pi:openai-codex:gpt-5.5");
+    expect(text).not.toMatch(/pull|not pulled|WARN/iu);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does NOT check an agent-host chat LLM against Ollama when embeddings provider is ollama", async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ models: [{ name: "nomic-embed-text:v1.5" }] }),
+    });
+    vi.stubGlobal("fetch", fetch);
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toContain("agent-host:pi:openai-codex:gpt-5.5");
+    expect(text).not.toMatch(/pi:openai-codex:gpt-5\.5.*pull|not pulled|WARN/iu);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks Ollama embeddings and chat models against their own endpoints", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      const models = url.startsWith("http://localhost:11435/")
+        ? [{ name: "qwen3.6:latest" }]
+        : [{ name: "nomic-embed-text:v1.5" }];
+      return {
+        ok: true,
+        json: async () => ({ models }),
+      };
+    });
+    vi.stubGlobal("fetch", fetch);
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "ollama",
+          model: "nomic-embed-text:v1.5",
+          endpoint: "http://localhost:11434",
+        },
+        llm: { provider: "ollama", model: "qwen3.6:latest", endpoint: "http://localhost:11435" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).not.toMatch(/not pulled|WARN/iu);
+    expect(fetch).toHaveBeenCalledWith("http://localhost:11434/api/tags", expect.anything());
+    expect(fetch).toHaveBeenCalledWith("http://localhost:11435/api/tags", expect.anything());
+  });
+
   it("passes lite mode without any Ollama probe (lite needs no embeddings)", async () => {
     // fetch is NOT stubbed — if the probe were attempted it would throw
     const configPath = await writeMinimalConfig({
