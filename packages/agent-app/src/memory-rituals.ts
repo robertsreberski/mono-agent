@@ -107,8 +107,9 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
         }
 
         if (inFlight) {
+          // Skip: the previous run is still in flight. Do NOT reschedule here — the in-flight run's
+          // .finally schedules the next tick, keeping exactly one pending timer per ritual (no double-schedule).
           logger?.warn(`Memory ritual "${name}" skipped — previous run is still in flight.`);
-          schedule(); // still reschedule for the next tick
           return;
         }
 

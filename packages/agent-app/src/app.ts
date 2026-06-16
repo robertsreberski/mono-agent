@@ -186,6 +186,10 @@ class MonoAgentAppController implements MonoAgentApp {
   };
   private traceSource: TraceSourceHandle | undefined;
   private memoryRituals: RunningRituals | undefined;
+  // One shared memory store across all channel responders + the ritual scheduler, so there is a single
+  // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
+  private sharedMemory: ReturnType<typeof createConfiguredMemory> = undefined;
+  private sharedMemoryBuilt = false;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
 
@@ -244,6 +248,7 @@ class MonoAgentAppController implements MonoAgentApp {
         await this.stopChannel(driver.id, `${reason}:reload`);
       }
       this.stopMemoryRituals();
+      await this.resetSharedMemory();
       await this.stopTraceSource(`${reason}:reload`);
       await this.startTraceability(reason);
       await Promise.all(this.drivers.map((driver) => this.startChannelIfConfigured(driver.id, reason)));
@@ -345,6 +350,7 @@ class MonoAgentAppController implements MonoAgentApp {
       await this.stopChannel(driver.id, "stop");
     }
     this.stopMemoryRituals();
+    await this.resetSharedMemory();
     await this.stopTraceSource("stop");
     await this.consoleServer?.stop();
     for (const runtime of this.activeRuntimes.splice(0)) {
@@ -369,7 +375,7 @@ class MonoAgentAppController implements MonoAgentApp {
       return;
     }
 
-    const store = createConfiguredMemory(coreConfig);
+    const store = this.memoryStore(coreConfig);
     // Duck-type: only bujo-tier BujoMemoryStore has reflect/migrate.
     // Cast through unknown to bypass the MemoryStore contract's type mismatch.
     const storeAsAny = store as unknown as Record<string, unknown>;
@@ -495,7 +501,31 @@ class MonoAgentAppController implements MonoAgentApp {
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
-    return createConfiguredAgentResponder({ config: coreConfig, runtime });
+    const memory = this.memoryStore(coreConfig);
+    return createConfiguredAgentResponder({
+      config: coreConfig,
+      runtime,
+      ...(memory !== undefined && { memory }),
+    });
+  }
+
+  /** Build the configured memory store once and share it across responders + the ritual scheduler. */
+  private memoryStore(coreConfig: MonoAgentConfig): ReturnType<typeof createConfiguredMemory> {
+    if (!this.sharedMemoryBuilt) {
+      this.sharedMemory = createConfiguredMemory(coreConfig);
+      this.sharedMemoryBuilt = true;
+    }
+    return this.sharedMemory;
+  }
+
+  /** Close + clear the shared memory store (on config reload or stop) so the next build is fresh. */
+  private async resetSharedMemory(): Promise<void> {
+    const mem = this.sharedMemory as { close?: () => Promise<void> | void } | undefined;
+    this.sharedMemory = undefined;
+    this.sharedMemoryBuilt = false;
+    if (mem?.close !== undefined) {
+      await Promise.resolve(mem.close()).catch(() => undefined);
+    }
   }
 
   private setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus {
