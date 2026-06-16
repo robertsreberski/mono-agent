@@ -343,7 +343,6 @@ describe("final agent demo", () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono and you love small LEGO blocks.", "utf8");
     await writeDemoMcpJson(dir);
-    await writeFile(join(dir, "MEMORY.md"), "Remember: prefer small package boundaries.", "utf8");
     await writeFile(join(dir, "mono-agent.config.json"), `${JSON.stringify(validConfigPatch(), null, 2)}\n`, "utf8");
 
     const fakeRuntime = createFakeRuntime();
@@ -367,7 +366,10 @@ describe("final agent demo", () => {
       expect(fakeRuntime.calls).toHaveLength(1);
       const call = fakeRuntime.calls[0];
       expect(call?.prompt).toContain("You are Mono and you love small LEGO blocks.");
-      expect(call?.prompt).toContain("Remember: prefer small package boundaries.");
+      // Memory v2 (lite tier) composes a recalled-memory block into the prompt. A fresh store
+      // recalls nothing yet (lite recall is keyword-only, keyed on the conversation id), so assert
+      // the block is wired into context rather than expecting seeded content.
+      expect(call?.prompt).toContain("Memory (recalled)");
       expect(call?.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
       expect(call?.options.executionMode).toBe("sdk");
       expect(call?.options.cwd).toBe(resolve(dir, "workspace"));
@@ -377,9 +379,14 @@ describe("final agent demo", () => {
       expect(call?.options.mcpConfigPath).toBe(resolve(dir, "mcp.json"));
       expect(call?.options.mcpServers).toMatchObject({ demo: { command: "demo-mcp" } });
 
-      const memory = await readFile(join(dir, "MEMORY.md"), "utf8");
-      expect(memory).toContain("Host-observed completed turn.");
-      expect(memory).toContain("Hello demo");
+      // append-host-summary persists a deterministic rapid-log bullet to the canonical daily file
+      // at <memory root>/daily/<day>.md (Memory v2 replaced the single MEMORY.md file).
+      const dailyDir = join(dir, "memory", "daily");
+      const dailyFiles = await readdir(dailyDir);
+      expect(dailyFiles).toHaveLength(1);
+      const daily = await readFile(join(dailyDir, dailyFiles[0] as string), "utf8");
+      expect(daily).toContain("Host-observed completed turn.");
+      expect(daily).toContain("Hello demo");
       const artifactFiles = await readdir(join(dir, "artifacts"));
       const summaryFile = artifactFiles.find((file) => file.endsWith(".summary.json"));
       expect(summaryFile).toBeDefined();
@@ -675,7 +682,8 @@ function validConfigPatch() {
       selectedSkills: [],
     },
     memory: {
-      path: "./MEMORY.md",
+      mode: "lite" as const,
+      path: "./memory",
       maxBytes: 64_000,
       writeMode: "append-host-summary" as const,
     },
