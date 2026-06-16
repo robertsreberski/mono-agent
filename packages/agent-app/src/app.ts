@@ -512,7 +512,11 @@ class MonoAgentAppController implements MonoAgentApp {
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */
   private memoryStore(coreConfig: MonoAgentConfig): ReturnType<typeof createConfiguredMemory> {
     if (!this.sharedMemoryBuilt) {
-      this.sharedMemory = createConfiguredMemory(coreConfig);
+      const appLogger = this.logger;
+      const logger = appLogger?.warn !== undefined
+        ? { warn: (message: string) => { appLogger.warn?.(message); } }
+        : undefined;
+      this.sharedMemory = createConfiguredMemory(coreConfig, ...(logger !== undefined ? [{ logger }] : []));
       this.sharedMemoryBuilt = true;
     }
     return this.sharedMemory;
@@ -520,12 +524,23 @@ class MonoAgentAppController implements MonoAgentApp {
 
   /** Close + clear the shared memory store (on config reload or stop) so the next build is fresh. */
   private async resetSharedMemory(): Promise<void> {
-    const mem = this.sharedMemory as { close?: () => Promise<void> | void } | undefined;
+    const mem = this.sharedMemory as
+      | { flush?: () => Promise<void>; close?: () => Promise<void> | void }
+      | undefined;
     this.sharedMemory = undefined;
     this.sharedMemoryBuilt = false;
+    if (mem?.flush !== undefined) {
+      await Promise.resolve(mem.flush()).catch(() => undefined);
+    }
     if (mem?.close !== undefined) {
       await Promise.resolve(mem.close()).catch(() => undefined);
     }
+  }
+
+  /** @internal Test-only seam: seed the shared memory store without going through config. */
+  __setSharedMemoryForTest(store: ReturnType<typeof createConfiguredMemory>): void {
+    this.sharedMemory = store;
+    this.sharedMemoryBuilt = true;
   }
 
   private setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus {

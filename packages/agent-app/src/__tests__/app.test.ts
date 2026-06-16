@@ -356,4 +356,30 @@ describe("startMonoAgentApp", () => {
 
     await running.stop();
   });
+
+  it("drains pending captures (flush) before closing memory on stop", async () => {
+    await writeConfig(baseConfig());
+
+    const order: string[] = [];
+    const fakeStore = {
+      load: async () => undefined,
+      appendHostSummary: async () => ({ conversationId: "c", source: "s", bytesWritten: 1 }),
+      flush: async () => { order.push("flush"); },
+      close: async () => { order.push("close"); },
+    };
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsole: false,
+      operatorConsoleFactory: fakeConsoleFactory,
+    });
+
+    // Inject a fake store via the test-only seam.
+    (app as unknown as { __setSharedMemoryForTest(store: unknown): void })
+      .__setSharedMemoryForTest(fakeStore);
+
+    await app.stop();
+    expect(order).toEqual(["flush", "close"]);
+  });
 });

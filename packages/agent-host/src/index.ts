@@ -150,7 +150,10 @@ function historyMaxMessages(maxTurns: number | undefined): number {
   return maxTurns === undefined || maxTurns <= 0 ? 0 : maxTurns * 2;
 }
 
-export function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefined {
+export function createConfiguredMemory(
+  config: MonoAgentConfig,
+  deps: { logger?: { warn(message: string): void } } = {},
+): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
   }
@@ -161,6 +164,7 @@ export function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | u
     return createBujoMemoryStore({
       root,
       ...(maxBytes !== undefined && { maxBytes }),
+      ...(deps.logger !== undefined && { logger: deps.logger }),
     });
   }
 
@@ -180,6 +184,7 @@ export function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | u
       embeddings,
       dim,
       ...(maxBytes !== undefined && { maxBytes }),
+      ...(deps.logger !== undefined && { logger: deps.logger }),
     });
   }
 
@@ -195,6 +200,7 @@ export function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | u
         ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
       }),
     }),
+    ...(deps.logger !== undefined && { logger: deps.logger }),
   });
 }
 
