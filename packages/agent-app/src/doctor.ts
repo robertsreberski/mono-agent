@@ -145,9 +145,6 @@ async function memorySection(config: MonoAgentConfig): Promise<ValidationSection
   const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,
   ];
-  if (config.memory.tools?.enabled === true) {
-    details.push(`Memory MCP tools enabled${config.memory.tools.allowJournalAppend ? " (journal append allowed)" : ""}.`);
-  }
 
   if (config.memory.mode === "bujo") {
     // Report ritual scheduler cadence

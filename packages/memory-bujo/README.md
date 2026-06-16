@@ -41,9 +41,9 @@ const block = await store.load("global");
 
 ## Dependency Boundary
 
-Depends on `@mono-agent/memory-store` (substrate), `@mono-agent/memory-search`
-(embedding provider), and `@mono-agent/memory-md` (the `MemoryStore` contract). It
-performs no LLM calls in Phase 1 — writes are deterministic rapid-log appends.
+Depends on `@mono-agent/memory-store` (SQLite substrate + `MemoryStore` contract) and
+`@mono-agent/memory-search` (embedding provider). It performs no LLM calls in the
+lite/journal tiers — writes are deterministic rapid-log appends.
 
 ## What This Package Does Not Own
 

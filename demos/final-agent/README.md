@@ -348,69 +348,33 @@ MONO_AGENT_TRACE_SOURCE_ID=final-agent
 MONO_AGENT_TRACE_SOURCE_LABEL="Final Agent Demo"
 ```
 
-## Persistent memory (journal + entity graph + semantic search)
+## Persistent memory (tiered bujo memory)
 
-The agent can keep a persistent, file-first memory: a daily journal whose **today** note is always in context, a long-term **entity graph**, and **semantic search** over older notes. It is a single global brain shared across every channel. Four packages compose it: `@mono-agent/memory-journal` (today note), `@mono-agent/memory-graph` (entity graph), `@mono-agent/memory-search` (Ollama/OpenAI embeddings + cosine index), and `@mono-agent/memory-mcp` (the tools the model calls).
+The agent supports three memory tiers, all sharing a single global brain across every channel. The tier is selected by `memory.mode` in `mono-agent.config.json`. See [`docs/memory.md`](../../docs/memory.md) for the full reference.
 
-**1. Enable journal-mode memory.** Point `memory.path` at a directory (not a file) and switch the mode to `journal`. `writeMode: "append-host-summary"` makes every completed turn auto-append to today's note:
+| Tier | `memory.mode` | What it needs |
+|---|---|---|
+| `lite` | FTS-only recall, no deps | Just a writable path |
+| `journal` | Hybrid FTS + vector recall with daily rolling notes | Ollama `nomic-embed-text:v1.5` |
+| `bujo` | `journal` + LLM-driven entity capture, reflection, migration, and auto-scheduled rituals | Ollama embeddings + a local chat LLM |
+
+**Minimal bujo config** (Ollama-backed, auto-scheduled rituals):
 
 ```json
 {
   "memory": {
-    "mode": "journal",
+    "mode": "bujo",
     "path": "./.mono-agent/memory",
-    "maxBytes": 64000,
-    "scope": "single-file",
-    "writeMode": "append-host-summary"
+    "writeMode": "append-host-summary",
+    "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5" },
+    "llm": { "provider": "ollama", "model": "qwen3:6b" }
   }
 }
 ```
 
-The agent-host reads the entity graph at `./.mono-agent/memory/graph.jsonl` and folds a digest of the most salient entities into the always-in-context `## Memory` block automatically.
+`writeMode: "append-host-summary"` appends a concise turn summary to today's daily note after every completed turn. The `llm` block enables nightly reflection (entity extraction + graph update, default `0 3 * * *`) and monthly migration (archive compaction, default `0 4 1 * *`) — both auto-scheduled as internal cron jobs, no external MCP server needed.
 
-**2. Expose the memory tools over MCP.** Add the memory server to `mcp.json` (referenced by `tools.mcpConfigPath`) and allowlist its tools. Embeddings default to local Ollama `nomic-embed-text` (use the exact tag installed, e.g. `nomic-embed-text:v1.5`); semantic search degrades to keyword search when Ollama is unreachable:
-
-```json
-{
-  "mcpServers": {
-    "memory": {
-      "command": "node",
-      "args": ["packages/memory-mcp/dist/main.js"],
-      "env": {
-        "MONO_AGENT_MEMORY_PATH": "./.mono-agent/memory",
-        "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER": "ollama",
-        "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL": "nomic-embed-text:v1.5"
-      }
-    }
-  }
-}
-```
-
-```json
-{
-  "tools": {
-    "allowedTools": ["journal_append", "memory_search", "memory_read_day", "memory_list_days", "entity_get", "entity_upsert", "memory_reindex"],
-    "mcpConfigPath": "./mcp.json"
-  }
-}
-```
-
-Build the server once with `pnpm run build` so `packages/memory-mcp/dist/main.js` exists. For OpenAI embeddings instead, set `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER=openai`, `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL=text-embedding-3-small`, and `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY=...`.
-
-**3. Schedule nightly consolidation.** Use the cron job to have the agent turn the day's journal into structured, searchable memory:
-
-```json
-{
-  "cron": {
-    "enabled": true,
-    "expression": "0 3 * * *",
-    "timezone": "UTC",
-    "prompt": "Nightly memory consolidation. Read today's journal with memory_read_day, extract the people, projects, topics, decisions, and events as entities and relations, upsert them with entity_upsert, then call memory_reindex so older notes become semantically searchable."
-  }
-}
-```
-
-`IDENTITY.example.md` includes a *Memory discipline* section telling the agent when to journal and which recall tool to use; copy it into your `IDENTITY.md`.
+`IDENTITY.example.md` includes a *Memory discipline* section telling the agent when to journal; copy it into your `IDENTITY.md`.
 
 ## CLI options
 
