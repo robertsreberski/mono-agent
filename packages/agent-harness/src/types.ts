@@ -5,7 +5,7 @@ import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "
 import type { SandboxPolicy } from "@mono-agent/sandbox";
 import type { ToolPolicy } from "@mono-agent/tool-policy";
 
-export type MemoryWriteMode = "disabled" | "append-host-summary";
+export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
 
 export interface ConversationHistoryStore {
   load(conversationId: string): Promise<readonly HistoryMessage[]>;
