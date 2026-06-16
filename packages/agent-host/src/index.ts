@@ -17,8 +17,10 @@ import { join } from "node:path";
 import { createEntityGraphStore } from "@mono-agent/memory-graph";
 import { createJournalMemoryStore } from "@mono-agent/memory-journal";
 import { resolveMemoryMcpMainPath } from "@mono-agent/memory-mcp";
+import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
 import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
 import type { MemoryStore } from "@mono-agent/memory-md";
+import { createEmbeddingProvider } from "@mono-agent/memory-search";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
   createMonoRuntime,
@@ -166,6 +168,31 @@ function historyMaxMessages(maxTurns: number | undefined): number {
 function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
+  }
+  if (config.memory.mode === "bujo") {
+    // BuJo memory: SQLite-indexed daily markdown with hybrid recall. Embeddings run in-process
+    // (default local Ollama nomic-embed-text); an optional chat LLM enables the intelligent
+    // capture/reflection/migration path. No silent markdown fallback — this branch owns "bujo".
+    const embeddingsConfig = config.memory.embeddings;
+    const embeddings = createEmbeddingProvider({
+      provider: embeddingsConfig?.provider ?? "ollama",
+      model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
+      ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
+      ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
+    });
+    const llmConfig = config.memory.llm;
+    return createBujoMemoryStore({
+      root: config.memory.path,
+      embeddings,
+      dim: embeddingsConfig?.dim ?? 768,
+      maxBytes: config.memory.maxBytes,
+      ...(llmConfig?.provider === "ollama" && {
+        llm: createOllamaLlm({
+          model: llmConfig.model,
+          ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
+        }),
+      }),
+    });
   }
   if (config.memory.mode === "journal") {
     // The entity graph lives next to the journal; its salient-entity digest is
