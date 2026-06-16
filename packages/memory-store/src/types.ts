@@ -83,13 +83,16 @@ export interface RecallOptions {
 
 export interface MemoryDbOptions {
   readonly path: string;
-  readonly embeddings: EmbeddingProvider;
-  readonly dim: number;
+  readonly embeddings?: EmbeddingProvider;
+  readonly dim?: number;
   readonly k?: number;
   readonly weights?: Partial<RecallWeights>;
   readonly decayGamma?: number;
   readonly clock?: () => Date;
 }
+
+/** Default vector dimension used for the `memories_vec` table DDL when no `dim` is provided. */
+export const DEFAULT_VEC_DIM = 768;
 
 /**
  * Re-score weights. `rrf` scales the (small, ~1/k) fused rank score; the others

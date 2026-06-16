@@ -13,3 +13,4 @@ export type {
   RecallWeights,
   SimilarHit,
 } from "./types.js";
+export { DEFAULT_VEC_DIM } from "./types.js";

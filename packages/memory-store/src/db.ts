@@ -10,6 +10,7 @@ import { loadVec, toBlob } from "./vec.js";
 import {
   DEFAULT_DECAY_GAMMA,
   DEFAULT_RRF_K,
+  DEFAULT_VEC_DIM,
   DEFAULT_WEIGHTS,
   type EntityRecord,
   type EntityRelationRecord,
@@ -24,7 +25,7 @@ import type { EmbeddingProvider } from "@mono-agent/memory-search";
 
 export class MemoryDb {
   protected readonly db: Database;
-  protected readonly embeddings: EmbeddingProvider;
+  protected readonly embeddings: EmbeddingProvider | undefined;
   protected readonly dim: number;
   protected readonly k: number;
   protected readonly weights: RecallWeights;
@@ -32,20 +33,22 @@ export class MemoryDb {
   protected readonly clock: () => Date;
 
   constructor(options: MemoryDbOptions) {
-    if (!Number.isInteger(options.dim) || options.dim <= 0) {
+    // Validate dim only when explicitly provided; absent → default 768 for the vec table DDL.
+    if (options.dim !== undefined && (!Number.isInteger(options.dim) || options.dim <= 0)) {
       throw new Error("MemoryDb: dim must be a positive integer.");
     }
+    const vecDim = options.dim ?? DEFAULT_VEC_DIM;
     if (options.path !== ":memory:") {
       mkdirSync(dirname(options.path), { recursive: true });
     }
     this.db = new BetterSqlite3(options.path);
     this.db.pragma("journal_mode = WAL");
     loadVec(this.db);
-    for (const statement of migrations(options.dim)) {
+    for (const statement of migrations(vecDim)) {
       this.db.exec(statement);
     }
     this.embeddings = options.embeddings;
-    this.dim = options.dim;
+    this.dim = vecDim;
     this.k = options.k ?? DEFAULT_RRF_K;
     this.weights = { ...DEFAULT_WEIGHTS, ...options.weights };
     this.decayGamma = options.decayGamma ?? DEFAULT_DECAY_GAMMA;
@@ -58,10 +61,17 @@ export class MemoryDb {
   }
 
   async upsert(record: MemoryRecord): Promise<void> {
-    const [vector] = await this.embeddings.embed([`search_document: ${record.text}`]);
-    if (vector === undefined) {
-      throw new Error("memory-store: embedding provider returned no vector for upsert.");
-    }
+    // Only embed when a provider is configured; lite tier skips vec entirely.
+    const vector = this.embeddings !== undefined
+      ? await (async () => {
+          const [v] = await this.embeddings!.embed([`search_document: ${record.text}`]);
+          if (v === undefined) {
+            throw new Error("memory-store: embedding provider returned no vector for upsert.");
+          }
+          return v;
+        })()
+      : undefined;
+
     const tx = this.db.transaction(() => {
       // seq is computed inside the tx so concurrent upserts of new ids cannot collide on MAX(seq)+1.
       const seq = this.nextSeq(record.id);
@@ -86,9 +96,11 @@ export class MemoryDb {
       ).run(this.toRow(record, seq));
       this.db.prepare(`DELETE FROM memories_fts WHERE id = ?`).run(record.id);
       this.db.prepare(`INSERT INTO memories_fts (id, text) VALUES (?, ?)`).run(record.id, record.text);
-      // NOTE (from Task 2 spike): sqlite-vec vec0 rejects float64-bound rowids — bind as BigInt.
-      this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(BigInt(seq));
-      this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`).run(BigInt(seq), toBlob(vector));
+      if (vector !== undefined) {
+        // NOTE (from Task 2 spike): sqlite-vec vec0 rejects float64-bound rowids — bind as BigInt.
+        this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(BigInt(seq));
+        this.db.prepare(`INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)`).run(BigInt(seq), toBlob(vector));
+      }
     });
     tx();
   }
@@ -107,8 +119,11 @@ export class MemoryDb {
     const candidates = options.candidates ?? Math.max(topK * 4, 20);
     const now = options.now ?? this.clock();
 
-    const vecIds = await this.vectorCandidates(query, candidates);
     const ftsIds = this.keywordCandidates(query, candidates);
+    const vecIds = this.embeddings !== undefined
+      ? await this.vectorCandidates(query, candidates)
+      : [];
+    // When embeddings are absent, fuse only the FTS list (RRF of one list still re-ranks correctly).
     const fused = rrfFuse([vecIds, ftsIds], this.k);
     if (fused.length === 0) return [];
 
@@ -143,6 +158,7 @@ export class MemoryDb {
   }
 
   protected async vectorCandidates(query: string, limit: number): Promise<string[]> {
+    if (this.embeddings === undefined) return [];
     const [vector] = await this.embeddings.embed([`search_query: ${query}`]);
     if (vector === undefined) return [];
     const rows = this.db
@@ -220,6 +236,7 @@ export class MemoryDb {
   }
 
   async findSimilar(text: string, k = 5): Promise<SimilarHit[]> {
+    if (this.embeddings === undefined) return [];
     // Deliberately the `search_document:` prefix (not `search_query:` like recall): dedup/reconciliation
     // compares a candidate memory to stored memories document-to-document, not query-to-document.
     const [vector] = await this.embeddings.embed([`search_document: ${text}`]);
@@ -298,7 +315,7 @@ export class MemoryDb {
       source_session: record.source.session ?? null,
       source_file: record.source.file ?? null,
       source_line: record.source.line ?? null,
-      embedding_model: record.embeddingModel ?? this.embeddings.id,
+      embedding_model: record.embeddingModel ?? this.embeddings?.id ?? null,
       dim: record.dim ?? this.dim,
       tags: JSON.stringify(record.tags),
     };
