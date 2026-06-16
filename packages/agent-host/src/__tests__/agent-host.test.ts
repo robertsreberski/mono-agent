@@ -5,8 +5,16 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
+import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { createSandboxPolicy } from "@mono-agent/sandbox";
+
+/** Deterministic non-zero fake embeddings (dim 64) — keeps journal/bujo-tier tests hermetic (no Ollama). */
+const fakeEmbeddings: EmbeddingProvider = {
+  id: "fake",
+  embed: async (texts) => texts.map(() => Array.from({ length: 64 }, () => 0.01)),
+};
 
 import {
   createConfiguredAgentHarness,
@@ -114,6 +122,8 @@ describe("agent host composition helpers", () => {
         artifactDir,
       }),
       runtime: fake.runtime,
+      // Inject a fake-embeddings journal-tier store so the test is hermetic (no live Ollama in CI).
+      memory: createBujoMemoryStore({ root: memoryRoot, embeddings: fakeEmbeddings, dim: 64 }),
     });
 
     await responder.respond(
