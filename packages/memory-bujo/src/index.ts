@@ -5,6 +5,7 @@ export { parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from
 export { appendBullet, dailyFilePath } from "./daily.js";
 export { createIdFactory } from "./ids.js";
 export type { Bullet, BujoOptions, BujoTier } from "./types.js";
+export type { LlmComplete } from "./llm.js";
 
 // Phase 2 capture pipeline
 export { captureTurn } from "./capture.js";
