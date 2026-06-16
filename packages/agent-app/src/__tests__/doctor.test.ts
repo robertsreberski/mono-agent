@@ -233,7 +233,11 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
 
   it("warns when the memory root is not writable", async () => {
     stubFetch(["nomic-embed-text:v1.5"]);
-    const unwritablePath = "/proc/mono-agent-test-unwritable-bujo-root";
+    // A path *under an existing file* makes mkdir fail with ENOTDIR deterministically on every
+    // platform and regardless of privileges. A hardcoded /proc path hangs on Linux CI runners.
+    const blocker = join(dir, "blocker-bujo");
+    await writeFile(blocker, "x");
+    const unwritablePath = join(blocker, "root");
 
     const configPath = await writeMinimalConfig({
       memory: {
@@ -332,7 +336,11 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
   });
 
   it("warns for lite mode when the memory root is not writable", async () => {
-    const unwritablePath = "/proc/mono-agent-test-unwritable-lite-root";
+    // See the bujo variant above: a path under an existing file fails mkdir with ENOTDIR
+    // deterministically; a hardcoded /proc path hangs on Linux CI runners.
+    const blocker = join(dir, "blocker-lite");
+    await writeFile(blocker, "x");
+    const unwritablePath = join(blocker, "root");
 
     const configPath = await writeMinimalConfig({
       memory: {
