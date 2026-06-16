@@ -46,7 +46,7 @@ caller decides when to rebuild the index (typically the nightly consolidation jo
 
 It does not own the journal or graph storage, does not extract entities, does not
 schedule consolidation, and does not expose MCP tools. It only embeds, indexes, and
-ranks. Keyword fallback lives in `@mono-agent/memory-mcp`.
+ranks. Hybrid recall (FTS + vector) is orchestrated by `@mono-agent/memory-store`.
 
 ## Verification
 

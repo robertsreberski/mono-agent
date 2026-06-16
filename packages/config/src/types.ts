@@ -4,12 +4,12 @@ import type { RedactedSecretValue } from "@mono-agent/settings";
 
 import type { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
 
-export type MemoryWriteMode = "disabled" | "append-host-summary";
-export type MemoryScope = "single-file" | "per-conversation";
-export type MemoryMode = "markdown" | "journal";
-export interface MemoryToolsConfig {
-  readonly enabled: boolean;
-  readonly allowJournalAppend: boolean;
+export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
+export type MemoryMode = "lite" | "journal" | "bujo";
+/** Configuration for a bujo-tier auto-ritual (reflection or migration). */
+export interface MemoryRitualConfig {
+  readonly enabled?: boolean;
+  readonly cron?: string;
 }
 export type MemoryEmbeddingsProvider = "ollama" | "openai";
 export interface MemoryEmbeddingsConfig {
@@ -20,6 +20,13 @@ export interface MemoryEmbeddingsConfig {
   readonly apiKey?: string;
   /** Name of the env var the key was read from, kept for redacted display. */
   readonly apiKeyEnv?: string;
+  /** Embedding vector dimension (bujo mode default: 768 for nomic-embed-text). */
+  readonly dim?: number;
+}
+export interface MemoryLlmConfig {
+  readonly provider: "ollama";
+  readonly model: string;
+  readonly endpoint?: string;
 }
 export type SessionMode = "continuous" | "per-message";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
@@ -61,13 +68,15 @@ export interface MonoAgentConfig {
     readonly mode: MemoryMode;
     readonly path: string;
     readonly maxBytes: number;
-    readonly scope: MemoryScope;
     readonly writeMode: MemoryWriteMode;
-    readonly tools?: MemoryToolsConfig;
-    /** Entity graph JSONL path (journal mode); defaults to `<path>/graph.jsonl`. */
-    readonly graphPath?: string;
     /** Embedding provider for semantic memory_search; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
+    /** Local LLM for bujo capture/reflect/migrate (optional; ollama only for now). */
+    readonly llm?: MemoryLlmConfig;
+    /** Bujo-tier reflection ritual (nightly summarise/compress). Default cron: `0 3 * * *`. */
+    readonly reflection?: MemoryRitualConfig;
+    /** Bujo-tier migration ritual (monthly archive/rebalance). Default cron: `0 4 1 * *`. */
+    readonly migration?: MemoryRitualConfig;
   };
   readonly tools: {
     readonly allowedTools: readonly string[];

@@ -12,13 +12,9 @@ import type {
 } from "@mono-agent/agent-harness";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { join } from "node:path";
-
-import { createEntityGraphStore } from "@mono-agent/memory-graph";
-import { createJournalMemoryStore } from "@mono-agent/memory-journal";
-import { resolveMemoryMcpMainPath } from "@mono-agent/memory-mcp";
-import { createMarkdownMemoryStore } from "@mono-agent/memory-md";
-import type { MemoryStore } from "@mono-agent/memory-md";
+import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
+import { createEmbeddingProvider } from "@mono-agent/memory-search";
+import type { MemoryStore } from "@mono-agent/memory-store";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
   createMonoRuntime,
@@ -33,14 +29,6 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import { createToolPolicy, loadToolPolicyFromJsonFileSync } from "@mono-agent/tool-policy";
 import type { ToolPolicyInput } from "@mono-agent/tool-policy";
-
-const MEMORY_RECALL_TOOLS = [
-  "memory_read_day",
-  "memory_list_days",
-  "memory_grep",
-  "memory_search",
-  "entity_get",
-] as const;
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
 
@@ -113,7 +101,6 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
   const executionMode = options.executionMode ?? config.runtime.executionMode;
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
-    memoryMcpRuntimeOptions(config),
     configRuntimeFlags(config),
     options.runtimeOptions,
   );
@@ -163,73 +150,58 @@ function historyMaxMessages(maxTurns: number | undefined): number {
   return maxTurns === undefined || maxTurns <= 0 ? 0 : maxTurns * 2;
 }
 
-function createConfiguredMemory(config: MonoAgentConfig): MemoryStore | undefined {
+export function createConfiguredMemory(
+  config: MonoAgentConfig,
+  deps: { logger?: { warn(message: string): void } } = {},
+): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
   }
-  if (config.memory.mode === "journal") {
-    // The entity graph lives next to the journal; its salient-entity digest is
-    // folded into the always-in-context block so long-term memory is present
-    // without loading the whole archive.
-    const graph = createEntityGraphStore({ path: config.memory.graphPath ?? join(config.memory.path, "graph.jsonl") });
-    return createJournalMemoryStore({
-      rootDir: config.memory.path,
-      maxBytes: config.memory.maxBytes,
-      entityDigest: async () => {
-        const digest = await graph.digest();
-        return digest.length === 0 ? undefined : digest;
-      },
+  const { mode, path: root, maxBytes, embeddings: embeddingsConfig, llm: llmConfig } = config.memory;
+
+  if (mode === "lite") {
+    // Lite tier: FTS-only recall, no external deps.
+    return createBujoMemoryStore({
+      root,
+      ...(maxBytes !== undefined && { maxBytes }),
+      ...(deps.logger !== undefined && { logger: deps.logger }),
     });
   }
-  return createMarkdownMemoryStore({
-    path: config.memory.path,
-    maxBytes: config.memory.maxBytes,
-    scope: config.memory.scope,
-  });
-}
 
-function memoryMcpRuntimeOptions(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
-  if (
-    config.memory === undefined ||
-    config.memory.mode !== "journal" ||
-    config.memory.tools?.enabled !== true
-  ) {
-    return undefined;
+  // journal and bujo tiers both need embeddings for hybrid recall.
+  const embeddings = createEmbeddingProvider({
+    provider: embeddingsConfig?.provider ?? "ollama",
+    model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
+    ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
+    ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
+  });
+  const dim = embeddingsConfig?.dim ?? 768;
+
+  if (mode === "journal") {
+    // Journal tier: hybrid recall + decay; no chat LLM.
+    return createBujoMemoryStore({
+      root,
+      embeddings,
+      dim,
+      ...(maxBytes !== undefined && { maxBytes }),
+      ...(deps.logger !== undefined && { logger: deps.logger }),
+    });
   }
 
-  const allowedTools = [
-    ...MEMORY_RECALL_TOOLS,
-    ...(config.memory.tools.allowJournalAppend ? ["journal_append"] : []),
-  ];
-
-  const embeddings = config.memory.embeddings;
-  return {
-    allowedTools,
-    mcpServers: {
-      memory: {
-        command: "node",
-        args: [resolveMemoryMcpMainPath()],
-        env: {
-          MONO_AGENT_MEMORY_PATH: config.memory.path,
-          ...(config.memory.graphPath === undefined
-            ? {}
-            : { MONO_AGENT_MEMORY_GRAPH_PATH: config.memory.graphPath }),
-          ...(embeddings === undefined
-            ? {}
-            : {
-                MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: embeddings.provider,
-                MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: embeddings.model,
-                ...(embeddings.endpoint === undefined
-                  ? {}
-                  : { MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: embeddings.endpoint }),
-                ...(embeddings.apiKey === undefined
-                  ? {}
-                  : { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: embeddings.apiKey }),
-              }),
-        },
-      },
-    },
-  };
+  // bujo tier: full stack — embeddings + optional chat LLM for capture/reflect/migrate.
+  return createBujoMemoryStore({
+    root,
+    embeddings,
+    dim,
+    ...(maxBytes !== undefined && { maxBytes }),
+    ...(llmConfig?.provider === "ollama" && {
+      llm: createOllamaLlm({
+        model: llmConfig.model,
+        ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
+      }),
+    }),
+    ...(deps.logger !== undefined && { logger: deps.logger }),
+  });
 }
 
 function mergeStaticRuntimeOptions(

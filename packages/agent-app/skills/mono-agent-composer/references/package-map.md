@@ -48,11 +48,9 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | --- | --- | --- |
 | Prompt assembly | `@mono-agent/context` | Load identity/SOUL/skills/history/memory into deterministic prompt context |
 | Selected skill bodies | `@mono-agent/skills` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
-| Markdown memory | `@mono-agent/memory-md` | Read capped memory blocks and optionally append host summaries |
-| Daily journal memory | `@mono-agent/memory-journal` | Keep a today note in context and persist continuous local journaling |
-| Entity graph memory | `@mono-agent/memory-graph` | Store local JSONL entities, relations, and observations (`memory.graphPath`) |
-| Searchable memory | `@mono-agent/memory-search` | Chunk and semantically search local memory with embeddings (`memory.embeddings`) |
-| Runtime memory tools | `@mono-agent/memory-mcp` | Expose memory tools over MCP when the runtime should query memory itself (`memory.tools`); also ships host-side `entity_upsert`/`memory_reindex` consolidation tools |
+| Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory-store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` contract |
+| Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory-bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + decay (journal), LLM capture/reconcile + entity graph + reflection/migration + auto-scheduler (bujo) |
+| Embedding providers | `@mono-agent/memory-search` | Ollama/OpenAI embedding providers used by memory-store for vector recall |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
 
@@ -103,7 +101,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
 
-Adapters must not import the harness, runtime adapter, memory packages, or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
+Adapters must not import the harness, runtime adapter, memory packages (`memory-store`, `memory-bujo`, `memory-search`), or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
 
 ## Operator And Observability Join
 

@@ -34,7 +34,7 @@ With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live
 
 ## Dependency Boundary
 
-The harness may depend on core building blocks: agent-contracts, context, memory-md, observability, runtime-adapter, sandbox, skills, and tool-policy. It must not depend on communication adapters, the operator console, or host/demo code.
+The harness may depend on core building blocks: agent-contracts, context, memory-store, observability, runtime-adapter, sandbox, skills, and tool-policy. It must not depend on communication adapters, the operator console, or host/demo code.
 
 ## What This Package Does Not Own
 

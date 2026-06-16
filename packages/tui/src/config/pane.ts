@@ -43,7 +43,6 @@ const ENV_KEYS = {
   contextSelectedSkills: "MONO_AGENT_SELECTED_SKILLS",
   memoryPath: "MONO_AGENT_MEMORY_PATH",
   memoryMaxBytes: "MONO_AGENT_MEMORY_MAX_BYTES",
-  memoryScope: "MONO_AGENT_MEMORY_SCOPE",
   memoryWriteMode: "MONO_AGENT_MEMORY_WRITE_MODE",
   toolsAllowed: "MONO_AGENT_ALLOWED_TOOLS",
   toolsDisallowed: "MONO_AGENT_DISALLOWED_TOOLS",
@@ -197,12 +196,6 @@ export function buildTuiConfigSummary(
           envKey: ENV_KEYS.memoryMaxBytes,
           jsonPresent: json.memory?.maxBytes !== undefined,
           value: String(redacted.memory.maxBytes),
-        }),
-        toField(env, {
-          label: "scope",
-          envKey: ENV_KEYS.memoryScope,
-          jsonPresent: json.memory?.scope !== undefined,
-          value: redacted.memory.scope,
         }),
         toField(env, {
           label: "writeMode",

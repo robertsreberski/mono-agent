@@ -1,22 +1,15 @@
 {
   "name": "@mono-agent/memory-mcp",
   "version": "0.2.2",
-  "description": "MCP stdio server exposing memory tools: journaling, entity graph, and keyword search.",
+  "description": "MCP stdio server exposing the Bullet-Journal memory engine: recall, capture, and note over the SQLite substrate.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md"
-  ],
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "bin": { "memory-mcp": "./dist/main.js" },
+  "files": ["dist", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -24,12 +17,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@mono-agent/memory-graph": "workspace:0.2.2",
-    "@mono-agent/memory-journal": "workspace:0.2.2",
+    "@mono-agent/memory-bujo": "workspace:0.2.2",
     "@mono-agent/memory-search": "workspace:0.2.2",
+    "@mono-agent/memory-store": "workspace:0.2.2",
     "zod": "^4.4.3"
   },
-  "publishConfig": {
-    "access": "public"
-  }
+  "publishConfig": { "access": "public" }
 }

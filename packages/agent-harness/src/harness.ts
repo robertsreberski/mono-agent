@@ -296,8 +296,17 @@ export class MonoAgentHarness implements AgentHarness {
       { role: "assistant", content: assistantText, timestamp },
     ]);
 
-    if (this.options.memory !== undefined && this.options.memoryWriteMode === "append-host-summary") {
-      await this.options.memory.appendHostSummary(request.conversationId, deterministicHostSummary(request.userMessage, assistantText));
+    const mode = this.options.memoryWriteMode;
+    if (this.options.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
+      // Always write the deterministic rapid-log line (sync, durable).
+      await this.options.memory.appendHostSummary(
+        request.conversationId,
+        deterministicHostSummary(request.userMessage, assistantText),
+      );
+      // 'capture' additionally enqueues a best-effort intelligent capture (async, non-blocking).
+      if (mode === "capture") {
+        this.options.memory.scheduleCapture?.(request.conversationId, captureTurnText(request.userMessage, assistantText));
+      }
     }
   }
 }
@@ -505,6 +514,11 @@ function deterministicHostSummary(userMessage: string, assistantText: string): s
     `User: ${compactOneLine(userMessage, 240)}`,
     `Assistant: ${compactOneLine(assistantText, 240)}`,
   ].join("\n");
+}
+
+function captureTurnText(userMessage: string, assistantText: string): string {
+  // Richer than the compacted host summary: the distiller wants the real turn content.
+  return `User: ${userMessage}\nAssistant: ${assistantText}`;
 }
 
 function compactOneLine(value: string, maxChars: number): string {

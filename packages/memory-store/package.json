@@ -1,0 +1,33 @@
+{
+  "name": "@mono-agent/memory-store",
+  "version": "0.2.2",
+  "description": "Local SQLite memory substrate: bi-temporal records, sqlite-vec + FTS5 hybrid retrieval, incremental upsert, rebuildable from files.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@mono-agent/memory-search": "workspace:0.2.2",
+    "better-sqlite3": "^11.8.1",
+    "sqlite-vec": "^0.1.7-alpha.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

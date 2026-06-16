@@ -34,10 +34,6 @@ describe("layerJsonOntoEnv", () => {
         memory: {
           mode: "journal",
           path: ".mono-agent/memory",
-          tools: {
-            enabled: true,
-            allowJournalAppend: true,
-          },
         },
         tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
         traceability: { registryDir: ".mono-agent/traces", sourceId: "json-source", staleAfterMs: 60000 },
@@ -62,8 +58,6 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_SELECTED_SKILLS).toBe("a,b");
     expect(layered.MONO_AGENT_MEMORY_MODE).toBe("journal");
     expect(layered.MONO_AGENT_MEMORY_PATH).toBe(".mono-agent/memory");
-    expect(layered.MONO_AGENT_MEMORY_TOOLS_ENABLED).toBe("true");
-    expect(layered.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND).toBe("true");
     expect(layered.MONO_AGENT_ALLOWED_TOOLS).toBe("Read");
     expect(layered.MONO_AGENT_DISALLOWED_TOOLS).toBe("Bash");
     expect(layered.MONO_AGENT_TRACE_REGISTRY_DIR).toBe(".mono-agent/traces");
@@ -169,13 +163,12 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS).toBe("false");
   });
 
-  it("translates JSON memory graphPath and embeddings to env keys", () => {
+  it("translates JSON memory embeddings to env keys (graphPath is a no-op — retired)", () => {
     const layered = layerJsonOntoEnv(
       {
         memory: {
           mode: "journal",
           path: ".mono-agent/memory",
-          graphPath: ".mono-agent/memory/entities.jsonl",
           embeddings: {
             provider: "ollama",
             model: "nomic-embed-text",
@@ -186,11 +179,78 @@ describe("layerJsonOntoEnv", () => {
       },
       {},
     );
-    expect(layered.MONO_AGENT_MEMORY_GRAPH_PATH).toBe(".mono-agent/memory/entities.jsonl");
+    expect(layered.MONO_AGENT_MEMORY_GRAPH_PATH).toBeUndefined();
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER).toBe("ollama");
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL).toBe("nomic-embed-text");
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT).toBe("http://localhost:11434");
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV).toBe("EMBEDDINGS_KEY");
+  });
+
+  it("translates JSON memory bujo mode and llm block to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text", dim: 768 },
+          llm: { provider: "ollama", model: "qwen3.6:latest", endpoint: "http://localhost:11434" },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_MODE).toBe("bujo");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_DIM).toBe("768");
+    expect(layered.MONO_AGENT_MEMORY_LLM_PROVIDER).toBe("ollama");
+    expect(layered.MONO_AGENT_MEMORY_LLM_MODEL).toBe("qwen3.6:latest");
+    expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBe("http://localhost:11434");
+  });
+
+  it("omits LLM env keys when llm block is absent in JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "bujo", path: ".mono-agent/memory" } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_LLM_MODEL).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_LLM_PROVIDER).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
+  });
+
+  it("translates JSON memory reflection and migration ritual blocks to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          reflection: { enabled: true, cron: "0 3 * * *" },
+          migration: { enabled: false, cron: "0 4 1 * *" },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_REFLECTION_ENABLED).toBe("true");
+    expect(layered.MONO_AGENT_MEMORY_REFLECTION_CRON).toBe("0 3 * * *");
+    expect(layered.MONO_AGENT_MEMORY_MIGRATION_ENABLED).toBe("false");
+    expect(layered.MONO_AGENT_MEMORY_MIGRATION_CRON).toBe("0 4 1 * *");
+  });
+
+  it("omits ritual env keys when ritual blocks are absent in JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "bujo", path: ".mono-agent/memory" } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_REFLECTION_ENABLED).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_REFLECTION_CRON).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_MIGRATION_ENABLED).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_MIGRATION_CRON).toBeUndefined();
+  });
+
+  it("uses lite as the default memory mode when mode is omitted from JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { path: ".mono-agent/memory" } },
+      {},
+    );
+    // mode not set from JSON — the loader supplies the lite default
+    expect(layered.MONO_AGENT_MEMORY_MODE).toBeUndefined();
   });
 
   it("translates JSON context.skillMaxBytes to an env key", () => {
@@ -378,7 +438,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     });
   });
 
-  it("loads memory embeddings and graph path from the JSON config file", async () => {
+  it("loads memory embeddings from the JSON config file (graphPath is retired — ignored)", async () => {
     const path = join(dir, "config.json");
     await writeFile(
       path,
@@ -388,7 +448,6 @@ describe("loadMonoAgentConfigWithSources", () => {
         memory: {
           mode: "journal",
           path: ".mono-agent/memory",
-          graphPath: ".mono-agent/memory/entities.jsonl",
           embeddings: { provider: "ollama" },
         },
       }),
@@ -396,7 +455,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     );
 
     const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
-    expect(config.memory?.graphPath).toBe(join(dir, ".mono-agent", "memory", "entities.jsonl"));
+    expect(config.memory).not.toHaveProperty("graphPath");
     expect(config.memory?.embeddings).toEqual({ provider: "ollama", model: "nomic-embed-text" });
   });
 
@@ -421,5 +480,138 @@ describe("loadMonoAgentConfigWithSources", () => {
       jsonPath: join(dir, "absent.json"),
     });
     expect(config.runtime.model).toMatchObject({ sdk: "pi" });
+  });
+
+  it("loads lite mode from a JSON config file (no embeddings, no llm)", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "lite",
+          path: ".mono-agent/memory",
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.memory?.mode).toBe("lite");
+    expect(config.memory?.embeddings).toBeUndefined();
+    expect(config.memory?.llm).toBeUndefined();
+    expect(config.memory?.reflection).toBeUndefined();
+    expect(config.memory?.migration).toBeUndefined();
+  });
+
+  it("loads journal mode from a JSON config file", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text", dim: 768 },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.memory?.mode).toBe("journal");
+    expect(config.memory?.embeddings).toMatchObject({ provider: "ollama", model: "nomic-embed-text", dim: 768 });
+    expect(config.memory?.llm).toBeUndefined();
+  });
+
+  it("loads bujo mode with reflection and migration ritual blocks from a JSON config file", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          embeddings: { provider: "ollama", model: "nomic-embed-text", dim: 768 },
+          llm: { provider: "ollama", model: "qwen3:8b" },
+          reflection: { enabled: true, cron: "0 3 * * *" },
+          migration: { enabled: true, cron: "0 4 1 * *" },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(config.memory?.mode).toBe("bujo");
+    expect(config.memory?.reflection).toEqual({ enabled: true, cron: "0 3 * * *" });
+    expect(config.memory?.migration).toEqual({ enabled: true, cron: "0 4 1 * *" });
+  });
+
+  it("env ritual cron beats JSON ritual cron", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          reflection: { enabled: true, cron: "0 3 * * *" },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_MEMORY_REFLECTION_CRON: "0 2 * * *" },
+      cwd: dir,
+      jsonPath: path,
+    });
+    expect(config.memory?.reflection?.cron).toBe("0 2 * * *");
+  });
+
+  it("loads bujo mode with llm block from a JSON config file", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          embeddings: {
+            provider: "ollama",
+            model: "nomic-embed-text:v1.5",
+            dim: 768,
+          },
+          llm: {
+            provider: "ollama",
+            model: "qwen3.6:latest",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+
+    expect(config.memory?.mode).toBe("bujo");
+    expect(config.memory?.path).toBe(join(dir, ".mono-agent", "memory"));
+    expect(config.memory?.embeddings).toMatchObject({
+      provider: "ollama",
+      model: "nomic-embed-text:v1.5",
+      dim: 768,
+    });
+    expect(config.memory?.llm).toEqual({
+      provider: "ollama",
+      model: "qwen3.6:latest",
+    });
   });
 });

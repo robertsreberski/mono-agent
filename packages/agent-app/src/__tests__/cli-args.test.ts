@@ -100,6 +100,18 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--port", "no"])).toThrow(/--port/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
   });
+
+  it("accepts --memory bujo and --memory lite, rejects --memory markdown", () => {
+    const bujoResult = parseCliArgs(["init", "--memory", "bujo"]);
+    expect(bujoResult.command).toBe("init");
+    expect(bujoResult.memory).toBe("bujo");
+
+    const liteResult = parseCliArgs(["init", "--memory", "lite"]);
+    expect(liteResult.command).toBe("init");
+    expect(liteResult.memory).toBe("lite");
+
+    expect(() => parseCliArgs(["init", "--memory", "markdown"])).toThrow(/--memory must be lite, journal, or bujo/u);
+  });
 });
 
 describe("loadCliEnvFile", () => {

@@ -44,7 +44,7 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, OpenAI Agents SDK adapter, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and optional Markdown memory. |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo). |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
 | `evaluation` | `@mono-agent/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
@@ -68,10 +68,10 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ whatsapp-adapter ── agent-contracts, settings, baileys
   ├─ agent-host
   │   ├─ config
-  │   ├─ agent-harness ── agent-contracts, context, skills, memory-md, observability, runtime-adapter, sandbox, tool-policy
+  │   ├─ agent-harness ── agent-contracts, context, skills, memory-store, observability, runtime-adapter, sandbox, tool-policy
   │   ├─ runtime-adapter ── @mono-agent/agent-runtime, sandbox types
   │   ├─ sandbox ── agent-contracts
-  │   ├─ memory-md
+  │   ├─ memory-store, memory-bujo, memory-search
   │   ├─ observability
   │   └─ tool-policy
   ├─ agent-orchestrator ── agent-contracts, MCP SDK
@@ -250,7 +250,9 @@ flowchart TB
   subgraph PromptContext["Context layer"]
     Context["`@mono-agent/context`\nprompt assembly"]
     Skills["`@mono-agent/skills`\nselected skill blocks"]
-    Memory["`@mono-agent/memory-md`\noptional memory file"]
+    MemoryStore["`@mono-agent/memory-store`\nSQLite substrate + MemoryStore contract"]
+    MemoryBujo["`@mono-agent/memory-bujo`\nbujo engine (journal/bujo tiers)"]
+    MemorySearch["`@mono-agent/memory-search`\nOllama/OpenAI embeddings + cosine index"]
   end
 
   subgraph Execution["Execution layer"]
@@ -306,7 +308,9 @@ flowchart TB
   Orchestrator -.->|runtime extension| Harness
   AgentHost --> Config
   AgentHost --> Harness
-  AgentHost --> Memory
+  AgentHost --> MemoryStore
+  AgentHost --> MemoryBujo
+  AgentHost --> MemorySearch
   AgentHost --> Policy
   AgentHost --> Sandbox
   AgentHost --> RuntimeAdapter
@@ -317,7 +321,7 @@ flowchart TB
   Harness --> Contracts
   Harness --> Context
   Harness --> Skills
-  Harness --> Memory
+  Harness --> MemoryStore
   Harness --> Policy
   Harness --> Sandbox
   Harness --> RuntimeAdapter

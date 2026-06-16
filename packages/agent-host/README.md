@@ -29,11 +29,6 @@ const responder = createConfiguredAgentResponder({ config });
 
 Use the returned responder with Telegram, A2A, Slack, WhatsApp, a TUI, or any host-owned surface that speaks the shared `AgentResponder` contract.
 
-When journal memory is configured with `memory.tools.enabled`, the host also
-composes the memory MCP server into runtime options. It exposes recall tools by
-default and exposes `journal_append` only when `memory.tools.allowJournalAppend`
-is enabled.
-
 ## Public API
 
 - `createConfiguredAgentRuntime`

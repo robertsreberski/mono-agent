@@ -13,3 +13,10 @@ yarn-error.log*
 mono-agent.config.json
 packages/*/dist/
 demos/*/dist/
+# memory-bujo SQLite index — disposable, rebuildable from canonical markdown (spec §6.1)
+memory.db
+*.db-wal
+*.db-shm
+
+# Superpowers working docs (specs/plans) — local-only, not tracked in git
+docs/superpowers/

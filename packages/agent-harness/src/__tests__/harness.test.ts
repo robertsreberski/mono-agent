@@ -343,6 +343,71 @@ describe("AgentHarness", () => {
     expect(appendCount).toBe(0);
   });
 
+  it("writeMode 'capture' writes the rapid-log AND schedules an async capture", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      appendHostSummary: async (id: string) => {
+        calls.push(`append:${id}`);
+        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+      },
+      scheduleCapture: (id: string, text: string) => {
+        calls.push(`schedule:${id}:${text.includes("Assistant") ? "turn" : "?"}`);
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "All good." }));
+
+    const response = await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-capture",
+    }).run({ conversationId: "c1", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(response.text).toBe("All good.");
+    expect(calls).toContain("append:c1");
+    expect(calls.some((c) => c.startsWith("schedule:c1"))).toBe(true);
+  });
+
+  it("writeMode 'append-host-summary' does NOT schedule a capture", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      appendHostSummary: async (id: string) => {
+        calls.push(`append:${id}`);
+        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+      },
+      scheduleCapture: () => {
+        calls.push("schedule");
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "Done." }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "append-host-summary",
+      createRunId: () => "run-no-capture",
+    }).run({ conversationId: "c1", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect(calls).toContain("append:c1");
+    expect(calls).not.toContain("schedule");
+  });
+
   it("resolves scalar and mcpServers precedence collisions last-wins across merge layers", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

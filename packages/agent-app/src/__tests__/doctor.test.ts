@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { validateMonoAgentFolder } from "../doctor.js";
 
@@ -110,5 +110,314 @@ describe("validateMonoAgentFolder", () => {
     const core = sectionById(report, "core");
     expect(core.status).toBe("error");
     expect(core.details.join("\n")).toContain("MONO_AGENT_MODEL");
+  });
+});
+
+describe("validateMonoAgentFolder — bujo memory checks", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function writeMinimalConfig(extra: Record<string, unknown> = {}): Promise<string> {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "./IDENTITY.md" },
+        ...extra,
+      }),
+    );
+    return configPath;
+  }
+
+  function stubFetch(models: string[]): void {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ models: models.map((name) => ({ name })) }),
+      }),
+    );
+  }
+
+  it("passes the bujo memory section when Ollama is reachable and the embeddings model is present", async () => {
+    stubFetch(["nomic-embed-text:v1.5"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
+    expect(memory.details.join("\n")).toContain("bujo");
+  });
+
+  it("warns (status=waiting, no throw) when Ollama is unreachable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    // unreachable Ollama => waiting (not error, not a throw)
+    expect(memory.status).toBe("waiting");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/not reachable|unreachable|ECONNREFUSED/iu);
+    // overall report is still "ok" — a warn is non-fatal
+    expect(report.ok).toBe(true);
+  });
+
+  it("warns when the embeddings model is not yet pulled", async () => {
+    stubFetch(["llama3:latest"]); // model present but NOT the embeddings model
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/nomic-embed-text/u);
+    expect(text).toMatch(/not pulled|pull/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("warns when the chat LLM model is configured but not pulled", async () => {
+    // Embeddings model present, chat model absent
+    stubFetch(["nomic-embed-text:v1.5"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/qwen3:6b/u);
+    expect(text).toMatch(/not pulled|pull/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("warns when the memory root is not writable", async () => {
+    stubFetch(["nomic-embed-text:v1.5"]);
+    const unwritablePath = "/proc/mono-agent-test-unwritable-bujo-root";
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: unwritablePath,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("warns on journal mode when Ollama is unreachable (journal also needs embeddings)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/not reachable|unreachable|ECONNREFUSED/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("passes journal mode when Ollama is reachable and embeddings model is present", async () => {
+    stubFetch(["nomic-embed-text:v1.5"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
+    expect(memory.details.join("\n")).toContain("journal");
+  });
+
+  it("does NOT probe Ollama when embeddings provider is openai", async () => {
+    // fetch is NOT stubbed — if the Ollama probe were attempted it would fail and warn.
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).not.toMatch(/ollama/iu);
+    expect(text).not.toMatch(/WARN/iu);
+  });
+
+  it("passes lite mode without any Ollama probe (lite needs no embeddings)", async () => {
+    // fetch is NOT stubbed — if the probe were attempted it would throw
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "lite",
+        path: dir,
+        writeMode: "append-host-summary",
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    expect(memory.details.join("\n")).toContain("lite");
+    expect(report.ok).toBe(true);
+  });
+
+  it("warns for lite mode when the memory root is not writable", async () => {
+    const unwritablePath = "/proc/mono-agent-test-unwritable-lite-root";
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "lite",
+        path: unwritablePath,
+        writeMode: "append-host-summary",
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports ritual cadence for bujo with a chat LLM (auto-scheduled)", async () => {
+    stubFetch(["nomic-embed-text:v1.5", "qwen3:6b"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/rituals/iu);
+    expect(text).toContain("0 3 * * *"); // default reflection cron
+    expect(text).toContain("0 4 1 * *"); // default migration cron
+    expect(text).toMatch(/auto/iu);
+  });
+
+  it("reports manual rituals for bujo without a chat LLM", async () => {
+    stubFetch(["nomic-embed-text:v1.5"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        // No llm config
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toMatch(/rituals/iu);
+    expect(text).toMatch(/manual/iu);
+    expect(text).toMatch(/no chat model/iu);
+  });
+
+  it("reports custom ritual crons when configured", async () => {
+    stubFetch(["nomic-embed-text:v1.5", "qwen3:6b"]);
+
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+        llm: { provider: "ollama", model: "qwen3:6b" },
+        reflection: { cron: "0 2 * * *" },
+        migration: { enabled: false },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toContain("0 2 * * *"); // custom reflection cron
+    expect(text).toMatch(/migration disabled/iu);
   });
 });
