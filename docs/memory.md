@@ -19,7 +19,7 @@ only `memory.mode` and the optional embeddings/LLM blocks differ.
 | Monthly migration (promote/reschedule/cluster/forget) | — | — | yes |
 | Auto-scheduled rituals (in-app scheduler) | — | — | yes |
 | Living `index.md` + `future-log.md` | — | — | yes |
-| **Requires Ollama embeddings** | no | **yes** | **yes** |
+| **Requires embeddings** | no | **yes** | **yes** |
 | **Requires chat model** | no | no | **yes** |
 
 ### `lite`
@@ -32,8 +32,7 @@ running Ollama. Host summaries can be appended after each run
 ### `journal`
 
 Adds hybrid recall (BM25 + vector RRF) and salience decay on top of the lite tier.
-Requires a locally running Ollama instance with the
-`nomic-embed-text:v1.5` embeddings model. No chat model needed.
+Requires a configured embeddings provider, either Ollama or OpenAI. No chat model needed.
 
 ### `bujo` (BuJo — Bullet Journal memory)
 
@@ -55,8 +54,9 @@ the agent-app scheduler runs them at the configured cron cadence (default: night
 reflect at `0 3 * * *`, monthly migrate at `0 4 1 * *`). No external cron or launchd
 setup is required. Run `mono-agent validate` to confirm the cadence being used.
 
-Requires Ollama for embeddings (`nomic-embed-text:v1.5`, dim 768) and a local chat
-model for the LLM pipelines.
+Requires embeddings and a chat model for the LLM pipelines. The app-level chat model can
+be a direct Ollama model or an `agent-host` runtime model reference such as
+`pi:openai-codex:gpt-5.5`.
 
 ## Config
 
@@ -127,6 +127,33 @@ model for the LLM pipelines.
 }
 ```
 
+For Pi SDK memory capture through the host runtime, use:
+
+```jsonc
+{
+  "memory": {
+    "mode": "bujo",
+    "path": "./.mono-agent/memory",
+    "writeMode": "capture",
+    "embeddings": {
+      "provider": "openai",
+      "model": "text-embedding-3-small",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "dim": 1536
+    },
+    "llm": {
+      "provider": "agent-host",
+      "model": "pi:openai-codex:gpt-5.5",
+      "executionMode": "sdk"
+    }
+  }
+}
+```
+
+`agent-host` memory LLMs are SDK-only for now. CLI-backed refs such as
+`codex:gpt-5.5`, or explicit `executionMode: "cli"`, are rejected because those
+runtimes cannot yet guarantee a no-tools/no-external-actions memory turn.
+
 ### Per-turn write mode (`memory.writeMode`)
 
 How the **host** persists each completed turn (independent of the tier's recall):
@@ -147,7 +174,7 @@ No external prerequisites. SQLite is bundled.
 
 ### Journal tier
 
-**Embeddings model (required):**
+**Embeddings model (required when using the Ollama embeddings provider):**
 
 ```bash
 ollama pull nomic-embed-text:v1.5
@@ -159,21 +186,22 @@ at startup. `mono-agent validate` checks for this exact tag.
 
 ### Bujo tier
 
-**Embeddings model (required):**
+**Embeddings model (required when using the Ollama embeddings provider):**
 
 ```bash
 ollama pull nomic-embed-text:v1.5
 ```
 
-**Chat model (required for LLM pipelines):**
+**Chat model (required for LLM pipelines when using `llm.provider: "ollama"`):**
 
 ```bash
 ollama pull qwen3.6:latest   # or any local chat model you prefer
 ```
 
-Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the CLI reflect/migrate
-commands manually. Without a chat model the `bujo` tier cannot start the LLM-augmented
-reconciliation, insight synthesis, and migration steps.
+Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the standalone CLI
+reflect/migrate commands manually. The standalone CLI remains Ollama-only. For the app
+runtime, `memory.llm.provider: "agent-host"` may instead point at a SDK runtime model
+reference such as `pi:openai-codex:gpt-5.5`.
 
 ## Auto-Scheduler (bujo tier)
 
@@ -225,14 +253,16 @@ MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo reflect <root>
 MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 ```
 
-The CLI reads the **same `MONO_AGENT_MEMORY_*` env vars** as the agent and the `memory-mcp`
-server (the memory root is the positional `<root>` argument). Embeddings are **opt-in**: set
+The standalone CLI reads the **same embedding/root `MONO_AGENT_MEMORY_*` env vars** as the
+agent and the `memory-mcp` server (the memory root is the positional `<root>` argument).
+Embeddings are **opt-in**: set
 `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama`/`openai`) to enable semantic recall — without
 it, `recall`/`rebuild` run FTS-only and need no embedding service. When enabled, the model
 defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and dim to 768
-(`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama
-endpoint for the chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL`
-is unset when running `reflect` or `migrate`, the command prints a clear error and exits 2.
+(`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). For `reflect`/`migrate`, the standalone CLI uses the
+built-in Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint
+for the chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL` is
+unset when running `reflect` or `migrate`, the command prints a clear error and exits 2.
 
 ## Liveness Check — `mono-agent validate`
 
@@ -242,15 +272,18 @@ with the configured tier:
 **lite:** confirms the memory root is creatable and writable.
 
 **journal / bujo:**
-1. **Ollama reachable** — probes `GET <endpoint>/api/tags` with a short timeout.
-2. **Embeddings model pulled** — confirms `nomic-embed-text:v1.5` (or whichever
-   `memory.embeddings.model` you set) appears in `/api/tags`. If absent it emits:
+1. **Memory root writable** — confirms `memory.path` is creatable and writable.
+2. **Ollama embeddings reachable** — only when `memory.embeddings.provider` is `ollama`;
+   probes that embedding endpoint's `GET /api/tags` with a short timeout.
+3. **Embeddings model pulled** — for Ollama embeddings only, confirms
+   `nomic-embed-text:v1.5` (or whichever `memory.embeddings.model` you set) appears in
+   that endpoint's `/api/tags`. If absent it emits:
    `⚠  memory embeddings model "nomic-embed-text:v1.5" not found — run: ollama pull nomic-embed-text:v1.5`
-3. **Memory root writable** — confirms `memory.path` is creatable and writable.
 
 **bujo (additional):**
-4. **Chat model pulled** (if `memory.llm` is configured) — same check for the chat
-   model.
+4. **Chat model pulled** — only when `memory.llm.provider` is `ollama`; probes the chat
+   endpoint and checks the chat model against that endpoint's `/api/tags`. `agent-host`
+   chat LLMs are not checked against Ollama.
 5. **Ritual cadence** — reports the reflection/migration cron expressions and whether
    the scheduler will run (tier is bujo with an llm configured).
 
@@ -275,7 +308,7 @@ the full question flow and config blocks the composer writes.
 - `memory_capture({ text })` — intelligent store (distil → reconcile → entities). **Bujo only**; returns an explicit error result when no chat LLM is configured.
 - `memory_note({ text })` — quick deterministic rapid-log append. All tiers.
 
-It reads the same `MONO_AGENT_MEMORY_*` environment the agent and CLI use (`MONO_AGENT_MEMORY_PATH` required; embeddings env improves recall ranking; `MONO_AGENT_MEMORY_LLM_MODEL` enables `memory_capture`), opens its own `memory.db` handle (WAL + `busy_timeout` make concurrent use alongside a running agent safe), and drains the capture queue on `SIGINT`/`SIGTERM`. Run the `memory-mcp` bin (or `node <dist>/main.js`) and register it as a stdio MCP server. Full details: `packages/memory-mcp/README.md`.
+It reads the same memory root and embeddings environment the agent and CLI use (`MONO_AGENT_MEMORY_PATH` required; embeddings env improves recall ranking). Its `memory_capture` LLM path uses the built-in Ollama adapter, so `MONO_AGENT_MEMORY_LLM_MODEL` is an Ollama chat model there; app-level `memory.llm.provider: "agent-host"` is not used by the standalone MCP server. It opens its own `memory.db` handle (WAL + `busy_timeout` make concurrent use alongside a running agent safe), and drains the capture queue on `SIGINT`/`SIGTERM`. Run the `memory-mcp` bin (or `node <dist>/main.js`) and register it as a stdio MCP server. Full details: `packages/memory-mcp/README.md`.
 
 ## References
 

@@ -375,7 +375,11 @@ class MonoAgentAppController implements MonoAgentApp {
       return;
     }
 
-    const store = this.memoryStore(coreConfig);
+    const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+    if (!this.activeRuntimes.includes(runtime)) {
+      this.activeRuntimes.push(runtime);
+    }
+    const store = this.memoryStore(coreConfig, runtime);
     // Duck-type: only bujo-tier BujoMemoryStore has reflect/migrate.
     // Cast through unknown to bypass the MemoryStore contract's type mismatch.
     const storeAsAny = store as unknown as Record<string, unknown>;
@@ -399,7 +403,7 @@ class MonoAgentAppController implements MonoAgentApp {
     // scheduler started in that case — log an accurate skip instead.
     const tier = bujoStore.tier();
     if (tier !== "bujo") {
-      this.logger?.info?.("Memory ritual scheduler skipped — store tier is not bujo (reflect/migrate need a local chat LLM).", { reason, tier });
+      this.logger?.info?.("Memory ritual scheduler skipped — store tier is not bujo (reflect/migrate need a chat LLM).", { reason, tier });
       return;
     }
 
@@ -510,7 +514,7 @@ class MonoAgentAppController implements MonoAgentApp {
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
-    const memory = this.memoryStore(coreConfig);
+    const memory = this.memoryStore(coreConfig, runtime);
     return createConfiguredAgentResponder({
       config: coreConfig,
       runtime,
@@ -519,13 +523,13 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */
-  private memoryStore(coreConfig: MonoAgentConfig): ReturnType<typeof createConfiguredMemory> {
+  private memoryStore(coreConfig: MonoAgentConfig, runtime: MonoRuntimeLike): ReturnType<typeof createConfiguredMemory> {
     if (!this.sharedMemoryBuilt) {
       const appLogger = this.logger;
       const logger = appLogger?.warn !== undefined
         ? { warn: (message: string) => { appLogger.warn?.(message); } }
         : undefined;
-      this.sharedMemory = createConfiguredMemory(coreConfig, ...(logger !== undefined ? [{ logger }] : []));
+      this.sharedMemory = createConfiguredMemory(coreConfig, { ...(logger === undefined ? {} : { logger }), runtime });
       this.sharedMemoryBuilt = true;
     }
     return this.sharedMemory;

@@ -29,6 +29,46 @@ const responder = createConfiguredAgentResponder({ config });
 
 Use the returned responder with Telegram, A2A, Slack, WhatsApp, a TUI, or any host-owned surface that speaks the shared `AgentResponder` contract.
 
+## BuJo Memory LLM Providers
+
+`agent-host` consumes the loaded `MonoAgentConfig` and composes memory for the harness; it does not parse channel settings, own channel lifecycle, or move BuJo internals out of `@mono-agent/memory-bujo`. For `memory.mode: "bujo"`, the optional `memory.llm` block selects how the host injects the `LlmComplete` used by BuJo capture, reflection, and migration.
+
+Use `ollama` when BuJo memory should call a local Ollama model directly:
+
+```json
+{
+  "memory": {
+    "mode": "bujo",
+    "path": ".mono-agent/memory",
+    "llm": {
+      "provider": "ollama",
+      "model": "qwen3:8b",
+      "endpoint": "http://localhost:11434"
+    }
+  }
+}
+```
+
+The `endpoint` field is optional and applies only to the `ollama` provider.
+
+Use `agent-host` when BuJo memory should run through the same configured runtime path as agent execution:
+
+```json
+{
+  "memory": {
+    "mode": "bujo",
+    "path": ".mono-agent/memory",
+    "llm": {
+      "provider": "agent-host",
+      "model": "pi:openai-codex:gpt-5.5",
+      "executionMode": "sdk"
+    }
+  }
+}
+```
+
+For `provider: "agent-host"`, `model` is a normal SDK runtime model reference parsed by `@mono-agent/config`, so values such as `pi:openai-codex:gpt-5.5` use the runtime adapter/provider configuration instead of an Ollama endpoint. CLI-backed refs such as `codex:gpt-5.5`, and explicit `executionMode: "cli"`, are rejected for memory LLMs until runtimes can enforce no external actions. `agent-host` turns that runtime path into the `LlmComplete` dependency that `memory-bujo` needs; `memory-bujo` still owns the BuJo capture and ritual logic, and its standalone CLI remains Ollama-only.
+
 ## Public API
 
 - `createConfiguredAgentRuntime`

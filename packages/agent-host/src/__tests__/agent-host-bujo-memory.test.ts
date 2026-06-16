@@ -13,8 +13,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
+import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
-import { createConfiguredAgentHarness } from "../index.js";
+import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
 
 /** Deterministic non-zero fake embeddings — no network. */
 const fakeEmbeddings: EmbeddingProvider = {
@@ -83,9 +84,89 @@ describe("createConfiguredMemory — bujo mode", () => {
     expect(result).toBeUndefined();
     await liteStore.close();
   });
+
+  it("keeps bujo tier when memory.llm uses an agent-host runtime model", async () => {
+    const dir = await tempDir();
+    const runtime = createRecordingRuntime();
+    const store = createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "agent-host-memory"),
+        llm: {
+          provider: "agent-host",
+          model: "pi:openai-codex:gpt-5.5",
+          executionMode: "sdk",
+        },
+      }),
+      { runtime },
+    );
+
+    expect(store).toBeDefined();
+    expect((store as unknown as { tier(): string }).tier()).toBe("bujo");
+    await (store as unknown as { close(): Promise<void> }).close();
+  });
+
+  it("runs agent-host memory LLM calls without tools or MCP servers", async () => {
+    const dir = await tempDir();
+    const runtime = createRecordingRuntime();
+    const store = createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "agent-host-memory"),
+        llm: {
+          provider: "agent-host",
+          model: "pi:openai-codex:gpt-5.5",
+          executionMode: "sdk",
+        },
+      }),
+      { runtime },
+    );
+
+    const result = await (store as unknown as { capture(conversationId: string, text: string): Promise<unknown> })
+      .capture("conv-1", "Robert prefers agent-host memory LLM calls.");
+
+    expect(result).toEqual({ actions: 0, entities: 0 });
+    expect(runtime.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of runtime.calls) {
+      expect(call.systemPrompt).toMatch(/private memory maintenance LLM/u);
+      expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
+      expect(call.options.executionMode).toBe("sdk");
+      expect(call.options.cwd).toBe(dir);
+      expect(call.options.maxTurns).toBe(1);
+      expect(call.options.allowedTools).toEqual([]);
+      expect(call.options.disallowedTools).toEqual([]);
+      expect(call.options.mcpServers).toEqual({});
+    }
+    await (store as unknown as { close(): Promise<void> }).close();
+  });
+
+  it("rejects CLI-backed agent-host memory LLM configs", async () => {
+    const dir = await tempDir();
+    expect(() =>
+      createConfiguredMemory(
+        bujoConfig({
+          dir,
+          identityPath: join(dir, "IDENTITY.md"),
+          memoryRoot: join(dir, "agent-host-memory"),
+          llm: {
+            provider: "agent-host",
+            model: "codex:gpt-5.5",
+          },
+        }),
+        { runtime: createRecordingRuntime() },
+      ),
+    ).toThrow(/SDK execution mode only/u);
+  });
 });
 
-function bujoConfig(input: { readonly dir: string; readonly identityPath: string; readonly memoryRoot: string }): MonoAgentConfig {
+function bujoConfig(input: {
+  readonly dir: string;
+  readonly identityPath: string;
+  readonly memoryRoot: string;
+  readonly llm?: NonNullable<MonoAgentConfig["memory"]>["llm"];
+}): MonoAgentConfig {
   return {
     runtime: {
       model: { sdk: "pi", provider: "ollama", model: "qwen3:8b", reference: "pi:ollama:qwen3:8b" },
@@ -101,9 +182,21 @@ function bujoConfig(input: { readonly dir: string; readonly identityPath: string
       writeMode: "disabled",
       maxBytes: 8_000,
       embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      ...(input.llm === undefined ? {} : { llm: input.llm }),
     },
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(input.dir, "artifacts") },
     traceability: { registryDir: join(input.dir, "trace-sources") },
+  };
+}
+
+function createRecordingRuntime() {
+  const calls: Array<{ systemPrompt: string; options: RuntimeRunOptions }> = [];
+  return {
+    calls,
+    async run(systemPrompt: string, options: RuntimeRunOptions) {
+      calls.push({ systemPrompt, options });
+      return { text: "[]" };
+    },
   };
 }
