@@ -26,14 +26,25 @@ A fully intelligent memory system backed by a SQLite index. Captures agent obser
 and conversation summaries into daily markdown notes, reconciles them against existing
 memories (classifying each entry as ADD / UPDATE / SUPERSEDE / NOOP to avoid
 duplication), and maintains hybrid recall via BM25 full-text + vector RRF with recency
-and salience weighting. A scheduled reflection pass applies temporal decay, synthesises
-cross-entry insights, and surfaces overdue future-log items. Monthly migration promotes
-active memories, reschedules recurring patterns, clusters related entries, and forgets
-stale ones. The result is a living `index.md` and `future-log.md` at the memory root.
+and salience weighting. A **reflection** pass applies temporal decay, synthesises
+cross-entry insights (with provenance links), and surfaces overdue future-log items; a
+**migration** pass promotes active memories, reschedules recurring patterns, clusters
+related entries, and forgets stale ones (bi-temporal — never deleted). Both produce a
+living `index.md` and `future-log.md` at the memory root.
 
 Bujo mode requires a locally running Ollama instance for embeddings. An optional local
 chat model (also via Ollama) powers the capture-reconcile, reflection, and migration
-pipelines; without it the pipelines skip LLM-augmented steps but still index.
+pipelines; without it the recall + rapid-log capture still work but the LLM-augmented
+steps are skipped.
+
+> **Runtime scope (current).** At runtime, `mode: "bujo"` provides **hybrid recall** (an
+> always-in-context curated block) plus **rapid-log capture** (each turn's host summary is
+> appended to today's daily note when `writeMode: "append-host-summary"`). The
+> **intelligent write path** (distill → reconcile ADD/UPDATE/SUPERSEDE/NOOP + entity
+> extraction) and the **reflection/migration rituals** run **via the `memory-bujo` CLI**
+> (or the `BujoMemoryStore.capture()/reflect()/migrate()` API) — they are not yet
+> auto-invoked per turn or auto-scheduled. See [Automating the Rituals](#automating-the-rituals)
+> to run them on a schedule.
 
 ## Config
 
@@ -93,7 +104,7 @@ memory-bujo rebuild <root>
 # Recall: hybrid BM25+vector search (prints matching entries)
 memory-bujo recall <root> "<query>"
 
-# Reindex: update the embedding index without a full rebuild
+# Write the living index.md (table of contents: counts, top memories, entities)
 memory-bujo index <root>
 
 # Reflection pass: decay + insight synthesis (requires MONO_AGENT_LLM_MODEL)
@@ -104,8 +115,28 @@ MONO_AGENT_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 ```
 
 `MONO_AGENT_LLM_ENDPOINT` overrides the Ollama endpoint for the chat model (default
-`http://localhost:11434`). If `MONO_AGENT_LLM_MODEL` is unset when running `reflect` or
-`migrate`, the command prints a clear error and exits 2.
+`http://localhost:11434`). The CLI reads the embeddings model from `MONO_AGENT_EMBED_MODEL`
+(default `nomic-embed-text:v1.5`) and `MONO_AGENT_EMBED_DIM` (default 768). If
+`MONO_AGENT_LLM_MODEL` is unset when running `reflect` or `migrate`, the command prints a
+clear error and exits 2.
+
+## Automating the Rituals
+
+The reflection and migration rituals are **not auto-scheduled yet** — the agent does not
+run them on its own. To get the BuJo cadence (nightly reflect, monthly migrate), schedule
+the CLI from system `cron`/`launchd` against your memory root. With `crontab -e`:
+
+```cron
+# nightly reflection (decay + insight synthesis) at 03:00
+0 3 * * *  MONO_AGENT_LLM_MODEL=qwen3.6:latest /path/to/memory-bujo reflect /path/to/memory
+# monthly migration (promote/reschedule/cluster/forget) on the 1st at 04:00
+0 4 1 * *  MONO_AGENT_LLM_MODEL=qwen3.6:latest /path/to/memory-bujo migrate /path/to/memory
+```
+
+`/path/to/memory-bujo` is the package bin (e.g. `node packages/memory-bujo/dist/cli.js`).
+Likewise, the intelligent per-turn capture (`distill`/`reconcile`) is invoked via
+`BujoMemoryStore.capture()` from the host or a scheduled job, not automatically on every
+turn — wiring it into the live turn path is a planned follow-up.
 
 ## Liveness Check — `mono-agent validate`
 
@@ -119,9 +150,11 @@ bujo-specific liveness check that confirms:
 3. **Chat model pulled** (if `memory.llm` is configured) — same check for the chat model.
 4. **Memory root writable** — confirms `memory.path` is creatable and writable.
 
-Any failure emits a loud `[warn]` in the validate report. There is **no silent fallback**:
-if bujo is configured but Ollama is unreachable, the app warns at validate time and again
-at startup. The runtime does not silently downgrade to markdown mode.
+Any failure emits a loud `[warn]` in the validate report's Memory section (status
+`waiting`, so the bujo warnings do not flip the overall result to `error` — run
+`validate` and read the Memory section). There is **no silent fallback**: the host owns
+`mode: "bujo"` and never downgrades to markdown. Run `mono-agent validate` before cutover
+(and after pulling models) to confirm bujo is live.
 
 ## Composer Integration
 
