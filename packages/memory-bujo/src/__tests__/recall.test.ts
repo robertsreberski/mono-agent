@@ -17,6 +17,18 @@ describe("composeRecallBlock", () => {
     db.close();
   });
 
+  it("renders the marker from type AND status (a done task is not shown as open)", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
+    await db.upsert({ id: "open", type: "task", status: "open", text: "open task about widgets.", salience: 0.6, isInsight: false, createdAt: "2026-06-15T09:00:00.000Z", accessCount: 0, tags: [], source: {} });
+    await db.upsert({ id: "done", type: "task", status: "done", text: "done task about widgets.", salience: 0.6, isInsight: false, createdAt: "2026-06-15T09:00:00.000Z", accessCount: 0, tags: [], source: {} });
+    await db.upsert({ id: "sched", type: "task", status: "scheduled", text: "scheduled task about widgets.", salience: 0.6, isInsight: false, createdAt: "2026-06-15T09:00:00.000Z", accessCount: 0, tags: [], source: {} });
+    const block = await composeRecallBlock(db, "widgets", { topK: 10 });
+    expect(block.content).toContain("- [ ] open task about widgets.");
+    expect(block.content).toContain("- [x] done task about widgets.");
+    expect(block.content).toContain("- [<] scheduled task about widgets.");
+    db.close();
+  });
+
   it("truncates to the byte budget and flags it", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64 });
     for (let i = 0; i < 20; i += 1) {

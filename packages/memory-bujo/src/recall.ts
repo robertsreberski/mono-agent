@@ -1,7 +1,7 @@
 import type { MemoryBlock } from "@mono-agent/memory-store";
 import type { MemoryDb } from "@mono-agent/memory-store";
 
-const MARKER: Record<string, string> = { task: "- [ ]", event: "- ◦", note: "- –" };
+import { MARKER_FOR } from "./grammar.js";
 
 export async function composeRecallBlock(
   db: MemoryDb,
@@ -13,7 +13,9 @@ export async function composeRecallBlock(
   const lines = ["## Memory (recalled)", ""];
   for (const hit of hits) {
     const star = hit.record.isInsight ? " *" : "";
-    lines.push(`${MARKER[hit.record.type] ?? "- –"} ${hit.record.text}${star}`);
+    // Marker reflects type *and* status (e.g. a done task renders `- [x]`, not `- [ ]`); recall
+    // surfaces done/scheduled/migrated records, so a type-only marker would misrepresent their state.
+    lines.push(`- ${MARKER_FOR(hit.record.type, hit.record.status)} ${hit.record.text}${star}`);
   }
   let content = lines.join("\n");
   let truncated = false;

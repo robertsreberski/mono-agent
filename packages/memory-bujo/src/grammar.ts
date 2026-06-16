@@ -20,7 +20,7 @@ const STATUS_MARKER: Partial<Record<MemoryStatus, string>> = {
   invalidated: "[~]", // rendered struck like dropped; the comment metadata stays authoritative for the real status
 };
 
-const MARKER_FOR = (type: MemoryType, status: MemoryStatus): string => {
+export const MARKER_FOR = (type: MemoryType, status: MemoryStatus): string => {
   // For task-style statuses (done/migrated/scheduled/dropped), the visible marker encodes status.
   const statusMarker = STATUS_MARKER[status];
   if (statusMarker !== undefined) return statusMarker;
