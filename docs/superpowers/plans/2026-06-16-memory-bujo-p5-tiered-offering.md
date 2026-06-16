@@ -90,14 +90,19 @@
 
 ---
 
-## Task 7: Remove superseded v1 packages (no back-compat)
+## Task 7: Retire superseded v1 packages — delete from repo AND remove from npm (no back-compat)
 
-**Files:** Delete `packages/memory-md`, `packages/memory-journal`, `packages/memory-graph`; update `scripts/package-catalog.mjs`, root `package.json` devDeps, `PACKAGES.md`; repoint/trim `memory-mcp`.
+**Retire:** `memory-md`, `memory-journal`, `memory-graph`, `memory-mcp` (the MCP server only exposed the journal/graph tools, which are gone — a bujo MCP is a follow-up). **Keep:** `memory-search` (embedding providers used by `memory-store`).
 
-- [ ] **Step 1:** Confirm no remaining runtime imports of `@mono-agent/memory-md` (contract now in memory-store), `@mono-agent/memory-journal`, `@mono-agent/memory-graph` outside `memory-mcp`. Grep across `packages/*/src`.
-- [ ] **Step 2:** `memory-mcp` depends on memory-journal/memory-graph/memory-search to expose journal/graph tools. Since journal is now bujo-backed and graph is gone: EITHER (a) repoint memory-mcp to expose bujo recall (`memory_search`/`memory_grep` over the BujoMemoryStore/MemoryDb) — preferred but more work, OR (b) remove `@mono-agent/memory-mcp` entirely for P5 (no back-compat; bujo MCP tools become a follow-up). Choose (b) if (a) is more than a thin repoint; **log the decision**. If removing, also drop its catalog/deps/PACKAGES references and any agent-host MCP wiring.
-- [ ] **Step 3:** Delete the three (or four) package dirs. Remove their entries from `scripts/package-catalog.mjs`, root `package.json` devDependencies, and `PACKAGES.md` (regenerate the mermaid/table sections per the repo's convention — check `scripts/` for a generator).
-- [ ] **Step 4:** `pnpm install`; `node scripts/check-package-architecture.mjs` → passed (no orphaned refs; the check scans for stale references — fix any). Whole-repo typecheck of the memory-touching packages + agent-app/agent-harness/agent-host. **Commit** `refactor(memory): remove superseded v1 packages (memory-md/journal/graph[/mcp]) — bujo substrate is the single engine`.
+**Files:** Delete the four `packages/*` dirs; update `scripts/package-catalog.mjs`, root `package.json` devDeps, `PACKAGES.md`; npm deprecate/unpublish.
+
+- [ ] **Step 1:** Confirm no remaining runtime imports of the four packages outside themselves. Grep `@mono-agent/memory-md|memory-journal|memory-graph|memory-mcp` across `packages/*/src` + `demos/`. (After P5-5, agent-host no longer imports journal/graph/mcp; the contract is in memory-store.) Re-point any stragglers; if `memory-md`'s markdown store has no remaining consumers, it goes too.
+- [ ] **Step 2:** Delete `packages/memory-md`, `packages/memory-journal`, `packages/memory-graph`, `packages/memory-mcp`. Remove their entries from `scripts/package-catalog.mjs`, root `package.json` devDependencies, and `PACKAGES.md` (regenerate the mermaid/table per the repo convention — check `scripts/`). Remove `resolveMemoryMcpMainPath`/`memoryMcpRuntimeOptions` + `MEMORY_RECALL_TOOLS` wiring from agent-host (done in P5-5; verify gone).
+- [ ] **Step 3:** `pnpm install`; `node scripts/check-package-architecture.mjs` → passed (it scans for stale references — fix any). Whole-repo typecheck/build of the remaining touched packages. **Commit** `refactor(memory)!: retire v1 packages (memory-md/journal/graph/mcp) — bujo substrate is the single engine`.
+- [ ] **Step 4: remove from npm.** Check auth: `npm whoami`. For each retired package `@mono-agent/<name>`:
+  - `npm deprecate "@mono-agent/<name>" "Retired in Memory v2 — replaced by @mono-agent/memory-store + @mono-agent/memory-bujo (tiered lite/journal/bujo). Do not use."` (always works for the scope owner; reversible).
+  - Attempt full removal where npm policy allows: `npm unpublish "@mono-agent/<name>" --force` (npm blocks unpublish of public packages >72h old or with dependents; if it fails, the deprecation stands as the retirement signal).
+  If `npm whoami` fails (not authenticated in this environment), DO NOT guess credentials — output the exact deprecate/unpublish commands for the four packages so the user can run them with `! <cmd>`, and note this in the report. This is the one step that may need the human.
 
 ---
 
