@@ -52,15 +52,22 @@ export function parseBullet(line: string): Bullet | undefined {
   // `status=bogus`) falls back to the marker-derived base value rather than corrupting the Bullet.
   const status = (VALID_STATUSES.has(fields.status ?? "") ? (fields.status as MemoryStatus) : undefined) ?? base.status;
   const type = (VALID_TYPES.has(fields.type ?? "") ? (fields.type as MemoryType) : undefined) ?? base.type;
+  // A bullet needs a stable id, a created timestamp, and non-empty text. Missing/blank values (e.g.
+  // `id=` or `created=`) would yield id="" — a primary-key collision on rebuild and impossible to
+  // rewrite-by-id. Treat such malformed lines as non-bullets rather than corrupting the index.
+  const id = (fields.id ?? "").trim();
+  const createdAt = (fields.created ?? "").trim();
+  const bulletText = (text ?? "").trim();
+  if (id === "" || createdAt === "" || bulletText === "") return undefined;
   const salienceNum = Number(fields.salience);
   const bullet: Bullet = {
-    id: fields.id ?? "",
+    id,
     type,
     status,
-    text: text ?? "",
+    text: bulletText,
     salience: fields.salience !== undefined && Number.isFinite(salienceNum) ? salienceNum : 0.5,
     isInsight: fields.isInsight === "1",
-    createdAt: fields.created ?? "",
+    createdAt,
     refs: fields.refs === undefined || fields.refs.length === 0 ? [] : fields.refs.split(","),
     ...(fields.due !== undefined ? { dueAt: fields.due } : {}),
   };

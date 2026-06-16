@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 import type { MonoAgentConfigJson } from "@mono-agent/config";
 import type { SettingsJsonValue } from "@mono-agent/settings";
@@ -140,7 +140,8 @@ export async function writeMultiAgentDeploymentFiles(
     join(baseDir, "config"),
     traceRegistryDir,
     ...MULTI_AGENT_ROLES.flatMap((role) => [
-      dirname(roles[role].memoryPath),
+      // memoryPath is now the per-role memory root directory; the engine creates memory.db inside it.
+      roles[role].memoryPath,
       roles[role].workspaceDir,
       roles[role].artifactDir,
     ]),
@@ -149,10 +150,6 @@ export async function writeMultiAgentDeploymentFiles(
 
   await Promise.all(MULTI_AGENT_ROLES.map(async (role) => {
     await writeFile(roles[role].configPath, `${JSON.stringify(configs[role], null, 2)}\n`, { encoding: "utf8" });
-    await writeFileIfMissing(
-      roles[role].memoryPath,
-      `# Multi-Agent ${role} memory\n\nThis file is local deployment state and is ignored by git.\n`,
-    );
   }));
 
   return {
@@ -266,7 +263,9 @@ function buildRoleConfig(input: {
       selectedSkills: [],
     },
     memory: {
-      path: jsonPath(input.cwd, join(input.baseDir, "memory", `${input.role}.md`)),
+      // Memory v2: a root *directory* per role (holds memory.db + daily/), not a markdown file.
+      mode: "lite",
+      path: jsonPath(input.cwd, join(input.baseDir, "memory", input.role)),
       maxBytes: 64_000,
       writeMode: "disabled",
     },
@@ -337,7 +336,7 @@ function roleFileMap(cwd: string, baseDir: string): Record<MultiAgentRole, Multi
 function roleFiles(cwd: string, baseDir: string, role: MultiAgentRole): MultiAgentRoleDeploymentFiles {
   return {
     configPath: roleConfigPath({ cwd, configDir: baseDir, role }),
-    memoryPath: join(baseDir, "memory", `${role}.md`),
+    memoryPath: join(baseDir, "memory", role),
     workspaceDir: join(baseDir, "workspace", role),
     artifactDir: join(baseDir, "artifacts", role),
   };
@@ -435,21 +434,6 @@ function skillDescriptionForRole(role: MultiAgentRole): string {
   return "Provides one concise read-only local inspection contribution.";
 }
 
-async function writeFileIfMissing(path: string, contents: string): Promise<void> {
-  try {
-    await writeFile(path, contents, { encoding: "utf8", flag: "wx" });
-  } catch (error) {
-    if (isNodeError(error) && error.code === "EEXIST") {
-      return;
-    }
-    throw error;
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }

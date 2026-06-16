@@ -35,6 +35,21 @@ describe("parseBullet/serializeBullet", () => {
     expect(parseBullet("just prose")).toBeUndefined();
   });
 
+  it("treats bullets with a blank id, created, or text as non-bullets (avoids PK collisions on rebuild)", () => {
+    // blank id
+    expect(parseBullet(
+      "- [ ] Has text.  <!--mem id= type=task status=open salience=0.5 isInsight=0 created=2026-06-15T10:00:00.000Z refs=-->",
+    )).toBeUndefined();
+    // blank created
+    expect(parseBullet(
+      "- [ ] Has text.  <!--mem id=01Z type=task status=open salience=0.5 isInsight=0 created= refs=-->",
+    )).toBeUndefined();
+    // blank text
+    expect(parseBullet(
+      "- [ ]    <!--mem id=01Z type=task status=open salience=0.5 isInsight=0 created=2026-06-15T10:00:00.000Z refs=-->",
+    )).toBeUndefined();
+  });
+
   it("round-trips due, invalidated, and (event,done) via serialize→parse", () => {
     const bullets: Bullet[] = [
       { id: "01F", type: "task", status: "scheduled", text: "Review backlog.", salience: 0.6, isInsight: false, createdAt: "2026-06-15T13:00:00.000Z", refs: [], dueAt: "2026-07-01T09:00:00.000Z" },

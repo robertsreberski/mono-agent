@@ -1,6 +1,9 @@
 const ENCODING = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // Crockford base32
 
-/** Minimal ULID-style id: 48-bit time + random suffix. Injectable for tests. */
+/**
+ * Minimal ULID-style id: a millisecond timestamp encoded as 10 Crockford base32 chars
+ * (50-bit capacity, monotonically sortable) + a 16-char random suffix. Injectable for tests.
+ */
 export function createIdFactory(options: { clock?: () => Date; random?: () => number } = {}): () => string {
   const clock = options.clock ?? (() => new Date());
   const random = options.random ?? Math.random;

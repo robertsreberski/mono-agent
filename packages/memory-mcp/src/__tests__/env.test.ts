@@ -24,6 +24,20 @@ describe("memory-mcp env: readEmbeddings", () => {
       readEmbeddings({ MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai", MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "1536" }),
     ).toMatchObject({ provider: "openai", dim: 1536 });
   });
+
+  it("throws on a set-but-invalid dim instead of forwarding it into an opaque db error", () => {
+    for (const dim of ["abc", "0", "-5", "1.5", "12abc"]) {
+      expect(() =>
+        readEmbeddings({ MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama", MONO_AGENT_MEMORY_EMBEDDINGS_DIM: dim }),
+      ).toThrow(/MONO_AGENT_MEMORY_EMBEDDINGS_DIM/u);
+    }
+  });
+
+  it("ignores an empty dim (embeddings provider default applies)", () => {
+    expect(
+      readEmbeddings({ MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama", MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "  " }),
+    ).not.toHaveProperty("dim");
+  });
 });
 
 describe("memory-mcp env: readLlm", () => {

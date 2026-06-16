@@ -20,14 +20,25 @@ export function readEmbeddings(env: NodeJS.ProcessEnv = process.env): MemoryMcpE
   const model = env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL?.trim() || "nomic-embed-text:v1.5";
   const endpoint = env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT?.trim();
   const apiKey = env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY?.trim();
+  // A set-but-invalid dim (non-integer, 0, negative) is a misconfiguration — fail here with an
+  // actionable message rather than forwarding a bad value into a later, opaque MemoryDb error.
   const dimStr = env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM?.trim();
-  const dim = dimStr !== undefined && dimStr !== "" ? parseInt(dimStr, 10) : undefined;
+  let dim: number | undefined;
+  if (dimStr !== undefined && dimStr !== "") {
+    const parsed = Number(dimStr);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error(
+        `memory-mcp: invalid MONO_AGENT_MEMORY_EMBEDDINGS_DIM "${dimStr}" (expected a positive integer).`,
+      );
+    }
+    dim = parsed;
+  }
   return {
     provider: provider as EmbeddingProviderKind,
     model,
     ...(endpoint ? { endpoint } : {}),
     ...(apiKey ? { apiKey } : {}),
-    ...(dim !== undefined && Number.isFinite(dim) ? { dim } : {}),
+    ...(dim !== undefined ? { dim } : {}),
   };
 }
 

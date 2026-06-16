@@ -24,6 +24,17 @@ describe("reScore", () => {
     expect(fresh).toBeGreaterThan(old);
     expect(insight).toBeGreaterThan(fresh);
   });
+
+  it("returns a finite score (no NaN) for a malformed lastAccessedAt", () => {
+    const now = new Date("2026-06-15T00:00:00.000Z");
+    const score = reScore(
+      { rrfScore: 1, salience: 0.5, isInsight: false, lastAccessedAt: "not-a-date" },
+      DEFAULT_WEIGHTS,
+      0.995,
+      now,
+    );
+    expect(Number.isNaN(score)).toBe(false);
+  });
 });
 
 describe("ftsQuery", () => {

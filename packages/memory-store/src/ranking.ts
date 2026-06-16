@@ -38,6 +38,10 @@ export function reScore(input: ReScoreInput, weights: RecallWeights, decayGamma:
 
 function recencyDecay(lastAccessedAt: string | undefined, gamma: number, now: Date): number {
   if (lastAccessedAt === undefined) return 0;
-  const days = Math.max(0, (now.getTime() - new Date(lastAccessedAt).getTime()) / 86_400_000);
+  const ts = new Date(lastAccessedAt).getTime();
+  // A malformed timestamp parses to NaN; left unguarded it would make reScore return NaN and
+  // destabilise sorting. Treat it as no recency contribution.
+  if (Number.isNaN(ts)) return 0;
+  const days = Math.max(0, (now.getTime() - ts) / 86_400_000);
   return gamma ** days;
 }
