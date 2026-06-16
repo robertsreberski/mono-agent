@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describeMonoRuntimeSupport } from "@mono-agent/runtime-adapter";
@@ -53,7 +53,7 @@ export async function validateMonoAgentFolder(
   if (coreConfig !== undefined) {
     sections.push(runtimeSection(coreConfig));
     sections.push(await contextSection(coreConfig));
-    sections.push(memorySection(coreConfig));
+    sections.push(await memorySection(coreConfig));
     sections.push(await toolsSection(coreConfig));
     sections.push(sandboxSection(coreConfig));
   }
@@ -135,17 +135,139 @@ async function contextSection(config: MonoAgentConfig): Promise<ValidationSectio
   return { id: "context", label: "Context & skills", status, details };
 }
 
-function memorySection(config: MonoAgentConfig): ValidationSection {
+const DEFAULT_REFLECTION_CRON = "0 3 * * *";
+const DEFAULT_MIGRATION_CRON = "0 4 1 * *";
+
+async function memorySection(config: MonoAgentConfig): Promise<ValidationSection> {
   if (config.memory === undefined) {
     return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
   }
-  const details = [
+  const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,
   ];
-  if (config.memory.tools?.enabled === true) {
-    details.push(`Memory MCP tools enabled${config.memory.tools.allowJournalAppend ? " (journal append allowed)" : ""}.`);
+
+  if (config.memory.mode === "bujo") {
+    // Report ritual scheduler cadence
+    const reflectionEnabled = config.memory.reflection?.enabled !== false;
+    const migrationEnabled = config.memory.migration?.enabled !== false;
+    const reflectionCron = config.memory.reflection?.cron ?? DEFAULT_REFLECTION_CRON;
+    const migrationCron = config.memory.migration?.cron ?? DEFAULT_MIGRATION_CRON;
+    const hasLlm = config.memory.llm !== undefined;
+
+    if (hasLlm) {
+      const ritualParts: string[] = [];
+      if (reflectionEnabled) {
+        ritualParts.push(`reflection ${reflectionCron}`);
+      } else {
+        ritualParts.push("reflection disabled");
+      }
+      if (migrationEnabled) {
+        ritualParts.push(`migration ${migrationCron}`);
+      } else {
+        ritualParts.push("migration disabled");
+      }
+      details.push(`Rituals: ${ritualParts.join(" / ")} (auto).`);
+    } else {
+      details.push("Rituals: manual (no chat model — reflect/migrate need a local LLM).");
+    }
   }
+
+  if (config.memory.mode === "journal" || config.memory.mode === "bujo") {
+    const warns = await memoryLivenessWarnings(config.memory);
+    if (warns.length > 0) {
+      return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...warns] };
+    }
+  }
+
+  if (config.memory.mode === "lite") {
+    const liteWarns = await liteRootWritableWarning(config.memory.path);
+    if (liteWarns.length > 0) {
+      return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...liteWarns] };
+    }
+  }
+
   return { id: "memory", label: "Memory", status: "ok", details };
+}
+
+async function liteRootWritableWarning(memoryPath: string): Promise<string[]> {
+  try {
+    await mkdir(memoryPath, { recursive: true });
+    return [];
+  } catch (err) {
+    return [
+      `[WARN] lite memory root is not writable: ${memoryPath} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
+    ];
+  }
+}
+
+const BUJO_PROBE_TIMEOUT_MS = 3_000;
+
+/** Probes Ollama /api/tags and returns a sorted list of model names, or throws. */
+async function fetchOllamaModels(endpoint: string): Promise<string[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => { ctrl.abort(); }, BUJO_PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${endpoint}/api/tags`, { signal: ctrl.signal });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = (await res.json()) as { models?: { name?: unknown }[] };
+    return (data.models ?? []).flatMap((m) => (typeof m.name === "string" ? [m.name] : []));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function memoryLivenessWarnings(
+  memory: NonNullable<MonoAgentConfig["memory"]>,
+): Promise<string[]> {
+  const warns: string[] = [];
+  const mode = memory.mode;
+  const embeddingsUsesOllama = (memory.embeddings?.provider ?? "ollama") === "ollama";
+  const llmUsesOllama = memory.llm?.provider === "ollama";
+
+  // 1. Memory root writable (every embedded tier)
+  try {
+    await mkdir(memory.path, { recursive: true });
+  } catch (err) {
+    warns.push(
+      `[WARN] ${mode} memory root is not writable: ${memory.path} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
+    );
+  }
+
+  // 2. Ollama liveness — only probe when embeddings and/or the chat LLM actually use Ollama. With
+  // OpenAI embeddings there is nothing local to probe, so we must not tell the user to start Ollama.
+  if (embeddingsUsesOllama || llmUsesOllama) {
+    const endpoint = (
+      (embeddingsUsesOllama ? memory.embeddings?.endpoint : memory.llm?.endpoint) ?? "http://localhost:11434"
+    ).replace(/\/$/u, "");
+
+    let ollamaModels: string[] | undefined;
+    try {
+      ollamaModels = await fetchOllamaModels(endpoint);
+    } catch (err) {
+      warns.push(
+        `[WARN] Ollama not reachable at ${endpoint}; ${mode} memory cannot embed and will fail at runtime (${err instanceof Error ? err.message : String(err)}). Start Ollama or fix the endpoint.`,
+      );
+    }
+
+    if (ollamaModels !== undefined) {
+      if (embeddingsUsesOllama) {
+        const embeddingsModel = memory.embeddings?.model ?? "nomic-embed-text:v1.5";
+        if (!ollamaModels.includes(embeddingsModel)) {
+          warns.push(`[WARN] Embeddings model ${embeddingsModel} not pulled — run \`ollama pull ${embeddingsModel}\`.`);
+        }
+      }
+      if (llmUsesOllama && memory.llm !== undefined) {
+        const chatModel = memory.llm.model;
+        if (!ollamaModels.includes(chatModel)) {
+          warns.push(`[WARN] Chat LLM model ${chatModel} not pulled — run \`ollama pull ${chatModel}\`.`);
+        }
+      }
+    }
+  }
+
+  return warns;
 }
 
 async function toolsSection(config: MonoAgentConfig): Promise<ValidationSection> {

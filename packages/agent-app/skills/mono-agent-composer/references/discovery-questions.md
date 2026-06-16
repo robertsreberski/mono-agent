@@ -84,12 +84,108 @@ Question:
 Should the agent remember anything between conversations?
 
 1. No durable memory yet (recommended for first integration)
-2. Markdown memory file (read into context; optional host summaries appended)
-3. Journal memory (daily notes + entity graph, optional MCP recall tools)
-4. Journal memory with semantic search (adds an embedding index for memory_search)
+2. Lite memory — FTS keyword recall + rapid-log capture; zero external deps
+3. Journal memory — hybrid recall (BM25+vector) + salience decay; requires local Ollama embeddings
+4. BuJo memory — full tier: journal + LLM capture/reconcile + entity graph + auto-scheduled
+   reflection/migration; requires Ollama embeddings AND a local chat model
 ```
 
-Fills: the `memory` section — `mode` (`markdown`/`journal`), `path`, `writeMode` (`disabled`/`append-host-summary`), `scope`, and for journal mode `tools.enabled` / `tools.allowJournalAppend` to give the runtime memory recall/append tools over MCP. The entity graph defaults to `<path>/graph.jsonl` (`memory.graphPath` to relocate). For semantic search fill `memory.embeddings`: `provider` (`ollama` with local `nomic-embed-text` — pull it first with `ollama pull nomic-embed-text` — or `openai` which requires `apiKey`/`apiKeyEnv`), optional `model`/`endpoint`. Without embeddings, `memory_search` falls back to keyword search.
+All tiers share the same `@mono-agent/memory-bujo` substrate. Fills: `memory.mode`
+(`lite`/`journal`/`bujo`), `memory.path`, `memory.writeMode`
+(`disabled`/`append-host-summary`), and tier-specific blocks below.
+
+**Tier 2 — lite (no external deps):**
+
+Write:
+
+```jsonc
+"memory": {
+  "mode": "lite",
+  "path": "./.mono-agent/memory",
+  "writeMode": "append-host-summary"
+}
+```
+
+No prerequisites. No Ollama. SQLite is bundled.
+
+**Tier 3 — journal (embeddings required):**
+
+- Ask: which local Ollama embeddings model? (default `nomic-embed-text:v1.5` — use the
+  exact `:v1.5` tag; pull first with `ollama pull nomic-embed-text:v1.5`).
+- Default `memory.embeddings.dim` to `768` for `nomic-embed-text:v1.5`.
+
+Write:
+
+```jsonc
+"memory": {
+  "mode": "journal",
+  "path": "./.mono-agent/memory",
+  "writeMode": "append-host-summary",
+  "embeddings": {
+    "provider": "ollama",
+    "model": "nomic-embed-text:v1.5",
+    "dim": 768
+  }
+}
+```
+
+After writing, remind the user to run `mono-agent validate` (checks Ollama reachability
+and that the model is pulled — warns loudly on any failure, never silently falls back).
+
+**Tier 4 — bujo (embeddings + chat model + auto-rituals):**
+
+Proactively explain what bujo does: capture → reconcile (ADD/UPDATE/SUPERSEDE/NOOP),
+hybrid BM25+vector recall, entity graph, reflection (decay + insight synthesis), monthly
+migration (promote/reschedule/cluster/forget), living `index.md` + `future-log.md`.
+The reflection and migration rituals are **auto-scheduled in-app** — no external cron or
+launchd setup needed.
+
+- Ask: which local Ollama embeddings model? (default `nomic-embed-text:v1.5` — exact
+  `:v1.5` tag; `ollama pull nomic-embed-text:v1.5`).
+- Ask: which local chat model for LLM pipelines? (e.g. `qwen3.6:latest`;
+  `ollama pull qwen3.6:latest`). A chat model is required — without it the `bujo` tier
+  cannot run capture/reflect/migrate.
+- Ask: should we keep the default reflection/migration schedule (nightly `0 3 * * *` /
+  monthly `0 4 1 * *`), or customise the cron expressions?
+
+Write (embeddings + chat model):
+
+```jsonc
+"memory": {
+  "mode": "bujo",
+  "path": "./.mono-agent/memory",
+  "writeMode": "append-host-summary",
+  "embeddings": {
+    "provider": "ollama",
+    "model": "nomic-embed-text:v1.5",
+    "dim": 768
+  },
+  "llm": {
+    "provider": "ollama",
+    "model": "qwen3.6:latest"
+  }
+}
+```
+
+If the user customises the ritual schedule, add the `reflection`/`migration` blocks:
+
+```jsonc
+"reflection": { "enabled": true, "cron": "0 3 * * *" },
+"migration":  { "enabled": true, "cron": "0 4 1 * *" }
+```
+
+After writing, append a prerequisite note:
+
+```
+Before running mono-agent validate, pull the required models:
+  ollama pull nomic-embed-text:v1.5
+  ollama pull qwen3.6:latest          # (or whichever chat model you chose)
+```
+
+Then run `mono-agent validate` — the Memory section confirms Ollama reachability, both
+models are present, the root is writable, and the ritual cadence (with next-run times).
+See `docs/memory.md` for the full tier table, config shapes, and CLI subcommands
+(`memory-bujo rebuild|recall|index|reflect|migrate`).
 
 ## 7. Sandbox
 

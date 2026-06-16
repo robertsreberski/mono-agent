@@ -41,7 +41,7 @@ Everything below runs in the user's agent folder, not the workspace.
 2. **Scaffold.** In the user's folder run:
 
    ```bash
-   mono-agent init --model <ref> [--fallback-models <csv>] [--memory markdown|journal]
+   mono-agent init --model <ref> [--fallback-models <csv>] [--memory lite|journal|bujo]
    ```
 
    This writes a minimal `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories. It never overwrites existing files.
@@ -63,7 +63,7 @@ Everything below runs in the user's agent folder, not the workspace.
 
 ## When Config Is Not Enough
 
-Config-first covers one responder served over any combination of the seven channels (webhook, OpenAI-compatible API, Telegram, Slack, WhatsApp, A2A, cron) plus the operator console, sandbox, memory (markdown or journal with entity graph and optional semantic search), and traceability. Drop to programmatic composition only for: custom runtimes (`MonoRuntimeLike`, incl. the OpenAI Agents SDK), request-scoped runtime extensions, tool approval gates, structured output schemas, multi-agent orchestration (`@mono-agent/agent-orchestrator`), custom channel message texts, or bespoke transports — `references/feature-coverage.md` lists which features are config keys and which are code-only. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue. For eval suites over the composed agent, use `@mono-agent/agent-evals`.
+Config-first covers one responder served over any combination of the seven channels (webhook, OpenAI-compatible API, Telegram, Slack, WhatsApp, A2A, cron) plus the operator console, sandbox, memory (lite with FTS-only recall, journal with hybrid BM25+vector recall + Ollama embeddings, or bujo with SQLite-indexed hybrid recall + LLM capture/reconcile + entity graph + auto-scheduled reflection/migration), and traceability. Drop to programmatic composition only for: custom runtimes (`MonoRuntimeLike`, incl. the OpenAI Agents SDK), request-scoped runtime extensions, tool approval gates, structured output schemas, multi-agent orchestration (`@mono-agent/agent-orchestrator`), custom channel message texts, or bespoke transports — `references/feature-coverage.md` lists which features are config keys and which are code-only. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue. For eval suites over the composed agent, use `@mono-agent/agent-evals`.
 
 ## Implementation References
 

@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryMode, MemoryScope, MemoryToolsConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -349,13 +349,27 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
 function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {
   const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
   if (rawPath === undefined) {
+    // Any memory env var set without a path is a misconfiguration — fail closed rather than
+    // silently ignoring it. Covers every behavior-configuring var (not just embeddings). The
+    // retired _GRAPH_PATH/_SCOPE/_TOOLS_ENABLED keys are deliberately omitted: the loader tolerates
+    // them for backward-compat with pre-v2 configs.
     const orphaned = [
-      "MONO_AGENT_MEMORY_GRAPH_PATH",
+      "MONO_AGENT_MEMORY_MODE",
+      "MONO_AGENT_MEMORY_WRITE_MODE",
+      "MONO_AGENT_MEMORY_MAX_BYTES",
       "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
       "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
       "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
       "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
       "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
+      "MONO_AGENT_MEMORY_LLM_PROVIDER",
+      "MONO_AGENT_MEMORY_LLM_MODEL",
+      "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+      "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
+      "MONO_AGENT_MEMORY_REFLECTION_CRON",
+      "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
+      "MONO_AGENT_MEMORY_MIGRATION_CRON",
     ].find((name) => normalizeOptionalString(env[name]) !== undefined);
     if (orphaned !== undefined) {
       throw new MonoAgentConfigError("invalid_env", `${orphaned} requires MONO_AGENT_MEMORY_PATH (or memory.path) to be set.`, {
@@ -366,30 +380,44 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   }
 
   const mode = readChoice<MemoryMode>(env.MONO_AGENT_MEMORY_MODE, "MONO_AGENT_MEMORY_MODE", [
-    "markdown",
+    "lite",
     "journal",
-  ], "markdown", invalidEnv);
+    "bujo",
+  ], "lite", invalidEnv);
   const writeMode = readChoice<MemoryWriteMode>(env.MONO_AGENT_MEMORY_WRITE_MODE, "MONO_AGENT_MEMORY_WRITE_MODE", [
     "disabled",
     "append-host-summary",
+    "capture",
   ], "disabled", invalidEnv);
-  const scope = readChoice<MemoryScope>(env.MONO_AGENT_MEMORY_SCOPE, "MONO_AGENT_MEMORY_SCOPE", [
-    "single-file",
-    "per-conversation",
-  ], "single-file", invalidEnv);
-  const tools = readMemoryToolsConfig(env);
-  const graphPath = readOptionalPath(env.MONO_AGENT_MEMORY_GRAPH_PATH, cwd);
+  if (writeMode === "capture" && mode !== "bujo") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `MONO_AGENT_MEMORY_WRITE_MODE "capture" requires MONO_AGENT_MEMORY_MODE "bujo" (it needs a chat LLM).`,
+      { env: "MONO_AGENT_MEMORY_WRITE_MODE" },
+    );
+  }
   const embeddings = readMemoryEmbeddingsConfig(env);
+  const llm = readMemoryLlmConfig(env);
+  const dim = readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 });
+  const reflection = readMemoryRitualConfig(env, "REFLECTION");
+  const migration = readMemoryRitualConfig(env, "MIGRATION");
+
+  const embeddingsWithDim =
+    embeddings === undefined
+      ? undefined
+      : dim === undefined
+        ? embeddings
+        : { ...embeddings, dim };
 
   return {
     mode,
     path: readPath(rawPath, cwd),
     maxBytes: readInteger(env.MONO_AGENT_MEMORY_MAX_BYTES, "MONO_AGENT_MEMORY_MAX_BYTES", DEFAULT_MEMORY_MAX_BYTES, invalidEnv, { min: 1, max: 1_000_000 }),
-    scope,
     writeMode,
-    ...(tools === undefined ? {} : { tools }),
-    ...(graphPath === undefined ? {} : { graphPath }),
-    ...(embeddings === undefined ? {} : { embeddings }),
+    ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
+    ...(llm === undefined ? {} : { llm }),
+    ...(reflection === undefined ? {} : { reflection }),
+    ...(migration === undefined ? {} : { migration }),
   };
 }
 
@@ -433,29 +461,51 @@ function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): Me
   };
 }
 
-function readMemoryToolsConfig(env: Record<string, string | undefined>): MemoryToolsConfig | undefined {
-  const hasMemoryToolsEnv = [
-    env.MONO_AGENT_MEMORY_TOOLS_ENABLED,
-    env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
-  ].some((value) => normalizeOptionalString(value) !== undefined);
-  if (!hasMemoryToolsEnv) {
+function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlmConfig | undefined {
+  const model = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_MODEL);
+  if (model === undefined) {
     return undefined;
   }
-  const enabled = readBoolean(env.MONO_AGENT_MEMORY_TOOLS_ENABLED, "MONO_AGENT_MEMORY_TOOLS_ENABLED", false, invalidEnv);
-  const allowJournalAppend = readBoolean(
-    env.MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND,
-    "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND",
-    false,
-    invalidEnv,
-  );
-  if (allowJournalAppend && !enabled) {
-    throw new MonoAgentConfigError(
-      "invalid_env",
-      "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND requires MONO_AGENT_MEMORY_TOOLS_ENABLED=true.",
-      { env: "MONO_AGENT_MEMORY_TOOLS_ALLOW_JOURNAL_APPEND" },
-    );
+  const provider = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_PROVIDER) ?? "ollama";
+  if (provider !== "ollama") {
+    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_MEMORY_LLM_PROVIDER must be ollama.", {
+      env: "MONO_AGENT_MEMORY_LLM_PROVIDER",
+    });
   }
-  return { enabled, allowJournalAppend };
+  const endpoint = normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_ENDPOINT);
+  return {
+    provider: "ollama",
+    model,
+    ...(endpoint === undefined ? {} : { endpoint }),
+  };
+}
+
+/**
+ * Reads an optional ritual config block (reflection or migration) from env.
+ * Returns undefined when neither `_ENABLED` nor `_CRON` is present — the
+ * object is only added to memory config when the user explicitly configures it.
+ *
+ * @param suffix - uppercase discriminator: "REFLECTION" or "MIGRATION"
+ */
+function readMemoryRitualConfig(
+  env: Record<string, string | undefined>,
+  suffix: "REFLECTION" | "MIGRATION",
+): MemoryRitualConfig | undefined {
+  const enabledKey = `MONO_AGENT_MEMORY_${suffix}_ENABLED`;
+  const cronKey = `MONO_AGENT_MEMORY_${suffix}_CRON`;
+  const hasEnabled = normalizeOptionalString(env[enabledKey]) !== undefined;
+  const hasCron = normalizeOptionalString(env[cronKey]) !== undefined;
+  if (!hasEnabled && !hasCron) {
+    return undefined;
+  }
+  const enabled = hasEnabled
+    ? readBoolean(env[enabledKey], enabledKey, true, invalidEnv)
+    : undefined;
+  const cron = normalizeOptionalString(env[cronKey]);
+  return {
+    ...(enabled === undefined ? {} : { enabled }),
+    ...(cron === undefined ? {} : { cron }),
+  };
 }
 
 function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["traceability"] {

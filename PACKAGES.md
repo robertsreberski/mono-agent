@@ -39,11 +39,9 @@ flowchart TB
   subgraph ContextLayer["context"]
     Context["@mono-agent/context"]
     Skills["@mono-agent/skills"]
-    MemoryMd["@mono-agent/memory-md"]
-    MemoryJournal["@mono-agent/memory-journal"]
-    MemoryGraph["@mono-agent/memory-graph"]
+    MemoryBujo["@mono-agent/memory-bujo"]
     MemorySearch["@mono-agent/memory-search"]
-    MemoryMcp["@mono-agent/memory-mcp"]
+    MemoryStore["@mono-agent/memory-store"]
   end
 
   subgraph ObservabilityLayer["observability"]
@@ -111,16 +109,14 @@ flowchart TB
 
   Host --> Harness
   Host --> Config
-  Host --> MemoryMd
-  Host --> MemoryJournal
-  Host --> MemoryGraph
+  Host --> MemoryBujo
   Host --> Observability
   Host --> RuntimeAdapter
   Host --> Sandbox
   Host --> ToolPolicy
   Harness --> Contracts
   Harness --> Context
-  Harness --> MemoryMd
+  Harness --> MemoryStore
   Harness --> Observability
   Harness --> RuntimeAdapter
   Harness --> Sandbox
@@ -136,9 +132,8 @@ flowchart TB
   Config --> RuntimeAdapter
   Config --> Sandbox
   Skills --> Context
-  MemoryJournal --> MemoryMd
-  MemoryMcp --> MemoryJournal
-  MemoryMcp --> MemoryGraph
+  MemoryBujo --> MemoryStore
+  MemoryBujo --> MemorySearch
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Sandbox
   AgentRuntime --> Sandbox
@@ -152,7 +147,7 @@ flowchart TB
 | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime`, `@mono-agent/sandbox` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-md`, `@mono-agent/memory-journal`, `@mono-agent/memory-graph`, `@mono-agent/memory-search`, `@mono-agent/memory-mcp` |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |
 | `evaluation` | `@mono-agent/agent-evals` |
