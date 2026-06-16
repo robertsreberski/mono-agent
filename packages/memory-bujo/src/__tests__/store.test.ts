@@ -334,3 +334,95 @@ describe("BujoMemoryStore", () => {
     await store.close();
   });
 });
+
+// ─── Async capture queue tests ───────────────────────────────────────────────
+
+import type { LlmComplete } from "../llm.js";
+
+function tmpRoot(): string {
+  return mkdtempSync(join(tmpdir(), "bujo-queue-"));
+}
+
+// A fake LLM that records the order of completion calls and yields empty JSON
+// (distill/reconcile/entities all tolerate empty arrays → a no-op capture).
+function recordingLlm(order: string[], opts: { throwOnText?: string } = {}): LlmComplete {
+  return {
+    id: "fake",
+    async complete(prompt: string): Promise<string> {
+      // Push the full prompt so the caller can detect "FIRST" / "SECOND" / "POISON" / "HEALTHY"
+      // (these appear in the TEXT: section at the tail of the distill prompt).
+      order.push(prompt);
+      if (opts.throwOnText !== undefined && prompt.includes(opts.throwOnText)) {
+        throw new Error("boom");
+      }
+      return "[]"; // empty distillation/entities — safe no-op
+    },
+  };
+}
+
+describe("BujoMemoryStore async capture queue", () => {
+  it("scheduleCapture runs captures serially (no interleaving) and flush awaits them", async () => {
+    const order: string[] = []; // every LLM call pushes its turn tag (FIRST/SECOND)
+    const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", llm: recordingLlm(order) });
+    store.scheduleCapture("c1", "FIRST user text");
+    store.scheduleCapture("c1", "SECOND user text");
+    await store.flush();
+    // Serialized ⇒ ALL of FIRST's calls precede ALL of SECOND's (the last FIRST < the first SECOND).
+    const firstTags = order.map((t, i) => (t.includes("FIRST") ? i : -1)).filter((i) => i >= 0);
+    const secondTags = order.map((t, i) => (t.includes("SECOND") ? i : -1)).filter((i) => i >= 0);
+    expect(firstTags.length).toBeGreaterThan(0);
+    expect(secondTags.length).toBeGreaterThan(0);
+    expect(Math.max(...firstTags)).toBeLessThan(Math.min(...secondTags));
+    await store.close();
+  });
+
+  it("a throwing capture is swallowed and does not block the next capture", async () => {
+    const order: string[] = [];
+    const warnings: string[] = [];
+    const store = createBujoMemoryStore({
+      root: tmpRoot(), tier: "bujo",
+      llm: recordingLlm(order),
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    // Patch capture() directly so the POISON turn throws from capture() itself (not from
+    // the LLM, which is already caught inside distill/entities). This is the only way to
+    // reliably trigger the scheduleCapture catch block without reaching into internal LLM pipes.
+    const original = store.capture.bind(store);
+    store.capture = async (convId: string, text: string) => {
+      if (text.includes("POISON")) throw new Error("boom");
+      order.push(`capture:${text.includes("HEALTHY") ? "HEALTHY" : text}`);
+      return original(convId, text);
+    };
+    store.scheduleCapture("c1", "POISON text");
+    store.scheduleCapture("c1", "HEALTHY text");
+    await expect(store.flush()).resolves.toBeUndefined();
+    expect(warnings.some((w) => /capture/i.test(w))).toBe(true);
+    expect(order.some((t) => t.includes("HEALTHY"))).toBe(true);
+    await store.close();
+  });
+
+  it("scheduleCapture is a no-op without an llm (lite/journal)", async () => {
+    const store = createBujoMemoryStore({ root: tmpRoot() }); // lite
+    expect(() => store.scheduleCapture("c1", "x")).not.toThrow();
+    await expect(store.flush()).resolves.toBeUndefined();
+    await store.close();
+  });
+
+  it("recall delegates to db.recall and returns scored hits", async () => {
+    const store = createBujoMemoryStore({ root: tmpRoot() });
+    await store.appendHostSummary("c1", "The launch date is March 3rd.");
+    const hits = await store.recall("launch date", { topK: 5 });
+    expect(hits.length).toBeGreaterThan(0);
+    expect(typeof hits[0]!.score).toBe("number");
+    expect(hits[0]!.record.text).toMatch(/launch/i);
+    await store.close();
+  });
+
+  it("close() drains a pending capture before closing the db", async () => {
+    const order: string[] = [];
+    const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", llm: recordingLlm(order) });
+    store.scheduleCapture("c1", "DRAINME user text");
+    await store.close(); // must await the queued capture before closing — no explicit flush()
+    expect(order.some((t) => t.includes("DRAINME"))).toBe(true);
+  });
+});

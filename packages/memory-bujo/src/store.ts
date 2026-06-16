@@ -1,6 +1,6 @@
 import { join, relative } from "node:path";
 
-import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-store";
+import type { MemoryBlock, MemoryStore, MemoryWriteResult, RecallHit } from "@mono-agent/memory-store";
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "@mono-agent/memory-store";
 
 import { appendBullet, dailyFilePath } from "./daily.js";
@@ -12,7 +12,7 @@ import { composeRecallBlock } from "./recall.js";
 import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
 import { migrate as migrateFn, type MigrateResult } from "./migrate.js";
 import { writeFutureLog, writeIndex } from "./projections.js";
-import type { Bullet, BujoOptions, BujoTier } from "./types.js";
+import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
 
 export class BujoMemoryStore implements MemoryStore {
   private readonly root: string;
@@ -22,6 +22,8 @@ export class BujoMemoryStore implements MemoryStore {
   private readonly nextId: () => string;
   private readonly llm?: LlmComplete;
   private readonly _tier: BujoTier;
+  private readonly logger: BujoLogger;
+  private captureChain: Promise<void> = Promise.resolve();
 
   constructor(options: BujoOptions) {
     this.root = options.root;
@@ -43,6 +45,7 @@ export class BujoMemoryStore implements MemoryStore {
         : options.llm === undefined
           ? "journal"
           : "bujo");
+    this.logger = options.logger ?? { warn: () => {} };
   }
 
   /** The effective tier of this store (lite / journal / bujo). */
@@ -54,6 +57,11 @@ export class BujoMemoryStore implements MemoryStore {
     // Phase 1: prime with recent high-salience memories. The query is the conversation id
     // as a coarse seed; richer session-aware priming arrives with reflection (P3).
     return composeRecallBlock(this.db, conversationId, { topK: 8, maxBytes: this.maxBytes });
+  }
+
+  /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */
+  async recall(query: string, options: { topK?: number } = {}): Promise<RecallHit[]> {
+    return this.db.recall(query, { ...(options.topK !== undefined && { topK: options.topK }) });
   }
 
   async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
@@ -130,6 +138,27 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   /**
+   * Enqueue a best-effort intelligent capture. Returns immediately. Captures run strictly
+   * one-at-a-time (serialized across all channels sharing this store), and a failure is caught +
+   * logged so it never breaks the chain, the reply, or the process. No-op without an llm.
+   */
+  scheduleCapture(conversationId: string, text: string): void {
+    if (this.llm === undefined) return;
+    this.captureChain = this.captureChain.then(async () => {
+      try {
+        await this.capture(conversationId, text);
+      } catch (error) {
+        this.logger.warn(`bujo capture failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+  }
+
+  /** Await all captures queued before this call (graceful shutdown / one-shot exit). */
+  async flush(): Promise<void> {
+    await this.captureChain;
+  }
+
+  /**
    * LLM-backed intelligent capture: distills the turn text into atomic candidate memories,
    * reconciles them against the existing index (ADD / UPDATE / SUPERSEDE / NOOP), and extracts
    * typed entities into the canonical graph.
@@ -162,6 +191,9 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   async close(): Promise<void> {
+    // Drain any queued captures before closing the db handle, so a caller that omits flush()
+    // (e.g. the MCP's signal handler) doesn't strand an in-flight capture against a closed db.
+    await this.flush();
     this.db.close();
   }
 }
