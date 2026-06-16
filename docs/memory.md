@@ -127,6 +127,18 @@ model for the LLM pipelines.
 }
 ```
 
+### Per-turn write mode (`memory.writeMode`)
+
+How the **host** persists each completed turn (independent of the tier's recall):
+
+- `disabled` — never write.
+- `append-host-summary` — append a deterministic, single-line rapid-log of the turn to today's daily file (fast, no LLM). Available in every tier.
+- `capture` — **bujo only.** A superset of `append-host-summary`: it still writes the deterministic rapid-log synchronously (durable), and *additionally* runs the intelligent capture pipeline (distil → reconcile → entity extraction) in the background. Capture is **async and non-blocking** (reply latency is unchanged), serialized per store, and **drained on graceful shutdown** (nothing queued is lost on stop; the canonical markdown rapid-log survives even if a capture is interrupted). Because it needs a chat LLM, `writeMode: "capture"` requires `mode: "bujo"` and fails config validation otherwise — no silent fallback.
+
+```jsonc
+{ "memory": { "mode": "bujo", "writeMode": "capture", "path": "./.mono-agent/memory" /* + embeddings + llm */ } }
+```
+
 ## Prerequisites
 
 ### Lite tier
@@ -252,8 +264,18 @@ tiers during the memory strategy step (question 6). See
 `packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md` for
 the full question flow and config blocks the composer writes.
 
+## Memory over MCP
+
+`@mono-agent/memory-mcp` exposes the engine over MCP (**stdio**) to any client — Claude Code, the agent itself, another tool. It is the v2 replacement for the retired `memory.tools` mechanism. Three tools:
+
+- `memory_recall({ query, limit? })` — hybrid (keyword + semantic) search. Read-only; works in every tier.
+- `memory_capture({ text })` — intelligent store (distil → reconcile → entities). **Bujo only**; returns an explicit error result when no chat LLM is configured.
+- `memory_note({ text })` — quick deterministic rapid-log append. All tiers.
+
+It reads the same `MONO_AGENT_MEMORY_*` environment the agent and CLI use (`MONO_AGENT_MEMORY_PATH` required; embeddings env improves recall ranking; `MONO_AGENT_MEMORY_LLM_MODEL` enables `memory_capture`), opens its own `memory.db` handle (WAL + `busy_timeout` make concurrent use alongside a running agent safe), and drains the capture queue on `SIGINT`/`SIGTERM`. Run the `memory-mcp` bin (or `node <dist>/main.js`) and register it as a stdio MCP server. Full details: `packages/memory-mcp/README.md`.
+
 ## References
 
-- Design spec: `docs/superpowers/specs/2026-06-15-memory-bujo-design.md`
-- Phase 1–5 implementation plans: `docs/superpowers/plans/2026-06-15-memory-bujo-p*.md`, `docs/superpowers/plans/2026-06-16-memory-bujo-p5-tiered-offering.md`
-- Feature registry rows: `docs/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`
+- Design specs: `docs/superpowers/specs/2026-06-15-memory-bujo-design.md`, `docs/superpowers/specs/2026-06-16-memory-bujo-followups-design.md`
+- Implementation plans: `docs/superpowers/plans/2026-06-15-memory-bujo-p*.md`, `docs/superpowers/plans/2026-06-16-memory-bujo-p5-tiered-offering.md`, `docs/superpowers/plans/2026-06-16-memory-bujo-p6-followups.md`
+- Feature registry rows: `docs/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.mcp`
