@@ -23,7 +23,6 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/memory-md": "workspace:0.2.2",
     "@mono-agent/memory-search": "workspace:0.2.2",
     "@mono-agent/memory-store": "workspace:0.2.2"
   },
