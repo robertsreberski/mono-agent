@@ -106,7 +106,6 @@ export function buildFinalDemoDeploymentConfig(
     memory: {
       path: DEPLOY_MEMORY_PATH,
       maxBytes: 64_000,
-      scope: "single-file",
       writeMode: "disabled",
     },
     tools: {

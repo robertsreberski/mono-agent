@@ -268,7 +268,6 @@ function buildRoleConfig(input: {
     memory: {
       path: jsonPath(input.cwd, join(input.baseDir, "memory", `${input.role}.md`)),
       maxBytes: 64_000,
-      scope: "single-file",
       writeMode: "disabled",
     },
     tools: {
