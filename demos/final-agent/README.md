@@ -161,7 +161,6 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
   "memory": {
     "path": "./MEMORY.md",
     "maxBytes": 64000,
-    "scope": "single-file",
     "writeMode": "disabled"
   },
   "tools": {
