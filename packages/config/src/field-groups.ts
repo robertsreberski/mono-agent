@@ -214,7 +214,7 @@ export const memoryFieldGroup = defineFieldGroup({
       id: "memory.writeMode",
       label: "Write mode",
       description:
-        "disabled = never write; append-host-summary = let the host append after each run.",
+        "disabled = never write; append-host-summary = host appends a rapid-log after each run; capture = also enqueue an async intelligent capture (bujo tier only).",
       kind: "select",
       options: [
         { value: "disabled", label: "disabled" },
