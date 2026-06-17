@@ -6,6 +6,7 @@ import {
   DEFAULT_MESSAGES,
   buildAgentRequest,
   finishSafely,
+  normalizeTelegramMessageInput,
   resolveErrorText,
   type AgentResponder,
   type AgentResponse,
@@ -62,6 +63,8 @@ export interface TelegramBotController {
 interface ActiveRun {
   controller: AbortController;
 }
+
+type TelegramControlCommand = "start" | "help" | "cancel";
 
 /**
  * Build a grammY bot that routes authorized text messages to an agent responder.
@@ -122,6 +125,21 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   bot.on("message:text", async (ctx) => {
     await handleAgentMessage(ctx);
   });
+  bot.on("message:document", async (ctx) => {
+    await handleAgentMessage(ctx);
+  });
+  bot.on("message:photo", async (ctx) => {
+    await handleAgentMessage(ctx);
+  });
+  bot.on("message:audio", async (ctx) => {
+    await handleAgentMessage(ctx);
+  });
+  bot.on("message:video", async (ctx) => {
+    await handleAgentMessage(ctx);
+  });
+  bot.on("message:voice", async (ctx) => {
+    await handleAgentMessage(ctx);
+  });
   bot.on("message", async (ctx) => {
     await ctx.reply(messages.unsupportedText);
   });
@@ -133,8 +151,17 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
 
-    const text = (message.text ?? "").trim();
-    if (text.length === 0) {
+    const captionCommand = controlCommandFromCaption(
+      message as unknown as TelegramMessage,
+      ctx.me.username,
+    );
+    if (captionCommand !== undefined) {
+      await handleControlCommand(ctx, captionCommand);
+      return;
+    }
+
+    const input = normalizeTelegramMessageInput(message as unknown as TelegramMessage);
+    if (input === undefined) {
       await ctx.reply(messages.unsupportedText);
       return;
     }
@@ -154,7 +181,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     const request = buildAgentRequest(
       ctx.update as unknown as TelegramUpdate,
       message as unknown as TelegramMessage,
-      text,
+      input,
       controller.signal,
     );
     const stream = new TelegramMessageStream(
@@ -214,6 +241,25 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         activeRuns.delete(key);
       }
     }
+  }
+
+  async function handleControlCommand(
+    ctx: Context,
+    command: TelegramControlCommand,
+  ): Promise<void> {
+    if (command === "start") {
+      await ctx.reply(messages.welcomeText);
+      return;
+    }
+    if (command === "help") {
+      await ctx.reply(messages.helpText);
+      return;
+    }
+    const chatId = ctx.chat?.id;
+    if (chatId !== undefined) {
+      activeRuns.get(String(chatId))?.controller.abort(new Error("Cancelled by Telegram user."));
+    }
+    await ctx.reply(messages.cancelledText);
   }
 
   function buildStreamOptions(
@@ -296,4 +342,24 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function controlCommandFromCaption(
+  message: TelegramMessage,
+  botUsername: string | undefined,
+): TelegramControlCommand | undefined {
+  if (message.text !== undefined || message.caption === undefined) {
+    return undefined;
+  }
+  const match = message.caption.trim().match(/^\/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s|$)/u);
+  const command = match?.[1]?.toLowerCase();
+  const target = match?.[2]?.toLowerCase();
+  if (target !== undefined) {
+    if (botUsername === undefined || target !== botUsername.toLowerCase()) {
+      return undefined;
+    }
+  }
+  return command === "start" || command === "help" || command === "cancel"
+    ? command
+    : undefined;
 }
