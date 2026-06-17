@@ -63,3 +63,27 @@ export type {
   RunningRituals,
   StartMemoryRitualsInput,
 } from "./memory-rituals.js";
+export {
+  applySelfCron,
+  applySelfSkill,
+  createSelfCapabilitiesRuntimeExtension,
+  proposeSelfCron,
+  proposeSelfSkill,
+  resolveSelfCapabilitiesSettings,
+  SELF_CAPABILITIES_PROPOSALS_DIR,
+  selfCapabilityConfirmationToken,
+  selfCapabilitiesFieldGroup,
+} from "./self-capabilities.js";
+export type {
+  SelfCapabilitiesMode,
+  SelfCapabilitiesSettings,
+  SelfCapabilityApplyResult,
+  SelfCapabilityKind,
+  SelfCapabilityPlan,
+  SelfCapabilityProposalRecord,
+  SelfCronApplyInput,
+  SelfCronInput,
+  SelfProposalApplyInput,
+  SelfSkillApplyInput,
+  SelfSkillInput,
+} from "./self-capabilities.js";

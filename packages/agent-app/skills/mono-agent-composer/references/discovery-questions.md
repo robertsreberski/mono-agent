@@ -61,6 +61,18 @@ Should this agent load selected skills?
 
 Fills: `context.skillsRoot`, `context.selectedSkills`, optionally `context.skillMaxBytes` (per-skill byte cap, default 48000). Skill discovery loads immediate child directories only: `<skillsRoot>/<skill-name>/SKILL.md`. Skill files may carry YAML frontmatter (Claude Code style); the description is the first prose paragraph after it.
 
+Follow-up if the user wants the agent to evolve its own local routines:
+
+```text
+Should this agent be allowed to propose or create new local skills and cron jobs while it runs?
+
+1. No self-authoring tools (default)
+2. Proposal-only tools
+3. Apply tools after explicit user confirmation
+```
+
+Fills: `selfCapabilities.enabled`, `selfCapabilities.mode`, and optionally `selfCapabilities.skillsRoot`, `selfCapabilities.cronDir`, `selfCapabilities.auditDir`. Default to `mode: "propose"` unless the user explicitly asks for write tools. Propose-mode tools persist immutable drafts under `.mono-agent/self-capabilities/proposals/` and return a `proposalId`. Apply-mode create tools also require the host env var `MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN`; the operator must provide the saved `proposalId` plus a proposal-scoped approval token derived from that host secret in the confirming request. Generated skills are ordinary `<skillsRoot>/<name>/SKILL.md` files; generated cron jobs are ordinary `<cronDir>/<id>.md` files. Applies are audited and the app reloads after the current response.
+
 ## 5. Tools And MCP Servers
 
 Question:

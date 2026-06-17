@@ -19,6 +19,8 @@ import { telegramFieldGroup } from "@mono-agent/telegram-adapter";
 import { webhookFieldGroup } from "@mono-agent/webhook-adapter";
 import { whatsappFieldGroup } from "@mono-agent/whatsapp-adapter";
 
+import { selfCapabilitiesFieldGroup } from "./self-capabilities.js";
+
 export const consoleFieldGroup = defineFieldGroup({
   id: "console",
   label: "Operator console",
@@ -52,6 +54,7 @@ export const consoleFieldGroup = defineFieldGroup({
 export const MONO_AGENT_APP_FIELD_GROUPS: readonly FieldGroup[] = [
   ...CORE_AGENT_FIELD_GROUPS,
   consoleFieldGroup,
+  selfCapabilitiesFieldGroup,
   telegramFieldGroup,
   slackFieldGroup,
   a2aFieldGroup,
