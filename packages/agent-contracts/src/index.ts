@@ -1,11 +1,31 @@
 export type AgentRequestMetadata = Record<string, unknown>;
 export type AgentResponseMetadata = Record<string, unknown>;
 
+/**
+ * A multimodal attachment that accompanies a request — an image to be fed to a
+ * vision model, or a document whose bytes (and/or extracted text) can be inlined
+ * into the prompt. Transport-agnostic: channels populate it; runtimes consume it.
+ */
+export interface AgentAttachment {
+  readonly kind: "image" | "document";
+  /** MIME type, e.g. "image/png" or "application/pdf". */
+  readonly mimeType: string;
+  /** Raw attachment bytes, base64-encoded. */
+  readonly data: string;
+  /** Original file name, when known. */
+  readonly name?: string;
+  /** Size of the decoded bytes, when known. */
+  readonly sizeBytes?: number;
+  /** Extracted text for documents, when available. */
+  readonly text?: string;
+}
+
 export interface AgentRequestBase {
   readonly conversationId: string;
   readonly text: string;
   readonly abortSignal: AbortSignal;
   readonly metadata?: AgentRequestMetadata;
+  readonly attachments?: readonly AgentAttachment[];
 }
 
 export interface AgentResponse {
@@ -116,3 +136,15 @@ export {
   splitTextByCodePoints,
 } from "./stream-text.js";
 export { toolHintFor } from "./tool-hints.js";
+export {
+  ResilientMessageStream,
+  ChannelDeliveryError,
+} from "./resilient-message-stream.js";
+export type {
+  ChannelTransport,
+  ChannelSendOutcome,
+  MessageRef,
+  ResilientMessageStreamOptions,
+  ResilientMessageStreamLogger,
+  ResilientAgentMessageStream,
+} from "./resilient-message-stream.js";
