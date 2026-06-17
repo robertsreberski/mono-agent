@@ -324,14 +324,13 @@ async function runStreamingResponder(input: {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
+  // Flush the response headers before awaiting the (potentially slow) responder
+  // so the client sees the stream open promptly. We deliberately do NOT write a
+  // leading SSE comment (": open") here: some OpenAI-compatible clients
+  // (e.g. Open WebUI) mishandle a comment that precedes the first data chunk,
+  // and real OpenAI streams never send one. The first `data:` chunk (the
+  // assistant-role delta) is the stream's opening signal.
   input.response.flushHeaders();
-  // Push an SSE keep-alive comment onto the wire immediately, before awaiting
-  // the (potentially slow) responder setup, so a streaming client observes an
-  // open, active connection right away instead of waiting out setup latency.
-  // SSE comment lines (leading ":") are ignored by clients, so this does not
-  // alter the event/chunk payloads or [DONE] semantics.
-  input.response.write(": open\n\n");
-  flushResponse(input.response);
 
   const chunkInput = {
     id: `chatcmpl-${input.requestId}`,
@@ -929,16 +928,6 @@ function normalizeBasePath(path: string): string {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-// Express exposes a body-level flush() only when compression middleware is
-// installed; the raw Node ServerResponse does not. Call it when present so an
-// eager SSE write is pushed past any buffering layer immediately.
-function flushResponse(response: Response): void {
-  const flush = (response as { flush?: () => void }).flush;
-  if (typeof flush === "function") {
-    flush.call(response);
-  }
 }
 
 function normalizeOptionalString(value: unknown): string | undefined {

@@ -558,11 +558,13 @@ describe("OpenAI API adapter", () => {
       if (reader === undefined) {
         throw new Error("Expected a streaming response body.");
       }
-      // An initial keep-alive comment + assistant-role chunk must reach the
-      // client before setup completes, proving the stream opened eagerly and
-      // was flushed past any buffering layer rather than waiting out setup.
+      // The assistant-role chunk must reach the client before setup completes,
+      // proving the stream opened eagerly. The stream opens with a real `data:`
+      // chunk — NOT a leading SSE comment (": open"), which some OpenAI-compatible
+      // clients (Open WebUI) mishandle when it precedes the first data event.
       const earlyBody = await readUntil(reader, "\"role\":\"assistant\"");
-      expect(earlyBody.startsWith(": ")).toBe(true);
+      expect(earlyBody.startsWith("data:")).toBe(true);
+      expect(earlyBody).not.toContain(": open");
       expect(earlyBody).toContain("\"object\":\"chat.completion.chunk\"");
       expect(earlyBody).not.toContain("hello after setup");
 
