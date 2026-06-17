@@ -77,7 +77,7 @@ export interface OpenAIApiAttachmentMetadata {
 export interface OpenAIApiChatRequest extends AgentRequestBase {
   readonly conversationId: string;
   readonly text: string;
-  readonly attachments: readonly OpenAIApiAttachment[];
+  readonly imageAttachments: readonly OpenAIApiAttachment[];
   readonly abortSignal: AbortSignal;
   readonly metadata: {
     readonly openaiApi: OpenAIApiRequestMetadata;
@@ -116,7 +116,7 @@ export interface OpenAIApiAdapterStartResult {
 interface NormalizedChatBody {
   readonly model: string;
   readonly text: string;
-  readonly attachments: readonly OpenAIApiAttachment[];
+  readonly imageAttachments: readonly OpenAIApiAttachment[];
   readonly stream: boolean;
   readonly conversationId: string;
   readonly parameters: Record<string, unknown>;
@@ -231,7 +231,7 @@ export async function startOpenAIApiAdapter(
     const request: OpenAIApiChatRequest = {
       conversationId: body.conversationId,
       text: body.text,
-      attachments: body.attachments,
+      imageAttachments: body.imageAttachments,
       abortSignal: controller.signal,
       metadata: {
         openaiApi: {
@@ -244,7 +244,7 @@ export async function startOpenAIApiAdapter(
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
           headers: sanitizeRequestHeaders(req.headers),
           parameters: body.parameters,
-          ...(body.attachments.length === 0 ? {} : { attachments: summarizeAttachments(body.attachments) }),
+          ...(body.imageAttachments.length === 0 ? {} : { attachments: summarizeAttachments(body.imageAttachments) }),
         },
       },
     };
@@ -537,13 +537,13 @@ function normalizeChatBody(
   // chat, so user-keyed transcripts keep full-flatten semantics.
   const input = (conversationId === undefined ? undefined : latestUserTurn(messages))
     ?? flattenTranscript(messages);
-  if (input.text.length === 0 && input.attachments.length === 0) {
+  if (input.text.length === 0 && input.imageAttachments.length === 0) {
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion messages must include text or image content.");
   }
   return {
     model,
     text: input.text,
-    attachments: input.attachments,
+    imageAttachments: input.imageAttachments,
     stream: body.stream === true,
     conversationId: conversationId ?? normalizeOptionalString(body.user) ?? `openai-api:${requestId}`,
     parameters: readParameters(body),
@@ -553,12 +553,12 @@ function normalizeChatBody(
 interface ParsedChatMessage {
   readonly role: string;
   readonly content: string;
-  readonly attachments: readonly OpenAIApiAttachment[];
+  readonly imageAttachments: readonly OpenAIApiAttachment[];
 }
 
 interface NormalizedChatInput {
   readonly text: string;
-  readonly attachments: readonly OpenAIApiAttachment[];
+  readonly imageAttachments: readonly OpenAIApiAttachment[];
 }
 
 function parseChatMessage(value: unknown, messageIndex: number): ParsedChatMessage {
@@ -573,7 +573,7 @@ function parseChatMessage(value: unknown, messageIndex: number): ParsedChatMessa
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion message tool/function calls are not supported.");
   }
   const content = normalizeContent(value.content, { messageIndex, messageRole: role });
-  return { role, content: content.text, attachments: content.attachments };
+  return { role, content: content.text, imageAttachments: content.imageAttachments };
 }
 
 function flattenTranscript(messages: readonly ParsedChatMessage[]): NormalizedChatInput {
@@ -583,7 +583,7 @@ function flattenTranscript(messages: readonly ParsedChatMessage[]): NormalizedCh
     .join("\n");
   return {
     text,
-    attachments: messages.flatMap((message) => message.attachments),
+    imageAttachments: messages.flatMap((message) => message.imageAttachments),
   };
 }
 
@@ -602,7 +602,7 @@ function latestUserTurn(messages: readonly ParsedChatMessage[]): NormalizedChatI
   }
   const trailing = messages
     .slice(lastAssistant + 1)
-    .filter((message) => message.role === "user" && (message.content.length > 0 || message.attachments.length > 0));
+    .filter((message) => message.role === "user" && (message.content.length > 0 || message.imageAttachments.length > 0));
   if (trailing.length === 0) {
     return undefined;
   }
@@ -611,23 +611,23 @@ function latestUserTurn(messages: readonly ParsedChatMessage[]): NormalizedChatI
       .map((message) => message.content)
       .filter((content) => content.length > 0)
       .join("\n"),
-    attachments: trailing.flatMap((message) => message.attachments),
+    imageAttachments: trailing.flatMap((message) => message.imageAttachments),
   };
 }
 
 function normalizeContent(
   value: unknown,
   context: { readonly messageIndex: number; readonly messageRole: string },
-): { readonly text: string; readonly attachments: readonly OpenAIApiAttachment[] } {
+): { readonly text: string; readonly imageAttachments: readonly OpenAIApiAttachment[] } {
   if (typeof value === "string") {
-    return { text: value, attachments: [] };
+    return { text: value, imageAttachments: [] };
   }
   if (value === null || value === undefined) {
-    return { text: "", attachments: [] };
+    return { text: "", imageAttachments: [] };
   }
   if (Array.isArray(value)) {
     const textParts: string[] = [];
-    const attachments: OpenAIApiAttachment[] = [];
+    const imageAttachments: OpenAIApiAttachment[] = [];
     value.forEach((part, contentPartIndex) => {
       if (!isRecord(part)) {
         throw new OpenAIApiAdapterError("invalid_request", "Chat completion message content parts must be JSON objects.");
@@ -643,14 +643,14 @@ function normalizeContent(
         return;
       }
       if (type === "image_url") {
-        attachments.push(normalizeImageAttachment(part, { ...context, contentPartIndex }));
+        imageAttachments.push(normalizeImageAttachment(part, { ...context, contentPartIndex }));
         return;
       }
       throw new OpenAIApiAdapterError("invalid_request", `Chat completion message content part type ${String(part.type)} is not supported.`);
     });
     return {
       text: textParts.join("\n"),
-      attachments,
+      imageAttachments,
     };
   }
   throw new OpenAIApiAdapterError("invalid_request", "Chat completion message content must be a string or text/image content parts.");

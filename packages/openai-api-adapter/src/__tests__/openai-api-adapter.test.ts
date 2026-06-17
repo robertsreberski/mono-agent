@@ -276,7 +276,7 @@ describe("OpenAI API adapter", () => {
       async respond(request, stream) {
         seen.push({
           text: request.text,
-          attachments: request.attachments,
+          imageAttachments: request.imageAttachments,
           metadata: request.metadata.openaiApi,
         });
         await stream.append("image received");
@@ -327,7 +327,7 @@ describe("OpenAI API adapter", () => {
       expect(seen).toEqual([
         {
           text: "user: Describe this",
-          attachments: [
+          imageAttachments: [
             {
               type: "image",
               source: "image_url",
