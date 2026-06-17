@@ -54,6 +54,8 @@ export interface AgentHarness {
    * run() outside continuous mode.
    */
   submit?(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  /** Abort the in-flight turn for a conversation and clear its queued follow-ups. */
+  cancel?(conversationId: string, reason?: unknown): void;
   /** Retire all live provider sessions (graceful shutdown). */
   dispose?(): Promise<void>;
 }

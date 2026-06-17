@@ -19,18 +19,29 @@ export class AgentHarnessFailureError extends Error {
 
 export function createAgentResponder(options: { readonly harness: AgentHarness }): AgentResponder & {
   dispose(): Promise<void>;
+  cancel(conversationId: string, reason?: unknown): void;
 } {
   if (typeof options.harness?.run !== "function") {
     throw new TypeError("createAgentResponder requires a harness with run().");
   }
 
+  // Prefer submit() (queue-after-turn: a mid-run follow-up is answered on the
+  // warm session after the current turn) and fall back to run() for harnesses
+  // that do not implement it.
+  const invoke = typeof options.harness.submit === "function"
+    ? options.harness.submit.bind(options.harness)
+    : options.harness.run.bind(options.harness);
+
   return {
     async dispose(): Promise<void> {
       await options.harness.dispose?.();
     },
+    cancel(conversationId: string, reason?: unknown): void {
+      options.harness.cancel?.(conversationId, reason);
+    },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       const runtimeEventStream = createRuntimeEventStream(stream);
-      const response = await options.harness.run({
+      const response = await invoke({
         conversationId: request.conversationId,
         userMessage: request.text,
         abortSignal: request.abortSignal,

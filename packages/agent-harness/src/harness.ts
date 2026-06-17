@@ -71,6 +71,10 @@ export class MonoAgentHarness implements AgentHarness {
     return this.run(request);
   }
 
+  cancel(conversationId: string, reason?: unknown): void {
+    this.liveSessionManager?.cancel(conversationId, reason);
+  }
+
   async run(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
