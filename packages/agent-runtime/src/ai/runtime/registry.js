@@ -35,7 +35,12 @@ const builtinBridgeSpecs = {
     id: "pi",
     supports: (ref) => ref?.sdk === "pi",
     capabilities: () => runtimeCapabilities("pi"),
-    load: async () => (await import("../providers/pi-sdk.js")).piRuntimeBridge,
+    // The hand-rolled pi-sdk bridge is the DEFAULT. The pi-native AgentHarness
+    // bridge is opt-in via options.piEngine === "native"; any other value (or
+    // none) keeps the legacy path so the production pi runtime is unchanged.
+    load: async (options = {}) => (options.piEngine === "native"
+      ? (await import("../providers/pi-native.js")).piNativeRuntimeBridge
+      : (await import("../providers/pi-sdk.js")).piRuntimeBridge),
   },
 };
 
@@ -49,7 +54,7 @@ export function listRuntimeBridges() {
 
 export async function resolveRuntimeBridge(modelRef, options = {}) {
   for (const spec of Object.values(builtinBridgeSpecs)) {
-    if (spec.supports(modelRef, options)) return spec.load();
+    if (spec.supports(modelRef, options)) return spec.load(options);
   }
   throw new Error(`unsupported sdk: ${modelRef?.sdk || "unknown"}`);
 }
