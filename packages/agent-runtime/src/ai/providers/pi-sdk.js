@@ -4,7 +4,7 @@ import { stream as piStream, streamSimple as piStreamSimple } from "@earendil-wo
 import * as openAiCodexResponses from "@earendil-works/pi-ai/openai-codex-responses";
 import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
-import { PROVIDER_ABORT_RE } from "../failure.js";
+import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
 import { createSessionRegistry } from "../runtime/sessions.js";
 import { formatLiveInputGuidance } from "../live-input-prompt.js";
@@ -207,6 +207,14 @@ function failureKindForPiError(message, diagnostics, { maxTurnsHit = false } = {
   if (!message) return null;
   if (maxTurnsHit || isContextLimitError(message) || isLikelyContextTermination(message, diagnostics)) return "usage_limit";
   return "provider_unavailable";
+}
+
+function isRetryablePiStreamError(message) {
+  if (!message) return false;
+  return retryableProviderFailureInfo({
+    errorText: message,
+    failureKind: "provider_unavailable",
+  }).retryable;
 }
 
 function pickFirstString(...values) {
@@ -896,7 +904,7 @@ export async function generatePiResponse(systemPrompt, options = {}) {
       const lastStopReason = lastAssistant?.stopReason || null;
       const lastErrorMessage = String(lastAssistant?.errorMessage || "");
       if (lastStopReason !== "error") break;
-      if (!PROVIDER_ABORT_RE.test(lastErrorMessage)) break;
+      if (!isRetryablePiStreamError(lastErrorMessage)) break;
       streamRetryAttempts += 1;
       const attempt = streamRetryAttempts;
       streamRetryEvents.push({ attempt, reason: lastErrorMessage });
