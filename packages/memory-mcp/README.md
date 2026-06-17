@@ -41,6 +41,7 @@ memory-mcp
 | `MONO_AGENT_MEMORY_PATH` | yes | Memory root (holds the daily markdown + `memory.db`). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` / `_MODEL` / `_ENDPOINT` / `_API_KEY` | no | Enables semantic recall ranking. Without it, `memory_recall` falls back to FTS keyword search. |
 | `MONO_AGENT_MEMORY_LLM_MODEL` / `_ENDPOINT` | for `memory_capture` | Ollama chat model for the intelligent capture pipeline. Absent → `memory_capture` returns an explicit "requires the bujo tier" error. |
+| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | no | Per-call chat-LLM timeout in ms (default 120000). A capture runs several sequential calls; slow local models can exceed a short timeout, which (because distil/reconcile/entities never-throw) silently stores nothing. Raise this for slow models. |
 
 Register it with an MCP client as a stdio server whose command is the `memory-mcp` bin (or `node <dist>/main.js`). Stdout is the MCP channel; diagnostics go to stderr.
 

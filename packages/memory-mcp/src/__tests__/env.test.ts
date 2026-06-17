@@ -51,4 +51,25 @@ describe("memory-mcp env: readLlm", () => {
       readLlm({ MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest", MONO_AGENT_MEMORY_LLM_ENDPOINT: "http://x:11434" }),
     ).toEqual({ model: "qwen3.6:latest", endpoint: "http://x:11434" });
   });
+
+  it("resolves an optional positive-integer timeout override", () => {
+    expect(
+      readLlm({ MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest", MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: "180000" }),
+    ).toEqual({ model: "qwen3.6:latest", timeoutMs: 180000 });
+  });
+
+  it("omits the timeout when unset or empty (client default applies)", () => {
+    expect(readLlm({ MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest", MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: "  " })).toEqual({
+      model: "qwen3.6:latest",
+    });
+  });
+
+  it("throws on a non-integer or non-positive timeout (misconfiguration, not silent)", () => {
+    expect(() =>
+      readLlm({ MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest", MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: "soon" }),
+    ).toThrow("MONO_AGENT_MEMORY_LLM_TIMEOUT_MS");
+    expect(() =>
+      readLlm({ MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest", MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: "0" }),
+    ).toThrow("MONO_AGENT_MEMORY_LLM_TIMEOUT_MS");
+  });
 });

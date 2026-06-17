@@ -43,9 +43,25 @@ export function readEmbeddings(env: NodeJS.ProcessEnv = process.env): MemoryMcpE
 }
 
 /** Resolve the chat-LLM config from environment. Unset model → `undefined` (no LLM = no bujo tier). */
-export function readLlm(env: NodeJS.ProcessEnv = process.env): { model: string; endpoint?: string } | undefined {
+export function readLlm(
+  env: NodeJS.ProcessEnv = process.env,
+): { model: string; endpoint?: string; timeoutMs?: number } | undefined {
   const model = env.MONO_AGENT_MEMORY_LLM_MODEL?.trim();
   if (!model) return undefined;
   const endpoint = env.MONO_AGENT_MEMORY_LLM_ENDPOINT?.trim();
-  return { model, ...(endpoint ? { endpoint } : {}) };
+  // Per-call timeout for the chat LLM. The capture pipeline issues several sequential calls and
+  // local models can be slow, so this is overridable; a set-but-invalid value is a misconfiguration
+  // — fail with an actionable message rather than forwarding a bad timeout into the LLM client.
+  const timeoutStr = env.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS?.trim();
+  let timeoutMs: number | undefined;
+  if (timeoutStr !== undefined && timeoutStr !== "") {
+    const parsed = Number(timeoutStr);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error(
+        `memory-mcp: invalid MONO_AGENT_MEMORY_LLM_TIMEOUT_MS "${timeoutStr}" (expected a positive integer of milliseconds).`,
+      );
+    }
+    timeoutMs = parsed;
+  }
+  return { model, ...(endpoint ? { endpoint } : {}), ...(timeoutMs !== undefined ? { timeoutMs } : {}) };
 }

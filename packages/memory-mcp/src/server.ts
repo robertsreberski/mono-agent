@@ -61,7 +61,7 @@ export interface MemoryMcpEmbeddingsConfig extends EmbeddingProviderConfig {
 export interface MemoryMcpServerConfig {
   readonly root: string;
   readonly embeddings?: MemoryMcpEmbeddingsConfig;
-  readonly llm?: { readonly model: string; readonly endpoint?: string };
+  readonly llm?: { readonly model: string; readonly endpoint?: string; readonly timeoutMs?: number };
 }
 
 /** Build a server (and its backing store) from resolved config. Returns both so the caller can close the store. */
@@ -76,6 +76,7 @@ export function createMemoryMcpServerFromConfig(config: MemoryMcpServerConfig): 
       llm: createOllamaLlm({
         model: config.llm.model,
         ...(config.llm.endpoint !== undefined && { endpoint: config.llm.endpoint }),
+        ...(config.llm.timeoutMs !== undefined && { timeoutMs: config.llm.timeoutMs }),
       }),
     }),
   });

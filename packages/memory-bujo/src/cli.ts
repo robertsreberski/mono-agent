@@ -11,6 +11,14 @@ import { writeFutureLog, writeIndex } from "./projections.js";
 import { rebuildFromMarkdown } from "./rebuild.js";
 import { reflect } from "./reflect.js";
 
+/** Optional per-call LLM timeout override (ms). Invalid values fall back to the client default. */
+function llmTimeoutMsFromEnv(): number | undefined {
+  const raw = process.env.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS?.trim();
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 async function main(): Promise<void> {
   const [command, root, ...rest] = process.argv.slice(2);
   if (command !== "rebuild" && command !== "recall" && command !== "index" && command !== "reflect" && command !== "migrate") {
@@ -55,9 +63,11 @@ async function main(): Promise<void> {
     } else if (command === "reflect") {
       // MONO_AGENT_MEMORY_LLM_MODEL is guaranteed non-undefined here (guard above)
       const chatModel = process.env.MONO_AGENT_MEMORY_LLM_MODEL as string;
+      const timeoutMs = llmTimeoutMsFromEnv();
       const llm = createOllamaLlm({
         model: chatModel,
         ...(process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       });
       const r = await reflect({ db, root, llm, nextId: createIdFactory(), now: () => new Date() });
       writeFutureLog(root, db, new Date());
@@ -66,9 +76,11 @@ async function main(): Promise<void> {
     } else if (command === "migrate") {
       // MONO_AGENT_MEMORY_LLM_MODEL is guaranteed non-undefined here (guard above)
       const chatModel = process.env.MONO_AGENT_MEMORY_LLM_MODEL as string;
+      const timeoutMs = llmTimeoutMsFromEnv();
       const llm = createOllamaLlm({
         model: chatModel,
         ...(process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT ? { endpoint: process.env.MONO_AGENT_MEMORY_LLM_ENDPOINT } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       });
       const m = await migrate({ db, root, llm, nextId: createIdFactory(), now: () => new Date() });
       writeFutureLog(root, db, new Date());

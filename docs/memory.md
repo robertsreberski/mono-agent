@@ -264,6 +264,12 @@ built-in Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Oll
 for the chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL` is
 unset when running `reflect` or `migrate`, the command prints a clear error and exits 2.
 
+`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout (default `120000`). A
+single capture runs several sequential LLM calls (distil → reconcile → entity extraction), and
+slow local models can take tens of seconds each; because those steps swallow LLM errors
+(never-throw), a too-short timeout makes a capture *silently store nothing* rather than fail
+loudly. Raise it for slow models (`memory-mcp` and the `reflect`/`migrate` CLI both honor it).
+
 ## Liveness Check — `mono-agent validate`
 
 `mono-agent validate` (the agent-app doctor) runs a memory liveness check that scales
