@@ -7,11 +7,13 @@ import {
   buildAgentRequest,
   downloadTelegramAttachments,
   finishSafely,
+  mergeTelegramMessageInputs,
   normalizeTelegramMessageInput,
   resolveErrorText,
   type AgentResponder,
   type AgentResponse,
   type DownloadTelegramAttachmentsOptions,
+  type TelegramAgentMessageInput,
   type TelegramAdapterLogger,
   type TelegramAdapterMessages,
   type TelegramAdapterStreamOptions,
@@ -28,6 +30,9 @@ type RunnerFetchOptions = NonNullable<NonNullable<RunOptions<Context>["runner"]>
 type AllowedUpdates = NonNullable<RunnerFetchOptions["allowed_updates"]>;
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
+// Quiet window after the last album message before we flush the group as one
+// request. Telegram sends album parts back-to-back (sub-second), so ~1s is safe.
+const DEFAULT_ALBUM_AGGREGATION_DELAY_MS = 1000;
 
 export interface CreateTelegramBotOptions {
   readonly botToken: string;
@@ -39,6 +44,12 @@ export interface CreateTelegramBotOptions {
   readonly logger?: TelegramAdapterLogger;
   /** Update types to long-poll for. Defaults to messages only. */
   readonly allowedUpdates?: readonly string[];
+  /**
+   * Quiet window (ms) for aggregating a multi-photo/video album (messages sharing
+   * a `media_group_id`) into one request. Defaults to 1000. Set 0 to flush on the
+   * next tick (used by tests).
+   */
+  readonly albumAggregationDelayMs?: number;
   /** Delete any configured webhook before polling. Defaults to true. */
   readonly deleteWebhookOnStart?: boolean;
   /** Drop updates queued before start. Defaults to false. */
@@ -105,6 +116,17 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // we only track them so `/cancel` can abort every live turn for the chat.
   const activeControllers = new Map<string, Set<AbortController>>();
 
+  // Telegram delivers a multi-photo/video album as N separate messages sharing a
+  // `media_group_id`, arriving back-to-back. We buffer them per group and flush
+  // once after a short quiet window so the album becomes ONE request with all
+  // attachments (the caption rides on only one message).
+  const albumBuffers = new Map<string, {
+    readonly ctx: Context;
+    readonly messages: TelegramMessage[];
+    timer: ReturnType<typeof setTimeout>;
+  }>();
+  const albumDelayMs = options.albumAggregationDelayMs ?? DEFAULT_ALBUM_AGGREGATION_DELAY_MS;
+
   const cancelChat = (chatId: TelegramChatId): void => {
     const conversationId = `telegram:${String(chatId)}`;
     // Clear queued follow-ups (and signal the harness to abort the in-flight
@@ -114,6 +136,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (controllers !== undefined) {
       for (const controller of controllers) {
         controller.abort(new Error("Cancelled by Telegram user."));
+      }
+    }
+    // Drop any album still buffering for this chat so /cancel does not leave it
+    // to fire a turn after the user asked to stop.
+    for (const [key, buffer] of albumBuffers) {
+      if (key.startsWith(`${String(chatId)}:`)) {
+        clearTimeout(buffer.timer);
+        albumBuffers.delete(key);
       }
     }
   };
@@ -181,22 +211,87 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (message === undefined || chatId === undefined) {
       return;
     }
+    const telegramMessage = message as unknown as TelegramMessage;
 
-    const captionCommand = controlCommandFromCaption(
-      message as unknown as TelegramMessage,
-      ctx.me.username,
-    );
+    // A multi-photo/video album arrives as several messages sharing a
+    // media_group_id; buffer them and flush once so the agent sees one request
+    // with every attachment instead of N single-attachment turns.
+    const groupId = telegramMessage.media_group_id;
+    if (typeof groupId === "string" && groupId.length > 0) {
+      bufferAlbumMessage(ctx, chatId, groupId, telegramMessage);
+      return;
+    }
+
+    const captionCommand = controlCommandFromCaption(telegramMessage, ctx.me.username);
     if (captionCommand !== undefined) {
       await handleControlCommand(ctx, captionCommand);
       return;
     }
 
-    const input = normalizeTelegramMessageInput(message as unknown as TelegramMessage);
+    const input = normalizeTelegramMessageInput(telegramMessage);
     if (input === undefined) {
       await ctx.reply(messages.unsupportedText);
       return;
     }
+    await runAgentTurn(ctx, telegramMessage, input);
+  }
 
+  function bufferAlbumMessage(
+    ctx: Context,
+    chatId: TelegramChatId,
+    groupId: string,
+    message: TelegramMessage,
+  ): void {
+    const key = `${String(chatId)}:${groupId}`;
+    const schedule = (): ReturnType<typeof setTimeout> => {
+      const timer = setTimeout(() => {
+        void flushAlbum(key);
+      }, albumDelayMs);
+      timer.unref?.();
+      return timer;
+    };
+    const existing = albumBuffers.get(key);
+    if (existing === undefined) {
+      albumBuffers.set(key, { ctx, messages: [message], timer: schedule() });
+      return;
+    }
+    existing.messages.push(message);
+    clearTimeout(existing.timer);
+    existing.timer = schedule();
+  }
+
+  async function flushAlbum(key: string): Promise<void> {
+    const buffer = albumBuffers.get(key);
+    if (buffer === undefined) {
+      return;
+    }
+    albumBuffers.delete(key);
+    const { ctx, messages: parts } = buffer;
+
+    // A control command in any album caption controls the chat.
+    for (const part of parts) {
+      const command = controlCommandFromCaption(part, ctx.me.username);
+      if (command !== undefined) {
+        await handleControlCommand(ctx, command);
+        return;
+      }
+    }
+
+    const primary = parts[0];
+    const input = mergeTelegramMessageInputs(parts);
+    if (primary === undefined || input === undefined) {
+      await ctx.reply(messages.unsupportedText);
+      return;
+    }
+    await runAgentTurn(ctx, primary, input);
+  }
+
+  async function runAgentTurn(
+    ctx: Context,
+    message: TelegramMessage,
+    input: TelegramAgentMessageInput,
+  ): Promise<void> {
+    const chatId = message.chat.id;
     const key = String(chatId);
     // Track this message's controller in the per-chat set. Concurrent messages
     // are NOT rejected: the harness serializes turns per conversation (a

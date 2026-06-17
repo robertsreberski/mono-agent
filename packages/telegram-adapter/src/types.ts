@@ -25,6 +25,8 @@ export interface TelegramMessage {
   from?: TelegramUser;
   text?: string;
   caption?: string;
+  /** Set on each message of a multi-photo/video album; shared across the group. */
+  media_group_id?: string;
   animation?: unknown;
   document?: TelegramDocument;
   photo?: TelegramPhotoSize[];

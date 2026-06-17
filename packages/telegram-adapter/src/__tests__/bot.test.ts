@@ -250,6 +250,35 @@ function photoUpdate(options?: { caption?: string; updateId?: number }): Paramet
   } as Parameters<Bot["handleUpdate"]>[0];
 }
 
+function albumPhotoUpdate(options: {
+  groupId: string;
+  fileId: string;
+  caption?: string;
+  updateId: number;
+  messageId: number;
+}): Parameters<Bot["handleUpdate"]>[0] {
+  return {
+    update_id: options.updateId,
+    message: {
+      message_id: options.messageId,
+      date: 1234,
+      chat: { id: 42, type: "private" },
+      from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+      media_group_id: options.groupId,
+      caption: options.caption,
+      photo: [
+        {
+          file_id: options.fileId,
+          file_unique_id: `${options.fileId}-unique`,
+          width: 1280,
+          height: 720,
+          file_size: 65_536,
+        },
+      ],
+    },
+  } as Parameters<Bot["handleUpdate"]>[0];
+}
+
 function voiceUpdate(options?: { caption?: string; updateId?: number }): Parameters<Bot["handleUpdate"]>[0] {
   return {
     update_id: options?.updateId ?? 1,
@@ -528,6 +557,33 @@ describe("createTelegramBot", () => {
       width: 1280,
       height: 720,
     });
+  });
+
+  it("aggregates a multi-photo album (shared media_group_id) into one request with every attachment", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, downloadedFileIds } = buildTestBot({
+      // Flush the album on the next tick so the test does not wait a full second.
+      albumAggregationDelayMs: 0,
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "got the album" };
+      }),
+    });
+
+    // Telegram delivers an album as separate messages sharing a media_group_id;
+    // the caption rides on only the first one.
+    await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p1", caption: "look at these", updateId: 1, messageId: 10 }));
+    await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p2", updateId: 2, messageId: 11 }));
+    await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p3", updateId: 3, messageId: 12 }));
+
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+
+    // One request carrying ALL three photos plus the single caption — not three
+    // separate single-attachment turns.
+    expect(requests[0]?.text).toContain("look at these");
+    expect(requests[0]?.attachments).toHaveLength(3);
+    expect(requests[0]?.metadata.telegram.attachments).toHaveLength(3);
+    expect(downloadedFileIds).toEqual(["p1", "p2", "p3"]);
   });
 
   it("downloads Telegram voice attachments now that audio/ogg is on the allowlist", async () => {

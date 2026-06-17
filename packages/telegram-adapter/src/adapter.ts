@@ -258,6 +258,39 @@ export function normalizeTelegramMessageInput(
   };
 }
 
+/**
+ * Merge a Telegram media-group (album) into a single input: Telegram delivers an
+ * album of N photos/videos as N separate messages sharing one `media_group_id`,
+ * with the caption on only one of them. We concatenate every message's
+ * attachments and take the single caption (first non-empty), so the agent sees
+ * all photos as one request instead of N single-attachment turns.
+ */
+export function mergeTelegramMessageInputs(
+  messages: readonly TelegramMessage[],
+): TelegramAgentMessageInput | undefined {
+  const attachments: TelegramAttachment[] = [];
+  let text = "";
+  for (const message of messages) {
+    if (message.animation !== undefined) {
+      continue;
+    }
+    if (text.length === 0) {
+      const messageText = normalizeMessageText(message);
+      if (messageText.length > 0) {
+        text = messageText;
+      }
+    }
+    attachments.push(...extractTelegramAttachments(message));
+  }
+  if (text.length === 0 && attachments.length === 0) {
+    return undefined;
+  }
+  return {
+    text: text.length > 0 ? text : summarizeTelegramAttachments(attachments),
+    attachments,
+  };
+}
+
 function metadataFromChat(messageChat: TelegramMessage["chat"]): TelegramRequestMetadata["chat"] {
   const chat: TelegramRequestMetadata["chat"] = { id: messageChat.id };
   if (messageChat.type !== undefined) {
