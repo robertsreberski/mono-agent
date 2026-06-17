@@ -6,9 +6,12 @@ This repository is a small pnpm workspace of reusable npm packages under the `@m
 
 Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a working agent with the `mono-agent` CLI from `@mono-agent/agent-app`:
 
+Use Node.js 20 or newer and pnpm 10 or newer.
+
 ```bash
 # once, in this workspace
-corepack enable && pnpm install --frozen-lockfile && pnpm run build
+pnpm install --frozen-lockfile
+pnpm run build
 alias mono-agent="node $(pwd)/packages/agent-app/dist/cli.js"
 
 # in the agent folder
@@ -97,7 +100,6 @@ The final demo lives at `demos/final-agent/`. It starts the local operator conso
 The preferred local deployment path generates an ignored config under `.mono-agent/deploy/`, verifies Ollama has Gemma 4 installed, then starts the operator console, traceability source, and loopback A2A provider:
 
 ```bash
-corepack enable
 pnpm install --frozen-lockfile
 pnpm run deploy:final
 ```
@@ -115,7 +117,6 @@ The operator console Traceability view should show source `final-agent-gemma4`. 
 The generic manual demo command remains available when you want to provide your own config:
 
 ```bash
-corepack enable
 pnpm install --frozen-lockfile
 pnpm run build
 pnpm run demo:final
