@@ -26,6 +26,17 @@ export interface CronJob {
   readonly conversationId?: string;
 }
 
+/**
+ * Overlap policy when a job fires while a prior run is still active.
+ * - "queue" (default): preserve the firing and run it after the current one.
+ * - "skip": drop the new firing (legacy behavior).
+ * - "replace": abort the active run and run the newest firing instead.
+ */
+export type CronOverlapMode = "queue" | "skip" | "replace";
+
+/** What to do when a job's queue exceeds maxQueueDepth (overlap:"queue"). */
+export type CronOverflowPolicy = "preserve" | "coalesce" | "drop-oldest";
+
 export type CronJobResult =
   | {
       readonly kind: "succeeded";
@@ -49,6 +60,18 @@ export type CronJobResult =
       readonly jobId: string;
       readonly scheduledAt: string;
       readonly reason: "overlap";
+    }
+  | {
+      readonly kind: "queued";
+      readonly jobId: string;
+      readonly scheduledAt: string;
+      readonly queueDepth: number;
+    }
+  | {
+      readonly kind: "dropped";
+      readonly jobId: string;
+      readonly scheduledAt: string;
+      readonly reason: "overflow";
     };
 
 export interface CronAdapterLogger {
@@ -64,6 +87,12 @@ export interface CronAdapterOptions {
   readonly now?: () => Date;
   readonly onResult?: (result: CronJobResult) => void | Promise<void>;
   readonly logger?: CronAdapterLogger;
+  /** Overlap policy for a job that fires while still running. Default "queue". */
+  readonly overlap?: CronOverlapMode;
+  /** Soft cap on a job's pending-firing queue (overlap:"queue"). Unbounded if unset. */
+  readonly maxQueueDepth?: number;
+  /** What to do past maxQueueDepth. Default "preserve" (keep all, warn). */
+  readonly overflow?: CronOverflowPolicy;
 }
 
 export interface CronAdapterStartResult {
@@ -92,8 +121,13 @@ export class CronAdapterError extends Error {
   }
 }
 
-interface RunningJob {
-  readonly controller: AbortController;
+interface PendingFiring {
+  readonly scheduledAt: string;
+}
+
+interface JobRuntimeState {
+  active: AbortController | undefined;
+  pending: PendingFiring[];
 }
 
 interface ScheduledJob {
@@ -106,16 +140,20 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 
 export function startCronAdapter(options: CronAdapterOptions): CronAdapterStartResult {
   validateOptions(options);
-  const activeJobs = new Map<string, RunningJob>();
+  const jobStates = new Map<string, JobRuntimeState>();
   const scheduled = options.jobs.map((job) => ({ job, timer: undefined }) satisfies ScheduledJob);
   for (const entry of scheduled) {
-    scheduleNext(entry, options, activeJobs);
+    scheduleNext(entry, options, jobStates);
   }
 
   return {
     jobs: options.jobs.slice(),
     get activeJobCount() {
-      return activeJobs.size;
+      let count = 0;
+      for (const state of jobStates.values()) {
+        if (state.active !== undefined) count += 1;
+      }
+      return count;
     },
     stop() {
       for (const entry of scheduled) {
@@ -124,10 +162,11 @@ export function startCronAdapter(options: CronAdapterOptions): CronAdapterStartR
           entry.timer = undefined;
         }
       }
-      for (const running of activeJobs.values()) {
-        running.controller.abort(new Error("Cron adapter stopped."));
+      for (const state of jobStates.values()) {
+        state.pending.length = 0;
+        state.active?.abort(new Error("Cron adapter stopped."));
       }
-      activeJobs.clear();
+      jobStates.clear();
     },
   };
 }
@@ -135,7 +174,7 @@ export function startCronAdapter(options: CronAdapterOptions): CronAdapterStartR
 function scheduleNext(
   entry: ScheduledJob,
   options: CronAdapterOptions,
-  activeJobs: Map<string, RunningJob>,
+  jobStates: Map<string, JobRuntimeState>,
 ): void {
   const now = options.now?.() ?? new Date();
   const scheduledAt = nextDateFor(entry.job, now);
@@ -143,30 +182,93 @@ function scheduleNext(
   entry.timer = setTimeout(() => {
     entry.timer = undefined;
     if (delayMs > MAX_TIMEOUT_MS) {
-      scheduleNext(entry, options, activeJobs);
+      scheduleNext(entry, options, jobStates);
       return;
     }
-    handleTick(entry.job, scheduledAt, options, activeJobs);
-    scheduleNext(entry, options, activeJobs);
+    handleTick(entry.job, scheduledAt, options, jobStates);
+    scheduleNext(entry, options, jobStates);
   }, Math.min(delayMs, MAX_TIMEOUT_MS));
+}
+
+function ensureState(jobStates: Map<string, JobRuntimeState>, jobId: string): JobRuntimeState {
+  let state = jobStates.get(jobId);
+  if (state === undefined) {
+    state = { active: undefined, pending: [] };
+    jobStates.set(jobId, state);
+  }
+  return state;
 }
 
 function handleTick(
   job: CronJob,
   scheduledAtDate: Date,
   options: CronAdapterOptions,
-  activeJobs: Map<string, RunningJob>,
+  jobStates: Map<string, JobRuntimeState>,
 ): void {
   const scheduledAt = scheduledAtDate.toISOString();
-  if (activeJobs.has(job.id)) {
-    const result: CronJobResult = { kind: "skipped", jobId: job.id, scheduledAt, reason: "overlap" };
-    options.logger?.warn?.("Cron job skipped because a prior run is still active.", { jobId: job.id, scheduledAt });
-    void emitResult(options, result);
+  const state = ensureState(jobStates, job.id);
+
+  // No run in flight for this job: start immediately. Distinct jobs always run
+  // in parallel because each has its own state.
+  if (state.active === undefined) {
+    startRun(job, scheduledAt, options, jobStates, state);
     return;
   }
 
+  const mode: CronOverlapMode = options.overlap ?? "queue";
+  if (mode === "skip") {
+    options.logger?.warn?.("Cron job skipped because a prior run is still active.", { jobId: job.id, scheduledAt });
+    void emitResult(options, { kind: "skipped", jobId: job.id, scheduledAt, reason: "overlap" });
+    return;
+  }
+  if (mode === "replace") {
+    // Discard pending + the in-flight run; the newest firing wins.
+    state.pending = [{ scheduledAt }];
+    state.active.abort(new Error("Cron job replaced by a newer scheduled run."));
+    void emitResult(options, { kind: "queued", jobId: job.id, scheduledAt, queueDepth: state.pending.length });
+    return;
+  }
+
+  // "queue" (default): preserve every firing, drained in order after the
+  // active run finishes.
+  state.pending.push({ scheduledAt });
+  const max = options.maxQueueDepth;
+  if (max !== undefined && max >= 0 && state.pending.length > max) {
+    const overflow: CronOverflowPolicy = options.overflow ?? "preserve";
+    if (overflow === "drop-oldest") {
+      const dropped = state.pending.shift();
+      if (dropped !== undefined) {
+        options.logger?.warn?.("Cron firing dropped (queue overflow, drop-oldest).", { jobId: job.id, maxQueueDepth: max });
+        void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+      }
+    } else if (overflow === "coalesce") {
+      const newest = state.pending[state.pending.length - 1];
+      const droppedOnes = state.pending.slice(0, -1);
+      state.pending = newest === undefined ? [] : [newest];
+      for (const dropped of droppedOnes) {
+        void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+      }
+    } else {
+      // "preserve": keep everything, but surface backpressure (never a silent drop).
+      options.logger?.warn?.("Cron queue depth exceeds maxQueueDepth (preserving every firing).", {
+        jobId: job.id,
+        depth: state.pending.length,
+        maxQueueDepth: max,
+      });
+    }
+  }
+  void emitResult(options, { kind: "queued", jobId: job.id, scheduledAt, queueDepth: state.pending.length });
+}
+
+function startRun(
+  job: CronJob,
+  scheduledAt: string,
+  options: CronAdapterOptions,
+  jobStates: Map<string, JobRuntimeState>,
+  state: JobRuntimeState,
+): void {
   const controller = new AbortController();
-  activeJobs.set(job.id, { controller });
+  state.active = controller;
   const startedAt = (options.now?.() ?? new Date()).toISOString();
   const stream = new BufferedMessageStream({
     onClosed: () =>
@@ -218,8 +320,25 @@ function handleTick(
       await emitResult(options, result);
     })
     .finally(() => {
-      activeJobs.delete(job.id);
+      state.active = undefined;
+      drainNext(job, options, jobStates, state);
     });
+}
+
+function drainNext(
+  job: CronJob,
+  options: CronAdapterOptions,
+  jobStates: Map<string, JobRuntimeState>,
+  state: JobRuntimeState,
+): void {
+  const next = state.pending.shift();
+  if (next !== undefined) {
+    startRun(job, next.scheduledAt, options, jobStates, state);
+    return;
+  }
+  if (state.active === undefined && state.pending.length === 0) {
+    jobStates.delete(job.id);
+  }
 }
 
 async function emitResult(options: CronAdapterOptions, result: CronJobResult): Promise<void> {

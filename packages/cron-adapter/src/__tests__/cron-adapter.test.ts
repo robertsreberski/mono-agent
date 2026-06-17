@@ -57,7 +57,55 @@ describe("Cron adapter", () => {
     }
   });
 
-  it("skips overlapping ticks for the same job", async () => {
+  it("queues overlapping ticks for the same job and runs each after the prior finishes (preserve)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const started: string[] = [];
+    const gates: Array<() => void> = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        const cron = (request.metadata as { cron: { scheduledAt: string } }).cron;
+        started.push(cron.scheduledAt);
+        await new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+        return { text: "done" };
+      },
+    };
+    const results: Array<{ kind: string }> = [];
+
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
+      now: () => new Date(Date.now()),
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000); // tick 1 -> run 1 starts (gated)
+      await vi.advanceTimersByTimeAsync(60_000); // tick 2 -> queued (NOT skipped)
+
+      expect(started).toHaveLength(1);
+      expect(results).toContainEqual(expect.objectContaining({ kind: "queued", jobId: "slow" }));
+      expect(results.some((r) => r.kind === "skipped")).toBe(false);
+
+      gates[0]?.(); // run 1 completes -> drains the queued firing
+      await vi.runOnlyPendingTimersAsync();
+      await expect.poll(() => started).toHaveLength(2); // queued firing ran
+      gates[1]?.();
+      await vi.runOnlyPendingTimersAsync();
+      await expect
+        .poll(() => results.filter((r) => r.kind === "succeeded").length)
+        .toBe(2); // both firings preserved + completed
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("overlap:'skip' preserves the legacy skip-on-overlap behavior", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     let finish!: () => void;
@@ -69,15 +117,12 @@ describe("Cron adapter", () => {
         return { text: "done" };
       },
     };
-    const results: unknown[] = [];
+    const results: Array<{ kind: string }> = [];
 
     const scheduler = startCronAdapter({
       responder,
-      jobs: [{
-        id: "slow",
-        expression: "* * * * *",
-        prompt: "slow work",
-      }],
+      overlap: "skip",
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
       now: () => new Date(Date.now()),
       onResult: (result) => {
         results.push(result);
@@ -87,13 +132,52 @@ describe("Cron adapter", () => {
     try {
       await vi.advanceTimersByTimeAsync(60_000);
       await vi.advanceTimersByTimeAsync(60_000);
-      expect(results).toEqual([
+      expect(results).toContainEqual(
         expect.objectContaining({ kind: "skipped", jobId: "slow", reason: "overlap" }),
-      ]);
-
+      );
       finish();
       await vi.runOnlyPendingTimersAsync();
-      await expect.poll(() => results).toContainEqual(expect.objectContaining({ kind: "succeeded", jobId: "slow" }));
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the oldest queued firing past maxQueueDepth with overflow:'drop-oldest'", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const gates: Array<() => void> = [];
+    const responder: AgentResponder = {
+      async respond() {
+        await new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+        return { text: "done" };
+      },
+    };
+    const results: Array<{ kind: string; reason?: string }> = [];
+
+    const scheduler = startCronAdapter({
+      responder,
+      overlap: "queue",
+      maxQueueDepth: 1,
+      overflow: "drop-oldest",
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
+      now: () => new Date(Date.now()),
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000); // run 1 active
+      await vi.advanceTimersByTimeAsync(60_000); // queued depth 1
+      await vi.advanceTimersByTimeAsync(60_000); // depth would be 2 > 1 -> drop oldest
+      expect(results).toContainEqual(
+        expect.objectContaining({ kind: "dropped", jobId: "slow", reason: "overflow" }),
+      );
+      gates.forEach((g) => g());
+      await vi.runOnlyPendingTimersAsync();
     } finally {
       scheduler.stop();
       vi.useRealTimers();
