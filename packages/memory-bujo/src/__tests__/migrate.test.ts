@@ -9,6 +9,7 @@ import { appendBullet, dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
 import { migrate, type MigrateDeps } from "../migrate.js";
+import { MemoryModelError } from "../model-error.js";
 import type { Bullet } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 
@@ -195,7 +196,13 @@ describe("migrate", () => {
       complete: async (): Promise<string> => { throw new Error("ollama unavailable"); },
     };
 
-    await expect(migrate(makeDeps(db, root, { llm: throwingLlm }))).rejects.toThrow(/ollama unavailable/);
+    const err = await migrate(makeDeps(db, root, { llm: throwingLlm })).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MemoryModelError);
+    expect((err as MemoryModelError).kind).toBe("llm");
+    expect((err as MemoryModelError).stage).toBe("migrate");
+    expect((err as Error).message).toMatch(/ollama unavailable/);
+    // A migration failure must NOT read as a "capture" failure.
+    expect((err as Error).message).not.toMatch(/capture/i);
   });
 
   it("isolates a genuine per-item data error (missing daily file) without aborting the batch", async () => {
