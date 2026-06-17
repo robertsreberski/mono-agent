@@ -502,6 +502,33 @@ describe("AgentHarness", () => {
     expect(response.text).toBe("done");
   });
 
+  it("coalesces adjacent runtime text deltas before writing to the stream", async () => {
+    const harness = {
+      async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "hel" }] } });
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "lo" }] } });
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "!" }] } });
+        return {
+          text: "hello!",
+          metadata: {
+            runId: "run",
+            conversationId: "c",
+            contextSources: [],
+            contextSectionIds: [],
+          },
+        };
+      },
+    };
+    const streamText: string[] = [];
+    const response = await createAgentResponder({ harness }).respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async (delta) => { streamText.push(delta); } },
+    );
+
+    expect(streamText).toEqual(["hello!"]);
+    expect(response.text).toBe("hello!");
+  });
+
   it("forwards thoughts and internal tool activity as stream events without appending them to answer text", async () => {
     const harness = {
       async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {
