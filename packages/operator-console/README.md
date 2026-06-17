@@ -47,6 +47,8 @@ The console keeps the existing bearer-protected `/api/observability/*` endpoints
 
 When no registry is configured but an `observability.artifactDir` is present, the traceability API exposes a single fallback `local` source instead of demo data. Malformed manifests, missing artifact directories, corrupt summaries/events, and stale heartbeats are returned as warnings.
 
+The browser Traceability view renders source context, run insights, event mix, and timeline event data as operator-facing fields and chips. Artifact payloads stay structured internally, but the user-facing surface does not show raw JSON previews.
+
 ## Dependency Boundary
 
 The package depends on `@mono-agent/settings` and `@mono-agent/observability`. It must not depend on core config, communication adapters, or the agent harness; hosts compose field groups, trace source lifecycle, and runtime behavior outside the console.
