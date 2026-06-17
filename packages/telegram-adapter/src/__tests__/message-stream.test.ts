@@ -85,7 +85,7 @@ describe("TelegramMessageStream", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: 42, message_id: 100, text: "Hello" },
+      { chat_id: 42, message_id: 100, text: "Answer\n\nHello" },
     ]);
   });
 
@@ -101,7 +101,7 @@ describe("TelegramMessageStream", () => {
     await stream.finish("final answer");
 
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: "chat-a", message_id: 100, text: "final answer", parse_mode: "MarkdownV2" },
+      { chat_id: "chat-a", message_id: 100, text: "Final answer\n\nfinal answer", parse_mode: "MarkdownV2" },
     ]);
     await vi.runOnlyPendingTimersAsync();
     expect(api.editMessageTextCalls).toHaveLength(1);
@@ -123,7 +123,7 @@ describe("TelegramMessageStream", () => {
 
     expect(api.sendMessageCalls).toEqual([{ chat_id: 42, text: "Working..." }]);
     expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
-      "final answer",
+      "Final answer\n\nfinal answer",
     ]);
   });
 
@@ -140,14 +140,14 @@ describe("TelegramMessageStream", () => {
     await stream.append("Final answer.");
     await stream.finish("Final answer.");
 
-    // Thoughts accumulate into one "💭" message (plain), the streamed answer
-    // replaces it (plain), then the final delivery re-renders it as MarkdownV2
-    // with the reserved "." escaped.
+    // Thoughts and final text keep explicit labels. Interim edits stay plain,
+    // then the final delivery re-renders the answer as MarkdownV2 with the
+    // reserved "." escaped.
     expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
-      "💭 I",
-      "💭 I think",
-      "Final answer.",
-      "Final answer\\.",
+      "Thinking\n\nI",
+      "Thinking\n\nI think",
+      "Answer\n\nFinal answer.",
+      "Final answer\n\nFinal answer\\.",
     ]);
     // Interim edits stay plain; only the final answer carries parse_mode.
     expect(api.editMessageTextCalls.slice(0, 3).every((call) => call.parse_mode === undefined)).toBe(true);
@@ -168,9 +168,58 @@ describe("TelegramMessageStream", () => {
     // The interim edit streams plain text; the final edit re-applies MarkdownV2
     // (the formatting that interim streaming intentionally skips).
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: 42, message_id: 100, text: "final answer" },
-      { chat_id: 42, message_id: 100, text: "final answer", parse_mode: "MarkdownV2" },
+      { chat_id: 42, message_id: 100, text: "Answer\n\nfinal answer" },
+      { chat_id: 42, message_id: 100, text: "Final answer\n\nfinal answer", parse_mode: "MarkdownV2" },
     ]);
+  });
+
+  it("preserves an already-streamed answer when finish receives no final text", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      editDebounceMs: 0,
+    });
+
+    await stream.append("streamed answer");
+    await stream.finish();
+
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 42, message_id: 100, text: "Answer\n\nstreamed answer" },
+      { chat_id: 42, message_id: 100, text: "Final answer\n\nstreamed answer", parse_mode: "MarkdownV2" },
+    ]);
+  });
+
+  it("replaces a thought-only run with an explicit final placeholder", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({ type: "assistant_thought", text: "Still checking" });
+    await stream.finish();
+
+    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
+      "Thinking\n\nStill checking",
+      "Final answer\n\nNo response text was returned\\.",
+    ]);
+    expect(api.editMessageTextCalls.at(-1)?.parse_mode).toBe("MarkdownV2");
+  });
+
+  it("does not render the empty-final placeholder for whitespace-only thoughts", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({ type: "assistant_thought", text: "   " });
+
+    expect(api.sendMessageCalls).toHaveLength(0);
+    expect(api.editMessageTextCalls).toHaveLength(0);
   });
 
   it("splits final output into Telegram-sized message chunks", async () => {
@@ -185,12 +234,15 @@ describe("TelegramMessageStream", () => {
 
     await stream.finish(finalText);
 
-    expect(api.editMessageTextCalls).toHaveLength(1);
-    expect(api.editMessageTextCalls[0]?.text).toHaveLength(32);
-    expect(api.sendMessageCalls).toHaveLength(3);
+    const expectedChunks = splitTelegramText(`Final answer\n\n${finalText}`, 32);
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 99, message_id: 100, text: expectedChunks[0], parse_mode: "MarkdownV2" },
+    ]);
     expect(api.sendMessageCalls[0]).toEqual({ chat_id: 99, text: "Thinking…" });
-    expect(api.sendMessageCalls[1]?.text).toHaveLength(32);
-    expect(api.sendMessageCalls[2]?.text).toHaveLength(6);
+    expect(api.sendMessageCalls.slice(1)).toEqual([
+      { chat_id: 99, text: expectedChunks[1] },
+      { chat_id: 99, text: expectedChunks[2] },
+    ]);
   });
 
   it("uses a bounded preview for long in-progress content", async () => {
@@ -206,7 +258,7 @@ describe("TelegramMessageStream", () => {
     await vi.runAllTimersAsync();
 
     expect(api.editMessageTextCalls[0]?.text).toHaveLength(32);
-    expect(api.editMessageTextCalls[0]?.text.startsWith("…\n")).toBe(true);
+    expect(api.editMessageTextCalls[0]?.text.startsWith("Answer\n\n…\n")).toBe(true);
   });
 
   it("does not substitute the placeholder for blank status updates", async () => {
@@ -239,7 +291,7 @@ describe("TelegramMessageStream", () => {
       {
         chat_id: 8,
         message_id: 100,
-        text: "No response text was returned\\.",
+        text: "Final answer\n\nNo response text was returned\\.",
         parse_mode: "MarkdownV2",
       },
     ]);
@@ -268,7 +320,7 @@ describe("TelegramMessageStream", () => {
     await stream.finish("Run `npm i` now");
 
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: 9, message_id: 100, text: "Run `npm i` now", parse_mode: "MarkdownV2" },
+      { chat_id: 9, message_id: 100, text: "Final answer\n\nRun `npm i` now", parse_mode: "MarkdownV2" },
     ]);
   });
 
@@ -278,7 +330,7 @@ describe("TelegramMessageStream", () => {
       api,
       chatId: 3,
       editDebounceMs: 0,
-      maxMessageChars: 40,
+      maxMessageChars: 50,
     });
 
     // 30 dots fit the limit, but MarkdownV2 escapes each "." to "\." (60 chars),
@@ -289,7 +341,7 @@ describe("TelegramMessageStream", () => {
 
     const call = api.editMessageTextCalls.at(-1);
     expect(call?.parse_mode).toBeUndefined();
-    expect(call?.text).toBe(dots);
+    expect(call?.text).toBe(`Final answer\n\n${dots}`);
   });
 
   it("still rejects append when the initial placeholder send fails", async () => {
@@ -329,7 +381,7 @@ describe("TelegramMessageStream", () => {
 
     expect(sendCalls.map((call) => call.text)).toEqual([
       "Thinking…",
-      "recovered answer",
+      "Final answer\n\nrecovered answer",
     ]);
   });
 
@@ -432,9 +484,9 @@ describe("TelegramMessageStream", () => {
 
     expect(editParams).toHaveLength(2);
     expect(editParams[0]?.parse_mode).toBe("MarkdownV2");
-    expect(editParams[0]?.text).toBe("*bold* answer");
+    expect(editParams[0]?.text).toBe("Final answer\n\n*bold* answer");
     expect(editParams[1]?.parse_mode).toBeUndefined();
-    expect(editParams[1]?.text).toBe("**bold** answer");
+    expect(editParams[1]?.text).toBe("Final answer\n\n**bold** answer");
   });
 
   it("does not post a fresh message with the answer once aborted", async () => {
