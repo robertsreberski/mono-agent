@@ -1,6 +1,6 @@
 # Agent Framework Packages
 
-This repository is a small pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime`, but keeps runtime access, sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces as separate packages. `@mono-agent/agent-app` composes them all from one config file.
+This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
 
 ## Quickstart: An Agent Folder From One Config File
 
@@ -45,9 +45,9 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
-| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, OpenAI Agents SDK adapter, and fail-closed sandbox policy/process wrapping. |
+| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo). |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-mcp` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, tiered memory (lite/journal/bujo), and an MCP memory surface for external clients. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
 | `evaluation` | `@mono-agent/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
@@ -263,6 +263,7 @@ flowchart TB
     MemoryStore["`@mono-agent/memory-store`\nSQLite substrate + MemoryStore contract"]
     MemoryBujo["`@mono-agent/memory-bujo`\nbujo engine (journal/bujo tiers)"]
     MemorySearch["`@mono-agent/memory-search`\nOllama/OpenAI embeddings + cosine index"]
+    MemoryMcp["`@mono-agent/memory-mcp`\nstdio MCP memory tools"]
   end
 
   subgraph Execution["Execution layer"]
@@ -337,6 +338,8 @@ flowchart TB
   Harness --> RuntimeAdapter
   Harness --> Observability
 
+  MemoryMcp --> MemoryBujo
+  MemoryMcp --> MemoryStore
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Sandbox
   AgentRuntime --> Sandbox

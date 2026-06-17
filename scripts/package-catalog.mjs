@@ -140,14 +140,6 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "openai-agents-runtime",
-    name: "@mono-agent/openai-agents-runtime",
-    category: "runtime",
-    responsibility: "Adapts @openai/agents to the runtime contract.",
-    allowedDependencyCategories: ["core", "runtime"],
-    publishable: true,
-  },
-  {
     dir: "observability",
     name: "@mono-agent/observability",
     category: "observability",

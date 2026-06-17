@@ -53,9 +53,6 @@ importers:
       '@mono-agent/observability':
         specifier: workspace:0.3.0
         version: link:packages/observability
-      '@mono-agent/openai-agents-runtime':
-        specifier: workspace:0.3.0
-        version: link:packages/openai-agents-runtime
       '@mono-agent/openai-api-adapter':
         specifier: workspace:0.3.0
         version: link:packages/openai-api-adapter
@@ -360,19 +357,6 @@ importers:
         version: 7.6.13
 
   packages/observability: {}
-
-  packages/openai-agents-runtime:
-    dependencies:
-      '@mono-agent/runtime-adapter':
-        specifier: workspace:0.3.0
-        version: link:../runtime-adapter
-      '@openai/agents':
-        specifier: ^0.11.4
-        version: 0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)
-    devDependencies:
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/node@22.19.19)(happy-dom@15.11.7)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
 
   packages/openai-api-adapter:
     dependencies:
@@ -1390,29 +1374,6 @@ packages:
 
   '@nodable/entities@2.1.0':
     resolution: {integrity: sha512-nyT7T3nbMyBI/lvr6L5TyWbFJAI9FTgVRakNoBqCD+PmID8DzFrrNdLLtHMwMszOtqZa8PAOV24ZqDnQrhQINA==}
-
-  '@openai/agents-core@0.11.4':
-    resolution: {integrity: sha512-K529uAX9oZV8LUnsv0b+c+nWflIJc+LAJeEfZLN74q0J9UYvyt4pddt30e7OsGS1kPVK/lbChnPCOkPhnd1cpg==}
-    peerDependencies:
-      zod: ^4.0.0
-    peerDependenciesMeta:
-      zod:
-        optional: true
-
-  '@openai/agents-openai@0.11.4':
-    resolution: {integrity: sha512-NAiiCsUsb+4twlaCIZ4OM8s9WoDNKjHfZBrw1jkE/oXH4sXO5OwRqi85ZM5xtfZNBqBF0IEY5hIuwWOhZntdKg==}
-    peerDependencies:
-      zod: ^4.0.0
-
-  '@openai/agents-realtime@0.11.4':
-    resolution: {integrity: sha512-SZS22YbsKilfPpsVJmHwigYbNX3W+ZHZFTm5+uDdV3OnziodCQu2P/cMag2dcpwmJq/fW0lANUzD+YC4l0qwoA==}
-    peerDependencies:
-      zod: ^4.0.0
-
-  '@openai/agents@0.11.4':
-    resolution: {integrity: sha512-HEOnixfXyziXgYcuRWIx+oJRYLgTxX8VFeJPIAum7LSYxznO5orJsn4u+u3w+7xe1BupoB8eUaJ7dDvOSChKPA==}
-    peerDependencies:
-      zod: ^4.0.0
 
   '@opencode-ai/sdk@1.17.0':
     resolution: {integrity: sha512-a4Fw6lEZqXhjkyTH0LNInntrdLaWcz9M1+eqQgSVqI6PAlcqC/Jo069k8VdGcU3u4qbETqmURec8+VfhS06Sqg==}
@@ -5564,57 +5525,6 @@ snapshots:
     optional: true
 
   '@nodable/entities@2.1.0': {}
-
-  '@openai/agents-core@0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)':
-    dependencies:
-      debug: 4.4.3
-      openai: 6.38.0(ws@8.20.1)(zod@4.4.3)
-    optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
-      zod: 4.4.3
-    transitivePeerDependencies:
-      - '@cfworker/json-schema'
-      - supports-color
-      - ws
-
-  '@openai/agents-openai@0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)':
-    dependencies:
-      '@openai/agents-core': 0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)
-      debug: 4.4.3
-      openai: 6.38.0(ws@8.20.1)(zod@4.4.3)
-      zod: 4.4.3
-    transitivePeerDependencies:
-      - '@cfworker/json-schema'
-      - supports-color
-      - ws
-
-  '@openai/agents-realtime@0.11.4(@cfworker/json-schema@4.1.1)(zod@4.4.3)':
-    dependencies:
-      '@openai/agents-core': 0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)
-      '@types/ws': 8.18.1
-      debug: 4.4.3
-      ws: 8.20.1
-      zod: 4.4.3
-    transitivePeerDependencies:
-      - '@cfworker/json-schema'
-      - bufferutil
-      - supports-color
-      - utf-8-validate
-
-  '@openai/agents@0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)':
-    dependencies:
-      '@openai/agents-core': 0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)
-      '@openai/agents-openai': 0.11.4(@cfworker/json-schema@4.1.1)(ws@8.20.1)(zod@4.4.3)
-      '@openai/agents-realtime': 0.11.4(@cfworker/json-schema@4.1.1)(zod@4.4.3)
-      debug: 4.4.3
-      openai: 6.38.0(ws@8.20.1)(zod@4.4.3)
-      zod: 4.4.3
-    transitivePeerDependencies:
-      - '@cfworker/json-schema'
-      - bufferutil
-      - supports-color
-      - utf-8-validate
-      - ws
 
   '@opencode-ai/sdk@1.17.0':
     dependencies:
