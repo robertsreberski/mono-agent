@@ -508,6 +508,7 @@ describe("OpenAI API adapter", () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toContain("text/event-stream");
+      expect(response.headers.get("x-accel-buffering")).toBe("no");
       const body = await response.text();
       expect(body).toContain("\"object\":\"chat.completion.chunk\"");
       expect(body).toContain("\"role\":\"assistant\"");
@@ -561,6 +562,7 @@ describe("OpenAI API adapter", () => {
       expect(response.status).toBe(200);
       const body = await response.text();
       expect(body).toContain("\"reasoning_content\":\"checking available context\"");
+      expect(body).toContain("\"reasoning_content\":\"Running mcp__context_a8c__search...\"");
       expect(body).toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
       expect(body).toContain("id=\\\"call-1\\\"");
       expect(body).toContain("name=\\\"mcp__context_a8c__search\\\"");
@@ -570,6 +572,111 @@ describe("OpenAI API adapter", () => {
       expect(body).not.toContain("\"finish_reason\":\"tool_calls\"");
       expect(body.match(/"content":"Final answer\."/gu)).toHaveLength(1);
       expect(body.trim().endsWith("data: [DONE]")).toBe(true);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("streams internally executed tool progress before the tool completes", async () => {
+    const releaseTool = deferred<void>();
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-1",
+          name: "mcp__context_a8c__search",
+          arguments: { query: "OpenWebUI tool rendering" },
+        });
+        await releaseTool.promise;
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-1",
+          content: { matches: 2 },
+          isError: false,
+        });
+        return { text: "Final answer." };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "Show progress" }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const reader = response.body?.getReader();
+      if (reader === undefined) {
+        throw new Error("Expected a streaming response body.");
+      }
+      const earlyBody = await readUntil(
+        reader,
+        "\"reasoning_content\":\"Running mcp__context_a8c__search...\"",
+      );
+      expect(earlyBody).not.toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
+
+      releaseTool.resolve(undefined);
+      const body = earlyBody + await readRemaining(reader);
+      expect(body).toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
+      expect(body.trim().endsWith("data: [DONE]")).toBe(true);
+    } finally {
+      releaseTool.resolve(undefined);
+      await server.stop();
+    }
+  });
+
+  it("does not duplicate tool-start progress already emitted as a runtime thought", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({ type: "assistant_thought", text: "Running mcp__context_a8c__search..." });
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-1",
+          name: "mcp__context_a8c__search",
+          arguments: { query: "OpenWebUI tool rendering" },
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-1",
+          content: { matches: 2 },
+          isError: false,
+        });
+        return { text: "Final answer." };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "Show progress" }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body.match(/"reasoning_content":"Running mcp__context_a8c__search\.\.\."/gu)).toHaveLength(1);
+      expect(body).toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
     } finally {
       await server.stop();
     }
@@ -971,6 +1078,70 @@ function echoResponder(): AgentResponder {
       return {};
     },
   };
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, text: string): Promise<string> {
+  const decoder = new TextDecoder();
+  let body = "";
+  while (!body.includes(text)) {
+    const next = await readNextChunk(reader, 1_000);
+    if (next.done) {
+      break;
+    }
+    body += decoder.decode(next.value, { stream: true });
+  }
+  body += decoder.decode();
+  if (!body.includes(text)) {
+    throw new Error(`Timed out before stream contained: ${text}`);
+  }
+  return body;
+}
+
+async function readRemaining(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let body = "";
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) {
+      return body + decoder.decode();
+    }
+    body += decoder.decode(next.value, { stream: true });
+  }
+}
+
+async function readNextChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+) {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Timed out waiting for stream chunk.")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 async function postChat(

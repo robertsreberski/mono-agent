@@ -143,6 +143,13 @@ function structuredOutputFinalizationPrompt() {
   ].join("\n");
 }
 
+function toolStartProgressText(toolName) {
+  if (typeof toolName !== "string" || toolName.trim().length === 0) {
+    return null;
+  }
+  return `Running ${toolName}...`;
+}
+
 function shouldRetryStructuredOutputFinalization({
   outputSchema,
   structuredResult,
@@ -770,6 +777,13 @@ export async function generatePiResponse(systemPrompt, options = {}) {
           cwd: options.cwd,
           toolLimits: compaction?.policy,
         });
+        const progressText = toolStartProgressText(event.toolName);
+        if (progressText) {
+          onEvent({
+            type: "assistant",
+            message: { content: [{ type: "thinking", text: progressText }] },
+          });
+        }
         onEvent({
           type: "assistant",
           message: { content: [{ type: "tool_use", id: event.toolCallId, name: event.toolName, input }] },
