@@ -24,7 +24,49 @@ export interface TelegramMessage {
   chat: TelegramChat;
   from?: TelegramUser;
   text?: string;
+  caption?: string;
+  animation?: unknown;
+  document?: TelegramDocument;
+  photo?: TelegramPhotoSize[];
+  audio?: TelegramAudio;
+  video?: TelegramVideo;
+  voice?: TelegramVoice;
   [key: string]: unknown;
+}
+
+export interface TelegramFileReference {
+  file_id: string;
+  file_unique_id: string;
+  file_size?: number;
+}
+
+export interface TelegramPhotoSize extends TelegramFileReference {
+  width: number;
+  height: number;
+}
+
+export interface TelegramDocument extends TelegramFileReference {
+  file_name?: string;
+  mime_type?: string;
+}
+
+export interface TelegramAudio extends TelegramFileReference {
+  duration: number;
+  file_name?: string;
+  mime_type?: string;
+}
+
+export interface TelegramVideo extends TelegramFileReference {
+  duration: number;
+  width: number;
+  height: number;
+  file_name?: string;
+  mime_type?: string;
+}
+
+export interface TelegramVoice extends TelegramFileReference {
+  duration: number;
+  mime_type?: string;
 }
 
 export interface TelegramUpdate {
