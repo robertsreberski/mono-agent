@@ -322,7 +322,9 @@ async function runStreamingResponder(input: {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
   });
+  input.response.flushHeaders();
 
   const chunkInput = {
     id: `chatcmpl-${input.requestId}`,
@@ -383,6 +385,7 @@ class SseChatMessageStream implements AgentMessageStream {
         name: event.name,
         ...(event.arguments === undefined ? {} : { arguments: event.arguments }),
       });
+      this.writeChunk({ reasoning_content: `Running ${event.name}...` }, null);
       return;
     }
     if (event.type === "tool_call_completed") {

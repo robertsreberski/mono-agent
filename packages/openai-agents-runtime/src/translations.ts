@@ -10,6 +10,14 @@ export function translateOpenAIStreamEvent(event: OpenAIStreamEventLike): Runtim
   if (!isObject(event) || typeof event.type !== "string") {
     return undefined;
   }
+  const thoughtDelta = outputReasoningDelta(event);
+  if (thoughtDelta !== undefined) {
+    return {
+      type: "assistant",
+      message: { content: [{ type: "thinking", text: thoughtDelta }] },
+      raw_event: event,
+    };
+  }
   const textDelta = outputTextDelta(event);
   if (textDelta !== undefined) {
     return {
@@ -80,4 +88,65 @@ function outputTextDelta(event: OpenAIStreamEventLike): string | undefined {
     return undefined;
   }
   return event.data.delta;
+}
+
+function outputReasoningDelta(event: OpenAIStreamEventLike): string | undefined {
+  if (event.type !== "raw_model_stream_event" || !isObject(event.data)) {
+    return undefined;
+  }
+
+  const dataType = stringField(event.data, "type");
+  if (dataType !== undefined && isReasoningDeltaEventType(dataType)) {
+    const directDelta = stringField(event.data, "delta") ?? stringField(event.data, "text");
+    if (directDelta !== undefined) {
+      return directDelta;
+    }
+  }
+
+  const nestedEvent = event.data.event;
+  return responseReasoningDelta(nestedEvent) ?? chatCompletionReasoningDelta(nestedEvent);
+}
+
+function responseReasoningDelta(event: unknown): string | undefined {
+  if (!isObject(event)) {
+    return undefined;
+  }
+  const eventType = stringField(event, "type");
+  if (eventType === undefined || !isReasoningDeltaEventType(eventType)) {
+    return undefined;
+  }
+  return stringField(event, "delta") ?? stringField(event, "text");
+}
+
+function chatCompletionReasoningDelta(event: unknown): string | undefined {
+  if (!isObject(event) || !Array.isArray(event.choices)) {
+    return undefined;
+  }
+  for (const choice of event.choices) {
+    if (!isObject(choice) || !isObject(choice.delta)) {
+      continue;
+    }
+    const index = typeof choice.index === "number" ? choice.index : 0;
+    if (index !== 0) {
+      continue;
+    }
+    const reasoning = stringField(choice.delta, "reasoning");
+    if (reasoning !== undefined) {
+      return reasoning;
+    }
+  }
+  return undefined;
+}
+
+function isReasoningDeltaEventType(type: string): boolean {
+  return isReasoningEventType(type) && (type.endsWith(".delta") || type.endsWith("_delta"));
+}
+
+function isReasoningEventType(type: string): boolean {
+  return type.includes("reasoning") || type.includes("thinking");
+}
+
+function stringField(value: Record<string, unknown>, field: string): string | undefined {
+  const candidate = value[field];
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
 }
