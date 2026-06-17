@@ -111,11 +111,14 @@ describe("current launch manifest", () => {
   test("discovers all catalog-publishable packages", () => {
     const publishable = discoverPackages().filter((pkg) => pkg.catalogEntry.publishable);
 
-    expect(publishable).toHaveLength(28);
+    expect(publishable).toHaveLength(27);
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/tui");
     // memory-mcp was retired: the BuJo recall tool is now auto-provisioned in-app
     // from the single config.memory block (no separate stdio MCP package).
     expect(publishable.map((pkg) => pkg.name)).not.toContain("@mono-agent/memory-mcp");
+    // operator-console was retired: Phoenix (observability-otel) is the trace
+    // viewer and config is JSON-first, applied on `mono-agent restart`.
+    expect(publishable.map((pkg) => pkg.name)).not.toContain("@mono-agent/operator-console");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/agent-runtime");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/sandbox");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/agent-app");
@@ -130,7 +133,7 @@ describe("current launch manifest", () => {
 
     const result = validateRelease({ tag: `v${version}`, silent: true });
 
-    expect(result.publishablePackages).toHaveLength(28);
+    expect(result.publishablePackages).toHaveLength(27);
     expect(result.publishablePackages.every((pkg) => pkg.version === version)).toBe(true);
   });
 });

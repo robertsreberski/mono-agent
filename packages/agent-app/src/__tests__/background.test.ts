@@ -34,7 +34,6 @@ function makeTarget(overrides: Partial<InstanceTarget> = {}): InstanceTarget {
     },
     nodePath: "/usr/local/bin/node",
     cliPath: "/opt/app/dist/cli.js",
-    noConsole: false,
     pathEnv: "/usr/bin:/bin",
     ...overrides,
   };
@@ -55,11 +54,6 @@ function makeSource(target: InstanceTarget, overrides: Partial<TraceSourceListIt
     warnings: [],
     metadata: {
       reason: "startup-complete",
-      // The worker persists only the base console URL — never the access token.
-      operatorConsole: {
-        url: "http://127.0.0.1:7777",
-        configPath: target.configPath,
-      },
       channels: {
         telegram: { kind: "running" },
         slack: { kind: "waiting_for_config", reason: "Missing appToken" },
@@ -184,9 +178,6 @@ describe("startBackground", () => {
     expect(harness.written[0]?.data).toContain(target.label);
     const stdout = harness.out.join("");
     expect(stdout).toContain("started in the background");
-    expect(stdout).toContain("http://127.0.0.1:7777");
-    // The per-boot token is never surfaced from the persisted manifest.
-    expect(stdout).not.toContain("?t=");
     expect(stdout).toContain("4321");
     expect(stdout).toContain(target.label);
   });

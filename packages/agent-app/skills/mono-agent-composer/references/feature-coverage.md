@@ -73,8 +73,8 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Capability | Coverage | Where |
 | --- | --- | --- |
 | JSONL run artifacts (events + summaries, secrets redacted) | config | `artifacts.dir` |
-| Trace-source registry (heartbeat manifests for dashboards) | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` |
-| Operator console (browser settings editor, traceability views, live config re-apply, bearer token) | config + cli | `console.{enabled,port}`; `--port`, `--no-console` |
+| Trace-source registry (heartbeat manifests `mono-agent status` reads) | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` |
+| Phoenix trace viewer (OTLP exporter; local JSONL artifacts are the fallback) | config | `observability.exporters` (phoenix entry) |
 | Terminal chat (TUI with transcript + redacted config pane) | cli | `mono-agent-tui --config ./mono-agent.config.json` |
 | Scaffold / validate / start / install-skill | cli | `mono-agent init|validate|start|install-skill` |
 | `.env` auto-loading | cli | automatic; `--env-file <path>` |

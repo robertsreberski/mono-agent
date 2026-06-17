@@ -116,8 +116,6 @@ rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | `observability.latency-attribution` | Per-turn `provider_bridge_latency` event (provider+tool+IO time vs harness overhead) and per-tool `tool_timing` events (`execution_ms`); MCP tool results carry `mcp_call_duration_ms`. Lets traces separate model-reasoning time from tool/MCP time | `auto` | Emitted into the run JSONL artifacts |
 | `observability.trace-registry` | Host publishes a heartbeat manifest so dashboards discover running agents | `config` | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` (`MONO_AGENT_TRACE_*`) |
 | `observability.phoenix-exporter` | Additive best-effort OTLP/HTTP+JSON export of each run lifecycle to a Phoenix-compatible endpoint (root span per run + child event spans, mono-agent identifiers as attributes). Metadata-only by default; failures are bounded by timeout and never change the run outcome or suppress JSONL writes. Transport lives in `@mono-agent/observability-otel`; `start`/`status` show the endpoint, `doctor` does the live reachability probe | `config` | `observability.exporters[]: {type:"phoenix", endpoint, includeSensitiveData, headers, timeoutMs}` (`MONO_AGENT_OBSERVABILITY_EXPORTERS` JSON array) |
-| `operator-console.http` | Local browser console: settings editor (field groups, secret redaction), observability + traceability views (a local fallback once a Phoenix exporter is configured), per-boot bearer token, live config re-apply | `config`+`cli` | `console.enabled`, `console.port` (`MONO_AGENT_CONSOLE_ENABLED`, `MONO_AGENT_CONSOLE_PORT`); CLI `--port` / `--no-console` override |
-| `operator-console.live-apply` | Saving config in the console restarts channels without restarting the app | `auto` | Built into `mono-agent start` |
 | `tui.chat` | Terminal chat + transcript + redacted config pane | `cli` | `mono-agent-tui --config ./mono-agent.config.json` (ships with `@mono-agent/tui`) |
 
 ## Execution & composition (`agent-harness`, `agent-host`, `agent-orchestrator`, `agent-app`)
@@ -125,8 +123,8 @@ rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |
 | `app.cli-init` | Non-destructive scaffold (config + IDENTITY.md + `.mono-agent/`) | `cli` | `mono-agent init [--model] [--fallback-models] [--memory]` |
-| `app.cli-validate` | Per-section config report (core, runtime, context, memory, tools, sandbox, console, every channel) | `cli` | `mono-agent validate [--config] [--env-file]` |
-| `app.cli-start` | Console + traceability + every configured channel | `cli` | `mono-agent start [--config] [--port] [--no-console] [--env-file]` |
+| `app.cli-validate` | Per-section config report (core, runtime, context, memory, tools, sandbox, every channel) | `cli` | `mono-agent validate [--config] [--env-file]` |
+| `app.cli-start` | Traceability + every configured channel | `cli` | `mono-agent start [--config] [--port] [--env-file]` |
 | `app.cli-install-skill` | Copy the composer skill into `~/.claude/skills` / `~/.codex/skills` | `cli` | `mono-agent install-skill [--target claude\|codex\|both] [--force]` |
 | `app.env-file` | `.env` auto-load (exported shell vars win) | `cli` | automatic; `--env-file <path>` to override |
 | `harness.failure-handling` | Explicit failure objects (never fake success) | `auto` | Built into every run |

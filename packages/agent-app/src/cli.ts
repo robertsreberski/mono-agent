@@ -30,13 +30,11 @@ type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 interface ParsedCliArgs {
   readonly command: CliCommand;
   readonly configPath?: string;
-  readonly port?: number;
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
   readonly memory?: "lite" | "journal" | "bujo";
   readonly envFile?: string;
   readonly target?: InstallSkillTarget;
-  readonly noConsole: boolean;
   readonly force: boolean;
   /** start: run the blocking foreground worker instead of backgrounding. */
   readonly foreground: boolean;
@@ -49,7 +47,7 @@ interface ParsedCliArgs {
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    return { command: "help", noConsole: false, force: false, foreground: false, follow: false };
+    return { command: "help", force: false, foreground: false, follow: false };
   }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
@@ -58,13 +56,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const isLogs = cmd === "logs";
 
   let configPath: string | undefined;
-  let port: number | undefined;
   let model: string | undefined;
   let fallbackModels: readonly string[] | undefined;
   let memory: "lite" | "journal" | "bujo" | undefined;
   let envFile: string | undefined;
   let target: InstallSkillTarget | undefined;
-  let noConsole = false;
   let force = false;
   let foreground = false;
   let follow = false;
@@ -76,15 +72,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--config":
         configPath = requireValue(rest, ++i, flag);
         break;
-      case "--port": {
-        const raw = requireValue(rest, ++i, flag);
-        const parsed = Number(raw);
-        if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
-          throw new Error("--port must be an integer between 0 and 65535.");
-        }
-        port = parsed;
-        break;
-      }
       case "--model":
         model = requireValue(rest, ++i, flag);
         break;
@@ -115,9 +102,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       }
       case "--force":
         force = true;
-        break;
-      case "--no-console":
-        noConsole = true;
         break;
       case "--foreground":
         foreground = true;
@@ -150,13 +134,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   return {
     command: cmd,
     ...(configPath === undefined ? {} : { configPath }),
-    ...(port === undefined ? {} : { port }),
     ...(model === undefined ? {} : { model }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(memory === undefined ? {} : { memory }),
     ...(envFile === undefined ? {} : { envFile }),
     ...(target === undefined ? {} : { target }),
-    noConsole,
     force,
     foreground,
     follow,
@@ -196,12 +178,12 @@ Usage:
   mono-agent validate [--config <path>] [--env-file <path>]
       Load every config section and report what would run, wait, or fail.
 
-  mono-agent start [--config <path>] [--port <n>] [--no-console] [--env-file <path>] [--foreground|-f]
+  mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]
       Start the agent as a background macOS service (launchd), print its
       instance info, and return. Re-running restarts the running instance.
       Use --foreground (-f) to run in the blocking foreground instead.
 
-  mono-agent restart [--config <path>] [--port <n>] [--no-console]
+  mono-agent restart [--config <path>]
       Restart the background instance for this config (starts it if stopped).
 
   mono-agent stop [--config <path>]
@@ -343,16 +325,13 @@ async function runStart(args: ParsedCliArgs): Promise<number> {
 
 /**
  * The blocking worker: builds the responder, starts every configured channel
- * plus the operator console and traceability, and stays alive until a signal.
- * This is what launchd invokes (via `start --foreground`) and what users get
- * with `--foreground`/`-f`.
+ * plus traceability, and stays alive until a signal. This is what launchd
+ * invokes (via `start --foreground`) and what users get with `--foreground`/`-f`.
  */
 async function runForeground(args: ParsedCliArgs): Promise<number> {
   const app = await startMonoAgentApp({
     cwd: process.cwd(),
     ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-    ...(args.port === undefined ? {} : { operatorConsolePort: args.port }),
-    ...(args.noConsole ? { operatorConsole: false } : {}),
     logger: consoleLogger(),
   });
 
@@ -374,8 +353,6 @@ async function runBackgroundCommand(
     args: {
       ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
       ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
-      ...(args.port === undefined ? {} : { port: args.port }),
-      noConsole: args.noConsole,
     },
     env: process.env,
     cwd: process.cwd(),
@@ -413,9 +390,6 @@ function requireDarwin(command: string): number | undefined {
 }
 
 export function printAppStatus(app: MonoAgentApp): void {
-  if (app.operatorConsole !== undefined) {
-    process.stdout.write(`operator console  ${app.operatorConsole.appUrl}\n`);
-  }
   process.stdout.write(`config            ${app.configPath}\n`);
   const trace = app.traceabilityStatus;
   process.stdout.write(

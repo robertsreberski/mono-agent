@@ -60,11 +60,11 @@ MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS=123456789
 
 Use `--no-telegram` when you only want the A2A smoke path. The generated configs intentionally contain no Telegram secrets.
 
-Operator-console config saves persist changes to disk, but this demo reports a restart-required apply status. Restart the multi-agent process before expecting changed role, model, tool, A2A, or collaborator timeout settings to affect running Telegram or A2A responders.
+Edit the role configs in the config directory directly (by hand or via an AI agent). Config changes apply on restart — there is no live in-process re-apply. Restart the multi-agent process before expecting changed role, model, tool, A2A, or collaborator timeout settings to affect running Telegram or A2A responders.
 
 ## A2A Smoke
 
-The deploy command prints the orchestrator Agent Card URL. Send a text request to that URL with `sendA2AMessage` from `@mono-agent/a2a-adapter` or any A2A client. A successful request that calls both collaborator agents should record three runs in the operator console Traceability view:
+The deploy command prints the orchestrator Agent Card URL. Send a text request to that URL with `sendA2AMessage` from `@mono-agent/a2a-adapter` or any A2A client. A successful request that calls both collaborator agents should record three runs in the local JSONL artifacts (and in Phoenix when an OTLP exporter is configured):
 
 - `multi-agent-orchestrator`
 - `multi-agent-researcher`
@@ -83,4 +83,4 @@ pnpm run build
 pnpm run demo:multi -- --config-dir ./.mono-agent/multi-agent --port 5417
 ```
 
-Use `SIGINT` or `SIGTERM` to stop the operator console, Telegram poller, A2A providers, and trace source heartbeats cleanly.
+Use `SIGINT` or `SIGTERM` to stop the Telegram poller, A2A providers, and trace source heartbeats cleanly.

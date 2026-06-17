@@ -37,7 +37,6 @@ async function main(): Promise<void> {
     ...(args.researcherModel === undefined ? {} : { researcherModel: args.researcherModel }),
     ...(args.workerModel === undefined ? {} : { workerModel: args.workerModel }),
     ollamaBaseUrl: args.ollamaBaseUrl,
-    ...(args.port === undefined ? {} : { operatorConsolePort: args.port }),
     ...(args.orchestratorA2APort === undefined ? {} : { orchestratorA2APort: args.orchestratorA2APort }),
     ...(args.researcherA2APort === undefined ? {} : { researcherA2APort: args.researcherA2APort }),
     ...(args.workerA2APort === undefined ? {} : { workerA2APort: args.workerA2APort }),
@@ -64,16 +63,13 @@ async function main(): Promise<void> {
     env: process.env,
     cwd: process.cwd(),
     configDir: files.configDir,
-    ...(args.port === undefined ? {} : { operatorConsolePort: args.port }),
     startTelegram: !args.noTelegram,
     startA2A: !args.noA2A,
     logger: console,
   });
 
-  console.log(`operator-console: ${demo.operatorConsole.appUrl}`);
-  console.log(`operator-api:     ${demo.operatorConsole.url}`);
-  console.log(`operator-token:   ${demo.operatorConsole.token}`);
   console.log(`config-dir:       ${files.configDir}`);
+  console.log("edits:            edit the role config JSON, then restart the deployment to apply changes");
   console.log(`trace-registry:   ${files.traceRegistryDir}`);
   console.log(`orchestrator:     ${demo.orchestratorStatus.kind === "running" ? demo.orchestratorStatus.agentCardUrl : demo.orchestratorStatus.kind}`);
   console.log(`researcher:       ${demo.researcherStatus.kind === "running" ? demo.researcherStatus.agentCardUrl : demo.researcherStatus.kind}`);
@@ -111,7 +107,7 @@ function printReadinessFailure(readiness: Exclude<OllamaReadiness, { readonly ki
 }
 
 function printHelp(): void {
-  console.log(`Usage: pnpm run deploy:multi -- [options]\n\nWrites local multi-agent demo configs, checks Ollama readiness, then starts operator console, role A2A providers, traceability, and optional Telegram.\n\nOptions:\n  --model <tag>                  Ollama model tag for all roles (default: gemma4:31b)\n  --orchestrator-model <tag>     Ollama model tag for the orchestrator\n  --researcher-model <tag>       Ollama model tag for the researcher\n  --worker-model <tag>           Ollama model tag for the worker\n  --ollama-url <url>             Ollama base URL (default: http://localhost:11434)\n  --config-dir <path>            Generated config/state directory (default: ./.mono-agent/multi-agent)\n  --port <port>                  Operator Console port (default: 0)\n  --orchestrator-a2a-port <port> Orchestrator A2A provider port (default: 0)\n  --researcher-a2a-port <port>   Researcher A2A provider port (default: 0)\n  --worker-a2a-port <port>       Worker A2A provider port (default: 0)\n  --no-start                     Write files and verify Ollama, but do not start\n  --no-telegram                  Do not start Telegram even if configured\n  --no-a2a                       Do not start role A2A providers\n  -h, --help                     Show this help`);
+  console.log(`Usage: pnpm run deploy:multi -- [options]\n\nWrites local multi-agent demo configs, checks Ollama readiness, then starts the headless role A2A providers, traceability, and optional Telegram. Config edits apply on restart.\n\nOptions:\n  --model <tag>                  Ollama model tag for all roles (default: gemma4:31b)\n  --orchestrator-model <tag>     Ollama model tag for the orchestrator\n  --researcher-model <tag>       Ollama model tag for the researcher\n  --worker-model <tag>           Ollama model tag for the worker\n  --ollama-url <url>             Ollama base URL (default: http://localhost:11434)\n  --config-dir <path>            Generated config/state directory (default: ./.mono-agent/multi-agent)\n  --orchestrator-a2a-port <port> Orchestrator A2A provider port (default: 0)\n  --researcher-a2a-port <port>   Researcher A2A provider port (default: 0)\n  --worker-a2a-port <port>       Worker A2A provider port (default: 0)\n  --no-start                     Write files and verify Ollama, but do not start\n  --no-telegram                  Do not start Telegram even if configured\n  --no-a2a                       Do not start role A2A providers\n  -h, --help                     Show this help`);
 }
 
 void main().catch((error: unknown) => {

@@ -4,7 +4,7 @@ Use this map to select the smallest mono-agent package set for a host. Package c
 
 ## App Join (default)
 
-`@mono-agent/agent-app` is the config-first host: it loads `mono-agent.config.json`, builds the responder through `agent-host`, and drives every configured channel plus the operator console and traceability. It ships the `mono-agent` CLI (`init`, `validate`, `start`) and is the only publishable package allowed to compose communication adapters.
+`@mono-agent/agent-app` is the config-first host: it loads `mono-agent.config.json`, builds the responder through `agent-host`, and drives every configured channel plus traceability and any configured observability exporters. It ships the `mono-agent` CLI (`init`, `validate`, `start`) and is the only publishable package allowed to compose communication adapters.
 
 ```ts
 import { startMonoAgentApp } from "@mono-agent/agent-app";
@@ -104,15 +104,14 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 
 Adapters must not import the harness, runtime adapter, memory packages (`memory-store`, `memory-bujo`, `memory-search`), or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
 
-## Operator And Observability Join
+## Observability Join
 
 Use:
 
-- `@mono-agent/operator-console` for local browser settings and traceability (`console` config section; per-boot bearer token; saves re-apply live).
 - `@mono-agent/tui` for local terminal chat and redacted read-only config (`mono-agent-tui --config ./mono-agent.config.json`).
-- `@mono-agent/observability` for JSONL event artifacts, summaries, and trace-source registration.
+- `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and the OTLP exporters (Phoenix) configured via `observability.exporters`.
 
-Traceability is local-first. A running host registers a source manifest; the operator console reads artifacts by `(sourceId, runId)` so duplicate run ids do not collide.
+Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; local JSONL artifacts are the fallback otherwise.
 
 ## Evaluation Join
 

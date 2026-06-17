@@ -9,7 +9,6 @@ import {
   readMonoAgentConfigJson,
 } from "@mono-agent/config";
 import type { MonoAgentConfig, ObservabilityExporterConfig } from "@mono-agent/config";
-import { defineFieldGroup } from "@mono-agent/settings";
 import type { FieldGroup } from "@mono-agent/settings";
 import { a2aFieldGroup } from "@mono-agent/a2a-adapter";
 import { cronFieldGroup } from "@mono-agent/cron-adapter";
@@ -21,39 +20,12 @@ import { whatsappFieldGroup } from "@mono-agent/whatsapp-adapter";
 
 import { selfCapabilitiesFieldGroup } from "./self-capabilities.js";
 
-export const consoleFieldGroup = defineFieldGroup({
-  id: "console",
-  label: "Operator console",
-  description: "The local browser console started alongside the agent.",
-  fields: [
-    {
-      id: "console.enabled",
-      label: "Enabled",
-      description: "Start the loopback operator console with the app (on by default).",
-      kind: "switch",
-      path: ["console", "enabled"],
-    },
-    {
-      id: "console.port",
-      label: "Port",
-      description: "Fixed loopback port for the console; omit (or 0) to pick a free port.",
-      kind: "integer",
-      min: 0,
-      max: 65_535,
-      placeholder: "0",
-      path: ["console", "port"],
-    },
-  ],
-});
-
 /**
- * Every settings group a config-first host edits through the operator console:
- * the adapter-neutral core config, the console itself, plus one group per
- * communication channel.
+ * Every settings group a config-first host exposes: the adapter-neutral core
+ * config plus one group per communication channel.
  */
 export const MONO_AGENT_APP_FIELD_GROUPS: readonly FieldGroup[] = [
   ...CORE_AGENT_FIELD_GROUPS,
-  consoleFieldGroup,
   selfCapabilitiesFieldGroup,
   telegramFieldGroup,
   slackFieldGroup,
@@ -98,9 +70,9 @@ export interface AppTraceDefaults {
 
 /**
  * The resolvers below intentionally tolerate an incomplete or invalid config
- * file: observability and the operator console must stay usable while the
- * user is still fixing their config, so they fall back to defaults instead of
- * throwing on unreadable JSON.
+ * file: observability and traceability must stay usable while the user is still
+ * fixing their config, so they fall back to defaults instead of throwing on
+ * unreadable JSON.
  */
 export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Promise<string> {
   const envDir = input.env.MONO_AGENT_ARTIFACT_DIR?.trim();
@@ -137,7 +109,7 @@ export type ResolvedExporter = ObservabilityExporterConfig & { readonly endpoint
  * (`MONO_AGENT_OBSERVABILITY_EXPORTERS`, JSON array), then the
  * `observability.exporters` block of the config file, then `[]`. Like the other
  * app-level resolvers it tolerates an unreadable config file (returns `[]` so the
- * console/host stay usable while the user fixes their config), but it DOES throw
+ * host stays usable while the user fixes their config), but it DOES throw
  * a {@link MonoAgentConfigError} for a present-but-invalid exporter shape so bad
  * config fails clearly before startup. No reachability probe runs here —
  * reachability is the doctor's job (Phoenix may start after the agent).
@@ -283,66 +255,6 @@ function validateExporterTimeout(value: unknown, source: string): number {
     );
   }
   return value;
-}
-
-export interface AppConsoleSettings {
-  readonly enabled: boolean;
-  readonly port?: number;
-}
-
-/**
- * Operator console settings: env wins, then the `console` section of the
- * config file, then defaults (enabled, auto-selected port). Tolerates an
- * unreadable config file like the other app-level resolvers so the console
- * stays available while the user fixes their config.
- */
-export async function resolveAppConsoleSettings(input: MonoAgentAppConfigInput): Promise<AppConsoleSettings> {
-  let enabled = parseConsoleBoolean(input.env.MONO_AGENT_CONSOLE_ENABLED, "MONO_AGENT_CONSOLE_ENABLED");
-  let port = parseConsolePort(input.env.MONO_AGENT_CONSOLE_PORT, "MONO_AGENT_CONSOLE_PORT");
-
-  if (enabled === undefined || port === undefined) {
-    try {
-      const { json } = await readMonoAgentConfigJson(input.configPath);
-      const section = json.console;
-      if (typeof section === "object" && section !== null && !Array.isArray(section)) {
-        const record = section as Record<string, unknown>;
-        if (enabled === undefined && typeof record.enabled === "boolean") {
-          enabled = record.enabled;
-        }
-        if (port === undefined && record.port !== undefined) {
-          port = parseConsolePort(record.port, "console.port");
-        }
-      }
-    } catch {
-      // Keep defaults while the user fixes an incomplete or invalid config.
-    }
-  }
-
-  return {
-    enabled: enabled ?? true,
-    ...(port === undefined ? {} : { port }),
-  };
-}
-
-function parseConsoleBoolean(raw: string | undefined, name: string): boolean | undefined {
-  const value = raw?.trim().toLowerCase();
-  if (value === undefined || value.length === 0) {
-    return undefined;
-  }
-  if (value === "true" || value === "1") {
-    return true;
-  }
-  if (value === "false" || value === "0") {
-    return false;
-  }
-  throw new MonoAgentConfigError("invalid_env", `${name} must be true or false.`, { env: name });
-}
-
-function parseConsolePort(value: unknown, name: string): number | undefined {
-  if (value === undefined || (typeof value === "string" && value.trim().length === 0)) {
-    return undefined;
-  }
-  return parseTraceInteger(value, name, 0, 65_535);
 }
 
 export async function resolveAppTraceRegistryDir(input: MonoAgentAppConfigInput): Promise<string> {

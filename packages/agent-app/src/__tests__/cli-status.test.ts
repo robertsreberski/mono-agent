@@ -6,7 +6,6 @@ import type { ChannelId, ChannelStatus } from "../channels.js";
 
 function fakeApp(exporterStatus: ExporterStatus, traceabilityStatus?: TraceabilityStatus): MonoAgentApp {
   return {
-    operatorConsole: undefined,
     configPath: "/work/demo/mono-agent.config.json",
     traceabilityStatus: traceabilityStatus ?? {
       kind: "running",

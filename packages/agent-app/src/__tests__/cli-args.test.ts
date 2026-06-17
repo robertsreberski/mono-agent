@@ -35,22 +35,19 @@ describe("parseCliArgs", () => {
       model: "claude:claude-sonnet-4-6",
       fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.5"],
       memory: "journal",
-      noConsole: false,
       force: false,
       foreground: false,
       follow: false,
     });
   });
 
-  it("parses start with config, port, env file, and --no-console", () => {
+  it("parses start with config and env file", () => {
     expect(
-      parseCliArgs(["start", "--config", "agent.json", "--port", "4100", "--no-console", "--env-file", ".env.local"]),
+      parseCliArgs(["start", "--config", "agent.json", "--env-file", ".env.local"]),
     ).toEqual({
       command: "start",
       configPath: "agent.json",
-      port: 4100,
       envFile: ".env.local",
-      noConsole: true,
       force: false,
       foreground: false,
       follow: false,
@@ -83,7 +80,6 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["install-skill", "--target", "codex", "--force"])).toEqual({
       command: "install-skill",
       target: "codex",
-      noConsole: false,
       force: true,
       foreground: false,
       follow: false,
@@ -97,7 +93,7 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["--help"]).command).toBe("help");
     expect(() => parseCliArgs(["serve"])).toThrow(/Unknown command/u);
     expect(() => parseCliArgs(["start", "--what"])).toThrow(/Unknown flag/u);
-    expect(() => parseCliArgs(["start", "--port", "no"])).toThrow(/--port/u);
+    expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/Unknown flag/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
   });
 

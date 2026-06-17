@@ -955,7 +955,7 @@ function withRedactedProviders(
     providers: {
       ...(config.providers.piAuthPath === undefined ? {} : { piAuthPath: config.providers.piAuthPath }),
       // pi-native knobs carry no secrets — pass them through so redacted config
-      // surfaces (e.g. the operator console) still show them.
+      // surfaces (e.g. the TUI config pane) still show them.
       ...(config.providers.piNative === undefined ? {} : { piNative: config.providers.piNative }),
       ...(config.providers.local === undefined
         ? {}

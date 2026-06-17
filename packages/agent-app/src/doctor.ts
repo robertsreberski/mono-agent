@@ -8,7 +8,6 @@ import {
   isAppCoreConfigError,
   loadAppCoreConfig,
   phoenixAppBaseUrl,
-  resolveAppConsoleSettings,
   resolveAppObservabilityExporters,
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
@@ -65,7 +64,6 @@ export async function validateMonoAgentFolder(
     sections.push(sandboxSection(coreConfig));
   }
 
-  sections.push(await consoleSection(options));
   sections.push(await exporterSection(options));
 
   for (const driver of drivers) {
@@ -347,34 +345,6 @@ function sandboxSection(config: MonoAgentConfig): ValidationSection {
   };
 }
 
-async function consoleSection(input: MonoAgentAppConfigInput): Promise<ValidationSection> {
-  try {
-    const settings = await resolveAppConsoleSettings(input);
-    if (!settings.enabled) {
-      return {
-        id: "console",
-        label: "Operator console",
-        status: "disabled",
-        details: ["Disabled via console.enabled; start stays headless."],
-      };
-    }
-    return {
-      id: "console",
-      label: "Operator console",
-      status: "ok",
-      details: [
-        settings.port === undefined
-          ? "Starts on a free loopback port."
-          : `Starts on loopback port ${settings.port}.`,
-      ],
-    };
-  } catch (error) {
-    if (!isAppCoreConfigError(error)) {
-      throw error;
-    }
-    return { id: "console", label: "Operator console", status: "error", details: [error.message] };
-  }
-}
 
 const LOCAL_ARTIFACTS_NOTE = "JSONL artifacts remain local (the exporter is additive; export failures never affect them).";
 

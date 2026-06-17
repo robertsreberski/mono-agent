@@ -52,28 +52,6 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "channel:telegram").status).toBe("disabled");
   });
 
-  it("reports the operator console section", async () => {
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    const configPath = await writeConfig({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      console: { port: 4321 },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-    const consoleSection = sectionById(report, "console");
-    expect(consoleSection.status).toBe("ok");
-    expect(consoleSection.details.join("\n")).toContain("4321");
-
-    const disabledPath = await writeConfig({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      console: { enabled: false },
-    });
-    const disabledReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: disabledPath });
-    expect(sectionById(disabledReport, "console").status).toBe("disabled");
-  });
-
   it("reports adapter-derived send tools when enabled adapter configs are valid", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({

@@ -10,11 +10,11 @@ import type {
   ChannelDriver,
   ChannelStartInput,
   ChannelStatus,
+  ConfigApplyResult,
   MonoAgentApp,
   MonoAgentAppLogger,
   TraceabilityStatus as AppTraceabilityStatus,
 } from "@mono-agent/agent-app";
-import type { ConfigApplyResult, OperatorConsoleOptions, OperatorConsoleStartResult } from "@mono-agent/operator-console";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { A2AProviderOptions, A2AProviderStartResult } from "@mono-agent/a2a-adapter";
 import type { CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
@@ -25,10 +25,8 @@ import type {
   TelegramAdapterStartResult,
 } from "@mono-agent/telegram-adapter";
 import type { WebhookAdapterOptions, WebhookAdapterStartResult } from "@mono-agent/webhook-adapter";
-import type { FieldGroup } from "@mono-agent/settings";
 
 import {
-  FINAL_DEMO_FIELD_GROUPS,
   FINAL_DEMO_TRACE_DEFAULTS,
   redactFinalAgentDemoConfig,
 } from "./configuration.js";
@@ -52,7 +50,6 @@ export interface FinalAgentDemoOptions {
   readonly env?: Record<string, string | undefined>;
   readonly cwd?: string;
   readonly configPath?: string;
-  readonly operatorConsolePort?: number;
   readonly logger?: FinalAgentDemoLogger;
   readonly runtime?: MonoRuntimeLike;
   readonly telegramStartAdapter?: (
@@ -62,17 +59,6 @@ export interface FinalAgentDemoOptions {
   readonly webhookAdapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
   readonly openAIApiAdapterFactory?: (options: OpenAIApiAdapterOptions) => Promise<OpenAIApiAdapterStartResult>;
   readonly cronAdapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
-  readonly operatorConsoleFactory?: (options: OperatorConsoleOptions) => Promise<OperatorConsoleStartResult>;
-  readonly fieldGroups?: readonly FieldGroup[];
-}
-
-export interface FinalAgentDemoOperatorConsole {
-  /** Base loopback URL for API calls, without the token query string. */
-  readonly url: string;
-  /** Browser URL that includes the per-boot operator console token. */
-  readonly appUrl: string;
-  readonly token: string;
-  readonly configPath: string;
 }
 
 export type TelegramStatus =
@@ -124,7 +110,8 @@ export type CronStatus =
 export type TraceabilityStatus = AppTraceabilityStatus;
 
 export interface FinalAgentDemo {
-  readonly operatorConsole: FinalAgentDemoOperatorConsole;
+  /** Resolved path to the mono-agent.config.json the demo host watches. */
+  readonly configPath: string;
   readonly telegramStatus: TelegramStatus;
   readonly a2aStatus: A2AStatus;
   readonly webhookStatus: WebhookStatus;
@@ -180,10 +167,7 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
     ...(options.configPath === undefined ? {} : { configPath: options.configPath }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
-    ...(options.operatorConsolePort === undefined ? {} : { operatorConsolePort: options.operatorConsolePort }),
-    ...(options.operatorConsoleFactory === undefined ? {} : { operatorConsoleFactory: options.operatorConsoleFactory }),
     drivers,
-    fieldGroups: options.fieldGroups ?? FINAL_DEMO_FIELD_GROUPS,
     traceDefaults: FINAL_DEMO_TRACE_DEFAULTS,
   });
 
@@ -211,13 +195,10 @@ function withRedactedDemoConfig<TConfig>(
 }
 
 class FinalAgentDemoFacade implements FinalAgentDemo {
-  readonly operatorConsole: FinalAgentDemoOperatorConsole;
+  constructor(private readonly app: MonoAgentApp) {}
 
-  constructor(private readonly app: MonoAgentApp) {
-    if (app.operatorConsole === undefined) {
-      throw new Error("Final agent demo requires the operator console.");
-    }
-    this.operatorConsole = app.operatorConsole;
+  get configPath(): string {
+    return this.app.configPath;
   }
 
   get telegramStatus(): TelegramStatus {

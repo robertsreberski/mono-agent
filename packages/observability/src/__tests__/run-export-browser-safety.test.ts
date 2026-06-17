@@ -9,8 +9,8 @@ const distFile = join(here, "..", "..", "dist", "run-export-mapping.js");
 
 /**
  * Browser-safety is a real invariant, not tree-shaking-dependent: the built
- * run-export mapping must not statically reach node:* or Buffer so the
- * operator-console browser graph (which imports observability subpaths) stays
+ * run-export mapping must not statically reach node:* or Buffer so any
+ * browser graph (which imports observability subpaths) stays
  * clean. This reads the BUILT artifact, so it only runs meaningfully after
  * `pnpm --filter @mono-agent/observability run build`.
  */
