@@ -226,9 +226,13 @@ in-flight turn and clears that conversation's queue.
 **Honest per-provider session behavior** — parity is *behavioral* (every
 provider exposes queue-after-turn), not durability/cost:
 
+The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
+bridge was removed once native reached parity); it owns the session, native
+compaction, and pi-ai-managed retry.
+
 | Provider | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|
-| **pi-sdk** | Yes (pi `Agent` + JSONL session repo) | session repo | **Yes** (only one) |
+| **pi** | Yes (pi `AgentHarness` + JSONL session repo) | session repo | **Yes** (only one) |
 | **claude-sdk** | No persistent process (stream closes at turn end) | `queryOptions.resume` | No (Anthropic-side id) |
 | **claude-cli** | No — respawns `claude --resume` per turn (re-inits MCP) | `--resume` replay | No |
 | **codex-app** | Live subprocess thread (dies with the subprocess) | next turn on the thread, else replay | No |
