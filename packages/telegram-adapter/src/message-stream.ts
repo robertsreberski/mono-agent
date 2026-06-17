@@ -40,7 +40,7 @@ export interface TelegramMessageStreamOptions {
   retryCapMs?: number;
   /** Base delay for exponential backoff between final-delivery retries. Default 500. */
   retryBaseDelayMs?: number;
-  /** Render accumulated reasoning as a live "💭" message. Default true. */
+  /** Render accumulated reasoning as a live "Thinking" message. Default true. */
   showThoughts?: boolean;
   /** Render the final answer as Telegram MarkdownV2 (plain fallback). Default true. */
   formatMarkdown?: boolean;
@@ -86,7 +86,9 @@ const DEFAULT_MAX_SEND_RETRIES = 3;
 const DEFAULT_RETRY_CAP_MS = 60_000;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
 const EMPTY_FINAL_TEXT = DEFAULT_EMPTY_FINAL_TEXT;
-const THOUGHT_PREFIX = "💭 ";
+const THINKING_HEADER = "Thinking\n\n";
+const ANSWER_HEADER = "Answer\n\n";
+const FINAL_ANSWER_HEADER = "Final answer\n\n";
 
 export class TelegramMessageStream implements AgentMessageStream {
   private readonly api: TelegramMessageSender;
@@ -192,12 +194,15 @@ export class TelegramMessageStream implements AgentMessageStream {
     await this.awaitInFlightEdit();
 
     if (event.type === "assistant_thought") {
-      // Reasoning is shown live as a single accumulating "💭" message, then
-      // superseded the moment the answer starts streaming.
+      // Reasoning is shown live as a labelled thinking message, then superseded
+      // the moment the answer starts streaming.
       if (!this.showThoughts || this.hasAnswerText || event.text.length === 0) {
         return;
       }
       this.thinkingText += event.text;
+      if (this.thinkingText.trim().length === 0) {
+        return;
+      }
       await this.ensureMessage();
       this.scheduleEdit();
       return;
@@ -244,14 +249,18 @@ export class TelegramMessageStream implements AgentMessageStream {
     this.cancelScheduledEdit();
     await this.awaitInFlightEdit();
 
-    const chunks = splitTelegramText(this.currentText, this.maxMessageChars);
+    const formatFinal = options?.format ?? true;
+    const chunks = splitTelegramText(
+      this.finalDeliveryText({ label: formatFinal }),
+      this.maxMessageChars,
+    );
     const [firstChunk, ...remainingChunks] = chunks;
 
     await this.ensureMessage();
     try {
       await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, {
         final: true,
-        format: options?.format ?? true,
+        format: formatFinal,
       });
     } catch (error) {
       if (this.abortSignal?.aborted === true) {
@@ -275,12 +284,28 @@ export class TelegramMessageStream implements AgentMessageStream {
 
   private interimDisplayText(): string {
     if (this.hasAnswerText || this.currentText.length > 0) {
-      return this.currentText;
+      return buildLabeledStreamingPreview(
+        ANSWER_HEADER,
+        this.currentText,
+        this.maxMessageChars,
+      );
     }
     if (this.showThoughts && this.thinkingText.length > 0) {
-      return `${THOUGHT_PREFIX}${this.thinkingText}`;
+      return buildLabeledStreamingPreview(
+        THINKING_HEADER,
+        this.thinkingText,
+        this.maxMessageChars,
+      );
     }
-    return this.statusText;
+    return buildStreamingPreview(this.statusText, this.maxMessageChars);
+  }
+
+  private finalDeliveryText(options: { label: boolean }): string {
+    const finalText = normalizeTrailing(this.currentText, EMPTY_FINAL_TEXT);
+    if (!options.label) {
+      return finalText;
+    }
+    return `${FINAL_ANSWER_HEADER}${finalText}`;
   }
 
   private async ensureMessage(): Promise<TelegramSentMessage> {
@@ -330,7 +355,7 @@ export class TelegramMessageStream implements AgentMessageStream {
   }
 
   private startInFlightEdit(): void {
-    const text = buildStreamingPreview(this.interimDisplayText(), this.maxMessageChars);
+    const text = this.interimDisplayText();
     this.inFlightEdit = this.deliverText(text, { final: false }).catch((error: unknown) => {
       // Interim edits are best-effort; deliverText already swallows, but guard
       // against an abort rejection so a streaming hiccup never aborts the run.
@@ -629,6 +654,15 @@ function buildStreamingPreview(text: string, maxChars: number): string {
     maxChars,
     "…\n",
   );
+}
+
+function buildLabeledStreamingPreview(
+  header: string,
+  text: string,
+  maxChars: number,
+): string {
+  const bodyChars = Math.max(1, maxChars - countCodePoints(header));
+  return `${header}${buildStreamingPreview(text, bodyChars)}`;
 }
 
 function normalizeTelegramText(text: string): string {
