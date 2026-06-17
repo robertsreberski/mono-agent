@@ -123,6 +123,9 @@ importers:
 
   packages/agent-app:
     dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@mono-agent/a2a-adapter':
         specifier: workspace:0.3.0
         version: link:../a2a-adapter
@@ -165,6 +168,9 @@ importers:
       '@mono-agent/whatsapp-adapter':
         specifier: workspace:0.3.0
         version: link:../whatsapp-adapter
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
   packages/agent-contracts: {}
 
