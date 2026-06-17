@@ -234,7 +234,10 @@ describe("createTelegramBot", () => {
       text: "Thinking…",
       reply_parameters: { message_id: 10 },
     });
-    expect(texts(calls, "editMessageText")).toEqual(["partial", "final"]);
+    expect(texts(calls, "editMessageText")).toEqual([
+      "Answer\n\npartial",
+      "Final answer\n\nfinal",
+    ]);
   });
 
   it("hides thoughts when disabled and delivers only the final answer", async () => {
@@ -251,10 +254,51 @@ describe("createTelegramBot", () => {
 
     // The thought is hidden; the answer streams as plain text and the final edit
     // re-renders it as MarkdownV2.
-    expect(texts(calls, "editMessageText")).toEqual(["the answer", "the answer"]);
+    expect(texts(calls, "editMessageText")).toEqual([
+      "Answer\n\nthe answer",
+      "Final answer\n\nthe answer",
+    ]);
     const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
     expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
     expect(calls.some((call) => String(call.payload.text).includes("secret"))).toBe(false);
+  });
+
+  it("replaces thought-only bot runs with an explicit final placeholder", async () => {
+    const { bot, calls } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.event({ type: "assistant_thought", text: "checking Todoist" });
+        return {};
+      }),
+    });
+
+    await bot.handleUpdate(textUpdate("clean up todoist"));
+
+    expect(texts(calls, "editMessageText")).toEqual([
+      "Thinking\n\nchecking Todoist",
+      "Final answer\n\nNo response text was returned\\.",
+    ]);
+    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
+    expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
+  });
+
+  it("preserves streamed bot answers when the responder returns no text", async () => {
+    const { bot, calls } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.append("streamed answer");
+        return {};
+      }),
+    });
+
+    await bot.handleUpdate(textUpdate("stream only"));
+
+    expect(texts(calls, "editMessageText")).toEqual([
+      "Answer\n\nstreamed answer",
+      "Final answer\n\nstreamed answer",
+    ]);
+    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
+    expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
   });
 
   it("replies busy for a second concurrent message in the same chat", async () => {
