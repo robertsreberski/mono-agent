@@ -68,6 +68,7 @@ describe("classifyFailure", () => {
   it("matches provider unavailable messages", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "fetch failed: ECONNRESET" })).toBe("provider_unavailable");
     expect(classifyFailure({ exitCode: 1, stderrTail: "503 Service Unavailable" })).toBe("provider_unavailable");
+    expect(classifyFailure({ exitCode: 1, errorText: "Codex SSE response headers timed out after 10000ms" })).toBe("provider_unavailable");
   });
 
   it("matches tool failure messages", () => {
