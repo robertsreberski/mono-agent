@@ -209,6 +209,36 @@ The host is responsible for:
 - converting runtime failures into product workflow behavior
 - deciding when to retry, recover, continue, cancel, or ask for user input
 
+## Sessions, Follow-ups & Concurrency
+
+When `runtime.session.mode = "continuous"`, the harness keeps a conversation's
+provider session warm and serializes its turns through a per-conversation queue
+(`@mono-agent/agent-harness` `LiveSessionManager`). A message that arrives while
+a turn is in flight is **queued and answered on the warm session after the
+current turn finishes** (queue-after-turn) rather than rejected — this is what
+powers follow-up messages in chat channels. Different conversations run
+concurrently; an optional `concurrency.maxConcurrentRuns` bounds simultaneous
+model runs via admission control around the provider call (queued follow-ups
+hold no slot, so the bound never deadlocks against the queue). Channels surface
+a user cancel through `responder.cancel(conversationId)`, which aborts the
+in-flight turn and clears that conversation's queue.
+
+**Honest per-provider session behavior** — parity is *behavioral* (every
+provider exposes queue-after-turn), not durability/cost:
+
+| Provider | Warm session | Resume across turns | Survives process restart |
+|---|---|---|---|
+| **pi-sdk** | Yes (pi `Agent` + JSONL session repo) | session repo | **Yes** (only one) |
+| **claude-sdk** | No persistent process (stream closes at turn end) | `queryOptions.resume` | No (Anthropic-side id) |
+| **claude-cli** | No — respawns `claude --resume` per turn (re-inits MCP) | `--resume` replay | No |
+| **codex-app** | Live subprocess thread (dies with the subprocess) | next turn on the thread, else replay | No |
+
+claude-cli and codex only *approximate* a warm session (resume/replay), so do
+not assume warm-session latency wins there. Recall (memory embeddings) is bounded
+by a timeout + circuit breaker and degrades to empty (with a `memory_degraded`
+warning) rather than blocking or failing a turn; selected skills are mtime-cached
+across turns.
+
 ## Essential Takeaway
 
 Think of `@mono-agent/agent-runtime` as the portable agent process engine
