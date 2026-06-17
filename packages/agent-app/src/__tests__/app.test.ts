@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { listTraceSources } from "@mono-agent/observability";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type {
   TelegramAdapterErrorText,
@@ -83,6 +84,92 @@ describe("startMonoAgentApp", () => {
 
     await app.stop();
     expect(webhookStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a configured exporter status when observability.exporters is set", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      observability: {
+        exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false }],
+      },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsoleFactory: fakeConsoleFactory,
+    });
+
+    expect(app.exporterStatus.kind).toBe("configured");
+    if (app.exporterStatus.kind === "configured") {
+      expect(app.exporterStatus.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
+      expect(app.exporterStatus.includeSensitiveData).toBe(false);
+    }
+    await app.stop();
+  });
+
+  it("routes export warnings to lastWarning/lastError and persists them to the trace-source manifest", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsoleFactory: fakeConsoleFactory,
+    });
+
+    const seam = app as unknown as { recordExporterWarning(w: { phase: string; message: string }): void };
+    seam.recordExporterWarning({ phase: "finish", message: "export boom" });
+    seam.recordExporterWarning({ phase: "fail", message: "fail boom" });
+
+    expect(app.exporterStatus.kind).toBe("configured");
+    if (app.exporterStatus.kind === "configured") {
+      expect(app.exporterStatus.lastWarning).toContain("export boom");
+      expect(app.exporterStatus.lastError).toContain("fail boom");
+    }
+
+    // The detached `mono-agent status` reads the manifest, not this live object,
+    // so the warning/error must reach the persisted trace-source metadata.
+    const registryDir = join(dir, "trace-sources");
+    await vi.waitFor(async () => {
+      const { sources } = await listTraceSources({ registryDir });
+      const meta = sources[0]?.metadata?.observability as { lastWarning?: string; lastError?: string } | undefined;
+      expect(meta?.lastWarning).toContain("export boom");
+      expect(meta?.lastError).toContain("fail boom");
+    });
+
+    await app.stop();
+  });
+
+  it("reports a disabled exporter status when no exporter is configured", async () => {
+    await writeConfig({ ...baseConfig() });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsoleFactory: fakeConsoleFactory,
+    });
+
+    expect(app.exporterStatus.kind).toBe("disabled");
+    await app.stop();
+  });
+
+  it("reports a failed exporter status for an invalid exporter config", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      observability: { exporters: [{ type: "not-a-thing" }] },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsoleFactory: fakeConsoleFactory,
+    });
+
+    expect(app.exporterStatus.kind).toBe("failed");
+    await app.stop();
   });
 
   it("reports waiting_for_config for every channel when the core config is incomplete", async () => {

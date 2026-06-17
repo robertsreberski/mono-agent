@@ -22,6 +22,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `disabled` / `waiting_for_config` / `running` / `failed` status.
 - Start the operator console first and re-apply config writes in-process.
 - Register the host as a traceability source.
+- Resolve and surface any configured `observability.exporters` (the Phoenix
+  preset): `start`/`status` report the configured endpoint and a note that JSONL
+  artifacts remain local; `doctor` performs the live reachability probe. Export
+  is best-effort and never changes a run outcome. `--no-console` and
+  `console.enabled` behavior is unchanged by exporter configuration.
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 - Optionally expose guarded self-capability tools so the running agent can

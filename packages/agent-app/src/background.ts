@@ -6,7 +6,7 @@ import process from "node:process";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
-import { resolveAppTraceRegistryDir, resolveAppTraceStaleAfterMs } from "./app-config.js";
+import { phoenixAppBaseUrl, resolveAppTraceRegistryDir, resolveAppTraceStaleAfterMs } from "./app-config.js";
 import {
   bootout,
   bootstrap,
@@ -402,6 +402,10 @@ function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget
   deps.stdout(`started           ${source.startedAt}\n`);
   deps.stdout(`logs              ${target.paths.stdoutPath}\n`);
   deps.stdout(`                  ${target.paths.stderrPath}\n`);
+  const observability = describeObservabilityMetadata(source);
+  if (observability !== undefined) {
+    deps.stdout(`observability     ${observability}\n`);
+  }
   const channelLines = formatChannels(source);
   if (channelLines.length > 0) {
     deps.stdout("channels\n");
@@ -442,6 +446,40 @@ function consoleBaseUrl(source: TraceSourceListItem): string | undefined {
   }
   const url = (console as Record<string, unknown>).url;
   return typeof url === "string" && url.length > 0 ? url : undefined;
+}
+
+/**
+ * Format the persisted observability exporter metadata for the detached
+ * `status` reader. Reads defensively (the worker persists only endpoint +
+ * warning/error strings, never headers/secrets) and always notes that JSONL
+ * artifacts remain local.
+ */
+function describeObservabilityMetadata(source: TraceSourceListItem): string | undefined {
+  const observability = source.metadata?.observability;
+  if (observability === null || typeof observability !== "object") {
+    return undefined;
+  }
+  const record = observability as Record<string, unknown>;
+  const endpoint = record.endpoint;
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    return undefined;
+  }
+  const parts = [`phoenix ${endpoint}`];
+  const appUrl = phoenixAppBaseUrl(endpoint);
+  if (appUrl !== undefined) {
+    parts.push(`app ${appUrl}`);
+  }
+  if (record.includeSensitiveData === true) {
+    parts.push("includeSensitiveData=true");
+  }
+  if (typeof record.lastWarning === "string" && record.lastWarning.length > 0) {
+    parts.push(`last warning: ${record.lastWarning}`);
+  }
+  if (typeof record.lastError === "string" && record.lastError.length > 0) {
+    parts.push(`last error: ${record.lastError}`);
+  }
+  parts.push("JSONL artifacts remain local");
+  return parts.join("; ");
 }
 
 /** ` --config <path>` when a non-default config is in play, else empty. */

@@ -53,6 +53,9 @@ importers:
       '@mono-agent/observability':
         specifier: workspace:0.3.0
         version: link:packages/observability
+      '@mono-agent/observability-otel':
+        specifier: workspace:0.3.0
+        version: link:packages/observability-otel
       '@mono-agent/openai-api-adapter':
         specifier: workspace:0.3.0
         version: link:packages/openai-api-adapter
@@ -242,6 +245,9 @@ importers:
       '@mono-agent/observability':
         specifier: workspace:0.3.0
         version: link:../observability
+      '@mono-agent/observability-otel':
+        specifier: workspace:0.3.0
+        version: link:../observability-otel
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.3.0
         version: link:../runtime-adapter
@@ -345,6 +351,12 @@ importers:
         version: 7.6.13
 
   packages/observability: {}
+
+  packages/observability-otel:
+    dependencies:
+      '@mono-agent/observability':
+        specifier: workspace:0.3.0
+        version: link:../observability
 
   packages/openai-api-adapter:
     dependencies:

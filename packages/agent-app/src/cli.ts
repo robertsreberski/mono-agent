@@ -4,7 +4,8 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { startMonoAgentApp } from "./app.js";
-import type { MonoAgentApp } from "./app.js";
+import type { ExporterStatus, MonoAgentApp } from "./app.js";
+import { phoenixAppBaseUrl } from "./app-config.js";
 import {
   defaultBackgroundDeps,
   resolveInstanceTarget,
@@ -411,7 +412,7 @@ function requireDarwin(command: string): number | undefined {
   return 1;
 }
 
-function printAppStatus(app: MonoAgentApp): void {
+export function printAppStatus(app: MonoAgentApp): void {
   if (app.operatorConsole !== undefined) {
     process.stdout.write(`operator console  ${app.operatorConsole.appUrl}\n`);
   }
@@ -422,9 +423,35 @@ function printAppStatus(app: MonoAgentApp): void {
       ? `traceability      running (source ${trace.sourceId})\n`
       : `traceability      ${trace.kind}: ${trace.reason}\n`,
   );
+  const artifactDir = app.traceabilityStatus.kind === "running" ? app.traceabilityStatus.artifactDir : undefined;
+  process.stdout.write(`observability     ${describeExporter(app.exporterStatus, artifactDir)}\n`);
   for (const [id, status] of app.channelStatuses()) {
     process.stdout.write(`${id.padEnd(17)} ${describeChannelStatus(status)}\n`);
   }
+}
+
+function describeExporter(status: ExporterStatus, artifactDir: string | undefined): string {
+  if (status.kind !== "configured") {
+    return `${status.kind}: ${status.reason}`;
+  }
+  const parts = [`phoenix ${status.endpoint}`];
+  const appUrl = phoenixAppBaseUrl(status.endpoint);
+  if (appUrl !== undefined) {
+    parts.push(`app ${appUrl}`);
+  }
+  if (status.includeSensitiveData) {
+    parts.push("includeSensitiveData=true");
+  }
+  if (status.lastWarning !== undefined) {
+    parts.push(`last warning: ${status.lastWarning}`);
+  }
+  if (status.lastError !== undefined) {
+    parts.push(`last error: ${status.lastError}`);
+  }
+  parts.push(artifactDir === undefined
+    ? "JSONL artifacts remain local"
+    : `JSONL artifacts remain local at ${artifactDir}`);
+  return parts.join("; ");
 }
 
 function describeChannelStatus(status: ChannelStatus): string {

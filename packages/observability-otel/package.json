@@ -1,7 +1,7 @@
 {
-  "name": "@mono-agent/observability",
+  "name": "@mono-agent/observability-otel",
   "version": "0.3.0",
-  "description": "Run event recording and artifact summaries for agent hosts.",
+  "description": "Hand-rolled OTLP/HTTP+JSON trace exporter (Phoenix preset) for agent run lifecycles.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
@@ -11,14 +11,6 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./event-timeline": {
-      "types": "./dist/event-timeline.d.ts",
-      "import": "./dist/event-timeline.js"
-    },
-    "./run-export": {
-      "types": "./dist/run-export-mapping.d.ts",
-      "import": "./dist/run-export-mapping.js"
     }
   },
   "files": [
@@ -29,6 +21,9 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@mono-agent/observability": "workspace:0.3.0"
   },
   "publishConfig": {
     "access": "public"

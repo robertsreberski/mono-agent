@@ -7,6 +7,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type {
+  PhoenixExporterConfig,
+  RunExportContext,
+  RunExporter,
+  RunSummary,
+  RuntimeEventLike,
+} from "@mono-agent/observability";
+import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
 import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
@@ -622,6 +630,296 @@ describe("agent host composition helpers", () => {
   });
 });
 
+describe("agent host phoenix exporter wiring", () => {
+  function phoenixObservability(
+    overrides: Partial<PhoenixExporterConfig> = {},
+  ): NonNullable<MonoAgentConfig["observability"]> {
+    return {
+      exporters: [
+        {
+          type: "phoenix",
+          endpoint: "http://127.0.0.1:6006/v1/traces",
+          ...overrides,
+        },
+      ],
+    };
+  }
+
+  it("still produces a response and writes JSONL artifacts when the exporter throws in every phase", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+
+    const failing: RunExporter = {
+      start: () => { throw new Error("start boom"); },
+      onEvent: () => { throw new Error("onEvent boom"); },
+      finish: () => { throw new Error("finish boom"); },
+      fail: () => { throw new Error("fail boom"); },
+    };
+    const warnings: Array<{ phase: string; message: string }> = [];
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
+      runtime: fake.runtime,
+      createRunId: () => "run-failing-exporter",
+      exporterFactory: () => failing,
+      exporterWarn: (warning) => { warnings.push(warning); },
+    });
+
+    const response = await responder.respond(
+      { conversationId: "conv-exporter", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    // Run outcome is unchanged by the failing exporter.
+    expect(response.text).toBe("Final answer");
+
+    // JSONL artifacts are written byte-for-byte as without an exporter.
+    const artifactFiles = await readdir(artifactDir);
+    expect(artifactFiles).toContain("run-failing-exporter.summary.json");
+    expect(artifactFiles).toContain("run-failing-exporter.events.jsonl");
+    expect(await readFile(join(artifactDir, "run-failing-exporter.summary.json"), "utf8")).toContain(
+      "run-failing-exporter",
+    );
+
+    // Exporter failures surface only as best-effort warnings.
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings.map((w) => w.message).join(" ")).toContain("boom");
+  });
+
+  it("a hanging exporter resolves within the bounded timeout and warns instead of stalling the run", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Final answer" }));
+
+    // start/finish never resolve — the composite's bounded timeout must win.
+    const hanging: RunExporter = {
+      start: () => new Promise<void>(() => {}),
+      finish: () => new Promise<void>(() => {}),
+    };
+    const warnings: Array<{ phase: string; message: string }> = [];
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability({ timeoutMs: 25 }) }),
+      runtime: fake.runtime,
+      createRunId: () => "run-hanging-exporter",
+      exporterFactory: () => hanging,
+      exporterWarn: (warning) => { warnings.push(warning); },
+    });
+
+    const started = Date.now();
+    const response = await responder.respond(
+      { conversationId: "conv-hang", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+    const elapsed = Date.now() - started;
+
+    expect(response.text).toBe("Final answer");
+    // The bounded timeout (25ms) keeps the run from hanging; allow generous slack.
+    expect(elapsed).toBeLessThan(5_000);
+    expect(warnings.some((w) => /timed out/u.test(w.message))).toBe(true);
+
+    const artifactFiles = await readdir(artifactDir);
+    expect(artifactFiles).toContain("run-hanging-exporter.summary.json");
+  });
+
+  it("does not delay startup when exporter.start hangs (harness awaits recorder.start once)", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const hangingStart: RunExporter = {
+      start: () => new Promise<void>(() => {}),
+    };
+    const warnings: Array<{ phase: string; message: string }> = [];
+
+    const harness = createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability({ timeoutMs: 25 }) }),
+      runtime: fake.runtime,
+      createRunId: () => "run-hang-start",
+      exporterFactory: () => hangingStart,
+      exporterWarn: (warning) => { warnings.push(warning); },
+    });
+
+    const started = Date.now();
+    const response = await harness.run({ conversationId: "conv-hang-start", userMessage: "hi", abortSignal: new AbortController().signal });
+    const elapsed = Date.now() - started;
+
+    expect(response.text).toBe("ok");
+    expect(elapsed).toBeLessThan(5_000);
+    expect(warnings.some((w) => w.phase === "start" && /timed out/u.test(w.message))).toBe(true);
+  });
+
+  it("still exports best-effort AND writes JSONL when a run is cancelled", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const finishCalls: RunSummary[] = [];
+    const exporter: RunExporter = {
+      finish: (summary) => { finishCalls.push(summary); },
+    };
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const harness = createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
+      runtime: fake.runtime,
+      createRunId: () => "run-cancelled",
+      exporterFactory: () => exporter,
+    });
+
+    const response = await harness.run({ conversationId: "conv-cancelled", userMessage: "hi", abortSignal: controller.signal });
+
+    // Cancelled runs surface as a failure but the runtime is never invoked.
+    expect(response.failure?.kind).toBe("cancelled");
+    expect(fake.calls).toHaveLength(0);
+
+    // JSONL artifacts are written even for the cancelled path.
+    const artifactFiles = await readdir(artifactDir);
+    expect(artifactFiles).toContain("run-cancelled.summary.json");
+
+    // The cancelled summary was exported best-effort.
+    expect(finishCalls).toHaveLength(1);
+    expect(finishCalls[0]?.status).toBe("cancelled");
+  });
+
+  it("omits raw prompt and tool payloads from the exported body in metadata-only mode (default)", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const secret = "SUPER_SECRET_PROMPT_PAYLOAD";
+    const toolSecret = "TOOL_INPUT_SECRET_VALUE";
+
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      options.onEvent?.({
+        type: "tool_use",
+        name: "Read",
+        input: { path: "/etc/passwd", note: toolSecret },
+      } as RuntimeEventLike);
+      return { text: "ok" };
+    });
+
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(String(init?.body ?? ""));
+      return new Response(null, { status: 200 });
+    };
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        // includeSensitiveData omitted -> defaults to false (metadata-only).
+        observability: phoenixObservability(),
+      }),
+      runtime: fake.runtime,
+      createRunId: () => "run-metadata-only",
+      exporterFactory: (cfg) => realPhoenixExporter(cfg, { fetch: fetchImpl }),
+    });
+
+    await responder.respond(
+      { conversationId: "conv-meta", text: secret, abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(bodies.length).toBeGreaterThan(0);
+    const exported = bodies.join("\n");
+    expect(exported).not.toContain(secret);
+    expect(exported).not.toContain(toolSecret);
+    expect(exported).not.toContain("/etc/passwd");
+    // Identifiers are still exported.
+    expect(exported).toContain("run-metadata-only");
+  });
+
+  it("does NOT construct an exporter when config.observability.exporters is empty", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    let factoryCalls = 0;
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, artifactDir, observability: { exporters: [] } }),
+      runtime: fake.runtime,
+      createRunId: () => "run-no-exporter",
+      exporterFactory: () => { factoryCalls += 1; return {}; },
+    });
+
+    const response = await responder.respond(
+      { conversationId: "conv-empty", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(response.text).toBe("ok");
+    expect(factoryCalls).toBe(0);
+
+    // JSONL is still written via the plain recorder.
+    const artifactFiles = await readdir(artifactDir);
+    expect(artifactFiles).toContain("run-no-exporter.summary.json");
+  });
+
+  it("threads source_id/source_label/config_path from observabilityContext onto root span attributes", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(String(init?.body ?? ""));
+      return new Response(null, { status: 200 });
+    };
+
+    const responder = createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
+      runtime: fake.runtime,
+      createRunId: () => "run-ctx",
+      observabilityContext: {
+        sourceId: "src-123",
+        sourceLabel: "Personal Agent",
+        configPath: "/home/me/mono-agent.config.json",
+      },
+      exporterFactory: (cfg) => realPhoenixExporter(cfg, { fetch: fetchImpl }),
+    });
+
+    await responder.respond(
+      { conversationId: "conv-ctx", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(bodies.length).toBeGreaterThan(0);
+    const exported = bodies.join("\n");
+    expect(exported).toContain("mono.agent.source_id");
+    expect(exported).toContain("src-123");
+    expect(exported).toContain("mono.agent.source_label");
+    expect(exported).toContain("Personal Agent");
+    expect(exported).toContain("mono.agent.config_path");
+    expect(exported).toContain("/home/me/mono-agent.config.json");
+  });
+});
+
+function realPhoenixExporter(
+  config: PhoenixExporterConfig,
+  deps: { fetch: typeof fetch },
+): RunExporter {
+  return createPhoenixRunExporter(config, { fetch: deps.fetch });
+}
+
 function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>) {
   const calls: Array<{ prompt: string; options: RuntimeRunOptions }> = [];
   return {
@@ -715,6 +1013,7 @@ function monoConfig(input: {
   readonly mcpConfigPath?: string;
   readonly permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
   readonly reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on";
+  readonly observability?: NonNullable<MonoAgentConfig["observability"]>;
 }): MonoAgentConfig {
   return {
     runtime: {
@@ -766,5 +1065,6 @@ function monoConfig(input: {
     traceability: {
       registryDir: join(input.dir, "trace-sources"),
     },
+    ...(input.observability === undefined ? {} : { observability: input.observability }),
   };
 }

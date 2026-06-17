@@ -69,6 +69,15 @@ export type MonoAgentMemoryLlmJson = {
   readonly endpoint?: string;
 };
 
+/** JSON-serialisable shape for a single observability exporter block. */
+export type MonoAgentObservabilityExporterJson = {
+  readonly type?: string;
+  readonly endpoint?: string;
+  readonly headers?: { readonly [k: string]: string };
+  readonly includeSensitiveData?: boolean;
+  readonly timeoutMs?: number;
+};
+
 /**
  * Serializable shape of MonoAgentConfig persisted as `mono-agent.config.json`.
  *
@@ -141,6 +150,9 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly sourceLabel?: string;
     readonly heartbeatMs?: number;
     readonly staleAfterMs?: number;
+  };
+  readonly observability?: {
+    readonly exporters?: readonly MonoAgentObservabilityExporterJson[];
   };
   readonly providers?: MonoAgentProvidersJson;
 }

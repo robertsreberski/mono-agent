@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { describeMonoRuntimeSupport } from "@mono-agent/runtime-adapter";
 import type { MonoAgentConfig } from "@mono-agent/config";
 
-import { isAppCoreConfigError, loadAppCoreConfig, resolveAppConsoleSettings } from "./app-config.js";
+import {
+  isAppCoreConfigError,
+  loadAppCoreConfig,
+  phoenixAppBaseUrl,
+  resolveAppConsoleSettings,
+  resolveAppObservabilityExporters,
+} from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
 import { defaultChannelDrivers } from "./channels.js";
@@ -60,6 +66,7 @@ export async function validateMonoAgentFolder(
   }
 
   sections.push(await consoleSection(options));
+  sections.push(await exporterSection(options));
 
   for (const driver of drivers) {
     sections.push(await channelSection(driver, options));
@@ -366,6 +373,73 @@ async function consoleSection(input: MonoAgentAppConfigInput): Promise<Validatio
       throw error;
     }
     return { id: "console", label: "Operator console", status: "error", details: [error.message] };
+  }
+}
+
+const LOCAL_ARTIFACTS_NOTE = "JSONL artifacts remain local (the exporter is additive; export failures never affect them).";
+
+/**
+ * Reports observability exporter state and, uniquely among the validation
+ * sections, performs a LIVE reachability probe of the Phoenix endpoint. An
+ * invalid exporter shape is a hard `error` (fails the report) so bad config is
+ * caught before startup, but an unreachable endpoint is only `waiting` — Phoenix
+ * may start after the agent, mirroring the Ollama-unreachable precedent so
+ * `validate` still passes. Probe failures are swallowed into a warning.
+ */
+async function exporterSection(input: MonoAgentAppConfigInput): Promise<ValidationSection> {
+  let exporters;
+  try {
+    exporters = await resolveAppObservabilityExporters(input);
+  } catch (error) {
+    if (!isAppCoreConfigError(error)) {
+      throw error;
+    }
+    return { id: "observability", label: "Observability exporter", status: "error", details: [error.message] };
+  }
+
+  if (exporters.length === 0) {
+    return {
+      id: "observability",
+      label: "Observability exporter",
+      status: "disabled",
+      details: ["No observability exporter configured."],
+    };
+  }
+
+  const exporter = exporters[0]!;
+  const details: string[] = [`Exporter: ${exporter.type} -> ${exporter.endpoint}`];
+  const appUrl = phoenixAppBaseUrl(exporter.endpoint);
+  if (appUrl !== undefined) {
+    details.push(`Phoenix app: ${appUrl}`);
+  }
+  if (exporter.includeSensitiveData) {
+    details.push("includeSensitiveData=true (redacted payloads are exported).");
+  }
+
+  const probeError = await probeExporterEndpoint(exporter.endpoint);
+  if (probeError !== undefined) {
+    details.push(
+      `[WARN] Phoenix not reachable at ${exporter.endpoint} (${probeError}); exports will fail until it starts. This is non-fatal.`,
+    );
+    details.push(LOCAL_ARTIFACTS_NOTE);
+    return { id: "observability", label: "Observability exporter", status: "waiting", details };
+  }
+
+  details.push(LOCAL_ARTIFACTS_NOTE);
+  return { id: "observability", label: "Observability exporter", status: "ok", details };
+}
+
+/** Times a POST-less reachability probe of the OTLP endpoint; returns an error string when unreachable, else undefined. */
+async function probeExporterEndpoint(endpoint: string): Promise<string | undefined> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => { ctrl.abort(); }, BUJO_PROBE_TIMEOUT_MS);
+  try {
+    await fetch(endpoint, { method: "OPTIONS", signal: ctrl.signal });
+    return undefined;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

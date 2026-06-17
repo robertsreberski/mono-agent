@@ -18,7 +18,13 @@ import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo"
 import type { LlmComplete } from "@mono-agent/memory-bujo";
 import { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } from "@mono-agent/memory-search";
 import type { MemoryStore } from "@mono-agent/memory-store";
-import { createJsonlRunRecorder } from "@mono-agent/observability";
+import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
+import type {
+  PhoenixExporterConfig,
+  RunExportContext,
+  RunExporter,
+} from "@mono-agent/observability";
+import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
 import {
   assertExecutionModeCompatible,
   createMonoRuntime,
@@ -59,6 +65,20 @@ export interface ConfiguredAgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  /**
+   * Exporter-context fields the factory input cannot supply. Surfaced on the
+   * exported root span so Phoenix traces map back to the running host and its
+   * local artifacts.
+   */
+  readonly observabilityContext?: {
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly configPath?: string;
+  };
+  /** Best-effort exporter warnings (timeouts, transport failures). */
+  readonly exporterWarn?: (warning: { phase: string; message: string }) => void;
+  /** Injection seam (tests); defaults to createPhoenixRunExporter. */
+  readonly exporterFactory?: (config: PhoenixExporterConfig) => RunExporter;
 }
 
 export interface ConfiguredAgentResponderOptions extends ConfiguredAgentHarnessOptions {}
@@ -153,11 +173,45 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
-    recorderFactory: ({ runId, conversationId }) => createJsonlRunRecorder({
-      runId,
-      conversationId,
-      artifactDir: config.artifacts.dir,
-    }),
+    recorderFactory: ({ runId, conversationId }) => {
+      // The JSONL recorder is always built first and returned unchanged when no
+      // exporter is configured, so default recording stays byte-identical.
+      const jsonl = createJsonlRunRecorder({
+        runId,
+        conversationId,
+        artifactDir: config.artifacts.dir,
+      });
+      const exporters = config.observability?.exporters ?? [];
+      const exporterCfg = exporters[0];
+      if (exporterCfg === undefined) {
+        return jsonl;
+      }
+      // Best-effort, additive export: wrap the JSONL recorder so exporter
+      // failures only surface as warnings and never change the run outcome.
+      const exporter = (options.exporterFactory ?? createPhoenixRunExporter)(exporterCfg);
+      const context: RunExportContext = {
+        runId,
+        conversationId,
+        ...(options.observabilityContext?.sourceId === undefined
+          ? {}
+          : { sourceId: options.observabilityContext.sourceId }),
+        ...(options.observabilityContext?.sourceLabel === undefined
+          ? {}
+          : { sourceLabel: options.observabilityContext.sourceLabel }),
+        ...(options.observabilityContext?.configPath === undefined
+          ? {}
+          : { configPath: options.observabilityContext.configPath }),
+        artifactDir: config.artifacts.dir,
+        includeSensitiveData: exporterCfg.includeSensitiveData ?? false,
+      };
+      return createCompositeRunRecorder({
+        recorder: jsonl,
+        exporter,
+        context,
+        timeoutMs: exporterCfg.timeoutMs ?? 5000,
+        ...(options.exporterWarn === undefined ? {} : { onWarning: options.exporterWarn }),
+      });
+    },
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });

@@ -47,6 +47,27 @@ export interface MemoryAgentHostLlmConfig {
   readonly executionMode?: RuntimeExecutionMode;
 }
 export type MemoryLlmConfig = MemoryOllamaLlmConfig | MemoryAgentHostLlmConfig;
+
+/**
+ * Phoenix OTLP-HTTP trace exporter config. Best-effort, additive sink: never
+ * changes run outcome and never suppresses the local JSONL recorder. Header
+ * values are secrets and are redacted by `redactMonoAgentConfig`.
+ */
+export interface PhoenixExporterConfig {
+  readonly type: "phoenix";
+  /** OTLP/HTTP traces endpoint; defaults to Phoenix's local `/v1/traces`. */
+  readonly endpoint?: string;
+  /** Extra HTTP headers (e.g. auth) sent on the OTLP POST. Values are secrets. */
+  readonly headers?: Readonly<Record<string, string>>;
+  /** When true, redacted raw payloads are exported; default false (metadata only). */
+  readonly includeSensitiveData?: boolean;
+  /** Hard cap (ms) on a single export attempt; bounded {1..60000}, default 5000. */
+  readonly timeoutMs?: number;
+}
+
+/** Union of supported observability exporters (future: langfuse/otlp). */
+export type ObservabilityExporterConfig = PhoenixExporterConfig;
+
 export type SessionMode = "continuous" | "per-message";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
@@ -136,6 +157,13 @@ export interface MonoAgentConfig {
     readonly heartbeatMs?: number;
     readonly staleAfterMs?: number;
   };
+  /**
+   * Best-effort observability sinks. Present only when at least one exporter is
+   * configured; the local JSONL recorder always runs regardless.
+   */
+  readonly observability?: {
+    readonly exporters: readonly ObservabilityExporterConfig[];
+  };
   readonly providers?: {
     readonly piAuthPath?: string;
     readonly local?: readonly LocalProviderDefinition[];
@@ -168,6 +196,17 @@ export type RedactedMemoryConfig = Omit<NonNullable<MonoAgentConfig["memory"]>, 
   readonly embeddings?: RedactedMemoryEmbeddingsConfig;
 };
 
+export type RedactedPhoenixExporterConfig = Omit<PhoenixExporterConfig, "headers"> & {
+  /** Header VALUES are secrets and replaced with the literal `[redacted]`. */
+  readonly headers?: Readonly<Record<string, "[redacted]">>;
+};
+
+export type RedactedObservabilityExporterConfig = RedactedPhoenixExporterConfig;
+
+export interface RedactedObservabilityConfig {
+  readonly exporters: readonly RedactedObservabilityExporterConfig[];
+}
+
 export interface RedactedMonoAgentConfig {
   readonly runtime: MonoAgentConfig["runtime"];
   readonly concurrency?: MonoAgentConfig["concurrency"];
@@ -177,6 +216,7 @@ export interface RedactedMonoAgentConfig {
   readonly sandbox?: MonoAgentConfig["sandbox"];
   readonly artifacts: MonoAgentConfig["artifacts"];
   readonly traceability: MonoAgentConfig["traceability"];
+  readonly observability?: RedactedObservabilityConfig;
   readonly providers?: {
     readonly piAuthPath?: string;
     readonly local?: readonly RedactedLocalProviderDefinition[];

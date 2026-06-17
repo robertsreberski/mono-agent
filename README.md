@@ -134,7 +134,9 @@ const app = await startMonoAgentApp({ cwd, configPath });
 
 The workspace now has a local host traceability path. Each running host registers an `agent-runtime.trace-source.v1` manifest in a registry directory such as `~/.mono-agent/trace-sources`; each manifest points at that source's artifact directory, where run summaries and event JSONL files remain. The operator console Traceability view reads the registry, marks stale sources when their heartbeat ages out, aggregates recent runs across sources, and loads details by `(sourceId, runId)` so duplicate run ids do not collide.
 
-This is local-first and bearer-protected through the loopback console. It is not a LangSmith dependency, database, or cloud collector. LangSmith/OpenTelemetry export remains a later sink option.
+This is local-first and bearer-protected through the loopback console. It is not a LangSmith dependency, database, or cloud collector.
+
+When an `observability.exporters` entry (currently the `phoenix` preset) is configured, Phoenix becomes the recommended trace viewer for local development: the host additively exports each run lifecycle to a Phoenix-compatible OTLP HTTP endpoint via `@mono-agent/observability-otel`. Export is best-effort and bounded by a timeout — it never changes the run outcome and never suppresses JSONL writes. Raw prompts, reasoning, and tool I/O are metadata-only by default (`includeSensitiveData: false`). The local JSONL artifacts and the operator console Traceability view remain the local fallback and source of truth; the earlier "OTLP export remains a later sink option" note is now realized by this Phoenix-first OTLP-HTTP path. `mono-agent start`, `mono-agent status`, and `mono-agent validate` report the configured exporter endpoint and note that JSONL artifacts stay local.
 
 See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
 

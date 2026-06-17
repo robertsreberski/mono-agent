@@ -321,6 +321,29 @@ describe("statusBackground", () => {
     expect(stdout).toContain("/work/other/mono-agent.config.json");
   });
 
+  it("prints the observability exporter line with the local-artifacts note", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target, {
+      metadata: {
+        reason: "startup-complete",
+        observability: {
+          endpoint: "http://127.0.0.1:6006/v1/traces",
+          includeSensitiveData: false,
+          jsonlArtifactsLocal: true,
+        },
+      },
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
+
+    await statusBackground(target, harness.deps);
+
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("observability");
+    expect(stdout).toContain("http://127.0.0.1:6006/v1/traces");
+    expect(stdout).toContain("JSONL artifacts remain local");
+  });
+
   it("returns non-zero when no instance is running for this config", async () => {
     const { runner } = makeRunner({ loaded: false });
     const target = makeTarget();

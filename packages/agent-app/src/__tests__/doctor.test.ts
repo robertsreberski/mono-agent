@@ -140,6 +140,71 @@ describe("validateMonoAgentFolder", () => {
   });
 });
 
+describe("validateMonoAgentFolder — observability exporter section", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function writeExporterConfig(exporters?: unknown): Promise<string> {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    return writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      ...(exporters === undefined ? {} : { observability: { exporters } }),
+    });
+  }
+
+  it("reports disabled when no exporter is configured", async () => {
+    const configPath = await writeExporterConfig();
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("disabled");
+    expect(section.details.join("\n")).toMatch(/no observability exporter/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports ok when the Phoenix endpoint is reachable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("ok");
+    const text = section.details.join("\n");
+    expect(text).toContain("http://127.0.0.1:6006/v1/traces");
+    expect(text).toMatch(/JSONL artifacts remain local/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports waiting (not error) when the endpoint is unreachable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("waiting");
+    const text = section.details.join("\n");
+    expect(text).toMatch(/WARN/u);
+    expect(text).toMatch(/ECONNREFUSED|not reachable|unreachable/iu);
+    expect(text).toMatch(/JSONL artifacts remain local/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports error (fails the report) for an invalid exporter type", async () => {
+    const configPath = await writeExporterConfig([{ type: "bogus", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("error");
+    expect(report.ok).toBe(false);
+  });
+});
+
 describe("validateMonoAgentFolder — bujo memory checks", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

@@ -403,6 +403,32 @@ describe("layerJsonOntoEnv", () => {
     );
     expect(layered.MONO_AGENT_MAX_TURNS).toBe("4");
   });
+
+  it("translates JSON observability.exporters to MONO_AGENT_OBSERVABILITY_EXPORTERS", () => {
+    const exporters = [
+      { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false },
+    ];
+    const layered = layerJsonOntoEnv({ observability: { exporters } }, {});
+    expect(JSON.parse(layered.MONO_AGENT_OBSERVABILITY_EXPORTERS ?? "[]")).toEqual(exporters);
+  });
+
+  it("lets env override JSON observability exporters", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        observability: {
+          exporters: [{ type: "phoenix", endpoint: "http://json-host:6006/v1/traces" }],
+        },
+      },
+      {
+        MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+          { type: "phoenix", endpoint: "http://env-host:6006/v1/traces" },
+        ]),
+      },
+    );
+    expect(JSON.parse(layered.MONO_AGENT_OBSERVABILITY_EXPORTERS ?? "[]")).toEqual([
+      { type: "phoenix", endpoint: "http://env-host:6006/v1/traces" },
+    ]);
+  });
 });
 
 describe("loadMonoAgentConfigWithSources", () => {

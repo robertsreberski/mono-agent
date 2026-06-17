@@ -45,6 +45,39 @@ export interface RunRecorder {
   fail(error: unknown): Promise<RunSummary>;
 }
 
+export interface RunExportContext {
+  readonly runId: string;
+  readonly conversationId: string;
+  readonly sourceId?: string;
+  readonly sourceLabel?: string;
+  readonly configPath?: string;
+  readonly artifactDir?: string;
+  readonly includeSensitiveData: boolean;
+}
+
+export interface RunExportEventContext extends RunExportContext {
+  readonly eventIndex: number;
+}
+
+export interface RunExporter {
+  start?(context: RunExportContext): Promise<void> | void;
+  onEvent?(event: RuntimeEventLike, context: RunExportEventContext): Promise<void> | void;
+  finish?(summary: RunSummary, context: RunExportContext): Promise<void> | void;
+  fail?(summary: RunSummary, error: unknown, context: RunExportContext): Promise<void> | void;
+  flush?(): Promise<void>;
+  close?(): Promise<void>;
+}
+
+export interface PhoenixExporterConfig {
+  readonly type: "phoenix";
+  readonly endpoint?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly includeSensitiveData?: boolean;
+  readonly timeoutMs?: number;
+}
+
+export type ObservabilityExporterConfig = PhoenixExporterConfig;
+
 export interface JsonlRunRecorderOptions {
   readonly runId: string;
   readonly conversationId: string;

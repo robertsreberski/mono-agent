@@ -8,6 +8,8 @@ Category: `operator-surface`
 
 Local loopback operator surface for agent hosts. It serves a React settings UI, validates registered field-group patches, writes a JSON settings file atomically, and reads local trace registry plus recorded-run artifacts for a Traceability view.
 
+The browser Traceability view is now a local fallback / legacy surface: when an `observability.exporters` (Phoenix) entry is configured, Phoenix is the recommended external trace viewer. The local JSONL artifacts and the file-backed trace-source registry this console reads remain the local source of truth. (The traceability routes and view are not removed in this slice; their removal is a later migration gated on a live Phoenix proof.)
+
 ## Install / Usage
 
 ```bash
@@ -48,6 +50,8 @@ The console keeps the existing bearer-protected `/api/observability/*` endpoints
 When no registry is configured but an `observability.artifactDir` is present, the traceability API exposes a single fallback `local` source instead of demo data. Malformed manifests, missing artifact directories, corrupt summaries/events, and stale heartbeats are returned as warnings.
 
 The browser Traceability view renders source context, run insights, event mix, and timeline event data as operator-facing fields and chips. Artifact payloads stay structured internally, but the user-facing surface does not show raw JSON previews.
+
+This view is a local fallback for trace inspection. Where a Phoenix exporter is configured (`observability.exporters`), Phoenix is the recommended external trace viewer; the local JSONL artifacts and trace-source registry remain the local source of truth. These endpoints and the view are unchanged in this slice.
 
 ## Dependency Boundary
 
