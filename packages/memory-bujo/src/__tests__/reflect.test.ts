@@ -122,7 +122,7 @@ describe("reflect", () => {
     expect(edgeDsts).not.toContain("MEM3");
   });
 
-  it("returns insights:0 and does not throw when the LLM throws", async () => {
+  it("surfaces (rethrows) a model failure during insight synthesis instead of returning insights:0", async () => {
     const root = newRoot();
     const db = openDb(root);
 
@@ -137,9 +137,9 @@ describe("reflect", () => {
       },
     };
 
-    await expect(reflect(makeDeps(db, root, { llm: throwingLlm }))).resolves.toMatchObject({
-      insights: 0,
-    });
+    // A dead model during the nightly reflection must surface (the scheduler logs it) — not look
+    // like a successful reflection that simply found no insights worth synthesizing.
+    await expect(reflect(makeDeps(db, root, { llm: throwingLlm }))).rejects.toThrow(/LLM unavailable/);
   });
 
   it("returns insights:0 when fewer than 3 non-insight memories exist", async () => {

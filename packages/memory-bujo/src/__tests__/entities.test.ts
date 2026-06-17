@@ -135,4 +135,12 @@ describe("extractEntities", () => {
     const llm = fakeLlm([["entities", "{{{broken json"]]);
     await expect(extractEntities("some text", llm)).resolves.toEqual({ entities: [], relations: [] });
   });
+
+  it("surfaces (rethrows) a model failure from the LLM instead of swallowing to EMPTY", async () => {
+    // Malformed *content* (above) is tolerated as EMPTY, but a thrown model error (Ollama down,
+    // timeout, 500) must surface so it can be logged — it is not "no entities found".
+    const throwingLlm = { id: "throws", complete: async () => { throw new Error("ECONNREFUSED"); } };
+    await expect(extractEntities("some text", throwingLlm)).rejects.toThrow(/entit/i);
+    await expect(extractEntities("some text", throwingLlm)).rejects.toThrow(/ECONNREFUSED/);
+  });
 });
