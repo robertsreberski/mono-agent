@@ -40,9 +40,11 @@ function fakeAssistantMessage(model, spec) {
   }
   const content = [
     ...(spec.thinking ? [{ type: "thinking", thinking: spec.thinking }] : []),
-    { type: "text", text: spec.text },
+    ...(spec.toolCall ? [{ type: "toolCall", ...spec.toolCall }] : []),
+    ...(spec.text ? [{ type: "text", text: spec.text }] : []),
   ];
-  return { ...base, content, stopReason: "stop" };
+  const stopReason = spec.stopReason || (spec.toolCall ? "toolUse" : "stop");
+  return { ...base, content, stopReason };
 }
 
 // Returns a StreamFn-compatible fake: async-iterable over
@@ -63,11 +65,7 @@ function makeStreamFn(plan, { gate, eventsForSpec } = {}) {
     const message = fakeAssistantMessage(model, spec);
     const events = spec.error
       ? [{ type: "error", reason: "error", error: message }]
-      : (eventsForSpec?.(spec, message) || [
-        { type: "start", partial: message },
-        { type: "text_end", contentIndex: spec.thinking ? 1 : 0, content: spec.text, partial: message },
-        { type: "done", reason: "stop", message },
-      ]);
+      : (eventsForSpec?.(spec, message) || defaultEventsForSpec(spec, message));
     return {
       async *[Symbol.asyncIterator]() {
         if (gate) await gate;
@@ -81,6 +79,20 @@ function makeStreamFn(plan, { gate, eventsForSpec } = {}) {
   };
   streamFn.calls = calls;
   return streamFn;
+}
+
+function defaultEventsForSpec(spec, message) {
+  if (spec.toolCall) {
+    return [
+      { type: "start", partial: message },
+      { type: "done", reason: "toolUse", message },
+    ];
+  }
+  return [
+    { type: "start", partial: message },
+    { type: "text_end", contentIndex: spec.thinking ? 1 : 0, content: spec.text, partial: message },
+    { type: "done", reason: "stop", message },
+  ];
 }
 
 function transcriptOf(call) {
@@ -144,6 +156,55 @@ describe("pi-sdk native sessions", () => {
       .filter((block) => block?.type === "thinking")
       .map((block) => block.text);
     expect(thinkingTexts).toEqual(["checking ", "context"]);
+  });
+
+  it("emits a visible progress thought before executing a Pi tool call", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-sdk-tool-progress-"));
+    try {
+      writeFileSync(join(root, "notes.txt"), "important context\n");
+      const onEvent = vi.fn();
+      const streamFn = makeStreamFn([
+        {
+          toolCall: {
+            id: "call-1",
+            name: "Read",
+            arguments: { file_path: "notes.txt" },
+          },
+        },
+        { text: "done" },
+      ]);
+
+      const result = await generatePiResponse("system", runOptions({
+        cwd: root,
+        allowedTools: ["Read"],
+        messages: [{ role: "user", content: "turn-1" }],
+        streamFn,
+        onEvent,
+      }));
+
+      expect(result.error).toBeNull();
+      expect(result.text).toBe("done");
+      expect(result.thinking).toBe("");
+      const runtimeEvents = onEvent.mock.calls.map(([event]) => event);
+      const progressIndex = runtimeEvents.findIndex((event) =>
+        event?.message?.content?.[0]?.type === "thinking"
+        && event.message.content[0].text === "Running Read..."
+      );
+      const toolUseIndex = runtimeEvents.findIndex((event) =>
+        event?.message?.content?.[0]?.type === "tool_use"
+        && event.message.content[0].name === "Read"
+      );
+      const toolResultIndex = runtimeEvents.findIndex((event) =>
+        event?.message?.content?.[0]?.type === "tool_result"
+        && event.message.content[0].tool_use_id === "call-1"
+      );
+
+      expect(progressIndex).toBeGreaterThanOrEqual(0);
+      expect(toolUseIndex).toBeGreaterThan(progressIndex);
+      expect(toolResultIndex).toBeGreaterThan(toolUseIndex);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("does not force OpenAI reasoning summaries by default", async () => {
