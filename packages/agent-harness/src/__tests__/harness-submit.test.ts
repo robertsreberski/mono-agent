@@ -78,6 +78,44 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
     expect(fake.calls[1]?.options.sessionId).toBe("ps-1");
   });
 
+  it("bounds concurrent runtime runs across conversations to maxConcurrentRuns", async () => {
+    const identityPath = await identityFixture();
+    let concurrent = 0;
+    let maxObserved = 0;
+    const gates: Array<() => void> = [];
+    const fake = createSessionFakeRuntime(async () => {
+      concurrent += 1;
+      maxObserved = Math.max(maxObserved, concurrent);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      concurrent -= 1;
+      return { text: "ok", providerSessionId: "ps" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      session: continuous,
+      concurrency: { maxConcurrentRuns: 1 },
+    });
+
+    const p1 = harness.submit?.(request("conv-a", "a"));
+    const p2 = harness.submit?.(request("conv-b", "b"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Different conversations, but the global limit allows only one model run.
+    expect(maxObserved).toBe(1);
+    expect(fake.calls).toHaveLength(1);
+
+    gates[0]?.();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fake.calls).toHaveLength(2);
+    gates[1]?.();
+    await p1;
+    await p2;
+    expect(maxObserved).toBe(1);
+  });
+
   it("falls back to run() (no queue) when not in continuous mode", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-1" }));

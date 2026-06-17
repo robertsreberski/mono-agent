@@ -12,6 +12,8 @@ import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/to
 import { NoopRunRecorder } from "./recorder.js";
 import { createLiveSessionManager } from "./live-session.js";
 import type { LiveSessionManager } from "./live-session.js";
+import { createSemaphore } from "./semaphore.js";
+import type { Semaphore } from "./semaphore.js";
 import { createRuntimeSessionStore } from "./sessions.js";
 import type { RuntimeSessionRecord, RuntimeSessionStore } from "./sessions.js";
 import type {
@@ -40,6 +42,7 @@ export class MonoAgentHarness implements AgentHarness {
   private readonly sessionStore: RuntimeSessionStore | undefined;
   private readonly liveSessionManager: LiveSessionManager | undefined;
   private readonly skillsCache: SkillsCache;
+  private readonly runLimiter: Semaphore | undefined;
   private supportsResumeCache: boolean | undefined;
 
   constructor(options: AgentHarnessOptions) {
@@ -61,6 +64,10 @@ export class MonoAgentHarness implements AgentHarness {
     // current turn (queue-after-turn), instead of racing fresh.
     this.liveSessionManager = options.session?.mode === "continuous"
       ? createLiveSessionManager({ run: (request) => this.run(request) })
+      : undefined;
+    const maxConcurrentRuns = options.concurrency?.maxConcurrentRuns;
+    this.runLimiter = typeof maxConcurrentRuns === "number" && maxConcurrentRuns > 0
+      ? createSemaphore(maxConcurrentRuns)
       : undefined;
   }
 
@@ -336,9 +343,16 @@ export class MonoAgentHarness implements AgentHarness {
         hostOnEvent?.(event);
       },
     };
+    // Admission control: acquire a slot only around the actual provider run.
+    // A blocked acquire holds nothing, so per-conversation queued follow-ups
+    // never occupy a concurrency slot while they wait.
+    if (this.runLimiter !== undefined) {
+      await this.runLimiter.acquire();
+    }
     try {
       return await this.options.runtime.run(context.prompt, runtimeOptions);
     } finally {
+      this.runLimiter?.release();
       await requestExtension?.cleanup?.();
     }
   }

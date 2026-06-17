@@ -108,6 +108,13 @@ export interface AgentHarnessOptions {
   readonly createRunId?: () => string;
   readonly now?: () => Date;
   readonly session?: AgentHarnessSessionOptions;
+  /**
+   * Optional global concurrency bound across all conversations. Limits how many
+   * model runs execute at once (admission control around the provider call);
+   * queued follow-ups wait in the per-conversation queue and hold no slot.
+   * Unset = unbounded (default).
+   */
+  readonly concurrency?: { readonly maxConcurrentRuns?: number };
 }
 
 export interface AgentHarnessRuntimeOptionsInput {
