@@ -44,6 +44,14 @@ type DetailState =
 type SelectedRunKey = `${string}/${string}`;
 type StatusFilter = "all" | RunSummaryStatus;
 type EventCounts = Record<RecordedRunEventCategory, number>;
+type BadgeVariant = "default" | "secondary" | "outline" | "success" | "warning" | "destructive";
+type EventField = { readonly key: string; readonly label: string; readonly value: unknown };
+
+const MAX_RENDER_DEPTH = 4;
+const MAX_RENDER_FIELDS = 20;
+const MAX_RENDER_ITEMS = 12;
+const SENSITIVE_FIELD_PATTERN = /(token|secret|password|authorization|api[_-]?key|cookie|credential|private[_-]?key|access[_-]?key|refresh[_-]?token|client[_-]?secret)/iu;
+const STRUCTURED_TEXT_LABEL = "Structured text value";
 
 interface OperationsSnapshot {
   readonly sourceCount: number;
@@ -52,7 +60,17 @@ interface OperationsSnapshot {
   readonly failingRunCount: number;
 }
 
-const CATEGORY_BADGES: Record<RecordedRunEventCategory, "default" | "secondary" | "outline" | "success" | "warning" | "destructive"> = {
+interface BoundedRecordEntries {
+  readonly entries: readonly [string, unknown][];
+  readonly hasMore: boolean;
+}
+
+interface EventFieldSet {
+  readonly fields: readonly EventField[];
+  readonly hasMore: boolean;
+}
+
+const CATEGORY_BADGES: Record<RecordedRunEventCategory, BadgeVariant> = {
   tool: "default",
   thinking: "warning",
   message: "secondary",
@@ -178,11 +196,7 @@ export function TraceabilityView({ client }: TraceabilityViewProps): React.JSX.E
               {listState.kind === "loading" ? "Refreshing..." : "Refresh"}
             </Button>
           </div>
-          {listResponse?.registryDir !== undefined ? (
-            <p className="max-w-full break-all rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[0.7rem] text-muted-foreground" title={listResponse.registryDir}>
-              {listResponse.registryDir}
-            </p>
-          ) : null}
+          {listResponse?.registryDir !== undefined ? <RegistryPath value={listResponse.registryDir} /> : null}
         </CardHeader>
         <CardContent className="min-w-0 space-y-3">
           <ListStatus state={listState} />
@@ -196,7 +210,7 @@ export function TraceabilityView({ client }: TraceabilityViewProps): React.JSX.E
       </Card>
 
       {listResponse !== undefined && listResponse.enabled ? (
-        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(20rem,24rem)_minmax(0,1fr)]">
+        <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(20rem,24rem)_minmax(0,1fr)]" aria-label="Traceability layout">
           <aside className="grid min-w-0 content-start gap-4">
             <SourcesPanel sources={listResponse.sources} />
             <RunsPanel
@@ -216,6 +230,15 @@ export function TraceabilityView({ client }: TraceabilityViewProps): React.JSX.E
         </div>
       ) : null}
     </section>
+  );
+}
+
+function RegistryPath({ value }: { readonly value: string }): React.JSX.Element {
+  const label = displayString(value);
+  return (
+    <p className="max-w-full break-all rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[0.7rem] text-muted-foreground" title={label}>
+      {label}
+    </p>
   );
 }
 
@@ -279,24 +302,31 @@ function SourcesPanel({ sources }: { readonly sources: readonly TraceSourceListI
       </CardHeader>
       <CardContent className="min-w-0">
         <div className="grid gap-2" aria-label="Trace sources">
-        {sources.map((source) => (
-          <div key={source.sourceId} className="min-w-0 rounded-lg border border-border bg-background p-3">
-            <div className="flex min-w-0 items-start justify-between gap-2">
-              <div className="min-w-0">
-                <p className="break-words text-sm font-medium" title={source.label}>{source.label}</p>
-                <p className="break-all font-mono text-[0.7rem] text-muted-foreground" title={source.sourceId}>{source.sourceId}</p>
+        {sources.map((source) => {
+          const sourceLabel = displayString(source.label);
+          const sourceId = displayString(source.sourceId);
+          const artifactDir = displayString(source.artifactDir);
+          return (
+            <div key={source.sourceId} className="min-w-0 rounded-lg border border-border bg-background p-3">
+              <div className="flex min-w-0 items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="break-words text-sm font-medium" title={sourceLabel}>{sourceLabel}</p>
+                  <p className="break-all font-mono text-[0.7rem] text-muted-foreground" title={sourceId}>{sourceId}</p>
+                </div>
+                <Badge variant={HEALTH_BADGES[source.health]}>{source.health}</Badge>
               </div>
-              <Badge variant={HEALTH_BADGES[source.health]}>{source.health}</Badge>
+              <p className="mt-2 break-all font-mono text-[0.7rem] text-muted-foreground" title={artifactDir}>{artifactDir}</p>
+              {source.transports !== undefined && source.transports.length > 0 ? (
+                <div className="mt-2">
+                  <ChipList values={source.transports} />
+                </div>
+              ) : null}
+              {source.warnings.map((warning) => (
+                <p key={warning} className="mt-2 text-[0.7rem] [color:var(--warning)]">{displayString(warning)}</p>
+              ))}
             </div>
-            <p className="mt-2 break-all font-mono text-[0.7rem] text-muted-foreground" title={source.artifactDir}>{source.artifactDir}</p>
-            {source.transports !== undefined && source.transports.length > 0 ? (
-              <p className="mt-2 break-words text-[0.7rem] text-muted-foreground">{source.transports.join(", ")}</p>
-            ) : null}
-            {source.warnings.map((warning) => (
-              <p key={warning} className="mt-2 text-[0.7rem] [color:var(--warning)]">{warning}</p>
-            ))}
-          </div>
-        ))}
+          );
+        })}
         </div>
       </CardContent>
     </Card>
@@ -374,7 +404,7 @@ function RunFilters({
         <Select aria-label="Source" value={sourceFilter} onChange={(event) => onSourceFilter(event.target.value)}>
           <option value="all">All sources</option>
           {sources.map((source) => (
-            <option key={source.sourceId} value={source.sourceId}>{source.label}</option>
+            <option key={source.sourceId} value={source.sourceId}>{displayString(source.label)}</option>
           ))}
         </Select>
       </label>
@@ -419,6 +449,9 @@ function RunList({
       {runs.map((run) => {
         const key = runKey(run.source.sourceId, run.runId);
         const selected = key === selectedRunKey;
+        const sourceLabel = displayString(run.source.label);
+        const runId = displayString(run.runId);
+        const conversationId = displayString(run.conversationId);
         return (
           <button
             key={key}
@@ -431,11 +464,11 @@ function RunList({
               <div className="min-w-0 space-y-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <Badge variant={statusBadge(run.status)}>{run.status}</Badge>
-                  <Badge variant={HEALTH_BADGES[run.source.health]}>{run.source.label}</Badge>
-                  {run.failureKind !== undefined ? <Badge variant="destructive">{run.failureKind}</Badge> : null}
+                  <Badge variant={HEALTH_BADGES[run.source.health]}>{sourceLabel}</Badge>
+                  {run.failureKind !== undefined ? <Badge variant="destructive">{displayString(run.failureKind)}</Badge> : null}
                 </div>
-                <p className="truncate font-mono text-xs text-foreground" title={run.runId}>{run.runId}</p>
-                <p className="truncate text-xs text-muted-foreground" title={run.conversationId}>{run.conversationId}</p>
+                <p className="truncate font-mono text-xs text-foreground" title={runId}>{runId}</p>
+                <p className="truncate text-xs text-muted-foreground" title={conversationId}>{conversationId}</p>
               </div>
               <div className="grid gap-2 text-[0.7rem] text-muted-foreground min-[360px]:grid-cols-2">
                 <RunMiniStat label="Duration" value={formatDuration(run.durationMs)} />
@@ -469,7 +502,7 @@ function RunDetailPanel({ state }: { readonly state: DetailState }): React.JSX.E
     );
   }
   if (state.kind === "loading") {
-    return <DetailShell title="Run detail" description={`Loading ${state.sourceId}/${state.runId}...`} />;
+    return <DetailShell title="Run detail" description="Loading selected trace run..." />;
   }
   if (state.kind === "error") {
     return <DetailShell title="Run detail" description={state.message} tone="error" />;
@@ -487,18 +520,21 @@ function RunDetail({
   const summary = detail.run.summary;
   const metadata = useMemo(() => runMetadata(summary), [summary]);
   const eventCounts = useMemo(() => countEvents(detail.run.events), [detail.run.events]);
+  const runId = displayString(summary.runId);
+  const sourceLabel = displayString(detail.source.label);
+  const conversationId = displayString(summary.conversationId);
   return (
     <Card className="min-w-0 border border-border/70 shadow-sm">
       <CardHeader className="gap-3">
         <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">
-            <CardTitle className="truncate" title={summary.runId}>{summary.runId}</CardTitle>
-            <CardDescription className="break-words">{detail.source.label} - {summary.conversationId}</CardDescription>
+            <CardTitle className="truncate" title={runId}>{runId}</CardTitle>
+            <CardDescription className="break-words">{sourceLabel} - {conversationId}</CardDescription>
           </div>
           <div className="flex flex-wrap gap-1">
             <Badge variant={statusBadge(summary.status)}>{summary.status}</Badge>
             <Badge variant={HEALTH_BADGES[detail.source.health]}>{detail.source.health}</Badge>
-            {summary.failureKind !== undefined ? <Badge variant="destructive">{summary.failureKind}</Badge> : null}
+            {summary.failureKind !== undefined ? <Badge variant="destructive">{displayString(summary.failureKind)}</Badge> : null}
           </div>
         </div>
         <dl className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
@@ -513,28 +549,82 @@ function RunDetail({
           <WarningNotice key={warning} warning={warning} />
         ))}
         <EventMixPanel counts={eventCounts} />
-        <details className="rounded-lg border border-border bg-muted/30 p-3">
-          <summary className="cursor-pointer rounded-sm text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">Source metadata</summary>
-          <div className="mt-3">
-            <JsonPreview value={detail.source} />
-          </div>
-        </details>
-        {metadata.length > 0 ? (
-          <details className="rounded-lg border border-border bg-muted/30 p-3">
-            <summary className="cursor-pointer rounded-sm text-sm font-medium focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">Summary metadata</summary>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              {metadata.map((entry) => (
-                <div key={entry.label} className="min-w-0 rounded-md bg-background p-3 ring-1 ring-border">
-                  <p className="mb-2 text-xs font-medium text-muted-foreground">{entry.label}</p>
-                  <JsonPreview value={entry.value} />
-                </div>
-              ))}
-            </div>
-          </details>
-        ) : null}
+        <SourceContext source={detail.source} />
+        {metadata.length > 0 ? <RunInsights entries={metadata} /> : null}
         <EventTimeline events={detail.run.events} />
       </CardContent>
     </Card>
+  );
+}
+
+function SourceContext({ source }: { readonly source: TraceSourceListItem }): React.JSX.Element {
+  const sourceFields = [
+    { label: "Source ID", value: source.sourceId },
+    { label: "Runtime status", value: source.status },
+    { label: "Health", value: source.health },
+    { label: "Started", value: formatDate(source.startedAt) },
+    { label: "Heartbeat", value: formatDate(source.updatedAt) },
+    ...(source.pid === undefined ? [] : [{ label: "Process ID", value: String(source.pid) }]),
+    ...(source.configPath === undefined ? [] : [{ label: "Config path", value: source.configPath }]),
+    { label: "Artifact directory", value: source.artifactDir },
+  ];
+  return (
+    <section className="rounded-lg border border-border bg-muted/20 p-3" aria-label="Source context">
+      <div className="mb-3 flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <h3 className="text-sm font-medium">Source context</h3>
+          <p className="break-words text-xs text-muted-foreground">{displayString(source.label)}</p>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          <Badge variant={HEALTH_BADGES[source.health]}>{source.health}</Badge>
+          <Badge variant="outline">{source.status}</Badge>
+        </div>
+      </div>
+      <dl className="grid min-w-0 gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {sourceFields.map((field) => (
+          <MetaItem key={field.label} label={field.label} value={field.value} />
+        ))}
+      </dl>
+      {source.transports !== undefined && source.transports.length > 0 ? (
+        <div className="mt-3">
+          <p className="mb-2 text-xs font-medium uppercase text-muted-foreground">Transports</p>
+          <ChipList values={source.transports} />
+        </div>
+      ) : null}
+      {source.metadata !== undefined && hasAnyRecordEntry(source.metadata) ? (
+        <StructuredSection title="Source metadata" value={source.metadata} />
+      ) : null}
+      {source.warnings.length > 0 ? (
+        <div className="mt-3 grid gap-2">
+          {source.warnings.map((warning) => (
+            <WarningNotice key={warning} warning={warning} />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function RunInsights({
+  entries,
+}: {
+  readonly entries: readonly { readonly label: string; readonly value: unknown }[];
+}): React.JSX.Element {
+  return (
+    <section className="rounded-lg border border-border bg-muted/20 p-3" aria-label="Run insights">
+      <div className="mb-3 flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <h3 className="text-sm font-medium">Run insights</h3>
+        <span className="text-xs text-muted-foreground">{formatCount(entries.length, "section")} rendered</span>
+      </div>
+      <div className="grid min-w-0 gap-3 md:grid-cols-2">
+        {entries.map((entry) => (
+          <div key={entry.label} className="min-w-0 rounded-lg border border-border bg-background p-3">
+            <p className="mb-2 text-xs font-medium uppercase text-muted-foreground">{entry.label}</p>
+            <StructuredValue value={entry.value} />
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -566,28 +656,55 @@ function EventRow({ event }: { readonly event: RecordedRunTimelineItem }): React
   const sourceRange = isGrouped
     ? `#${event.sourceEventStartIndex + 1}-#${event.sourceEventEndIndex + 1} · ${event.sourceEventCount} events`
     : `#${event.index + 1}`;
+  const summary = eventSummaryText(event);
+  const eventType = event.type === undefined ? undefined : displayString(event.type);
+  const eventLabel = displayString(event.label);
   return (
     <li className="min-w-0 rounded-lg border border-border bg-background p-3">
       <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={CATEGORY_BADGES[event.category]}>{event.category}</Badge>
-            {event.type !== undefined ? <span className="font-mono text-xs text-muted-foreground">{event.type}</span> : null}
+            {eventType !== undefined ? <span className="font-mono text-xs text-muted-foreground">{eventType}</span> : null}
           </div>
-          <p className="break-words text-sm font-medium">{event.label}</p>
-          <p className="break-words text-sm text-muted-foreground">{event.summary}</p>
+          <p className="break-words text-sm font-medium">{eventLabel}</p>
+          {summary.length > 0 ? <p className="break-words text-sm text-muted-foreground">{summary}</p> : null}
         </div>
         <div className="shrink-0 text-xs text-muted-foreground">
           {sourceRange}{event.timestamp !== undefined ? ` - ${formatDate(event.timestamp)}` : ""}
         </div>
       </div>
-      <details className="mt-3 min-w-0 rounded-md bg-muted/40 p-3">
-        <summary className="cursor-pointer rounded-sm text-xs font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">{isGrouped ? "Combined payload preview" : "Raw JSON payload"}</summary>
-        <div className="mt-2">
-          <JsonPreview value={event.payload} />
-        </div>
-      </details>
+      <EventData event={event} />
     </li>
+  );
+}
+
+function EventData({ event }: { readonly event: RecordedRunTimelineItem }): React.JSX.Element {
+  const { fields, hasMore } = eventFields(event);
+  const fieldCountLabel = hasMore ? `${fields.length.toLocaleString()}+ fields` : formatCount(fields.length, "field");
+  return (
+    <details className="mt-3 min-w-0 rounded-lg border border-border bg-muted/30 p-3" open={event.category === "error"}>
+      <summary className="cursor-pointer rounded-sm text-xs font-medium uppercase text-muted-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+        Event fields
+      </summary>
+      <div className="mt-2 flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-xs text-muted-foreground">Rendered event data</p>
+        <span className="text-xs text-muted-foreground">{fieldCountLabel}</span>
+      </div>
+      <div className="mt-2 grid min-w-0 gap-2 md:grid-cols-2">
+        {fields.map((field) => (
+          <div key={field.key} className="min-w-0 rounded-md bg-background p-2 ring-1 ring-border">
+            <p className="mb-1 text-[0.7rem] font-medium uppercase text-muted-foreground">{field.label}</p>
+            <StructuredValue value={field.value} compact />
+          </div>
+        ))}
+        {hasMore ? (
+          <div className="min-w-0 rounded-md bg-background p-2 ring-1 ring-border">
+            <LimitNotice shown={fields.length} unit="field" />
+          </div>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -600,11 +717,12 @@ function DetailShell({
   readonly description: string;
   readonly tone?: "normal" | "error";
 }): React.JSX.Element {
+  const displayDescription = displayString(description);
   return (
     <Card className="min-w-0">
       <CardHeader>
         <CardTitle>{title}</CardTitle>
-        <CardDescription className={tone === "error" ? "text-destructive" : undefined}>{description}</CardDescription>
+        <CardDescription className={tone === "error" ? "text-destructive" : undefined}>{displayDescription}</CardDescription>
       </CardHeader>
     </Card>
   );
@@ -619,6 +737,7 @@ function MetricTile({
   readonly value: string;
   readonly tone: "neutral" | "warning" | "critical";
 }): React.JSX.Element {
+  const displayValue = displayString(value);
   const toneClass = tone === "critical"
     ? "border-destructive/30 bg-destructive/10 [color:var(--destructive)]"
     : tone === "warning"
@@ -627,7 +746,7 @@ function MetricTile({
   return (
     <div className={`min-w-0 rounded-lg border px-3 py-2 ${toneClass}`}>
       <p className="text-[0.7rem] uppercase text-muted-foreground">{label}</p>
-      <p className="truncate text-lg font-medium" title={value}>{value}</p>
+      <p className="truncate text-lg font-medium" title={displayValue}>{displayValue}</p>
     </div>
   );
 }
@@ -660,10 +779,11 @@ function HealthCount({
 }
 
 function RunMiniStat({ label, value }: { readonly label: string; readonly value: string }): React.JSX.Element {
+  const displayValue = displayString(value);
   return (
     <div className="min-w-0 rounded-md bg-muted/40 px-2 py-1.5">
       <p className="uppercase text-muted-foreground">{label}</p>
-      <p className="truncate font-medium text-foreground" title={value}>{value}</p>
+      <p className="truncate font-medium text-foreground" title={displayValue}>{displayValue}</p>
     </div>
   );
 }
@@ -693,7 +813,7 @@ function EventMixItem({
 }: {
   readonly label: string;
   readonly value: number;
-  readonly variant: "default" | "secondary" | "outline" | "warning" | "destructive";
+  readonly variant: BadgeVariant;
 }): React.JSX.Element {
   return (
     <div className="min-w-0 rounded-md bg-background px-2 py-2">
@@ -703,13 +823,14 @@ function EventMixItem({
 }
 
 function StatusBox({ label, tone = "normal" }: { readonly label: string; readonly tone?: "normal" | "error" }): React.JSX.Element {
+  const displayLabel = displayString(label);
   return (
     <div
       role={tone === "error" ? "alert" : "status"}
       aria-live={tone === "error" ? "assertive" : "polite"}
       className={`rounded-lg border px-3 py-2 text-sm ${tone === "error" ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-border bg-muted/40 text-muted-foreground"}`}
     >
-      {label}
+      {displayLabel}
     </div>
   );
 }
@@ -717,30 +838,315 @@ function StatusBox({ label, tone = "normal" }: { readonly label: string; readonl
 function WarningNotice({ warning }: { readonly warning: string }): React.JSX.Element {
   return (
     <div role="alert" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm [color:var(--warning)]">
-      {warning}
+      {displayString(warning)}
     </div>
   );
 }
 
 function MetaItem({ label, value }: { readonly label: string; readonly value: string }): React.JSX.Element {
+  const displayValue = displayString(value);
   return (
     <div className="min-w-0 rounded-md bg-muted/40 px-3 py-2">
       <dt className="text-[0.7rem] uppercase">{label}</dt>
-      <dd className="truncate text-foreground" title={value}>{value}</dd>
+      <dd className="truncate text-foreground" title={displayValue}>{displayValue}</dd>
     </div>
   );
 }
 
-function JsonPreview({ value }: { readonly value: unknown }): React.JSX.Element {
+function StructuredSection({ title, value }: { readonly title: string; readonly value: unknown }): React.JSX.Element {
   return (
-    <pre
-      tabIndex={0}
-      aria-label="JSON payload preview"
-      className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 text-xs leading-relaxed text-muted-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-    >
-      {JSON.stringify(value, null, 2)}
-    </pre>
+    <div className="mt-3 min-w-0 rounded-lg border border-border bg-background p-3">
+      <p className="mb-2 text-xs font-medium uppercase text-muted-foreground">{title}</p>
+      <StructuredValue value={value} />
+    </div>
   );
+}
+
+function StructuredValue({
+  value,
+  compact = false,
+  depth = 0,
+}: {
+  readonly value: unknown;
+  readonly compact?: boolean;
+  readonly depth?: number;
+}): React.JSX.Element {
+  if (typeof value === "string") {
+    const label = displayString(value);
+    return <span className="break-words text-foreground">{label}</span>;
+  }
+  if (typeof value === "number") {
+    return <span className="text-foreground">{Number.isFinite(value) ? value.toLocaleString() : String(value)}</span>;
+  }
+  if (typeof value === "boolean") {
+    return <span className="text-foreground">{value ? "Yes" : "No"}</span>;
+  }
+  if (value === null || value === undefined) {
+    return <span className="text-muted-foreground">Not recorded</span>;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return <span className="text-muted-foreground">None</span>;
+    }
+    if (depth >= MAX_RENDER_DEPTH) {
+      return <span className="text-muted-foreground">Additional nested data omitted.</span>;
+    }
+    const visibleItems = value.slice(0, MAX_RENDER_ITEMS);
+    if (visibleItems.every(isDisplayScalar)) {
+      return (
+        <div className="grid min-w-0 gap-2">
+          <ChipList values={visibleItems.map((item) => scalarText(item as string | number | boolean | null | undefined))} />
+          {value.length > visibleItems.length ? <LimitNotice shown={visibleItems.length} total={value.length} unit="item" /> : null}
+        </div>
+      );
+    }
+    return (
+      <ol className="grid min-w-0 gap-2">
+        {visibleItems.map((item, index) => (
+          <li key={index} className="min-w-0 rounded-md border border-border bg-muted/20 p-2">
+            <p className="mb-1 text-[0.7rem] font-medium uppercase text-muted-foreground">Item {index + 1}</p>
+            <StructuredValue value={item} compact={compact} depth={depth + 1} />
+          </li>
+        ))}
+        {value.length > visibleItems.length ? (
+          <li className="min-w-0 rounded-md border border-border bg-muted/20 p-2">
+            <LimitNotice shown={visibleItems.length} total={value.length} unit="item" />
+          </li>
+        ) : null}
+      </ol>
+    );
+  }
+  if (isRecord(value)) {
+    const { entries, hasMore } = boundedRecordEntries(value, MAX_RENDER_FIELDS);
+    if (entries.length === 0 && !hasMore) {
+      return <span className="text-muted-foreground">None</span>;
+    }
+    if (depth >= MAX_RENDER_DEPTH) {
+      return <span className="text-muted-foreground">Additional nested data omitted.</span>;
+    }
+    return (
+      <dl className={`grid min-w-0 gap-2 ${compact ? "" : "sm:grid-cols-2"}`}>
+        {entries.map(([key, entryValue]) => (
+          <div key={key} className="min-w-0 rounded-md bg-muted/40 px-2 py-1.5">
+            <dt className="text-[0.7rem] font-medium uppercase text-muted-foreground">{fieldLabel(key)}</dt>
+            <dd className="mt-1 min-w-0 text-sm">
+              <StructuredValue value={safeDisplayValue(key, entryValue)} compact depth={depth + 1} />
+            </dd>
+          </div>
+        ))}
+        {hasMore ? (
+          <div className="min-w-0 rounded-md bg-muted/40 px-2 py-1.5">
+            <LimitNotice shown={entries.length} unit="field" />
+          </div>
+        ) : null}
+      </dl>
+    );
+  }
+  return <span className="break-words text-foreground">{String(value)}</span>;
+}
+
+function LimitNotice({
+  shown,
+  total,
+  unit,
+}: {
+  readonly shown: number;
+  readonly total?: number;
+  readonly unit: "field" | "item";
+}): React.JSX.Element {
+  const plural = unit === "field" ? "fields" : "items";
+  return (
+    <span className="break-words text-xs text-muted-foreground">
+      {total === undefined
+        ? `Showing first ${shown.toLocaleString()} ${plural}. Additional ${plural} omitted.`
+        : `Showing first ${shown.toLocaleString()} of ${formatCount(total, unit)}.`}
+    </span>
+  );
+}
+
+function ChipList({ values }: { readonly values: readonly string[] }): React.JSX.Element {
+  return (
+    <div className="flex min-w-0 flex-wrap gap-1.5">
+      {values.map((value, index) => (
+        <span key={`${value}-${index}`} className="max-w-full break-words rounded-md bg-muted px-2 py-1 text-xs text-foreground ring-1 ring-border">
+          {displayString(value)}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function eventFields(event: RecordedRunTimelineItem): EventFieldSet {
+  const fields: EventField[] = [
+    {
+      key: "source-events",
+      label: "Source events",
+      value: event.sourceEventCount === 1
+        ? `#${event.sourceEventStartIndex + 1}`
+        : `#${event.sourceEventStartIndex + 1} through #${event.sourceEventEndIndex + 1}`,
+    },
+  ];
+  if (event.timestamp !== undefined) {
+    fields.push({ key: "timestamp", label: "Timestamp", value: formatDate(event.timestamp) });
+  }
+  if (event.type !== undefined) {
+    fields.push({ key: "type", label: "Type", value: event.type });
+  }
+  if (isRecord(event.payload)) {
+    const payloadFieldBudget = Math.max(MAX_RENDER_FIELDS - fields.length, 0);
+    const { entries, hasMore } = boundedRecordEntries(event.payload, payloadFieldBudget);
+    for (const [key, value] of entries) {
+      fields.push({ key: `payload-${key}`, label: fieldLabel(key), value: safeDisplayValue(key, value) });
+    }
+    return { fields, hasMore };
+  }
+  fields.push({ key: "payload", label: "Value", value: event.payload });
+  return { fields, hasMore: false };
+}
+
+function eventSummaryText(event: RecordedRunTimelineItem): string {
+  const summary = event.summary.trim();
+  if (summary.length === 0) {
+    return "";
+  }
+  if (isWholeStructuredText(summary)) {
+    return `${titleCase(event.category)} event with ${structuredPayloadCountLabel(event.payload)}.`;
+  }
+  if (containsStructuredText(summary)) {
+    return `${titleCase(event.category)} event with structured text.`;
+  }
+  return summary;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDisplayScalar(value: unknown): value is string | number | boolean | null | undefined {
+  return value === null
+    || value === undefined
+    || typeof value === "string"
+    || typeof value === "number"
+    || typeof value === "boolean";
+}
+
+function scalarText(value: string | number | boolean | null | undefined): string {
+  if (typeof value === "string") {
+    return displayString(value);
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value.toLocaleString() : String(value);
+  }
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+  return "Not recorded";
+}
+
+function displayString(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return "Empty";
+  }
+  if (isWholeStructuredText(trimmed)) {
+    return STRUCTURED_TEXT_LABEL;
+  }
+  if (containsStructuredText(trimmed)) {
+    return "Text with structured data omitted.";
+  }
+  return formatMaybeDate(value);
+}
+
+function safeDisplayValue(key: string, value: unknown): unknown {
+  return SENSITIVE_FIELD_PATTERN.test(normalizeSensitiveKey(key)) ? "[redacted]" : value;
+}
+
+function fieldLabel(key: string): string {
+  return displayString(humanizeKey(key));
+}
+
+function boundedRecordEntries(record: Record<string, unknown>, limit: number): BoundedRecordEntries {
+  const entries: [string, unknown][] = [];
+  for (const key in record) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      continue;
+    }
+    if (entries.length >= limit) {
+      return { entries, hasMore: true };
+    }
+    entries.push([key, record[key]]);
+  }
+  return { entries, hasMore: false };
+}
+
+function hasAnyRecordEntry(record: Record<string, unknown>): boolean {
+  for (const key in record) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function structuredPayloadCountLabel(value: unknown): string {
+  if (isRecord(value)) {
+    const { entries, hasMore } = boundedRecordEntries(value, MAX_RENDER_FIELDS);
+    return hasMore ? `${entries.length.toLocaleString()}+ fields` : formatCount(entries.length, "field");
+  }
+  if (Array.isArray(value)) {
+    return formatCount(value.length, "field");
+  }
+  return "1 field";
+}
+
+function isWholeStructuredText(value: string): boolean {
+  const trimmed = value.trim();
+  return (trimmed.startsWith("{") && trimmed.endsWith("}"))
+    || (/^\[\s*(?:\{|\[|"|-?\d|true\b|false\b|null\b)/iu.test(trimmed) && trimmed.endsWith("]"));
+}
+
+function containsStructuredText(value: string): boolean {
+  return /\{\s*"/u.test(value)
+    || /"\s*:/u.test(value)
+    || /\[\s*(?:\{|\[|"|-?\d|true\b|false\b|null\b)/iu.test(value);
+}
+
+function normalizeSensitiveKey(key: string): string {
+  return key.replace(/[\s.-]+/gu, "_");
+}
+
+function formatMaybeDate(value: string): string {
+  return isIsoDateString(value) ? formatDate(value) : value;
+}
+
+function isIsoDateString(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/u.test(value) && !Number.isNaN(new Date(value).getTime());
+}
+
+function humanizeKey(key: string): string {
+  const words = key
+    .replace(/json/giu, "data")
+    .replace(/[_-]+/gu, " ")
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .replace(/([a-zA-Z])(\d)/gu, "$1 $2")
+    .replace(/(\d)([a-zA-Z])/gu, "$1 $2")
+    .trim()
+    .split(/\s+/u)
+    .filter((word) => word.length > 0);
+  if (words.length === 0) {
+    return "Field";
+  }
+  return words.map((word) => {
+    const lower = word.toLowerCase();
+    if (lower === "id" || lower === "pid" || lower === "url" || lower === "api" || lower === "mcp" || lower === "llm") {
+      return lower.toUpperCase();
+    }
+    return titleCase(lower);
+  }).join(" ");
+}
+
+function titleCase(value: string): string {
+  return value.length === 0 ? value : `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`;
 }
 
 function countSources(sources: readonly TraceSourceListItem[]): Record<TraceSourceHealth, number> {
@@ -772,10 +1178,11 @@ function totalEvents(counts: EventCounts): number {
 }
 
 function formatCount(count: number, singular: string): string {
+  const label = count.toLocaleString();
   if (singular === "thinking" || singular === "runtime" || singular === "failing") {
-    return `${count} ${singular}`;
+    return `${label} ${singular}`;
   }
-  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+  return `${label} ${count === 1 ? singular : `${singular}s`}`;
 }
 
 function runMetadata(summary: TraceRunDetail["run"]["summary"]): readonly { readonly label: string; readonly value: unknown }[] {
