@@ -39,7 +39,6 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.structured-output` | JSON-schema-enforced output on capable backends | `code` | `runtimeOptions.outputSchema` via harness options |
 | `runtime.live-input` | In-flight user message steering | `code` | `runtimeOptions.liveInput` queue |
 | `runtime.approval-gates` | Human-in-the-loop tool approval (risk tiers, timeout, always-allow) | `code` | `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` — needs a host UI to answer; config posture is `runtime.permissionMode` |
-| `runtime.openai-agents-sdk` | `@mono-agent/openai-agents-runtime` (OpenAI Agents SDK backend) | `code` | Pass `createOpenAIAgentsRuntime(...)` as `startMonoAgentApp({ runtime })` / `createConfiguredAgentResponder({ runtime })` |
 | `runtime.custom` | Any `MonoRuntimeLike` implementation | `code` | `startMonoAgentApp({ runtime })` |
 
 ## Sandbox (`@mono-agent/sandbox`)
