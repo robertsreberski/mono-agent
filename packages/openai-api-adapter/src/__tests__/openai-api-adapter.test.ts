@@ -636,6 +636,52 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("does not duplicate tool-start progress already emitted as a runtime thought", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({ type: "assistant_thought", text: "Running mcp__context_a8c__search..." });
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-1",
+          name: "mcp__context_a8c__search",
+          arguments: { query: "OpenWebUI tool rendering" },
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-1",
+          content: { matches: 2 },
+          isError: false,
+        });
+        return { text: "Final answer." };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "Show progress" }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body.match(/"reasoning_content":"Running mcp__context_a8c__search\.\.\."/gu)).toHaveLength(1);
+      expect(body).toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("requires bearer auth when an API key is configured", async () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",
