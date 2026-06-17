@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,9 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { startMonoAgentApp } from "../app.js";
 import type { ChannelDriver } from "../channels.js";
+import { createSelfCapabilitiesMcpServer } from "../self-capabilities-mcp.js";
 import {
   SELF_CAPABILITIES_MCP_SERVER_NAME,
   applySelfCron,
@@ -299,6 +302,31 @@ describe("self capability authoring", () => {
     expect(selfCapabilityConfirmationToken(settings, "proposal-1")).not.toBe("confirm-me");
   });
 
+  it("allows in-root path segments that start with two dots", async () => {
+    const configPath = await writeConfig(baseConfig({
+      selfCapabilities: {
+        enabled: true,
+        mode: "apply",
+        skillsRoot: "./..skills",
+        auditDir: "./..audit",
+      },
+    }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+
+    const result = await applySelfSkill(settings, {
+      name: "Near Parent",
+      description: "Use a path segment that starts with two dots.",
+      instructions: "Stay inside the agent root.",
+    });
+
+    expect(result.files).toEqual([join(dir, "..skills", "near-parent", "SKILL.md")]);
+    expect(await readFile(join(dir, "..skills", "near-parent", "SKILL.md"), "utf8")).toContain("Near Parent");
+    expect((await readJson(configPath)).context).toMatchObject({
+      skillsRoot: "./..skills",
+      selectedSkills: ["near-parent"],
+    });
+  });
+
   it("rejects newline injection in cron frontmatter scalars", async () => {
     const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
     const settings = await settingsFromConfig(configPath, { mode: "apply" });
@@ -342,6 +370,96 @@ describe("self capability authoring", () => {
     })).rejects.toMatchObject({ code: "invalid_config" });
     await expect(readFile(join(dir, "skills", "audit-escape", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readSelfCapabilitiesReloadToken(settings.auditDir)).toBe("");
+  });
+
+  it("reports conflicts when applying saved proposals whose targets already exist", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+
+    await mkdir(join(dir, "skills", "existing-skill"), { recursive: true });
+    await writeFile(join(dir, "skills", "existing-skill", "SKILL.md"), "# Existing\n", "utf8");
+    const skillProposal = await proposeSelfSkill(settings, {
+      name: "Existing Skill",
+      description: "This target already exists.",
+      instructions: "Applying should fail as a conflict.",
+    });
+
+    expect(skillProposal.warnings[0]).toContain("already exists");
+    await expect(applySelfSkill(settings, { proposalId: skillProposal.proposalId! })).rejects.toMatchObject({
+      code: "conflict",
+      details: { proposalId: skillProposal.proposalId },
+    });
+
+    await mkdir(join(dir, "cron"), { recursive: true });
+    await writeFile(join(dir, "cron", "existing-cron.md"), "---\nid: existing-cron\nexpression: 0 8 * * *\n---\n", "utf8");
+    const cronProposal = await proposeSelfCron(settings, {
+      id: "Existing Cron",
+      expression: "0 8 * * *",
+      prompt: "This target already exists.",
+    });
+
+    expect(cronProposal.warnings[0]).toContain("already exists");
+    await expect(applySelfCron(settings, { proposalId: cronProposal.proposalId! })).rejects.toMatchObject({
+      code: "conflict",
+      details: { proposalId: cronProposal.proposalId },
+    });
+  });
+
+  it("recovers stale mutation locks before writing", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    await mkdir(settings.auditDir, { recursive: true });
+    const lockPath = join(settings.auditDir, "mutation.lock");
+    await writeFile(lockPath, "999999999\n", "utf8");
+    const staleTime = new Date(Date.now() - 60_000);
+    await utimes(lockPath, staleTime, staleTime);
+
+    const result = await applySelfSkill(settings, {
+      name: "Recovered Lock",
+      description: "Recover from a stale mutation lock.",
+      instructions: "Remove stale lock files before waiting.",
+    });
+
+    expect(result.id).toBe("recovered-lock");
+    await expect(readFile(join(settings.auditDir, "mutation.lock"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("recovers stale mutation reaper locks", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    await mkdir(settings.auditDir, { recursive: true });
+    const lockPath = join(settings.auditDir, "mutation.lock");
+    const reaperPath = `${lockPath}.reaper`;
+    await writeFile(lockPath, "999999999:stale-main\n", "utf8");
+    await writeFile(reaperPath, "999999999:stale-reaper\n", "utf8");
+    const staleTime = new Date(Date.now() - 60_000);
+    await utimes(lockPath, staleTime, staleTime);
+    await utimes(reaperPath, staleTime, staleTime);
+
+    const result = await applySelfSkill(settings, {
+      name: "Recovered Reaper",
+      description: "Recover from a stale reaper lock.",
+      instructions: "Remove stale reaper files before waiting.",
+    });
+
+    expect(result.id).toBe("recovered-reaper");
+    await expect(readFile(lockPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(reaperPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not remove fresh malformed mutation locks", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply", mutationLockTimeoutMs: 50 });
+    await mkdir(settings.auditDir, { recursive: true });
+    const lockPath = join(settings.auditDir, "mutation.lock");
+    await writeFile(lockPath, "", "utf8");
+
+    await expect(applySelfSkill(settings, {
+      name: "Fresh Lock",
+      description: "Do not reap a just-created partial lock.",
+      instructions: "Wait for a fresh lock instead of deleting it.",
+    })).rejects.toMatchObject({ code: "conflict" });
+    expect(await readFile(lockPath, "utf8")).toBe("");
   });
 
   it("reports cron env overrides and rejects direct MCP env paths outside the agent folder", async () => {
@@ -393,6 +511,28 @@ describe("self capability authoring", () => {
     });
   });
 
+  it("accepts request-nonce reload records without a proposal id", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    const reloads: string[] = [];
+    const extensionFactory = createSelfCapabilitiesRuntimeExtension(settings, (token) => {
+      reloads.push(token);
+    });
+    const extension = await extensionFactory();
+    const server = extension.runtimeOptions.mcpServers[SELF_CAPABILITIES_MCP_SERVER_NAME] as { env: Record<string, string> };
+    const reloadNonce = server.env.MONO_AGENT_SELF_CAPABILITIES_RELOAD_NONCE;
+
+    await mkdir(join(dir, ".mono-agent", "self-capabilities"), { recursive: true });
+    await writeFile(
+      join(dir, ".mono-agent", "self-capabilities", "reload-requests.jsonl"),
+      `${JSON.stringify({ kind: "skill", id: "direct-apply", reloadNonce })}\n`,
+      { flag: "a" },
+    );
+    await extension.cleanup();
+
+    expect(reloads).toHaveLength(1);
+  });
+
   it("ignores reload records without the current request nonce", async () => {
     const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "propose" } }));
     const settings = await settingsFromConfig(configPath, { mode: "propose" });
@@ -411,6 +551,68 @@ describe("self capability authoring", () => {
     await extension.cleanup();
 
     expect(reloads).toEqual([]);
+  });
+
+  it("trims pasted MCP confirmation tokens and reports structured token errors", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, {
+      mode: "apply",
+      confirmationToken: "operator-secret",
+    });
+    const proposal = await proposeSelfSkill(settings, {
+      name: "MCP Token",
+      description: "Validate the MCP token path.",
+      instructions: "Apply only with a proposal-scoped token.",
+    });
+    const cronProposal = await proposeSelfCron(settings, {
+      id: "MCP Cron Token",
+      expression: "0 8 * * *",
+      prompt: "Validate cron token errors.",
+    });
+
+    await withSelfCapabilitiesMcpClient(settings, async (client) => {
+      const badSkill = await client.callTool({
+        name: "self_skill_create",
+        arguments: {
+          proposalId: proposal.proposalId!,
+          confirmationToken: "wrong",
+        },
+      });
+      expect(badSkill.isError).toBe(true);
+      expect(badSkill.structuredContent).toMatchObject({
+        code: "invalid_input",
+        details: { proposalId: proposal.proposalId, kind: "skill" },
+      });
+
+      const token = selfCapabilityConfirmationToken(settings, proposal.proposalId!);
+      const result = await client.callTool({
+        name: "self_skill_create",
+        arguments: {
+          proposalId: proposal.proposalId!,
+          confirmationToken: ` ${token}\n`,
+        },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        kind: "skill",
+        id: "mcp-token",
+        proposalId: proposal.proposalId,
+      });
+
+      const badCron = await client.callTool({
+        name: "self_cron_create",
+        arguments: {
+          proposalId: cronProposal.proposalId!,
+          confirmationToken: "wrong",
+        },
+      });
+      expect(badCron.isError).toBe(true);
+      expect(badCron.structuredContent).toMatchObject({
+        code: "invalid_input",
+        details: { proposalId: cronProposal.proposalId, kind: "cron" },
+      });
+    });
   });
 
   it("injects the self-capability MCP server into app-served runtime requests only when enabled", async () => {
@@ -606,6 +808,23 @@ function coreConfig(input: { readonly skillsRoot?: string } = {}): MonoAgentConf
     traceability: { registryDir: join(dir, "trace-sources") },
     providers: {},
   };
+}
+
+async function withSelfCapabilitiesMcpClient<T>(
+  settings: SelfCapabilitiesSettings,
+  fn: (client: Client) => Promise<T>,
+): Promise<T> {
+  const server = createSelfCapabilitiesMcpServer(settings);
+  const client = new Client({ name: "self-capabilities-test", version: "0.1.0" }, { capabilities: {} });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    return await fn(client);
+  } finally {
+    await client.close();
+    await server.close();
+  }
 }
 
 async function readJson(path: string): Promise<Record<string, unknown>> {

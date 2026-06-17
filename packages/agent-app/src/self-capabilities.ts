@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { appendFile, lstat, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,7 @@ export interface SelfCapabilitiesSettings {
   readonly cronDirEnvOverride: boolean;
   readonly confirmationToken?: string;
   readonly reloadNonce?: string;
+  readonly mutationLockTimeoutMs?: number;
 }
 
 export interface SelfSkillInput {
@@ -107,6 +108,11 @@ export interface SelfCapabilitiesRuntimeExtension {
   readonly cleanup: () => Promise<void>;
 }
 
+export interface SelfCapabilitiesReloadSnapshot {
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
 export class SelfCapabilityError extends Error {
   readonly code: "invalid_config" | "invalid_input" | "not_enabled" | "not_found" | "conflict" | "write_failed";
   readonly details: Record<string, unknown>;
@@ -133,6 +139,7 @@ const DEFAULT_CRON_DIR = "cron";
 const DEFAULT_AUDIT_DIR = ".mono-agent/self-capabilities";
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const PROPOSAL_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,160}[a-z0-9])?$/u;
+const STALE_MUTATION_LOCK_MS = 30_000;
 
 export const selfCapabilitiesFieldGroup: FieldGroup = defineFieldGroup({
   id: "selfCapabilities",
@@ -258,7 +265,7 @@ export function createSelfCapabilitiesRuntimeExtension(
 ): () => Promise<SelfCapabilitiesRuntimeExtension> {
   return async () => {
     const requestSettings = { ...settings, reloadNonce: randomUUID() };
-    const before = await readSelfCapabilitiesReloadToken(settings.auditDir, requestSettings.reloadNonce);
+    const before = await readSelfCapabilitiesReloadSnapshot(settings.auditDir);
     return {
       runtimeOptions: {
         mcpServers: {
@@ -266,9 +273,9 @@ export function createSelfCapabilitiesRuntimeExtension(
         },
       },
       cleanup: async () => {
-        const after = await readSelfCapabilitiesReloadToken(settings.auditDir, requestSettings.reloadNonce);
-        if (after.length > 0 && after !== before) {
-          onReloadRequested(after);
+        const token = await readSelfCapabilitiesReloadTokenSince(settings.auditDir, before, requestSettings.reloadNonce);
+        if (token.length > 0) {
+          onReloadRequested(token);
         }
       },
     };
@@ -409,6 +416,15 @@ async function applySelfSkillInput(
     const file = resolveSkillFile(settings, id);
     const skillDir = resolve(settings.skillsRoot, id);
     const { patch, warnings } = await skillConfigPatch(settings, id, input.activate ?? true);
+    await preflightSelfCapabilityWriteTargets(settings);
+    await assertNoSymlinkAncestors(settings.cwd, settings.skillsRoot, "selfCapabilities.skillsRoot");
+    await assertNoSymlinkAncestors(settings.cwd, file, "skill file");
+    if (await pathExists(file)) {
+      throw new SelfCapabilityError("conflict", `Skill ${id} already exists.`, {
+        file,
+        ...(proposal === undefined ? {} : { proposalId: proposal.proposalId }),
+      });
+    }
     if (proposal !== undefined) {
       assertProposalMatchesCurrent(proposal, {
         kind: "skill",
@@ -421,8 +437,6 @@ async function applySelfSkillInput(
       });
     }
 
-    await preflightSelfCapabilityWriteTargets(settings);
-    await assertNoSymlinkAncestors(settings.cwd, settings.skillsRoot, "selfCapabilities.skillsRoot");
     await mkdir(skillDir, { recursive: true });
     await assertNoSymlinkAncestors(settings.cwd, skillDir, "skill directory");
     const originalConfig = patch === undefined ? undefined : await readFile(settings.configPath, "utf8");
@@ -525,6 +539,15 @@ async function applySelfCronInput(
     const file = resolveCronFile(settings, id);
     const patch = cronConfigPatch(settings);
     const warnings = cronWarnings(settings, patch);
+    await preflightSelfCapabilityWriteTargets(settings);
+    await assertNoSymlinkAncestors(settings.cwd, settings.cronDir, "selfCapabilities.cronDir");
+    await assertNoSymlinkAncestors(settings.cwd, file, "cron job file");
+    if (await pathExists(file)) {
+      throw new SelfCapabilityError("conflict", `Cron job ${id} already exists.`, {
+        file,
+        ...(proposal === undefined ? {} : { proposalId: proposal.proposalId }),
+      });
+    }
     if (proposal !== undefined) {
       assertProposalMatchesCurrent(proposal, {
         kind: "cron",
@@ -537,8 +560,6 @@ async function applySelfCronInput(
       });
     }
 
-    await preflightSelfCapabilityWriteTargets(settings);
-    await assertNoSymlinkAncestors(settings.cwd, settings.cronDir, "selfCapabilities.cronDir");
     await mkdir(settings.cronDir, { recursive: true });
     await assertNoSymlinkAncestors(settings.cwd, settings.cronDir, "cron directory");
     const originalConfig = patch === undefined ? undefined : await readFile(settings.configPath, "utf8");
@@ -585,18 +606,64 @@ async function applySelfCronInput(
 }
 
 export async function readSelfCapabilitiesReloadToken(auditDir: string, reloadNonce?: string): Promise<string> {
+  if (reloadNonce !== undefined) {
+    return await readSelfCapabilitiesReloadTokenSince(
+      auditDir,
+      { size: 0, mtimeMs: 0 },
+      normalizeReloadNonce(reloadNonce),
+    );
+  }
+  return reloadSnapshotToken(await readSelfCapabilitiesReloadSnapshot(auditDir));
+}
+
+export async function readSelfCapabilitiesReloadSnapshot(auditDir: string): Promise<SelfCapabilitiesReloadSnapshot> {
   try {
-    const raw = await readFile(join(auditDir, SELF_CAPABILITIES_RELOAD_FILE), "utf8");
-    const content = reloadNonce === undefined ? raw : reloadRecordsForNonce(raw, reloadNonce);
-    if (content.length === 0) {
-      return "";
-    }
-    return createHash("sha256").update(content).digest("hex");
+    const info = await stat(join(auditDir, SELF_CAPABILITIES_RELOAD_FILE));
+    return { size: info.size, mtimeMs: info.mtimeMs };
   } catch (error) {
     if (isErrno(error, "ENOENT")) {
-      return "";
+      return { size: 0, mtimeMs: 0 };
     }
     throw error;
+  }
+}
+
+async function readSelfCapabilitiesReloadTokenSince(
+  auditDir: string,
+  before: SelfCapabilitiesReloadSnapshot,
+  reloadNonce: string,
+): Promise<string> {
+  const normalizedNonce = normalizeReloadNonce(reloadNonce);
+  const reloadPath = join(auditDir, SELF_CAPABILITIES_RELOAD_FILE);
+  const after = await readSelfCapabilitiesReloadSnapshot(auditDir);
+  if (after.size <= before.size) {
+    return "";
+  }
+  const appended = await readFileRange(reloadPath, before.size, after.size - before.size);
+  const content = reloadRecordsForNonce(appended, normalizedNonce);
+  if (content.length === 0) {
+    return "";
+  }
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function reloadSnapshotToken(snapshot: SelfCapabilitiesReloadSnapshot): string {
+  if (snapshot.size === 0) {
+    return "";
+  }
+  return createHash("sha256")
+    .update(`${snapshot.size}:${snapshot.mtimeMs}`)
+    .digest("hex");
+}
+
+async function readFileRange(path: string, start: number, length: number): Promise<string> {
+  const file = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await file.read(buffer, 0, length, start);
+    return buffer.subarray(0, bytesRead).toString("utf8");
+  } finally {
+    await file.close();
   }
 }
 
@@ -849,6 +916,11 @@ async function preflightSelfCapabilityWriteTargets(settings: SelfCapabilitiesSet
     settings.cwd,
     join(settings.auditDir, SELF_CAPABILITIES_RELOAD_FILE),
     "selfCapabilities.reloadFile",
+  );
+  await assertNoSymlinkAncestors(
+    settings.cwd,
+    join(settings.auditDir, "mutation.lock.reaper"),
+    "selfCapabilities.mutationLockReaper",
   );
 }
 
@@ -1146,7 +1218,7 @@ function resolveAgentLocalPath(cwd: string, value: string, field: string): strin
 
 function assertInside(root: string, target: string, field: string): void {
   const rel = relative(resolve(root), resolve(target));
-  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+  if (isInsideRelativePath(rel)) {
     return;
   }
   throw new SelfCapabilityError("invalid_config", `${field} must stay inside ${root}.`, { root, target });
@@ -1157,7 +1229,11 @@ function configRelativePath(cwd: string, target: string): string {
   if (rel.length === 0) {
     return ".";
   }
-  return rel.startsWith("..") ? target : `./${rel}`;
+  return isInsideRelativePath(rel) ? `./${rel}` : target;
+}
+
+function isInsideRelativePath(rel: string): boolean {
+  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith("../") && !rel.startsWith("..\\"));
 }
 
 function normalizeSlug(value: unknown, field: string): string {
@@ -1206,7 +1282,7 @@ function reloadRecordHasNonce(line: string, reloadNonce: string): boolean {
   }
   try {
     const record = JSON.parse(line) as unknown;
-    return isRecord(record) && record.reloadNonce === reloadNonce && typeof record.proposalId === "string";
+    return isRecord(record) && record.reloadNonce === reloadNonce;
   } catch {
     return false;
   }
@@ -1393,14 +1469,40 @@ async function withSelfCapabilityMutation<T>(
   await mkdir(settings.auditDir, { recursive: true });
   await assertNoSymlinkAncestors(settings.cwd, settings.auditDir, "selfCapabilities.auditDir");
   const lockPath = join(settings.auditDir, "mutation.lock");
-  const deadline = Date.now() + 10_000;
+  const lockOwner = await acquireMutationLock(settings, lockPath);
+  try {
+    return await fn();
+  } finally {
+    await releaseMutationLock(lockPath, lockOwner);
+  }
+}
+
+function mutationLockTimeoutMs(settings: SelfCapabilitiesSettings): number {
+  const value = settings.mutationLockTimeoutMs ?? 10_000;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new SelfCapabilityError("invalid_config", "selfCapabilities mutation lock timeout must be positive.", {
+      mutationLockTimeoutMs: value,
+    });
+  }
+  return value;
+}
+
+async function acquireMutationLock(settings: SelfCapabilitiesSettings, lockPath: string): Promise<string> {
+  const deadline = Date.now() + mutationLockTimeoutMs(settings);
   while (true) {
+    const owner = `${process.pid}:${randomUUID()}\n`;
     try {
-      await writeFile(lockPath, `${process.pid}\n`, { encoding: "utf8", flag: "wx" });
-      break;
+      await writeMutationLock(lockPath, owner);
+      if (await mutationLockMatches(lockPath, owner)) {
+        return owner;
+      }
+      continue;
     } catch (error) {
       if (!isErrno(error, "EEXIST")) {
         throw error;
+      }
+      if (await removeStaleMutationLock(lockPath)) {
+        continue;
       }
       if (Date.now() >= deadline) {
         throw new SelfCapabilityError("conflict", "Timed out waiting for another self-capability mutation.", { lockPath });
@@ -1408,10 +1510,183 @@ async function withSelfCapabilityMutation<T>(
       await sleep(50);
     }
   }
+}
+
+async function writeMutationLock(lockPath: string, owner: string): Promise<void> {
+  const handle = await open(lockPath, "wx");
   try {
-    return await fn();
+    await handle.writeFile(owner, "utf8");
   } finally {
+    await handle.close();
+  }
+}
+
+async function releaseMutationLock(lockPath: string, owner: string): Promise<void> {
+  if (await mutationLockMatches(lockPath, owner)) {
     await rm(lockPath, { force: true });
+  }
+}
+
+async function mutationLockMatches(lockPath: string, owner: string): Promise<boolean> {
+  try {
+    return await readFile(lockPath, "utf8") === owner;
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+interface MutationLockSnapshot {
+  readonly raw: string;
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+}
+
+async function mutationLockSnapshot(lockPath: string): Promise<MutationLockSnapshot | undefined> {
+  let raw: string;
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    info = await lstat(lockPath);
+    if (info.isSymbolicLink()) {
+      throw new SelfCapabilityError("invalid_config", "selfCapabilities mutation lock must not be a symlink.", {
+        lockPath,
+      });
+    }
+    raw = await readFile(lockPath, "utf8");
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      return undefined;
+    }
+    throw error;
+  }
+  return {
+    raw,
+    dev: info.dev,
+    ino: info.ino,
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+  };
+}
+
+async function removeStaleMutationLock(lockPath: string): Promise<boolean> {
+  const reaperPath = `${lockPath}.reaper`;
+  const reaperOwner = await tryAcquireMutationLockReaper(reaperPath, lockPath);
+  if (reaperOwner === undefined) {
+    return false;
+  }
+  try {
+    const snapshot = await mutationLockSnapshot(lockPath);
+    if (snapshot === undefined) {
+      return true;
+    }
+    const { raw, mtimeMs } = snapshot;
+    const pid = mutationLockPid(raw);
+    if (pid !== undefined && isProcessAlive(pid)) {
+      return false;
+    }
+    if (Date.now() - mtimeMs < STALE_MUTATION_LOCK_MS) {
+      return false;
+    }
+    const nextSnapshot = await mutationLockSnapshot(lockPath);
+    if (nextSnapshot === undefined) {
+      return true;
+    }
+    if (!sameMutationLockSnapshot(snapshot, nextSnapshot)) {
+      return false;
+    }
+    await rm(lockPath, { force: true });
+    return true;
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      return true;
+    }
+    throw error;
+  } finally {
+    await releaseMutationLock(reaperPath, reaperOwner);
+  }
+}
+
+async function tryAcquireMutationLockReaper(reaperPath: string, lockPath: string): Promise<string | undefined> {
+  const owner = `${process.pid}:${randomUUID()}\n`;
+  try {
+    await writeMutationLock(reaperPath, owner);
+    if (await mutationLockMatches(reaperPath, owner)) {
+      return owner;
+    }
+    await releaseMutationLock(reaperPath, owner);
+    return undefined;
+  } catch (error) {
+    if (isErrno(error, "EEXIST")) {
+      if (await removeStaleReaperLock(reaperPath, lockPath)) {
+        return await tryAcquireMutationLockReaper(reaperPath, lockPath);
+      }
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function removeStaleReaperLock(reaperPath: string, lockPath: string): Promise<boolean> {
+  const snapshot = await mutationLockSnapshot(reaperPath);
+  if (snapshot === undefined) {
+    return true;
+  }
+  const pid = mutationLockPid(snapshot.raw);
+  if (pid !== undefined && isProcessAlive(pid)) {
+    return false;
+  }
+  if (Date.now() - snapshot.mtimeMs < STALE_MUTATION_LOCK_MS) {
+    return false;
+  }
+  const lockSnapshot = await mutationLockSnapshot(lockPath);
+  if (lockSnapshot === undefined || Date.now() - lockSnapshot.mtimeMs < STALE_MUTATION_LOCK_MS) {
+    return false;
+  }
+  const nextSnapshot = await mutationLockSnapshot(reaperPath);
+  if (nextSnapshot === undefined) {
+    return true;
+  }
+  if (!sameMutationLockSnapshot(snapshot, nextSnapshot)) {
+    return false;
+  }
+  await rm(reaperPath, { force: true });
+  return true;
+}
+
+function sameMutationLockSnapshot(first: MutationLockSnapshot, second: MutationLockSnapshot): boolean {
+  return first.raw === second.raw &&
+    first.dev === second.dev &&
+    first.ino === second.ino &&
+    first.size === second.size &&
+    first.mtimeMs === second.mtimeMs;
+}
+
+function mutationLockPid(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  const match = /^([0-9]+)(?::[a-f0-9-]+)?$/u.exec(trimmed);
+  if (match === null) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(match[1]!, 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (isErrno(error, "ESRCH")) {
+      return false;
+    }
+    if (isErrno(error, "EPERM")) {
+      return true;
+    }
+    return false;
   }
 }
 

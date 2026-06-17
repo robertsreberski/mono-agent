@@ -6,6 +6,7 @@ import {
   applySelfSkill,
   proposeSelfCron,
   proposeSelfSkill,
+  SelfCapabilityError,
   selfCapabilityConfirmationToken,
 } from "./self-capabilities.js";
 import type { SelfCapabilitiesSettings } from "./self-capabilities.js";
@@ -53,7 +54,7 @@ export function createSelfCapabilitiesMcpServer(settings: SelfCapabilitiesSettin
       description: "Persist and preview an immutable local skill proposal. Use this when the user has not explicitly confirmed a write.",
       inputSchema: skillSchema,
     },
-    async (args) => result(await proposeSelfSkill(settings, normalizeSkillArgs(args))),
+    async (args) => selfCapabilityToolResult(async () => await proposeSelfSkill(settings, normalizeSkillArgs(args))),
   );
 
   server.registerTool(
@@ -63,7 +64,7 @@ export function createSelfCapabilitiesMcpServer(settings: SelfCapabilitiesSettin
       description: "Persist and preview an immutable markdown cron proposal. Use this when the user has not explicitly confirmed a write.",
       inputSchema: cronSchema,
     },
-    async (args) => result(await proposeSelfCron(settings, normalizeCronArgs(args))),
+    async (args) => selfCapabilityToolResult(async () => await proposeSelfCron(settings, normalizeCronArgs(args))),
   );
 
   if (settings.mode === "apply" && settings.confirmationToken !== undefined) {
@@ -74,7 +75,7 @@ export function createSelfCapabilitiesMcpServer(settings: SelfCapabilitiesSettin
         description: "Create a local SKILL.md from a saved proposal, update config when requested, write an audit record, and request app reload. Requires the operator-provided proposal-scoped confirmation token.",
         inputSchema: skillWriteSchema,
       },
-      async (args) => result(await applySelfSkill(settings, normalizeSkillWriteArgs(settings, args))),
+      async (args) => selfCapabilityToolResult(async () => await applySelfSkill(settings, normalizeSkillWriteArgs(settings, args))),
     );
 
     server.registerTool(
@@ -84,7 +85,7 @@ export function createSelfCapabilitiesMcpServer(settings: SelfCapabilitiesSettin
         description: "Create a markdown cron job from a saved proposal, write an audit record, and request app reload. Requires the operator-provided proposal-scoped confirmation token.",
         inputSchema: cronWriteSchema,
       },
-      async (args) => result(await applySelfCron(settings, normalizeCronWriteArgs(settings, args))),
+      async (args) => selfCapabilityToolResult(async () => await applySelfCron(settings, normalizeCronWriteArgs(settings, args))),
     );
   }
 
@@ -111,7 +112,7 @@ function normalizeSkillWriteArgs(
   settings: SelfCapabilitiesSettings,
   args: { readonly proposalId: string; readonly confirmationToken: string },
 ): SelfProposalApplyInput {
-  assertConfirmationToken(settings, args.proposalId, args.confirmationToken);
+  assertConfirmationToken(settings, args.proposalId, args.confirmationToken, "skill");
   return { proposalId: args.proposalId };
 }
 
@@ -137,14 +138,33 @@ function normalizeCronWriteArgs(
   settings: SelfCapabilitiesSettings,
   args: { readonly proposalId: string; readonly confirmationToken: string },
 ): SelfProposalApplyInput {
-  assertConfirmationToken(settings, args.proposalId, args.confirmationToken);
+  assertConfirmationToken(settings, args.proposalId, args.confirmationToken, "cron");
   return { proposalId: args.proposalId };
 }
 
-function assertConfirmationToken(settings: SelfCapabilitiesSettings, proposalId: string, value: string): void {
+function assertConfirmationToken(
+  settings: SelfCapabilitiesSettings,
+  proposalId: string,
+  value: string,
+  kind: "skill" | "cron",
+): void {
   const expected = selfCapabilityConfirmationToken(settings, proposalId);
-  if (expected === undefined || value !== expected) {
-    throw new Error("Invalid self-capability confirmation token.");
+  if (expected === undefined || value.trim() !== expected) {
+    throw new SelfCapabilityError("invalid_input", "Invalid self-capability confirmation token.", {
+      proposalId: proposalId.trim().toLowerCase(),
+      kind,
+    });
+  }
+}
+
+async function selfCapabilityToolResult(task: () => Promise<unknown>): Promise<ToolResult> {
+  try {
+    return result(await task());
+  } catch (error) {
+    if (error instanceof SelfCapabilityError) {
+      return errorResult(error);
+    }
+    throw error;
   }
 }
 
@@ -153,6 +173,19 @@ function result(payload: unknown): ToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(structured, null, 2) }],
     structuredContent: structured,
+  };
+}
+
+function errorResult(error: SelfCapabilityError): ToolResult {
+  const structured = {
+    code: error.code,
+    message: error.message,
+    details: error.details,
+  };
+  return {
+    content: [{ type: "text", text: JSON.stringify(structured, null, 2) }],
+    structuredContent: structured,
+    isError: true,
   };
 }
 
