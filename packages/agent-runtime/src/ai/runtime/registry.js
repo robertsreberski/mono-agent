@@ -35,12 +35,9 @@ const builtinBridgeSpecs = {
     id: "pi",
     supports: (ref) => ref?.sdk === "pi",
     capabilities: () => runtimeCapabilities("pi"),
-    // The hand-rolled pi-sdk bridge is the DEFAULT. The pi-native AgentHarness
-    // bridge is opt-in via options.piEngine === "native"; any other value (or
-    // none) keeps the legacy path so the production pi runtime is unchanged.
-    load: async (options = {}) => (options.piEngine === "native"
-      ? (await import("../providers/pi-native.js")).piNativeRuntimeBridge
-      : (await import("../providers/pi-sdk.js")).piRuntimeBridge),
+    // The pi-native AgentHarness bridge is the sole pi runtime path. The
+    // hand-rolled pi-sdk bridge was removed once native reached parity.
+    load: async () => (await import("../providers/pi-native.js")).piNativeRuntimeBridge,
   },
 };
 

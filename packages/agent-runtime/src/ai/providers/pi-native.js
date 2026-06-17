@@ -1,11 +1,10 @@
 // Pi-NATIVE runtime bridge.
 //
-// This is the opt-in alternative to the hand-rolled pi bridge in pi-sdk.js.
-// It is selected ONLY when options.piEngine === "native" (registry default
-// stays pi-sdk.js). Instead of driving the low-level `Agent` and hand-rolling
-// MCP init, transcript handling, compaction, a manual retry loop, and session
-// bookkeeping, this bridge builds on pi-agent-core's high-level AgentHarness
-// plus native primitives:
+// This is the SOLE pi runtime path: the hand-rolled pi bridge (formerly
+// pi-sdk.js, driving the low-level `Agent` with manual MCP init, transcript
+// handling, compaction, a hand-rolled stream-retry loop, and session
+// bookkeeping) was removed once this bridge reached parity. This bridge builds
+// on pi-agent-core's high-level AgentHarness plus native primitives:
 //
 //   * AgentHarness OWNS a session and performs durable writes itself, so resume
 //     is "open the session from a repo and hand it to a new harness". There is
@@ -14,11 +13,11 @@
 //     retry/backoff is delegated to pi-ai via streamOptions.maxRetries instead
 //     of the legacy manual loop.
 //   * Tool sandboxing, approval gates, allowlist/bloat filtering, and the MCP
-//     tool bridge are the SAME reused pieces as the legacy bridge — they are
-//     wired into the harness via its `tools` option, never reimplemented.
+//     tool bridge are reused shared pieces — they are wired into the harness
+//     via its `tools` option, never reimplemented.
 //
-// The result/event contract is identical to generatePiResponse: callers and
-// the existing test suite cannot tell which engine produced the run.
+// The result/event contract is the package's unified runtime-result shape, so
+// callers and the test suite see the same artifact the retired bridge produced.
 
 import { AgentHarness, InMemorySessionRepo, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
@@ -26,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
 import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
+import { createSessionRegistry } from "../runtime/sessions.js";
 import { formatLiveInputGuidance } from "../live-input-prompt.js";
 import { isLikelyContextTermination } from "../../agent/compaction.js";
 import {
@@ -52,7 +52,7 @@ import {
 import {
   isContextLimitError,
   normalizePiErrorMessage,
-} from "./pi-sdk.js";
+} from "./pi-errors.js";
 
 function usageFromMessages(messages = []) {
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
@@ -92,6 +92,39 @@ function appendStructuredOutputInstruction(systemPrompt, outputSchema) {
 function toolStartProgressText(toolName) {
   if (typeof toolName !== "string" || toolName.trim().length === 0) return null;
   return `Running ${toolName}...`;
+}
+
+function structuredOutputFinalizationPrompt() {
+  return [
+    "The previous assistant turn ended without submitting the required structured result.",
+    "Do not run tools, inspect files, or redo work.",
+    "Call only `StructuredOutput` once with the final object matching the requested schema, based on the completed transcript above.",
+    "Do not print prose before or after the tool call.",
+  ].join("\n");
+}
+
+function shouldRetryStructuredOutputFinalization({
+  outputSchema,
+  structuredResult,
+  finalText,
+  stopReason,
+  externalAbort,
+  maxTurnsHit,
+}) {
+  if (!outputSchema) return false;
+  if (structuredResult !== null && structuredResult !== undefined) return false;
+  if (String(finalText || "").trim()) return false;
+  if (externalAbort || maxTurnsHit) return false;
+  return stopReason !== "error" && stopReason !== "aborted";
+}
+
+function structuredOutputRetryDiagnostics(attempts, reason, failed) {
+  if (!attempts) return {};
+  return {
+    structured_output_finalization_retry_attempts: attempts,
+    structured_output_finalization_retry_reason: reason,
+    structured_output_finalization_retry_failed: !!failed,
+  };
 }
 
 function failureKindForPiError(message, diagnostics, { maxTurnsHit = false } = {}) {
@@ -146,27 +179,62 @@ function splitPromptMessages(messages) {
   };
 }
 
-function resolveNativeSessionRepo(piSessionsRoot) {
-  if (typeof piSessionsRoot === "string" && piSessionsRoot.trim()) {
-    return new JsonlSessionRepo({
+// Live pi-native sessions, keyed by provider session id. Entries are
+// { session, metadata, repo, durable, busy } — identical shape and lifecycle
+// policy to the (now-retired) pi-sdk bridge: in-memory transcripts are freed
+// when the registry evicts them; durable (jsonl) transcripts survive eviction
+// so a later resume can reopen them from disk. Registering here gives
+// runtime.disposeSession / disposeProviderSession + idle-TTL eviction the same
+// reach over native pi sessions that the legacy bridge had.
+const nativeSessionRepo = new InMemorySessionRepo();
+const nativeSessions = createSessionRegistry({
+  isBusy: (entry) => entry.busy === true,
+  onEvict: async (entry) => {
+    if (entry.durable) return;
+    try {
+      await entry.repo.delete(entry.metadata);
+    } catch { /* best-effort */ }
+  },
+});
+
+const durableNativeSessionRepos = new Map();
+
+function resolveDurableNativeSessionRepo(piSessionsRoot) {
+  if (typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) return null;
+  const root = piSessionsRoot.trim();
+  let repo = durableNativeSessionRepos.get(root);
+  if (!repo) {
+    repo = new JsonlSessionRepo({
       fs: new NodeExecutionEnv({ cwd: process.cwd() }),
-      sessionsRoot: piSessionsRoot.trim(),
+      sessionsRoot: root,
     });
+    durableNativeSessionRepos.set(root, repo);
   }
-  return new InMemorySessionRepo();
+  return repo;
 }
 
-async function openExistingSession(repo, sessionId) {
+async function reopenDurableNativeSession(repo, sessionId) {
   try {
     const metadata = (await repo.list()).find((entry) => entry?.id === sessionId);
     if (!metadata) return null;
-    return await repo.open(metadata);
+    const session = await repo.open(metadata);
+    return { session, metadata, repo, durable: true, busy: false };
   } catch {
     return null;
   }
 }
 
-function sessionUnavailableResult({ resolved, options, events, runtimeWarnings, start, sessionId }) {
+function sessionUnavailableResult({
+  resolved,
+  options,
+  events,
+  runtimeWarnings,
+  start,
+  sessionId,
+  errorMessage,
+  failureKind,
+  piErrorCode,
+}) {
   return {
     text: null,
     events,
@@ -177,13 +245,13 @@ function sessionUnavailableResult({ resolved, options, events, runtimeWarnings, 
     effort: options.effort || null,
     sdk: resolved?.sdk || "pi",
     cancelled: false,
-    error: `Pi session ${sessionId} is not live`,
-    failureKind: "session_not_found",
+    error: errorMessage,
+    failureKind,
     providerSessionId: sessionId,
     runtimeWarnings,
     diagnostics: {
       provider_session_id: sessionId,
-      pi_error_code: "pi_session_not_found",
+      pi_error_code: piErrorCode,
       pi_engine: "native",
     },
   };
@@ -240,6 +308,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   const requestedSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
     ? options.sessionId
     : null;
+  // Bridge TTL is a backstop behind the host's session policy; the grace
+  // keeps host-side lazy expiry firing first.
+  const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
+    ? Number(options.sessionIdleTimeoutMs) + 60_000
+    : undefined;
+  let structuredOutputFinalizationRetryAttempts = 0;
+  let structuredOutputFinalizationRetryReason = null;
+  let structuredOutputFinalizationRetryFailed = false;
 
   const onEvent = (event) => emitCaptured(events, options.onEvent, event);
   const approvalManager = options.onToolApprovalRequest
@@ -257,14 +333,21 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId });
   }
 
-  const repo = resolveNativeSessionRepo(options.piSessionsRoot);
+  const durableRepo = resolveDurableNativeSessionRepo(options.piSessionsRoot);
   let session = null;
+  let sessionEntry = null;
   let sessionBaselineCount = 0;
 
   try {
+    // Resume check first: a session miss must stay cheap (no tool/MCP/harness
+    // init). This mirrors the legacy bridge's fail-fast contract.
     if (requestedSessionId) {
-      session = await openExistingSession(repo, requestedSessionId);
-      if (!session) {
+      let entry = nativeSessions.get(requestedSessionId);
+      if (!entry && durableRepo) {
+        entry = await reopenDurableNativeSession(durableRepo, requestedSessionId);
+        if (entry) nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+      }
+      if (!entry) {
         return sessionUnavailableResult({
           resolved,
           options,
@@ -272,10 +355,33 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           runtimeWarnings,
           start,
           sessionId: requestedSessionId,
+          errorMessage: `Pi session ${requestedSessionId} is not live`,
+          failureKind: "session_not_found",
+          piErrorCode: "pi_session_not_found",
         });
       }
+      if (entry.busy) {
+        return sessionUnavailableResult({
+          resolved,
+          options,
+          events,
+          runtimeWarnings,
+          start,
+          sessionId: requestedSessionId,
+          errorMessage: `Pi session ${requestedSessionId} is busy with another turn`,
+          failureKind: "session_busy",
+          piErrorCode: "pi_session_busy",
+        });
+      }
+      entry.busy = true;
+      sessionEntry = entry;
+      session = entry.session;
     } else {
-      session = await repo.create({ id: providerSessionId, cwd: options.cwd || process.cwd() });
+      // Fresh runs persist into the durable jsonl repo when piSessionsRoot is
+      // set, so a kept-alive session can be reopened from disk after the live
+      // entry is evicted; otherwise the in-memory repo is used.
+      session = await (durableRepo || nativeSessionRepo)
+        .create({ id: providerSessionId, cwd: options.cwd || process.cwd() });
     }
 
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
@@ -476,6 +582,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         sessionBaselineCount += 1;
       }
     }
+    // The harness persists each turn INLINE into the live session. To preserve
+    // the legacy "a failed resumed turn does not corrupt the session" contract,
+    // remember the leaf before the run so a failed resume can be rolled back to
+    // the last good transcript via the session tree's moveTo primitive.
+    let baselineLeafId = null;
+    if (requestedSessionId) {
+      try { baselineLeafId = await session.getLeafId(); } catch { /* best-effort */ }
+    }
 
     if (options.liveInput) {
       (async () => {
@@ -512,15 +626,70 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     externalAbort ||= !!options.abortSignal?.aborted;
 
-    const context = await session.buildContext();
-    const transcript = context.messages || [];
-    const runTranscript = transcript.slice(sessionBaselineCount);
-    const assistantMessages = runTranscript.filter((message) => message?.role === "assistant");
-    const lastAssistant = assistantMessages[assistantMessages.length - 1] || null;
-    const stopReason = lastAssistant?.stopReason || null;
-    const finalText = textFromContent(lastAssistant?.content) || assistantTexts.join("");
-    const finalThinking = thinkingFromContent(lastAssistant?.content) || assistantThinking.join("");
-    const runAssistantCount = assistantMessages.length;
+    const captureState = async () => {
+      const context = await session.buildContext();
+      const transcript = context.messages || [];
+      const runTranscript = transcript.slice(sessionBaselineCount);
+      const assistantMessages = runTranscript.filter((message) => message?.role === "assistant");
+      const lastAssistant = assistantMessages[assistantMessages.length - 1] || null;
+      return {
+        transcript,
+        runTranscript,
+        assistantMessages,
+        lastAssistant,
+        stopReason: lastAssistant?.stopReason || null,
+        finalText: textFromContent(lastAssistant?.content) || assistantTexts.join(""),
+        finalThinking: thinkingFromContent(lastAssistant?.content) || assistantThinking.join(""),
+      };
+    };
+
+    let state = await captureState();
+
+    // Structured-output finalization retry: if the turn ended with neither
+    // text nor a StructuredOutput call, re-prompt ONCE in the same session with
+    // only StructuredOutput active so the model can submit the required result.
+    // This replicates the legacy bridge's single re-prompt via the harness's
+    // followUp + setActiveTools instead of the low-level agent.continue() loop.
+    if (!runError && shouldRetryStructuredOutputFinalization({
+      outputSchema: options.outputSchema,
+      structuredResult,
+      finalText: state.finalText,
+      stopReason: state.stopReason,
+      externalAbort,
+      maxTurnsHit,
+    })) {
+      structuredOutputFinalizationRetryAttempts = 1;
+      structuredOutputFinalizationRetryReason = "empty_final_output";
+      runtimeWarnings.push({
+        warning_kind: "structured_output_finalization_retry",
+        source: "pi",
+        reason: structuredOutputFinalizationRetryReason,
+        message: "Pi stopped without text or structured output; retrying once in the same session with only StructuredOutput enabled.",
+      });
+      const previousActive = harness.getActiveTools().map((toolDef) => toolDef.name);
+      try {
+        // The harness is idle after waitForIdle(), so re-prompt (not followUp,
+        // which only queues onto an active run) with only StructuredOutput
+        // active. This re-prompts ONCE in the same session, matching the legacy
+        // single agent.continue() finalization re-prompt.
+        await harness.setActiveTools(structuredTool ? [structuredTool.name] : []);
+        await harness.prompt(structuredOutputFinalizationPrompt());
+        await harness.waitForIdle();
+      } catch (err) {
+        runtimeWarnings.push({
+          warning_kind: "structured_output_finalization_retry_failed",
+          source: "pi",
+          message: err?.message || String(err),
+        });
+      } finally {
+        try { await harness.setActiveTools(previousActive); } catch { /* best-effort */ }
+      }
+      structuredOutputFinalizationRetryFailed = structuredResult === null || structuredResult === undefined;
+      state = await captureState();
+    }
+
+    const { runTranscript, lastAssistant, stopReason, finalText, finalThinking } = state;
+    const runAssistantCount = state.assistantMessages.length;
 
     const usage = usageFromMessages(runTranscript);
     const estimatedCost = estimateCost({
@@ -578,6 +747,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       external_abort: externalAbort,
       pi_max_retries: maxRetries,
       ...(lastToolName ? { last_tool_name: lastToolName } : {}),
+      ...structuredOutputRetryDiagnostics(
+        structuredOutputFinalizationRetryAttempts,
+        structuredOutputFinalizationRetryReason,
+        structuredOutputFinalizationRetryFailed,
+      ),
     };
     const errorDetails = errorMessage ? {
       pi_stop_reason: stopReason || "error",
@@ -587,6 +761,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       max_turns_hit: maxTurnsHit,
       provider_session_id: providerSessionId,
       pi_engine: "native",
+      ...structuredOutputRetryDiagnostics(
+        structuredOutputFinalizationRetryAttempts,
+        structuredOutputFinalizationRetryReason,
+        structuredOutputFinalizationRetryFailed,
+      ),
     } : null;
 
     const capabilitiesUsed = buildCapabilitiesUsed({
@@ -601,17 +780,60 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     });
     onEvent({ type: "capabilities_resolved", sdk: resolved.sdk, model: reference, capabilitiesUsed });
 
-    // The harness already durably persisted the transcript to the session repo.
-    // When the caller did not opt into keep-alive, drop the session so a later
-    // resume reports session_not_found, matching the legacy contract.
-    if (!externalAbort && !errorMessage && options.sessionKeepAlive !== true) {
+    // Session lifecycle parity with the legacy bridge. The harness already
+    // durably persisted the transcript into its session object (in-memory for
+    // the default repo, jsonl on disk when piSessionsRoot is set); the registry
+    // tracks LIVENESS so disposeProviderSession / idle-TTL eviction can reach
+    // native sessions, and a resume miss reports session_not_found.
+    if (options.sessionKeepAlive === true && !externalAbort && !errorMessage) {
       try {
-        await repo.delete(await session.getMetadata());
-      } catch { /* best-effort */ }
-    } else if (errorMessage && !requestedSessionId) {
-      // Never leave a freshly-created session behind a failed first turn.
+        if (sessionEntry) {
+          // Resumed run: the harness appended this run's turns onto the live
+          // session; just re-arm the idle window.
+          nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
+          // Surface a write failure the harness swallowed: a session that can
+          // no longer persist must not pretend to be resumable.
+          await session.buildContext();
+        } else {
+          const metadata = await session.getMetadata();
+          nativeSessions.set(providerSessionId, {
+            session,
+            metadata,
+            repo: durableRepo || nativeSessionRepo,
+            durable: !!durableRepo,
+            busy: false,
+          }, { idleTimeoutMs: sessionTtlMs });
+        }
+      } catch (err) {
+        // Session persistence must never fail the run; drop the (now
+        // inconsistent) session instead of resuming from a broken transcript.
+        onEvent({
+          type: "runtime_warning",
+          warning_kind: "pi_session_persist_failed",
+          message: err?.message || String(err),
+        });
+        nativeSessions.delete(providerSessionId);
+        if (requestedSessionId) nativeSessions.delete(requestedSessionId);
+        const broken = sessionEntry;
+        if (broken) {
+          try { await broken.repo.delete(broken.metadata); } catch { /* best-effort */ }
+        }
+      }
+    } else if (sessionEntry) {
+      // Resumed run that errored (or was aborted): roll the live session back to
+      // the leaf captured before this turn so the failed turn never leaks into a
+      // later resume. The next resume then sees the last good transcript. The
+      // entry stays live (busy is cleared in finally) and its idle TTL re-arms.
+      if (baselineLeafId && (errorMessage || externalAbort)) {
+        try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
+      }
+      nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
+    } else {
+      // Fresh, non-keep-alive (or failed first) run: never leave a live session
+      // behind. A durable jsonl transcript on disk is dropped too, matching the
+      // legacy default contract that a non-keep-alive run is not resumable.
       try {
-        await repo.delete(await session.getMetadata());
+        await (durableRepo || nativeSessionRepo).delete(await session.getMetadata());
       } catch { /* best-effort */ }
     }
 
@@ -687,6 +909,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       },
     };
   } finally {
+    if (sessionEntry) sessionEntry.busy = false;
     removeAbortHandler?.();
     await closePiMcpClients(mcpClients);
   }

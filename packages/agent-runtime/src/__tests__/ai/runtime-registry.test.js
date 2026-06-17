@@ -20,23 +20,17 @@ describe("AI runtime bridge registry", () => {
       .rejects.toThrow(/unsupported sdk/i);
   });
 
-  it("keeps the legacy pi-sdk bridge as the default and opts into pi-native only with piEngine='native'", async () => {
-    const legacy = await resolveRuntimeBridge({ sdk: "pi", provider: "openai", model: "gpt-5.5" });
-    expect(legacy).toMatchObject({ id: "pi", execute: expect.any(Function) });
-
-    const legacyExplicit = await resolveRuntimeBridge(
+  it("resolves the pi sdk to the native AgentHarness bridge as the sole pi path", async () => {
+    const { piNativeRuntimeBridge } = await import("../../ai/providers/pi-native.js");
+    const bridge = await resolveRuntimeBridge({ sdk: "pi", provider: "openai", model: "gpt-5.5" });
+    expect(bridge).toMatchObject({ id: "pi", execute: expect.any(Function) });
+    // The piEngine knob is gone: every resolution returns the native bridge.
+    expect(bridge.execute).toBe(piNativeRuntimeBridge.execute);
+    const ignoresKnob = await resolveRuntimeBridge(
       { sdk: "pi", provider: "openai", model: "gpt-5.5" },
       { piEngine: "legacy" },
     );
-    expect(legacyExplicit.execute).toBe(legacy.execute);
-
-    const native = await resolveRuntimeBridge(
-      { sdk: "pi", provider: "openai", model: "gpt-5.5" },
-      { piEngine: "native" },
-    );
-    expect(native).toMatchObject({ id: "pi", execute: expect.any(Function) });
-    // The native bridge must be a distinct implementation from the legacy default.
-    expect(native.execute).not.toBe(legacy.execute);
+    expect(ignoresKnob.execute).toBe(piNativeRuntimeBridge.execute);
   });
 
   it("routes to CLI bridges when execution_mode='cli'", async () => {
