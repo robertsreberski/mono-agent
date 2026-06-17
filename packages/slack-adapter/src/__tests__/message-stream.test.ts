@@ -43,6 +43,10 @@ class FakeSlackApi implements SlackWebApi {
     }
     return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
   }
+
+  async downloadFile(): Promise<Uint8Array> {
+    return new Uint8Array();
+  }
 }
 
 function slackApiError(
@@ -85,15 +89,17 @@ describe("SlackMessageStream", () => {
     await stream.append("Hel");
     await stream.append("lo");
 
+    // The shared substrate posts the initial status and streams interim edits as
+    // plain text (mrkdwn: false); only the final answer is markdown-rendered.
     expect(api.postMessageCalls).toEqual([
-      { channel: "C1", text: "Starting", thread_ts: "171.000001", mrkdwn: true },
+      { channel: "C1", text: "Starting", thread_ts: "171.000001", mrkdwn: false },
     ]);
     expect(api.updateCalls).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(50);
 
     expect(api.updateCalls).toEqual([
-      { channel: "C1", ts: "100.000001", text: "Hello", mrkdwn: true },
+      { channel: "C1", ts: "100.000001", text: "Hello", mrkdwn: false },
     ]);
   });
 
@@ -114,17 +120,20 @@ describe("SlackMessageStream", () => {
     expect(api.updateCalls).toHaveLength(1);
     expect(api.updateCalls[0]?.text).toHaveLength(32);
     expect(api.postMessageCalls).toHaveLength(3);
+    // Initial status post is plain (mrkdwn: false) under the shared substrate.
     expect(api.postMessageCalls[0]).toEqual({
       channel: "D1",
       text: "Thinking...",
       thread_ts: "172.000001",
-      mrkdwn: true,
+      mrkdwn: false,
     });
+    // The first final chunk edits the placeholder in place; overflow
+    // continuation chunks are posted as plain (mrkdwn: false) thread replies.
     expect(api.postMessageCalls[1]?.text).toHaveLength(32);
     expect(api.postMessageCalls[1]?.thread_ts).toBe("172.000001");
-    expect(api.postMessageCalls[1]?.mrkdwn).toBe(true);
+    expect(api.postMessageCalls[1]?.mrkdwn).toBe(false);
     expect(api.postMessageCalls[2]?.text).toHaveLength(6);
-    expect(api.postMessageCalls[2]?.mrkdwn).toBe(true);
+    expect(api.postMessageCalls[2]?.mrkdwn).toBe(false);
   });
 
   it("translates Markdown output to Slack mrkdwn for posts and updates", async () => {
@@ -141,18 +150,20 @@ describe("SlackMessageStream", () => {
     await vi.runAllTimersAsync();
     await stream.finish("__Final__ ~~ready~~");
 
+    // The status post and interim edit stream as plain text under the shared
+    // substrate; only the final answer is translated to Slack mrkdwn.
     expect(api.postMessageCalls[0]).toEqual({
       channel: "C1",
-      text: "Working on *the fix*",
+      text: "Working on **the fix**",
       thread_ts: "171.000001",
-      mrkdwn: true,
+      mrkdwn: false,
     });
     expect(api.updateCalls).toEqual([
       {
         channel: "C1",
         ts: "100.000001",
-        text: "*Result*\n\n*Done* <https://example.com?a=1&amp;b=2|details>",
-        mrkdwn: true,
+        text: "## Result\n\n**Done** [details](https://example.com?a=1&b=2)",
+        mrkdwn: false,
       },
       {
         channel: "C1",
@@ -177,7 +188,8 @@ describe("SlackMessageStream", () => {
     await vi.runAllTimersAsync();
 
     expect(api.updateCalls[0]?.text).toHaveLength(32);
-    expect(api.updateCalls[0]?.text.startsWith("...\n")).toBe(true);
+    // The shared substrate marks a truncated in-progress preview with an ellipsis.
+    expect(api.updateCalls[0]?.text.startsWith("…\n")).toBe(true);
   });
 
   it("does not surface an interim update failure to the caller", async () => {
@@ -216,6 +228,9 @@ describe("SlackMessageStream", () => {
       async appsConnectionsOpen() {
         return { ok: true as const, url: "wss://slack.test/socket" };
       },
+      async downloadFile() {
+        return new Uint8Array();
+      },
       async chatPostMessage(params) {
         postCalls.push(params);
         return { ok: true as const, channel: params.channel, ts: `${nextTs++}.000001` };
@@ -247,6 +262,9 @@ describe("SlackMessageStream", () => {
       async appsConnectionsOpen() {
         return { ok: true as const, url: "wss://slack.test/socket" };
       },
+      async downloadFile() {
+        return new Uint8Array();
+      },
       async chatPostMessage(params) {
         return { ok: true as const, channel: params.channel, ts: "400.000001" };
       },
@@ -276,6 +294,9 @@ describe("SlackMessageStream", () => {
       async appsConnectionsOpen() {
         return { ok: true as const, url: "wss://slack.test/socket" };
       },
+      async downloadFile() {
+        return new Uint8Array();
+      },
       async chatPostMessage(params) {
         return { ok: true as const, channel: params.channel, ts: "500.000001" };
       },
@@ -302,6 +323,9 @@ describe("SlackMessageStream", () => {
       },
       async appsConnectionsOpen() {
         return { ok: true as const, url: "wss://slack.test/socket" };
+      },
+      async downloadFile() {
+        return new Uint8Array();
       },
       async chatPostMessage(params) {
         return { ok: true as const, channel: params.channel, ts: "600.000001" };
@@ -332,6 +356,9 @@ describe("SlackMessageStream", () => {
       },
       async appsConnectionsOpen() {
         return { ok: true as const, url: "wss://slack.test/socket" };
+      },
+      async downloadFile() {
+        return new Uint8Array();
       },
       async chatPostMessage(params) {
         postCalls.push(params);
@@ -369,6 +396,9 @@ describe("SlackMessageStream", () => {
       async appsConnectionsOpen() {
         return { ok: true as const, url: "wss://slack.test/socket" };
       },
+      async downloadFile() {
+        return new Uint8Array();
+      },
       async chatPostMessage(params) {
         if (params.text === "Thinking...") {
           return { ok: true as const, channel: params.channel, ts: "800.000001" };
@@ -398,6 +428,9 @@ describe("SlackMessageStream", () => {
       },
       async appsConnectionsOpen() {
         return { ok: true as const, url: "wss://slack.test/socket" };
+      },
+      async downloadFile() {
+        return new Uint8Array();
       },
       async chatPostMessage(params) {
         postCalls.push(params);
@@ -458,6 +491,70 @@ describe("SlackMessageStream", () => {
     ];
     expect(allText.some((text) => text.includes("secret private reasoning"))).toBe(false);
     expect(api.updateCalls.at(-1)?.text).toBe("answer");
+  });
+
+  it("delegates to the shared substrate: renders final markdown via the Slack transport and preserves thread_ts", async () => {
+    // Equivalence probe for the thin-wrapper refactor: the wrapper builds a
+    // ChannelTransport (post -> chatPostMessage, edit -> chatUpdate,
+    // renderMarkdown -> formatMarkdownForSlack, thread_ts preserved) and lets the
+    // shared ResilientMessageStream drive delivery.
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C42",
+      threadTs: "999.000001",
+      editDebounceMs: 0,
+    });
+
+    await stream.append("draft");
+    await vi.runAllTimersAsync();
+    await stream.finish("**bold** done");
+
+    // Initial post + every edit carry the thread_ts through the transport.
+    expect(api.postMessageCalls[0]?.thread_ts).toBe("999.000001");
+    expect(api.updateCalls.every((call) => call.ts === "100.000001")).toBe(true);
+    // The final answer is markdown-rendered (mrkdwn: true) by the transport.
+    expect(api.updateCalls.at(-1)).toEqual({
+      channel: "C42",
+      ts: "100.000001",
+      text: "*bold* done",
+      mrkdwn: true,
+    });
+  });
+
+  it("normalizes a substrate ChannelDeliveryError into a SlackDeliveryError", async () => {
+    // The placeholder post succeeds, but every edit and the last-resort fresh
+    // post fail with a transient error. The substrate raises a
+    // ChannelDeliveryError, which the wrapper must surface as a SlackDeliveryError.
+    const api: SlackWebApi = {
+      async authTest() {
+        return { ok: true as const };
+      },
+      async appsConnectionsOpen() {
+        return { ok: true as const, url: "wss://slack.test/socket" };
+      },
+      async downloadFile() {
+        return new Uint8Array();
+      },
+      async chatPostMessage(params) {
+        if (params.text === "Thinking...") {
+          return { ok: true as const, channel: params.channel, ts: "900.000001" };
+        }
+        throw slackApiError({ kind: "network", method: "chat.postMessage" });
+      },
+      async chatUpdate() {
+        throw slackApiError({ kind: "network", method: "chat.update" });
+      },
+    };
+
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      editDebounceMs: 0,
+      maxSendRetries: 0,
+    });
+
+    await expect(stream.finish("doomed")).rejects.toBeInstanceOf(SlackDeliveryError);
   });
 
   it("stops refreshing the hint once answer text streams in", async () => {

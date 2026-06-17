@@ -55,6 +55,17 @@ export interface SlackChatUpdateResult {
   [key: string]: unknown;
 }
 
+/** Parameters for an authenticated download of a private Slack file. */
+export interface SlackDownloadFileParams {
+  /** The file's `url_private` (or `url_private_download`). */
+  url: string;
+  /**
+   * Stop reading once this many bytes have been received and reject. Lets the
+   * caller enforce a hard cap without buffering an unbounded response.
+   */
+  maxBytes?: number;
+}
+
 export interface SlackWebApi {
   authTest(options?: SlackRequestOptions): Promise<SlackAuthTestResult>;
   appsConnectionsOpen(options?: SlackRequestOptions): Promise<SlackAppsConnectionsOpenResult>;
@@ -66,6 +77,30 @@ export interface SlackWebApi {
     params: SlackChatUpdateParams,
     options?: SlackRequestOptions,
   ): Promise<SlackChatUpdateResult>;
+  /**
+   * Download a private Slack file's bytes using the bot token. Slack serves
+   * `url_private` only with an `Authorization: Bearer <bot token>` header.
+   */
+  downloadFile(
+    params: SlackDownloadFileParams,
+    options?: SlackRequestOptions,
+  ): Promise<Uint8Array>;
+}
+
+/**
+ * A Slack file object as delivered on a message/app_mention event's `files`
+ * array. Only the fields the adapter needs are typed; the rest pass through.
+ */
+export interface SlackFile {
+  id?: string;
+  name?: string;
+  title?: string;
+  mimetype?: string;
+  filetype?: string;
+  size?: number;
+  url_private?: string;
+  url_private_download?: string;
+  [key: string]: unknown;
 }
 
 export type SlackEventType = "app_mention" | "message" | string;
@@ -81,6 +116,7 @@ export interface SlackEventBase {
   event_ts?: SlackMessageTs;
   channel_type?: string;
   bot_id?: string;
+  files?: readonly SlackFile[];
   [key: string]: unknown;
 }
 

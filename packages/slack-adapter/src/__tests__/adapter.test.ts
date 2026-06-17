@@ -11,7 +11,9 @@ import type {
   SlackChatPostMessageParams,
   SlackChatPostMessageResult,
   SlackChatUpdateParams,
+  SlackDownloadFileParams,
   SlackEventCallback,
+  SlackRequestOptions,
   SlackWebApi,
 } from "../types.js";
 
@@ -36,6 +38,13 @@ class FakeSlackApi implements SlackWebApi {
   async chatUpdate(params: SlackChatUpdateParams) {
     this.updateCalls.push(params);
     return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+  }
+
+  async downloadFile(
+    _params: SlackDownloadFileParams,
+    _options?: SlackRequestOptions,
+  ): Promise<Uint8Array> {
+    return new Uint8Array();
   }
 }
 
@@ -147,7 +156,7 @@ describe("SlackAdapter", () => {
       channel: "D123",
       text: "Thinking...",
       thread_ts: "171.000001",
-      mrkdwn: true,
+      mrkdwn: false,
     });
     expect(api.updateCalls.map((call) => call.text)).toEqual(["partial", "final"]);
   });
@@ -172,7 +181,7 @@ describe("SlackAdapter", () => {
       channel: "D123",
       text: "Thinking...",
       thread_ts: "171.000001",
-      mrkdwn: true,
+      mrkdwn: false,
     });
     expect(api.updateCalls.at(-1)).toEqual({
       channel: "D123",
@@ -379,6 +388,144 @@ describe("SlackAdapter", () => {
     expect(api.updateCalls.at(-1)?.text).toBe("final answer");
   });
 
+  it("downloads inbound files into request.attachments with base64 data", async () => {
+    const api = new FakeSlackApi();
+    const downloads: Array<{ url: string; signalAborted: boolean }> = [];
+    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const textBytes = new TextEncoder().encode("hello doc");
+    api.downloadFile = async (params, options) => {
+      downloads.push({ url: params.url, signalAborted: options?.signal?.aborted === true });
+      if (params.url.includes("photo")) {
+        return imageBytes;
+      }
+      return textBytes;
+    };
+
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ok" };
+      }),
+    });
+
+    const callback = directMessage("here are files", {
+      files: [
+        {
+          id: "F1",
+          name: "photo.png",
+          mimetype: "image/png",
+          url_private: "https://files.slack.test/photo.png",
+          size: imageBytes.byteLength,
+        },
+        {
+          id: "F2",
+          title: "Notes",
+          name: "notes.txt",
+          mimetype: "text/plain",
+          url_private: "https://files.slack.test/notes.txt",
+          size: textBytes.byteLength,
+        },
+      ],
+    });
+
+    await expect(adapter.handleEventCallback(callback)).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+    });
+
+    expect(downloads.map((d) => d.url)).toEqual([
+      "https://files.slack.test/photo.png",
+      "https://files.slack.test/notes.txt",
+    ]);
+    expect(downloads.every((d) => d.signalAborted === false)).toBe(true);
+
+    expect(captured?.attachments).toHaveLength(2);
+    expect(captured?.attachments?.[0]).toEqual({
+      kind: "image",
+      mimeType: "image/png",
+      data: Buffer.from(imageBytes).toString("base64"),
+      name: "photo.png",
+      sizeBytes: imageBytes.byteLength,
+    });
+    // Text mimetypes are also decoded to UTF-8 text.
+    expect(captured?.attachments?.[1]).toEqual({
+      kind: "document",
+      mimeType: "text/plain",
+      data: Buffer.from(textBytes).toString("base64"),
+      name: "notes.txt",
+      sizeBytes: textBytes.byteLength,
+      text: "hello doc",
+    });
+  });
+
+  it("skips a file whose download fails and keeps the rest", async () => {
+    const api = new FakeSlackApi();
+    const okBytes = new Uint8Array([1, 2, 3]);
+    api.downloadFile = async (params) => {
+      if (params.url.includes("bad")) {
+        throw new Error("download failed");
+      }
+      return okBytes;
+    };
+
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ok" };
+      }),
+    });
+
+    const callback = directMessage("files", {
+      files: [
+        { id: "F1", name: "bad.png", mimetype: "image/png", url_private: "https://files.slack.test/bad.png" },
+        { id: "F2", name: "good.png", mimetype: "image/png", url_private: "https://files.slack.test/good.png" },
+      ],
+    });
+
+    await adapter.handleEventCallback(callback);
+
+    expect(captured?.attachments).toHaveLength(1);
+    expect(captured?.attachments?.[0]?.name).toBe("good.png");
+  });
+
+  it("enforces the maxBytes cap and mimetype allowlist", async () => {
+    const api = new FakeSlackApi();
+    api.downloadFile = async () => new Uint8Array([1, 2, 3, 4]);
+
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      attachments: { maxBytes: 3, allowedMimeTypes: ["image/png"] },
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ok" };
+      }),
+    });
+
+    const callback = directMessage("files", {
+      files: [
+        // Disallowed mimetype: skipped before any download.
+        { id: "F1", name: "doc.pdf", mimetype: "application/pdf", url_private: "https://files.slack.test/doc.pdf" },
+        // Allowed mimetype but advertised size exceeds the cap: skipped.
+        { id: "F2", name: "big.png", mimetype: "image/png", size: 9, url_private: "https://files.slack.test/big.png" },
+      ],
+    });
+
+    await adapter.handleEventCallback(callback);
+
+    expect(captured?.attachments ?? []).toHaveLength(0);
+  });
+
   it("surfaces responder failures without fake success", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({
@@ -428,6 +575,7 @@ function directMessage(
     user?: string;
     botId?: string;
     subtype?: string;
+    files?: readonly Record<string, unknown>[];
   } = {},
 ): SlackEventCallback {
   const event: Record<string, unknown> = {
@@ -441,6 +589,9 @@ function directMessage(
   };
   if (options.threadTs !== undefined) {
     event.thread_ts = options.threadTs;
+  }
+  if (options.files !== undefined) {
+    event.files = options.files;
   }
   if (options.botId !== undefined) {
     event.bot_id = options.botId;

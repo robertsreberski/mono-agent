@@ -5,6 +5,7 @@ import type {
   SlackChatPostMessageResult,
   SlackChatUpdateParams,
   SlackChatUpdateResult,
+  SlackDownloadFileParams,
   SlackRequestOptions,
   SlackWebApi,
 } from "./types.js";
@@ -144,6 +145,81 @@ export class SlackWebApiClient implements SlackWebApi {
     options?: SlackRequestOptions,
   ): Promise<SlackChatUpdateResult> {
     return this.request<SlackChatUpdateResult>("chat.update", params, this.botToken, options);
+  }
+
+  /**
+   * Download a private Slack file. Slack serves `url_private` only with an
+   * `Authorization: Bearer <bot token>` header. The download is bounded by the
+   * caller's request timeout and any external abort signal, and reads at most
+   * `maxBytes` (rejecting once the cap is exceeded) so a hostile or oversized
+   * file cannot exhaust memory.
+   */
+  async downloadFile(
+    params: SlackDownloadFileParams,
+    options?: SlackRequestOptions,
+  ): Promise<Uint8Array> {
+    const method = "files.download";
+    const { signal, cleanup } = createRequestSignal(options?.signal, this.requestTimeoutMs);
+
+    let response: Response;
+    try {
+      const init: RequestInit = {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${this.botToken}`,
+        },
+      };
+      if (signal !== undefined) {
+        init.signal = signal;
+      }
+      response = await this.fetchImpl(params.url, init);
+    } catch (error) {
+      cleanup();
+      if (isAbortError(error) || options?.signal?.aborted === true) {
+        throw new SlackApiError(`Slack file download was aborted.`, {
+          kind: "aborted",
+          method,
+        });
+      }
+      throw new SlackApiError(`Network failure while downloading a Slack file.`, {
+        kind: "network",
+        method,
+      });
+    }
+
+    if (!response.ok) {
+      const retryAfterMs = parseRetryAfterMs(response);
+      await safelyDrainResponse(response);
+      cleanup();
+      throw new SlackApiError(`Slack file download failed with HTTP ${response.status}.`, {
+        kind: "http",
+        method,
+        status: response.status,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      });
+    }
+
+    try {
+      const bytes = await readBodyWithCap(response, params.maxBytes);
+      cleanup();
+      return bytes;
+    } catch (error) {
+      cleanup();
+      if (error instanceof SlackApiError) {
+        throw error;
+      }
+      if (isAbortError(error) || options?.signal?.aborted === true) {
+        throw new SlackApiError(`Slack file download was aborted.`, {
+          kind: "aborted",
+          method,
+        });
+      }
+      throw new SlackApiError(`Failed to read a downloaded Slack file.`, {
+        kind: "network",
+        method,
+        cause: error,
+      });
+    }
   }
 
   private async request<T extends { ok: true }>(
@@ -311,6 +387,66 @@ function isAbortError(value: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/**
+ * Read a response body into a single Uint8Array, rejecting once `maxBytes` is
+ * exceeded. Streams the body where possible so an oversized file is abandoned
+ * without buffering the whole thing; falls back to an arrayBuffer read (still
+ * cap-checked) when the runtime exposes no readable stream.
+ */
+async function readBodyWithCap(
+  response: Response,
+  maxBytes: number | undefined,
+): Promise<Uint8Array> {
+  const cap = maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes >= 0 ? maxBytes : undefined;
+
+  const body = response.body;
+  if (body === null || typeof body.getReader !== "function") {
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    if (cap !== undefined && bytes.byteLength > cap) {
+      throw new SlackApiError("Slack file exceeded the configured byte cap.", {
+        kind: "malformed",
+        method: "files.download",
+      });
+    }
+    return bytes;
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value === undefined) {
+        continue;
+      }
+      total += value.byteLength;
+      if (cap !== undefined && total > cap) {
+        await reader.cancel();
+        throw new SlackApiError("Slack file exceeded the configured byte cap.", {
+          kind: "malformed",
+          method: "files.download",
+        });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 async function safelyDrainResponse(response: Response): Promise<void> {

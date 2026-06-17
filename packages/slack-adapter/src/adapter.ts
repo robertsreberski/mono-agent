@@ -1,5 +1,6 @@
 import {
   isAgentResponseCancelledError,
+  type AgentAttachment,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
@@ -15,6 +16,7 @@ import type {
   SlackChannelId,
   SlackEventBase,
   SlackEventCallback,
+  SlackFile,
   SlackMessageTs,
   SlackUserId,
   SlackWebApi,
@@ -33,10 +35,25 @@ export interface AgentRequest extends AgentRequestBase {
   text: string;
   trigger: SlackTriggerKind;
   abortSignal: AbortSignal;
+  attachments?: readonly AgentAttachment[];
   metadata: {
     slack: SlackRequestMetadata;
     [key: string]: unknown;
   };
+}
+
+/** Tunes how inbound Slack file attachments are downloaded. */
+export interface SlackAttachmentOptions {
+  /**
+   * Maximum decoded bytes to accept per file. Files whose advertised size
+   * exceeds this — or whose download exceeds it — are skipped. Default 10 MiB.
+   */
+  maxBytes?: number;
+  /**
+   * Allowed file mimetypes. A file whose mimetype is not listed is skipped.
+   * Defaults to a conservative allowlist of common image and document types.
+   */
+  allowedMimeTypes?: readonly string[];
 }
 
 export interface SlackRequestMetadata {
@@ -97,6 +114,7 @@ export interface SlackAdapterOptions {
   stripMentionText?: boolean;
   stream?: SlackAdapterStreamOptions;
   messages?: SlackAdapterMessages;
+  attachments?: SlackAttachmentOptions;
   logger?: SlackAdapterLogger;
 }
 
@@ -162,7 +180,21 @@ interface SlackTextEvent {
   threadTs: SlackMessageTs;
   eventTs?: SlackMessageTs;
   trigger: SlackTriggerKind;
+  files: readonly SlackFile[];
 }
+
+const DEFAULT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_ALLOWED_MIME_TYPES: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+];
 
 const DEFAULT_MESSAGES: Required<SlackAdapterMessages> = {
   welcomeText:
@@ -187,6 +219,8 @@ export class SlackAdapter {
   private readonly stripMentionText: boolean;
   private readonly streamOptions: SlackAdapterStreamOptions;
   private readonly messages: Required<SlackAdapterMessages>;
+  private readonly attachmentMaxBytes: number;
+  private readonly allowedMimeTypes: ReadonlySet<string>;
   private readonly logger: SlackAdapterLogger | undefined;
   /**
    * In-flight abort controllers per thread. The harness serializes runs for a
@@ -212,6 +246,12 @@ export class SlackAdapter {
       options.stripMentionText ?? (this.botUserIds.size > 0 || this.mentionTextAliases.length > 0);
     this.streamOptions = options.stream ?? {};
     this.messages = { ...DEFAULT_MESSAGES, ...options.messages };
+    this.attachmentMaxBytes = options.attachments?.maxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES;
+    this.allowedMimeTypes = new Set(
+      (options.attachments?.allowedMimeTypes ?? DEFAULT_ALLOWED_MIME_TYPES).map((mime) =>
+        mime.trim().toLowerCase(),
+      ),
+    );
     this.logger = options.logger;
 
     if (!this.allowAllChannels && this.allowedChannelIds.size === 0) {
@@ -244,7 +284,7 @@ export class SlackAdapter {
     }
 
     const text = event.text.trim();
-    if (text.length === 0) {
+    if (text.length === 0 && event.files.length === 0) {
       await this.api.chatPostMessage({
         channel: event.channelId,
         text: this.messages.unsupportedText,
@@ -368,7 +408,13 @@ export class SlackAdapter {
         return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
       }
 
-      const request = buildAgentRequest(event, text, controller.signal);
+      const attachments = await this.downloadAttachments(event.files, controller.signal);
+      if (controller.signal.aborted) {
+        await stream.finish(this.messages.cancelledText);
+        return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
+      }
+
+      const request = buildAgentRequest(event, text, controller.signal, attachments);
       const response = await this.responder.respond(request, stream);
 
       if (controller.signal.aborted) {
@@ -402,6 +448,70 @@ export class SlackAdapter {
     } finally {
       this.unregisterController(runKey, controller);
     }
+  }
+
+  /**
+   * Download each inbound Slack file's bytes into an {@link AgentAttachment}.
+   * Files with a missing/disallowed mimetype, no private URL, or an advertised
+   * size over the cap are skipped before any network call. The byte cap is also
+   * enforced during the download. A failed download skips that file and
+   * continues; downloads are tied to the request abort signal.
+   */
+  private async downloadAttachments(
+    files: readonly SlackFile[],
+    signal: AbortSignal,
+  ): Promise<AgentAttachment[]> {
+    const attachments: AgentAttachment[] = [];
+    for (const file of files) {
+      if (signal.aborted) {
+        break;
+      }
+
+      const mimeType = typeof file.mimetype === "string" ? file.mimetype : "";
+      if (mimeType.length === 0 || !this.allowedMimeTypes.has(mimeType.toLowerCase())) {
+        this.logger?.debug?.("Skipped Slack file with disallowed mimetype.", {
+          id: file.id,
+          mimeType,
+        });
+        continue;
+      }
+
+      if (typeof file.size === "number" && file.size > this.attachmentMaxBytes) {
+        this.logger?.debug?.("Skipped Slack file exceeding the byte cap.", {
+          id: file.id,
+          size: file.size,
+        });
+        continue;
+      }
+
+      const url = file.url_private ?? file.url_private_download;
+      if (typeof url !== "string" || url.length === 0) {
+        this.logger?.debug?.("Skipped Slack file without a private URL.", { id: file.id });
+        continue;
+      }
+
+      let bytes: Uint8Array;
+      try {
+        bytes = await this.api.downloadFile({ url, maxBytes: this.attachmentMaxBytes }, { signal });
+      } catch (error) {
+        this.logger?.warn?.("Failed to download a Slack file (skipped).", {
+          id: file.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+
+      if (bytes.byteLength > this.attachmentMaxBytes) {
+        this.logger?.debug?.("Skipped Slack file exceeding the byte cap.", {
+          id: file.id,
+          size: bytes.byteLength,
+        });
+        continue;
+      }
+
+      attachments.push(buildAttachment(file, mimeType, bytes));
+    }
+    return attachments;
   }
 
   private registerController(runKey: string, controller: AbortController): void {
@@ -467,6 +577,7 @@ export class SlackAdapter {
       messageTs: rawEvent.ts,
       threadTs,
       trigger,
+      files: Array.isArray(rawEvent.files) ? rawEvent.files : [],
     };
     if (callback.team_id !== undefined) {
       event.teamId = callback.team_id;
@@ -542,6 +653,7 @@ function buildAgentRequest(
   event: SlackTextEvent,
   text: string,
   abortSignal: AbortSignal,
+  attachments: readonly AgentAttachment[],
 ): AgentRequest {
   const metadata: SlackRequestMetadata = {
     eventId: event.eventId,
@@ -592,7 +704,52 @@ function buildAgentRequest(
   if (event.userId !== undefined) {
     request.userId = event.userId;
   }
+  if (attachments.length > 0) {
+    request.attachments = attachments;
+  }
   return request;
+}
+
+const TEXT_MIME_PATTERN = /^text\/|[/+](?:json|xml|csv)$/iu;
+
+/** Build an {@link AgentAttachment} from downloaded Slack file bytes. */
+function buildAttachment(
+  file: SlackFile,
+  mimeType: string,
+  bytes: Uint8Array,
+): AgentAttachment {
+  const attachment: {
+    kind: "image" | "document";
+    mimeType: string;
+    data: string;
+    name?: string;
+    sizeBytes?: number;
+    text?: string;
+  } = {
+    kind: mimeType.toLowerCase().startsWith("image/") ? "image" : "document",
+    mimeType,
+    data: toBase64(bytes),
+    sizeBytes: bytes.byteLength,
+  };
+
+  const name = typeof file.name === "string" && file.name.length > 0
+    ? file.name
+    : typeof file.title === "string" && file.title.length > 0
+      ? file.title
+      : undefined;
+  if (name !== undefined) {
+    attachment.name = name;
+  }
+
+  if (TEXT_MIME_PATTERN.test(mimeType)) {
+    attachment.text = new TextDecoder("utf-8").decode(bytes);
+  }
+
+  return attachment;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 }
 
 function parseCommand(text: string): NormalizedCommand | undefined {
