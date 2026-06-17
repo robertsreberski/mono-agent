@@ -55,7 +55,6 @@ describe("runtime adapter model references", () => {
       "claude-sdk",
       "claude-code-cli",
       "codex-app-cli",
-      "openai-agents-sdk",
       "pi-sdk",
     ]);
     expect(backends.find((backend) => backend.id === "claude-sdk")).toMatchObject({

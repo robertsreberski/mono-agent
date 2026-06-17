@@ -7,7 +7,6 @@ flowchart TB
   subgraph HostDemos["Host/demo composition"]
     FinalDemo["demos/final-agent"]
     MultiDemo["demos/multi-agent"]
-    AgentsSdkDemo["demos/agents-sdk-demo"]
     DownloadsCurator["demos/downloads-curator"]
   end
 
@@ -40,6 +39,7 @@ flowchart TB
     Context["@mono-agent/context"]
     Skills["@mono-agent/skills"]
     MemoryBujo["@mono-agent/memory-bujo"]
+    MemoryMcp["@mono-agent/memory-mcp"]
     MemorySearch["@mono-agent/memory-search"]
     MemoryStore["@mono-agent/memory-store"]
   end
@@ -62,7 +62,6 @@ flowchart TB
   subgraph Runtime["runtime"]
     RuntimeAdapter["@mono-agent/runtime-adapter"]
     AgentRuntime["@mono-agent/agent-runtime"]
-    OpenAIAgents["@mono-agent/openai-agents-runtime"]
     Sandbox["@mono-agent/sandbox"]
   end
 
@@ -134,20 +133,21 @@ flowchart TB
   Skills --> Context
   MemoryBujo --> MemoryStore
   MemoryBujo --> MemorySearch
+  MemoryMcp --> MemoryBujo
+  MemoryMcp --> MemoryStore
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Sandbox
   AgentRuntime --> Sandbox
   Sandbox --> Contracts
-  OpenAIAgents --> RuntimeAdapter
 ```
 
 ## Current Packages
 
 | Layer | Packages |
 | --- | --- |
-| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/openai-agents-runtime`, `@mono-agent/sandbox` |
+| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-mcp`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |
 | `evaluation` | `@mono-agent/agent-evals` |
@@ -155,4 +155,4 @@ flowchart TB
 | `operator-surface` | `@mono-agent/operator-console`, `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |
 
-`@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). `@mono-agent/openai-agents-runtime` remains an additional first-class adapter for the OpenAI Agents SDK; Claude and Codex both flow through `agent-runtime`. Hosts choose one runtime per responder at composition time via `createConfiguredAgentResponder({ runtime, model })`.
+`@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). Configured hosts use this one runtime implementation path by default; programmatic hosts may still pass any custom `MonoRuntimeLike` to `createConfiguredAgentResponder({ runtime, model })` when they genuinely need a private escape hatch.
