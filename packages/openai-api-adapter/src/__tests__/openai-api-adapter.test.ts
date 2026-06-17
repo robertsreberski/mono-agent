@@ -277,6 +277,7 @@ describe("OpenAI API adapter", () => {
         seen.push({
           text: request.text,
           imageAttachments: request.imageAttachments,
+          attachments: request.attachments,
           metadata: request.metadata.openaiApi,
         });
         await stream.append("image received");
@@ -339,6 +340,11 @@ describe("OpenAI API adapter", () => {
               messageIndex: 0,
               contentPartIndex: 1,
             },
+          ],
+          // The base64 data: image is also forwarded on the shared attachments
+          // contract so it reaches the agent through the generic responder/harness.
+          attachments: [
+            { kind: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
           ],
           metadata: expect.objectContaining({
             attachments: {

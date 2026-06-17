@@ -179,4 +179,60 @@ describe("createLiveSessionManager", () => {
     await expect(queued).rejects.toSatisfy(isAgentResponseCancelledError);
     await expect(manager.enqueue("c1", req("c1"))).rejects.toSatisfy(isAgentResponseCancelledError);
   });
+
+  it("unlinks and rejects a queued turn when its own signal aborts, leaving the active turn running", async () => {
+    const gates: Array<() => void> = [];
+    const manager = createLiveSessionManager({
+      run: async (request) => {
+        await new Promise<void>((resolve) => gates.push(resolve));
+        return response(request.userMessage);
+      },
+    });
+
+    const p1 = manager.enqueue("c1", req("c1", "active"));
+    const secondAbort = new AbortController();
+    const p2 = manager.enqueue("c1", req("c1", "queued", secondAbort.signal));
+    await flush();
+    expect(manager.pendingCount("c1")).toBe(1); // queued behind the active turn
+
+    secondAbort.abort(new Error("client disconnected"));
+    await expect(p2).rejects.toSatisfy(isAgentResponseCancelledError);
+    // The aborted turn is removed from the queue immediately, not retained.
+    expect(manager.pendingCount("c1")).toBe(0);
+
+    gates[0]?.();
+    await expect(p1).resolves.toMatchObject({ text: "active" });
+  });
+
+  it("rejects enqueues beyond the per-conversation pending cap", async () => {
+    const gates: Array<() => void> = [];
+    const manager = createLiveSessionManager({
+      maxPendingPerConversation: 2,
+      run: async (request) => {
+        await new Promise<void>((resolve) => gates.push(resolve));
+        return response(request.userMessage);
+      },
+    });
+
+    const p1 = manager.enqueue("c1", req("c1", "active")); // becomes active
+    await flush();
+    const p2 = manager.enqueue("c1", req("c1", "q1")); // pending 1
+    const p3 = manager.enqueue("c1", req("c1", "q2")); // pending 2 (cap)
+    expect(manager.pendingCount("c1")).toBe(2);
+
+    // The next enqueue exceeds the cap and is rejected.
+    await expect(manager.enqueue("c1", req("c1", "q3"))).rejects.toSatisfy(isAgentResponseCancelledError);
+    expect(manager.pendingCount("c1")).toBe(2);
+
+    // Drain everything so the accepted turns settle (each started turn pushes a
+    // new gate, so release them in order).
+    gates[0]?.();
+    await p1;
+    await flush();
+    gates[1]?.();
+    await p2;
+    await flush();
+    gates[2]?.();
+    await p3;
+  });
 });

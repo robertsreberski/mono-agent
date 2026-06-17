@@ -28,12 +28,22 @@ export interface LiveSessionManager {
 export interface LiveSessionManagerOptions {
   /** Executes a single turn — typically `MonoAgentHarness.run`. */
   readonly run: (request: AgentHarnessRequest) => Promise<AgentHarnessResponse>;
+  /**
+   * Max turns queued behind the active one per conversation. Beyond this, new
+   * enqueues are rejected (cancelled) so a stuck active turn cannot retain
+   * unbounded follow-ups. Default 100.
+   */
+  readonly maxPendingPerConversation?: number;
 }
+
+const DEFAULT_MAX_PENDING_PER_CONVERSATION = 100;
 
 interface QueuedTurn {
   readonly request: AgentHarnessRequest;
   readonly resolve: (response: AgentHarnessResponse) => void;
   readonly reject: (error: unknown) => void;
+  /** Removes the while-queued abort listener (no-op once detached). */
+  detachAbort: () => void;
 }
 
 interface ConversationQueue {
@@ -45,6 +55,7 @@ interface ConversationQueue {
 
 export function createLiveSessionManager(options: LiveSessionManagerOptions): LiveSessionManager {
   const conversations = new Map<string, ConversationQueue>();
+  const maxPending = options.maxPendingPerConversation ?? DEFAULT_MAX_PENDING_PER_CONVERSATION;
   let disposed = false;
 
   function queueFor(conversationId: string): ConversationQueue {
@@ -72,6 +83,9 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
     try {
       while (queue.pending.length > 0) {
         const turn = queue.pending.shift() as QueuedTurn;
+        // This turn is now active: drop its while-queued abort listener; the
+        // controller linkage below owns abort from here.
+        turn.detachAbort();
         const controller = new AbortController();
         linkAbort(turn.request.abortSignal, controller);
         queue.activeController = controller;
@@ -103,8 +117,26 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
         return Promise.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
       }
       const queue = queueFor(conversationId);
+      if (queue.pending.length >= maxPending) {
+        return Promise.reject(
+          new AgentResponseCancelledError(`Per-conversation queue is full (max ${maxPending} pending turns).`),
+        );
+      }
       const promise = new Promise<AgentHarnessResponse>((resolve, reject) => {
-        queue.pending.push({ request, resolve, reject });
+        const turn: QueuedTurn = { request, resolve, reject, detachAbort: () => {} };
+        // While this turn is still queued (not yet active), an abort on its own
+        // signal unlinks it and rejects immediately so a disconnected follow-up
+        // is not retained behind a long-running active turn.
+        const onAbort = (): void => {
+          const index = queue.pending.indexOf(turn);
+          if (index >= 0) {
+            queue.pending.splice(index, 1);
+            reject(new AgentResponseCancelledError("Cancelled while queued.", { reason: request.abortSignal.reason }));
+          }
+        };
+        request.abortSignal.addEventListener("abort", onAbort, { once: true });
+        turn.detachAbort = () => request.abortSignal.removeEventListener("abort", onAbort);
+        queue.pending.push(turn);
       });
       void drain(conversationId, queue);
       return promise;
@@ -117,6 +149,7 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
       queue.activeController?.abort(reason);
       const dropped = queue.pending.splice(0);
       for (const turn of dropped) {
+        turn.detachAbort();
         turn.reject(new AgentResponseCancelledError("Cancelled while queued.", { reason }));
       }
     },
@@ -133,6 +166,7 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
         queue.activeTurn?.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
         const dropped = queue.pending.splice(0);
         for (const turn of dropped) {
+          turn.detachAbort();
           turn.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
         }
         conversations.delete(conversationId);

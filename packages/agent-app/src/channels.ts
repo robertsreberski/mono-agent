@@ -367,6 +367,12 @@ export function createCronChannelDriver(
       const adapterFactory = overrides.adapterFactory ?? startCronAdapter;
       const adapter = adapterFactory({
         responder: input.responder,
+        // Skip overlapping firings (a job still running when its next tick fires)
+        // — the legacy/default app behavior. This avoids the scheduler's
+        // unbounded "queue" default retaining stale ticks in memory when a job
+        // runs longer than its interval. (Queue/replace remain available to
+        // programmatic callers of startCronAdapter.)
+        overlap: "skip",
         jobs: jobs.map((job) => ({
           id: job.id,
           expression: job.expression,

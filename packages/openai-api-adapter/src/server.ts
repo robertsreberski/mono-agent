@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import {
   BufferedMessageStream,
   isAgentResponseCancelledError,
+  type AgentAttachment,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
@@ -228,10 +229,16 @@ export async function startOpenAIApiAdapter(
     const receivedAt = new Date().toISOString();
     const body = normalizeChatBody(req.body, req.headers, requestId, modelId);
     const controller = new AbortController();
+    // Inline base64 data: image_url parts into the shared attachments contract so
+    // they reach the agent through the generic responder/harness path (the
+    // imageAttachments field alone is not forwarded). Remote/file URL images are
+    // not downloaded here; they remain in metadata only.
+    const agentAttachments = agentAttachmentsFromImages(body.imageAttachments);
     const request: OpenAIApiChatRequest = {
       conversationId: body.conversationId,
       text: body.text,
       imageAttachments: body.imageAttachments,
+      ...(agentAttachments.length === 0 ? {} : { attachments: agentAttachments }),
       abortSignal: controller.signal,
       metadata: {
         openaiApi: {
@@ -718,6 +725,41 @@ function classifyAttachmentUrl(url: string): OpenAIApiAttachmentUrlKind {
 function mediaTypeFromDataUrl(url: string): string | undefined {
   const match = /^data:([^;,]+)[;,]/iu.exec(url);
   return match?.[1]?.toLowerCase();
+}
+
+/**
+ * Convert base64 `data:` image_url parts into the shared {@link AgentAttachment}
+ * contract so they flow to the agent through the generic responder. Non-base64
+ * and remote/file URL images are skipped (no download is performed here).
+ */
+function agentAttachmentsFromImages(images: readonly OpenAIApiAttachment[]): AgentAttachment[] {
+  const attachments: AgentAttachment[] = [];
+  for (const image of images) {
+    if (image.urlKind !== "data") {
+      continue;
+    }
+    const parsed = parseBase64DataUrl(image.url);
+    if (parsed === undefined) {
+      continue;
+    }
+    attachments.push({ kind: "image", mimeType: parsed.mediaType, data: parsed.base64 });
+  }
+  return attachments;
+}
+
+function parseBase64DataUrl(url: string): { mediaType: string; base64: string } | undefined {
+  // data:[<mediaType>][;base64],<data> — only base64-encoded payloads become
+  // attachments (raw/url-encoded data is not inlined).
+  const match = /^data:([^;,]*)(;base64)?,([\s\S]*)$/iu.exec(url);
+  if (match === null || match[2] === undefined) {
+    return undefined;
+  }
+  const base64 = (match[3] ?? "").trim();
+  if (base64.length === 0) {
+    return undefined;
+  }
+  const mediaType = (match[1] && match[1].length > 0 ? match[1] : "application/octet-stream").toLowerCase();
+  return { mediaType, base64 };
 }
 
 function summarizeAttachments(attachments: readonly OpenAIApiAttachment[]): OpenAIApiAttachmentMetadata {

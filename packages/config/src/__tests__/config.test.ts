@@ -385,6 +385,24 @@ describe("loadMonoAgentConfig", () => {
     expect(JSON.stringify(redacted)).not.toContain("redacted-value");
   });
 
+  it("preserves non-secret pi-native provider knobs through redaction", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PI_MAX_RETRIES: "4",
+        MONO_AGENT_MAX_RETRY_DELAY_MS: "30000",
+        MONO_AGENT_PI_SESSIONS_ROOT: ".mono-agent/sessions",
+      },
+    });
+    const redacted = redactMonoAgentConfig(config);
+    expect(redacted.providers?.piNative).toEqual({
+      piMaxRetries: 4,
+      maxRetryDelayMs: 30_000,
+      piSessionsRoot: join("/repo", ".mono-agent", "sessions"),
+    });
+  });
+
   it("defaults traceability to a host-shared registry path", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

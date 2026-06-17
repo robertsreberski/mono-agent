@@ -174,4 +174,74 @@ describe("AgentHarness attachments", () => {
 
     expect((fake.calls[0]?.options as { piSessionsRoot?: string }).piSessionsRoot).toBe("/tmp/pi-sessions");
   });
+
+  it("accepts an attachment-only request (empty userMessage) and synthesizes a prompt", async () => {
+    const identityPath = await identityFixture();
+    const attachmentsDir = await attachmentsDirFixture();
+    const fake = createCapturingRuntime();
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", attachmentsDir });
+
+    const response = await harness.run({
+      conversationId: "c1",
+      userMessage: "", // file upload with no caption (e.g. a Slack file_share)
+      abortSignal: new AbortController().signal,
+      attachments: [{ kind: "image", mimeType: "image/png", data: Buffer.from("img").toString("base64"), name: "shot.png" }],
+    });
+
+    // The empty-text request is NOT rejected; the runtime runs with a synthesized
+    // prompt that references the attachment.
+    expect(response.failure).toBeUndefined();
+    expect(fake.calls).toHaveLength(1);
+    expect(userContent(fake.calls[0] as { options: RuntimeRunOptions })).toContain("shot.png");
+  });
+
+  it("runs requestExtension.cleanup even when concurrency admission is aborted while queued", async () => {
+    const identityPath = await identityFixture();
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let runCount = 0;
+    const runtime = {
+      async run(): Promise<RuntimeResult> {
+        runCount += 1;
+        if (runCount === 1) {
+          markFirstStarted();
+          await firstGate; // hold the only concurrency slot
+        }
+        return { text: "ok" };
+      },
+      async disposeSession(): Promise<boolean> { return true; },
+      async disposeAllSessions(): Promise<void> {},
+    };
+    const cleanups: string[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      executionMode: "sdk",
+      concurrency: { maxConcurrentRuns: 1 },
+      runtimeOptionsForRequest: ({ request }) => ({
+        cleanup: async () => { cleanups.push(request.conversationId); },
+      }),
+    });
+
+    // First run takes the only slot and blocks inside runtime.run.
+    const first = harness.run({ conversationId: "c1", userMessage: "first", abortSignal: new AbortController().signal });
+    await firstStarted;
+
+    // Second run queues for admission, then is aborted before it can acquire.
+    const secondAbort = new AbortController();
+    const second = harness.run({ conversationId: "c2", userMessage: "second", abortSignal: secondAbort.signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    secondAbort.abort(new Error("cancelled"));
+    const secondResult = await second;
+
+    // It never ran the provider, but its request-scoped cleanup still fired.
+    expect(secondResult.failure?.kind).toBe("cancelled");
+    expect(cleanups).toContain("c2");
+
+    releaseFirst();
+    await first;
+  });
 });

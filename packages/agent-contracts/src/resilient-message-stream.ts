@@ -165,7 +165,6 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private lastFlushedText: string | undefined;
   private lastFlushedMarkdown = false;
   private finished = false;
-  private finalizing = false;
 
   constructor(options: ResilientMessageStreamOptions) {
     this.transport = options.transport;
@@ -323,7 +322,6 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
 
     this.finished = true;
-    this.finalizing = true;
     if (finalText !== undefined) {
       this.currentText = finalText;
       if (finalText.trim().length > 0) {
@@ -338,16 +336,14 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     const chunks = splitTextByCodePoints(finalMessageText, this.maxMessageChars);
     const [firstChunk, ...remainingChunks] = chunks;
 
-    if (this.finalOnly && this.sentMessage === undefined) {
-      // No interim message was posted, so the lazy first send should carry the
-      // final answer directly (not the "Thinking…" placeholder). deliverText then
-      // re-renders it with markdown in place.
-      this.statusText = firstChunk ?? EMPTY_FINAL_TEXT;
-    }
-
-    await this.ensureMessage();
+    // Final-only mode posts the answer for the first time at finish(): deliver it
+    // as a fresh post THROUGH the classified retry path (`post: true`) so the
+    // single send still gets retry, markdown→plain fallback, and lastResortSend —
+    // never a bare unprotected post. (Streaming mode keeps its placeholder+edit
+    // sequence: ensureMessage runs inside deliverText's retry loop.)
+    const post = this.finalOnly && this.sentMessage === undefined;
     try {
-      await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, { final: true });
+      await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, { final: true, post });
     } catch (error) {
       if (this.abortSignal?.aborted === true) {
         // Cancelled: deliver in place if we can, but never post a brand-new
@@ -421,16 +417,12 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
 
     if (this.sendMessagePromise === undefined) {
-      // In final-only mode the lazy first send happens AT finish() and carries
-      // the answer, so render it with markdown directly — avoiding a plain→markdown
-      // re-edit (and the brief flash of raw markdown the user would otherwise see).
-      const useMarkdown = this.finalOnly && this.finalizing && this.formatMarkdown;
-      const initialText = this.render(this.statusText, useMarkdown);
+      const initialText = this.statusText;
       this.sendMessagePromise = this.transport
-        .post(initialText, { markdown: useMarkdown })
+        .post(initialText, { markdown: false })
         .then((message) => {
           this.lastFlushedText = initialText;
-          this.lastFlushedMarkdown = useMarkdown;
+          this.lastFlushedMarkdown = false;
           return message;
         });
     }
@@ -479,7 +471,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
    */
   private async deliverText(
     sourceText: string,
-    options: { final: boolean },
+    options: { final: boolean; post?: boolean },
   ): Promise<void> {
     const normalizedSource = normalizeTrailing(sourceText, EMPTY_FINAL_TEXT);
     let useMarkdown = options.final && this.formatMarkdown;
@@ -490,7 +482,9 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
 
     const maxAttempts = options.final ? this.maxSendRetries + 1 : 1;
-    let recreate = false;
+    // `post: true` delivers via a fresh transport.post() inside the classified
+    // retry loop (used for the final-only first send) instead of edit-in-place.
+    let recreate = options.post === true;
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {

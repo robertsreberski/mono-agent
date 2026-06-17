@@ -408,12 +408,16 @@ export class MonoAgentHarness implements AgentHarness {
     // Admission control: acquire a slot only around the actual provider run.
     // A blocked acquire holds nothing, so per-conversation queued follow-ups
     // never occupy a concurrency slot while they wait. The acquire is abortable
-    // so a cancelled turn does not hang waiting for a slot to free up — it
-    // rejects (and never entered the try below, so nothing is released).
-    if (this.runLimiter !== undefined) {
-      await this.runLimiter.acquire(request.abortSignal);
-    }
+    // so a cancelled turn does not hang waiting for a slot to free up. The
+    // acquire lives INSIDE the cleanup try/finally so a rejected admission
+    // (aborted while queued) still runs requestExtension.cleanup(); release()
+    // is guarded by `acquired` so it only fires when a slot was actually taken.
+    let acquired = false;
     try {
+      if (this.runLimiter !== undefined) {
+        await this.runLimiter.acquire(request.abortSignal);
+        acquired = true;
+      }
       // Bracket the provider call so observability can separate provider+tool+IO
       // time (this event's durationMs) from harness overhead (context build,
       // attachment persistence, compaction, admission wait).
@@ -430,7 +434,9 @@ export class MonoAgentHarness implements AgentHarness {
         hostOnEvent?.(latencyEvent);
       }
     } finally {
-      this.runLimiter?.release();
+      if (acquired) {
+        this.runLimiter?.release();
+      }
       await requestExtension?.cleanup?.();
     }
   }
@@ -483,8 +489,15 @@ function validateRequest(request: AgentHarnessRequest): void {
   if (typeof request.conversationId !== "string" || request.conversationId.trim().length === 0) {
     throw new TypeError("conversationId must be a non-empty string.");
   }
-  if (typeof request.userMessage !== "string" || request.userMessage.trim().length === 0) {
-    throw new TypeError("userMessage must be a non-empty string.");
+  if (typeof request.userMessage !== "string") {
+    throw new TypeError("userMessage must be a string.");
+  }
+  // Attachment-only turns (e.g. a Slack/Telegram file upload with no caption)
+  // are valid: applyAttachments() synthesizes a non-empty prompt referencing the
+  // files. Only reject when there is neither text nor any attachment.
+  const hasAttachments = Array.isArray(request.attachments) && request.attachments.length > 0;
+  if (request.userMessage.trim().length === 0 && !hasAttachments) {
+    throw new TypeError("userMessage must be a non-empty string unless attachments are provided.");
   }
   if (!(request.abortSignal instanceof AbortSignal)) {
     throw new TypeError("abortSignal is required.");

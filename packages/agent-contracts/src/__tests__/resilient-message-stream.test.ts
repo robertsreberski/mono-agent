@@ -141,6 +141,47 @@ describe("ResilientMessageStream", () => {
     expect(transport.calls.filter((c) => c.op === "edit")).toHaveLength(0);
   });
 
+  it("finalOnly mode: retries a transient first-post failure and still delivers the answer", async () => {
+    // The first transport call (the final post) fails retryably; delivery must
+    // recover instead of dropping the answer (the stream is finalOnly, so this is
+    // the only send).
+    const transport = new FakeTransport({ failures: { 1: { kind: "retry" } } });
+    const stream = new ResilientMessageStream({
+      transport,
+      editDebounceMs: 0,
+      sleep: noSleep,
+      finalOnly: true,
+    });
+
+    await stream.append("the answer");
+    await expect(stream.finish()).resolves.toBeUndefined();
+
+    const posts = transport.calls.filter((c) => c.op === "post") as RecordedPost[];
+    expect(posts).toHaveLength(1); // the retry succeeded
+    expect(posts[0]?.text).toContain("the answer");
+  });
+
+  it("finalOnly mode: falls back to plain text when the markdown first-post is rejected", async () => {
+    const transport = new FakeTransport({
+      failures: { 1: { kind: "reformat_plain" } },
+      renderMarkdown: (text) => `MD(${text})`,
+    });
+    const stream = new ResilientMessageStream({
+      transport,
+      editDebounceMs: 0,
+      sleep: noSleep,
+      finalOnly: true,
+    });
+
+    await stream.append("the answer");
+    await stream.finish();
+
+    const posts = transport.calls.filter((c) => c.op === "post") as RecordedPost[];
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.markdown).toBe(false); // fell back to plain
+    expect(posts[0]?.text).toBe("the answer"); // not MD(the answer)
+  });
+
   it("does not post anything until the first write (lazy first send)", async () => {
     const transport = new FakeTransport();
     const stream = makeStream(transport);
