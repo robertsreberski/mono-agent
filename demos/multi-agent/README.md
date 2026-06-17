@@ -34,8 +34,9 @@ The `lsof` check should show no local `node` listener for the old final demo por
 
 The deploy command writes ignored role configs, memory files, workspaces, artifacts, and trace source manifests under `.mono-agent/multi-agent/`. It does not write Telegram tokens.
 
+Prerequisites: Node.js 20 or newer and an existing pnpm 10 or newer install.
+
 ```bash
-corepack enable
 pnpm install --frozen-lockfile
 pnpm run deploy:multi -- \
   --port 5417 \

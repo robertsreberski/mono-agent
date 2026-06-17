@@ -25,11 +25,12 @@ The `mono-agent` CLI ships with `@mono-agent/agent-app` on npm:
 npm install -g @mono-agent/agent-app   # or: npx @mono-agent/agent-app …
 ```
 
-To run an unreleased build instead, use a clone of the mono-agent workspace:
+To run an unreleased build instead, use a clone of the mono-agent workspace with Node 20+ and pnpm 10 or newer already installed:
 
 ```bash
 git clone <mono-agent-repo> ~/mono-agent && cd ~/mono-agent
-corepack enable && pnpm install --frozen-lockfile && pnpm run build
+pnpm install --frozen-lockfile
+pnpm run build
 alias mono-agent="node ~/mono-agent/packages/agent-app/dist/cli.js"
 ```
 
