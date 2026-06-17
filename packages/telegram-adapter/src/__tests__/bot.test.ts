@@ -134,6 +134,106 @@ function stickerUpdate(): Parameters<Bot["handleUpdate"]>[0] {
   } as Parameters<Bot["handleUpdate"]>[0];
 }
 
+function animationUpdate(): Parameters<Bot["handleUpdate"]>[0] {
+  return {
+    update_id: 1,
+    message: {
+      message_id: 10,
+      date: 1234,
+      chat: { id: 42, type: "private" },
+      from: { id: 7, is_bot: false, first_name: "Person A" },
+      animation: {
+        file_id: "animation-file-id",
+        file_unique_id: "animation-unique-id",
+        width: 320,
+        height: 240,
+        duration: 3,
+        file_name: "funny.gif",
+        mime_type: "image/gif",
+        file_size: 20_000,
+      },
+      document: {
+        file_id: "animation-file-id",
+        file_unique_id: "animation-unique-id",
+        file_name: "funny.gif",
+        mime_type: "image/gif",
+        file_size: 20_000,
+      },
+    },
+  } as Parameters<Bot["handleUpdate"]>[0];
+}
+
+function documentUpdate(
+  options?: { caption?: string; updateId?: number },
+): Parameters<Bot["handleUpdate"]>[0] {
+  return {
+    update_id: options?.updateId ?? 1,
+    message: {
+      message_id: 10,
+      date: 1234,
+      chat: { id: 42, type: "private" },
+      from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+      caption: options?.caption,
+      document: {
+        file_id: "doc-file-id",
+        file_unique_id: "doc-unique-id",
+        file_name: "brief.pdf",
+        mime_type: "application/pdf",
+        file_size: 12_345,
+      },
+    },
+  } as Parameters<Bot["handleUpdate"]>[0];
+}
+
+function photoUpdate(options?: { caption?: string; updateId?: number }): Parameters<Bot["handleUpdate"]>[0] {
+  return {
+    update_id: options?.updateId ?? 1,
+    message: {
+      message_id: 10,
+      date: 1234,
+      chat: { id: 42, type: "private" },
+      from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+      caption: options?.caption,
+      photo: [
+        {
+          file_id: "photo-small-id",
+          file_unique_id: "photo-small-unique",
+          width: 160,
+          height: 90,
+          file_size: 1_024,
+        },
+        {
+          file_id: "photo-large-id",
+          file_unique_id: "photo-large-unique",
+          width: 1280,
+          height: 720,
+          file_size: 65_536,
+        },
+      ],
+    },
+  } as Parameters<Bot["handleUpdate"]>[0];
+}
+
+function voiceUpdate(options?: { caption?: string; updateId?: number }): Parameters<Bot["handleUpdate"]>[0] {
+  return {
+    update_id: options?.updateId ?? 1,
+    message: {
+      message_id: 10,
+      date: 1234,
+      chat: { id: 42, type: "private" },
+      from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+      caption: options?.caption,
+      voice: {
+        file_id: "voice-file-id",
+        file_unique_id: "voice-unique-id",
+        duration: 17,
+        mime_type: "audio/ogg",
+        file_size: 23_456,
+      },
+    },
+  } as Parameters<Bot["handleUpdate"]>[0];
+}
+
 function responderFrom(respond: AgentResponder["respond"]): AgentResponder {
   return { respond };
 }
@@ -173,8 +273,8 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(commandUpdate("/help@ExampleBot", { updateId: 2 }));
 
     expect(texts(calls, "sendMessage")).toEqual([
-      "Hello! Send me a text message and I will pass it to the configured agent.",
-      "Send a text message to talk to the agent. Use /cancel to stop the current response.",
+      "Hello! Send text or Telegram media. I will pass captions and attachment metadata to the configured agent.",
+      "Send text, documents, photos, audio, video, or voice messages. I forward captions and Telegram attachment metadata, not file contents. Use /cancel to stop the current response.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
   });
@@ -237,6 +337,117 @@ describe("createTelegramBot", () => {
     expect(texts(calls, "editMessageText")).toEqual([
       "Answer\n\npartial",
       "Final answer\n\nfinal",
+    ]);
+  });
+
+  it("handles Telegram file attachments with caption text", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, calls } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "received document" };
+      }),
+    });
+
+    await bot.handleUpdate(documentUpdate({ caption: "Please summarize this" }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      text: "Please summarize this",
+      attachments: [
+        {
+          kind: "document",
+          fileId: "doc-file-id",
+          fileUniqueId: "doc-unique-id",
+          fileName: "brief.pdf",
+          mimeType: "application/pdf",
+          fileSize: 12_345,
+        },
+      ],
+      metadata: {
+        telegram: {
+          attachments: [
+            {
+              kind: "document",
+              fileId: "doc-file-id",
+              fileUniqueId: "doc-unique-id",
+              fileName: "brief.pdf",
+              mimeType: "application/pdf",
+              fileSize: 12_345,
+            },
+          ],
+        },
+      },
+    });
+    expect(texts(calls, "sendMessage")).not.toContain(
+      "I can handle text and Telegram document, photo, audio, video, or voice metadata in this adapter.",
+    );
+  });
+
+  it("handles Telegram photo attachments without captions using a text summary", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "received photo" };
+      }),
+    });
+
+    await bot.handleUpdate(photoUpdate());
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.text).toContain("Telegram photo");
+    expect(requests[0]?.attachments).toEqual([
+      {
+        kind: "photo",
+        fileId: "photo-large-id",
+        fileUniqueId: "photo-large-unique",
+        fileSize: 65_536,
+        width: 1280,
+        height: 720,
+        sizes: [
+          {
+            fileId: "photo-small-id",
+            fileUniqueId: "photo-small-unique",
+            fileSize: 1_024,
+            width: 160,
+            height: 90,
+          },
+          {
+            fileId: "photo-large-id",
+            fileUniqueId: "photo-large-unique",
+            fileSize: 65_536,
+            width: 1280,
+            height: 720,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("handles Telegram voice attachments with a duration summary", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "received voice" };
+      }),
+    });
+
+    await bot.handleUpdate(voiceUpdate());
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.text).toContain("17s");
+    expect(requests[0]?.attachments).toEqual([
+      {
+        kind: "voice",
+        fileId: "voice-file-id",
+        fileUniqueId: "voice-unique-id",
+        duration: 17,
+        mimeType: "audio/ogg",
+        fileSize: 23_456,
+      },
     ]);
   });
 
@@ -332,9 +543,79 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(stickerUpdate());
 
     expect(texts(calls, "sendMessage")).toEqual([
-      "I can only handle text messages in this adapter for now.",
+      "I can handle text and Telegram document, photo, audio, video, or voice metadata in this adapter.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("rejects Telegram animation documents as unsupported", async () => {
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const { bot, calls } = buildTestBot({ responder });
+
+    await bot.handleUpdate(animationUpdate());
+
+    expect(texts(calls, "sendMessage")).toEqual([
+      "I can handle text and Telegram document, photo, audio, video, or voice metadata in this adapter.",
+    ]);
+    expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("treats media captions with /cancel as control commands", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const started = createDeferred<void>();
+    const responder = responderFrom(
+      async (request) =>
+        await new Promise<{ text: string }>((resolve) => {
+          capturedSignal = request.abortSignal;
+          request.abortSignal.addEventListener(
+            "abort",
+            () => resolve({ text: "should not be used" }),
+            { once: true },
+          );
+          started.resolve();
+        }),
+    );
+    const { bot, calls } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder,
+    });
+
+    const first = bot.handleUpdate(textUpdate("long task"));
+    await started.promise;
+
+    await bot.handleUpdate(documentUpdate({ caption: "/cancel", updateId: 2 }));
+
+    expect(capturedSignal?.aborted).toBe(true);
+    await first;
+    expect(texts(calls, "sendMessage")).toContain("Cancelled.");
+    expect(lastEditText(calls)).toBe("Cancelled.");
+  });
+
+  it("ignores media caption commands targeted at another bot", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const started = createDeferred<void>();
+    const finish = createDeferred<{ text: string }>();
+    const { bot, calls } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        capturedSignal = request.abortSignal;
+        started.resolve();
+        return finish.promise;
+      }),
+    });
+
+    const first = bot.handleUpdate(textUpdate("long task"));
+    await started.promise;
+
+    await bot.handleUpdate(documentUpdate({ caption: "/cancel@OtherBot", updateId: 2 }));
+
+    expect(capturedSignal?.aborted).toBe(false);
+    expect(texts(calls, "sendMessage").at(-1)).toBe(
+      "I am still working on your previous message. Use /cancel to stop it.",
+    );
+
+    finish.resolve({ text: "done" });
+    await first;
   });
 
   it("finishes with plain cancelled text when the responder reports cancellation", async () => {
