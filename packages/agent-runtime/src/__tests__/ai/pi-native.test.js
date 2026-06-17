@@ -126,9 +126,15 @@ describe("pi-native AgentHarness bridge", () => {
       const toolResult = events.find((event) =>
         event?.message?.content?.[0]?.type === "tool_result"
         && event.message.content[0].tool_use_id === "call-1");
+      const toolTiming = events.find((event) =>
+        event?.type === "tool_timing" && event.tool_use_id === "call-1");
       expect(progress).toBeTruthy();
       expect(toolUse).toBeTruthy();
       expect(toolResult).toBeTruthy();
+      expect(toolTiming).toBeTruthy();
+      expect(toolTiming.name).toBe("Read");
+      expect(typeof toolTiming.execution_ms).toBe("number");
+      expect(toolTiming.execution_ms).toBeGreaterThanOrEqual(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

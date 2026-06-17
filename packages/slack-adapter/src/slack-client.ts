@@ -6,6 +6,7 @@ import type {
   SlackChatUpdateParams,
   SlackChatUpdateResult,
   SlackDownloadFileParams,
+  SlackReactionsAddParams,
   SlackRequestOptions,
   SlackWebApi,
 } from "./types.js";
@@ -145,6 +146,13 @@ export class SlackWebApiClient implements SlackWebApi {
     options?: SlackRequestOptions,
   ): Promise<SlackChatUpdateResult> {
     return this.request<SlackChatUpdateResult>("chat.update", params, this.botToken, options);
+  }
+
+  async reactionsAdd(
+    params: SlackReactionsAddParams,
+    options?: SlackRequestOptions,
+  ): Promise<void> {
+    await this.request<{ ok: true }>("reactions.add", params, this.botToken, options);
   }
 
   /**

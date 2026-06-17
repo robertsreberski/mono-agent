@@ -97,6 +97,11 @@ export interface SlackAdapterStreamOptions {
   retryCapMs?: number;
   retryBaseDelayMs?: number;
   showHints?: boolean;
+  /**
+   * Deliver only the final answer with a 👀 "seen" reaction while working,
+   * instead of streaming interim edits. Defaults to true for the Slack adapter.
+   */
+  finalOnly?: boolean;
 }
 
 export interface SlackAdapterLogger extends SlackMessageStreamLogger {
@@ -207,6 +212,16 @@ const DEFAULT_MESSAGES: Required<SlackAdapterMessages> = {
   errorText: "The agent failed while processing your Slack message.",
   unsupportedText: "I can only handle Slack text messages in this adapter for now.",
 };
+
+// Slack delivers file uploads as subtyped messages (`file_share`), and a message
+// posted to a thread "also sent to channel" arrives as `thread_broadcast`. Both
+// carry real user content (text and/or a `files` array), so they must NOT be
+// rejected alongside genuinely-unsupported subtypes (e.g. message_changed,
+// channel_join). Without this, attachments are silently dropped.
+const FILE_BEARING_MESSAGE_SUBTYPES: ReadonlySet<string> = new Set([
+  "file_share",
+  "thread_broadcast",
+]);
 
 export class SlackAdapter {
   private readonly api: SlackWebApi;
@@ -373,6 +388,10 @@ export class SlackAdapter {
       api: this.api,
       channelId: event.channelId,
       threadTs: event.threadTs,
+      reactToTs: event.messageTs,
+      // Default to a 👀 "seen" reaction + final-answer-only delivery (no streamed
+      // interim edits); a tuning override can restore interim streaming.
+      finalOnly: this.streamOptions.finalOnly ?? true,
       abortSignal: controller.signal,
     };
     if (this.streamOptions.initialStatusText !== undefined) {
@@ -550,7 +569,7 @@ export class SlackAdapter {
     if (rawEvent.user !== undefined && this.botUserIds.has(normalizeIdForMatch(rawEvent.user))) {
       return ignored("from_self", callback, rawEvent);
     }
-    if (rawEvent.subtype !== undefined) {
+    if (rawEvent.subtype !== undefined && !FILE_BEARING_MESSAGE_SUBTYPES.has(rawEvent.subtype)) {
       return ignored("unsupported_message", callback, rawEvent);
     }
     if (
@@ -559,10 +578,13 @@ export class SlackAdapter {
     ) {
       return ignored("unsupported_event", callback, rawEvent);
     }
+    // A file upload may arrive with no caption (text absent/empty); accept it as
+    // long as it carries files so the attachment is not dropped.
+    const hasFiles = Array.isArray(rawEvent.files) && rawEvent.files.length > 0;
     if (
       typeof rawEvent.channel !== "string" ||
       typeof rawEvent.ts !== "string" ||
-      typeof rawEvent.text !== "string"
+      (typeof rawEvent.text !== "string" && !hasFiles)
     ) {
       return ignored("unsupported_message", callback, rawEvent);
     }
@@ -573,7 +595,7 @@ export class SlackAdapter {
     const event: SlackTextEvent = {
       eventId: callback.event_id,
       channelId: rawEvent.channel,
-      text: this.prepareText(rawEvent.text),
+      text: this.prepareText(typeof rawEvent.text === "string" ? rawEvent.text : ""),
       messageTs: rawEvent.ts,
       threadTs,
       trigger,

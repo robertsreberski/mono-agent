@@ -8,6 +8,7 @@ import type {
   TelegramEditMessageTextParams,
   TelegramMessageSender,
   TelegramRequestOptions,
+  TelegramSendChatActionParams,
   TelegramSendMessageParams,
   TelegramSentMessage,
 } from "./types.js";
@@ -82,6 +83,23 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
         "grammY editMessageText requires inline_message_id, or chat_id and message_id.",
         { kind: "telegram", method: "editMessageText" },
       );
+    },
+
+    async sendChatAction(
+      params: TelegramSendChatActionParams,
+      options?: TelegramRequestOptions,
+    ): Promise<true> {
+      try {
+        await api.sendChatAction(
+          params.chat_id,
+          params.action as Parameters<Api["sendChatAction"]>[1],
+          {},
+          asGrammySignal(options?.signal),
+        );
+        return true;
+      } catch (error) {
+        throw toTelegramApiError("sendChatAction", error, options?.signal);
+      }
     },
   };
 }

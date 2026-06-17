@@ -122,6 +122,9 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     ...(config.runtime.maxTurns === undefined ? {} : { maxTurns: config.runtime.maxTurns }),
+    ...(config.providers?.piNative?.piSessionsRoot === undefined
+      ? {}
+      : { piSessionsRoot: config.providers.piNative.piSessionsRoot }),
     session: {
       mode: config.runtime.session.mode,
       idleTimeoutMs: config.runtime.session.idleTimeoutMs,
@@ -398,12 +401,20 @@ function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
 
 function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
   const { permissionMode, reasoningSummary } = config.runtime;
-  if (permissionMode === undefined && reasoningSummary === undefined) {
+  const piNative = config.providers?.piNative;
+  if (
+    permissionMode === undefined
+    && reasoningSummary === undefined
+    && piNative?.piMaxRetries === undefined
+    && piNative?.maxRetryDelayMs === undefined
+  ) {
     return undefined;
   }
   return {
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(reasoningSummary === undefined ? {} : { piReasoningSummary: reasoningSummary }),
+    ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
+    ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
   };
 }
 

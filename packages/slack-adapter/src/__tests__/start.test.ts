@@ -10,6 +10,7 @@ import type {
 import type {
   SlackChatPostMessageParams,
   SlackChatUpdateParams,
+  SlackReactionsAddParams,
   SlackEventCallback,
   SlackSocketModeEnvelope,
   SlackWebApi,
@@ -19,6 +20,7 @@ class FakeSlackApi implements SlackWebApi {
   readonly opened: string[] = [];
   readonly postMessageCalls: SlackChatPostMessageParams[] = [];
   readonly updateCalls: SlackChatUpdateParams[] = [];
+  readonly reactionsAddCalls: SlackReactionsAddParams[] = [];
 
   async authTest() {
     return { ok: true as const };
@@ -38,6 +40,10 @@ class FakeSlackApi implements SlackWebApi {
   async chatUpdate(params: SlackChatUpdateParams) {
     this.updateCalls.push(params);
     return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+  }
+
+  async reactionsAdd(params: SlackReactionsAddParams): Promise<void> {
+    this.reactionsAddCalls.push(params);
   }
 
   async downloadFile() {
@@ -113,13 +119,13 @@ describe("startSlackAdapter", () => {
       expect(seen[0]?.text).toBe("hello there");
       expect(seen[0]?.channelId).toBe("D1");
 
-      // The envelope was acknowledged, a status message was posted, and the
-      // final responder text was flushed to that message via chatUpdate.
+      // The envelope was acknowledged and, with final-only delivery, the final
+      // responder text was posted as a single chat.postMessage (no chat.update).
       expect(JSON.parse(socket.sent[0] ?? "{}")).toEqual({ envelope_id: "E1" });
-      expect(api.postMessageCalls.length).toBeGreaterThan(0);
       await vi.waitFor(() =>
-        expect(api.updateCalls.some((call) => call.text === "echo: hello there")).toBe(true),
+        expect(api.postMessageCalls.some((call) => call.text === "echo: hello there")).toBe(true),
       );
+      expect(api.updateCalls).toEqual([]);
     } finally {
       await started.stop();
     }

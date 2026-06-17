@@ -92,17 +92,41 @@ describe("createSkillsCache", () => {
     expect(loader).toHaveBeenCalledTimes(2);
   });
 
-  it("treats name order as identical (same selection set)", async () => {
+  it("preserves selection order in loaded output and treats a reversed order as a cache miss", async () => {
     const root = await createSkillsRoot();
     const loader = vi.fn(loadSelectedSkills);
     const cache = createSkillsCache({ loader });
 
-    await cache.loadSelectedSkillsCached({ skillsRoot: root, names: ["writing", "research"] });
-    const second = await cache.loadSelectedSkillsCached({ skillsRoot: root, names: ["writing", "research"] });
-
-    // Same names in the same order: a pure cache hit.
+    const first = await cache.loadSelectedSkillsCached({ skillsRoot: root, names: ["writing", "research"] });
     expect(loader).toHaveBeenCalledTimes(1);
+    // loaded follows input order; index is always sorted independent of input order.
+    expect(first.loaded.map((skill) => skill.name)).toEqual(["writing", "research"]);
+    expect(first.index.map((entry) => entry.name)).toEqual(["research", "writing"]);
+
+    // Reversing the order changes the produced instructions/loaded, so it must be
+    // a cache MISS (otherwise the wrong-ordered cached result would be returned).
+    const second = await cache.loadSelectedSkillsCached({ skillsRoot: root, names: ["research", "writing"] });
+    expect(loader).toHaveBeenCalledTimes(2);
+    expect(second.loaded.map((skill) => skill.name)).toEqual(["research", "writing"]);
     expect(second.index.map((entry) => entry.name)).toEqual(["research", "writing"]);
+  });
+
+  it("treats a cache entry whose source files all failed to stat as stale and reloads", async () => {
+    const root = await createSkillsRoot();
+    const loader = vi.fn(loadSelectedSkills);
+    // stat throws on every call, so the first load records no mtimes.
+    const statSpy = vi.fn(async (_path: string): Promise<never> => {
+      throw new Error("stat failed");
+    });
+    const cache = createSkillsCache({ loader, stat: statSpy as never });
+    const input: LoadSelectedSkillsInput = { skillsRoot: root, names: ["writing"] };
+
+    await cache.loadSelectedSkillsCached(input);
+    expect(loader).toHaveBeenCalledTimes(1);
+
+    // Empty mtimes for a non-empty selection must NOT be treated as fresh.
+    await cache.loadSelectedSkillsCached(input);
+    expect(loader).toHaveBeenCalledTimes(2);
   });
 
   it("stats the selected skill source files on a cache hit (cheap, no content read)", async () => {

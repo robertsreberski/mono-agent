@@ -324,6 +324,12 @@ async function runStreamingResponder(input: {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
+  // Disable Nagle's algorithm on the underlying socket. SSE writes are many tiny
+  // chunks (often a single token); with Nagle on, the kernel coalesces them into
+  // larger TCP segments, so the client receives the reply in bursts that look
+  // "all at once" instead of streaming token-by-token. setNoDelay flushes each
+  // chunk immediately.
+  input.response.socket?.setNoDelay(true);
   // Flush the response headers before awaiting the (potentially slow) responder
   // so the client sees the stream open promptly. We deliberately do NOT write a
   // leading SSE comment (": open") here: some OpenAI-compatible clients

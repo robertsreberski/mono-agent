@@ -90,6 +90,12 @@ export interface TelegramSendMessageParams {
   disable_web_page_preview?: boolean;
 }
 
+export interface TelegramSendChatActionParams {
+  chat_id: TelegramChatId;
+  /** Telegram chat action, e.g. "typing". */
+  action: string;
+}
+
 export interface TelegramEditMessageTextParams {
   chat_id?: TelegramChatId;
   message_id?: number;
@@ -124,6 +130,11 @@ export interface TelegramMessageSender {
     params: TelegramEditMessageTextParams,
     options?: TelegramRequestOptions,
   ): Promise<TelegramSentMessage | true>;
+  /** Optional: surface a transient chat action such as "typing". Best-effort. */
+  sendChatAction?(
+    params: TelegramSendChatActionParams,
+    options?: TelegramRequestOptions,
+  ): Promise<true>;
 }
 
 export interface TelegramBotApi extends TelegramMessageSender {

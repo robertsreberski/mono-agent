@@ -74,6 +74,20 @@ describe("layerJsonOntoEnv", () => {
     ]);
   });
 
+  it("translates JSON providers.piNative knobs to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        providers: {
+          piNative: { piMaxRetries: 4, maxRetryDelayMs: 30000, piSessionsRoot: ".mono-agent/sessions" },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_PI_MAX_RETRIES).toBe("4");
+    expect(layered.MONO_AGENT_MAX_RETRY_DELAY_MS).toBe("30000");
+    expect(layered.MONO_AGENT_PI_SESSIONS_ROOT).toBe(".mono-agent/sessions");
+  });
+
   it("translates JSON runtime permission mode and reasoning summary to env keys", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { permissionMode: "bypassPermissions", reasoningSummary: "detailed" } },

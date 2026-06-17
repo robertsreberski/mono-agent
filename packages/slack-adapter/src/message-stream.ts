@@ -35,6 +35,13 @@ export interface SlackMessageStreamOptions {
   api: SlackWebApi;
   channelId: SlackChannelId;
   threadTs?: SlackMessageTs;
+  /** Message ts to react to (👀 "seen") in final-only mode. */
+  reactToTs?: SlackMessageTs;
+  /**
+   * Deliver only the final answer: suppress interim edits and react 👀 ("seen")
+   * while the agent works. Default false.
+   */
+  finalOnly?: boolean;
   initialStatusText?: string;
   editDebounceMs?: number;
   maxMessageChars?: number;
@@ -94,17 +101,31 @@ class SlackChannelTransport implements ChannelTransport {
   private readonly api: SlackWebApi;
   private readonly channelId: SlackChannelId;
   private readonly threadTs: SlackMessageTs | undefined;
+  private readonly reactToTs: SlackMessageTs | undefined;
+  private reacted = false;
 
   constructor(options: {
     api: SlackWebApi;
     channelId: SlackChannelId;
     threadTs?: SlackMessageTs;
+    reactToTs?: SlackMessageTs;
     maxMessageChars: number;
   }) {
     this.api = options.api;
     this.channelId = options.channelId;
     this.threadTs = options.threadTs;
+    this.reactToTs = options.reactToTs;
     this.maxMessageChars = options.maxMessageChars;
+  }
+
+  async indicateActivity(): Promise<void> {
+    // Slack has no bot "typing" indicator, so signal "seen" with a 👀 reaction
+    // on the triggering message — added once (Slack rejects duplicates).
+    if (this.reacted || this.reactToTs === undefined || this.api.reactionsAdd === undefined) {
+      return;
+    }
+    this.reacted = true;
+    await this.api.reactionsAdd({ channel: this.channelId, timestamp: this.reactToTs, name: "eyes" });
   }
 
   async post(text: string, options: { markdown: boolean }): Promise<MessageRef> {
@@ -161,6 +182,7 @@ export class SlackMessageStream implements AgentMessageStream {
       api: options.api,
       channelId: options.channelId,
       ...(options.threadTs === undefined ? {} : { threadTs: options.threadTs }),
+      ...(options.reactToTs === undefined ? {} : { reactToTs: options.reactToTs }),
       maxMessageChars,
     });
 
@@ -169,6 +191,7 @@ export class SlackMessageStream implements AgentMessageStream {
       initialStatusText: options.initialStatusText ?? DEFAULT_INITIAL_STATUS_TEXT,
       maxMessageChars,
       formatMarkdown: true,
+      ...(options.finalOnly === undefined ? {} : { finalOnly: options.finalOnly }),
       ...(options.editDebounceMs === undefined ? {} : { editDebounceMs: options.editDebounceMs }),
       ...(options.maxSendRetries === undefined ? {} : { maxSendRetries: options.maxSendRetries }),
       ...(options.retryCapMs === undefined ? {} : { retryCapMs: options.retryCapMs }),

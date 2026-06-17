@@ -22,6 +22,11 @@ export function normalizePiErrorMessage(message) {
 
 export function isContextLimitError(message) {
   const text = String(message || "");
+  // Rate-limit wording takes precedence: it is a throttle, not a context overflow.
   if (/rate limit|too many requests/i.test(text)) return false;
-  return /context[_ ]length[_ ]exceeded|exceeds the context window|too many tokens|maximum context length|token limit exceeded|prompt is too long/i.test(text);
+  // Broadened to catch the many ways providers phrase a context/token overflow:
+  // "context length/window/budget", "max(imum) tokens", "token limit",
+  // "too many tokens", "prompt (is) too long", "exceeds the context/maximum/max",
+  // "input tokens/exceeds", "output token(s)", "token(s) exceed".
+  return /context[_ ](?:length|window|budget)|max(?:imum)?[_ ]?tokens?|token[_ ]limit|too[_ ]many[_ ]tokens?|prompt[_ ](?:is[_ ])?too[_ ]long|exceeds?[_ ](?:the context|maximum|max)|input[_ ](?:tokens?|exceeds)|output[_ ]tokens?|tokens?[_ ]exceed/i.test(text);
 }

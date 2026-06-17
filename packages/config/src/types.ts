@@ -123,7 +123,21 @@ export interface MonoAgentConfig {
   readonly providers?: {
     readonly piAuthPath?: string;
     readonly local?: readonly LocalProviderDefinition[];
+    readonly piNative?: PiNativeProviderConfig;
   };
+}
+
+/** Tuning knobs for the pi-native provider bridge. */
+export interface PiNativeProviderConfig {
+  /** Max retry attempts for the pi provider transport (0-8; default 2). */
+  readonly piMaxRetries?: number;
+  /** Maximum delay between retry attempts, in milliseconds (default 60000). */
+  readonly maxRetryDelayMs?: number;
+  /**
+   * Directory for durable JSONL session storage. When set, provider sessions
+   * persist to disk and resume across restarts; unset keeps sessions in-memory.
+   */
+  readonly piSessionsRoot?: string;
 }
 
 export type RedactedLocalProviderDefinition = Omit<LocalProviderDefinition, "apiKey"> & {
@@ -150,5 +164,6 @@ export interface RedactedMonoAgentConfig {
   readonly providers?: {
     readonly piAuthPath?: string;
     readonly local?: readonly RedactedLocalProviderDefinition[];
+    readonly piNative?: PiNativeProviderConfig;
   };
 }

@@ -143,6 +143,53 @@ describe("createCircuitBreakerEmbeddingProvider", () => {
     expect(inner.calls).toBe(4);
   });
 
+  it("permits only one in-flight half-open trial; a concurrent caller fast-fails", async () => {
+    let calls = 0;
+    let release!: () => void;
+    const trialGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let mode: "fail" | "gate" = "fail";
+    const inner: EmbeddingProvider = {
+      id: "fake:gated",
+      async embed(texts: readonly string[]): Promise<number[][]> {
+        calls += 1;
+        if (mode === "fail") {
+          throw new Error("inner failed");
+        }
+        await trialGate; // hold the single half-open trial open
+        return texts.map(() => [0]);
+      },
+    };
+    const clock = fakeClock();
+    const provider = createCircuitBreakerEmbeddingProvider(inner, {
+      failureThreshold: 1,
+      cooldownMs: 1000,
+      now: clock.now,
+    });
+
+    // Trip OPEN (threshold 1).
+    await expect(provider.embed(["x"])).rejects.toThrow(/inner failed/u);
+    expect(calls).toBe(1);
+
+    // Cooldown elapses -> the next call promotes to half-open and gates inside inner.
+    clock.advance(1000);
+    mode = "gate";
+    const trial = provider.embed(["first"]);
+    await Promise.resolve();
+
+    // While the single trial is in flight, a concurrent caller must fast-fail
+    // instead of also reaching the unhealthy backend.
+    await expect(provider.embed(["second"])).rejects.toThrow(MemorySearchError);
+    expect(calls).toBe(2);
+
+    // Releasing the trial succeeds and closes the breaker.
+    release();
+    expect(await trial).toEqual([[0]]);
+    expect(await provider.embed(["y"])).toEqual([[0]]);
+    expect(calls).toBe(3);
+  });
+
   it("resets the consecutive-failure count on a closed-state success", async () => {
     const inner = new FakeInner();
     const clock = fakeClock();

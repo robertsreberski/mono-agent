@@ -55,6 +55,28 @@ describe("createAgentResponder", () => {
     expect(calls).toEqual(["run"]);
   });
 
+  it("streams each assistant text delta to stream.append in order (no batching)", async () => {
+    const appended: string[] = [];
+    const stream: AgentMessageStream = {
+      append: async (delta: string) => {
+        appended.push(delta);
+      },
+    };
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => {
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "Hel" }] } });
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "lo" }] } });
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "!" }] } });
+        return okResponse(request.conversationId);
+      },
+    };
+    const responder = createAgentResponder({ harness });
+
+    await responder.respond(baseRequest(), stream);
+
+    expect(appended).toEqual(["Hel", "lo", "!"]);
+  });
+
   it("cancel(conversationId) delegates to the harness", async () => {
     const cancelled: string[] = [];
     const harness: AgentHarness = {

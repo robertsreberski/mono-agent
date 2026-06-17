@@ -298,6 +298,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   let turnCount = 0;
   let toolResultsSeen = 0;
   let lastToolName = null;
+  // toolCallId -> start timestamp, so we can emit per-tool execution latency.
+  const toolStartTimes = new Map();
   let harness = null;
   let removeAbortHandler = null;
 
@@ -305,9 +307,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     || options.providerSessionId
     || options.runId
     || randomUUID();
+  // Prefer the explicit sessionId, but fall back to providerSessionId so a caller
+  // that only supplies providerSessionId still resumes the prior session instead
+  // of being treated as a fresh run (which would drop prior context).
   const requestedSessionId = typeof options.sessionId === "string" && options.sessionId.trim()
     ? options.sessionId
-    : null;
+    : (typeof options.providerSessionId === "string" && options.providerSessionId.trim()
+      ? options.providerSessionId
+      : null);
   // Bridge TTL is a backstop behind the host's session policy; the grace
   // keeps host-side lazy expiry firing first.
   const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
@@ -470,6 +477,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs))
       ? Number(options.maxRetryDelayMs)
       : 60_000;
+    // Tool steering: default "one-at-a-time" (safe, deterministic ordering).
+    // Opt-in "all" lets pi-agent-core run a model step's tool calls concurrently
+    // (QueueMode). Only enable when tools in a step are independent.
+    const toolSteeringMode = options.piToolParallelismMode === "all" ? "all" : "one-at-a-time";
 
     harness = new AgentHarness({
       env: new NodeExecutionEnv({ cwd: options.cwd || process.cwd() }),
@@ -487,8 +498,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         });
         return apiKey ? { apiKey } : undefined;
       },
-      steeringMode: "one-at-a-time",
-      followUpMode: "one-at-a-time",
+      steeringMode: toolSteeringMode,
+      followUpMode: toolSteeringMode,
     });
 
     harness.subscribe((event) => {
@@ -517,6 +528,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         }
       } else if (event.type === "tool_execution_start") {
         if (event.toolName) lastToolName = event.toolName;
+        if (event.toolCallId) toolStartTimes.set(event.toolCallId, Date.now());
         const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd });
         const progressText = toolStartProgressText(event.toolName);
         if (progressText) {
@@ -538,6 +550,17 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       } else if (event.type === "tool_execution_end") {
         const resultContent = toolResultContent(event.result);
         if (!event.isError) toolResultsSeen += 1;
+        const startedAt = toolStartTimes.get(event.toolCallId);
+        if (startedAt !== undefined) {
+          toolStartTimes.delete(event.toolCallId);
+          onEvent({
+            type: "tool_timing",
+            tool_use_id: event.toolCallId,
+            name: event.toolName,
+            execution_ms: Date.now() - startedAt,
+            is_error: !!event.isError,
+          });
+        }
         onEvent({
           type: "user",
           message: {
@@ -591,12 +614,22 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       try { baselineLeafId = await session.getLeafId(); } catch { /* best-effort */ }
     }
 
+    // Live steering: consume follow-up messages and steer the harness mid-run.
+    // The consumer is tied to run completion (runComplete) so it stops steering
+    // once the run finishes and does not swallow messages meant for a later turn.
+    let liveInputIterator = null;
+    let liveInputTask = null;
+    let runComplete = false;
     if (options.liveInput) {
-      (async () => {
+      liveInputIterator = typeof options.liveInput[Symbol.asyncIterator] === "function"
+        ? options.liveInput[Symbol.asyncIterator]()
+        : options.liveInput;
+      liveInputTask = (async () => {
         try {
-          for await (const message of options.liveInput) {
-            if (options.abortSignal?.aborted) break;
-            await harness.steer(formatLiveInputGuidance(message.body));
+          while (!runComplete && !options.abortSignal?.aborted) {
+            const next = await liveInputIterator.next();
+            if (next.done || runComplete || options.abortSignal?.aborted) break;
+            await harness.steer(formatLiveInputGuidance(next.value.body));
           }
         } catch (err) {
           onEvent({
@@ -623,6 +656,17 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runError = err;
     }
     await harness.waitForIdle();
+
+    // The run is done: stop the live-steering consumer so it cannot steer a
+    // finished harness or swallow a follow-up meant for the next turn. We signal
+    // completion, then best-effort return() the iterator to unblock a pending
+    // next(). We do NOT await the task (it could block on next() if the source
+    // has no return()), but the runComplete guard prevents any further steering.
+    runComplete = true;
+    if (liveInputIterator && typeof liveInputIterator.return === "function") {
+      try { await liveInputIterator.return(); } catch { /* best-effort */ }
+    }
+    void liveInputTask;
 
     externalAbort ||= !!options.abortSignal?.aborted;
 

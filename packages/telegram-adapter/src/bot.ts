@@ -325,6 +325,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       chatId,
       replyToMessageId,
       abortSignal: signal,
+      // Default to "typing…" + final-answer-only delivery (no streamed interim
+      // edits); a tuning override can restore interim streaming.
+      finalOnly: options.stream?.finalOnly ?? true,
     };
     const tuning = options.stream;
     if (tuning?.initialStatusText !== undefined) {

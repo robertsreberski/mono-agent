@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, PiNativeProviderConfig, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -101,6 +101,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const traceability = readTraceabilityConfig(input.env, cwd);
   const piAuthPath = readPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
   const localProviders = readLocalProviders(input.env);
+  const piNative = readPiNativeProviderConfig(input.env, cwd);
 
   assertModeCompatibility(model, executionMode);
 
@@ -147,6 +148,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     providers: {
       piAuthPath,
       ...(localProviders.length === 0 ? {} : { local: localProviders }),
+      ...(piNative === undefined ? {} : { piNative }),
     },
   };
 
@@ -850,6 +852,28 @@ function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAge
     return undefined;
   }
   return { maxConcurrentRuns };
+}
+
+function readPiNativeProviderConfig(
+  env: Record<string, string | undefined>,
+  cwd: string,
+): PiNativeProviderConfig | undefined {
+  const hasAny = [
+    env.MONO_AGENT_PI_MAX_RETRIES,
+    env.MONO_AGENT_MAX_RETRY_DELAY_MS,
+    env.MONO_AGENT_PI_SESSIONS_ROOT,
+  ].some((value) => normalizeOptionalString(value) !== undefined);
+  if (!hasAny) {
+    return undefined;
+  }
+  const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
+  const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
+  const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
+  return {
+    ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
+    ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
+    ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),
+  };
 }
 
 function readOptionalInteger(

@@ -54,6 +54,11 @@ export interface TelegramMessageStreamOptions {
   showHints?: boolean;
   /** Render the final answer as Telegram MarkdownV2 (plain fallback). Default true. */
   formatMarkdown?: boolean;
+  /**
+   * Deliver only the final answer: suppress streaming interim edits and show a
+   * "typing…" chat action while the agent works. Default false.
+   */
+  finalOnly?: boolean;
   /** Aborts in-flight retry waits (e.g. on /cancel). */
   abortSignal?: AbortSignal;
   logger?: TelegramMessageStreamLogger;
@@ -164,6 +169,12 @@ class TelegramChannelTransport implements ChannelTransport {
     return classifyTelegramError(error);
   }
 
+  async indicateActivity(): Promise<void> {
+    // Telegram "typing…" chat action; expires after ~5s so the substrate
+    // refreshes it while the agent works. No-op if the sender lacks the method.
+    await this.api.sendChatAction?.({ chat_id: this.chatId, action: "typing" });
+  }
+
   /**
    * MarkdownV2 escaping can expand a chunk past Telegram's size limit even though
    * the plain source is within it (chunks are split on the source length). Rather
@@ -268,6 +279,9 @@ export class TelegramMessageStream implements AgentMessageStream {
     }
     if (options.showHints !== undefined) {
       innerOptions.showHints = options.showHints;
+    }
+    if (options.finalOnly !== undefined) {
+      innerOptions.finalOnly = options.finalOnly;
     }
     if (options.abortSignal !== undefined) {
       innerOptions.abortSignal = options.abortSignal;

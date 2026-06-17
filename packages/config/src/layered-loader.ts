@@ -217,6 +217,15 @@ export function layerJsonOntoEnv(
   if (json.providers?.local !== undefined && !hasLocalProviderEnv(env)) {
     fromJson.MONO_AGENT_LOCAL_PROVIDERS_JSON = JSON.stringify(json.providers.local);
   }
+  if (json.providers?.piNative?.piMaxRetries !== undefined) {
+    fromJson.MONO_AGENT_PI_MAX_RETRIES = String(json.providers.piNative.piMaxRetries);
+  }
+  if (json.providers?.piNative?.maxRetryDelayMs !== undefined) {
+    fromJson.MONO_AGENT_MAX_RETRY_DELAY_MS = String(json.providers.piNative.maxRetryDelayMs);
+  }
+  if (json.providers?.piNative?.piSessionsRoot !== undefined) {
+    fromJson.MONO_AGENT_PI_SESSIONS_ROOT = json.providers.piNative.piSessionsRoot;
+  }
 
   // env wins: spread env last
   const layered: Record<string, string | undefined> = { ...fromJson };

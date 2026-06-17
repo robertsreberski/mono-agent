@@ -27,6 +27,7 @@ type Recorded = RecordedPost | RecordedEdit;
 class FakeTransport implements ChannelTransport {
   readonly maxMessageChars: number;
   readonly calls: Recorded[] = [];
+  activityCount = 0;
   private callCount = 0;
   private nextId = 0;
   private readonly failures: Map<number, ChannelSendOutcome>;
@@ -82,6 +83,10 @@ class FakeTransport implements ChannelTransport {
   renderMarkdown(text: string): string {
     return this.renderMd ? this.renderMd(text) : text;
   }
+
+  async indicateActivity(): Promise<void> {
+    this.activityCount += 1;
+  }
 }
 
 const noSleep = async (): Promise<void> => {};
@@ -107,6 +112,35 @@ function makeStream(
 }
 
 describe("ResilientMessageStream", () => {
+  it("finalOnly mode: no interim posts/edits, indicates activity, posts the final answer once", async () => {
+    const transport = new FakeTransport();
+    const stream = new ResilientMessageStream({
+      transport,
+      editDebounceMs: 0,
+      sleep: noSleep,
+      finalOnly: true,
+    });
+
+    await stream.status("Thinking...");
+    await stream.event({ type: "tool_call_started", id: "t1", name: "WebSearch" });
+    await stream.append("the ");
+    await stream.append("answer");
+
+    // Nothing is posted or edited while the agent works.
+    expect(transport.calls).toHaveLength(0);
+    // A working affordance (typing/seen) was surfaced instead.
+    expect(transport.activityCount).toBeGreaterThanOrEqual(1);
+
+    await stream.finish();
+
+    // The answer is delivered as a single post (no interim edits at all).
+    const posts = transport.calls.filter((c) => c.op === "post") as RecordedPost[];
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.text).toContain("the answer");
+    expect(transport.calls[0]?.op).toBe("post");
+    expect(transport.calls.filter((c) => c.op === "edit")).toHaveLength(0);
+  });
+
   it("does not post anything until the first write (lazy first send)", async () => {
     const transport = new FakeTransport();
     const stream = makeStream(transport);

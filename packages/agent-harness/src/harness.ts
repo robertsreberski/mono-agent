@@ -386,6 +386,9 @@ export class MonoAgentHarness implements AgentHarness {
       ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
       ...(this.options.effort === undefined ? {} : { effort: this.options.effort }),
       ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
+      // Durable provider-session root (pi-native): when set, sessions persist to
+      // disk so resume recovers from there instead of re-sending full history.
+      ...(this.options.piSessionsRoot === undefined ? {} : { piSessionsRoot: this.options.piSessionsRoot }),
       // Session keys live after the merge so request extensions cannot
       // clobber the harness's session decision — including forcing the keys
       // back to undefined on fresh runs.
@@ -404,12 +407,28 @@ export class MonoAgentHarness implements AgentHarness {
     };
     // Admission control: acquire a slot only around the actual provider run.
     // A blocked acquire holds nothing, so per-conversation queued follow-ups
-    // never occupy a concurrency slot while they wait.
+    // never occupy a concurrency slot while they wait. The acquire is abortable
+    // so a cancelled turn does not hang waiting for a slot to free up — it
+    // rejects (and never entered the try below, so nothing is released).
     if (this.runLimiter !== undefined) {
-      await this.runLimiter.acquire();
+      await this.runLimiter.acquire(request.abortSignal);
     }
     try {
-      return await this.options.runtime.run(context.prompt, runtimeOptions);
+      // Bracket the provider call so observability can separate provider+tool+IO
+      // time (this event's durationMs) from harness overhead (context build,
+      // attachment persistence, compaction, admission wait).
+      const bridgeStartMs = Date.now();
+      try {
+        return await this.options.runtime.run(context.prompt, runtimeOptions);
+      } finally {
+        const latencyEvent: RuntimeEventLike = {
+          type: "provider_bridge_latency",
+          durationMs: Date.now() - bridgeStartMs,
+          timestamp: new Date(bridgeStartMs).toISOString(),
+        };
+        recorder.onEvent(latencyEvent);
+        hostOnEvent?.(latencyEvent);
+      }
     } finally {
       this.runLimiter?.release();
       await requestExtension?.cleanup?.();
@@ -706,7 +725,10 @@ const ATTACHMENT_TEXT_MAX_CHARS = 8_000;
 function attachmentFileName(runId: string, index: number, attachment: AgentAttachment): string {
   const sanitized = sanitizeAttachmentName(attachment.name);
   const base = sanitized ?? `attachment-${index}${MIME_EXTENSIONS[attachment.mimeType] ?? ""}`;
-  return `${runId}-${index}-${base}`;
+  // runId may come from a caller-supplied createRunId(); sanitize it too so it
+  // cannot inject path separators or leading dots and escape attachmentsDir.
+  const safeRunId = sanitizeAttachmentName(runId) ?? `run-${index}`;
+  return `${safeRunId}-${index}-${base}`;
 }
 
 function sanitizeAttachmentName(name: string | undefined): string | undefined {

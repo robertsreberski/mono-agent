@@ -67,13 +67,23 @@ export function createSkillsCache(options: CreateSkillsCacheOptions = {}): Skill
 }
 
 function cacheKey(input: LoadSelectedSkillsInput): string {
+  // Preserve selection ORDER: loadSelectedSkills returns instructions/loaded in
+  // the order the caller listed names, so two different orders must NOT share a
+  // cache entry (only the `index` field is sorted, independent of input order).
   const names = Array.isArray(input.names)
-    ? [...input.names].map((name) => (typeof name === "string" ? name.toLowerCase() : String(name))).sort()
+    ? input.names.map((name) => (typeof name === "string" ? name.toLowerCase() : String(name)))
     : [];
   return JSON.stringify({ skillsRoot: input.skillsRoot, names, maxBytes: input.maxBytes ?? null });
 }
 
 async function isFresh(entry: CacheEntry, stat: SkillsStat): Promise<boolean> {
+  // A skill loaded without a recorded mtime means its stat failed during the
+  // previous load (e.g. transient FS error). With nothing to validate against we
+  // must NOT treat such an entry as fresh — reload so a real failure surfaces.
+  // An entry that genuinely loaded zero skills has nothing to invalidate.
+  if (entry.mtimes.size < entry.result.loaded.length) {
+    return false;
+  }
   for (const [mainFile, mtimeMs] of entry.mtimes) {
     let stats: Stats;
     try {

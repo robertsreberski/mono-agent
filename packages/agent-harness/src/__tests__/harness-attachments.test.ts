@@ -107,4 +107,71 @@ describe("AgentHarness attachments", () => {
     expect(userContent(fake.calls[0] as { options: RuntimeRunOptions })).toContain("plain message");
     expect(await readdir(attachmentsDir)).toHaveLength(0);
   });
+
+  it("sanitizes a path-traversal runId so attachments cannot escape attachmentsDir", async () => {
+    const identityPath = await identityFixture();
+    const attachmentsDir = await attachmentsDirFixture();
+    const fake = createCapturingRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      attachmentsDir,
+      createRunId: () => "../../etc/evil",
+    });
+
+    const bytes = Buffer.from("data");
+    await harness.run({
+      conversationId: "c1",
+      userMessage: "hi",
+      abortSignal: new AbortController().signal,
+      attachments: [{ kind: "document", mimeType: "text/plain", data: bytes.toString("base64"), name: "n.txt" }],
+    });
+
+    // Exactly one file, written as a direct child of attachmentsDir (readdir on
+    // attachmentsDir proves it did not escape), with no path separators or
+    // leading dots in its name (so no traversal / hidden-file escape).
+    const files = await readdir(attachmentsDir);
+    expect(files).toHaveLength(1);
+    const name = files[0] as string;
+    expect(name.includes("/")).toBe(false);
+    expect(name.includes("\\")).toBe(false);
+    expect(name.startsWith(".")).toBe(false);
+  });
+
+  it("emits a provider_bridge_latency event around the provider call", async () => {
+    const identityPath = await identityFixture();
+    const fake = createCapturingRuntime();
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk" });
+
+    const events: Array<{ type?: string; durationMs?: number }> = [];
+    await harness.run({
+      conversationId: "c1",
+      userMessage: "hi",
+      abortSignal: new AbortController().signal,
+      onEvent: (event) => events.push(event as { type?: string; durationMs?: number }),
+    });
+
+    const latency = events.find((event) => event.type === "provider_bridge_latency");
+    expect(latency).toBeDefined();
+    expect(typeof latency?.durationMs).toBe("number");
+    expect(latency?.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("passes piSessionsRoot through to the runtime when configured", async () => {
+    const identityPath = await identityFixture();
+    const fake = createCapturingRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      piSessionsRoot: "/tmp/pi-sessions",
+    });
+
+    await harness.run({ conversationId: "c1", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    expect((fake.calls[0]?.options as { piSessionsRoot?: string }).piSessionsRoot).toBe("/tmp/pi-sessions");
+  });
 });

@@ -12,14 +12,16 @@ import type {
   SlackChatPostMessageResult,
   SlackChatUpdateParams,
   SlackDownloadFileParams,
-  SlackEventCallback,
+  SlackReactionsAddParams,
   SlackRequestOptions,
+  SlackEventCallback,
   SlackWebApi,
 } from "../types.js";
 
 class FakeSlackApi implements SlackWebApi {
   readonly postMessageCalls: SlackChatPostMessageParams[] = [];
   readonly updateCalls: SlackChatUpdateParams[] = [];
+  readonly reactionsAddCalls: SlackReactionsAddParams[] = [];
   nextTs = 200;
 
   async authTest() {
@@ -38,6 +40,10 @@ class FakeSlackApi implements SlackWebApi {
   async chatUpdate(params: SlackChatUpdateParams) {
     this.updateCalls.push(params);
     return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+  }
+
+  async reactionsAdd(params: SlackReactionsAddParams): Promise<void> {
+    this.reactionsAddCalls.push(params);
   }
 
   async downloadFile(
@@ -152,13 +158,21 @@ describe("SlackAdapter", () => {
       },
     });
     expect(requests[0]?.abortSignal).toBeInstanceOf(AbortSignal);
-    expect(api.postMessageCalls[0]).toEqual({
-      channel: "D123",
-      text: "Thinking...",
-      thread_ts: "171.000001",
-      mrkdwn: false,
-    });
-    expect(api.updateCalls.map((call) => call.text)).toEqual(["partial", "final"]);
+    // Final-only delivery: the answer arrives as a single chat.postMessage at
+    // finish() — no interim "Thinking..." post and no streaming edits.
+    expect(api.postMessageCalls).toEqual([
+      {
+        channel: "D123",
+        text: "final",
+        thread_ts: "171.000001",
+        mrkdwn: true,
+      },
+    ]);
+    expect(api.updateCalls).toEqual([]);
+    // A 👀 "seen" reaction was added once to the triggering message while working.
+    expect(api.reactionsAddCalls).toEqual([
+      { channel: "D123", timestamp: "171.000001", name: "eyes" },
+    ]);
   });
 
   it("sends responder Markdown as Slack mrkdwn", async () => {
@@ -177,18 +191,18 @@ describe("SlackAdapter", () => {
       action: "responded",
     });
 
-    expect(api.postMessageCalls[0]).toEqual({
-      channel: "D123",
-      text: "Thinking...",
-      thread_ts: "171.000001",
-      mrkdwn: false,
-    });
-    expect(api.updateCalls.at(-1)).toEqual({
-      channel: "D123",
-      ts: "200.000001",
-      text: "*Done* <https://example.com/report|details>",
-      mrkdwn: true,
-    });
+    // Final-only delivery: the Markdown answer is rendered to Slack mrkdwn and
+    // sent in a single chat.postMessage at finish() — no separate placeholder
+    // post and no chat.update edit.
+    expect(api.postMessageCalls).toEqual([
+      {
+        channel: "D123",
+        text: "*Done* <https://example.com/report|details>",
+        thread_ts: "171.000001",
+        mrkdwn: true,
+      },
+    ]);
+    expect(api.updateCalls).toEqual([]);
   });
 
   it("handles app mentions and strips configured bot mentions and aliases", async () => {
@@ -221,7 +235,9 @@ describe("SlackAdapter", () => {
         },
       },
     });
-    expect(api.updateCalls.at(-1)?.text).toBe("help me");
+    // Final-only delivery: the stripped text is the final answer, posted once.
+    expect(api.postMessageCalls.at(-1)?.text).toBe("help me");
+    expect(api.updateCalls).toEqual([]);
   });
 
   it("ignores bot/self/subtyped and unsupported events without sending", async () => {
@@ -260,21 +276,27 @@ describe("SlackAdapter", () => {
     const first = createDeferred<{ text: string }>();
     const second = createDeferred<{ text: string }>();
     const queue = [first, second];
+    let started = 0;
     const adapter = new SlackAdapter({
       api,
       allowAllChannels: true,
       // The harness serializes per conversation; the channel just calls respond
       // for every message. Both runs are accepted (no "busy" rejection).
-      responder: responderFrom(async () => queue.shift()!.promise),
+      responder: responderFrom(async () => {
+        started += 1;
+        return queue.shift()!.promise;
+      }),
     });
 
     const firstRun = adapter.handleEventCallback(directMessage("first"));
-    await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(1));
+    await vi.waitFor(() => expect(started).toBe(1));
 
     const secondRun = adapter.handleEventCallback(
       directMessage("second", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" }),
     );
-    await vi.waitFor(() => expect(api.postMessageCalls.length).toBeGreaterThanOrEqual(2));
+    // The second message is accepted, not rejected — the responder is invoked
+    // for it too rather than the channel posting a "busy" reply.
+    await vi.waitFor(() => expect(started).toBe(2));
 
     // No "busy" copy is ever posted.
     expect(
@@ -287,6 +309,10 @@ describe("SlackAdapter", () => {
     second.resolve({ text: "done-2" });
     await expect(firstRun).resolves.toMatchObject({ kind: "handled", action: "responded" });
     await expect(secondRun).resolves.toMatchObject({ kind: "handled", action: "responded" });
+
+    // Final-only delivery: each turn posts exactly one final message at finish().
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual(["done-1", "done-2"]);
+    expect(api.updateCalls).toEqual([]);
   });
 
   it("aborts active runs and clears queued follow-ups on /cancel in the same Slack thread", async () => {
@@ -324,8 +350,9 @@ describe("SlackAdapter", () => {
     expect(capturedSignal?.aborted).toBe(true);
     expect(cancelCalls).toEqual(["slack:D123:171.000001"]);
     await expect(first).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
-    expect(api.postMessageCalls.some((call) => call.text === "Cancelled.")).toBe(true);
-    expect(api.updateCalls.at(-1)?.text).toBe("Cancelled.");
+    // Final-only delivery: the terminal "Cancelled." copy is the single final post.
+    expect(api.postMessageCalls.at(-1)?.text).toBe("Cancelled.");
+    expect(api.updateCalls).toEqual([]);
   });
 
   it("does not require a responder.cancel to handle /cancel", async () => {
@@ -360,7 +387,7 @@ describe("SlackAdapter", () => {
     await expect(first).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
   });
 
-  it("forwards stream events to the SlackMessageStream as activity hints", async () => {
+  it("signals activity with a 👀 reaction and never leaks tool/reasoning text", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({
       api,
@@ -382,10 +409,18 @@ describe("SlackAdapter", () => {
       ...api.postMessageCalls.map((call) => call.text),
       ...api.updateCalls.map((call) => call.text),
     ];
-    // The friendly hint was rendered; private reasoning never was.
-    expect(allText).toContain("Searching the web…");
+    // Final-only delivery: no interim hint text is posted/edited; the user sees a
+    // 👀 "seen" reaction while the agent works, then just the final answer.
+    expect(api.reactionsAddCalls).toEqual([
+      { channel: "D123", timestamp: "171.000001", name: "eyes" },
+    ]);
+    // Neither friendly tool hints nor private reasoning ever reach the channel.
+    expect(allText.some((text) => text.includes("Searching the web"))).toBe(false);
+    expect(allText.some((text) => text.includes("WebSearch"))).toBe(false);
     expect(allText.some((text) => text.includes("secret reasoning"))).toBe(false);
-    expect(api.updateCalls.at(-1)?.text).toBe("final answer");
+    // The final answer is delivered as the single posted message.
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual(["final answer"]);
+    expect(api.updateCalls).toEqual([]);
   });
 
   it("downloads inbound files into request.attachments with base64 data", async () => {
@@ -460,6 +495,39 @@ describe("SlackAdapter", () => {
       sizeBytes: textBytes.byteLength,
       text: "hello doc",
     });
+  });
+
+  it("downloads files from a file_share subtyped message instead of ignoring it", async () => {
+    const api = new FakeSlackApi();
+    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    api.downloadFile = async () => imageBytes;
+
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ok" };
+      }),
+    });
+
+    // Slack delivers a file upload as subtype "file_share"; it must NOT be
+    // rejected as an unsupported subtyped message.
+    const callback = directMessage("here is a screenshot", {
+      subtype: "file_share",
+      files: [
+        { id: "F1", name: "shot.png", mimetype: "image/png", url_private: "https://files.slack.test/shot.png", size: imageBytes.byteLength },
+      ],
+    });
+
+    await expect(adapter.handleEventCallback(callback)).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+    });
+    expect(captured?.attachments).toHaveLength(1);
+    expect(captured?.attachments?.[0]?.name).toBe("shot.png");
   });
 
   it("skips a file whose download fails and keeps the rest", async () => {
@@ -539,7 +607,11 @@ describe("SlackAdapter", () => {
     const result = await adapter.handleEventCallback(directMessage("boom"));
 
     expect(result).toMatchObject({ kind: "error", channelId: "D123" });
-    expect(api.updateCalls.at(-1)?.text).toBe("The agent failed while processing your Slack message.");
+    // Final-only delivery: the failure copy is the single final post.
+    expect(api.postMessageCalls.at(-1)?.text).toBe(
+      "The agent failed while processing your Slack message.",
+    );
+    expect(api.updateCalls).toEqual([]);
   });
 
   it("finishes with cancelled text when the responder reports cancellation", async () => {
@@ -557,7 +629,9 @@ describe("SlackAdapter", () => {
       kind: "cancelled",
       channelId: "D123",
     });
-    expect(api.updateCalls.at(-1)?.text).toBe("Cancelled.");
+    // Final-only delivery: the cancelled copy is the single final post.
+    expect(api.postMessageCalls.at(-1)?.text).toBe("Cancelled.");
+    expect(api.updateCalls).toEqual([]);
   });
 });
 

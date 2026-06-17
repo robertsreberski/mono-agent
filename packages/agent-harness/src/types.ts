@@ -109,6 +109,12 @@ export interface AgentHarnessOptions {
   readonly cwd?: string;
   readonly effort?: string;
   readonly maxTurns?: number;
+  /**
+   * Durable pi-native session root directory. When set, provider sessions are
+   * persisted to disk (JSONL) so a turn can resume across restarts instead of
+   * falling back to a full conversation-history re-send. Unset = in-memory only.
+   */
+  readonly piSessionsRoot?: string;
   readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent">;
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,

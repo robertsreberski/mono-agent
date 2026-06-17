@@ -66,6 +66,13 @@ export interface SlackDownloadFileParams {
   maxBytes?: number;
 }
 
+export interface SlackReactionsAddParams {
+  channel: SlackChannelId;
+  timestamp: SlackMessageTs;
+  /** Emoji short name without colons, e.g. "eyes". */
+  name: string;
+}
+
 export interface SlackWebApi {
   authTest(options?: SlackRequestOptions): Promise<SlackAuthTestResult>;
   appsConnectionsOpen(options?: SlackRequestOptions): Promise<SlackAppsConnectionsOpenResult>;
@@ -73,6 +80,14 @@ export interface SlackWebApi {
     params: SlackChatPostMessageParams,
     options?: SlackRequestOptions,
   ): Promise<SlackChatPostMessageResult>;
+  /**
+   * Optional: add an emoji reaction (e.g. 👀 to signal "seen"). Best-effort; the
+   * message stream swallows failures (and "already_reacted" is not an error).
+   */
+  reactionsAdd?(
+    params: SlackReactionsAddParams,
+    options?: SlackRequestOptions,
+  ): Promise<void>;
   chatUpdate(
     params: SlackChatUpdateParams,
     options?: SlackRequestOptions,

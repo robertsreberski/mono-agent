@@ -103,6 +103,37 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.reasoningSummary).toBeUndefined();
   });
 
+  it("loads pi-native provider knobs from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PI_MAX_RETRIES: "4",
+        MONO_AGENT_MAX_RETRY_DELAY_MS: "30000",
+        MONO_AGENT_PI_SESSIONS_ROOT: ".mono-agent/sessions",
+      },
+    });
+    expect(config.providers?.piNative).toEqual({
+      piMaxRetries: 4,
+      maxRetryDelayMs: 30_000,
+      piSessionsRoot: join("/repo", ".mono-agent", "sessions"),
+    });
+  });
+
+  it("omits pi-native provider knobs when the env is unset", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.providers?.piNative).toBeUndefined();
+  });
+
+  it("rejects an out-of-range pi max retries value", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_PI_MAX_RETRIES: "99" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
   it("rejects invalid permission mode and reasoning summary values", () => {
     expect(() =>
       loadMonoAgentConfig({

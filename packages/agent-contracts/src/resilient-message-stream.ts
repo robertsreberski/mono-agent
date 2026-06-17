@@ -56,6 +56,13 @@ export interface ChannelTransport {
   classifyError(error: unknown): ChannelSendOutcome;
   /** Render markdown to the channel's wire format. Defaults to identity. */
   renderMarkdown?(text: string): string;
+  /**
+   * Show a lightweight "working" affordance without posting a chat message —
+   * e.g. a Telegram "typing…" chat action or a Slack 👀 reaction. Used in
+   * `finalOnly` mode in place of interim message edits. Best-effort; the stream
+   * swallows failures.
+   */
+  indicateActivity?(): Promise<void>;
 }
 
 export interface ResilientMessageStreamLogger {
@@ -83,6 +90,12 @@ export interface ResilientMessageStreamOptions {
   showHints?: boolean;
   /** Render the final answer with `transport.renderMarkdown`. Default true. */
   formatMarkdown?: boolean;
+  /**
+   * Deliver only the final answer: suppress all interim message posts/edits and,
+   * instead, surface progress via `transport.indicateActivity()` (typing/seen).
+   * The single chat message is posted once at finish(). Default false.
+   */
+  finalOnly?: boolean;
   /** Aborts in-flight retry waits (e.g. on /cancel). */
   abortSignal?: AbortSignal;
   /** Injectable sleep so tests need not wait on real timers. */
@@ -109,6 +122,10 @@ export class ChannelDeliveryError extends Error {
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
 const DEFAULT_EDIT_DEBOUNCE_MS = 750;
+// Minimum gap between activity indicators (typing/seen) in final-only mode.
+// Telegram's "typing" action lasts ~5s, so refreshing a little under that keeps
+// it continuous without spamming the API.
+const ACTIVITY_INDICATE_THROTTLE_MS = 4_000;
 const DEFAULT_MAX_SEND_RETRIES = 3;
 const DEFAULT_RETRY_CAP_MS = 60_000;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
@@ -132,6 +149,8 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private readonly retryBaseDelayMs: number;
   private readonly showHints: boolean;
   private readonly formatMarkdown: boolean;
+  private readonly finalOnly: boolean;
+  private lastActivityIndicatedAt = 0;
   private readonly abortSignal: AbortSignal | undefined;
   private readonly sleepFn: (ms: number, signal?: AbortSignal) => Promise<void>;
   private readonly logger: ResilientMessageStreamLogger | undefined;
@@ -146,6 +165,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private lastFlushedText: string | undefined;
   private lastFlushedMarkdown = false;
   private finished = false;
+  private finalizing = false;
 
   constructor(options: ResilientMessageStreamOptions) {
     this.transport = options.transport;
@@ -161,6 +181,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
     this.showHints = options.showHints ?? true;
     this.formatMarkdown = options.formatMarkdown ?? true;
+    this.finalOnly = options.finalOnly ?? false;
     this.abortSignal = options.abortSignal;
     this.sleepFn = options.sleep ?? defaultSleep;
     this.logger = options.logger;
@@ -184,8 +205,12 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   async status(text: string): Promise<void> {
     this.assertOpen();
-    await this.awaitInFlightEdit();
     this.statusText = normalizeTrailing(text, EMPTY_FINAL_TEXT);
+    if (this.finalOnly) {
+      await this.maybeIndicateActivity();
+      return;
+    }
+    await this.awaitInFlightEdit();
     const hadMessage = this.sentMessage !== undefined;
     await this.ensureMessage();
     if (hadMessage && !this.hasAnswerText) {
@@ -195,32 +220,56 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   async append(delta: string): Promise<void> {
     this.assertOpen();
-    await this.awaitInFlightEdit();
     if (delta.length === 0) {
       return;
     }
-
     this.currentText += delta;
     if (!this.hasAnswerText && delta.trim().length > 0) {
       this.hasAnswerText = true;
     }
+    if (this.finalOnly) {
+      // Accumulate the answer but do not post/edit until finish(); just keep the
+      // working indicator alive.
+      await this.maybeIndicateActivity();
+      return;
+    }
+    await this.awaitInFlightEdit();
     await this.ensureMessage();
     this.scheduleEdit();
   }
 
   async replace(text: string): Promise<void> {
     this.assertOpen();
-    await this.awaitInFlightEdit();
     this.currentText = text;
     if (text.trim().length > 0) {
       this.hasAnswerText = true;
     }
+    if (this.finalOnly) {
+      await this.maybeIndicateActivity();
+      return;
+    }
+    await this.awaitInFlightEdit();
     await this.ensureMessage();
     this.scheduleEdit();
   }
 
   async event(event: AgentStreamEvent): Promise<void> {
     this.assertOpen();
+
+    if (this.finalOnly) {
+      // No interim posts/edits in final-only mode. Any activity (reasoning,
+      // tool calls) just keeps the working indicator (typing/seen) alive.
+      if (event.type === "runtime_warning") {
+        this.logger?.warn?.("Resilient stream received runtime warning.", {
+          warningKind: event.warningKind,
+          message: event.message,
+        });
+        return;
+      }
+      await this.maybeIndicateActivity();
+      return;
+    }
+
     await this.awaitInFlightEdit();
 
     if (event.type === "assistant_thought") {
@@ -274,6 +323,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
 
     this.finished = true;
+    this.finalizing = true;
     if (finalText !== undefined) {
       this.currentText = finalText;
       if (finalText.trim().length > 0) {
@@ -287,6 +337,13 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     const finalMessageText = normalizeTrailing(this.currentText, EMPTY_FINAL_TEXT);
     const chunks = splitTextByCodePoints(finalMessageText, this.maxMessageChars);
     const [firstChunk, ...remainingChunks] = chunks;
+
+    if (this.finalOnly && this.sentMessage === undefined) {
+      // No interim message was posted, so the lazy first send should carry the
+      // final answer directly (not the "Thinking…" placeholder). deliverText then
+      // re-renders it with markdown in place.
+      this.statusText = firstChunk ?? EMPTY_FINAL_TEXT;
+    }
 
     await this.ensureMessage();
     try {
@@ -335,18 +392,45 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     return this.transport.renderMarkdown ? this.transport.renderMarkdown(text) : text;
   }
 
+  /**
+   * Surface a "working" affordance (typing/seen) via the transport, throttled so
+   * frequent reasoning/tool events do not spam the channel. Best-effort: failures
+   * are logged and swallowed so an indicator hiccup never affects the run.
+   */
+  private async maybeIndicateActivity(): Promise<void> {
+    if (this.transport.indicateActivity === undefined) {
+      return;
+    }
+    const now = Date.now();
+    if (now - this.lastActivityIndicatedAt < ACTIVITY_INDICATE_THROTTLE_MS) {
+      return;
+    }
+    this.lastActivityIndicatedAt = now;
+    try {
+      await this.transport.indicateActivity();
+    } catch (error) {
+      this.logger?.debug?.("Resilient stream activity indicator failed (ignored).", {
+        error: errorMessage(error),
+      });
+    }
+  }
+
   private async ensureMessage(): Promise<MessageRef> {
     if (this.sentMessage !== undefined) {
       return this.sentMessage;
     }
 
     if (this.sendMessagePromise === undefined) {
-      const initialText = this.statusText;
+      // In final-only mode the lazy first send happens AT finish() and carries
+      // the answer, so render it with markdown directly — avoiding a plain→markdown
+      // re-edit (and the brief flash of raw markdown the user would otherwise see).
+      const useMarkdown = this.finalOnly && this.finalizing && this.formatMarkdown;
+      const initialText = this.render(this.statusText, useMarkdown);
       this.sendMessagePromise = this.transport
-        .post(initialText, { markdown: false })
+        .post(initialText, { markdown: useMarkdown })
         .then((message) => {
           this.lastFlushedText = initialText;
-          this.lastFlushedMarkdown = false;
+          this.lastFlushedMarkdown = useMarkdown;
           return message;
         });
     }

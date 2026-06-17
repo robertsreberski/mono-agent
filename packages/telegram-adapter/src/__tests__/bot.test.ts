@@ -200,7 +200,7 @@ function animationUpdate(): Parameters<Bot["handleUpdate"]>[0] {
 }
 
 function documentUpdate(
-  options?: { caption?: string; updateId?: number },
+  options?: { caption?: string; updateId?: number; mimeType?: string },
 ): Parameters<Bot["handleUpdate"]>[0] {
   return {
     update_id: options?.updateId ?? 1,
@@ -214,7 +214,7 @@ function documentUpdate(
         file_id: "doc-file-id",
         file_unique_id: "doc-unique-id",
         file_name: "brief.pdf",
-        mime_type: "application/pdf",
+        mime_type: options?.mimeType ?? "application/pdf",
         file_size: 12_345,
       },
     },
@@ -276,10 +276,6 @@ function responderFrom(respond: AgentResponder["respond"]): AgentResponder {
 
 function texts(calls: RecordedCall[], method: string): unknown[] {
   return calls.filter((call) => call.method === method).map((call) => call.payload.text);
-}
-
-function lastEditText(calls: RecordedCall[]): unknown {
-  return calls.filter((call) => call.method === "editMessageText").at(-1)?.payload.text;
 }
 
 function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -364,16 +360,17 @@ describe("createTelegramBot", () => {
     });
     expect(requests[0]?.abortSignal).toBeInstanceOf(AbortSignal);
 
-    const placeholder = calls.find((call) => call.method === "sendMessage");
-    expect(placeholder?.payload).toMatchObject({
+    // Final-only delivery: no interim edits. The single sendMessage at finish()
+    // carries the final answer (the lazy first send happens at finish), rendered
+    // as MarkdownV2, and replies to the inbound message.
+    expect(texts(calls, "editMessageText")).toEqual([]);
+    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+    expect(finalSend?.payload).toMatchObject({
       chat_id: 42,
-      text: "Thinking…",
+      text: "final",
+      parse_mode: "MarkdownV2",
       reply_parameters: { message_id: 10 },
     });
-    expect(texts(calls, "editMessageText")).toEqual([
-      "partial",
-      "final",
-    ]);
   });
 
   it("downloads inbound document bytes into request.attachments while preserving metadata", async () => {
@@ -478,7 +475,8 @@ describe("createTelegramBot", () => {
     expect(requests[0]?.attachments).toBeUndefined();
     // Telegram metadata is still preserved even though the bytes were skipped.
     expect(requests[0]?.metadata.telegram.attachments).toHaveLength(1);
-    expect(texts(calls, "editMessageText").at(-1)).toBe("ran anyway");
+    // Final-only delivery: the final answer arrives as a single sendMessage.
+    expect(texts(calls, "sendMessage").at(-1)).toBe("ran anyway");
   });
 
   it("skips attachments whose MIME type is not on the allowlist", async () => {
@@ -491,11 +489,13 @@ describe("createTelegramBot", () => {
       }),
     });
 
-    await bot.handleUpdate(voiceUpdate());
+    // application/x-msdownload is not on the default allowlist, so no download is attempted.
+    await bot.handleUpdate(documentUpdate({ mimeType: "application/x-msdownload" }));
 
-    // audio/ogg is not on the default allowlist, so no download is attempted.
     expect(downloadedFileIds).toEqual([]);
     expect(requests[0]?.attachments).toBeUndefined();
+    // Metadata is still forwarded even when the bytes are not downloaded.
+    expect(requests[0]?.metadata.telegram.attachments).toHaveLength(1);
   });
 
   it("downloads the largest photo as an image attachment and keeps the text summary", async () => {
@@ -530,9 +530,9 @@ describe("createTelegramBot", () => {
     });
   });
 
-  it("keeps Telegram voice metadata even though audio/ogg is not downloaded", async () => {
+  it("downloads Telegram voice attachments now that audio/ogg is on the allowlist", async () => {
     const requests: AgentRequest[] = [];
-    const { bot } = buildTestBot({
+    const { bot, downloadedFileIds } = buildTestBot({
       responder: responderFrom(async (request) => {
         requests.push(request);
         return { text: "received voice" };
@@ -543,9 +543,17 @@ describe("createTelegramBot", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.text).toContain("17s");
-    // audio/ogg is off the default allowlist, so no bytes are inlined…
-    expect(requests[0]?.attachments).toBeUndefined();
-    // …but the metadata is still forwarded.
+    // audio/ogg is on the default allowlist, so the bytes are downloaded and inlined.
+    expect(downloadedFileIds).toEqual(["voice-file-id"]);
+    expect(requests[0]?.attachments).toEqual([
+      {
+        kind: "document",
+        mimeType: "audio/ogg",
+        data: Buffer.from("bytes:voice-file-id").toString("base64"),
+        sizeBytes: Buffer.from("bytes:voice-file-id").length,
+      },
+    ]);
+    // …and the Telegram metadata is still forwarded.
     expect(requests[0]?.metadata.telegram.attachments).toEqual([
       {
         kind: "voice",
@@ -570,18 +578,16 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("hello"));
 
-    // The reasoning is never rendered; the answer streams as plain text (no
-    // label) and the final edit re-renders it as MarkdownV2.
-    expect(texts(calls, "editMessageText")).toEqual([
-      "the answer",
-      "the answer",
-    ]);
-    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
-    expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
+    // The reasoning is never rendered. Final-only delivery: no interim edits;
+    // the answer arrives as a single sendMessage rendered as MarkdownV2.
+    expect(texts(calls, "editMessageText")).toEqual([]);
+    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+    expect(finalSend?.payload.text).toBe("the answer");
+    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
     expect(calls.some((call) => String(call.payload.text).includes("secret"))).toBe(false);
   });
 
-  it("surfaces a friendly activity hint for tool_call_started, never the raw tool name", async () => {
+  it("shows a typing indicator for tool_call_started and never leaks the raw tool name", async () => {
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async (_request, stream) => {
@@ -593,11 +599,16 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("look it up"));
 
-    const editTexts = texts(calls, "editMessageText");
-    // The friendly hint shows while working, then is replaced by the answer.
-    expect(editTexts).toContain("Searching the web…");
-    expect(editTexts.some((text) => String(text).includes("WebSearch"))).toBe(false);
-    expect(editTexts.at(-1)).toBe("the answer");
+    // Final-only delivery: tool activity is surfaced via a "typing…" chat action,
+    // not a hint message. At least one sendChatAction(typing) is sent while working.
+    const typing = calls.filter(
+      (call) => call.method === "sendChatAction" && call.payload.action === "typing",
+    );
+    expect(typing.length).toBeGreaterThanOrEqual(1);
+    // The final answer is delivered as a single sendMessage.
+    expect(texts(calls, "sendMessage").at(-1)).toBe("the answer");
+    // The raw tool name never leaks into any outbound payload text.
+    expect(calls.some((call) => String(call.payload.text).includes("WebSearch"))).toBe(false);
   });
 
   it("replaces hint-only bot runs with an explicit final placeholder", async () => {
@@ -611,12 +622,12 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("clean up todoist"));
 
-    expect(texts(calls, "editMessageText")).toEqual([
-      "Checking your tasks…",
-      "No response text was returned\\.",
-    ]);
-    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
-    expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
+    // No hint messages in final-only mode. With no answer text, the run delivers
+    // an explicit final placeholder as a single sendMessage rendered as MarkdownV2.
+    expect(texts(calls, "editMessageText")).toEqual([]);
+    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+    expect(finalSend?.payload.text).toBe("No response text was returned\\.");
+    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
   });
 
   it("preserves streamed bot answers when the responder returns no text", async () => {
@@ -630,12 +641,12 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("stream only"));
 
-    expect(texts(calls, "editMessageText")).toEqual([
-      "streamed answer",
-      "streamed answer",
-    ]);
-    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
-    expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
+    // Final-only delivery: the streamed answer is held back and delivered as a
+    // single sendMessage at finish(), rendered as MarkdownV2 (no interim edits).
+    expect(texts(calls, "editMessageText")).toEqual([]);
+    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+    expect(finalSend?.payload.text).toBe("streamed answer");
+    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
   });
 
   it("does not reject a second concurrent message in the same chat", async () => {
@@ -740,7 +751,12 @@ describe("createTelegramBot", () => {
     expect(capturedSignal?.aborted).toBe(true);
     await first;
     expect(texts(calls, "sendMessage")).toContain("Cancelled.");
-    expect(lastEditText(calls)).toBe("Cancelled.");
+    // The in-flight run resolves its placeholder to plain cancelled text via a
+    // final-only sendMessage (no parse_mode).
+    const cancelledSend = calls
+      .filter((call) => call.method === "sendMessage" && call.payload.text === "Cancelled.")
+      .at(-1);
+    expect(cancelledSend?.payload.parse_mode).toBeUndefined();
   });
 
   it("ignores media caption commands targeted at another bot", async () => {
@@ -788,10 +804,12 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("please stop"));
 
-    expect(lastEditText(calls)).toBe("Cancelled.");
-    expect(
-      calls.filter((call) => call.method === "editMessageText").at(-1)?.payload.parse_mode,
-    ).toBeUndefined();
+    // Final-only delivery: the cancelled copy arrives as a single PLAIN
+    // sendMessage (no MarkdownV2 parse_mode), with no interim edits.
+    expect(texts(calls, "editMessageText")).toEqual([]);
+    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+    expect(finalSend?.payload.text).toBe("Cancelled.");
+    expect(finalSend?.payload.parse_mode).toBeUndefined();
   });
 
   it("lets hosts derive terminal error text from responder failure details", async () => {
@@ -814,7 +832,11 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("check calendar"));
 
-    expect(lastEditText(calls)).toBe('I hit the turn limit while handling "check calendar".');
+    // Final-only delivery: the host-derived error text arrives as a single
+    // PLAIN sendMessage.
+    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+    expect(finalSend?.payload.text).toBe('I hit the turn limit while handling "check calendar".');
+    expect(finalSend?.payload.parse_mode).toBeUndefined();
   });
 
   it("aborts the active run when /cancel is received and acks it", async () => {
@@ -852,8 +874,13 @@ describe("createTelegramBot", () => {
 
     // The /cancel command acks with plain cancelled text…
     expect(texts(calls, "sendMessage")).toContain("Cancelled.");
-    // …and the in-flight run's placeholder is also resolved to cancelled text.
-    expect(lastEditText(calls)).toBe("Cancelled.");
+    // …and the in-flight run resolves its placeholder to plain cancelled text via
+    // a final-only sendMessage (no parse_mode), with no interim edits.
+    expect(texts(calls, "editMessageText")).toEqual([]);
+    const cancelledSend = calls
+      .filter((call) => call.method === "sendMessage" && call.payload.text === "Cancelled.")
+      .at(-1);
+    expect(cancelledSend?.payload.parse_mode).toBeUndefined();
   });
 
   it("does not throw when every delivery path fails after a successful run", async () => {
@@ -867,17 +894,12 @@ describe("createTelegramBot", () => {
       responder: responderFrom(async () => ({ text: "the real answer" })),
     });
 
-    // Editing the placeholder always fails fatally (no retry, no recreate).
+    // Editing always fails fatally (no retry, no recreate) — final-only mode does
+    // not edit, but this guards any future interim path too.
     failures.set("editMessageText", () => err(403, "Forbidden: bot was blocked by the user"));
-    // The placeholder send works once; the last-resort fresh send fails too.
-    let sends = 0;
-    failures.set("sendMessage", () => {
-      sends += 1;
-      if (sends === 1) {
-        return ok({ message_id: 1, date: 0, chat: { id: 42, type: "private" }, text: "Thinking…" });
-      }
-      return err(403, "Forbidden: bot was blocked by the user");
-    });
+    // Final-only delivery posts the answer with a single sendMessage at finish();
+    // every send fails, so there is no delivery path left.
+    failures.set("sendMessage", () => err(403, "Forbidden: bot was blocked by the user"));
 
     // The AI run succeeded, so a delivery failure must not throw out of the handler.
     await expect(bot.handleUpdate(textUpdate("hello"))).resolves.toBeUndefined();

@@ -137,6 +137,11 @@ describe("Cron adapter", () => {
       );
       finish();
       await vi.runOnlyPendingTimersAsync();
+      // The original (first) run must still complete successfully after finish();
+      // skipping the overlap must not abandon the in-flight run.
+      expect(results).toContainEqual(
+        expect.objectContaining({ kind: "succeeded", jobId: "slow" }),
+      );
     } finally {
       scheduler.stop();
       vi.useRealTimers();

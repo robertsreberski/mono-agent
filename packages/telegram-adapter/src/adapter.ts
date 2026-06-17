@@ -163,6 +163,11 @@ export interface TelegramAdapterStreamOptions {
   showThoughts?: boolean;
   showHints?: boolean;
   formatMarkdown?: boolean;
+  /**
+   * Deliver only the final answer with a "typing…" indicator while working,
+   * instead of streaming interim edits. Defaults to true for the Telegram bot.
+   */
+  finalOnly?: boolean;
 }
 
 export interface TelegramAdapterLogger extends TelegramMessageStreamLogger {
@@ -495,6 +500,18 @@ export const DEFAULT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
   "text/markdown",
   "text/csv",
   "text/html",
+  // Audio (Telegram voice messages normalize to audio/ogg; see attachmentMimeType).
+  "audio/ogg",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/aac",
+  "audio/wav",
+  "audio/webm",
+  // Video.
+  "video/mp4",
+  "video/mpeg",
+  "video/quicktime",
+  "video/webm",
 ];
 
 /**
@@ -638,6 +655,14 @@ function attachmentMimeType(attachment: TelegramAttachment): string {
   }
   if (attachment.kind === "voice") {
     return "audio/ogg";
+  }
+  // Telegram may omit mime_type on audio/video; fall back to a sensible default
+  // on the allowlist so the attachment is not skipped as application/octet-stream.
+  if (attachment.kind === "audio") {
+    return "audio/mpeg";
+  }
+  if (attachment.kind === "video") {
+    return "video/mp4";
   }
   return "application/octet-stream";
 }
