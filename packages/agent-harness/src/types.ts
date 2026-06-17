@@ -1,3 +1,4 @@
+import type { AgentAttachment } from "@mono-agent/agent-contracts";
 import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
 import type { MemoryStore } from "@mono-agent/memory-store";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
@@ -23,6 +24,13 @@ export interface AgentHarnessRequest {
   readonly abortSignal: AbortSignal;
   readonly metadata?: Record<string, unknown>;
   readonly onEvent?: (event: RuntimeEventLike) => void;
+  /**
+   * Multimodal attachments. The harness saves each to `attachmentsDir` and
+   * references the saved path (plus inlined text for documents) in the prompt,
+   * so the agent opens them with its own file tools — no provider multimodal
+   * contract required.
+   */
+  readonly attachments?: readonly AgentAttachment[];
 }
 
 export interface AgentHarnessFailure {
@@ -89,6 +97,12 @@ export interface AgentHarnessOptions {
    * conversation) to skip unchanged reads. Defaults to a per-harness cache.
    */
   readonly skillsCache?: SkillsCache;
+  /**
+   * Directory where inbound request attachments are saved before the agent
+   * opens them. Should sit under a sandbox-readable root. When unset,
+   * attachment bytes are not persisted (document text is still inlined).
+   */
+  readonly attachmentsDir?: string;
   readonly runtime: MonoRuntimeLike;
   readonly model: RuntimeModelReference;
   readonly executionMode?: string;

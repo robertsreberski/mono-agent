@@ -46,6 +46,7 @@ export function createAgentResponder(options: { readonly harness: AgentHarness }
         userMessage: request.text,
         abortSignal: request.abortSignal,
         ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+        ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
         onEvent: (event) => {
           const streamEvent = streamEventFromRuntimeEvent(event);
           if (streamEvent !== undefined) {

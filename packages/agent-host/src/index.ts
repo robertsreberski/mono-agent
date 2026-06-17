@@ -10,6 +10,8 @@ import type {
   AgentHarnessRuntimeOptionsInput,
   ConversationHistoryStore,
 } from "@mono-agent/agent-harness";
+import { resolve as resolvePath } from "node:path";
+
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
@@ -131,6 +133,9 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: historyMaxMessages(config.runtime.maxTurns) }),
+    // Inbound channel attachments are saved here (under the artifacts dir, which
+    // sits inside a sandbox-readable root) so the agent can open them by path.
+    attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
     recorderFactory: ({ runId, conversationId }) => createJsonlRunRecorder({

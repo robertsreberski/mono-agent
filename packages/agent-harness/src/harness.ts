@@ -1,3 +1,7 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import type { AgentAttachment } from "@mono-agent/agent-contracts";
 import { loadContextFromFiles } from "@mono-agent/context";
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono-agent/context";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
@@ -100,16 +104,19 @@ export class MonoAgentHarness implements AgentHarness {
       request.onEvent?.(event);
     };
     try {
+      // Persist any inbound attachments to disk and reference them in the
+      // prompt so the agent opens them with its own file tools.
+      const activeRequest = await this.applyAttachments(request, runId, emit);
       let resumeSessionId = sessionRecord?.providerSessionId;
       // While a provider session is live it already holds the conversation,
       // so history is omitted from the prompt — that is the optimization.
-      let prepared = await this.prepareContext(request, { omitHistory: resumeSessionId !== undefined }, emit);
+      let prepared = await this.prepareContext(activeRequest, { omitHistory: resumeSessionId !== undefined }, emit);
       context = prepared.context;
 
       let runtimeResult: RuntimeResult | undefined;
       let resumeError: unknown;
       try {
-        runtimeResult = await this.runRuntime(request, recorder, context, runId, resumeSessionId);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, runId, resumeSessionId);
       } catch (error) {
         if (resumeSessionId === undefined || request.abortSignal.aborted) {
           throw error;
@@ -128,9 +135,9 @@ export class MonoAgentHarness implements AgentHarness {
         request.onEvent?.(warning);
         await this.sessionStore?.evict(request.conversationId, "stale", resumeSessionId);
         resumeSessionId = undefined;
-        prepared = await this.prepareContext(request, { omitHistory: false }, emit);
+        prepared = await this.prepareContext(activeRequest, { omitHistory: false }, emit);
         context = prepared.context;
-        runtimeResult = await this.runRuntime(request, recorder, context, runId, undefined);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, runId, undefined);
       }
       if (runtimeResult === undefined) {
         throw resumeError ?? new Error("Runtime did not produce a result.");
@@ -173,7 +180,7 @@ export class MonoAgentHarness implements AgentHarness {
 
       this.saveSession(request.conversationId, runtimeResult.providerSessionId, sessionRecord);
 
-      await this.persistSuccessfulTurn(request, text);
+      await this.persistSuccessfulTurn(activeRequest, text);
       return {
         text,
         metadata: baseMetadata,
@@ -256,6 +263,58 @@ export class MonoAgentHarness implements AgentHarness {
 
   private async loadHistory(conversationId: string): Promise<readonly HistoryMessage[]> {
     return this.options.historyStore?.load(conversationId) ?? [];
+  }
+
+  /**
+   * Saves inbound attachments to `attachmentsDir` and returns a request whose
+   * userMessage references the saved paths (and inlines extracted document
+   * text). The agent then opens the files with its own tools, so no provider
+   * multimodal contract is needed. Persistence failures degrade to a warning.
+   */
+  private async applyAttachments(
+    request: AgentHarnessRequest,
+    runId: string,
+    emit: (event: RuntimeEventLike) => void,
+  ): Promise<AgentHarnessRequest> {
+    const attachments = request.attachments;
+    if (attachments === undefined || attachments.length === 0) {
+      return request;
+    }
+    const dir = this.options.attachmentsDir;
+    const lines: string[] = [];
+    let dirEnsured = false;
+    for (let index = 0; index < attachments.length; index += 1) {
+      const attachment = attachments[index];
+      if (attachment === undefined) {
+        continue;
+      }
+      let savedPath: string | undefined;
+      if (dir !== undefined) {
+        try {
+          if (!dirEnsured) {
+            await mkdir(dir, { recursive: true });
+            dirEnsured = true;
+          }
+          savedPath = join(dir, attachmentFileName(runId, index, attachment));
+          await writeFile(savedPath, Buffer.from(attachment.data, "base64"));
+        } catch (error) {
+          emit({
+            type: "runtime_warning",
+            warning_kind: "attachment_persist_failed",
+            message: `Could not save attachment ${attachment.name ?? `#${index}`}: ${errorMessageText(error)}`,
+          });
+          savedPath = undefined;
+        }
+      }
+      lines.push(describeAttachment(attachment, savedPath));
+    }
+    if (lines.length === 0) {
+      return request;
+    }
+    const header = dir !== undefined
+      ? `[The user attached ${attachments.length} file(s) — saved to disk so you can open them with your tools:]`
+      : `[The user attached ${attachments.length} file(s):]`;
+    return { ...request, userMessage: `${request.userMessage}\n\n${header}\n${lines.join("\n")}` };
   }
 
   private async loadMemory(
@@ -628,6 +687,66 @@ function errorToDetails(error: unknown): unknown {
 
 function errorMessageText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const MIME_EXTENSIONS: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/heic": ".heic",
+  "application/pdf": ".pdf",
+  "text/plain": ".txt",
+  "text/markdown": ".md",
+  "application/json": ".json",
+};
+
+const ATTACHMENT_TEXT_MAX_CHARS = 8_000;
+
+function attachmentFileName(runId: string, index: number, attachment: AgentAttachment): string {
+  const sanitized = sanitizeAttachmentName(attachment.name);
+  const base = sanitized ?? `attachment-${index}${MIME_EXTENSIONS[attachment.mimeType] ?? ""}`;
+  return `${runId}-${index}-${base}`;
+}
+
+function sanitizeAttachmentName(name: string | undefined): string | undefined {
+  if (typeof name !== "string") {
+    return undefined;
+  }
+  const cleaned = name.replace(/[^A-Za-z0-9._-]/gu, "_").replace(/^\.+/u, "").slice(0, 80);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+function describeAttachment(attachment: AgentAttachment, savedPath: string | undefined): string {
+  const parts: string[] = [];
+  if (savedPath !== undefined) {
+    parts.push(savedPath);
+  }
+  parts.push(attachment.mimeType);
+  if (typeof attachment.sizeBytes === "number" && Number.isFinite(attachment.sizeBytes)) {
+    parts.push(formatAttachmentBytes(attachment.sizeBytes));
+  }
+  let line = `- ${parts.join(" — ")}`;
+  if (typeof attachment.name === "string" && attachment.name.length > 0) {
+    line += ` (original: ${attachment.name})`;
+  }
+  if (attachment.kind === "document" && typeof attachment.text === "string" && attachment.text.trim().length > 0) {
+    const text = attachment.text.length > ATTACHMENT_TEXT_MAX_CHARS
+      ? `${attachment.text.slice(0, ATTACHMENT_TEXT_MAX_CHARS)}…[truncated]`
+      : attachment.text;
+    line += `\n  --- extracted text ---\n${text}\n  --- end of extracted text ---`;
+  }
+  return line;
+}
+
+function formatAttachmentBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
 function createDefaultRunId(): string {
