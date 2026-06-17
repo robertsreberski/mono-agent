@@ -335,8 +335,8 @@ describe("createTelegramBot", () => {
       reply_parameters: { message_id: 10 },
     });
     expect(texts(calls, "editMessageText")).toEqual([
-      "Answer\n\npartial",
-      "Final answer\n\nfinal",
+      "partial",
+      "final",
     ]);
   });
 
@@ -451,9 +451,9 @@ describe("createTelegramBot", () => {
     ]);
   });
 
-  it("hides thoughts when disabled and delivers only the final answer", async () => {
+  it("never renders reasoning and delivers only the final answer text", async () => {
     const { bot, calls } = buildTestBot({
-      stream: { editDebounceMs: 0, showThoughts: false },
+      stream: { editDebounceMs: 0 },
       responder: responderFrom(async (_request, stream) => {
         await stream.event?.({ type: "assistant_thought", text: "secret" });
         await stream.append("the answer");
@@ -463,22 +463,41 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("hello"));
 
-    // The thought is hidden; the answer streams as plain text and the final edit
-    // re-renders it as MarkdownV2.
+    // The reasoning is never rendered; the answer streams as plain text (no
+    // label) and the final edit re-renders it as MarkdownV2.
     expect(texts(calls, "editMessageText")).toEqual([
-      "Answer\n\nthe answer",
-      "Final answer\n\nthe answer",
+      "the answer",
+      "the answer",
     ]);
     const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
     expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
     expect(calls.some((call) => String(call.payload.text).includes("secret"))).toBe(false);
   });
 
-  it("replaces thought-only bot runs with an explicit final placeholder", async () => {
+  it("surfaces a friendly activity hint for tool_call_started, never the raw tool name", async () => {
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async (_request, stream) => {
-        await stream.event({ type: "assistant_thought", text: "checking Todoist" });
+        await stream.event?.({ type: "tool_call_started", id: "t1", name: "WebSearch" });
+        await stream.append("the answer");
+        return { text: "the answer" };
+      }),
+    });
+
+    await bot.handleUpdate(textUpdate("look it up"));
+
+    const editTexts = texts(calls, "editMessageText");
+    // The friendly hint shows while working, then is replaced by the answer.
+    expect(editTexts).toContain("Searching the web…");
+    expect(editTexts.some((text) => String(text).includes("WebSearch"))).toBe(false);
+    expect(editTexts.at(-1)).toBe("the answer");
+  });
+
+  it("replaces hint-only bot runs with an explicit final placeholder", async () => {
+    const { bot, calls } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.event({ type: "tool_call_started", id: "t1", name: "todoist" });
         return {};
       }),
     });
@@ -486,8 +505,8 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(textUpdate("clean up todoist"));
 
     expect(texts(calls, "editMessageText")).toEqual([
-      "Thinking\n\nchecking Todoist",
-      "Final answer\n\nNo response text was returned\\.",
+      "Checking your tasks…",
+      "No response text was returned\\.",
     ]);
     const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
     expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
@@ -505,35 +524,55 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(textUpdate("stream only"));
 
     expect(texts(calls, "editMessageText")).toEqual([
-      "Answer\n\nstreamed answer",
-      "Final answer\n\nstreamed answer",
+      "streamed answer",
+      "streamed answer",
     ]);
     const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
     expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
   });
 
-  it("replies busy for a second concurrent message in the same chat", async () => {
-    const started = createDeferred<void>();
-    const finish = createDeferred<{ text: string }>();
+  it("does not reject a second concurrent message in the same chat", async () => {
+    const started: string[] = [];
+    const firstFinish = createDeferred<{ text: string }>();
+    const secondFinish = createDeferred<{ text: string }>();
+    const received: string[] = [];
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
-      responder: responderFrom(async () => {
-        started.resolve();
-        return finish.promise;
+      responder: responderFrom(async (request) => {
+        received.push(request.text);
+        if (received.length === 1) {
+          started.push("first");
+          return firstFinish.promise;
+        }
+        started.push("second");
+        return secondFinish.promise;
       }),
     });
 
     const first = bot.handleUpdate(textUpdate("first"));
-    await started.promise;
+    // Wait until the first run is actually in the responder.
+    while (started.length === 0) {
+      await Promise.resolve();
+    }
 
-    await bot.handleUpdate(textUpdate("second", { updateId: 2 }));
+    const second = bot.handleUpdate(textUpdate("second", { updateId: 2 }));
+    // Both messages reach the responder — no "busy" rejection. The harness is
+    // responsible for serializing per conversation, so the channel must not
+    // refuse the follow-up.
+    while (received.length < 2) {
+      await Promise.resolve();
+    }
+    expect(received).toEqual(["first", "second"]);
+    expect(
+      texts(calls, "sendMessage").includes(
+        "I am still working on your previous message. Use /cancel to stop it.",
+      ),
+    ).toBe(false);
 
-    expect(texts(calls, "sendMessage").at(-1)).toBe(
-      "I am still working on your previous message. Use /cancel to stop it.",
-    );
-
-    finish.resolve({ text: "done" });
+    firstFinish.resolve({ text: "done one" });
+    secondFinish.resolve({ text: "done two" });
     await first;
+    await second;
   });
 
   it("rejects non-text messages as unsupported", async () => {
@@ -563,8 +602,9 @@ describe("createTelegramBot", () => {
   it("treats media captions with /cancel as control commands", async () => {
     let capturedSignal: AbortSignal | undefined;
     const started = createDeferred<void>();
-    const responder = responderFrom(
-      async (request) =>
+    const cancelCalls: string[] = [];
+    const responder: AgentResponder = {
+      respond: async (request) =>
         await new Promise<{ text: string }>((resolve) => {
           capturedSignal = request.abortSignal;
           request.abortSignal.addEventListener(
@@ -574,7 +614,10 @@ describe("createTelegramBot", () => {
           );
           started.resolve();
         }),
-    );
+      cancel: (conversationId) => {
+        cancelCalls.push(conversationId);
+      },
+    };
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder,
@@ -585,6 +628,8 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(documentUpdate({ caption: "/cancel", updateId: 2 }));
 
+    // /cancel clears queued follow-ups via responder.cancel AND aborts the live run.
+    expect(cancelCalls).toEqual(["telegram:42"]);
     expect(capturedSignal?.aborted).toBe(true);
     await first;
     expect(texts(calls, "sendMessage")).toContain("Cancelled.");
@@ -592,30 +637,38 @@ describe("createTelegramBot", () => {
   });
 
   it("ignores media caption commands targeted at another bot", async () => {
-    let capturedSignal: AbortSignal | undefined;
-    const started = createDeferred<void>();
-    const finish = createDeferred<{ text: string }>();
-    const { bot, calls } = buildTestBot({
+    const signals: AbortSignal[] = [];
+    const received: string[] = [];
+    const finishers: Array<(value: { text: string }) => void> = [];
+    const { bot } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async (request) => {
-        capturedSignal = request.abortSignal;
-        started.resolve();
-        return finish.promise;
+        signals.push(request.abortSignal);
+        received.push(request.text);
+        return await new Promise<{ text: string }>((resolve) => {
+          finishers.push(resolve);
+        });
       }),
     });
 
     const first = bot.handleUpdate(textUpdate("long task"));
-    await started.promise;
+    while (received.length === 0) {
+      await Promise.resolve();
+    }
 
-    await bot.handleUpdate(documentUpdate({ caption: "/cancel@OtherBot", updateId: 2 }));
+    // A caption command aimed at another bot is NOT our /cancel, so it is treated
+    // as an ordinary media message and reaches the responder (no busy rejection,
+    // no cancellation of the in-flight run).
+    const second = bot.handleUpdate(documentUpdate({ caption: "/cancel@OtherBot", updateId: 2 }));
+    while (received.length < 2) {
+      await Promise.resolve();
+    }
 
-    expect(capturedSignal?.aborted).toBe(false);
-    expect(texts(calls, "sendMessage").at(-1)).toBe(
-      "I am still working on your previous message. Use /cancel to stop it.",
-    );
+    expect(signals.every((signal) => signal.aborted === false)).toBe(true);
 
-    finish.resolve({ text: "done" });
+    finishers.forEach((resolve) => resolve({ text: "done" }));
     await first;
+    await second;
   });
 
   it("finishes with plain cancelled text when the responder reports cancellation", async () => {
@@ -660,10 +713,11 @@ describe("createTelegramBot", () => {
   it("aborts the active run when /cancel is received and acks it", async () => {
     let capturedSignal: AbortSignal | undefined;
     const started = createDeferred<void>();
+    const cancelCalls: string[] = [];
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
-      responder: responderFrom(
-        async (request) =>
+      responder: {
+        respond: async (request) =>
           await new Promise<{ text: string }>((resolve) => {
             capturedSignal = request.abortSignal;
             request.abortSignal.addEventListener(
@@ -673,7 +727,10 @@ describe("createTelegramBot", () => {
             );
             started.resolve();
           }),
-      ),
+        cancel: (conversationId) => {
+          cancelCalls.push(conversationId);
+        },
+      },
     });
 
     const first = bot.handleUpdate(textUpdate("long task"));
@@ -681,6 +738,8 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(commandUpdate("/cancel", { updateId: 2 }));
 
+    // /cancel clears queued follow-ups via responder.cancel and aborts the live run.
+    expect(cancelCalls).toEqual(["telegram:42"]);
     expect(capturedSignal?.aborted).toBe(true);
     await first;
 

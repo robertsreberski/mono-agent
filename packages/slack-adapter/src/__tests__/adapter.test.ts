@@ -246,32 +246,80 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls).toEqual([]);
   });
 
-  it("returns busy for a second message in the same Slack thread", async () => {
+  it("does not reject a concurrent message in the same Slack thread (harness queues it)", async () => {
     const api = new FakeSlackApi();
-    const deferred = createDeferred<{ text: string }>();
+    const first = createDeferred<{ text: string }>();
+    const second = createDeferred<{ text: string }>();
+    const queue = [first, second];
     const adapter = new SlackAdapter({
       api,
       allowAllChannels: true,
-      responder: responderFrom(async () => deferred.promise),
+      // The harness serializes per conversation; the channel just calls respond
+      // for every message. Both runs are accepted (no "busy" rejection).
+      responder: responderFrom(async () => queue.shift()!.promise),
     });
 
-    const first = adapter.handleEventCallback(directMessage("first"));
+    const firstRun = adapter.handleEventCallback(directMessage("first"));
     await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(1));
 
-    await expect(
-      adapter.handleEventCallback(directMessage("second", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" })),
-    ).resolves.toMatchObject({ kind: "busy", channelId: "D123" });
-    expect(api.postMessageCalls.at(-1)).toEqual({
-      channel: "D123",
-      text: "I am still working on this Slack thread. Use /cancel to stop it.",
-      thread_ts: "171.000001",
-    });
+    const secondRun = adapter.handleEventCallback(
+      directMessage("second", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" }),
+    );
+    await vi.waitFor(() => expect(api.postMessageCalls.length).toBeGreaterThanOrEqual(2));
 
-    deferred.resolve({ text: "done" });
-    await expect(first).resolves.toMatchObject({ kind: "handled" });
+    // No "busy" copy is ever posted.
+    expect(
+      api.postMessageCalls.some((call) =>
+        call.text.includes("still working on this Slack thread"),
+      ),
+    ).toBe(false);
+
+    first.resolve({ text: "done-1" });
+    second.resolve({ text: "done-2" });
+    await expect(firstRun).resolves.toMatchObject({ kind: "handled", action: "responded" });
+    await expect(secondRun).resolves.toMatchObject({ kind: "handled", action: "responded" });
   });
 
-  it("aborts an active run on /cancel in the same Slack thread", async () => {
+  it("aborts active runs and clears queued follow-ups on /cancel in the same Slack thread", async () => {
+    const api = new FakeSlackApi();
+    let capturedSignal: AbortSignal | undefined;
+    const cancelCalls: string[] = [];
+    const responderStarted = createDeferred<void>();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: {
+        respond: async (request) =>
+          await new Promise<{ text: string }>((resolve) => {
+            capturedSignal = request.abortSignal;
+            request.abortSignal.addEventListener(
+              "abort",
+              () => resolve({ text: "should not be used" }),
+              { once: true },
+            );
+            responderStarted.resolve(undefined);
+          }),
+        cancel: (conversationId: string) => {
+          cancelCalls.push(conversationId);
+        },
+      },
+    });
+
+    const first = adapter.handleEventCallback(directMessage("long task"));
+    await responderStarted.promise;
+
+    await expect(
+      adapter.handleEventCallback(directMessage("/cancel", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" })),
+    ).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(cancelCalls).toEqual(["slack:D123:171.000001"]);
+    await expect(first).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+    expect(api.postMessageCalls.some((call) => call.text === "Cancelled.")).toBe(true);
+    expect(api.updateCalls.at(-1)?.text).toBe("Cancelled.");
+  });
+
+  it("does not require a responder.cancel to handle /cancel", async () => {
     const api = new FakeSlackApi();
     let capturedSignal: AbortSignal | undefined;
     const responderStarted = createDeferred<void>();
@@ -301,8 +349,34 @@ describe("SlackAdapter", () => {
     ).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
     expect(capturedSignal?.aborted).toBe(true);
     await expect(first).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
-    expect(api.postMessageCalls.some((call) => call.text === "Cancelled.")).toBe(true);
-    expect(api.updateCalls.at(-1)?.text).toBe("Cancelled.");
+  });
+
+  it("forwards stream events to the SlackMessageStream as activity hints", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.event?.({ type: "tool_call_started", id: "t1", name: "WebSearch" });
+        await stream.event?.({ type: "assistant_thought", text: "secret reasoning" });
+        return { text: "final answer" };
+      }),
+    });
+
+    await expect(adapter.handleEventCallback(directMessage("look it up"))).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+    });
+
+    const allText = [
+      ...api.postMessageCalls.map((call) => call.text),
+      ...api.updateCalls.map((call) => call.text),
+    ];
+    // The friendly hint was rendered; private reasoning never was.
+    expect(allText).toContain("Searching the web…");
+    expect(allText.some((text) => text.includes("secret reasoning"))).toBe(false);
+    expect(api.updateCalls.at(-1)?.text).toBe("final answer");
   });
 
   it("surfaces responder failures without fake success", async () => {

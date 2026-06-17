@@ -25,12 +25,15 @@ export type {
   SlackWebApiClientOptions,
 } from "./slack-client.js";
 export {
+  SlackDeliveryError,
   SlackMessageStream,
+  classifySlackError,
 } from "./message-stream.js";
 export type {
   AgentMessageStream,
   SlackMessageStreamLogger,
   SlackMessageStreamOptions,
+  SlackSendOutcome,
 } from "./message-stream.js";
 export {
   SlackAdapter,

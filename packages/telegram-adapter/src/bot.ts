@@ -60,10 +60,6 @@ export interface TelegramBotController {
   stop(): Promise<void>;
 }
 
-interface ActiveRun {
-  controller: AbortController;
-}
-
 type TelegramControlCommand = "start" | "help" | "cancel";
 
 /**
@@ -73,10 +69,12 @@ type TelegramControlCommand = "start" | "help" | "cancel";
  * Middleware order is: authorization gate → `/start` `/help` `/cancel` commands →
  * agent run handler (`message:text`) → unsupported fallback (other messages).
  *
- * Per-chat concurrency is guarded by an `activeRuns` map: a run is recorded
- * synchronously at handler entry, so a second message arriving for the same chat
- * mid-run gets a "busy" reply rather than starting a competing run. The long run
- * is intentionally NOT sequentialized, which is what makes "busy" reachable.
+ * Concurrency is NOT rejected per chat. Every message is handed to the responder,
+ * which routes through the runtime harness; the harness serializes per
+ * conversation (queue-after-turn follow-ups answered on the warm session). For
+ * each in-flight message the bot tracks an `AbortController` in a per-chat set so
+ * `/cancel` can abort every live turn for the chat (in addition to clearing
+ * queued follow-ups via `responder.cancel`).
  */
 export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBotController {
   const allowAllChats = options.allowAllChats === true;
@@ -88,7 +86,23 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const messages: Required<TelegramAdapterMessages> = { ...DEFAULT_MESSAGES, ...options.messages };
   const logger = options.logger;
   const initialStatusText = options.stream?.initialStatusText ?? DEFAULT_INITIAL_STATUS_TEXT;
-  const activeRuns = new Map<string, ActiveRun>();
+  // Per-chat set of AbortControllers for in-flight messages. The runtime harness
+  // serializes turns per conversation, so we never reject concurrent messages —
+  // we only track them so `/cancel` can abort every live turn for the chat.
+  const activeControllers = new Map<string, Set<AbortController>>();
+
+  const cancelChat = (chatId: TelegramChatId): void => {
+    const conversationId = `telegram:${String(chatId)}`;
+    // Clear queued follow-ups (and signal the harness to abort the in-flight
+    // turn) first, then abort every controller we are tracking for this chat.
+    options.responder.cancel?.(conversationId);
+    const controllers = activeControllers.get(String(chatId));
+    if (controllers !== undefined) {
+      for (const controller of controllers) {
+        controller.abort(new Error("Cancelled by Telegram user."));
+      }
+    }
+  };
 
   const bot = options.botFactory?.(options.botToken) ?? new Bot(options.botToken);
   const sender = createGrammyTelegramApi(bot.api);
@@ -117,7 +131,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   bot.command("cancel", async (ctx) => {
     const chatId = ctx.chat?.id;
     if (chatId !== undefined) {
-      activeRuns.get(String(chatId))?.controller.abort(new Error("Cancelled by Telegram user."));
+      cancelChat(chatId);
     }
     await ctx.reply(messages.cancelledText);
   });
@@ -167,16 +181,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
 
     const key = String(chatId);
-    if (activeRuns.has(key)) {
-      await ctx.reply(messages.busyText);
-      return;
-    }
-
-    // Record the run synchronously, before any await, so a concurrent message for
-    // the same chat observes it and gets the "busy" reply above.
+    // Track this message's controller in the per-chat set. Concurrent messages
+    // are NOT rejected: the harness serializes turns per conversation (a
+    // follow-up arriving mid-run is queued and answered on the warm session).
     const controller = new AbortController();
-    const activeRun: ActiveRun = { controller };
-    activeRuns.set(key, activeRun);
+    const controllers = activeControllers.get(key);
+    if (controllers === undefined) {
+      activeControllers.set(key, new Set([controller]));
+    } else {
+      controllers.add(controller);
+    }
 
     const request = buildAgentRequest(
       ctx.update as unknown as TelegramUpdate,
@@ -237,8 +251,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         });
       }
     } finally {
-      if (activeRuns.get(key) === activeRun) {
-        activeRuns.delete(key);
+      const set = activeControllers.get(key);
+      if (set !== undefined) {
+        set.delete(controller);
+        if (set.size === 0) {
+          activeControllers.delete(key);
+        }
       }
     }
   }
@@ -257,7 +275,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     const chatId = ctx.chat?.id;
     if (chatId !== undefined) {
-      activeRuns.get(String(chatId))?.controller.abort(new Error("Cancelled by Telegram user."));
+      cancelChat(chatId);
     }
     await ctx.reply(messages.cancelledText);
   }
@@ -294,6 +312,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     if (tuning?.showThoughts !== undefined) {
       streamOptions.showThoughts = tuning.showThoughts;
+    }
+    if (tuning?.showHints !== undefined) {
+      streamOptions.showHints = tuning.showHints;
     }
     if (tuning?.formatMarkdown !== undefined) {
       streamOptions.formatMarkdown = tuning.formatMarkdown;

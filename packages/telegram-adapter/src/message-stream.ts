@@ -8,6 +8,7 @@ import {
   buildStreamingTailPreview,
   normalizeTrailing,
   splitTextByCodePoints,
+  toolHintFor,
 } from "@mono-agent/agent-contracts";
 import { TelegramApiError } from "./telegram-error.js";
 import { renderTelegramMarkdown } from "./telegram-markdown.js";
@@ -40,8 +41,16 @@ export interface TelegramMessageStreamOptions {
   retryCapMs?: number;
   /** Base delay for exponential backoff between final-delivery retries. Default 500. */
   retryBaseDelayMs?: number;
-  /** Render accumulated reasoning as a live "Thinking" message. Default true. */
+  /**
+   * Retained for compatibility. Reasoning prose is never rendered, so this is a
+   * no-op for assistant thoughts. Default false.
+   */
   showThoughts?: boolean;
+  /**
+   * Show lightweight, friendly activity hints (e.g. "Searching the web…") while
+   * the agent works, before any answer text has arrived. Default true.
+   */
+  showHints?: boolean;
   /** Render the final answer as Telegram MarkdownV2 (plain fallback). Default true. */
   formatMarkdown?: boolean;
   /** Aborts in-flight retry waits (e.g. on /cancel). */
@@ -86,9 +95,6 @@ const DEFAULT_MAX_SEND_RETRIES = 3;
 const DEFAULT_RETRY_CAP_MS = 60_000;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
 const EMPTY_FINAL_TEXT = DEFAULT_EMPTY_FINAL_TEXT;
-const THINKING_HEADER = "Thinking\n\n";
-const ANSWER_HEADER = "Answer\n\n";
-const FINAL_ANSWER_HEADER = "Final answer\n\n";
 
 export class TelegramMessageStream implements AgentMessageStream {
   private readonly api: TelegramMessageSender;
@@ -101,12 +107,12 @@ export class TelegramMessageStream implements AgentMessageStream {
   private readonly retryCapMs: number;
   private readonly retryBaseDelayMs: number;
   private readonly showThoughts: boolean;
+  private readonly showHints: boolean;
   private readonly formatMarkdown: boolean;
   private readonly abortSignal: AbortSignal | undefined;
   private readonly logger: TelegramMessageStreamLogger | undefined;
 
   private currentText = "";
-  private thinkingText = "";
   private hasAnswerText = false;
   private statusText: string;
   private sentMessage: TelegramSentMessage | undefined;
@@ -130,7 +136,8 @@ export class TelegramMessageStream implements AgentMessageStream {
     this.maxSendRetries = options.maxSendRetries ?? DEFAULT_MAX_SEND_RETRIES;
     this.retryCapMs = options.retryCapMs ?? DEFAULT_RETRY_CAP_MS;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
-    this.showThoughts = options.showThoughts ?? true;
+    this.showThoughts = options.showThoughts ?? false;
+    this.showHints = options.showHints ?? true;
     this.formatMarkdown = options.formatMarkdown ?? true;
     this.abortSignal = options.abortSignal;
     this.logger = options.logger;
@@ -194,17 +201,8 @@ export class TelegramMessageStream implements AgentMessageStream {
     await this.awaitInFlightEdit();
 
     if (event.type === "assistant_thought") {
-      // Reasoning is shown live as a labelled thinking message, then superseded
-      // the moment the answer starts streaming.
-      if (!this.showThoughts || this.hasAnswerText || event.text.length === 0) {
-        return;
-      }
-      this.thinkingText += event.text;
-      if (this.thinkingText.trim().length === 0) {
-        return;
-      }
-      await this.ensureMessage();
-      this.scheduleEdit();
+      // Reasoning prose is never rendered to the user — not as a labelled
+      // "Thinking" message, not inline. It is dropped entirely.
       return;
     }
 
@@ -221,6 +219,15 @@ export class TelegramMessageStream implements AgentMessageStream {
         id: event.id,
         name: event.name,
       });
+      // Surface a lightweight, friendly activity hint while we work. Hints only
+      // refresh the message until answer text starts arriving, at which point the
+      // streamed answer takes over and is never clobbered by a later hint.
+      if (!this.showHints || this.hasAnswerText) {
+        return;
+      }
+      this.statusText = normalizeTelegramText(toolHintFor(event.name));
+      await this.ensureMessage();
+      this.scheduleEdit();
       return;
     }
 
@@ -251,7 +258,7 @@ export class TelegramMessageStream implements AgentMessageStream {
 
     const formatFinal = options?.format ?? true;
     const chunks = splitTelegramText(
-      this.finalDeliveryText({ label: formatFinal }),
+      this.finalDeliveryText(),
       this.maxMessageChars,
     );
     const [firstChunk, ...remainingChunks] = chunks;
@@ -284,28 +291,16 @@ export class TelegramMessageStream implements AgentMessageStream {
 
   private interimDisplayText(): string {
     if (this.hasAnswerText || this.currentText.length > 0) {
-      return buildLabeledStreamingPreview(
-        ANSWER_HEADER,
-        this.currentText,
-        this.maxMessageChars,
-      );
+      // The answer streams directly — no label.
+      return buildStreamingPreview(this.currentText, this.maxMessageChars);
     }
-    if (this.showThoughts && this.thinkingText.length > 0) {
-      return buildLabeledStreamingPreview(
-        THINKING_HEADER,
-        this.thinkingText,
-        this.maxMessageChars,
-      );
-    }
+    // No answer yet: show the current status/activity hint as-is.
     return buildStreamingPreview(this.statusText, this.maxMessageChars);
   }
 
-  private finalDeliveryText(options: { label: boolean }): string {
-    const finalText = normalizeTrailing(this.currentText, EMPTY_FINAL_TEXT);
-    if (!options.label) {
-      return finalText;
-    }
-    return `${FINAL_ANSWER_HEADER}${finalText}`;
+  private finalDeliveryText(): string {
+    // The final answer is delivered as plain answer text — no label.
+    return normalizeTrailing(this.currentText, EMPTY_FINAL_TEXT);
   }
 
   private async ensureMessage(): Promise<TelegramSentMessage> {
@@ -654,15 +649,6 @@ function buildStreamingPreview(text: string, maxChars: number): string {
     maxChars,
     "…\n",
   );
-}
-
-function buildLabeledStreamingPreview(
-  header: string,
-  text: string,
-  maxChars: number,
-): string {
-  const bodyChars = Math.max(1, maxChars - countCodePoints(header));
-  return `${header}${buildStreamingPreview(text, bodyChars)}`;
 }
 
 function normalizeTelegramText(text: string): string {

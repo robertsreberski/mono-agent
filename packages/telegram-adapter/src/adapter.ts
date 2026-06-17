@@ -154,6 +154,7 @@ export interface TelegramAdapterStreamOptions {
   retryCapMs?: number;
   retryBaseDelayMs?: number;
   showThoughts?: boolean;
+  showHints?: boolean;
   formatMarkdown?: boolean;
 }
 

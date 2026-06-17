@@ -76,6 +76,10 @@ export interface SlackAdapterStreamOptions {
   initialStatusText?: string;
   editDebounceMs?: number;
   maxMessageChars?: number;
+  maxSendRetries?: number;
+  retryCapMs?: number;
+  retryBaseDelayMs?: number;
+  showHints?: boolean;
 }
 
 export interface SlackAdapterLogger extends SlackMessageStreamLogger {
@@ -141,10 +145,6 @@ export type SlackEventHandlingResult =
       error: unknown;
     };
 
-interface ActiveRun {
-  controller: AbortController;
-}
-
 interface NormalizedCommand {
   name: string;
 }
@@ -188,7 +188,13 @@ export class SlackAdapter {
   private readonly streamOptions: SlackAdapterStreamOptions;
   private readonly messages: Required<SlackAdapterMessages>;
   private readonly logger: SlackAdapterLogger | undefined;
-  private readonly activeRuns = new Map<string, ActiveRun>();
+  /**
+   * In-flight abort controllers per thread. The harness serializes runs for a
+   * conversation, so several may be queued/active concurrently; /cancel aborts
+   * every controller for the thread (and clears the harness queue via
+   * responder.cancel).
+   */
+  private readonly activeControllers = new Map<string, Set<AbortController>>();
 
   constructor(options: SlackAdapterOptions) {
     this.api = options.api;
@@ -286,10 +292,15 @@ export class SlackAdapter {
     }
 
     const runKey = runKeyFor(event);
-    const activeRun = this.activeRuns.get(runKey);
     if (command?.name === "cancel") {
-      if (activeRun !== undefined) {
-        activeRun.controller.abort(new Error("Cancelled by Slack user."));
+      // Clear any queued follow-ups for the conversation (the harness owns the
+      // queue) and abort every in-flight controller for this thread.
+      this.responder.cancel?.(conversationIdFor(event), new Error("Cancelled by Slack user."));
+      const controllers = this.activeControllers.get(runKey);
+      if (controllers !== undefined) {
+        for (const controller of controllers) {
+          controller.abort(new Error("Cancelled by Slack user."));
+        }
       }
       await this.api.chatPostMessage({
         channel: event.channelId,
@@ -303,19 +314,10 @@ export class SlackAdapter {
       };
     }
 
-    if (activeRun !== undefined) {
-      await this.api.chatPostMessage({
-        channel: event.channelId,
-        text: this.messages.busyText,
-        thread_ts: event.threadTs,
-      });
-      return {
-        kind: "busy",
-        eventId: event.eventId,
-        channelId: event.channelId,
-      };
-    }
-
+    // No per-thread "busy" rejection: the harness serializes runs for the
+    // conversation, queuing a concurrent message and answering it on the warm
+    // session after the current turn. The channel simply responds to every
+    // message.
     return await this.respondToEvent(event, text, runKey);
   }
 
@@ -325,13 +327,13 @@ export class SlackAdapter {
     runKey: string,
   ): Promise<SlackEventHandlingResult> {
     const controller = new AbortController();
-    const activeRun: ActiveRun = { controller };
-    this.activeRuns.set(runKey, activeRun);
+    this.registerController(runKey, controller);
 
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
       channelId: event.channelId,
       threadTs: event.threadTs,
+      abortSignal: controller.signal,
     };
     if (this.streamOptions.initialStatusText !== undefined) {
       streamOptions.initialStatusText = this.streamOptions.initialStatusText;
@@ -341,6 +343,18 @@ export class SlackAdapter {
     }
     if (this.streamOptions.maxMessageChars !== undefined) {
       streamOptions.maxMessageChars = this.streamOptions.maxMessageChars;
+    }
+    if (this.streamOptions.maxSendRetries !== undefined) {
+      streamOptions.maxSendRetries = this.streamOptions.maxSendRetries;
+    }
+    if (this.streamOptions.retryCapMs !== undefined) {
+      streamOptions.retryCapMs = this.streamOptions.retryCapMs;
+    }
+    if (this.streamOptions.retryBaseDelayMs !== undefined) {
+      streamOptions.retryBaseDelayMs = this.streamOptions.retryBaseDelayMs;
+    }
+    if (this.streamOptions.showHints !== undefined) {
+      streamOptions.showHints = this.streamOptions.showHints;
     }
     if (this.logger !== undefined) {
       streamOptions.logger = this.logger;
@@ -386,9 +400,27 @@ export class SlackAdapter {
       await finishSafely(stream, this.messages.errorText, this.logger);
       return { kind: "error", eventId: event.eventId, channelId: event.channelId, error };
     } finally {
-      if (this.activeRuns.get(runKey) === activeRun) {
-        this.activeRuns.delete(runKey);
-      }
+      this.unregisterController(runKey, controller);
+    }
+  }
+
+  private registerController(runKey: string, controller: AbortController): void {
+    let controllers = this.activeControllers.get(runKey);
+    if (controllers === undefined) {
+      controllers = new Set<AbortController>();
+      this.activeControllers.set(runKey, controllers);
+    }
+    controllers.add(controller);
+  }
+
+  private unregisterController(runKey: string, controller: AbortController): void {
+    const controllers = this.activeControllers.get(runKey);
+    if (controllers === undefined) {
+      return;
+    }
+    controllers.delete(controller);
+    if (controllers.size === 0) {
+      this.activeControllers.delete(runKey);
     }
   }
 
@@ -544,7 +576,7 @@ function buildAgentRequest(
   }
 
   const request: AgentRequest = {
-    conversationId: `slack:${event.channelId}:${event.threadTs}`,
+    conversationId: conversationIdFor(event),
     channelId: event.channelId,
     messageTs: event.messageTs,
     threadTs: event.threadTs,
@@ -587,6 +619,14 @@ async function finishSafely(
 
 function runKeyFor(event: SlackTextEvent): string {
   return `${event.channelId}:${event.threadTs}`;
+}
+
+/**
+ * The conversation key the harness serializes runs on. /cancel uses the same id
+ * so the responder clears the right conversation's queued follow-ups.
+ */
+function conversationIdFor(event: SlackTextEvent): string {
+  return `slack:${event.channelId}:${event.threadTs}`;
 }
 
 function normalizeIdForMatch(value: string): string {

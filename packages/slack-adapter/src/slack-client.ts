@@ -24,6 +24,13 @@ export interface SlackApiErrorDetails {
   needed?: string;
   provided?: string;
   warning?: string;
+  /**
+   * How long to wait before retrying, in milliseconds. Lifted from a Slack
+   * `Retry-After` response header (seconds) on a rate-limited (HTTP 429)
+   * response. Only the integer is carried — never a raw response body — so bot
+   * tokens cannot leak.
+   */
+  retryAfterMs?: number;
   cause?: unknown;
 }
 
@@ -35,6 +42,7 @@ export class SlackApiError extends Error {
   readonly needed?: string;
   readonly provided?: string;
   readonly warning?: string;
+  readonly retryAfterMs?: number;
   override readonly cause?: unknown;
 
   constructor(message: string, details: SlackApiErrorDetails) {
@@ -56,6 +64,9 @@ export class SlackApiError extends Error {
     }
     if (details.warning !== undefined) {
       this.warning = details.warning;
+    }
+    if (details.retryAfterMs !== undefined) {
+      this.retryAfterMs = details.retryAfterMs;
     }
     if (details.cause !== undefined) {
       this.cause = details.cause;
@@ -175,11 +186,13 @@ export class SlackWebApiClient implements SlackWebApi {
     cleanup();
 
     if (!response.ok) {
+      const retryAfterMs = parseRetryAfterMs(response);
       await safelyDrainResponse(response);
       throw new SlackApiError(`Slack API ${method} failed with HTTP ${response.status}.`, {
         kind: "http",
         method,
         status: response.status,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       });
     }
 
@@ -271,6 +284,23 @@ function createRequestSignal(
 
 function stripTrailingSlashes(value: string): string {
   return value.replace(/\/+$/u, "");
+}
+
+/**
+ * Extract a `Retry-After` header (seconds) as milliseconds. Slack sends this on
+ * a rate-limited HTTP 429 response. Only the parsed integer is read so no raw
+ * response body or token material is carried.
+ */
+function parseRetryAfterMs(response: Response): number | undefined {
+  const header = response.headers?.get?.("retry-after");
+  if (header === null || header === undefined) {
+    return undefined;
+  }
+  const seconds = Number.parseInt(header.trim(), 10);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return undefined;
+  }
+  return seconds * 1000;
 }
 
 function isAbortError(value: unknown): boolean {
