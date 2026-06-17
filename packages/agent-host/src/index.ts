@@ -126,6 +126,9 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
       mode: config.runtime.session.mode,
       idleTimeoutMs: config.runtime.session.idleTimeoutMs,
     },
+    ...(config.concurrency?.maxConcurrentRuns === undefined
+      ? {}
+      : { concurrency: { maxConcurrentRuns: config.concurrency.maxConcurrentRuns } }),
     runtimeOptions,
     ...(options.runtimeOptionsForRequest === undefined
       ? {}
@@ -191,8 +194,16 @@ export function createConfiguredMemory(
       model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
       ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
       ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
-      timeoutMs: DEFAULT_EMBEDDINGS_TIMEOUT_MS,
+      timeoutMs: embeddingsConfig?.timeoutMs ?? DEFAULT_EMBEDDINGS_TIMEOUT_MS,
     }),
+    {
+      ...(embeddingsConfig?.circuitBreaker?.failureThreshold !== undefined && {
+        failureThreshold: embeddingsConfig.circuitBreaker.failureThreshold,
+      }),
+      ...(embeddingsConfig?.circuitBreaker?.cooldownMs !== undefined && {
+        cooldownMs: embeddingsConfig.circuitBreaker.cooldownMs,
+      }),
+    },
   );
   const dim = embeddingsConfig?.dim ?? 768;
 

@@ -75,6 +75,9 @@ export function layerJsonOntoEnv(
   if (json.runtime?.session?.idleTimeoutMs !== undefined) {
     fromJson.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS = String(json.runtime.session.idleTimeoutMs);
   }
+  if (json.concurrency?.maxConcurrentRuns !== undefined) {
+    fromJson.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS = String(json.concurrency.maxConcurrentRuns);
+  }
   if (json.context?.identityPath !== undefined) {
     fromJson.MONO_AGENT_IDENTITY_PATH = json.context.identityPath;
   }
@@ -119,6 +122,19 @@ export function layerJsonOntoEnv(
   }
   if (json.memory?.embeddings?.dim !== undefined) {
     fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_DIM = String(json.memory.embeddings.dim);
+  }
+  if (json.memory?.embeddings?.timeoutMs !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS = String(json.memory.embeddings.timeoutMs);
+  }
+  if (json.memory?.embeddings?.circuitBreaker?.failureThreshold !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD = String(
+      json.memory.embeddings.circuitBreaker.failureThreshold,
+    );
+  }
+  if (json.memory?.embeddings?.circuitBreaker?.cooldownMs !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS = String(
+      json.memory.embeddings.circuitBreaker.cooldownMs,
+    );
   }
   if (json.memory?.llm?.provider !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_PROVIDER = json.memory.llm.provider;

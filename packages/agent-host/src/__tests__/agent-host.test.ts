@@ -22,6 +22,7 @@ import {
   createConfiguredAgentHarness,
   createConfiguredAgentResponder,
   createConfiguredAgentRuntime,
+  createConfiguredMemory,
 } from "../index.js";
 
 const tempDirs: string[] = [];
@@ -285,6 +286,90 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.piReasoningSummary).toBe("detailed");
   });
 
+  it("bounds in-flight runs at concurrency.maxConcurrentRuns", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+
+    let active = 0;
+    let peak = 0;
+    const release: Array<() => void> = [];
+    const fake = createFakeRuntime(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => { release.push(resolve); });
+      active -= 1;
+      return { text: "ok" };
+    });
+
+    const harness = createConfiguredAgentHarness({
+      config: { ...monoConfig({ dir, identityPath, artifactDir }), concurrency: { maxConcurrentRuns: 1 } },
+      runtime: fake.runtime,
+    });
+
+    const first = harness.run({ conversationId: "c1", userMessage: "a", abortSignal: new AbortController().signal });
+    const second = harness.run({ conversationId: "c2", userMessage: "b", abortSignal: new AbortController().signal });
+
+    // Let the limiter settle: only one run should be in-flight.
+    for (let i = 0; i < 20 && release.length < 1; i += 1) {
+      await delay(5);
+    }
+    expect(release.length).toBe(1);
+    release.shift()?.();
+    for (let i = 0; i < 20 && release.length < 1; i += 1) {
+      await delay(5);
+    }
+    release.shift()?.();
+    await Promise.all([first, second]);
+    expect(peak).toBe(1);
+  });
+
+  it("trips the embeddings circuit breaker at the configured failureThreshold", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    const memoryRoot = join(dir, "memory");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+
+    // A counting embeddings server that always errors. With failureThreshold 1 the breaker
+    // trips OPEN after the first failure, so the second recall must NOT reach the server.
+    let requests = 0;
+    const endpoint = await startFailingEmbeddingServer(() => { requests += 1; });
+
+    const memory = createConfiguredMemory({
+      ...monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        memoryPath: memoryRoot,
+        memoryMode: "journal",
+        memoryEmbeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test", endpoint },
+      }),
+      memory: {
+        mode: "journal",
+        path: memoryRoot,
+        maxBytes: 64_000,
+        writeMode: "disabled",
+        embeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+          apiKey: "sk-test",
+          endpoint,
+          timeoutMs: 1000,
+          circuitBreaker: { failureThreshold: 1, cooldownMs: 60_000 },
+        },
+      },
+    } as MonoAgentConfig);
+
+    // First load drives an embedding request that fails and trips the breaker.
+    await expect(memory!.load("conv")).rejects.toThrow();
+    expect(requests).toBe(1);
+    // Second load fast-fails on the OPEN breaker without hitting the server again.
+    await expect(memory!.load("conv")).rejects.toThrow();
+    expect(requests).toBe(1);
+  });
+
   it("lets host runtimeOptions override config runtime flags", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -526,6 +611,26 @@ async function startEmbeddingServer(): Promise<string> {
   const address = server.address();
   if (typeof address !== "object" || address === null) {
     throw new Error("Failed to start embeddings test server.");
+  }
+  return `http://127.0.0.1:${address.port}`;
+}
+
+async function startFailingEmbeddingServer(onRequest: () => void): Promise<string> {
+  const server = createServer((req, res) => {
+    onRequest();
+    req.resume();
+    req.on("end", () => {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "backend down" }));
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  servers.push(server);
+  const address = server.address();
+  if (typeof address !== "object" || address === null) {
+    throw new Error("Failed to start failing embeddings test server.");
   }
   return `http://127.0.0.1:${address.port}`;
 }

@@ -12,6 +12,13 @@ export interface MemoryRitualConfig {
   readonly cron?: string;
 }
 export type MemoryEmbeddingsProvider = "ollama" | "openai";
+/** Circuit-breaker tuning for the embeddings provider used by journal/bujo recall. */
+export interface MemoryEmbeddingsCircuitBreakerConfig {
+  /** Consecutive failures before the breaker trips OPEN (default 3). */
+  readonly failureThreshold?: number;
+  /** How long the breaker stays OPEN before a half-open trial, in ms (default 30000). */
+  readonly cooldownMs?: number;
+}
 export interface MemoryEmbeddingsConfig {
   readonly provider: MemoryEmbeddingsProvider;
   readonly model: string;
@@ -22,6 +29,10 @@ export interface MemoryEmbeddingsConfig {
   readonly apiKeyEnv?: string;
   /** Embedding vector dimension (bujo mode default: 768 for nomic-embed-text). */
   readonly dim?: number;
+  /** Per-call embeddings timeout in ms (default 10000 in the host). */
+  readonly timeoutMs?: number;
+  /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
+  readonly circuitBreaker?: MemoryEmbeddingsCircuitBreakerConfig;
 }
 export type MemoryLlmProvider = "ollama" | "agent-host";
 export interface MemoryOllamaLlmConfig {
@@ -63,6 +74,13 @@ export interface MonoAgentConfig {
       readonly mode: SessionMode;
       readonly idleTimeoutMs: number;
     };
+  };
+  /**
+   * Global concurrency bound across all conversations. Unset (default) means
+   * runs are unbounded; a positive cap limits how many runs are in flight.
+   */
+  readonly concurrency?: {
+    readonly maxConcurrentRuns?: number;
   };
   readonly context: {
     readonly identityPath: string;
@@ -122,6 +140,7 @@ export type RedactedMemoryConfig = Omit<NonNullable<MonoAgentConfig["memory"]>, 
 
 export interface RedactedMonoAgentConfig {
   readonly runtime: MonoAgentConfig["runtime"];
+  readonly concurrency?: MonoAgentConfig["concurrency"];
   readonly context: MonoAgentConfig["context"];
   readonly memory?: RedactedMemoryConfig;
   readonly tools: MonoAgentConfig["tools"];

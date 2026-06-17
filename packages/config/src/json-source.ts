@@ -6,7 +6,25 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
-import type { MemoryEmbeddingsConfig, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
+import type { MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
+
+/** JSON-serialisable shape for the embeddings circuit-breaker block. */
+export type MonoAgentMemoryEmbeddingsCircuitBreakerJson = {
+  readonly failureThreshold?: number;
+  readonly cooldownMs?: number;
+};
+
+/** JSON-serialisable shape for the memory embeddings block. */
+export type MonoAgentMemoryEmbeddingsJson = {
+  readonly provider?: MemoryEmbeddingsProvider;
+  readonly model?: string;
+  readonly endpoint?: string;
+  readonly apiKey?: string;
+  readonly apiKeyEnv?: string;
+  readonly dim?: number;
+  readonly timeoutMs?: number;
+  readonly circuitBreaker?: MonoAgentMemoryEmbeddingsCircuitBreakerJson;
+};
 
 /** JSON-serialisable shape for a ritual config block (reflection or migration). */
 export type MonoAgentMemoryRitualJson = {
@@ -70,6 +88,9 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly idleTimeoutMs?: number;
     };
   };
+  readonly concurrency?: {
+    readonly maxConcurrentRuns?: number;
+  };
   readonly context?: {
     readonly identityPath?: string;
     readonly soulPath?: string;
@@ -82,7 +103,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly path?: string;
     readonly maxBytes?: number;
     readonly writeMode?: MemoryWriteMode;
-    readonly embeddings?: Partial<MemoryEmbeddingsConfig>;
+    readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;
     readonly reflection?: MonoAgentMemoryRitualJson;
     readonly migration?: MonoAgentMemoryRitualJson;

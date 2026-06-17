@@ -95,6 +95,45 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_REASONING_SUMMARY).toBe("concise");
   });
 
+  it("translates JSON concurrency to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      { concurrency: { maxConcurrentRuns: 4 } },
+      {},
+    );
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS).toBe("4");
+  });
+
+  it("lets env override JSON concurrency", () => {
+    const layered = layerJsonOntoEnv(
+      { concurrency: { maxConcurrentRuns: 4 } },
+      {
+        MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "8",
+      },
+    );
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS).toBe("8");
+  });
+
+  it("translates JSON memory embeddings timeoutMs and circuit breaker to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          embeddings: {
+            provider: "ollama",
+            model: "nomic-embed-text",
+            timeoutMs: 5000,
+            circuitBreaker: { failureThreshold: 5, cooldownMs: 20000 },
+          },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS).toBe("5000");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD).toBe("5");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS).toBe("20000");
+  });
+
   it("translates JSON runtime.session to env keys", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000 } } },

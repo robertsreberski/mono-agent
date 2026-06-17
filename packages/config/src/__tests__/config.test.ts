@@ -581,6 +581,125 @@ describe("loadMonoAgentConfig", () => {
     }
   });
 
+  it("loads concurrency.maxConcurrentRuns from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "4" },
+    });
+
+    expect(config.concurrency?.maxConcurrentRuns).toBe(4);
+  });
+
+  it("omits concurrency when the env is unset and rejects invalid values", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.concurrency).toBeUndefined();
+
+    for (const raw of ["not-a-number", "0", "-1"]) {
+      try {
+        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: raw } });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS" } });
+        continue;
+      }
+      throw new Error(`Expected concurrency load to fail for ${raw}.`);
+    }
+  });
+
+  it("loads memory embeddings timeoutMs and circuit breaker from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: "5000",
+        MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "5",
+        MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS: "20000",
+      },
+    });
+
+    expect(config.memory?.embeddings).toMatchObject({
+      provider: "ollama",
+      timeoutMs: 5000,
+      circuitBreaker: { failureThreshold: 5, cooldownMs: 20000 },
+    });
+  });
+
+  it("omits embeddings timeoutMs/circuitBreaker when unset and rejects invalid values", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      },
+    });
+    expect(config.memory?.embeddings).not.toHaveProperty("timeoutMs");
+    expect(config.memory?.embeddings).not.toHaveProperty("circuitBreaker");
+
+    const invalidByEnv: ReadonlyArray<readonly [string, string]> = [
+      ["MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS", "0"],
+      ["MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS", "not-a-number"],
+      ["MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "0"],
+      ["MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS", "-1"],
+    ];
+    for (const [key, raw] of invalidByEnv) {
+      try {
+        loadMonoAgentConfig({
+          cwd: "/repo",
+          env: {
+            ...baseEnv,
+            MONO_AGENT_MEMORY_PATH: "memory",
+            MONO_AGENT_MEMORY_MODE: "journal",
+            MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+            [key]: raw,
+          },
+        });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_env", details: { env: key } });
+        continue;
+      }
+      throw new Error(`Expected embeddings load to fail for ${key}=${raw}.`);
+    }
+  });
+
+  it("rejects embeddings timeoutMs and circuit breaker env without a memory path", () => {
+    for (const key of [
+      "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
+    ]) {
+      try {
+        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [key]: "5000" } });
+      } catch (error) {
+        expect(error).toBeInstanceOf(MonoAgentConfigError);
+        expect(error).toMatchObject({ code: "invalid_env" });
+        continue;
+      }
+      throw new Error(`Expected ${key} without MONO_AGENT_MEMORY_PATH to fail.`);
+    }
+  });
+
+  it("redacts the non-secret embeddings tuning fields", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: "5000",
+        MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "5",
+      },
+    });
+    const redacted = redactMonoAgentConfig(config);
+
+    expect(redacted.memory?.embeddings?.timeoutMs).toBe(5000);
+    expect(redacted.memory?.embeddings?.circuitBreaker).toEqual({ failureThreshold: 5 });
+  });
+
   it("does not include adapter env values in validation errors", () => {
     try {
       loadMonoAgentConfig({

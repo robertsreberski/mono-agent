@@ -173,6 +173,24 @@ export const runtimeFieldGroup = defineFieldGroup({
   ],
 });
 
+export const concurrencyFieldGroup = defineFieldGroup({
+  id: "concurrency",
+  label: "Concurrency",
+  description: "Global limits on how many runs execute at once (optional).",
+  fields: [
+    {
+      id: "concurrency.maxConcurrentRuns",
+      label: "Max concurrent runs",
+      description: "Upper bound on in-flight runs across all conversations; leave empty for unbounded.",
+      kind: "integer",
+      min: 1,
+      max: 100_000,
+      placeholder: "4",
+      path: ["concurrency", "maxConcurrentRuns"],
+    },
+  ],
+});
+
 export const memoryFieldGroup = defineFieldGroup({
   id: "memory",
   label: "Memory",
@@ -266,6 +284,36 @@ export const memoryFieldGroup = defineFieldGroup({
       max: 16_384,
       placeholder: "768",
       path: ["memory", "embeddings", "dim"],
+    },
+    {
+      id: "memory.embeddings.timeoutMs",
+      label: "Embeddings timeout ms",
+      description: "Per-call embeddings timeout in ms; a slow backend degrades recall to empty instead of stalling the turn (default 10000).",
+      kind: "integer",
+      min: 1,
+      max: 600_000,
+      placeholder: "10000",
+      path: ["memory", "embeddings", "timeoutMs"],
+    },
+    {
+      id: "memory.embeddings.circuitBreaker.failureThreshold",
+      label: "Embeddings breaker failure threshold",
+      description: "Consecutive embeddings failures before the circuit breaker fast-fails recall (default 3).",
+      kind: "integer",
+      min: 1,
+      max: 100,
+      placeholder: "3",
+      path: ["memory", "embeddings", "circuitBreaker", "failureThreshold"],
+    },
+    {
+      id: "memory.embeddings.circuitBreaker.cooldownMs",
+      label: "Embeddings breaker cooldown ms",
+      description: "How long the embeddings circuit breaker stays open before a trial call, in ms (default 30000).",
+      kind: "integer",
+      min: 1,
+      max: 3_600_000,
+      placeholder: "30000",
+      path: ["memory", "embeddings", "circuitBreaker", "cooldownMs"],
     },
     {
       id: "memory.llm.provider",
@@ -539,6 +587,7 @@ export const providersFieldGroup = defineFieldGroup({
 export const CORE_AGENT_FIELD_GROUPS: FieldGroupRegistry = [
   identityFieldGroup,
   runtimeFieldGroup,
+  concurrencyFieldGroup,
   memoryFieldGroup,
   toolsFieldGroup,
   sandboxFieldGroup,
