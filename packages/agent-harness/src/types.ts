@@ -1,6 +1,7 @@
 import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
 import type { MemoryStore } from "@mono-agent/memory-store";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
+import type { SkillsCache } from "@mono-agent/skills";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/sandbox";
 import type { ToolPolicy } from "@mono-agent/tool-policy";
@@ -45,6 +46,14 @@ export interface AgentHarnessResponse {
 
 export interface AgentHarness {
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  /**
+   * Queue-after-turn entry point. In continuous-session mode a same-conversation
+   * request that arrives while a turn is in flight is queued and answered after
+   * the current turn finishes — so it resumes the warm session rather than
+   * racing fresh; different conversations still run concurrently. Falls back to
+   * run() outside continuous mode.
+   */
+  submit?(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
   /** Retire all live provider sessions (graceful shutdown). */
   dispose?(): Promise<void>;
 }
@@ -72,6 +81,12 @@ export interface AgentHarnessOptions {
   readonly skillsRoot?: string;
   readonly selectedSkills?: readonly string[];
   readonly skillMaxBytes?: number;
+  /**
+   * Optional shared skills cache. Skills are re-read from disk every turn
+   * otherwise; pass one cache instance across turns (and across harnesses for a
+   * conversation) to skip unchanged reads. Defaults to a per-harness cache.
+   */
+  readonly skillsCache?: SkillsCache;
   readonly runtime: MonoRuntimeLike;
   readonly model: RuntimeModelReference;
   readonly executionMode?: string;

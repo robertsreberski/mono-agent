@@ -3,12 +3,15 @@ import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import { monoRuntimeSupportsSessionResume } from "@mono-agent/runtime-adapter";
 import type { RuntimeExecutionMode, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
-import { loadSelectedSkills } from "@mono-agent/skills";
+import { createSkillsCache } from "@mono-agent/skills";
+import type { SkillsCache } from "@mono-agent/skills";
 import { mergeSandboxPolicies, sandboxPolicyToRuntimeOptions } from "@mono-agent/sandbox";
 import type { SandboxPolicy } from "@mono-agent/sandbox";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/tool-policy";
 
 import { NoopRunRecorder } from "./recorder.js";
+import { createLiveSessionManager } from "./live-session.js";
+import type { LiveSessionManager } from "./live-session.js";
 import { createRuntimeSessionStore } from "./sessions.js";
 import type { RuntimeSessionRecord, RuntimeSessionStore } from "./sessions.js";
 import type {
@@ -35,11 +38,16 @@ export class AgentHarnessError extends Error {
 export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
   private readonly sessionStore: RuntimeSessionStore | undefined;
+  private readonly liveSessionManager: LiveSessionManager | undefined;
+  private readonly skillsCache: SkillsCache;
   private supportsResumeCache: boolean | undefined;
 
   constructor(options: AgentHarnessOptions) {
     validateOptions(options);
     this.options = options;
+    // Skills are otherwise re-read from disk every turn. A per-harness cache
+    // (or a shared one passed in) skips unchanged reads across turns.
+    this.skillsCache = options.skillsCache ?? createSkillsCache();
     this.sessionStore = options.session?.mode === "continuous"
       ? createRuntimeSessionStore({
         idleTimeoutMs: options.session.idleTimeoutMs,
@@ -48,6 +56,19 @@ export class MonoAgentHarness implements AgentHarness {
         },
       })
       : undefined;
+    // Continuous mode serializes same-conversation turns through a queue so a
+    // follow-up arriving mid-run is answered on the warm session after the
+    // current turn (queue-after-turn), instead of racing fresh.
+    this.liveSessionManager = options.session?.mode === "continuous"
+      ? createLiveSessionManager({ run: (request) => this.run(request) })
+      : undefined;
+  }
+
+  async submit(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
+    if (this.liveSessionManager !== undefined) {
+      return this.liveSessionManager.enqueue(request.conversationId, request);
+    }
+    return this.run(request);
   }
 
   async run(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
@@ -63,11 +84,15 @@ export class MonoAgentHarness implements AgentHarness {
 
     const sessionRecord = this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
+    const emit = (event: RuntimeEventLike): void => {
+      recorder.onEvent(event);
+      request.onEvent?.(event);
+    };
     try {
       let resumeSessionId = sessionRecord?.providerSessionId;
       // While a provider session is live it already holds the conversation,
       // so history is omitted from the prompt — that is the optimization.
-      let prepared = await this.prepareContext(request, { omitHistory: resumeSessionId !== undefined });
+      let prepared = await this.prepareContext(request, { omitHistory: resumeSessionId !== undefined }, emit);
       context = prepared.context;
 
       let runtimeResult: RuntimeResult | undefined;
@@ -92,7 +117,7 @@ export class MonoAgentHarness implements AgentHarness {
         request.onEvent?.(warning);
         await this.sessionStore?.evict(request.conversationId, "stale", resumeSessionId);
         resumeSessionId = undefined;
-        prepared = await this.prepareContext(request, { omitHistory: false });
+        prepared = await this.prepareContext(request, { omitHistory: false }, emit);
         context = prepared.context;
         runtimeResult = await this.runRuntime(request, recorder, context, runId, undefined);
       }
@@ -157,10 +182,12 @@ export class MonoAgentHarness implements AgentHarness {
   }
 
   async dispose(): Promise<void> {
-    // Only this harness's tracked sessions are retired (the store's onEvict
-    // disposes each provider session individually). runtime.disposeAllSessions
-    // is intentionally NOT called here: the provider registries are
-    // process-global and other harnesses may share them.
+    // Reject any in-flight/queued turns first so callers stop waiting, then
+    // retire sessions. Only this harness's tracked sessions are retired (the
+    // store's onEvict disposes each provider session individually).
+    // runtime.disposeAllSessions is intentionally NOT called here: the provider
+    // registries are process-global and other harnesses may share them.
+    this.liveSessionManager?.dispose();
     await this.sessionStore?.disposeAll();
   }
 
@@ -196,9 +223,13 @@ export class MonoAgentHarness implements AgentHarness {
     this.sessionStore?.save(conversationId, providerSessionId, owner);
   }
 
-  private async prepareContext(request: AgentHarnessRequest, options: { readonly omitHistory: boolean }): Promise<{ readonly context: BuiltAgentContext }> {
+  private async prepareContext(
+    request: AgentHarnessRequest,
+    options: { readonly omitHistory: boolean },
+    emit?: (event: RuntimeEventLike) => void,
+  ): Promise<{ readonly context: BuiltAgentContext }> {
     const history = options.omitHistory ? [] : await this.loadHistory(request.conversationId);
-    const memory = await this.loadMemory(request.conversationId);
+    const memory = await this.loadMemory(request.conversationId, emit);
     const selectedSkills = await this.loadSkills();
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
@@ -216,8 +247,24 @@ export class MonoAgentHarness implements AgentHarness {
     return this.options.historyStore?.load(conversationId) ?? [];
   }
 
-  private async loadMemory(conversationId: string): Promise<ContextBlockInput | undefined> {
-    const block = await this.options.memory?.load(conversationId);
+  private async loadMemory(
+    conversationId: string,
+    emit?: (event: RuntimeEventLike) => void,
+  ): Promise<ContextBlockInput | undefined> {
+    let block;
+    try {
+      block = await this.options.memory?.load(conversationId);
+    } catch (error) {
+      // A slow or failing memory backend (e.g. embeddings timeout / circuit
+      // breaker open) must never block or fail the turn — degrade to empty
+      // memory and surface a warning so the turn proceeds.
+      emit?.({
+        type: "runtime_warning",
+        warning_kind: "memory_degraded",
+        message: `Memory recall failed; continuing without memory. ${errorMessageText(error)}`,
+      });
+      return undefined;
+    }
     if (block === undefined) {
       return undefined;
     }
@@ -235,7 +282,7 @@ export class MonoAgentHarness implements AgentHarness {
     if (this.options.skillsRoot === undefined) {
       throw new AgentHarnessError("invalid_skill_selection", "selectedSkills requires skillsRoot.");
     }
-    return await loadSelectedSkills({
+    return await this.skillsCache.loadSelectedSkillsCached({
       skillsRoot: this.options.skillsRoot,
       names: this.options.selectedSkills,
       ...(this.options.skillMaxBytes === undefined ? {} : { maxBytes: this.options.skillMaxBytes }),
@@ -559,6 +606,10 @@ function errorToDetails(error: unknown): unknown {
     return { name: error.name, message: error.message };
   }
   return error;
+}
+
+function errorMessageText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function createDefaultRunId(): string {
