@@ -257,6 +257,73 @@ describe("pi-sdk native sessions", () => {
     ]);
   });
 
+  it("retries retryable Codex SSE header timeouts in the same session", async () => {
+    const onEvent = vi.fn();
+    const streamFn = makeStreamFn([
+      { error: "Codex SSE response headers timed out after 10000ms" },
+      { text: "recovered" },
+    ]);
+
+    const result = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-1" }],
+      streamFn,
+      onEvent,
+      piStreamRetryBaseMs: 0,
+    }));
+
+    expect(result.error).toBeNull();
+    expect(result.failureKind).toBeNull();
+    expect(result.text).toBe("recovered");
+    expect(streamFn.calls.length).toBe(2);
+    expect(transcriptOf(streamFn.calls[1])).toEqual(["user:turn-1"]);
+    expect(result.diagnostics.pi_stream_retries).toBe(1);
+    expect(result.diagnostics.pi_stream_retry_events[0].reason).toContain("response headers timed out");
+    expect(onEvent.mock.calls.some(([event]) => event?.warning_kind === "pi_stream_retry")).toBe(true);
+  });
+
+  it("preserves the final provider failure when Codex SSE header timeout retries are exhausted", async () => {
+    const timeout = "Codex SSE response headers timed out after 10000ms";
+    const streamFn = makeStreamFn([
+      { error: timeout },
+      { error: timeout },
+      { error: timeout },
+    ]);
+
+    const result = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-1" }],
+      streamFn,
+      piStreamRetryBaseMs: 0,
+      piStreamRetryMax: 2,
+    }));
+
+    expect(result.error).toBe(timeout);
+    expect(result.failureKind).toBe("provider_unavailable");
+    expect(streamFn.calls.length).toBe(3);
+    expect(result.diagnostics.pi_stream_retries).toBe(2);
+    expect(result.diagnostics.pi_stream_retry_events).toEqual([
+      { attempt: 1, reason: timeout },
+      { attempt: 2, reason: timeout },
+    ]);
+  });
+
+  it("does not retry non-retryable provider errors inside the stream retry loop", async () => {
+    const streamFn = makeStreamFn([
+      { error: "401 invalid api key - authentication failed" },
+      { text: "should not run" },
+    ]);
+
+    const result = await generatePiResponse("system", runOptions({
+      messages: [{ role: "user", content: "turn-1" }],
+      streamFn,
+      piStreamRetryBaseMs: 0,
+    }));
+
+    expect(result.error).toBe("401 invalid api key - authentication failed");
+    expect(result.failureKind).toBe("provider_unavailable");
+    expect(streamFn.calls.length).toBe(1);
+    expect(result.diagnostics.pi_stream_retries).toBeUndefined();
+  });
+
   it("registers no session without sessionKeepAlive", async () => {
     const streamFn = makeStreamFn([{ text: "reply-1" }]);
     const first = await generatePiResponse("system", runOptions({
