@@ -56,6 +56,11 @@ export interface AgentResponder<
   Response extends AgentResponse = AgentResponse,
 > {
   respond(request: Request, stream: Stream): Promise<Response>;
+  /**
+   * Optional: abort the in-flight turn for a conversation and clear any queued
+   * follow-ups. Channels call this on an explicit user cancel (e.g. /cancel).
+   */
+  cancel?(conversationId: string, reason?: unknown): void;
 }
 
 export interface AgentResponseCancelledErrorOptions {
@@ -110,3 +115,4 @@ export {
   normalizeTrailing,
   splitTextByCodePoints,
 } from "./stream-text.js";
+export { toolHintFor } from "./tool-hints.js";

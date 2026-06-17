@@ -567,6 +567,11 @@ class MonoAgentAppController implements MonoAgentApp {
           }
         });
       },
+      // Forward cancellation so a channel /cancel still reaches the harness's
+      // live-session manager when the responder is wrapped.
+      ...(responder.cancel === undefined
+        ? {}
+        : { cancel: (conversationId: string, reason?: unknown) => responder.cancel?.(conversationId, reason) }),
     };
   }
 
