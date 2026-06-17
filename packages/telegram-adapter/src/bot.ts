@@ -34,6 +34,32 @@ const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
 // request. Telegram sends album parts back-to-back (sub-second), so ~1s is safe.
 const DEFAULT_ALBUM_AGGREGATION_DELAY_MS = 1000;
 
+/**
+ * Minimal per-conversation serial queue: each submitted task runs only after the
+ * previous one settles, preserving arrival order. A task's failure does not
+ * poison the queue (the chain swallows it; the caller still sees the rejection).
+ */
+class SerialQueue {
+  private tail: Promise<void> = Promise.resolve();
+  private depth = 0;
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    this.depth += 1;
+    const result = this.tail.then(() => task());
+    this.tail = result.then(() => undefined, () => undefined);
+    void result.then(
+      () => { this.depth -= 1; },
+      () => { this.depth -= 1; },
+    );
+    return result;
+  }
+
+  /** True when no task is queued or running. */
+  get idle(): boolean {
+    return this.depth === 0;
+  }
+}
+
 export interface CreateTelegramBotOptions {
   readonly botToken: string;
   readonly responder: AgentResponder;
@@ -116,6 +142,36 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // we only track them so `/cancel` can abort every live turn for the chat.
   const activeControllers = new Map<string, Set<AbortController>>();
 
+  /**
+   * Create and register a fresh AbortController for a chat BEFORE the turn is
+   * admitted to the per-chat queue. Registering eagerly means a /cancel can abort
+   * a message that is still parked behind an earlier run (the controller would
+   * otherwise not exist until the queue reached its runAgentTurn).
+   */
+  function registerController(chatId: TelegramChatId): AbortController {
+    const key = String(chatId);
+    const controller = new AbortController();
+    const controllers = activeControllers.get(key);
+    if (controllers === undefined) {
+      activeControllers.set(key, new Set([controller]));
+    } else {
+      controllers.add(controller);
+    }
+    return controller;
+  }
+  // Per-conversation admission queue. grammY (via @grammyjs/runner) dispatches
+  // updates concurrently, and the pre-respond work (status + attachment download)
+  // is variable latency, so without this a later text-only message could reach
+  // responder.respond() (and the harness FIFO) before an earlier still-downloading
+  // media message in the same chat — and many same-chat downloads would run
+  // unbounded. We serialize runAgentTurn per chat to preserve arrival order and
+  // bound concurrent same-chat downloads. /cancel stays out-of-band (it never
+  // enters this queue, so a queued turn can never block cancellation).
+  const admissionQueues = new Map<string, SerialQueue>();
+  // Set in stop() so a pending album timer (or a late update) cannot fire a turn
+  // after the channel was torn down. Mirrors the slack/whatsapp adapters.
+  let stopped = false;
+
   // Telegram delivers a multi-photo/video album as N separate messages sharing a
   // `media_group_id`, arriving back-to-back. We buffer them per group and flush
   // once after a short quiet window so the album becomes ONE request with all
@@ -152,7 +208,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const sender = createGrammyTelegramApi(bot.api);
   const fileDownloader =
     options.fileDownloaderFactory?.(bot, options.botToken) ??
-    createDefaultFileDownloader(bot, options.botToken);
+    createDefaultFileDownloader(bot, options.botToken, {
+      ...(options.attachments?.downloadTimeoutMs !== undefined
+        ? { downloadTimeoutMs: options.attachments.downloadTimeoutMs }
+        : {}),
+      ...(logger !== undefined ? { logger } : {}),
+    });
 
   const isAuthorized = (chatId: TelegramChatId | undefined): boolean =>
     chatId !== undefined && (allowAllChats || allowedChatIds.has(String(chatId)));
@@ -183,29 +244,47 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     await ctx.reply(messages.cancelledText);
   });
 
-  bot.on("message:text", async (ctx) => {
-    await handleAgentMessage(ctx);
-  });
-  bot.on("message:document", async (ctx) => {
-    await handleAgentMessage(ctx);
-  });
-  bot.on("message:photo", async (ctx) => {
-    await handleAgentMessage(ctx);
-  });
-  bot.on("message:audio", async (ctx) => {
-    await handleAgentMessage(ctx);
-  });
-  bot.on("message:video", async (ctx) => {
-    await handleAgentMessage(ctx);
-  });
-  bot.on("message:voice", async (ctx) => {
-    await handleAgentMessage(ctx);
-  });
+  // A single handler for every message type so all messages reach the per-chat
+  // admission queue at the same middleware depth. Separate per-type handlers sit
+  // at different filter positions, and grammY yields a microtask per non-matching
+  // filter — so a later text message (matched by the first `message:text` filter)
+  // could overtake an earlier document/photo (filtered one step further) before
+  // admission, breaking arrival order. handleAgentMessage routes supported types
+  // and replies unsupportedText for the rest (normalizeTelegramMessageInput
+  // returns undefined), so a single `message` handler covers both cases.
   bot.on("message", async (ctx) => {
-    await ctx.reply(messages.unsupportedText);
+    await handleAgentMessage(ctx);
   });
 
+  /**
+   * Run a turn through the per-chat admission queue so same-chat turns serialize
+   * (preserving harness FIFO arrival order and bounding concurrent same-chat
+   * downloads). Cross-chat concurrency is preserved because queues are keyed per
+   * chat id (the same key /cancel uses for activeControllers).
+   */
+  async function admit(
+    chatId: TelegramChatId,
+    task: () => Promise<void>,
+  ): Promise<void> {
+    const key = String(chatId);
+    let queue = admissionQueues.get(key);
+    if (queue === undefined) {
+      queue = new SerialQueue();
+      admissionQueues.set(key, queue);
+    }
+    try {
+      await queue.run(task);
+    } finally {
+      if (queue.idle && admissionQueues.get(key) === queue) {
+        admissionQueues.delete(key);
+      }
+    }
+  }
+
   async function handleAgentMessage(ctx: Context): Promise<void> {
+    if (stopped) {
+      return;
+    }
     const message = ctx.message;
     const chatId = ctx.chat?.id;
     if (message === undefined || chatId === undefined) {
@@ -233,7 +312,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       await ctx.reply(messages.unsupportedText);
       return;
     }
-    await runAgentTurn(ctx, telegramMessage, input);
+    // Register the controller before admission so /cancel can abort this message
+    // even while it is still parked behind an earlier same-chat run.
+    const controller = registerController(chatId);
+    await admit(chatId, () => runAgentTurn(ctx, telegramMessage, input, controller));
   }
 
   function bufferAlbumMessage(
@@ -261,6 +343,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   async function flushAlbum(key: string): Promise<void> {
+    if (stopped) {
+      return;
+    }
     const buffer = albumBuffers.get(key);
     if (buffer === undefined) {
       return;
@@ -283,26 +368,22 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       await ctx.reply(messages.unsupportedText);
       return;
     }
-    await runAgentTurn(ctx, primary, input);
+    const controller = registerController(primary.chat.id);
+    await admit(primary.chat.id, () => runAgentTurn(ctx, primary, input, controller));
   }
 
   async function runAgentTurn(
     ctx: Context,
     message: TelegramMessage,
     input: TelegramAgentMessageInput,
+    controller: AbortController,
   ): Promise<void> {
     const chatId = message.chat.id;
     const key = String(chatId);
-    // Track this message's controller in the per-chat set. Concurrent messages
-    // are NOT rejected: the harness serializes turns per conversation (a
-    // follow-up arriving mid-run is queued and answered on the warm session).
-    const controller = new AbortController();
-    const controllers = activeControllers.get(key);
-    if (controllers === undefined) {
-      activeControllers.set(key, new Set([controller]));
-    } else {
-      controllers.add(controller);
-    }
+    // The AbortController is created and registered in activeControllers by the
+    // caller BEFORE admission, so a /cancel can abort a message still parked in the
+    // per-chat queue (the controller would otherwise not exist until the queue
+    // reached this run). This function owns unregistering it in the finally below.
 
     // Download attachment bytes (best-effort) before handing the request to the
     // responder. Failures skip the attachment; the run proceeds regardless. The
@@ -333,6 +414,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     );
 
     try {
+      // Parked-then-cancelled: /cancel aborted this controller while the message
+      // waited behind an earlier same-chat run. Bail before any responder call so a
+      // queued message is genuinely cancelled (not run on the warm session later).
+      if (controller.signal.aborted) {
+        await finishSafely(stream, messages.cancelledText, logger);
+        return;
+      }
       try {
         await stream.status(initialStatusText);
       } catch (statusError) {
@@ -481,6 +569,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       });
     },
     async stop(): Promise<void> {
+      // Guard the timer/late-update paths first: a pending album timer must not
+      // flush a turn after teardown. Clear every outstanding album timer and drop
+      // the buffers (mirrors cancelChat's per-chat cleanup, but for all chats).
+      stopped = true;
+      for (const buffer of albumBuffers.values()) {
+        clearTimeout(buffer.timer);
+      }
+      albumBuffers.clear();
       if (runnerHandle?.isRunning() === true) {
         await runnerHandle.stop();
       }
@@ -498,28 +594,158 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
+
+interface DefaultFileDownloaderOptions {
+  /** Per-file download timeout (ms), composed with the run abort signal. Default 30000. */
+  readonly downloadTimeoutMs?: number;
+  readonly logger?: TelegramAdapterLogger;
+}
+
 /**
  * Default {@link TelegramFileDownloader}: resolve a `file_id` to a `file_path`
  * via `bot.api.getFile`, then download it from the Telegram file URL
  * (`https://api.telegram.org/file/bot<token>/<file_path>`) with `fetch`. Both
  * calls honor the request abort signal.
+ *
+ * The download is hardened against oversized/stale-`file_size` bodies: a
+ * `Content-Length` header over the cap is rejected before reading the body, and
+ * the body is streamed with a running byte counter that cancels the reader the
+ * moment the cap is exceeded (so the whole payload is never buffered first). A
+ * `downloadTimeoutMs` timer is composed with the run signal so a stalled
+ * transfer is bounded by a dedicated timeout, not just the overall run.
  */
-function createDefaultFileDownloader(bot: Bot, token: string): TelegramFileDownloader {
+function createDefaultFileDownloader(
+  bot: Bot,
+  token: string,
+  options?: DefaultFileDownloaderOptions,
+): TelegramFileDownloader {
+  const timeoutMs = options?.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
   return {
     async resolveFilePath(fileId, signal): Promise<string | undefined> {
       const file = await bot.api.getFile(fileId, signal as unknown as Parameters<typeof bot.api.getFile>[1]);
       return file.file_path;
     },
-    async download(filePath, signal): Promise<Uint8Array> {
+    async download(filePath, signal, maxBytes): Promise<Uint8Array> {
       const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
-      const response = await fetch(url, { signal });
-      if (!response.ok) {
-        throw new Error(`Telegram file download failed with status ${response.status}.`);
+      const { signal: fetchSignal, cleanup } = composeDownloadSignal(signal, timeoutMs);
+      try {
+        const response = await fetch(url, fetchSignal === undefined ? {} : { signal: fetchSignal });
+        if (!response.ok) {
+          throw new Error(`Telegram file download failed with status ${response.status}.`);
+        }
+        // Early skip: a declared Content-Length over the cap means we never read
+        // the body at all (the adapter turns the throw into a logged skip).
+        if (maxBytes !== undefined) {
+          const declared = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+          if (Number.isFinite(declared) && declared > maxBytes) {
+            throw new Error("Telegram file exceeded the configured byte cap (Content-Length).");
+          }
+        }
+        return await readBodyWithCap(response, maxBytes);
+      } finally {
+        cleanup();
       }
-      const buffer = await response.arrayBuffer();
-      return new Uint8Array(buffer);
     },
   };
+}
+
+/**
+ * Compose a `downloadTimeoutMs` timer with the run abort signal into a single
+ * signal for `fetch`. The returned `cleanup` clears the timer (and detaches the
+ * forwarding listener) in every path so no timer leaks/keeps the loop alive.
+ */
+function composeDownloadSignal(
+  externalSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal?: AbortSignal; cleanup: () => void } {
+  const shouldUseTimeout = Number.isFinite(timeoutMs) && timeoutMs > 0;
+  if (!shouldUseTimeout) {
+    if (externalSignal === undefined) {
+      return { cleanup: () => undefined };
+    }
+    return { signal: externalSignal, cleanup: () => undefined };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error("Telegram file download timed out."));
+  }, timeoutMs);
+  timer.unref?.();
+
+  const forwardAbort = (): void => {
+    controller.abort(externalSignal?.reason);
+  };
+  if (externalSignal !== undefined) {
+    if (externalSignal.aborted) {
+      forwardAbort();
+    } else {
+      externalSignal.addEventListener("abort", forwardAbort, { once: true });
+    }
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener("abort", forwardAbort);
+    },
+  };
+}
+
+/**
+ * Read a response body into a single `Uint8Array`, rejecting once `maxBytes` is
+ * exceeded. Streams the body where possible so an oversized file is abandoned
+ * without buffering the whole thing; falls back to an `arrayBuffer()` read (still
+ * cap-checked) when the runtime exposes no readable stream.
+ */
+async function readBodyWithCap(
+  response: Response,
+  maxBytes: number | undefined,
+): Promise<Uint8Array> {
+  const cap =
+    maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes >= 0 ? maxBytes : undefined;
+
+  const body = response.body;
+  if (body === null || typeof body.getReader !== "function") {
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    if (cap !== undefined && bytes.byteLength > cap) {
+      throw new Error("Telegram file exceeded the configured byte cap.");
+    }
+    return bytes;
+  }
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value === undefined) {
+        continue;
+      }
+      total += value.byteLength;
+      if (cap !== undefined && total > cap) {
+        await reader.cancel();
+        throw new Error("Telegram file exceeded the configured byte cap.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 function controlCommandFromCaption(

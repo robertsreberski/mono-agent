@@ -396,6 +396,58 @@ describe("SlackAdapter", () => {
     expect(api.updateCalls).toEqual([]);
   });
 
+  it("/cancel silences a queued same-thread follow-up before it reaches the responder", async () => {
+    const api = new FakeSlackApi();
+    let respondCalls = 0;
+    const aBlocked = createDeferred<{ text: string }>();
+    const responderStarted = createDeferred<void>();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: {
+        respond: async (request) => {
+          respondCalls += 1;
+          // A blocks until aborted; B must never reach here (it is silenced by the
+          // /cancel that fires while it is still parked in the admission queue).
+          return await new Promise<{ text: string }>((resolve) => {
+            request.abortSignal.addEventListener(
+              "abort",
+              () => resolve({ text: "should not be used" }),
+              { once: true },
+            );
+            responderStarted.resolve(undefined);
+            void aBlocked.promise.then(resolve);
+          });
+        },
+        cancel: () => undefined,
+      },
+    });
+
+    // A becomes the active run.
+    const aRun = adapter.handleEventCallback(directMessage("long task"));
+    await responderStarted.promise;
+
+    // B arrives on the same thread and parks behind A in the admission queue
+    // (its controller is registered eagerly, before the queued task starts).
+    const bRun = adapter.handleEventCallback(
+      directMessage("queued follow-up", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" }),
+    );
+
+    // /cancel aborts every controller for the thread — including B's still-queued one.
+    await expect(
+      adapter.handleEventCallback(directMessage("/cancel", { eventId: "Ev3", ts: "171.000003", threadTs: "171.000001" })),
+    ).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+
+    await expect(aRun).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+    await expect(bRun).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+
+    // The responder ran exactly once (A only) — B bailed before responder.respond.
+    expect(respondCalls).toBe(1);
+    // No agent answer for B is posted after cancel; the last copy is the terminal.
+    expect(api.postMessageCalls.at(-1)?.text).toBe("Cancelled.");
+  });
+
   it("does not require a responder.cancel to handle /cancel", async () => {
     const api = new FakeSlackApi();
     let capturedSignal: AbortSignal | undefined;

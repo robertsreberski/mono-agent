@@ -228,7 +228,6 @@ Per-call options (a non-exhaustive selection):
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
 | `runArtifactDir` | `string` | Used by some providers as the Playwright MCP filename target. |
-| `piCodexTransport` | `string` | Forwarded to Pi when running OpenAI Codex models. |
 | `codexAppServerCommand` | `string` | Override the Codex CLI binary. |
 | `codexAppServerArgs` | `string[]` | Override the Codex CLI arguments. |
 

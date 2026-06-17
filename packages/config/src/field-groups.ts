@@ -188,6 +188,17 @@ export const concurrencyFieldGroup = defineFieldGroup({
       placeholder: "4",
       path: ["concurrency", "maxConcurrentRuns"],
     },
+    {
+      id: "concurrency.maxPendingRuns",
+      label: "Max pending runs",
+      description:
+        "Upper bound on admitted runs before attachment persistence + context prep; requests over this fail fast instead of queuing. Leave empty for unbounded.",
+      kind: "integer",
+      min: 1,
+      max: 100_000,
+      placeholder: "16",
+      path: ["concurrency", "maxPendingRuns"],
+    },
   ],
 });
 

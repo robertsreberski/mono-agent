@@ -27,7 +27,7 @@ import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
 import { createSessionRegistry } from "../runtime/sessions.js";
 import { formatLiveInputGuidance } from "../live-input-prompt.js";
-import { isLikelyContextTermination } from "../../agent/compaction.js";
+import { isLikelyContextTermination, resolveAgentCompactionPolicy } from "../../agent/compaction.js";
 import {
   closePiMcpClients,
   createStructuredOutputTool,
@@ -369,7 +369,21 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       let entry = nativeSessions.get(requestedSessionId);
       if (!entry && durableRepo) {
         entry = await reopenDurableNativeSession(durableRepo, requestedSessionId);
-        if (entry) nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+        if (entry) {
+          // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
+          // cold resume could have reopened+inserted its own entry in this
+          // window. Re-read the registry and adopt any entry already present so
+          // the busy-claim below collapses back to the warm path's synchronous
+          // semantics (the loser sees the winner's shared entry with busy===true
+          // and returns session_busy). The discarded reopen is just an in-memory
+          // jsonl handle (no subprocess/socket), so dropping it is safe.
+          const concurrent = nativeSessions.get(requestedSessionId);
+          if (concurrent) {
+            entry = concurrent;
+          } else {
+            nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
+          }
+        }
       }
       if (!entry) {
         return sessionUnavailableResult({
@@ -384,6 +398,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           piErrorCode: "pi_session_not_found",
         });
       }
+      // The busy claim MUST stay await-free between the registry adoption above
+      // and `entry.busy = true` below: get/set + this check/claim are all
+      // synchronous, which is what makes the cold-resume race (F4) safe. Do not
+      // introduce any await in this span or the TOCTOU window reopens.
       if (entry.busy) {
         return sessionUnavailableResult({
           resolved,
@@ -429,6 +447,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const reference = resolved.reference
       || (resolved.sdk === "pi" ? `pi:${resolved.provider}:${resolved.model}` : `${resolved.sdk}:${resolved.model}`);
 
+    // Tool-output limits (settings-driven clamps for tool/MCP payloads). The
+    // legacy pi-sdk bridge wired these via the compaction manager's `.policy`;
+    // resolveAgentCompactionPolicy is pure (no manager/Agent), so we compute the
+    // same policy directly and pass it into the tool builders + display
+    // normalization. Restores configurable clamping (agent_tool_text_limit_chars,
+    // agent_search_result_limit, ...) on top of the 256KB hard ceiling.
+    const toolLimits = resolveAgentCompactionPolicy(options.settings || {}, runtime.model);
+
     const onTruncate = (info) => {
       try {
         onEvent({
@@ -453,6 +479,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         onEvent,
         persistArtifact,
         onTruncate,
+        toolLimits,
+        toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
         toolPolicy: options.toolPolicy,
         sandboxPolicy: options.sandboxPolicy,
         sandboxEngine: options.sandboxEngine,
@@ -474,6 +502,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         persistArtifact,
         qaOutputDir,
         onTruncate,
+        limits: toolLimits,
+        toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
         sandboxPolicy: options.sandboxPolicy,
         sandboxEngine: options.sandboxEngine,
       });
@@ -546,7 +576,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       } else if (event.type === "tool_execution_start") {
         if (event.toolName) lastToolName = event.toolName;
         if (event.toolCallId) toolStartTimes.set(event.toolCallId, Date.now());
-        const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd });
+        const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
         const progressText = toolStartProgressText(event.toolName);
         if (progressText) {
           onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: progressText }] } });
@@ -556,7 +586,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           message: { content: [{ type: "tool_use", id: event.toolCallId, name: event.toolName, input }] },
         });
       } else if (event.type === "tool_execution_update") {
-        const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd });
+        const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
         onEvent({
           type: "tool_update",
           tool_use_id: event.toolCallId,
@@ -845,7 +875,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       mcpServersUsed: mcpClients.map((entry) => entry?.name).filter(Boolean),
       nativeSubagentsUsed: [],
       toolCompactionApplied: toolCompactionAppliedFromWarnings(runtimeWarnings),
-      contextCompactionApplied: false,
+      // null = unknown/unsupported (tristate). AgentHarness performs no automatic
+      // in-loop compaction (no transformContext hook), so we cannot honestly
+      // assert it "did not apply" — false would imply a compaction path exists
+      // and chose not to fire. See docs/feature-registry.md runtime.context-compaction.
+      contextCompactionApplied: null,
     });
     onEvent({ type: "capabilities_resolved", sdk: resolved.sdk, model: reference, capabilitiesUsed });
 
@@ -939,6 +973,15 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     };
   } catch (err) {
     externalAbort ||= !!options.abortSignal?.aborted;
+    // Drop a just-created FRESH durable session so a setup/run failure does not
+    // leave a resumable orphan jsonl on disk (the success path drops it at ~905;
+    // the catch must mirror that). Guarded: `session && !sessionEntry` fires only
+    // for fresh runs that actually created a session — NEVER for resumes
+    // (sessionEntry is non-null only on resume; deleting a resumed user session
+    // here would be data loss) and never when the throw preceded session create.
+    if (session && !sessionEntry) {
+      try { await (durableRepo || nativeSessionRepo).delete(await session.getMetadata()); } catch { /* best-effort */ }
+    }
     const errorMessage = normalizePiErrorMessage(err?.message || String(err));
     const isRetryable = retryableProviderFailureInfo({
       errorText: errorMessage,

@@ -260,7 +260,7 @@ describe("agent host composition helpers", () => {
     ).toThrowError(expect.objectContaining({ code: "tool_policy_read_failed" }));
   });
 
-  it("forwards runtime.permissionMode and runtime.reasoningSummary to the runtime", async () => {
+  it("forwards runtime.permissionMode to the runtime and does NOT forward the deprecated reasoningSummary", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -283,7 +283,9 @@ describe("agent host composition helpers", () => {
     );
 
     expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
-    expect(fake.calls[0]?.options.piReasoningSummary).toBe("detailed");
+    // reasoningSummary is no longer wired to a runtime option: pi-native derives
+    // reasoning from effort and the codex/claude CLIs emit summaries themselves.
+    expect(fake.calls[0]?.options.piReasoningSummary).toBeUndefined();
   });
 
   it("bounds in-flight runs at concurrency.maxConcurrentRuns", async () => {
@@ -323,6 +325,52 @@ describe("agent host composition helpers", () => {
     release.shift()?.();
     await Promise.all([first, second]);
     expect(peak).toBe(1);
+  });
+
+  it("threads concurrency.maxPendingRuns from config so over-capacity runs fail fast", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+
+    let started!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { started = resolve; });
+    const release: Array<() => void> = [];
+    let calls = 0;
+    const fake = createFakeRuntime(async () => {
+      calls += 1;
+      if (calls === 1) {
+        started();
+      }
+      await new Promise<void>((resolve) => { release.push(resolve); });
+      return { text: "ok" };
+    });
+
+    // maxPendingRuns is config-only plumbing: if it were not threaded into the
+    // harness, the third run would not fail fast.
+    const harness = createConfiguredAgentHarness({
+      config: { ...monoConfig({ dir, identityPath, artifactDir }), concurrency: { maxConcurrentRuns: 1, maxPendingRuns: 1 } },
+      runtime: fake.runtime,
+    });
+
+    // First admits and runs (holds the only provider slot).
+    const first = harness.run({ conversationId: "c1", userMessage: "a", abortSignal: new AbortController().signal });
+    await firstStarted;
+    // Second admits but parks waiting for the slot (pending = 1).
+    const second = harness.run({ conversationId: "c2", userMessage: "b", abortSignal: new AbortController().signal });
+    await delay(10);
+    // Third arrives at capacity -> fails fast.
+    const third = await harness.run({ conversationId: "c3", userMessage: "c", abortSignal: new AbortController().signal });
+
+    expect(third.failure?.kind).toBe("capacity_exceeded");
+    expect(calls).toBe(1);
+
+    // Drain.
+    for (const fn of release.splice(0)) { fn(); }
+    await first;
+    for (let i = 0; i < 20 && release.length < 1; i += 1) { await delay(5); }
+    for (const fn of release.splice(0)) { fn(); }
+    await second;
   });
 
   it("trips the embeddings circuit breaker at the configured failureThreshold", async () => {
@@ -378,16 +426,16 @@ describe("agent host composition helpers", () => {
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
     const responder = createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, artifactDir, reasoningSummary: "detailed" }),
+      config: monoConfig({ dir, identityPath, artifactDir, permissionMode: "acceptEdits" }),
       runtime: fake.runtime,
-      runtimeOptions: { piReasoningSummary: "concise" },
+      runtimeOptions: { permissionMode: "bypassPermissions" },
     });
     await responder.respond(
       { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
       { append: async () => {} },
     );
 
-    expect(fake.calls[0]?.options.piReasoningSummary).toBe("concise");
+    expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
   });
 
   it("creates a configured harness when a host wants to wrap the responder itself", async () => {

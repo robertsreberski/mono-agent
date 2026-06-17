@@ -851,10 +851,18 @@ function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAge
     "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS",
     { min: 1, max: 100_000 },
   );
-  if (maxConcurrentRuns === undefined) {
+  const maxPendingRuns = readOptionalInteger(
+    env.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS,
+    "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS",
+    { min: 1, max: 100_000 },
+  );
+  if (maxConcurrentRuns === undefined && maxPendingRuns === undefined) {
     return undefined;
   }
-  return { maxConcurrentRuns };
+  return {
+    ...(maxConcurrentRuns === undefined ? {} : { maxConcurrentRuns }),
+    ...(maxPendingRuns === undefined ? {} : { maxPendingRuns }),
+  };
 }
 
 function readPiNativeProviderConfig(

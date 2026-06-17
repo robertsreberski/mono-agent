@@ -1,6 +1,6 @@
 import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 import { Bot } from "grammy";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentRequest, AgentResponder, TelegramAdapterLogger } from "../adapter.js";
 import { createTelegramBot, type CreateTelegramBotOptions } from "../bot.js";
@@ -31,6 +31,11 @@ interface StubbedDownload {
   bytes?: Uint8Array;
   /** Force a missing file_path from getFile (resolveFilePath -> undefined). */
   noFilePath?: boolean;
+  /**
+   * When set, download() awaits this gate before returning (simulating a slow
+   * getFile/fetch). Used to prove same-chat admission ordering.
+   */
+  gate?: Promise<void>;
 }
 
 function buildTestBot(
@@ -41,6 +46,7 @@ function buildTestBot(
   failures: Map<string, () => unknown>;
   downloads: Map<string, StubbedDownload>;
   downloadedFileIds: string[];
+  stop: () => Promise<void>;
 } {
   const calls: RecordedCall[] = [];
   const failures = new Map<string, () => unknown>();
@@ -61,15 +67,18 @@ function buildTestBot(
         }
         return `path/${fileId}`;
       },
-      async download(filePath) {
+      async download(filePath: string, _signal: AbortSignal, _maxBytes?: number) {
         const fileId = filePath.replace(/^path\//u, "");
         downloadedFileIds.push(fileId);
         const stub = downloads.get(fileId);
+        if (stub?.gate !== undefined) {
+          await stub.gate;
+        }
         if (stub?.bytes !== undefined) {
           return stub.bytes;
         }
-        if (stub !== undefined) {
-          // Stub present but no bytes => simulate a failed download.
+        if (stub !== undefined && stub.gate === undefined) {
+          // Stub present but no bytes (and not just a gate) => simulate a failed download.
           throw new Error(`download failed for ${fileId}`);
         }
         // Default: deterministic bytes derived from the file id.
@@ -108,7 +117,14 @@ function buildTestBot(
     },
   });
 
-  return { bot: controller.bot, calls, failures, downloads, downloadedFileIds };
+  return {
+    bot: controller.bot,
+    calls,
+    failures,
+    downloads,
+    downloadedFileIds,
+    stop: () => controller.stop(),
+  };
 }
 
 function ok(result: unknown): never {
@@ -705,7 +721,7 @@ describe("createTelegramBot", () => {
     expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
   });
 
-  it("does not reject a second concurrent message in the same chat", async () => {
+  it("does not reject a second concurrent message in the same chat (admits it in order)", async () => {
     const started: string[] = [];
     const firstFinish = createDeferred<{ text: string }>();
     const secondFinish = createDeferred<{ text: string }>();
@@ -729,24 +745,185 @@ describe("createTelegramBot", () => {
       await Promise.resolve();
     }
 
+    // The follow-up is admitted, not rejected. With per-chat admission it is
+    // serialized BEHIND the first run (the harness owns per-conversation order),
+    // so it does not reach the responder until the first run settles.
     const second = bot.handleUpdate(textUpdate("second", { updateId: 2 }));
-    // Both messages reach the responder — no "busy" rejection. The harness is
-    // responsible for serializing per conversation, so the channel must not
-    // refuse the follow-up.
+    for (let i = 0; i < 20; i += 1) {
+      await Promise.resolve();
+    }
+    expect(received).toEqual(["first"]);
+
+    // Release the first run; the second is then admitted in arrival order.
+    firstFinish.resolve({ text: "done one" });
     while (received.length < 2) {
       await Promise.resolve();
     }
     expect(received).toEqual(["first", "second"]);
+    // No "busy" rejection was sent for the follow-up.
     expect(
       texts(calls, "sendMessage").includes(
         "I am still working on your previous message. Use /cancel to stop it.",
       ),
     ).toBe(false);
 
-    firstFinish.resolve({ text: "done one" });
     secondFinish.resolve({ text: "done two" });
     await first;
     await second;
+  });
+
+  it("admits same-chat turns in arrival order: a slow media message is not overtaken by a later text message", async () => {
+    const received: string[] = [];
+    const downloadGate = createDeferred<void>();
+    const { bot, downloads } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        received.push(request.text);
+        return { text: "ok" };
+      }),
+    });
+
+    // The document download blocks on a gate, simulating a slow getFile/fetch.
+    downloads.set("doc-file-id", {
+      bytes: new TextEncoder().encode("doc bytes"),
+      gate: downloadGate.promise,
+    });
+
+    // Media message first (its download stalls), then an immediate text-only
+    // message in the SAME chat. Without admission serialization the text message
+    // would skip the download branch and reach respond() first.
+    const mediaTurn = bot.handleUpdate(documentUpdate({ caption: "look at this", updateId: 1 }));
+    const textTurn = bot.handleUpdate(textUpdate("quick question", { updateId: 2 }));
+
+    // Let the event loop spin: the text turn must NOT overtake the still-downloading
+    // media turn while the gate is closed.
+    for (let i = 0; i < 20; i += 1) {
+      await Promise.resolve();
+    }
+    expect(received).toEqual([]);
+
+    // Release the download: now the media turn completes first, then the text turn.
+    downloadGate.resolve();
+    await mediaTurn;
+    await textTurn;
+
+    expect(received).toEqual(["look at this", "quick question"]);
+  });
+
+  it("/cancel aborts a same-chat message still parked in the admission queue", async () => {
+    const received: string[] = [];
+    const cancelCalls: string[] = [];
+    const downloadGate = createDeferred<void>();
+    const { bot, downloads } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: {
+        respond: async (request) => {
+          received.push(request.text);
+          return { text: "ok" };
+        },
+        cancel: (conversationId) => {
+          cancelCalls.push(conversationId);
+        },
+      },
+    });
+    // The media message's download stalls, so the text message parks behind it.
+    downloads.set("doc-file-id", {
+      bytes: new TextEncoder().encode("doc bytes"),
+      gate: downloadGate.promise,
+    });
+
+    const mediaTurn = bot.handleUpdate(documentUpdate({ caption: "look at this", updateId: 1 }));
+    const textTurn = bot.handleUpdate(textUpdate("quick question", { updateId: 2 }));
+    for (let i = 0; i < 20; i += 1) {
+      await Promise.resolve();
+    }
+    expect(received).toEqual([]);
+
+    // /cancel arrives while the media turn downloads and the text turn is parked.
+    // The text turn's controller is registered before admission, so it is aborted
+    // even though it never reached the responder.
+    await bot.handleUpdate(commandUpdate("/cancel", { updateId: 3 }));
+    expect(cancelCalls).toEqual(["telegram:42"]);
+
+    downloadGate.resolve();
+    await mediaTurn;
+    await textTurn;
+
+    // Neither the cancelled active media turn nor the parked text turn reached the
+    // responder — the parked message was genuinely cancelled, not run later.
+    expect(received).toEqual([]);
+  });
+
+  it("bounds concurrent same-chat downloads: the second download does not start until the first turn settles", async () => {
+    const firstDownloadGate = createDeferred<void>();
+    const respondCount: number[] = [];
+    const { bot, downloads, downloadedFileIds } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async () => {
+        respondCount.push(1);
+        return { text: "ok" };
+      }),
+    });
+
+    // Two same-chat media messages. The first download blocks on a gate; the
+    // second carries a distinct file id so we can observe whether its download
+    // started while the first was still in flight.
+    downloads.set("doc-file-id", {
+      bytes: new TextEncoder().encode("first"),
+      gate: firstDownloadGate.promise,
+    });
+
+    const firstTurn = bot.handleUpdate(documentUpdate({ caption: "first", updateId: 1 }));
+    const secondTurn = bot.handleUpdate(documentUpdate({ caption: "second", updateId: 2 }));
+
+    // While the first download is gated, the second must NOT have started its
+    // download (serialized admission bounds concurrent same-chat downloads).
+    for (let i = 0; i < 20; i += 1) {
+      await Promise.resolve();
+    }
+    expect(downloadedFileIds).toEqual(["doc-file-id"]);
+
+    firstDownloadGate.resolve();
+    await firstTurn;
+    await secondTurn;
+
+    // Both downloads ran (same file id since documentUpdate reuses it), strictly
+    // in sequence — two invocations total.
+    expect(downloadedFileIds).toEqual(["doc-file-id", "doc-file-id"]);
+    expect(respondCount).toHaveLength(2);
+  });
+
+  it("does not fire a buffered album turn after stop() clears its timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const requests: string[] = [];
+      const { bot, calls, stop } = buildTestBot({
+        // Use the default (non-zero) quiet window so the album timer is pending.
+        responder: responderFrom(async (request) => {
+          requests.push(request.text);
+          return { text: "should not run" };
+        }),
+      });
+
+      // Buffer an album so a flush timer is live.
+      await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p1", caption: "hi", updateId: 1, messageId: 10 }));
+      await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p2", updateId: 2, messageId: 11 }));
+
+      // Stop the channel, then advance past the quiet window: the pending timer
+      // must be cleared and the stopped guard must prevent any turn from firing.
+      await stop();
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(requests).toEqual([]);
+      expect(texts(calls, "sendMessage")).toEqual([]);
+
+      // A fresh update delivered after stop() is also ignored (stopped guard).
+      await bot.handleUpdate(textUpdate("post-stop", { updateId: 3 }));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(requests).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects non-text messages as unsupported", async () => {
@@ -837,8 +1014,19 @@ describe("createTelegramBot", () => {
 
     // A caption command aimed at another bot is NOT our /cancel, so it is treated
     // as an ordinary media message and reaches the responder (no busy rejection,
-    // no cancellation of the in-flight run).
+    // no cancellation of the in-flight run). Per-chat admission serializes it
+    // behind the in-flight run, so it reaches the responder only after the first
+    // settles — crucially without aborting the first run's signal.
     const second = bot.handleUpdate(documentUpdate({ caption: "/cancel@OtherBot", updateId: 2 }));
+    for (let i = 0; i < 20; i += 1) {
+      await Promise.resolve();
+    }
+    // The in-flight run was not cancelled by the other-bot caption command.
+    expect(signals[0]?.aborted).toBe(false);
+    expect(received).toEqual(["long task"]);
+
+    // Release the first run; the second is then admitted as ordinary media.
+    finishers[0]?.({ text: "done" });
     while (received.length < 2) {
       await Promise.resolve();
     }
@@ -991,5 +1179,147 @@ describe("createTelegramBot", () => {
 
     expect(crashes).toEqual([failure]);
     await controller.stop();
+  });
+});
+
+describe("createTelegramBot default file downloader (streaming cap + timeout)", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.useRealTimers();
+  });
+
+  // Drive the DEFAULT downloader (no fileDownloaderFactory) through the bot. The
+  // botFactory transformer answers getFile with a file_path so resolveFilePath
+  // succeeds; the body bytes come from a stubbed global.fetch. A successfully
+  // downloaded attachment appears on request.attachments; a cap/timeout skip
+  // leaves it undefined (the run still proceeds).
+  function buildDefaultDownloaderBot(options: {
+    responder: AgentResponder;
+    attachments?: CreateTelegramBotOptions["attachments"];
+  }): { bot: Bot } {
+    const controller = createTelegramBot({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder: options.responder,
+      ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
+      botFactory: () => {
+        const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+        bot.api.config.use(async (_prev, method, payload) => {
+          const typed = payload as Record<string, unknown>;
+          if (method === "getFile") {
+            return ok({ file_id: typed.file_id, file_unique_id: "u", file_path: "docs/file.bin" });
+          }
+          if (method === "sendMessage") {
+            return ok({ message_id: 1, date: 0, chat: { id: typed.chat_id, type: "private" }, text: typed.text });
+          }
+          if (method === "editMessageText") {
+            return ok({ message_id: typed.message_id ?? 0, date: 0, chat: { id: typed.chat_id, type: "private" }, text: typed.text });
+          }
+          return ok(true);
+        });
+        return bot;
+      },
+    });
+    return { bot: controller.bot };
+  }
+
+  function streamResponse(chunks: Uint8Array[], pulled: number[], init?: ResponseInit): Response {
+    let i = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(streamController) {
+        const chunk = chunks[i];
+        if (chunk === undefined) {
+          streamController.close();
+          return;
+        }
+        pulled.push(i);
+        streamController.enqueue(chunk);
+        i += 1;
+      },
+    });
+    return new Response(stream, init);
+  }
+
+  it("streams with a byte cap and cancels the reader before buffering the whole body", async () => {
+    const requests: AgentRequest[] = [];
+    const pulled: number[] = [];
+    // Three 4-byte chunks (12 bytes) exceed a 6-byte cap; no Content-Length so the
+    // early-skip does not short-circuit it.
+    const chunks = [new Uint8Array(4), new Uint8Array(4), new Uint8Array(4)];
+    globalThis.fetch = vi.fn(async () => streamResponse(chunks, pulled)) as unknown as typeof fetch;
+
+    const { bot } = buildDefaultDownloaderBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      attachments: { maxBytes: 6 },
+    });
+
+    await bot.handleUpdate(documentUpdate({ caption: "big" }));
+
+    // The download exceeded the cap and was skipped; the run still proceeded.
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.attachments).toBeUndefined();
+    // Not all chunks were pulled: the reader was cancelled once the cap tripped.
+    expect(pulled.length).toBeLessThan(chunks.length);
+  });
+
+  it("early-skips a download whose Content-Length exceeds the cap without reading the body", async () => {
+    const requests: AgentRequest[] = [];
+    const pulled: number[] = [];
+    const chunks = [new Uint8Array(4)];
+    globalThis.fetch = vi.fn(
+      async () => streamResponse(chunks, pulled, { headers: { "content-length": "999999" } }),
+    ) as unknown as typeof fetch;
+
+    const { bot } = buildDefaultDownloaderBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      attachments: { maxBytes: 6 },
+    });
+
+    await bot.handleUpdate(documentUpdate({ caption: "declared big" }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.attachments).toBeUndefined();
+    // The body reader was never pulled — the Content-Length early-skip threw first.
+    expect(pulled).toEqual([]);
+  });
+
+  it("aborts a stalled download via the composed download timeout", async () => {
+    vi.useFakeTimers();
+    const requests: AgentRequest[] = [];
+    let abortedByTimeout = false;
+    // A fetch that never resolves until its signal aborts.
+    globalThis.fetch = vi.fn((_url: unknown, init?: { signal?: AbortSignal }) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => {
+          abortedByTimeout = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    const { bot } = buildDefaultDownloaderBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      attachments: { maxBytes: 1_000_000, downloadTimeoutMs: 50 },
+    });
+
+    const turn = bot.handleUpdate(documentUpdate({ caption: "stalled" }));
+    await vi.advanceTimersByTimeAsync(60);
+    await turn;
+
+    expect(abortedByTimeout).toBe(true);
+    // The download timed out and was skipped; the run still proceeded.
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.attachments).toBeUndefined();
   });
 });

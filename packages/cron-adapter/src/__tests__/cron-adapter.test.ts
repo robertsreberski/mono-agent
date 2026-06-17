@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import { startCronAdapter, toCronJobs } from "../index.js";
+// handleTick is an internal export (not re-exported from the package index) so
+// the overlap defense-in-depth fallback can be tested directly, bypassing the
+// startup validateOptions gate that rejects an invalid overlap value.
+import { handleTick } from "../scheduler.js";
 
 describe("Cron adapter", () => {
   it("runs due cron jobs through a structural responder with cron metadata", async () => {
@@ -148,6 +152,88 @@ describe("Cron adapter", () => {
       scheduler.stop();
       vi.useRealTimers();
     }
+  });
+
+  it("unrecognized overlap mode defaults to skip (not unbounded queue)", async () => {
+    // Drive handleTick directly so an invalid overlap value reaches the
+    // dispatch fallback. (Going through startCronAdapter would fail fast at
+    // validateOptions; this exercises the runtime defense-in-depth path.)
+    let finish!: () => void;
+    let started = 0;
+    const responder: AgentResponder = {
+      async respond() {
+        started += 1;
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return { text: "done" };
+      },
+    };
+    const results: Array<{ kind: string; reason?: string }> = [];
+
+    const options = {
+      responder,
+      // An invalid value a JS/untyped consumer (or `as` cast) could pass; the
+      // dispatch must fall back to the safe "skip" default, not the unbounded
+      // "queue" branch.
+      overlap: "bogus" as never,
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
+      now: () => new Date(Date.now()),
+      onResult: (result: { kind: string }) => {
+        results.push(result);
+      },
+    };
+    const jobStates = new Map();
+
+    // tick 1 -> no active run, starts (and gates) the in-flight run.
+    handleTick(options.jobs[0]!, new Date(0), options, jobStates);
+    await expect.poll(() => started).toBe(1);
+
+    // tick 2 -> overlaps the active run with an unrecognized mode.
+    handleTick(options.jobs[0]!, new Date(60_000), options, jobStates);
+    await expect
+      .poll(() => results.filter((r) => r.kind !== "succeeded"))
+      .toContainEqual(expect.objectContaining({ kind: "skipped", jobId: "slow", reason: "overlap" }));
+    expect(results.some((r) => r.kind === "queued")).toBe(false);
+    expect(started).toBe(1); // overlap was NOT queued/run
+
+    // The in-flight run must still complete; defaulting to skip must not
+    // abandon the active run.
+    finish();
+    await expect
+      .poll(() => results)
+      .toContainEqual(expect.objectContaining({ kind: "succeeded", jobId: "slow" }));
+  });
+
+  it("rejects an invalid overlap mode at startup", () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return {};
+      },
+    };
+
+    expect(() => startCronAdapter({
+      responder,
+      overlap: "bogus" as never,
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
+      now: () => new Date(0),
+    })).toThrow(/overlap/u);
+  });
+
+  it("rejects an invalid overflow policy at startup", () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return {};
+      },
+    };
+
+    expect(() => startCronAdapter({
+      responder,
+      overlap: "queue",
+      overflow: "bogus" as never,
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
+      now: () => new Date(0),
+    })).toThrow(/overflow/u);
   });
 
   it("drops the oldest queued firing past maxQueueDepth with overflow:'drop-oldest'", async () => {

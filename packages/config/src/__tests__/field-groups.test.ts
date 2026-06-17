@@ -61,6 +61,14 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
     });
   });
 
+  it("exposes concurrency.maxPendingRuns on the concurrency group", () => {
+    const concurrency = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "concurrency");
+    expect(concurrency?.fields.find((field) => field.id === "concurrency.maxPendingRuns")).toMatchObject({
+      kind: "integer",
+      path: ["concurrency", "maxPendingRuns"],
+    });
+  });
+
   it("exposes embeddings timeoutMs and circuit breaker fields on the memory group", () => {
     const memory = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "memory");
     const ids = memory?.fields.map((field) => field.id) ?? [];

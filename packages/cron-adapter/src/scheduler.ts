@@ -199,7 +199,13 @@ function ensureState(jobStates: Map<string, JobRuntimeState>, jobId: string): Jo
   return state;
 }
 
-function handleTick(
+/**
+ * Internal: dispatch a single firing for a job, honoring the overlap policy.
+ * Exported (but not re-exported from the package index) so the overlap
+ * defense-in-depth fallback can be regression-tested directly, bypassing the
+ * startup `validateOptions` gate that rejects invalid overlap values.
+ */
+export function handleTick(
   job: CronJob,
   scheduledAtDate: Date,
   options: CronAdapterOptions,
@@ -234,33 +240,45 @@ function handleTick(
 
   // "queue" (opt-in): preserve every firing, drained in order after the active
   // run finishes. Bound it with maxQueueDepth + overflow to limit memory.
-  state.pending.push({ scheduledAt });
-  const max = options.maxQueueDepth;
-  if (max !== undefined && max >= 0 && state.pending.length > max) {
-    const overflow: CronOverflowPolicy = options.overflow ?? "preserve";
-    if (overflow === "drop-oldest") {
-      const dropped = state.pending.shift();
-      if (dropped !== undefined) {
-        options.logger?.warn?.("Cron firing dropped (queue overflow, drop-oldest).", { jobId: job.id, maxQueueDepth: max });
-        void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+  if (mode === "queue") {
+    state.pending.push({ scheduledAt });
+    const max = options.maxQueueDepth;
+    if (max !== undefined && max >= 0 && state.pending.length > max) {
+      const overflow: CronOverflowPolicy = options.overflow ?? "preserve";
+      if (overflow === "drop-oldest") {
+        const dropped = state.pending.shift();
+        if (dropped !== undefined) {
+          options.logger?.warn?.("Cron firing dropped (queue overflow, drop-oldest).", { jobId: job.id, maxQueueDepth: max });
+          void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+        }
+      } else if (overflow === "coalesce") {
+        const newest = state.pending[state.pending.length - 1];
+        const droppedOnes = state.pending.slice(0, -1);
+        state.pending = newest === undefined ? [] : [newest];
+        for (const dropped of droppedOnes) {
+          void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+        }
+      } else {
+        // "preserve": keep everything, but surface backpressure (never a silent drop).
+        options.logger?.warn?.("Cron queue depth exceeds maxQueueDepth (preserving every firing).", {
+          jobId: job.id,
+          depth: state.pending.length,
+          maxQueueDepth: max,
+        });
       }
-    } else if (overflow === "coalesce") {
-      const newest = state.pending[state.pending.length - 1];
-      const droppedOnes = state.pending.slice(0, -1);
-      state.pending = newest === undefined ? [] : [newest];
-      for (const dropped of droppedOnes) {
-        void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
-      }
-    } else {
-      // "preserve": keep everything, but surface backpressure (never a silent drop).
-      options.logger?.warn?.("Cron queue depth exceeds maxQueueDepth (preserving every firing).", {
-        jobId: job.id,
-        depth: state.pending.length,
-        maxQueueDepth: max,
-      });
     }
+    void emitResult(options, { kind: "queued", jobId: job.id, scheduledAt, queueDepth: state.pending.length });
+    return;
   }
-  void emitResult(options, { kind: "queued", jobId: job.id, scheduledAt, queueDepth: state.pending.length });
+
+  // Any unrecognized mode (e.g. an invalid value passed via a cast or untyped
+  // JS/JSON consumer) defaults to the safe "skip" behavior rather than silently
+  // falling through into the unbounded-memory "queue" branch.
+  options.logger?.warn?.("Cron overlap mode unrecognized; defaulting to skip.", {
+    jobId: job.id,
+    overlap: options.overlap,
+  });
+  void emitResult(options, { kind: "skipped", jobId: job.id, scheduledAt, reason: "overlap" });
 }
 
 function startRun(
@@ -362,9 +380,18 @@ function nextDateFor(job: CronJob, currentDate: Date): Date {
   }
 }
 
+const VALID_OVERLAP_MODES: ReadonlySet<CronOverlapMode> = new Set(["queue", "skip", "replace"]);
+const VALID_OVERFLOW_POLICIES: ReadonlySet<CronOverflowPolicy> = new Set(["preserve", "coalesce", "drop-oldest"]);
+
 function validateOptions(options: CronAdapterOptions): void {
   if (typeof options.responder?.respond !== "function") {
     throw new CronAdapterError("invalid_config", "Cron adapter requires a responder.");
+  }
+  if (options.overlap !== undefined && !VALID_OVERLAP_MODES.has(options.overlap)) {
+    throw new CronAdapterError("invalid_config", "Cron overlap mode is invalid.", { overlap: options.overlap });
+  }
+  if (options.overflow !== undefined && !VALID_OVERFLOW_POLICIES.has(options.overflow)) {
+    throw new CronAdapterError("invalid_config", "Cron overflow policy is invalid.", { overflow: options.overflow });
   }
   const seen = new Set<string>();
   for (const job of options.jobs) {

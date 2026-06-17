@@ -368,4 +368,60 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.error).toBeNull();
     expect(invoked).toBe(false);
   });
+
+  it("applies configured tool-output limits to tool params (not the pi-bridge fallbacks)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-limits-"));
+    try {
+      writeFileSync(join(root, "a.txt"), "needle here\n");
+      const model = setup();
+      // The model issues a Grep call with NO explicit max_output_chars/head_limit
+      // so the params are filled in purely from the resolved tool limits. The
+      // configured clamps are set BELOW the pi-bridge fallbacks (16000 text /
+      // 100 search) so the normalized params can only equal the configured values
+      // if settings-driven clamping reached the tool builder + display path.
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Grep", { pattern: "needle" }, { id: "g-1" })]),
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const onEvent = vi.fn();
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Grep"],
+        messages: [{ role: "user", content: "search" }],
+        settings: {
+          // Both below the pi-bridge fallbacks (16000 text / 100 search) AND
+          // within resolveAgentCompactionPolicy's clamp floors (>=1000 text,
+          // >=10 search) so they survive policy resolution verbatim.
+          agent_tool_text_limit_chars: 1000,
+          agent_search_result_limit: 25,
+        },
+        onEvent,
+      }));
+      expect(result.error).toBeNull();
+
+      const events = onEvent.mock.calls.map(([event]) => event);
+      const toolUse = events
+        .filter((event) => event?.message?.content?.[0]?.type === "tool_use")
+        .map((event) => event.message.content[0])
+        .find((block) => block.name === "Grep");
+      expect(toolUse).toBeTruthy();
+      // 1000 / 25 are the configured clamps; the fallback path would yield 16000 / 100.
+      expect(toolUse.input.max_output_chars).toBe(1000);
+      expect(toolUse.input.head_limit).toBe(25);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports context_compaction_applied as null (AgentHarness has no automatic compaction)", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "hi" }],
+    }));
+    expect(result.error).toBeNull();
+    // null = unknown/unsupported tristate; NOT false (which would imply a
+    // compaction path exists and chose not to fire).
+    expect(result.capabilitiesUsed.context_compaction_applied).toBeNull();
+  });
 });

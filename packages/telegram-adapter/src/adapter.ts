@@ -561,8 +561,13 @@ export const DEFAULT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
 export interface TelegramFileDownloader {
   /** Resolve a `file_id` to a downloadable `file_path` (Bot API `getFile`). */
   resolveFilePath(fileId: string, signal: AbortSignal): Promise<string | undefined>;
-  /** Download the file at `file_path` (GET on the file URL). */
-  download(filePath: string, signal: AbortSignal): Promise<Uint8Array>;
+  /**
+   * Download the file at `file_path` (GET on the file URL). `maxBytes`, when
+   * provided, lets the downloader abort an oversized transfer mid-stream instead
+   * of buffering the whole body first; the caller still re-checks the cap as a
+   * backstop, so a custom downloader that ignores `maxBytes` stays bounded.
+   */
+  download(filePath: string, signal: AbortSignal, maxBytes?: number): Promise<Uint8Array>;
 }
 
 export interface DownloadTelegramAttachmentsOptions {
@@ -570,6 +575,12 @@ export interface DownloadTelegramAttachmentsOptions {
   readonly maxBytes?: number;
   /** Only download files whose MIME type is allowed. Defaults to images + common docs/text. */
   readonly mimeAllowlist?: readonly string[];
+  /**
+   * Per-file download timeout (ms) for the default downloader, composed with the
+   * run abort signal. Defaults to 30000. Only consulted by the built-in
+   * downloader; custom downloaders manage their own timeouts.
+   */
+  readonly downloadTimeoutMs?: number;
   readonly logger?: TelegramAdapterLogger;
 }
 
@@ -631,7 +642,7 @@ export async function downloadTelegramAttachments(
         });
         continue;
       }
-      const bytes = await downloader.download(filePath, abortSignal);
+      const bytes = await downloader.download(filePath, abortSignal, maxBytes);
       if (bytes.byteLength > maxBytes) {
         logger?.warn?.("Telegram attachment exceeded the size cap after download; skipping.", {
           sizeBytes: bytes.byteLength,

@@ -78,6 +78,9 @@ export function layerJsonOntoEnv(
   if (json.concurrency?.maxConcurrentRuns !== undefined) {
     fromJson.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS = String(json.concurrency.maxConcurrentRuns);
   }
+  if (json.concurrency?.maxPendingRuns !== undefined) {
+    fromJson.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS = String(json.concurrency.maxPendingRuns);
+  }
   if (json.context?.identityPath !== undefined) {
     fromJson.MONO_AGENT_IDENTITY_PATH = json.context.identityPath;
   }

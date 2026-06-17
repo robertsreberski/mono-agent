@@ -95,6 +95,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
   };
   readonly concurrency?: {
     readonly maxConcurrentRuns?: number;
+    readonly maxPendingRuns?: number;
   };
   readonly context?: {
     readonly identityPath?: string;

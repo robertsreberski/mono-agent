@@ -129,9 +129,18 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
       mode: config.runtime.session.mode,
       idleTimeoutMs: config.runtime.session.idleTimeoutMs,
     },
-    ...(config.concurrency?.maxConcurrentRuns === undefined
+    ...(config.concurrency?.maxConcurrentRuns === undefined && config.concurrency?.maxPendingRuns === undefined
       ? {}
-      : { concurrency: { maxConcurrentRuns: config.concurrency.maxConcurrentRuns } }),
+      : {
+          concurrency: {
+            ...(config.concurrency?.maxConcurrentRuns === undefined
+              ? {}
+              : { maxConcurrentRuns: config.concurrency.maxConcurrentRuns }),
+            ...(config.concurrency?.maxPendingRuns === undefined
+              ? {}
+              : { maxPendingRuns: config.concurrency.maxPendingRuns }),
+          },
+        }),
     runtimeOptions,
     ...(options.runtimeOptionsForRequest === undefined
       ? {}
@@ -400,11 +409,15 @@ function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
 }
 
 function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
-  const { permissionMode, reasoningSummary } = config.runtime;
+  const { permissionMode } = config.runtime;
+  // NOTE: config.runtime.reasoningSummary is intentionally NOT forwarded. The
+  // sole pi runtime (pi-native) derives reasoning from `effort` and does not
+  // consume an explicit summary level, and the codex/claude CLIs emit summaries
+  // unconditionally — so the former `piReasoningSummary` runtime option was dead
+  // plumbing. The config field is retained for back-compat but has no effect here.
   const piNative = config.providers?.piNative;
   if (
     permissionMode === undefined
-    && reasoningSummary === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
   ) {
@@ -412,7 +425,6 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   }
   return {
     ...(permissionMode === undefined ? {} : { permissionMode }),
-    ...(reasoningSummary === undefined ? {} : { piReasoningSummary: reasoningSummary }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
   };

@@ -76,11 +76,17 @@ export interface MonoAgentConfig {
     };
   };
   /**
-   * Global concurrency bound across all conversations. Unset (default) means
-   * runs are unbounded; a positive cap limits how many runs are in flight.
+   * Global concurrency bounds across all conversations. Two independent tiers,
+   * both unset (default) = unbounded:
+   * - `maxConcurrentRuns` caps how many runs execute against the provider at
+   *   once (execution width, around the model call only).
+   * - `maxPendingRuns` caps how many runs may be admitted before the expensive
+   *   pre-provider work (attachment persistence + context prep); requests over
+   *   this bound fail fast instead of queuing, providing global backpressure.
    */
   readonly concurrency?: {
     readonly maxConcurrentRuns?: number;
+    readonly maxPendingRuns?: number;
   };
   readonly context: {
     readonly identityPath: string;

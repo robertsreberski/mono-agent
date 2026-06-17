@@ -411,13 +411,19 @@ export class SlackAdapter {
     // serial queue first so they reach the harness in arrival order even when an
     // earlier message stalls on file download.
     const conversationId = conversationIdFor(event);
+    // Create and register the controller BEFORE entering the admission queue so a
+    // /cancel can abort a message still parked behind an earlier same-thread run.
+    // respondToEvent's first abort check then makes the queued-then-cancelled run
+    // bail before responder.respond and post only the cancelled terminal.
+    const controller = new AbortController();
+    this.registerController(runKey, controller);
     let queue = this.admissionQueues.get(conversationId);
     if (queue === undefined) {
       queue = new SerialQueue();
       this.admissionQueues.set(conversationId, queue);
     }
     try {
-      return await queue.run(() => this.respondToEvent(event, text, runKey));
+      return await queue.run(() => this.respondToEvent(event, text, runKey, controller));
     } finally {
       if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
         this.admissionQueues.delete(conversationId);
@@ -429,10 +435,8 @@ export class SlackAdapter {
     event: SlackTextEvent,
     text: string,
     runKey: string,
+    controller: AbortController,
   ): Promise<SlackEventHandlingResult> {
-    const controller = new AbortController();
-    this.registerController(runKey, controller);
-
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
       channelId: event.channelId,

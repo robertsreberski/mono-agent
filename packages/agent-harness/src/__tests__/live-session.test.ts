@@ -124,7 +124,61 @@ describe("createLiveSessionManager", () => {
 
     expect(activeSignal?.aborted).toBe(true);
     await expect(p2).rejects.toSatisfy(isAgentResponseCancelledError);
-    await expect(p1).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+    // An explicitly cancelled active turn now rejects rather than resolving
+    // with a cancelled-failure response.
+    await expect(p1).rejects.toSatisfy(isAgentResponseCancelledError);
+    expect(manager.pendingCount("c1")).toBe(0);
+  });
+
+  it("rejects the active turn even when the runner ignores the abort and returns success", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = createLiveSessionManager({
+      // This runner ignores the abort signal entirely and returns a plain
+      // success once the gate is released (after cancel() has fired).
+      run: async () => {
+        await gate;
+        return response("done");
+      },
+    });
+
+    const p1 = manager.enqueue("c1", req("c1", "one"));
+    await flush();
+
+    manager.cancel("c1");
+    release?.();
+
+    // Despite the runner returning success, the explicit cancel converts the
+    // active turn into a cancellation rejection.
+    await expect(p1).rejects.toSatisfy(isAgentResponseCancelledError);
+    expect(manager.pendingCount("c1")).toBe(0);
+  });
+
+  it("rejects the active turn when its own request abortSignal aborts mid-run and the runner returns success", async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const requestAbort = new AbortController();
+    const manager = createLiveSessionManager({
+      // Ignores the (linked) abort signal and returns a plain success.
+      run: async () => {
+        await gate;
+        return response("done");
+      },
+    });
+
+    const p1 = manager.enqueue("c1", req("c1", "one", requestAbort.signal));
+    await flush();
+
+    // Abort via the request's own signal (not cancel()); the linkAbort path
+    // propagates it to the active controller.
+    requestAbort.abort(new Error("client disconnected"));
+    release?.();
+
+    await expect(p1).rejects.toSatisfy(isAgentResponseCancelledError);
     expect(manager.pendingCount("c1")).toBe(0);
   });
 

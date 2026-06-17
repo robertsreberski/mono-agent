@@ -47,6 +47,15 @@ export class MonoAgentHarness implements AgentHarness {
   private readonly liveSessionManager: LiveSessionManager | undefined;
   private readonly skillsCache: SkillsCache;
   private readonly runLimiter: Semaphore | undefined;
+  // Admission bound (maxPendingRuns): a cheap synchronous counter of runs that
+  // are admitted but have NOT yet begun their provider call (still doing — or
+  // waiting to do — the expensive pre-provider work: attachment persistence +
+  // context prep, then waiting for a provider slot). It gates BEFORE that work
+  // so over-capacity requests fail fast. This is deliberately NOT the runLimiter
+  // semaphore, whose waiter queue is unbounded — see the concurrency JSDoc on
+  // AgentHarnessOptions.
+  private readonly maxPendingRuns: number | undefined;
+  private pendingRuns = 0;
   private supportsResumeCache: boolean | undefined;
 
   constructor(options: AgentHarnessOptions) {
@@ -73,6 +82,10 @@ export class MonoAgentHarness implements AgentHarness {
     this.runLimiter = typeof maxConcurrentRuns === "number" && maxConcurrentRuns > 0
       ? createSemaphore(maxConcurrentRuns)
       : undefined;
+    const maxPendingRuns = options.concurrency?.maxPendingRuns;
+    this.maxPendingRuns = typeof maxPendingRuns === "number" && maxPendingRuns > 0
+      ? Math.floor(maxPendingRuns)
+      : undefined;
   }
 
   async submit(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
@@ -97,11 +110,46 @@ export class MonoAgentHarness implements AgentHarness {
       return failureResponse({ runId, request, summary, kind: "cancelled", message: "Agent request was cancelled before runtime execution." });
     }
 
+    // Global admission bound (maxPendingRuns): a cheap SYNCHRONOUS check before
+    // any expensive pre-provider work (applyAttachments persists bytes to disk;
+    // prepareContext loads history/recalls memory/reads skills/builds the
+    // prompt). `pendingRuns` counts runs that are admitted but have NOT yet begun
+    // their provider call — i.e. the requests simultaneously holding persisted
+    // attachments + built context in memory while waiting for a provider slot in
+    // the otherwise-unbounded semaphore queue. A request arriving when that
+    // counter is already at the bound fails fast here instead of doing the
+    // expensive work and parking. (A run executing at the provider does not count
+    // — it left "pending" the moment its provider call started.)
+    if (this.maxPendingRuns !== undefined && this.pendingRuns >= this.maxPendingRuns) {
+      try {
+        throw new AgentHarnessError(
+          "capacity_exceeded",
+          `Agent is at capacity (max ${this.maxPendingRuns} pending runs).`,
+          { maxPendingRuns: this.maxPendingRuns },
+        );
+      } catch (error) {
+        const failure = failureFromThrownError(error, false);
+        const summary = await safeRecorderFail(recorder, error);
+        return { metadata: responseMetadata(runId, request, undefined, summary), failure };
+      }
+    }
     const sessionRecord = this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
       recorder.onEvent(event);
       request.onEvent?.(event);
+    };
+    // Admitted: count this run as pending until it begins its provider call (via
+    // leavePending, fired from runRuntime) or exits before getting there. `left`
+    // makes the release idempotent so exactly one decrement happens per run, on
+    // every exit path including a throw in applyAttachments/prepareContext.
+    this.pendingRuns += 1;
+    let left = false;
+    const leavePending = (): void => {
+      if (!left) {
+        left = true;
+        this.pendingRuns -= 1;
+      }
     };
     try {
       // Persist any inbound attachments to disk and reference them in the
@@ -116,7 +164,7 @@ export class MonoAgentHarness implements AgentHarness {
       let runtimeResult: RuntimeResult | undefined;
       let resumeError: unknown;
       try {
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, runId, resumeSessionId);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, runId, resumeSessionId, leavePending);
       } catch (error) {
         if (resumeSessionId === undefined || request.abortSignal.aborted) {
           throw error;
@@ -137,7 +185,7 @@ export class MonoAgentHarness implements AgentHarness {
         resumeSessionId = undefined;
         prepared = await this.prepareContext(activeRequest, { omitHistory: false }, emit);
         context = prepared.context;
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, runId, undefined);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, runId, undefined, leavePending);
       }
       if (runtimeResult === undefined) {
         throw resumeError ?? new Error("Runtime did not produce a result.");
@@ -193,6 +241,10 @@ export class MonoAgentHarness implements AgentHarness {
         failure,
       };
     } finally {
+      // Release the admission-pending slot if the run never reached its provider
+      // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
+      // admission). No-op when onProviderStart already released it.
+      leavePending();
       if (sessionRecord !== undefined) {
         this.sessionStore?.release(request.conversationId, sessionRecord);
       }
@@ -365,6 +417,7 @@ export class MonoAgentHarness implements AgentHarness {
     context: BuiltAgentContext,
     runId: string,
     resumeSessionId: string | undefined,
+    onProviderStart?: () => void,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
     const policyOptions = toolPolicyToRuntimeOptions(this.options.toolPolicy ?? failClosedToolPolicy());
@@ -418,6 +471,11 @@ export class MonoAgentHarness implements AgentHarness {
         await this.runLimiter.acquire(request.abortSignal);
         acquired = true;
       }
+      // The provider call is starting: this run has left the admission-pending
+      // tier (it now holds a provider slot rather than waiting for one), so
+      // release its maxPendingRuns slot. Idempotent at the run() scope, so the
+      // resume-retry's second runRuntime does not double-release.
+      onProviderStart?.();
       // Bracket the provider call so observability can separate provider+tool+IO
       // time (this event's durationMs) from harness overhead (context build,
       // attachment persistence, compaction, admission wait).

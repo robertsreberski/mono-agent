@@ -12,7 +12,7 @@
 // responses, and the faux Model is handed to the bridge via the `piResolvedModel`
 // seam (the faux model is reachable only through the registration handle).
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -70,6 +70,18 @@ function transcriptOf(context) {
           .join("");
       return `${message.role}:${text}`;
     });
+}
+
+// Recursively count .jsonl files under a sessions root so a leaked durable
+// transcript (an orphaned session directory) is directly observable.
+function countJsonlFiles(root) {
+  let count = 0;
+  for (const dirent of readdirSync(root, { withFileTypes: true })) {
+    const full = join(root, dirent.name);
+    if (dirent.isDirectory()) count += countJsonlFiles(full);
+    else if (dirent.name.endsWith(".jsonl")) count += 1;
+  }
+  return count;
 }
 
 describe("pi-native sessions", () => {
@@ -265,6 +277,99 @@ describe("pi-native sessions", () => {
       "assistant:reply-1",
       "user:turn-2",
     ]);
+  });
+
+  it("serializes two concurrent cold resumes of an evicted durable session (one wins, the other returns session_busy)", async () => {
+    const model = setup();
+    // Fresh keep-alive turn with a durable jsonl on disk.
+    faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+    const first = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "turn-1" }],
+      sessionKeepAlive: true,
+      piSessionsRoot: sessionsRoot,
+    }));
+    expect(first.error).toBeNull();
+    const sessionId = first.providerSessionId;
+
+    // Evict the live entry but leave the durable jsonl on disk, so BOTH resumes
+    // take the cold reopen-from-disk branch (the F4 race window).
+    await expect(disposeProviderSession(sessionId)).resolves.toBe(true);
+
+    // Gate the winning turn mid-run so the session is observably busy while the
+    // loser races through the cold-resume path.
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    faux.setResponses([
+      async () => { await gate; return fauxAssistantMessage([fauxText("reply-2")]); },
+    ]);
+
+    // Fire BOTH cold resumes without an intervening await so the reopen await
+    // (the shared jsonl repo's async open) interleaves them through the window.
+    const optionsResume = runOptions(model, {
+      messages: [{ role: "user", content: "turn-2" }],
+      sessionKeepAlive: true,
+      sessionId,
+      piSessionsRoot: sessionsRoot,
+    });
+    const runA = generatePiNativeResponse("system", optionsResume);
+    const runB = generatePiNativeResponse("system", optionsResume);
+
+    // Let one claim busy and the other observe it, then release the gated turn.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    release();
+    const settled = await Promise.allSettled([runA, runB]);
+    expect(settled.every((entry) => entry.status === "fulfilled")).toBe(true);
+    const results = settled.map((entry) => entry.value);
+
+    const winners = results.filter((result) => result.error === null);
+    const busy = results.filter((result) => result.failureKind === "session_busy");
+    expect(winners).toHaveLength(1);
+    expect(busy).toHaveLength(1);
+    expect(winners[0].text).toBe("reply-2");
+    expect(busy[0].diagnostics.pi_error_code).toBe("pi_session_busy");
+  });
+
+  it("drops the durable jsonl session when a fresh run throws during execution", async () => {
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-leak-"));
+    try {
+      // FRESH run: no sessionId/providerSessionId, so the bridge creates a new
+      // durable jsonl session (piSessionsRoot set) at the top of the outer try,
+      // BEFORE the run. We force a throw into the OUTER catch (F5's patch site)
+      // by throwing from onEvent on the first event emitted after session
+      // create (`provider_request_started`) — emitCaptured propagates it, and it
+      // fires outside the inner harness.prompt try, so it lands in the outer
+      // catch rather than the success/runError path. Without the catch-delete
+      // the orphaned jsonl persists on disk and a later run resolving the same
+      // root would reopen it as a silently-resumable session.
+      faux.setResponses([fauxAssistantMessage([fauxText("never reached")])]);
+      const failed = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "turn-1" }],
+        piSessionsRoot: root,
+        onEvent: (event) => {
+          if (event?.type === "provider_request_started") throw new Error("setup-boom");
+        },
+      }));
+      expect(failed.error).toBe("setup-boom");
+      const leakedSessionId = failed.providerSessionId;
+
+      // No durable transcript may survive the failed fresh run.
+      expect(countJsonlFiles(root)).toBe(0);
+
+      // And a resume against the (would-be) orphaned id must report
+      // session_not_found, proving the orphan is gone and not silently resumable.
+      let invoked = false;
+      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      const resume = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "turn-2" }],
+        sessionId: leakedSessionId,
+        piSessionsRoot: root,
+      }));
+      expect(resume.failureKind).toBe("session_not_found");
+      expect(invoked).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("bills a resumed run only for this run's messages, not the restored transcript", async () => {

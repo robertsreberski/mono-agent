@@ -92,7 +92,20 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
         queue.activeTurn = turn;
         try {
           const result = await options.run({ ...turn.request, abortSignal: controller.signal });
-          turn.resolve(result);
+          // Guard against a runner that ignores/races the abort and returns a
+          // success despite an explicit cancel(): check the LOCAL controller
+          // (the finally below clears queue.activeController) so a cancelled
+          // active turn rejects rather than resolving success. This also covers
+          // aborts propagated via request.abortSignal through linkAbort above.
+          if (controller.signal.aborted) {
+            turn.reject(
+              new AgentResponseCancelledError("Cancelled during active turn.", {
+                reason: controller.signal.reason,
+              }),
+            );
+          } else {
+            turn.resolve(result);
+          }
         } catch (error) {
           turn.reject(error);
         } finally {

@@ -117,14 +117,25 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS).toBe("4");
   });
 
+  it("translates JSON concurrency.maxPendingRuns to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      { concurrency: { maxConcurrentRuns: 4, maxPendingRuns: 16 } },
+      {},
+    );
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS).toBe("4");
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS).toBe("16");
+  });
+
   it("lets env override JSON concurrency", () => {
     const layered = layerJsonOntoEnv(
-      { concurrency: { maxConcurrentRuns: 4 } },
+      { concurrency: { maxConcurrentRuns: 4, maxPendingRuns: 16 } },
       {
         MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "8",
+        MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: "32",
       },
     );
     expect(layered.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS).toBe("8");
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS).toBe("32");
   });
 
   it("translates JSON memory embeddings timeoutMs and circuit breaker to env keys", () => {

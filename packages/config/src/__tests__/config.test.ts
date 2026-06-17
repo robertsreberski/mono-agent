@@ -639,6 +639,32 @@ describe("loadMonoAgentConfig", () => {
     expect(config.concurrency?.maxConcurrentRuns).toBe(4);
   });
 
+  it("loads concurrency.maxPendingRuns from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: "16" },
+    });
+
+    expect(config.concurrency?.maxPendingRuns).toBe(16);
+    // maxPendingRuns is independent of maxConcurrentRuns: setting only it still
+    // omits the unset sibling.
+    expect(config.concurrency?.maxConcurrentRuns).toBeUndefined();
+  });
+
+  it("loads both concurrency bounds together from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "4",
+        MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: "16",
+      },
+    });
+
+    expect(config.concurrency?.maxConcurrentRuns).toBe(4);
+    expect(config.concurrency?.maxPendingRuns).toBe(16);
+  });
+
   it("omits concurrency when the env is unset and rejects invalid values", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.concurrency).toBeUndefined();
@@ -651,6 +677,16 @@ describe("loadMonoAgentConfig", () => {
         continue;
       }
       throw new Error(`Expected concurrency load to fail for ${raw}.`);
+    }
+
+    for (const raw of ["not-a-number", "0", "-1"]) {
+      try {
+        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: raw } });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS" } });
+        continue;
+      }
+      throw new Error(`Expected pending-runs load to fail for ${raw}.`);
     }
   });
 

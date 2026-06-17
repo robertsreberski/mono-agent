@@ -476,6 +476,16 @@ class MonoAgentAppController implements MonoAgentApp {
 
     try {
       const responder = await this.buildResponder(coreConfig);
+      // The AgentResponder contract has no dispose(), but the configured responder
+      // (createAgentResponder) exposes one that tears down the harness + live-session
+      // manager. Read it LAZILY (at teardown time) off the `responder` so both the
+      // normal stop/reload path AND the onFailure (transport-death) path retire the
+      // per-channel harness rather than orphan it, and any wrapper applied to the
+      // responder is honored. Duck-typed, consistent with the resetSharedMemory /
+      // bujo-store patterns elsewhere in this file.
+      const disposeResponder = (): Promise<void> | undefined =>
+        (responder as { dispose?: () => Promise<void> }).dispose?.();
+      const hasDispose = typeof (responder as { dispose?: () => Promise<void> }).dispose === "function";
       const runningChannel = await driver.start({
         config,
         coreConfig,
@@ -486,9 +496,23 @@ class MonoAgentAppController implements MonoAgentApp {
           this.running.delete(driver.id);
           this.setStatus(driver.id, { kind: "failed", reason: failureReason });
           this.logger?.error?.(`${driver.label} channel stopped with an error.`, { reason: failureReason });
+          // The running-channel entry (which holds the stop/reload dispose handle)
+          // was just deleted, so dispose the responder here too — otherwise a
+          // transport death orphans the per-channel harness/live-session manager
+          // (the stop/reload path early-returns on the now-missing entry).
+          void disposeResponder()?.catch((error: unknown) => {
+            this.logger?.warn?.(`${driver.label} responder did not dispose cleanly after failure.`, {
+              reason: failureReason,
+              error: reasonOf(error),
+            });
+          });
         },
       });
-      this.running.set(driver.id, runningChannel);
+      this.running.set(driver.id, {
+        ...runningChannel,
+        stop: () => runningChannel.stop(),
+        ...(hasDispose ? { dispose: () => disposeResponder() ?? Promise.resolve() } : {}),
+      });
       const status = this.setStatus(driver.id, { kind: "running", summary: runningChannel.summary });
       this.logger?.info?.(`${driver.label} channel is running.`, { reason, ...runningChannel.summary });
       return status;
@@ -508,6 +532,12 @@ class MonoAgentAppController implements MonoAgentApp {
     this.running.delete(id);
     await runningChannel.stop().catch((error: unknown) => {
       this.logger?.warn?.(`${driver.label} channel did not stop cleanly.`, { reason, error: reasonOf(error) });
+    });
+    // Stop the transport first (so no new turns arrive), then dispose the responder
+    // so the harness/live-session manager and warm provider sessions are retired
+    // rather than lingering against stale config across a reload.
+    await runningChannel.dispose?.().catch((error: unknown) => {
+      this.logger?.warn?.(`${driver.label} responder did not dispose cleanly.`, { reason, error: reasonOf(error) });
     });
     if (!this.stopped) {
       this.setStatus(id, {
@@ -572,7 +602,12 @@ class MonoAgentAppController implements MonoAgentApp {
       ...(responder.cancel === undefined
         ? {}
         : { cancel: (conversationId: string, reason?: unknown) => responder.cancel?.(conversationId, reason) }),
-    };
+      // Forward dispose (duck-typed; not on the AgentResponder contract) so the app
+      // can still tear down the harness on stop/reload through the wrapper.
+      ...((responder as { dispose?: () => Promise<void> }).dispose === undefined
+        ? {}
+        : { dispose: () => (responder as { dispose?: () => Promise<void> }).dispose?.() }),
+    } as AgentResponder;
   }
 
   private scheduleSelfCapabilitiesReload(token: string): void {
