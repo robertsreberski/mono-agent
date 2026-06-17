@@ -192,15 +192,15 @@ describe("(sdk, executionMode) selection table", () => {
     expect(selectMonoRuntimeBackendId("anthropic", "sdk")).toBeUndefined();
     expect(selectMonoRuntimeBackendId("claude", "cli")).toBe("claude-code-cli");
     expect(selectMonoRuntimeBackendId("codex", "cli")).toBe("codex-app-cli");
-    expect(selectMonoRuntimeBackendId("openai", "sdk")).toBe("openai-agents-sdk");
     expect(selectMonoRuntimeBackendId("pi", "sdk")).toBe("pi-sdk");
     expect(selectMonoRuntimeBackendId("openai", "cli")).toBeUndefined();
+    expect(selectMonoRuntimeBackendId("openai", "sdk")).toBeUndefined();
   });
 
   it("derives accepted sdk ids per backend", () => {
     expect(acceptedSdkIdsForBackend("claude-sdk")).toEqual(["claude"]);
     expect(acceptedSdkIdsForBackend("codex-app-cli")).toEqual(["codex"]);
-    expect(acceptedSdkIdsForBackend("openai-agents-sdk")).toEqual(["openai"]);
+    expect(acceptedSdkIdsForBackend("pi-sdk")).toEqual(["pi"]);
   });
 
   it("table rows reference real backend descriptors", () => {
@@ -210,10 +210,10 @@ describe("(sdk, executionMode) selection table", () => {
     }
   });
 
-  it("exposes the openai-agents backend with self-described capabilities", () => {
-    const openai = listMonoRuntimeBackends().find((backend) => backend.id === "openai-agents-sdk");
-    expect(openai?.sdk).toBe("openai");
-    expect(openai?.capabilities.kind).toBe("openai-agents");
-    expect(openai?.capabilities.supports_mcp).toBe(true);
+  it("exposes only agent-runtime-backed runtime descriptors", () => {
+    for (const backend of listMonoRuntimeBackends()) {
+      expect(backend.runtimeBridgeId).not.toBe(backend.id);
+      expect(backend.providerBoundary).toContain("@mono-agent/agent-runtime");
+    }
   });
 });

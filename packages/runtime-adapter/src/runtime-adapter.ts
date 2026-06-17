@@ -247,14 +247,8 @@ function normalizeRuntimeModelReference(value: unknown): RuntimeModelReference {
 
 interface RuntimeBackendDefinition {
   readonly id: MonoRuntimeBackendId;
-  /**
-   * Agent-runtime bridge id whose capabilities back this descriptor. Omit (use
-   * `inlineCapabilities` instead) for standalone backends that are not routed
-   * through @mono-agent/agent-runtime, e.g. the @openai/agents runtime.
-   */
-  readonly runtimeBridgeId?: string;
-  /** Self-described capabilities for backends with no agent-runtime bridge. */
-  readonly inlineCapabilities?: MonoRuntimeBackendCapabilities;
+  /** Agent-runtime bridge id whose capabilities back this descriptor. */
+  readonly runtimeBridgeId: string;
   readonly label: string;
   readonly sdk: RuntimeModelReference["sdk"];
   readonly executionMode: RuntimeExecutionMode;
@@ -299,30 +293,6 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
     acceptsProviderIds: false,
   },
   {
-    id: "openai-agents-sdk",
-    // No agent-runtime bridge: @openai/agents is driven directly by
-    // @mono-agent/openai-agents-runtime, so capabilities are self-described.
-    inlineCapabilities: {
-      kind: "openai-agents",
-      runtime: "sdk",
-      streaming: true,
-      structured_output: false,
-      supports_session_resume: false,
-      supports_mcp: true,
-      supports_skills: false,
-      supports_builtin_tools: false,
-      supports_live_input: false,
-      supports_native_subagents: false,
-    },
-    label: "OpenAI Agents SDK",
-    sdk: "openai",
-    executionMode: "sdk",
-    transport: "sdk",
-    providerBoundary: "@openai/agents via @mono-agent/openai-agents-runtime",
-    modelReferenceExamples: ["openai:gpt-5"],
-    acceptsProviderIds: false,
-  },
-  {
     id: "pi-sdk",
     runtimeBridgeId: "pi",
     label: "Pi SDK provider",
@@ -350,7 +320,6 @@ const RUNTIME_SELECTION_TABLE: readonly MonoRuntimeSelectionEntry[] = [
   { sdk: "claude", sdkAliases: ["claude"], executionMode: "sdk", backendId: "claude-sdk" },
   { sdk: "claude", sdkAliases: ["claude"], executionMode: "cli", backendId: "claude-code-cli" },
   { sdk: "codex", sdkAliases: ["codex"], executionMode: "cli", backendId: "codex-app-cli" },
-  { sdk: "openai", sdkAliases: ["openai"], executionMode: "sdk", backendId: "openai-agents-sdk" },
   { sdk: "pi", sdkAliases: ["pi"], executionMode: "sdk", backendId: "pi-sdk" },
 ];
 
@@ -400,31 +369,12 @@ export function acceptedSdkIdsForBackend(backendId: MonoRuntimeBackendId): reado
 function buildBackendDescriptor(
   definition: RuntimeBackendDefinition,
 ): MonoRuntimeBackendDescriptor {
-  const { runtimeBridgeId, inlineCapabilities, ...rest } = definition;
-  const capabilities = runtimeBridgeId === undefined
-    ? requireInlineCapabilities(definition.id, inlineCapabilities)
-    : capabilitiesForRuntimeBridge(runtimeBridgeId);
+  const { runtimeBridgeId, ...rest } = definition;
   return {
     ...rest,
-    // Public descriptors always carry a string bridge id; standalone backends
-    // (no agent-runtime bridge) report their own backend id here.
-    runtimeBridgeId: runtimeBridgeId ?? definition.id,
-    capabilities,
+    runtimeBridgeId,
+    capabilities: capabilitiesForRuntimeBridge(runtimeBridgeId),
   };
-}
-
-function requireInlineCapabilities(
-  id: MonoRuntimeBackendId,
-  inlineCapabilities: MonoRuntimeBackendCapabilities | undefined,
-): MonoRuntimeBackendCapabilities {
-  if (inlineCapabilities === undefined) {
-    throw new RuntimeAdapterError(
-      "runtime_backend_unavailable",
-      "Runtime backend has neither a runtime bridge nor inline capabilities.",
-      { id },
-    );
-  }
-  return { ...inlineCapabilities };
 }
 
 function backendById(id: MonoRuntimeBackendId): MonoRuntimeBackendDescriptor {

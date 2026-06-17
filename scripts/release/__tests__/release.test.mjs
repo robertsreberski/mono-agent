@@ -111,7 +111,7 @@ describe("current launch manifest", () => {
   test("discovers all catalog-publishable packages", () => {
     const publishable = discoverPackages().filter((pkg) => pkg.catalogEntry.publishable);
 
-    expect(publishable).toHaveLength(29);
+    expect(publishable).toHaveLength(28);
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/tui");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/memory-mcp");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/agent-runtime");
@@ -127,7 +127,7 @@ describe("current launch manifest", () => {
 
     const result = validateRelease({ tag: `v${version}`, silent: true });
 
-    expect(result.publishablePackages).toHaveLength(29);
+    expect(result.publishablePackages).toHaveLength(28);
     expect(result.publishablePackages.every((pkg) => pkg.version === version)).toBe(true);
   });
 });

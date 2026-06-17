@@ -261,7 +261,7 @@ import { startMonoAgentApp, defaultChannelDrivers } from "@mono-agent/agent-app"
 
 const app = await startMonoAgentApp({
   cwd: process.cwd(),
-  runtime: myCustomRuntime,            // any MonoRuntimeLike (incl. createOpenAIAgentsRuntime)
+  runtime: myCustomRuntime,            // any MonoRuntimeLike
   drivers: [...defaultChannelDrivers(), myCustomDriver],
 });
 ```

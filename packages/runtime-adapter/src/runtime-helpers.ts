@@ -7,8 +7,8 @@ import type {
 
 /**
  * Error factory passed by each SDK runtime so the shared scaffolding can throw
- * the runtime's own typed Error (e.g. OpenAIAgentsRuntimeError) without this
- * module depending on any concrete error class. The runtime owns its code union;
+ * the runtime's own typed Error without this module depending on any concrete
+ * error class. The runtime owns its code union;
  * here the factory is called only with the generic "invalid_options" code, which
  * every runtime already defines.
  */
