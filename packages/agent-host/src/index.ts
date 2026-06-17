@@ -14,7 +14,7 @@ import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
 import type { LlmComplete } from "@mono-agent/memory-bujo";
-import { createEmbeddingProvider } from "@mono-agent/memory-search";
+import { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } from "@mono-agent/memory-search";
 import type { MemoryStore } from "@mono-agent/memory-store";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
@@ -153,6 +153,10 @@ function historyMaxMessages(maxTurns: number | undefined): number {
   return maxTurns === undefined || maxTurns <= 0 ? 0 : maxTurns * 2;
 }
 
+// Bound embeddings calls so a slow/cold backend cannot stall a turn for the
+// provider default (30s). The harness degrades recall to empty on timeout.
+const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
+
 export function createConfiguredMemory(
   config: MonoAgentConfig,
   deps: { logger?: { warn(message: string): void }; runtime?: MonoRuntimeLike } = {},
@@ -171,13 +175,20 @@ export function createConfiguredMemory(
     });
   }
 
-  // journal and bujo tiers both need embeddings for hybrid recall.
-  const embeddings = createEmbeddingProvider({
-    provider: embeddingsConfig?.provider ?? "ollama",
-    model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
-    ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
-    ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
-  });
+  // journal and bujo tiers both need embeddings for hybrid recall. A bounded
+  // timeout keeps a slow backend (e.g. Ollama loading the model) from stalling
+  // the request, and the circuit breaker fast-fails after repeated failures so
+  // a sustained outage stops blocking recall entirely. The harness degrades
+  // recall to empty (with a memory_degraded warning) when this errors.
+  const embeddings = createCircuitBreakerEmbeddingProvider(
+    createEmbeddingProvider({
+      provider: embeddingsConfig?.provider ?? "ollama",
+      model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
+      ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
+      ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
+      timeoutMs: DEFAULT_EMBEDDINGS_TIMEOUT_MS,
+    }),
+  );
   const dim = embeddingsConfig?.dim ?? 768;
 
   if (mode === "journal") {
