@@ -2,6 +2,7 @@ export type MemorySearchErrorCode =
   | "invalid_embedding_options"
   | "embedding_request_failed"
   | "embedding_response_invalid"
+  | "embedding_circuit_open"
   | "invalid_index_options"
   | "index_read_failed"
   | "index_write_failed";

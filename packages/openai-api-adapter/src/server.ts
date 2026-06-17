@@ -325,6 +325,13 @@ async function runStreamingResponder(input: {
     "X-Accel-Buffering": "no",
   });
   input.response.flushHeaders();
+  // Push an SSE keep-alive comment onto the wire immediately, before awaiting
+  // the (potentially slow) responder setup, so a streaming client observes an
+  // open, active connection right away instead of waiting out setup latency.
+  // SSE comment lines (leading ":") are ignored by clients, so this does not
+  // alter the event/chunk payloads or [DONE] semantics.
+  input.response.write(": open\n\n");
+  flushResponse(input.response);
 
   const chunkInput = {
     id: `chatcmpl-${input.requestId}`,
@@ -922,6 +929,16 @@ function normalizeBasePath(path: string): string {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+// Express exposes a body-level flush() only when compression middleware is
+// installed; the raw Node ServerResponse does not. Call it when present so an
+// eager SSE write is pushed past any buffering layer immediately.
+function flushResponse(response: Response): void {
+  const flush = (response as { flush?: () => void }).flush;
+  if (typeof flush === "function") {
+    flush.call(response);
+  }
 }
 
 function normalizeOptionalString(value: unknown): string | undefined {

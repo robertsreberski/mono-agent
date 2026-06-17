@@ -521,6 +521,62 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("opens the SSE stream before the responder setup resolves", async () => {
+    const releaseRespond = deferred<void>();
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        // Simulate slow agent setup latency before any streaming happens.
+        await releaseRespond.promise;
+        await stream.append("hello after setup");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "Stream early" }],
+        }),
+      });
+
+      // Headers must be visible immediately, before the responder resolves.
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+      expect(response.headers.get("x-accel-buffering")).toBe("no");
+
+      const reader = response.body?.getReader();
+      if (reader === undefined) {
+        throw new Error("Expected a streaming response body.");
+      }
+      // An initial keep-alive comment + assistant-role chunk must reach the
+      // client before setup completes, proving the stream opened eagerly and
+      // was flushed past any buffering layer rather than waiting out setup.
+      const earlyBody = await readUntil(reader, "\"role\":\"assistant\"");
+      expect(earlyBody.startsWith(": ")).toBe(true);
+      expect(earlyBody).toContain("\"object\":\"chat.completion.chunk\"");
+      expect(earlyBody).not.toContain("hello after setup");
+
+      releaseRespond.resolve(undefined);
+      const body = earlyBody + await readRemaining(reader);
+      expect(body).toContain("\"content\":\"hello after setup\"");
+      expect(body).toContain("\"finish_reason\":\"stop\"");
+      expect(body.trim().endsWith("data: [DONE]")).toBe(true);
+    } finally {
+      releaseRespond.resolve(undefined);
+      await server.stop();
+    }
+  });
+
   it("streams thoughts and internally executed tools without client tool calls or duplicate final text", async () => {
     const responder: AgentResponder = {
       async respond(_request, stream) {
