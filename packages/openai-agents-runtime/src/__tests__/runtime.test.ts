@@ -297,6 +297,81 @@ describe("translations", () => {
       raw_event: raw,
     });
   });
+
+  it("translateOpenAIStreamEvent exposes raw reasoning deltas as canonical assistant thinking", () => {
+    const raw = { type: "raw_model_stream_event", data: { type: "reasoning_delta", delta: "Checking context" } };
+    expect(translateOpenAIStreamEvent(raw)).toEqual({
+      type: "assistant",
+      message: { content: [{ type: "thinking", text: "Checking context" }] },
+      raw_event: raw,
+    });
+  });
+
+  it("translateOpenAIStreamEvent exposes nested Responses reasoning deltas as canonical assistant thinking", () => {
+    const raw = {
+      type: "raw_model_stream_event",
+      data: {
+        type: "model",
+        event: { type: "response.reasoning_text.delta", delta: "Reviewing tool output" },
+      },
+    };
+    expect(translateOpenAIStreamEvent(raw)).toEqual({
+      type: "assistant",
+      message: { content: [{ type: "thinking", text: "Reviewing tool output" }] },
+      raw_event: raw,
+    });
+  });
+
+  it("translateOpenAIStreamEvent ignores nested Responses reasoning done events", () => {
+    const raw = {
+      type: "raw_model_stream_event",
+      data: {
+        type: "model",
+        event: { type: "response.reasoning_text.done", text: "Reviewing tool output" },
+      },
+    };
+    expect(translateOpenAIStreamEvent(raw)).toEqual(raw);
+  });
+
+  it("translateOpenAIStreamEvent exposes Chat Completions reasoning deltas as canonical assistant thinking", () => {
+    const raw = {
+      type: "raw_model_stream_event",
+      data: {
+        type: "model",
+        event: {
+          choices: [
+            {
+              index: 0,
+              delta: { reasoning: "Planning the first step" },
+            },
+          ],
+        },
+      },
+    };
+    expect(translateOpenAIStreamEvent(raw)).toEqual({
+      type: "assistant",
+      message: { content: [{ type: "thinking", text: "Planning the first step" }] },
+      raw_event: raw,
+    });
+  });
+
+  it("translateOpenAIStreamEvent ignores non-primary Chat Completions reasoning deltas", () => {
+    const raw = {
+      type: "raw_model_stream_event",
+      data: {
+        type: "model",
+        event: {
+          choices: [
+            {
+              index: 1,
+              delta: { reasoning: "Alternate path reasoning" },
+            },
+          ],
+        },
+      },
+    };
+    expect(translateOpenAIStreamEvent(raw)).toEqual(raw);
+  });
 });
 
 function buildHandle(
