@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { bearerTokensEqual } from "@mono-agent/settings";
 import * as z from "zod/v4";
 
 import {
@@ -149,7 +150,7 @@ function assertConfirmationToken(
   kind: "skill" | "cron",
 ): void {
   const expected = selfCapabilityConfirmationToken(settings, proposalId);
-  if (expected === undefined || value.trim() !== expected) {
+  if (expected === undefined || !bearerTokensEqual(value.trim(), expected)) {
     throw new SelfCapabilityError("invalid_input", "Invalid self-capability confirmation token.", {
       proposalId: proposalId.trim().toLowerCase(),
       kind,

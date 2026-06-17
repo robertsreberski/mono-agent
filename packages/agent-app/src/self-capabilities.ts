@@ -442,6 +442,7 @@ async function applySelfSkillInput(
     const originalConfig = patch === undefined ? undefined : await readFile(settings.configPath, "utf8");
     let fileWritten = false;
     let configWritten = false;
+    let auditPath: string | undefined;
     try {
       await writeFile(file, content, { encoding: "utf8", flag: "wx" });
       fileWritten = true;
@@ -449,7 +450,7 @@ async function applySelfSkillInput(
         await writeMonoAgentConfigJson({ path: settings.configPath, patch });
         configWritten = true;
       }
-      const auditPath = await writeAudit(settings, {
+      auditPath = await writeAudit(settings, {
         kind: "skill",
         id,
         files: [file],
@@ -477,6 +478,7 @@ async function applySelfSkillInput(
         throw new SelfCapabilityError("write_failed", "Unable to write skill file.", { file, reason: errorToMessage(error) });
       }
       await rollbackSelfCapabilityWrite(settings, file, fileWritten, originalConfig, configWritten);
+      await removeSelfCapabilityAudit(auditPath);
       throw error;
     }
   });
@@ -565,6 +567,7 @@ async function applySelfCronInput(
     const originalConfig = patch === undefined ? undefined : await readFile(settings.configPath, "utf8");
     let fileWritten = false;
     let configWritten = false;
+    let auditPath: string | undefined;
     try {
       await writeFile(file, content, { encoding: "utf8", flag: "wx" });
       fileWritten = true;
@@ -572,7 +575,7 @@ async function applySelfCronInput(
         await writeMonoAgentConfigJson({ path: settings.configPath, patch });
         configWritten = true;
       }
-      const auditPath = await writeAudit(settings, {
+      auditPath = await writeAudit(settings, {
         kind: "cron",
         id,
         files: [file],
@@ -600,6 +603,7 @@ async function applySelfCronInput(
         throw new SelfCapabilityError("write_failed", "Unable to write cron job file.", { file, reason: errorToMessage(error) });
       }
       await rollbackSelfCapabilityWrite(settings, file, fileWritten, originalConfig, configWritten);
+      await removeSelfCapabilityAudit(auditPath);
       throw error;
     }
   });
@@ -753,6 +757,7 @@ async function readProposal(settings: SelfCapabilitiesSettings, proposalId: stri
   const normalized = normalizeProposalId(proposalId);
   const path = proposalPath(settings, normalized);
   await assertNoSymlinkAncestors(settings.cwd, proposalsPath(settings), "selfCapabilities.proposalsDir");
+  await assertNoSymlinkAncestors(settings.cwd, path, "selfCapabilities.proposalFile");
   let parsed: unknown;
   try {
     parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
@@ -937,6 +942,13 @@ async function rollbackSelfCapabilityWrite(
   if (configWritten && originalConfig !== undefined) {
     await writeFile(settings.configPath, originalConfig, "utf8");
   }
+}
+
+async function removeSelfCapabilityAudit(auditPath: string | undefined): Promise<void> {
+  if (auditPath === undefined) {
+    return;
+  }
+  await rm(auditPath, { force: true });
 }
 
 async function writeAudit(

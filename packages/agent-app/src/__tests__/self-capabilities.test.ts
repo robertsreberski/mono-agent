@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -206,6 +206,25 @@ describe("self capability authoring", () => {
     expect(await readSelfCapabilitiesReloadToken(settings.auditDir)).toBe("");
   });
 
+  it("rejects symlinked proposal files before reading", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    const proposal = await proposeSelfSkill(settings, {
+      name: "Linked Proposal",
+      description: "Do not follow proposal file symlinks.",
+      instructions: "Read only proposal files that are regular files inside the agent folder.",
+    });
+    const outside = join(dir, "outside-proposal.json");
+    await writeFile(outside, await readFile(proposal.proposalPath!, "utf8"), "utf8");
+    await rm(proposal.proposalPath!);
+    await symlink(outside, proposal.proposalPath!, "file");
+
+    await expect(applySelfSkill(settings, { proposalId: proposal.proposalId! })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+    await expect(readFile(join(dir, "skills", "linked-proposal", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("rejects applying saved proposals when current write targets drift", async () => {
     const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
     const settings = await settingsFromConfig(configPath, { mode: "apply" });
@@ -353,6 +372,29 @@ describe("self capability authoring", () => {
       instructions: "This should fail before writing.",
     })).rejects.toMatchObject({ code: "invalid_config" });
     await expect(readFile(join(outside, "escaping-skill", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes apply audit records when reload requests fail after writing", async () => {
+    const configPath = await writeConfig(baseConfig({ selfCapabilities: { enabled: true, mode: "apply" } }));
+    const settings = await settingsFromConfig(configPath, { mode: "apply" });
+    await mkdir(join(settings.auditDir, "reload-requests.jsonl"), { recursive: true });
+
+    await expect(applySelfSkill(settings, {
+      name: "Reload Failure Skill",
+      description: "Force reload request failure after the audit record is written.",
+      instructions: "The apply audit should be removed when reload request writing fails.",
+    })).rejects.toMatchObject({ code: "EISDIR" });
+    await expect(readFile(join(dir, "skills", "reload-failure-skill", "SKILL.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await readJson(configPath)).context).toEqual({ identityPath: "./IDENTITY.md", selectedSkills: [] });
+    expect(await readdir(join(settings.auditDir, "audit"))).toEqual([]);
+
+    await expect(applySelfCron(settings, {
+      id: "Reload Failure Cron",
+      expression: "0 8 * * *",
+      prompt: "The cron audit should be removed when reload request writing fails.",
+    })).rejects.toMatchObject({ code: "EISDIR" });
+    await expect(readFile(join(dir, "cron", "reload-failure-cron.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(settings.auditDir, "audit"))).toEqual([]);
   });
 
   it("rejects symlinked audit folders before creating capability files", async () => {
