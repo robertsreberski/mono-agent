@@ -71,6 +71,12 @@ describe("createOpenAIAgentsRuntime", () => {
     expect(result.text).toBe("Hello");
     expect(result.events).toHaveLength(3);
     expect(seen).toHaveLength(3);
+    expect(result.events?.[1]).toEqual(seen[1]);
+    expect(seen[1]).toEqual({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Hello" }] },
+      raw_event: events[1],
+    });
     expect(result.numTurns).toBe(1);
     expect(result.sdk).toBe("openai");
     expect(result.model).toBe("gpt-5");
@@ -281,6 +287,15 @@ describe("translations", () => {
       "agent_updated_stream_event",
     );
     expect(translateOpenAIStreamEvent({})).toBeUndefined();
+  });
+
+  it("translateOpenAIStreamEvent exposes output text deltas as canonical assistant text", () => {
+    const raw = { type: "raw_model_stream_event", data: { type: "output_text_delta", delta: "Hello" } };
+    expect(translateOpenAIStreamEvent(raw)).toEqual({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Hello" }] },
+      raw_event: raw,
+    });
   });
 });
 

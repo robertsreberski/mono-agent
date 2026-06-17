@@ -10,6 +10,14 @@ export function translateOpenAIStreamEvent(event: OpenAIStreamEventLike): Runtim
   if (!isObject(event) || typeof event.type !== "string") {
     return undefined;
   }
+  const textDelta = outputTextDelta(event);
+  if (textDelta !== undefined) {
+    return {
+      type: "assistant",
+      message: { content: [{ type: "text", text: textDelta }] },
+      raw_event: event,
+    };
+  }
   return { ...event };
 }
 
@@ -62,4 +70,14 @@ function projectOpenAIMcpSpec(server: NormalizedMcpServer): McpServerSpec {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function outputTextDelta(event: OpenAIStreamEventLike): string | undefined {
+  if (event.type !== "raw_model_stream_event" || !isObject(event.data)) {
+    return undefined;
+  }
+  if (event.data.type !== "output_text_delta" || typeof event.data.delta !== "string" || event.data.delta.length === 0) {
+    return undefined;
+  }
+  return event.data.delta;
 }

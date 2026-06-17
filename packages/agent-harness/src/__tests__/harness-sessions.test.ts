@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
-import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
+import { AgentHarnessError, createAgentHarness, createInMemoryHistoryStore } from "../index.js";
 import type { AgentHarnessSessionOptions } from "../index.js";
 
 const tempDirs: string[] = [];
@@ -128,7 +128,51 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.disposedSessions).toContain("ps-next");
   });
 
-  it("retries once with history when the resumed attempt throws", async () => {
+  it("retries once with history when a resumed attempt throws a structured session miss", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = await primedHistoryStore("conv-1");
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      if (options.sessionId !== undefined) {
+        throw new AgentHarnessError("session_not_found", "session expired");
+      }
+      return { text: "recovered", providerSessionId: "ps-next" };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+
+    const first = await harness.run(request("conv-1"));
+    expect(first.text).toBe("recovered");
+
+    const second = await harness.run(request("conv-1", "again"));
+    expect(second.text).toBe("recovered");
+    expect(fake.calls).toHaveLength(3);
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-next");
+    expect(fake.calls[2]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(fake.disposedSessions).toContain("ps-next");
+  });
+
+  it("retries once with history when the resumed session is busy", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = await primedHistoryStore("conv-1");
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      if (options.sessionId !== undefined) {
+        return { failureKind: "session_busy", error: "session is busy" };
+      }
+      return { text: "recovered", providerSessionId: "ps-next" };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+
+    await harness.run(request("conv-1"));
+    const second = await harness.run(request("conv-1", "again"));
+    expect(second.text).toBe("recovered");
+    expect(fake.calls).toHaveLength(3);
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-next");
+    expect(fake.calls[2]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(fake.disposedSessions).toContain("ps-next");
+  });
+
+  it("does not replay history when the resumed attempt throws without session failure details", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async (_prompt, options) => {
       if (options.sessionId !== undefined) {
@@ -140,8 +184,9 @@ describe("AgentHarness continuous sessions", () => {
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
-    expect(second.text).toBe("recovered");
-    expect(fake.calls).toHaveLength(3);
+    expect(second.failure).toMatchObject({ kind: "Error", message: "transport died" });
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.disposedSessions).not.toContain("ps-next");
   });
 
   it("does not retry cancelled resumed runs", async () => {
@@ -292,7 +337,33 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls).toHaveLength(3);
   });
 
-  it("an error string without a failureKind also triggers the stale retry", async () => {
+  it("does not replay history for non-session provider failures during resume", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = await primedHistoryStore("conv-1");
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      if (options.sessionId !== undefined) {
+        return { failureKind: "provider_unavailable", error: "stream disconnected" };
+      }
+      return { text: "ok", providerSessionId: "ps-1" };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+
+    await harness.run(request("conv-1"));
+    const second = await harness.run(request("conv-1", "again"));
+    expect(second.failure).toMatchObject({ kind: "provider_unavailable", message: "stream disconnected" });
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-1");
+    expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
+    expect(fake.disposedSessions).toContain("ps-1");
+
+    const third = await harness.run(request("conv-1", "after failure"));
+    expect(third.text).toBe("ok");
+    expect(fake.calls).toHaveLength(3);
+    expect(fake.calls[2]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+  });
+
+  it("does not replay history for an error-only resumed result without a session failure kind", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async (_prompt, options) => {
       if (options.sessionId !== undefined) {
@@ -304,8 +375,8 @@ describe("AgentHarness continuous sessions", () => {
 
     await harness.run(request("conv-1"));
     const second = await harness.run(request("conv-1"));
-    expect(second.text).toBe("ok");
-    expect(fake.calls).toHaveLength(3);
+    expect(second.failure).toMatchObject({ kind: "runtime_error", message: "thread evaporated" });
+    expect(fake.calls).toHaveLength(2);
   });
 
   it("an empty resumed turn retires the session so the next message replays history", async () => {

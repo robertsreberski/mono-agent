@@ -81,7 +81,7 @@ export class MonoAgentHarness implements AgentHarness {
         resumeError = error;
       }
 
-      if (resumeSessionId !== undefined && (resumeError !== undefined || shouldRetryWithoutSession(runtimeResult, request.abortSignal.aborted))) {
+      if (resumeSessionId !== undefined && (shouldRetrySessionResumeError(resumeError) || shouldRetryWithoutSession(runtimeResult, request.abortSignal.aborted))) {
         const warning: RuntimeEventLike = {
           type: "runtime_warning",
           warning_kind: "session_resume_retry",
@@ -105,6 +105,9 @@ export class MonoAgentHarness implements AgentHarness {
       const baseMetadata = responseMetadata(runId, request, context, summary, runtimeResult);
 
       if (failure !== undefined) {
+        if (sessionRecord !== undefined && shouldRetireSessionAfterFailure(failure.kind)) {
+          await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
+        }
         return { metadata: baseMetadata, failure };
       }
 
@@ -396,14 +399,35 @@ function stringList(value: unknown): readonly string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
+const SESSION_RESUME_RETRY_FAILURE_KINDS = new Set(["session_not_found", "session_busy"]);
+
+function shouldRetrySessionResumeError(error: unknown): boolean {
+  return SESSION_RESUME_RETRY_FAILURE_KINDS.has(failureKindFromUnknown(error));
+}
+
 function shouldRetryWithoutSession(result: RuntimeResult | undefined, aborted: boolean): boolean {
   if (result === undefined || aborted || result.cancelled === true) {
     return false;
   }
   if (typeof result.failureKind === "string" && result.failureKind.trim().length > 0) {
-    return result.failureKind !== "cancelled";
+    return SESSION_RESUME_RETRY_FAILURE_KINDS.has(result.failureKind);
   }
-  return typeof result.error === "string" && result.error.trim().length > 0;
+  return false;
+}
+
+function failureKindFromUnknown(value: unknown): string {
+  if (!isRecord(value)) {
+    return "";
+  }
+  const direct = value.failureKind;
+  if (typeof direct === "string") {
+    return direct.trim();
+  }
+  const details = value.details;
+  if (isRecord(details) && typeof details.failureKind === "string") {
+    return details.failureKind.trim();
+  }
+  return "";
 }
 
 function failureFromRuntimeResult(result: RuntimeResult): AgentHarnessFailure | undefined {
@@ -429,6 +453,10 @@ function failureFromRuntimeResult(result: RuntimeResult): AgentHarnessFailure | 
     };
   }
   return undefined;
+}
+
+function shouldRetireSessionAfterFailure(kind: string): boolean {
+  return kind !== "cancelled";
 }
 
 function failureFromThrownError(error: unknown, wasAborted: boolean): AgentHarnessFailure {

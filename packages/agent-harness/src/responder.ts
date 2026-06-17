@@ -144,6 +144,8 @@ function createRuntimeEventStream(stream: AgentMessageStream): {
 } {
   let chain = Promise.resolve();
   let firstError: unknown;
+  let pendingText = "";
+  let textFlushScheduled = false;
   function enqueue(operation: () => Promise<void>): void {
     chain = chain
       .then(async () => {
@@ -158,13 +160,33 @@ function createRuntimeEventStream(stream: AgentMessageStream): {
         }
       });
   }
+  function flushPendingText(): void {
+    if (pendingText.length === 0) {
+      return;
+    }
+    const text = pendingText;
+    pendingText = "";
+    enqueue(async () => {
+      await stream.append(text);
+    });
+  }
+  function scheduleTextFlush(): void {
+    if (textFlushScheduled) {
+      return;
+    }
+    textFlushScheduled = true;
+    queueMicrotask(() => {
+      textFlushScheduled = false;
+      flushPendingText();
+    });
+  }
   return {
     enqueueText(delta: string): void {
-      enqueue(async () => {
-        await stream.append(delta);
-      });
+      pendingText += delta;
+      scheduleTextFlush();
     },
     enqueueEvent(event: AgentStreamEvent): void {
+      flushPendingText();
       enqueue(async () => {
         if (typeof stream.event === "function") {
           await stream.event(event);
@@ -176,6 +198,7 @@ function createRuntimeEventStream(stream: AgentMessageStream): {
       });
     },
     async flush(): Promise<void> {
+      flushPendingText();
       await chain;
       if (firstError !== undefined) {
         throw firstError;
