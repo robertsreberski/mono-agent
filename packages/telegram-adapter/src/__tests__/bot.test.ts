@@ -26,20 +26,56 @@ interface RecordedCall {
   payload: Record<string, unknown>;
 }
 
+interface StubbedDownload {
+  /** Bytes returned by download(); when omitted the download throws. */
+  bytes?: Uint8Array;
+  /** Force a missing file_path from getFile (resolveFilePath -> undefined). */
+  noFilePath?: boolean;
+}
+
 function buildTestBot(
   options: Partial<CreateTelegramBotOptions> & { responder: AgentResponder },
 ): {
   bot: Bot;
   calls: RecordedCall[];
   failures: Map<string, () => unknown>;
+  downloads: Map<string, StubbedDownload>;
+  downloadedFileIds: string[];
 } {
   const calls: RecordedCall[] = [];
   const failures = new Map<string, () => unknown>();
+  // By default every attachment file_id resolves to a tiny deterministic byte
+  // payload so the request carries base64 data without touching the network.
+  const downloads = new Map<string, StubbedDownload>();
+  const downloadedFileIds: string[] = [];
   let nextMessageId = 1000;
 
   const controller = createTelegramBot({
     botToken: "test-token",
     allowAllChats: true,
+    fileDownloaderFactory: () => ({
+      async resolveFilePath(fileId) {
+        const stub = downloads.get(fileId);
+        if (stub?.noFilePath === true) {
+          return undefined;
+        }
+        return `path/${fileId}`;
+      },
+      async download(filePath) {
+        const fileId = filePath.replace(/^path\//u, "");
+        downloadedFileIds.push(fileId);
+        const stub = downloads.get(fileId);
+        if (stub?.bytes !== undefined) {
+          return stub.bytes;
+        }
+        if (stub !== undefined) {
+          // Stub present but no bytes => simulate a failed download.
+          throw new Error(`download failed for ${fileId}`);
+        }
+        // Default: deterministic bytes derived from the file id.
+        return new TextEncoder().encode(`bytes:${fileId}`);
+      },
+    }),
     ...options,
     botFactory: () => {
       const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
@@ -72,7 +108,7 @@ function buildTestBot(
     },
   });
 
-  return { bot: controller.bot, calls, failures };
+  return { bot: controller.bot, calls, failures, downloads, downloadedFileIds };
 }
 
 function ok(result: unknown): never {
@@ -340,7 +376,7 @@ describe("createTelegramBot", () => {
     ]);
   });
 
-  it("handles Telegram file attachments with caption text", async () => {
+  it("downloads inbound document bytes into request.attachments while preserving metadata", async () => {
     const requests: AgentRequest[] = [];
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
@@ -353,41 +389,118 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(documentUpdate({ caption: "Please summarize this" }));
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({
-      text: "Please summarize this",
-      attachments: [
-        {
-          kind: "document",
-          fileId: "doc-file-id",
-          fileUniqueId: "doc-unique-id",
-          fileName: "brief.pdf",
-          mimeType: "application/pdf",
-          fileSize: 12_345,
-        },
-      ],
-      metadata: {
-        telegram: {
-          attachments: [
-            {
-              kind: "document",
-              fileId: "doc-file-id",
-              fileUniqueId: "doc-unique-id",
-              fileName: "brief.pdf",
-              mimeType: "application/pdf",
-              fileSize: 12_345,
-            },
-          ],
-        },
+    // request.attachments now carries downloaded bytes in the transport-agnostic
+    // AgentAttachment shape: a non-image MIME maps to kind "document".
+    const expectedBase64 = Buffer.from("bytes:doc-file-id").toString("base64");
+    expect(requests[0]?.text).toBe("Please summarize this");
+    expect(requests[0]?.attachments).toEqual([
+      {
+        kind: "document",
+        mimeType: "application/pdf",
+        data: expectedBase64,
+        name: "brief.pdf",
+        sizeBytes: Buffer.from("bytes:doc-file-id").length,
       },
-    });
+    ]);
+    // The original Telegram file metadata is preserved under metadata.telegram.
+    expect(requests[0]?.metadata.telegram.attachments).toEqual([
+      {
+        kind: "document",
+        fileId: "doc-file-id",
+        fileUniqueId: "doc-unique-id",
+        fileName: "brief.pdf",
+        mimeType: "application/pdf",
+        fileSize: 12_345,
+      },
+    ]);
     expect(texts(calls, "sendMessage")).not.toContain(
       "I can handle text and Telegram document, photo, audio, video, or voice metadata in this adapter.",
     );
   });
 
-  it("handles Telegram photo attachments without captions using a text summary", async () => {
+  it("decodes text/* document downloads into the attachment text field", async () => {
     const requests: AgentRequest[] = [];
-    const { bot } = buildTestBot({
+    const { bot, downloads } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "received note" };
+      }),
+    });
+
+    downloads.set("note-file-id", { bytes: new TextEncoder().encode("hello from a file") });
+
+    await bot.handleUpdate({
+      update_id: 1,
+      message: {
+        message_id: 10,
+        date: 1234,
+        chat: { id: 42, type: "private" },
+        from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+        document: {
+          file_id: "note-file-id",
+          file_unique_id: "note-unique-id",
+          file_name: "note.txt",
+          mime_type: "text/plain",
+          file_size: 17,
+        },
+      },
+    } as Parameters<Bot["handleUpdate"]>[0]);
+
+    expect(requests[0]?.attachments).toEqual([
+      {
+        kind: "document",
+        mimeType: "text/plain",
+        data: Buffer.from("hello from a file").toString("base64"),
+        name: "note.txt",
+        sizeBytes: 17,
+        text: "hello from a file",
+      },
+    ]);
+  });
+
+  it("skips an attachment whose download fails and still runs the responder", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, calls, downloads } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ran anyway" };
+      }),
+    });
+
+    // Stub present without bytes => the download throws; the attachment is skipped.
+    downloads.set("doc-file-id", {});
+
+    await bot.handleUpdate(documentUpdate({ caption: "summarize" }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.attachments).toBeUndefined();
+    // Telegram metadata is still preserved even though the bytes were skipped.
+    expect(requests[0]?.metadata.telegram.attachments).toHaveLength(1);
+    expect(texts(calls, "editMessageText").at(-1)).toBe("ran anyway");
+  });
+
+  it("skips attachments whose MIME type is not on the allowlist", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, downloadedFileIds } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(voiceUpdate());
+
+    // audio/ogg is not on the default allowlist, so no download is attempted.
+    expect(downloadedFileIds).toEqual([]);
+    expect(requests[0]?.attachments).toBeUndefined();
+  });
+
+  it("downloads the largest photo as an image attachment and keeps the text summary", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, downloadedFileIds } = buildTestBot({
       responder: responderFrom(async (request) => {
         requests.push(request);
         return { text: "received photo" };
@@ -398,35 +511,26 @@ describe("createTelegramBot", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.text).toContain("Telegram photo");
+    // The largest photo size is the one downloaded; image MIME maps to kind "image".
+    expect(downloadedFileIds).toEqual(["photo-large-id"]);
     expect(requests[0]?.attachments).toEqual([
       {
-        kind: "photo",
-        fileId: "photo-large-id",
-        fileUniqueId: "photo-large-unique",
-        fileSize: 65_536,
-        width: 1280,
-        height: 720,
-        sizes: [
-          {
-            fileId: "photo-small-id",
-            fileUniqueId: "photo-small-unique",
-            fileSize: 1_024,
-            width: 160,
-            height: 90,
-          },
-          {
-            fileId: "photo-large-id",
-            fileUniqueId: "photo-large-unique",
-            fileSize: 65_536,
-            width: 1280,
-            height: 720,
-          },
-        ],
+        kind: "image",
+        mimeType: "image/jpeg",
+        data: Buffer.from("bytes:photo-large-id").toString("base64"),
+        sizeBytes: Buffer.from("bytes:photo-large-id").length,
       },
     ]);
+    // Telegram photo metadata (all sizes) is preserved under metadata.telegram.
+    expect(requests[0]?.metadata.telegram.attachments?.[0]).toMatchObject({
+      kind: "photo",
+      fileId: "photo-large-id",
+      width: 1280,
+      height: 720,
+    });
   });
 
-  it("handles Telegram voice attachments with a duration summary", async () => {
+  it("keeps Telegram voice metadata even though audio/ogg is not downloaded", async () => {
     const requests: AgentRequest[] = [];
     const { bot } = buildTestBot({
       responder: responderFrom(async (request) => {
@@ -439,7 +543,10 @@ describe("createTelegramBot", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.text).toContain("17s");
-    expect(requests[0]?.attachments).toEqual([
+    // audio/ogg is off the default allowlist, so no bytes are inlined…
+    expect(requests[0]?.attachments).toBeUndefined();
+    // …but the metadata is still forwarded.
+    expect(requests[0]?.metadata.telegram.attachments).toEqual([
       {
         kind: "voice",
         fileId: "voice-file-id",

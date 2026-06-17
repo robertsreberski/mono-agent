@@ -1,4 +1,5 @@
 import type {
+  AgentAttachment,
   AgentRequestBase,
   AgentResponder as SharedAgentResponder,
   AgentResponse,
@@ -93,7 +94,13 @@ export interface AgentRequest extends AgentRequestBase {
   userId?: number;
   username?: string;
   text: string;
-  attachments?: readonly TelegramAttachment[];
+  /**
+   * Downloaded attachment bytes, ready for a vision/document-aware runtime. The
+   * transport-agnostic {@link AgentAttachment} shape (base64 data + mime + name);
+   * the original Telegram file metadata is preserved under
+   * `metadata.telegram.attachments`.
+   */
+  attachments?: readonly AgentAttachment[];
   abortSignal: AbortSignal;
   metadata: {
     telegram: TelegramRequestMetadata;
@@ -180,12 +187,17 @@ export const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
  * Build the responder-facing {@link AgentRequest} from a Telegram update. The
  * grammY message handler passes `ctx.update` and `ctx.message`, which are
  * structurally compatible with the wire types this reads.
+ *
+ * `resolvedAttachments` are the downloaded {@link AgentAttachment} bytes (when
+ * available) that populate `request.attachments`; the original Telegram file
+ * metadata is always preserved under `metadata.telegram.attachments`.
  */
 export function buildAgentRequest(
   update: TelegramUpdate,
   message: TelegramMessage,
   input: TelegramAgentMessageInput,
   abortSignal: AbortSignal,
+  resolvedAttachments?: readonly AgentAttachment[],
 ): AgentRequest {
   const from = metadataFromUser(message.from);
   const telegramMetadata: TelegramRequestMetadata = {
@@ -208,8 +220,8 @@ export function buildAgentRequest(
     },
   };
 
-  if (input.attachments.length > 0) {
-    request.attachments = input.attachments;
+  if (resolvedAttachments !== undefined && resolvedAttachments.length > 0) {
+    request.attachments = resolvedAttachments;
   }
   if (message.from?.id !== undefined) {
     request.userId = message.from.id;
@@ -458,6 +470,176 @@ function formatBytes(bytes: number): string {
     return `${Math.round(bytes / 1024)} KB`;
   }
   return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/** Telegram's hard cap for bot file downloads is 20 MB. */
+export const DEFAULT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * MIME types the adapter will download and inline. Images flow to vision-capable
+ * runtimes; documents/text are saved to disk (and decoded inline for text/*).
+ */
+export const DEFAULT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "application/json",
+  "application/zip",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "text/html",
+];
+
+/**
+ * Minimal seam over the Telegram Bot API needed to fetch attachment bytes:
+ * resolve a `file_id` to a `file_path` (getFile) then download it from the file
+ * URL. Both calls honor the request `abortSignal`.
+ */
+export interface TelegramFileDownloader {
+  /** Resolve a `file_id` to a downloadable `file_path` (Bot API `getFile`). */
+  resolveFilePath(fileId: string, signal: AbortSignal): Promise<string | undefined>;
+  /** Download the file at `file_path` (GET on the file URL). */
+  download(filePath: string, signal: AbortSignal): Promise<Uint8Array>;
+}
+
+export interface DownloadTelegramAttachmentsOptions {
+  /** Skip files larger than this many decoded bytes. Default ~20 MB. */
+  readonly maxBytes?: number;
+  /** Only download files whose MIME type is allowed. Defaults to images + common docs/text. */
+  readonly mimeAllowlist?: readonly string[];
+  readonly logger?: TelegramAdapterLogger;
+}
+
+interface ResolvedTelegramAttachmentSource {
+  readonly fileId: string;
+  readonly mimeType: string;
+  readonly name: string | undefined;
+  readonly declaredSize: number | undefined;
+}
+
+/**
+ * Download the bytes for each inbound {@link TelegramAttachment} and map them to
+ * the transport-agnostic {@link AgentAttachment} shape. Enforces a byte cap and a
+ * MIME allowlist, ties every request to `abortSignal`, and skips (never throws on)
+ * an attachment whose download fails so the run still proceeds. Photos and audio
+ * without a declared MIME type fall back to sensible defaults.
+ */
+export async function downloadTelegramAttachments(
+  attachments: readonly TelegramAttachment[],
+  downloader: TelegramFileDownloader,
+  abortSignal: AbortSignal,
+  options?: DownloadTelegramAttachmentsOptions,
+): Promise<AgentAttachment[]> {
+  const maxBytes = options?.maxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES;
+  const allowlist = new Set(
+    (options?.mimeAllowlist ?? DEFAULT_ATTACHMENT_MIME_ALLOWLIST).map((mime) => mime.toLowerCase()),
+  );
+  const logger = options?.logger;
+  const resolved: AgentAttachment[] = [];
+
+  for (const attachment of attachments) {
+    if (abortSignal.aborted) {
+      break;
+    }
+    const source = attachmentSource(attachment);
+    const mimeType = source.mimeType.toLowerCase();
+    if (!allowlist.has(mimeType)) {
+      logger?.debug?.("Skipping Telegram attachment with disallowed MIME type.", {
+        mimeType: source.mimeType,
+        name: source.name,
+      });
+      continue;
+    }
+    if (source.declaredSize !== undefined && source.declaredSize > maxBytes) {
+      logger?.debug?.("Skipping oversized Telegram attachment.", {
+        sizeBytes: source.declaredSize,
+        maxBytes,
+        name: source.name,
+      });
+      continue;
+    }
+
+    try {
+      const filePath = await downloader.resolveFilePath(source.fileId, abortSignal);
+      if (filePath === undefined) {
+        logger?.warn?.("Telegram getFile returned no file_path; skipping attachment.", {
+          fileId: source.fileId,
+          name: source.name,
+        });
+        continue;
+      }
+      const bytes = await downloader.download(filePath, abortSignal);
+      if (bytes.byteLength > maxBytes) {
+        logger?.warn?.("Telegram attachment exceeded the size cap after download; skipping.", {
+          sizeBytes: bytes.byteLength,
+          maxBytes,
+          name: source.name,
+        });
+        continue;
+      }
+      resolved.push(buildAgentAttachment(source, mimeType, bytes));
+    } catch (error) {
+      // Download failures never fail the run — skip the attachment and continue.
+      logger?.warn?.("Failed to download Telegram attachment; skipping it.", {
+        fileId: source.fileId,
+        name: source.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return resolved;
+}
+
+function buildAgentAttachment(
+  source: ResolvedTelegramAttachmentSource,
+  mimeType: string,
+  bytes: Uint8Array,
+): AgentAttachment {
+  const kind: AgentAttachment["kind"] = mimeType.startsWith("image/") ? "image" : "document";
+  const attachment: { -readonly [K in keyof AgentAttachment]?: AgentAttachment[K] } = {
+    kind,
+    mimeType: source.mimeType,
+    data: Buffer.from(bytes).toString("base64"),
+    sizeBytes: bytes.byteLength,
+  };
+  if (source.name !== undefined) {
+    attachment.name = source.name;
+  }
+  if (mimeType.startsWith("text/")) {
+    attachment.text = Buffer.from(bytes).toString("utf8");
+  }
+  return attachment as AgentAttachment;
+}
+
+function attachmentSource(attachment: TelegramAttachment): ResolvedTelegramAttachmentSource {
+  const name = "fileName" in attachment ? attachment.fileName : undefined;
+  return {
+    fileId: attachment.fileId,
+    mimeType: attachmentMimeType(attachment),
+    name,
+    declaredSize: attachment.fileSize,
+  };
+}
+
+function attachmentMimeType(attachment: TelegramAttachment): string {
+  if ("mimeType" in attachment && attachment.mimeType !== undefined) {
+    return attachment.mimeType;
+  }
+  if (attachment.kind === "photo") {
+    return "image/jpeg";
+  }
+  if (attachment.kind === "voice") {
+    return "audio/ogg";
+  }
+  return "application/octet-stream";
 }
 
 function metadataFromUser(

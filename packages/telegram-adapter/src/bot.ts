@@ -5,14 +5,17 @@ import { Bot, type Context } from "grammy";
 import {
   DEFAULT_MESSAGES,
   buildAgentRequest,
+  downloadTelegramAttachments,
   finishSafely,
   normalizeTelegramMessageInput,
   resolveErrorText,
   type AgentResponder,
   type AgentResponse,
+  type DownloadTelegramAttachmentsOptions,
   type TelegramAdapterLogger,
   type TelegramAdapterMessages,
   type TelegramAdapterStreamOptions,
+  type TelegramFileDownloader,
 } from "./adapter.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
 import {
@@ -45,8 +48,19 @@ export interface CreateTelegramBotOptions {
    * rejects). Lets a host mark the channel failed instead of leaving it running.
    */
   readonly onPollingError?: (error: unknown) => void;
+  /**
+   * Inbound attachment download tuning (byte cap + MIME allowlist). Inbound
+   * Telegram media bytes are fetched via the Bot API and inlined into
+   * `request.attachments`; failures skip the attachment without failing the run.
+   */
+  readonly attachments?: DownloadTelegramAttachmentsOptions;
   /** Test seam: build the grammY Bot (e.g. with a fake botInfo + transformer). */
   readonly botFactory?: (token: string) => Bot;
+  /**
+   * Test seam: override the file downloader (getFile + file URL fetch). Defaults
+   * to one backed by `bot.api.getFile` and `fetch` against the Telegram file URL.
+   */
+  readonly fileDownloaderFactory?: (bot: Bot, token: string) => TelegramFileDownloader;
   /** Test seam: build the polling runner. Defaults to `@grammyjs/runner`'s `run`. */
   readonly runnerFactory?: (bot: Bot) => RunnerHandle;
 }
@@ -106,6 +120,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   const bot = options.botFactory?.(options.botToken) ?? new Bot(options.botToken);
   const sender = createGrammyTelegramApi(bot.api);
+  const fileDownloader =
+    options.fileDownloaderFactory?.(bot, options.botToken) ??
+    createDefaultFileDownloader(bot, options.botToken);
 
   const isAuthorized = (chatId: TelegramChatId | undefined): boolean =>
     chatId !== undefined && (allowAllChats || allowedChatIds.has(String(chatId)));
@@ -192,11 +209,29 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       controllers.add(controller);
     }
 
+    // Download attachment bytes (best-effort) before handing the request to the
+    // responder. Failures skip the attachment; the run proceeds regardless. The
+    // download is tied to this message's abort signal.
+    let resolvedAttachments: Awaited<ReturnType<typeof downloadTelegramAttachments>> = [];
+    if (input.attachments.length > 0 && !controller.signal.aborted) {
+      const downloadOptions: DownloadTelegramAttachmentsOptions = {
+        ...options.attachments,
+        ...(logger !== undefined ? { logger } : {}),
+      };
+      resolvedAttachments = await downloadTelegramAttachments(
+        input.attachments,
+        fileDownloader,
+        controller.signal,
+        downloadOptions,
+      );
+    }
+
     const request = buildAgentRequest(
       ctx.update as unknown as TelegramUpdate,
       message as unknown as TelegramMessage,
       input,
       controller.signal,
+      resolvedAttachments,
     );
     const stream = new TelegramMessageStream(
       buildStreamOptions(chatId, message.message_id, controller.signal),
@@ -363,6 +398,30 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Default {@link TelegramFileDownloader}: resolve a `file_id` to a `file_path`
+ * via `bot.api.getFile`, then download it from the Telegram file URL
+ * (`https://api.telegram.org/file/bot<token>/<file_path>`) with `fetch`. Both
+ * calls honor the request abort signal.
+ */
+function createDefaultFileDownloader(bot: Bot, token: string): TelegramFileDownloader {
+  return {
+    async resolveFilePath(fileId, signal): Promise<string | undefined> {
+      const file = await bot.api.getFile(fileId, signal as unknown as Parameters<typeof bot.api.getFile>[1]);
+      return file.file_path;
+    },
+    async download(filePath, signal): Promise<Uint8Array> {
+      const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
+      const response = await fetch(url, { signal });
+      if (!response.ok) {
+        throw new Error(`Telegram file download failed with status ${response.status}.`);
+      }
+      const buffer = await response.arrayBuffer();
+      return new Uint8Array(buffer);
+    },
+  };
 }
 
 function controlCommandFromCaption(

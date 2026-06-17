@@ -306,7 +306,7 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls[0]?.text.startsWith("…\n")).toBe(true);
   });
 
-  it("does not substitute the placeholder for blank status updates", async () => {
+  it("shows the empty-content placeholder for a blank interim status update", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
       api,
@@ -315,13 +315,14 @@ describe("TelegramMessageStream", () => {
       editDebounceMs: 0,
     });
 
-    // Establish the message, then push a whitespace-only status update.
+    // Establish the message, then push a whitespace-only status update. The shared
+    // resilience substrate surfaces the empty-content placeholder rather than an
+    // empty bubble, so a blank interim status never renders as nothing.
     await stream.status("first");
     await stream.status("   \n");
 
     const lastEdit = api.editMessageTextCalls.at(-1);
-    expect(lastEdit?.text).toBe("");
-    expect(lastEdit?.text).not.toBe("No response text was returned.");
+    expect(lastEdit?.text).toBe("No response text was returned.");
   });
 
   it("substitutes the placeholder only when finishing with empty content", async () => {
@@ -562,6 +563,60 @@ describe("TelegramMessageStream", () => {
 
     await expect(stream.finish("unwanted answer")).resolves.toBeUndefined();
     expect(sendCalls.map((call) => call.text)).toEqual(["Thinking…"]);
+  });
+});
+
+describe("TelegramMessageStream (substrate wrapper)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("delegates streaming + finish to the shared ResilientMessageStream substrate", async () => {
+    // Equivalence proof that the wrapper is a thin pass-through onto the substrate:
+    // the substrate owns the lazy placeholder, the debounced interim edit, and the
+    // final MarkdownV2 re-render — the wrapper only builds the Telegram transport.
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 77,
+      initialStatusText: "Thinking…",
+      editDebounceMs: 0,
+    });
+
+    await stream.append("Answer with a dot.");
+    await stream.finish("Answer with a dot.");
+
+    // Lazy placeholder posted once via transport.post -> sendMessage.
+    expect(api.sendMessageCalls).toEqual([{ chat_id: 77, text: "Thinking…" }]);
+    // Interim edit streams plain; final edit re-renders MarkdownV2 (substrate FSM).
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 77, message_id: 100, text: "Answer with a dot." },
+      { chat_id: 77, message_id: 100, text: "Answer with a dot\\.", parse_mode: "MarkdownV2" },
+    ]);
+  });
+
+  it("classifies a MarkdownV2 size overflow as a reformat-to-plain recovery", async () => {
+    // The transport pre-empts an oversized MarkdownV2 chunk by signalling
+    // reformat_plain to the substrate, which re-delivers the plain source. The
+    // oversized markdown attempt never reaches the Telegram API.
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 88,
+      editDebounceMs: 0,
+      maxMessageChars: 50,
+    });
+
+    const dots = ".".repeat(30);
+    await stream.finish(dots);
+
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 88, message_id: 100, text: dots },
+    ]);
   });
 });
 
