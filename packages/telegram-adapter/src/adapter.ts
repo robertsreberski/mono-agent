@@ -95,10 +95,16 @@ export interface AgentRequest extends AgentRequestBase {
   username?: string;
   text: string;
   /**
-   * Downloaded attachment bytes, ready for a vision/document-aware runtime. The
-   * transport-agnostic {@link AgentAttachment} shape (base64 data + mime + name);
-   * the original Telegram file metadata is preserved under
-   * `metadata.telegram.attachments`.
+   * Downloaded attachment bytes, ready for a vision/document-aware runtime, in
+   * the transport-agnostic {@link AgentAttachment} shape (base64 data + mime +
+   * name).
+   *
+   * BREAKING (intentional, unified contract): on earlier versions this field
+   * held Telegram-specific `TelegramAttachment[]` metadata. It is now
+   * `AgentAttachment[]` (matching Slack and the OpenAI-compatible channel). The
+   * original Telegram file metadata (fileId, sizes, kind, …) is preserved under
+   * `metadata.telegram.attachments` — custom responders that filtered by
+   * `fileId`/`sizes`/`kind` should read it from there.
    */
   attachments?: readonly AgentAttachment[];
   abortSignal: AbortSignal;
@@ -178,9 +184,9 @@ export const DEFAULT_ERROR_TEXT = "The agent failed while processing your messag
 
 export const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
   welcomeText:
-    "Hello! Send text or Telegram media. I will pass captions and attachment metadata to the configured agent.",
+    "Hello! Send text or Telegram media. I pass your caption and download allowed attachments to share with the configured agent.",
   helpText:
-    "Send text, documents, photos, audio, video, or voice messages. I forward captions and Telegram attachment metadata, not file contents. Use /cancel to stop the current response.",
+    "Send text, documents, photos, audio, video, or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
   busyText: "I am still working on your previous message. Use /cancel to stop it.",
   unauthorizedText: "This Telegram chat is not authorized to use this bot.",
   cancelledText: "Cancelled.",

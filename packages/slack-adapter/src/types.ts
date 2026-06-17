@@ -95,8 +95,10 @@ export interface SlackWebApi {
   /**
    * Download a private Slack file's bytes using the bot token. Slack serves
    * `url_private` only with an `Authorization: Bearer <bot token>` header.
+   * Optional: a text-only custom client may omit it (file events then forward
+   * metadata only). The adapter guards before calling it.
    */
-  downloadFile(
+  downloadFile?(
     params: SlackDownloadFileParams,
     options?: SlackRequestOptions,
   ): Promise<Uint8Array>;

@@ -76,6 +76,8 @@ describe("Cron adapter", () => {
 
     const scheduler = startCronAdapter({
       responder,
+      // queue is opt-in (the default is skip), so request it explicitly.
+      overlap: "queue",
       jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
       now: () => new Date(Date.now()),
       onResult: (result) => {

@@ -127,6 +127,7 @@ export type SlackEventIgnoredReason =
   | "unsupported_event"
   | "unsupported_message"
   | "empty_text"
+  | "no_usable_attachments"
   | "from_bot"
   | "from_self";
 
@@ -223,6 +224,32 @@ const FILE_BEARING_MESSAGE_SUBTYPES: ReadonlySet<string> = new Set([
   "thread_broadcast",
 ]);
 
+/**
+ * Minimal per-conversation serial queue: each submitted task runs only after the
+ * previous one settles, preserving arrival order. A task's failure does not
+ * poison the queue (the chain swallows it; the caller still sees the rejection).
+ */
+class SerialQueue {
+  private tail: Promise<void> = Promise.resolve();
+  private depth = 0;
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    this.depth += 1;
+    const result = this.tail.then(() => task());
+    this.tail = result.then(() => undefined, () => undefined);
+    void result.then(
+      () => { this.depth -= 1; },
+      () => { this.depth -= 1; },
+    );
+    return result;
+  }
+
+  /** True when no task is queued or running. */
+  get idle(): boolean {
+    return this.depth === 0;
+  }
+}
+
 export class SlackAdapter {
   private readonly api: SlackWebApi;
   private readonly responder: AgentResponder;
@@ -244,6 +271,15 @@ export class SlackAdapter {
    * responder.cancel).
    */
   private readonly activeControllers = new Map<string, Set<AbortController>>();
+  /**
+   * Per-conversation admission queue. Socket Mode dispatches envelopes
+   * concurrently, and pre-submit work (status + file download) is variable
+   * latency, so without this a later same-thread message could reach
+   * responder.respond() (and the harness FIFO) before an earlier one. We
+   * serialize respondToEvent per conversation to preserve message order.
+   * /cancel stays out-of-band (handled before this queue).
+   */
+  private readonly admissionQueues = new Map<string, SerialQueue>();
 
   constructor(options: SlackAdapterOptions) {
     this.api = options.api;
@@ -371,9 +407,22 @@ export class SlackAdapter {
 
     // No per-thread "busy" rejection: the harness serializes runs for the
     // conversation, queuing a concurrent message and answering it on the warm
-    // session after the current turn. The channel simply responds to every
-    // message.
-    return await this.respondToEvent(event, text, runKey);
+    // session after the current turn. We admit messages through a per-conversation
+    // serial queue first so they reach the harness in arrival order even when an
+    // earlier message stalls on file download.
+    const conversationId = conversationIdFor(event);
+    let queue = this.admissionQueues.get(conversationId);
+    if (queue === undefined) {
+      queue = new SerialQueue();
+      this.admissionQueues.set(conversationId, queue);
+    }
+    try {
+      return await queue.run(() => this.respondToEvent(event, text, runKey));
+    } finally {
+      if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
+        this.admissionQueues.delete(conversationId);
+      }
+    }
   }
 
   private async respondToEvent(
@@ -433,6 +482,15 @@ export class SlackAdapter {
         return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
       }
 
+      // A file-only message whose files were all skipped (MIME/size/missing
+      // URL/download failure) leaves no text and no attachments. Deliver a
+      // deterministic message instead of submitting an empty request the harness
+      // would reject.
+      if (text.length === 0 && attachments.length === 0) {
+        await stream.finish(this.messages.unsupportedText);
+        return { kind: "ignored", reason: "no_usable_attachments", eventId: event.eventId, channelId: event.channelId };
+      }
+
       const request = buildAgentRequest(event, text, controller.signal, attachments);
       const response = await this.responder.respond(request, stream);
 
@@ -481,6 +539,15 @@ export class SlackAdapter {
     signal: AbortSignal,
   ): Promise<AgentAttachment[]> {
     const attachments: AgentAttachment[] = [];
+    // downloadFile is optional on SlackWebApi: a text-only custom client may omit
+    // it. Without it we cannot fetch bytes, so skip attachment download entirely.
+    if (typeof this.api.downloadFile !== "function") {
+      if (files.length > 0) {
+        this.logger?.debug?.("Slack client has no downloadFile; skipping attachments.", { count: files.length });
+      }
+      return attachments;
+    }
+    const downloadFile = this.api.downloadFile.bind(this.api);
     for (const file of files) {
       if (signal.aborted) {
         break;
@@ -511,7 +578,7 @@ export class SlackAdapter {
 
       let bytes: Uint8Array;
       try {
-        bytes = await this.api.downloadFile({ url, maxBytes: this.attachmentMaxBytes }, { signal });
+        bytes = await downloadFile({ url, maxBytes: this.attachmentMaxBytes }, { signal });
       } catch (error) {
         this.logger?.warn?.("Failed to download a Slack file (skipped).", {
           id: file.id,

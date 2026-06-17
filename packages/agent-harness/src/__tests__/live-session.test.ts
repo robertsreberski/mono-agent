@@ -148,19 +148,46 @@ describe("createLiveSessionManager", () => {
     expect(calls).toEqual(["boom", "ok"]);
   });
 
-  it("propagates an already-aborted request signal into the run", async () => {
+  it("rejects an already-aborted request up front without running it", async () => {
     const controller = new AbortController();
     controller.abort();
-    let seen: boolean | undefined;
+    let ran = false;
     const manager = createLiveSessionManager({
-      run: async (request) => {
-        seen = request.abortSignal.aborted;
+      run: async () => {
+        ran = true;
         return response("x");
       },
     });
 
-    await manager.enqueue("c1", req("c1", "hi", controller.signal));
-    expect(seen).toBe(true);
+    await expect(manager.enqueue("c1", req("c1", "hi", controller.signal))).rejects.toSatisfy(
+      isAgentResponseCancelledError,
+    );
+    expect(ran).toBe(false);
+  });
+
+  it("rejects an already-aborted request queued behind active work without retaining it", async () => {
+    const gates: Array<() => void> = [];
+    const manager = createLiveSessionManager({
+      run: async (request) => {
+        await new Promise<void>((resolve) => gates.push(resolve));
+        return response(request.userMessage);
+      },
+    });
+
+    const p1 = manager.enqueue("c1", req("c1", "active"));
+    await flush();
+    expect(manager.pendingCount("c1")).toBe(0); // active, nothing queued yet
+
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(manager.enqueue("c1", req("c1", "stale", aborted.signal))).rejects.toSatisfy(
+      isAgentResponseCancelledError,
+    );
+    // The pre-aborted turn never enters the pending queue.
+    expect(manager.pendingCount("c1")).toBe(0);
+
+    gates[0]?.();
+    await expect(p1).resolves.toMatchObject({ text: "active" });
   });
 
   it("dispose rejects all in-flight and queued turns and stops accepting new ones", async () => {

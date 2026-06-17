@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   splitTelegramText,
+  TelegramDeliveryError,
   TelegramMessageStream,
 } from "../message-stream.js";
 import { TelegramApiError } from "../telegram-error.js";
@@ -397,6 +398,31 @@ describe("TelegramMessageStream", () => {
     await expect(
       new TelegramMessageStream({ api, chatId: 1 }).append("hello"),
     ).rejects.toThrow("send failed");
+  });
+
+  it("normalizes a substrate final-delivery failure to TelegramDeliveryError", async () => {
+    // Every send fails, so finish() exhausts the retry path and the last-resort
+    // fresh send: the substrate raises the shared ChannelDeliveryError, which the
+    // wrapper must re-throw as the Telegram type (the base type must not escape).
+    const api = new FakeTelegramApi();
+    api.failSendWith = new Error("send failed");
+
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 9,
+      editDebounceMs: 0,
+      maxSendRetries: 0,
+      retryBaseDelayMs: 0,
+    });
+
+    const error = await stream.finish("final answer").then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(TelegramDeliveryError);
+    expect((error as TelegramDeliveryError).name).toBe("TelegramDeliveryError");
+    expect((error as TelegramDeliveryError).attempts).toBeGreaterThanOrEqual(1);
+    expect((error as TelegramDeliveryError).cause).toBeDefined();
   });
 
   it("recovers a vanished edit target by sending a fresh message", async () => {

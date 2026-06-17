@@ -748,17 +748,23 @@ function agentAttachmentsFromImages(images: readonly OpenAIApiAttachment[]): Age
 }
 
 function parseBase64DataUrl(url: string): { mediaType: string; base64: string } | undefined {
-  // data:[<mediaType>][;base64],<data> — only base64-encoded payloads become
-  // attachments (raw/url-encoded data is not inlined).
-  const match = /^data:([^;,]*)(;base64)?,([\s\S]*)$/iu.exec(url);
-  if (match === null || match[2] === undefined) {
+  // data:[<mediaType>][;<param>=<value>]*[;base64],<data>. Split on the FIRST
+  // comma so parameterized media types (e.g. image/png;charset=utf-8;base64) are
+  // handled the same way mediaTypeFromDataUrl reads them. Only base64-encoded
+  // payloads become attachments (raw/url-encoded data is not inlined).
+  const match = /^data:([^,]*),([\s\S]*)$/iu.exec(url);
+  if (match === null) {
     return undefined;
   }
-  const base64 = (match[3] ?? "").trim();
+  const meta = match[1] ?? "";
+  if (!/;base64$/iu.test(meta)) {
+    return undefined;
+  }
+  const base64 = (match[2] ?? "").trim();
   if (base64.length === 0) {
     return undefined;
   }
-  const mediaType = (match[1] && match[1].length > 0 ? match[1] : "application/octet-stream").toLowerCase();
+  const mediaType = (meta.split(";")[0] || "application/octet-stream").toLowerCase();
   return { mediaType, base64 };
 }
 

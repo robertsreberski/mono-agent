@@ -250,6 +250,26 @@ describe("ResilientMessageStream", () => {
     expect(posts.at(-1)?.text).toContain("recovered");
   });
 
+  it("after an interim-edit recreate, the next send posts a fresh message (not the stale deleted ref)", async () => {
+    // Post=1 (m1), interim edit=2 -> recreate (interim has a single attempt, so
+    // the post branch does not run this pass). The next write must post a NEW
+    // message rather than reviving the deleted m1 via a stale sendMessagePromise.
+    const transport = new FakeTransport({ failures: { 2: { kind: "recreate" } } });
+    const stream = makeStream(transport, { initialStatusText: "..." });
+
+    await stream.append("first");
+    await stream.append("second");
+
+    const posts = transport.calls.filter((c) => c.op === "post") as RecordedPost[];
+    const edits = transport.calls.filter((c) => c.op === "edit") as RecordedEdit[];
+    // A fresh message (m2) was posted after the recreate.
+    expect(posts.length).toBeGreaterThanOrEqual(2);
+    // No edit ever targets the stale, deleted m1.
+    for (const edit of edits) {
+      expect(edit.ref.id).not.toBe("m1");
+    }
+  });
+
   it("falls back to plain text when markdown cannot be parsed", async () => {
     // Final delivery uses markdown; reformat_plain forces a plain retry.
     const transport = new FakeTransport({

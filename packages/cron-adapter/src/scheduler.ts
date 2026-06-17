@@ -87,7 +87,7 @@ export interface CronAdapterOptions {
   readonly now?: () => Date;
   readonly onResult?: (result: CronJobResult) => void | Promise<void>;
   readonly logger?: CronAdapterLogger;
-  /** Overlap policy for a job that fires while still running. Default "queue". */
+  /** Overlap policy for a job that fires while still running. Default "skip". */
   readonly overlap?: CronOverlapMode;
   /** Soft cap on a job's pending-firing queue (overlap:"queue"). Unbounded if unset. */
   readonly maxQueueDepth?: number;
@@ -215,7 +215,10 @@ function handleTick(
     return;
   }
 
-  const mode: CronOverlapMode = options.overlap ?? "queue";
+  // Default to "skip" (the documented/legacy behavior): an overlapping firing is
+  // dropped while a prior run is active. "queue"/"replace" are opt-in; "queue"
+  // should be paired with maxQueueDepth to bound memory.
+  const mode: CronOverlapMode = options.overlap ?? "skip";
   if (mode === "skip") {
     options.logger?.warn?.("Cron job skipped because a prior run is still active.", { jobId: job.id, scheduledAt });
     void emitResult(options, { kind: "skipped", jobId: job.id, scheduledAt, reason: "overlap" });
@@ -229,8 +232,8 @@ function handleTick(
     return;
   }
 
-  // "queue" (default): preserve every firing, drained in order after the
-  // active run finishes.
+  // "queue" (opt-in): preserve every firing, drained in order after the active
+  // run finishes. Bound it with maxQueueDepth + overflow to limit memory.
   state.pending.push({ scheduledAt });
   const max = options.maxQueueDepth;
   if (max !== undefined && max >= 0 && state.pending.length > max) {

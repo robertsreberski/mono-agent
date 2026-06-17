@@ -370,6 +370,49 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("bridges only base64 data: images to request.attachments (remote URLs stay metadata-only)", async () => {
+    const seen: Array<{ imageAttachments: unknown; attachments: unknown }> = [];
+    const responder: AgentResponder<OpenAIApiChatRequest> = {
+      async respond(request, stream) {
+        seen.push({ imageAttachments: request.imageAttachments, attachments: request.attachments });
+        await stream.append("ok");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({ host: "127.0.0.1", port: 0, modelId: "agent", responder });
+
+    try {
+      await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "look" },
+                // Remote URL: structural only, NOT bridged to shared attachments.
+                { type: "image_url", image_url: { url: "https://example.com/cat.png" } },
+                // Parameterized base64 data URL: bridged (F157 parser must accept it).
+                { type: "image_url", image_url: { url: "data:image/png;charset=utf-8;base64,iVBORw0KGgo=" } },
+              ],
+            },
+          ],
+        }),
+      });
+
+      // Both images are in the full structural list.
+      expect((seen[0]?.imageAttachments as unknown[]).length).toBe(2);
+      // Only the base64 data: image reaches the shared attachments contract.
+      expect(seen[0]?.attachments).toEqual([
+        { kind: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("rejects malformed image_url content parts", async () => {
     const responder = countingResponder();
     const server = await startOpenAIApiAdapter({

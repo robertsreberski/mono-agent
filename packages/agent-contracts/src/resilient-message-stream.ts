@@ -1,7 +1,7 @@
 /**
  * Transport-agnostic resilient message stream.
  *
- * Generalizes the battle-tested finite-state machine that the Telegram and Slack
+ * Generalizes the battle-tested finite-state machine that multiple chat channel
  * adapters had each hand-rolled: lazy first send, debounced interim edits,
  * overflow chunking, and a final delivery that classifies failures into a
  * recovery strategy (retry-with-backoff / recreate / reformat-plain /
@@ -43,7 +43,7 @@ export type ChannelSendOutcome =
 
 /**
  * Abstracts a chat channel's API so the resilience FSM is transport-agnostic.
- * Implementations wrap a concrete platform client (Telegram, Slack, …).
+ * Implementations wrap a concrete chat channel API client.
  */
 export interface ChannelTransport {
   /** Per-message character budget for this channel. */
@@ -58,7 +58,7 @@ export interface ChannelTransport {
   renderMarkdown?(text: string): string;
   /**
    * Show a lightweight "working" affordance without posting a chat message —
-   * e.g. a Telegram "typing…" chat action or a Slack 👀 reaction. Used in
+   * e.g. a "typing…" activity indicator or a "seen" acknowledgement. Used in
    * `finalOnly` mode in place of interim message edits. Best-effort; the stream
    * swallows failures.
    */
@@ -123,7 +123,7 @@ export class ChannelDeliveryError extends Error {
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
 const DEFAULT_EDIT_DEBOUNCE_MS = 750;
 // Minimum gap between activity indicators (typing/seen) in final-only mode.
-// Telegram's "typing" action lasts ~5s, so refreshing a little under that keeps
+// A typical channel "typing" indicator lasts ~5s, so refreshing under that keeps
 // it continuous without spamming the API.
 const ACTIVITY_INDICATE_THROTTLE_MS = 4_000;
 const DEFAULT_MAX_SEND_RETRIES = 3;
@@ -515,6 +515,10 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         if (outcome.kind === "recreate" && this.abortSignal?.aborted !== true) {
           recreate = true;
           this.sentMessage = undefined;
+          // Also drop the resolved first-send promise: otherwise a later
+          // ensureMessage() reuses it and revives the deleted message ref
+          // instead of posting a fresh message.
+          this.sendMessagePromise = undefined;
           this.lastFlushedText = undefined;
           continue;
         }

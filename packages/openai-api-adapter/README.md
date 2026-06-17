@@ -61,9 +61,19 @@ OpenWebUI photo uploads arrive at OpenAI-compatible backends as standard Chat Co
 }
 ```
 
-The adapter accepts `image_url` parts and exposes them on `OpenAIApiChatRequest.attachments` as typed image attachments. The text content still feeds `request.text`, so existing text-only responders keep working. Hosts with a vision-capable runtime can opt into the adapter-specific request type and read `request.attachments`; hosts that only use the generic `AgentResponder` contract will ignore the attachments.
+The adapter accepts `image_url` parts and exposes the **full** structural list on
+`OpenAIApiChatRequest.imageAttachments` (every accepted part: base64 `data:`,
+remote `http(s)`, and `file-` URLs). Base64 `data:` images are **also** bridged
+into the shared `AgentRequestBase.attachments` contract (decoded mime + base64
+data), so they reach the generic app/harness path automatically. Remote/file URL
+images are **not** downloaded here, so they appear only on `imageAttachments`
+(and as a `metadata.openaiApi.attachments` summary) — a vision host that wants
+them must read `imageAttachments` and fetch/handle the URLs itself. The text
+content still feeds `request.text`, so text-only responders keep working.
 
-The adapter does not fetch remote image URLs, decode base64, validate image bytes, or claim model-level vision support. It preserves the attachment payload for the host responder. `metadata.openaiApi.attachments` contains only a small summary, excluding full image URLs and data payloads.
+The adapter does not fetch remote image URLs, validate image bytes, or claim
+model-level vision support. `metadata.openaiApi.attachments` contains only a
+small summary, excluding full image URLs and data payloads.
 
 ### OpenWebUI Feature Triage
 

@@ -334,8 +334,8 @@ describe("createTelegramBot", () => {
     await bot.handleUpdate(commandUpdate("/help@ExampleBot", { updateId: 2 }));
 
     expect(texts(calls, "sendMessage")).toEqual([
-      "Hello! Send text or Telegram media. I will pass captions and attachment metadata to the configured agent.",
-      "Send text, documents, photos, audio, video, or voice messages. I forward captions and Telegram attachment metadata, not file contents. Use /cancel to stop the current response.",
+      "Hello! Send text or Telegram media. I pass your caption and download allowed attachments to share with the configured agent.",
+      "Send text, documents, photos, audio, video, or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
   });

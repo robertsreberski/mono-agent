@@ -75,10 +75,11 @@ export interface TelegramMessageStreamLogger {
  * the last-resort fresh send. The AI request itself already succeeded, so the
  * adapter treats this as a degraded delivery — never as an agent failure.
  *
- * Retained as a thin compatibility alias over the shared
- * {@link ChannelDeliveryError}: the substrate throws the shared type, and
- * existing callers/tests rely on this class only by structural shape
- * (`{ cause, attempts }`).
+ * A thin specialization of the shared {@link ChannelDeliveryError}: the substrate
+ * throws the shared base type, and the wrapper's `finish()` normalizes it to this
+ * Telegram type (preserving `{ cause, attempts }`) so callers catching
+ * `TelegramDeliveryError` keep working and the base type never escapes — parity
+ * with how the Slack adapter wraps delivery failures.
  */
 export class TelegramDeliveryError extends ChannelDeliveryError {
   constructor(message: string, details: { cause: unknown; attempts: number }) {
@@ -314,7 +315,20 @@ export class TelegramMessageStream implements AgentMessageStream {
     // transport's markdown gate is toggled for this finish so the answer is not
     // re-rendered as MarkdownV2.
     this.transport.markdownEnabled = this.formatMarkdown && (options?.format ?? true);
-    await this.inner.finish(finalText);
+    try {
+      await this.inner.finish(finalText);
+    } catch (error) {
+      // The substrate throws the shared ChannelDeliveryError. Normalize it to
+      // TelegramDeliveryError so callers that catch the Telegram type keep
+      // working and the base type never escapes the adapter (parity with Slack).
+      if (error instanceof ChannelDeliveryError && !(error instanceof TelegramDeliveryError)) {
+        throw new TelegramDeliveryError("Telegram final delivery failed.", {
+          cause: error.cause,
+          attempts: error.attempts,
+        });
+      }
+      throw error;
+    }
   }
 }
 

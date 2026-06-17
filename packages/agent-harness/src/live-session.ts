@@ -116,6 +116,17 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
       if (disposed) {
         return Promise.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
       }
+      // Reject an already-aborted request up front: an abort listener added to an
+      // already-aborted signal never fires, so it would otherwise sit in the
+      // queue (consuming a pending slot behind active work) only to enter run()
+      // cancelled. Rejecting here avoids retaining cancelled work entirely.
+      if (request.abortSignal.aborted) {
+        return Promise.reject(
+          new AgentResponseCancelledError("Request was already aborted before enqueue.", {
+            reason: request.abortSignal.reason,
+          }),
+        );
+      }
       const queue = queueFor(conversationId);
       if (queue.pending.length >= maxPending) {
         return Promise.reject(

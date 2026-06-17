@@ -271,7 +271,7 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls).toEqual([]);
   });
 
-  it("does not reject a concurrent message in the same Slack thread (harness queues it)", async () => {
+  it("admits a concurrent same-thread message in arrival order without rejecting it", async () => {
     const api = new FakeSlackApi();
     const first = createDeferred<{ text: string }>();
     const second = createDeferred<{ text: string }>();
@@ -280,8 +280,9 @@ describe("SlackAdapter", () => {
     const adapter = new SlackAdapter({
       api,
       allowAllChannels: true,
-      // The harness serializes per conversation; the channel just calls respond
-      // for every message. Both runs are accepted (no "busy" rejection).
+      // Concurrent same-thread messages are admitted through a per-conversation
+      // serial queue: the second waits for the first (preserving order) and is
+      // never rejected with a "busy" reply.
       responder: responderFrom(async () => {
         started += 1;
         return queue.shift()!.promise;
@@ -294,25 +295,65 @@ describe("SlackAdapter", () => {
     const secondRun = adapter.handleEventCallback(
       directMessage("second", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" }),
     );
-    // The second message is accepted, not rejected — the responder is invoked
-    // for it too rather than the channel posting a "busy" reply.
-    await vi.waitFor(() => expect(started).toBe(2));
-
-    // No "busy" copy is ever posted.
+    // The second message is queued behind the first (serial admission): its
+    // responder has NOT run yet, and no "busy" copy is posted.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(started).toBe(1);
     expect(
       api.postMessageCalls.some((call) =>
         call.text.includes("still working on this Slack thread"),
       ),
     ).toBe(false);
 
+    // Completing the first admits the second, in order.
     first.resolve({ text: "done-1" });
+    await vi.waitFor(() => expect(started).toBe(2));
     second.resolve({ text: "done-2" });
+
     await expect(firstRun).resolves.toMatchObject({ kind: "handled", action: "responded" });
     await expect(secondRun).resolves.toMatchObject({ kind: "handled", action: "responded" });
 
-    // Final-only delivery: each turn posts exactly one final message at finish().
+    // Delivered in arrival order, one final post each.
     expect(api.postMessageCalls.map((call) => call.text)).toEqual(["done-1", "done-2"]);
     expect(api.updateCalls).toEqual([]);
+  });
+
+  it("preserves arrival order when an earlier same-thread message stalls on file download", async () => {
+    const api = new FakeSlackApi();
+    const order: string[] = [];
+    const firstDownload = createDeferred<void>();
+    api.downloadFile = async () => {
+      await firstDownload.promise; // the first message's download stalls
+      return new Uint8Array([1, 2, 3]);
+    };
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      attachments: { allowedMimeTypes: ["image/png"] },
+      responder: responderFrom(async (request) => {
+        order.push(request.text);
+        return { text: `ok:${request.text}` };
+      }),
+    });
+
+    // A has a (stalled) file; B has none and would otherwise race ahead.
+    const aRun = adapter.handleEventCallback(
+      directMessage("A-with-file", {
+        files: [{ id: "F1", name: "a.png", mimetype: "image/png", url_private: "https://files.slack.test/a.png" }],
+      }),
+    );
+    const bRun = adapter.handleEventCallback(
+      directMessage("B-no-file", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // B must NOT have reached the responder before A (it is queued behind A).
+    expect(order).toEqual([]);
+
+    firstDownload.resolve();
+    await Promise.all([aRun, bRun]);
+    // The responder saw the messages in arrival order, not download-completion order.
+    expect(order).toEqual(["A-with-file", "B-no-file"]);
   });
 
   it("aborts active runs and clears queued follow-ups on /cancel in the same Slack thread", async () => {
@@ -592,6 +633,74 @@ describe("SlackAdapter", () => {
     await adapter.handleEventCallback(callback);
 
     expect(captured?.attachments ?? []).toHaveLength(0);
+  });
+
+  it("returns a deterministic no-usable-files response when a file-only message has all files skipped", async () => {
+    const api = new FakeSlackApi();
+    let responderCalled = false;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      attachments: { allowedMimeTypes: ["image/png"] },
+      responder: responderFrom(async () => {
+        responderCalled = true;
+        return { text: "ok" };
+      }),
+    });
+
+    // File-only (no caption) with a disallowed-MIME file → every file skipped.
+    const result = await adapter.handleEventCallback(
+      directMessage("", {
+        files: [{ id: "F1", name: "doc.pdf", mimetype: "application/pdf", url_private: "https://files.slack.test/doc.pdf" }],
+      }),
+    );
+
+    // The adapter answers deterministically instead of submitting an empty
+    // request that the harness would reject.
+    expect(result).toMatchObject({ kind: "ignored", reason: "no_usable_attachments" });
+    expect(responderCalled).toBe(false);
+    expect(api.postMessageCalls.at(-1)?.text).toContain("only handle Slack text messages");
+  });
+
+  it("works with a text-only SlackWebApi client that has no downloadFile (forwards metadata only)", async () => {
+    const posts: SlackChatPostMessageParams[] = [];
+    // A minimal client WITHOUT downloadFile / reactionsAdd — must typecheck and
+    // not crash even on a file event.
+    const textOnlyApi: SlackWebApi = {
+      async authTest() {
+        return { ok: true as const };
+      },
+      async appsConnectionsOpen() {
+        return { ok: true as const, url: "wss://slack.test/socket" };
+      },
+      async chatPostMessage(params: SlackChatPostMessageParams) {
+        posts.push(params);
+        return { ok: true as const, channel: params.channel, ts: "200.000001" };
+      },
+      async chatUpdate(params: SlackChatUpdateParams) {
+        return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+      },
+    };
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api: textOnlyApi,
+      allowAllChannels: true,
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ok" };
+      }),
+    });
+
+    const result = await adapter.handleEventCallback(
+      directMessage("look at this", {
+        files: [{ id: "F1", name: "a.png", mimetype: "image/png", url_private: "https://files.slack.test/a.png" }],
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "handled", action: "responded" });
+    // No bytes were downloaded (the client has no downloadFile), so no attachments.
+    expect(captured?.attachments ?? []).toHaveLength(0);
+    expect(posts.some((p) => p.text === "ok")).toBe(true);
   });
 
   it("surfaces responder failures without fake success", async () => {

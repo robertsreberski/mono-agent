@@ -24,7 +24,63 @@ import {
   registerFauxProvider,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
+import { generatePiNativeResponse, splitPromptMessages } from "../../ai/providers/pi-native.js";
+
+const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
+
+describe("splitPromptMessages (pi-native multimodal preservation)", () => {
+  it("preserves text + image parts of the final user turn (no JSON stringification)", () => {
+    const { priorMessages, promptText, promptImages } = splitPromptMessages(
+      [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "describe this" },
+            { type: "image", data: "BASE64DATA", mimeType: "image/png" },
+          ],
+        },
+      ],
+      FAUX_MODEL,
+    );
+    expect(priorMessages).toEqual([]);
+    expect(promptText).toBe("describe this");
+    expect(promptImages).toEqual([{ type: "image", data: "BASE64DATA", mimeType: "image/png" }]);
+  });
+
+  it("keeps prior-turn structure (image blocks) via toAgentMessages instead of stringifying", () => {
+    const { priorMessages, promptText, promptImages } = splitPromptMessages(
+      [
+        { role: "user", content: [{ type: "text", text: "hi" }, { type: "image", data: "X", mimeType: "image/jpeg" }] },
+        { role: "assistant", content: "ok" },
+        { role: "user", content: "follow up" },
+      ],
+      FAUX_MODEL,
+    );
+    expect(promptText).toBe("follow up");
+    expect(promptImages).toEqual([]);
+    const priorUser = priorMessages.find((message) => message.role === "user");
+    expect(Array.isArray(priorUser.content)).toBe(true);
+    expect(priorUser.content).toContainEqual({ type: "image", data: "X", mimeType: "image/jpeg" });
+  });
+
+  it("handles a plain string final turn", () => {
+    const { promptText, promptImages } = splitPromptMessages([{ role: "user", content: "just text" }], FAUX_MODEL);
+    expect(promptText).toBe("just text");
+    expect(promptImages).toEqual([]);
+  });
+});
+
+describe("pi-sdk.js compatibility shim", () => {
+  it("re-exports the pi-native bridge + helpers under the legacy names", async () => {
+    const shim = await import("../../ai/providers/pi-sdk.js");
+    expect(typeof shim.generatePiResponse).toBe("function");
+    expect(shim.piRuntimeBridge?.kind).toBe("pi");
+    expect(typeof shim.piRuntimeBridge?.execute).toBe("function");
+    expect(shim.piOpenAiBackend?.execute).toBe(shim.generatePiResponse);
+    expect(typeof shim.isContextLimitError).toBe("function");
+    expect(typeof shim.normalizePiErrorMessage).toBe("function");
+  });
+});
 
 let faux = null;
 
@@ -93,6 +149,47 @@ describe("pi-native AgentHarness bridge", () => {
       .filter((block) => block?.type === "text")
       .map((block) => block.text);
     expect(textBlocks.join("")).toContain("hello world");
+  });
+
+  it("delivers final-turn images to the model as image content blocks (not dropped)", async () => {
+    // Regression: AgentHarness.prompt takes images under an options object
+    // (`{ images }`). Passing a bare ImageContent[] as the second positional arg
+    // makes `options?.images` undefined, so the image is silently dropped and
+    // never reaches the model. Assert the image block survives to the provider.
+    faux = registerFauxProvider({
+      provider: "faux",
+      models: [{ id: "faux-model", input: ["text", "image"] }],
+      tokensPerSecond: undefined,
+    });
+    const model = faux.getModel();
+
+    let capturedMessages = null;
+    faux.setResponses([
+      (context) => {
+        capturedMessages = context.messages;
+        return fauxAssistantMessage([fauxText("seen")]);
+      },
+    ]);
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this" },
+            { type: "image", data: "BASE64DATA", mimeType: "image/png" },
+          ],
+        },
+      ],
+    }));
+
+    expect(result.error).toBeNull();
+    expect(capturedMessages).not.toBeNull();
+    const lastUser = [...capturedMessages].reverse().find((message) => message.role === "user");
+    expect(lastUser).toBeDefined();
+    expect(Array.isArray(lastUser.content)).toBe(true);
+    expect(lastUser.content).toContainEqual({ type: "image", data: "BASE64DATA", mimeType: "image/png" });
+    expect(lastUser.content).toContainEqual({ type: "text", text: "what is this" });
   });
 
   it("maps a tool call to normalized tool_use and tool_result events", async () => {

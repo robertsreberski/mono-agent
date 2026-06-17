@@ -40,6 +40,7 @@ import { resolvePiRuntimeModel } from "./pi-models.js";
 import {
   textFromContent,
   thinkingFromContent,
+  toAgentMessages,
   toolResultContent,
 } from "./pi-messages.js";
 import {
@@ -153,30 +154,46 @@ async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnin
 // Normalize the incoming runtime messages into AgentMessages the harness can
 // seed/prompt. Returns the prior messages (appended to the session before the
 // run) and the final user text used to drive `harness.prompt`.
-function splitPromptMessages(messages) {
+export function splitPromptMessages(messages, model) {
   const source = Array.isArray(messages) && messages.length
     ? messages
     : [{ role: "user", content: "" }];
-  const normalized = source.map((message) => ({
-    role: message.role,
-    content: typeof message.content === "string"
-      ? message.content
-      : JSON.stringify(message.content ?? ""),
-    timestamp: message.timestamp || Date.now(),
-  }));
   // The harness `prompt` takes the trailing user turn; everything before it is
   // seeded as transcript context.
   let lastUserIndex = -1;
-  for (let i = normalized.length - 1; i >= 0; i -= 1) {
-    if (normalized[i].role === "user") { lastUserIndex = i; break; }
+  for (let i = source.length - 1; i >= 0; i -= 1) {
+    if (source[i]?.role === "user") { lastUserIndex = i; break; }
   }
   if (lastUserIndex === -1) {
-    return { priorMessages: normalized, promptText: "" };
+    // No user turn: seed everything (structure preserved), nothing to prompt.
+    return { priorMessages: toAgentMessages(source, model), promptText: "", promptImages: [] };
   }
-  return {
-    priorMessages: normalized.slice(0, lastUserIndex),
-    promptText: normalized[lastUserIndex].content,
-  };
+  // Prior turns: preserve structure (incl. image blocks) via toAgentMessages
+  // instead of stringifying — this is the format the harness seeds from.
+  const priorMessages = lastUserIndex > 0 ? toAgentMessages(source.slice(0, lastUserIndex), model) : [];
+  // Final user turn: split into plain text + structured images so harness.prompt
+  // can receive them as ImageContent[] rather than a JSON-stringified blob.
+  const { text, images } = splitUserContent(source[lastUserIndex].content);
+  return { priorMessages, promptText: text, promptImages: images };
+}
+
+// Split a user message's content into joined text and ImageContent[] image
+// parts ({ type, data, mimeType }), preserving multimodal input for the runtime.
+function splitUserContent(content) {
+  if (typeof content === "string") return { text: content, images: [] };
+  if (!Array.isArray(content)) return { text: String(content ?? ""), images: [] };
+  const texts = [];
+  const images = [];
+  for (const part of content) {
+    if (typeof part === "string") { texts.push(part); continue; }
+    if (part?.type === "text" && typeof part.text === "string") { texts.push(part.text); continue; }
+    if (part?.type === "image" && part.data) {
+      images.push({ type: "image", data: part.data, mimeType: part.mimeType || part.mime_type || "image/png" });
+      continue;
+    }
+    texts.push(JSON.stringify(part ?? ""));
+  }
+  return { text: texts.join("\n"), images };
 }
 
 // Live pi-native sessions, keyed by provider session id. Entries are
@@ -597,7 +614,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Seed prior transcript (everything before the trailing user turn) into the
     // harness-owned session. On resume the session already holds the transcript,
     // so only fresh runs append prior messages.
-    const { priorMessages, promptText } = splitPromptMessages(options.messages);
+    const { priorMessages, promptText, promptImages } = splitPromptMessages(options.messages, runtime.model);
     sessionBaselineCount = (await session.buildContext()).messages.length;
     if (!requestedSessionId) {
       for (const message of priorMessages) {
@@ -651,7 +668,15 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     let runError = null;
     try {
-      await harness.prompt(promptText);
+      // Pass structured images (when present) so multimodal input reaches the
+      // model as image blocks rather than stringified text. AgentHarness.prompt
+      // takes them under an options object (`{ images }`); a bare array would be
+      // read as `options` and silently dropped (options?.images === undefined).
+      if (Array.isArray(promptImages) && promptImages.length > 0) {
+        await harness.prompt(promptText, { images: promptImages });
+      } else {
+        await harness.prompt(promptText);
+      }
     } catch (err) {
       runError = err;
     }
