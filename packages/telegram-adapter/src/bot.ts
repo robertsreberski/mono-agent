@@ -159,6 +159,18 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     return controller;
   }
+
+  /** Remove a controller from a chat's active set (no-op if already gone). */
+  function unregisterController(chatId: TelegramChatId, controller: AbortController): void {
+    const key = String(chatId);
+    const set = activeControllers.get(key);
+    if (set !== undefined) {
+      set.delete(controller);
+      if (set.size === 0) {
+        activeControllers.delete(key);
+      }
+    }
+  }
   // Per-conversation admission queue. grammY (via @grammyjs/runner) dispatches
   // updates concurrently, and the pre-respond work (status + attachment download)
   // is variable latency, so without this a later text-only message could reach
@@ -176,11 +188,22 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // `media_group_id`, arriving back-to-back. We buffer them per group and flush
   // once after a short quiet window so the album becomes ONE request with all
   // attachments (the caption rides on only one message).
+  //
+  // To preserve arrival order, the FIRST part also RESERVES a per-chat admission
+  // slot (`ready`): the admitted task awaits `ready.promise`, which resolves to
+  // the actual album work (or a no-op). Reserving at album-start means a later
+  // same-chat text message admitted while the album is still buffering lands
+  // BEHIND the album's slot instead of overtaking it. `controller` is the eager
+  // AbortController so /cancel can abort a parked-but-not-yet-flushed album.
+  type AlbumWork = () => Promise<void>;
   const albumBuffers = new Map<string, {
     readonly ctx: Context;
     readonly messages: TelegramMessage[];
     timer: ReturnType<typeof setTimeout>;
+    readonly controller: AbortController;
+    readonly ready: { readonly promise: Promise<AlbumWork>; resolve: (work: AlbumWork) => void };
   }>();
+  const noopAlbumWork: AlbumWork = () => Promise.resolve();
   const albumDelayMs = options.albumAggregationDelayMs ?? DEFAULT_ALBUM_AGGREGATION_DELAY_MS;
 
   const cancelChat = (chatId: TelegramChatId): void => {
@@ -195,11 +218,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
     }
     // Drop any album still buffering for this chat so /cancel does not leave it
-    // to fire a turn after the user asked to stop.
+    // to fire a turn after the user asked to stop. Settle the reserved admission
+    // slot with a no-op so the parked admit() task does not hang the per-chat
+    // queue. (Its eager controller was just aborted in the loop above.)
     for (const [key, buffer] of albumBuffers) {
       if (key.startsWith(`${String(chatId)}:`)) {
         clearTimeout(buffer.timer);
         albumBuffers.delete(key);
+        buffer.ready.resolve(noopAlbumWork);
+        unregisterController(chatId, buffer.controller);
       }
     }
   };
@@ -334,7 +361,19 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     };
     const existing = albumBuffers.get(key);
     if (existing === undefined) {
-      albumBuffers.set(key, { ctx, messages: [message], timer: schedule() });
+      // First part of a new album: reserve a per-chat admission slot NOW so a
+      // later same-chat message cannot overtake the album. Register the eager
+      // controller (so /cancel can abort a parked album) and admit a task that
+      // blocks on `ready.promise` — flushAlbum settles it with the real work
+      // after the quiet window. The slot blocks only on the album timer, which
+      // fires independently of queue progress, so there is no deadlock.
+      const controller = registerController(chatId);
+      const ready = createDeferred<AlbumWork>();
+      albumBuffers.set(key, { ctx, messages: [message], timer: schedule(), controller, ready });
+      void admit(chatId, async () => {
+        const work = await ready.promise;
+        await work();
+      });
       return;
     }
     existing.messages.push(message);
@@ -343,20 +382,36 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   async function flushAlbum(key: string): Promise<void> {
-    if (stopped) {
-      return;
-    }
     const buffer = albumBuffers.get(key);
     if (buffer === undefined) {
       return;
     }
     albumBuffers.delete(key);
-    const { ctx, messages: parts } = buffer;
+    const { ctx, messages: parts, controller, ready } = buffer;
+    const albumChatId = ctx.chat?.id;
 
-    // A control command in any album caption controls the chat.
+    // The reserved admission slot is parked on `ready.promise`. EVERY exit below
+    // must settle it (with real work or a no-op) or the per-chat queue hangs
+    // forever. On a no-op exit, the eager controller never reaches runAgentTurn's
+    // finally, so unregister it here to avoid leaking it in activeControllers; on
+    // the run path it is reused (do not re-register) and runAgentTurn owns cleanup.
+    const settleAsNoop = (): void => {
+      ready.resolve(noopAlbumWork);
+      if (albumChatId !== undefined) {
+        unregisterController(albumChatId, controller);
+      }
+    };
+    if (stopped) {
+      settleAsNoop();
+      return;
+    }
+
+    // A control command in any album caption controls the chat. The album itself
+    // does not run, so settle the reserved slot with a no-op.
     for (const part of parts) {
       const command = controlCommandFromCaption(part, ctx.me.username);
       if (command !== undefined) {
+        settleAsNoop();
         await handleControlCommand(ctx, command);
         return;
       }
@@ -365,11 +420,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     const primary = parts[0];
     const input = mergeTelegramMessageInputs(parts);
     if (primary === undefined || input === undefined) {
+      settleAsNoop();
       await ctx.reply(messages.unsupportedText);
       return;
     }
-    const controller = registerController(primary.chat.id);
-    await admit(primary.chat.id, () => runAgentTurn(ctx, primary, input, controller));
+    // Fill the reserved slot with the real run so the album executes in its
+    // arrival-order position (a later same-chat text admitted after this album
+    // started buffering lands behind this slot).
+    ready.resolve(() => runAgentTurn(ctx, primary, input, controller));
   }
 
   async function runAgentTurn(
@@ -379,7 +437,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     controller: AbortController,
   ): Promise<void> {
     const chatId = message.chat.id;
-    const key = String(chatId);
     // The AbortController is created and registered in activeControllers by the
     // caller BEFORE admission, so a /cancel can abort a message still parked in the
     // per-chat queue (the controller would otherwise not exist until the queue
@@ -469,13 +526,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         });
       }
     } finally {
-      const set = activeControllers.get(key);
-      if (set !== undefined) {
-        set.delete(controller);
-        if (set.size === 0) {
-          activeControllers.delete(key);
-        }
-      }
+      unregisterController(chatId, controller);
     }
   }
 
@@ -554,6 +605,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (runnerHandle?.isRunning() === true) {
         return;
       }
+      // Re-arm message handling on a genuine (re)start: a prior stop() latches
+      // `stopped = true`, and handleAgentMessage/flushAlbum early-return while it
+      // is set. Resetting here (after the already-running no-op guard, before any
+      // update can be dispatched by the new runner) means a restart actually
+      // handles messages again instead of silently dropping every one.
+      stopped = false;
       if ((options.deleteWebhookOnStart ?? true) === true) {
         await bot.api.deleteWebhook({ drop_pending_updates: options.dropPendingUpdates ?? false });
       }
@@ -575,6 +632,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       stopped = true;
       for (const buffer of albumBuffers.values()) {
         clearTimeout(buffer.timer);
+        // Settle the reserved admission slot so the parked admit() task does not
+        // hang the per-chat queue after teardown (no turn fires: stopped guard +
+        // no-op work).
+        buffer.ready.resolve(noopAlbumWork);
       }
       albumBuffers.clear();
       if (runnerHandle?.isRunning() === true) {
@@ -592,6 +653,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A promise plus its resolver, for an externally-settled deferred value. */
+function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;

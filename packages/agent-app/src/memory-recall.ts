@@ -4,18 +4,29 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
 import type { BujoMemoryStore } from "@mono-agent/memory-bujo";
-import { createEmbeddingProvider } from "@mono-agent/memory-search";
-import type { EmbeddingProviderConfig } from "@mono-agent/memory-search";
+import { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } from "@mono-agent/memory-search";
+import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory-search";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import * as z from "zod/v4";
 
 /**
  * Read-only memory recall, wired from the SINGLE `config.memory` block.
  *
- * When `config.memory.recallTool.enabled` is true and embeddings are configured, the app exposes a
- * `memory_recall` MCP tool (server name {@link MEMORY_RECALL_MCP_SERVER_NAME}) to the agent. Recall
- * needs only embeddings + FTS — no chat LLM — so the recall server is built with embeddings alone.
- * Capture stays in-app (unchanged); this module never touches it.
+ * When `config.memory.recallTool.enabled` is true, the app exposes a `memory_recall` MCP tool
+ * (server name {@link MEMORY_RECALL_MCP_SERVER_NAME}) to the agent. Recall needs only embeddings +
+ * FTS — no chat LLM — so the recall server is built with embeddings alone. When embeddings are
+ * absent (lite tier, or an explicit opt-in on a no-embeddings store) recall still serves FTS-only
+ * (lexical) results. Capture stays in-app (unchanged); this module never touches it.
+ *
+ * Embeddings parity with the in-app store (`createConfiguredMemory`): the recall child applies the
+ * SAME resilience wrapping — a per-call timeout plus a circuit breaker — so a slow/failing backend
+ * cannot stall or repeatedly block recall in the child process either.
+ *
+ * Secret handling: the raw embeddings api key is NOT copied into the recall child's env. When the
+ * key was sourced from a named environment variable (`apiKeyEnv`) we forward only the NAME and the
+ * child re-reads the value from its inherited process env at runtime. An inline literal key (no
+ * `apiKeyEnv`) still has to transit the child env as a value — that residual is documented on
+ * {@link memoryRecallMcpEnv}.
  *
  * This mirrors the self-capabilities runtime extension: a stdio MCP server is injected purely as an
  * `mcpServers` entry via the per-request runtime options. MCP tools are not gated by
@@ -24,19 +35,33 @@ import * as z from "zod/v4";
 
 export const MEMORY_RECALL_MCP_SERVER_NAME = "mono-agent-memory";
 
+/** Circuit-breaker tuning carried into the recall child. Mirrors `config.memory.embeddings.circuitBreaker`. */
+export interface MemoryRecallEmbeddingsCircuitBreaker {
+  readonly failureThreshold?: number;
+  readonly cooldownMs?: number;
+}
+
 /** Embeddings the recall server needs. Mirrors the resolved `config.memory.embeddings` slice. */
 export interface MemoryRecallEmbeddings {
   readonly provider: "ollama" | "openai";
   readonly model: string;
   readonly endpoint?: string;
+  /** Resolved key value. Only used as a last resort (inline apiKey, no apiKeyEnv). */
   readonly apiKey?: string;
+  /** Name of the env var the key was read from; forwarded instead of the raw value when present. */
+  readonly apiKeyEnv?: string;
   readonly dim?: number;
+  /** Per-call embeddings timeout in ms; mirrors the host default when unset (see createRecallStore). */
+  readonly timeoutMs?: number;
+  /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
+  readonly circuitBreaker?: MemoryRecallEmbeddingsCircuitBreaker;
 }
 
 export interface MemoryRecallSettings {
   /** Memory root directory (config.memory.path). */
   readonly root: string;
-  readonly embeddings: MemoryRecallEmbeddings;
+  /** Embeddings for semantic recall. Omitted for an FTS-only (lite) recall store. */
+  readonly embeddings?: MemoryRecallEmbeddings;
 }
 
 export interface MemoryRecallRuntimeExtension {
@@ -47,9 +72,16 @@ export interface MemoryRecallRuntimeExtension {
 }
 
 /**
- * Resolve recall settings from the single in-app memory block. Returns `undefined` (recall off) when
- * memory is unconfigured, the recall tool is disabled, or embeddings are absent — recall can only
- * rank semantically with an embedding provider.
+ * Bound embeddings calls in the recall child so a slow/cold backend cannot stall a turn for the
+ * provider default. Mirrors the in-app `createConfiguredMemory` host default (agent-host).
+ */
+export const DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS = 10_000;
+
+/**
+ * Resolve recall settings from the single in-app memory block. Returns `undefined` (recall off) only
+ * when memory is unconfigured or the recall tool is disabled. When the operator explicitly enables
+ * recall on a no-embeddings store (lite tier), settings are returned WITHOUT embeddings so the child
+ * serves FTS-only recall — the config layer deliberately supports this forced-on opt-in.
  */
 export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryRecallSettings | undefined {
   const memory = config.memory;
@@ -61,7 +93,8 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
   }
   const embeddings = memory.embeddings;
   if (embeddings === undefined) {
-    return undefined;
+    // Explicit opt-in without embeddings → FTS-only recall (no embedding provider built).
+    return { root: memory.path };
   }
   return {
     root: memory.path,
@@ -69,50 +102,116 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
       provider: embeddings.provider,
       model: embeddings.model,
       ...(embeddings.endpoint === undefined ? {} : { endpoint: embeddings.endpoint }),
+      // Prefer forwarding the env-var NAME over the resolved secret value (F13): when apiKeyEnv is
+      // present the child re-reads the key from its inherited env, so the raw key never lands in the
+      // child's spec env. The literal apiKey is kept only as a fallback for the inline-key case.
+      ...(embeddings.apiKeyEnv === undefined ? {} : { apiKeyEnv: embeddings.apiKeyEnv }),
       ...(embeddings.apiKey === undefined ? {} : { apiKey: embeddings.apiKey }),
       ...(embeddings.dim === undefined ? {} : { dim: embeddings.dim }),
+      ...(embeddings.timeoutMs === undefined ? {} : { timeoutMs: embeddings.timeoutMs }),
+      ...(embeddings.circuitBreaker === undefined ? {} : { circuitBreaker: embeddings.circuitBreaker }),
     },
   };
 }
 
-/** Re-read recall settings from the recall server's own environment (the stdio child process). */
+/**
+ * Re-read recall settings from the recall server's own environment (the stdio child process).
+ *
+ * Only `MONO_AGENT_MEMORY_PATH` is required. When the embeddings provider/model are both absent the
+ * child runs FTS-only (no embedding provider). When present, the embeddings slice — including the
+ * resilience knobs (timeout + circuit breaker) — is rehydrated. The api key is resolved from the
+ * inherited env var named by `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` when set, falling back to a
+ * literal `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` (the inline-key case).
+ */
 export function memoryRecallSettingsFromEnv(env: Record<string, string | undefined>): MemoryRecallSettings {
   const root = optionalString(env.MONO_AGENT_MEMORY_PATH);
+  if (root === undefined) {
+    throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_PATH).");
+  }
   const provider = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER);
   const model = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL);
-  if (root === undefined || provider === undefined || model === undefined) {
+  if (provider === undefined && model === undefined) {
+    // No embeddings configured → FTS-only recall store.
+    return { root };
+  }
+  if (provider === undefined || model === undefined) {
     throw new Error(
-      "memory-recall: missing required environment (MONO_AGENT_MEMORY_PATH, MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER, MONO_AGENT_MEMORY_EMBEDDINGS_MODEL).",
+      "memory-recall: incomplete embeddings environment (MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER and MONO_AGENT_MEMORY_EMBEDDINGS_MODEL must be set together).",
     );
   }
   if (provider !== "ollama" && provider !== "openai") {
     throw new Error(`memory-recall: unsupported MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER "${provider}" (expected "ollama" or "openai").`);
   }
   const endpoint = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT);
-  const apiKey = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY);
+  const apiKeyEnv = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV);
+  // Resolve the key from the named inherited var first (F13); fall back to a literal value.
+  const apiKey =
+    (apiKeyEnv === undefined ? undefined : optionalString(env[apiKeyEnv])) ??
+    optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY);
   const dim = parseDim(optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM));
+  const timeoutMs = parsePositiveInt(optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS), "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS");
+  const failureThreshold = parsePositiveInt(
+    optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD),
+    "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+  );
+  const cooldownMs = parsePositiveInt(
+    optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS),
+    "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
+  );
+  const circuitBreaker =
+    failureThreshold === undefined && cooldownMs === undefined
+      ? undefined
+      : {
+          ...(failureThreshold === undefined ? {} : { failureThreshold }),
+          ...(cooldownMs === undefined ? {} : { cooldownMs }),
+        };
   return {
     root,
     embeddings: {
       provider,
       model,
       ...(endpoint === undefined ? {} : { endpoint }),
+      ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
       ...(apiKey === undefined ? {} : { apiKey }),
       ...(dim === undefined ? {} : { dim }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...(circuitBreaker === undefined ? {} : { circuitBreaker }),
     },
   };
 }
 
-/** Env passed to the recall stdio child. Reuses the MONO_AGENT_MEMORY_* names the old memory-mcp used. */
+/**
+ * Env passed to the recall stdio child. Reuses the MONO_AGENT_MEMORY_* names the old memory-mcp used.
+ *
+ * With no embeddings the child runs FTS-only and only the memory path is emitted. The embeddings
+ * resilience knobs (timeout + circuit breaker) are forwarded so the child wraps its provider exactly
+ * like the in-app store. SECRET HANDLING (F13): when `apiKeyEnv` is present the env-var NAME is
+ * forwarded (NOT the value) and the child re-reads it from its inherited process env; the raw
+ * `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` value is emitted ONLY for the inline-key residual (an inline
+ * `apiKey` with no `apiKeyEnv`), where there is no name to forward.
+ */
 export function memoryRecallMcpEnv(settings: MemoryRecallSettings): Record<string, string> {
   const { embeddings } = settings;
+  if (embeddings === undefined) {
+    return { MONO_AGENT_MEMORY_PATH: settings.root };
+  }
+  // Forward the secret only as a last resort: prefer the env-var name passthrough.
+  const forwardLiteralApiKey = embeddings.apiKeyEnv === undefined && embeddings.apiKey !== undefined;
   return {
     MONO_AGENT_MEMORY_PATH: settings.root,
     MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: embeddings.provider,
     MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: embeddings.model,
     ...(embeddings.endpoint === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: embeddings.endpoint }),
-    ...(embeddings.apiKey === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: embeddings.apiKey }),
+    ...(embeddings.apiKeyEnv === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: embeddings.apiKeyEnv }),
+    ...(forwardLiteralApiKey ? { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: embeddings.apiKey as string } : {}),
     ...(embeddings.dim === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_DIM: String(embeddings.dim) }),
+    ...(embeddings.timeoutMs === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: String(embeddings.timeoutMs) }),
+    ...(embeddings.circuitBreaker?.failureThreshold === undefined
+      ? {}
+      : { MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: String(embeddings.circuitBreaker.failureThreshold) }),
+    ...(embeddings.circuitBreaker?.cooldownMs === undefined
+      ? {}
+      : { MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS: String(embeddings.circuitBreaker.cooldownMs) }),
   };
 }
 
@@ -146,19 +245,36 @@ export function createMemoryRecallRuntimeExtension(
 
 /**
  * Build a RECALL-ONLY store: embeddings + FTS, no chat LLM (recall needs none, so capture/reflect
- * stay disabled here). With no embeddings (lite tier) the store still serves FTS-only recall.
+ * stay disabled here). With no embeddings (lite tier / explicit FTS-only opt-in) the store is built
+ * without an embedding provider and serves FTS-only recall.
+ *
+ * The embedding provider is wrapped with the SAME resilience as the in-app store
+ * (`createConfiguredMemory`): a bounded per-call timeout (default
+ * {@link DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS}) keeps a slow backend from stalling recall, and a
+ * circuit breaker fast-fails after repeated failures so a sustained outage stops blocking it.
  */
 export function createRecallStore(settings: MemoryRecallSettings): BujoMemoryStore {
   const { embeddings } = settings;
+  if (embeddings === undefined) {
+    // FTS-only recall: no embedding provider, no dim (mirrors the lite-tier store shape).
+    return createBujoMemoryStore({ root: settings.root });
+  }
   const providerConfig: EmbeddingProviderConfig = {
     provider: embeddings.provider,
     model: embeddings.model,
     ...(embeddings.endpoint === undefined ? {} : { endpoint: embeddings.endpoint }),
     ...(embeddings.apiKey === undefined ? {} : { apiKey: embeddings.apiKey }),
+    timeoutMs: embeddings.timeoutMs ?? DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS,
+  };
+  const breakerOptions: CircuitBreakerEmbeddingOptions = {
+    ...(embeddings.circuitBreaker?.failureThreshold === undefined
+      ? {}
+      : { failureThreshold: embeddings.circuitBreaker.failureThreshold }),
+    ...(embeddings.circuitBreaker?.cooldownMs === undefined ? {} : { cooldownMs: embeddings.circuitBreaker.cooldownMs }),
   };
   return createBujoMemoryStore({
     root: settings.root,
-    embeddings: createEmbeddingProvider(providerConfig),
+    embeddings: createCircuitBreakerEmbeddingProvider(createEmbeddingProvider(providerConfig), breakerOptions),
     dim: embeddings.dim ?? 768,
   });
 }
@@ -214,6 +330,17 @@ function parseDim(raw: string | undefined): number | undefined {
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new Error(`memory-recall: invalid MONO_AGENT_MEMORY_EMBEDDINGS_DIM "${raw}" (expected a positive integer).`);
+  }
+  return parsed;
+}
+
+function parsePositiveInt(raw: string | undefined, name: string): number | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`memory-recall: invalid ${name} "${raw}" (expected a positive integer).`);
   }
   return parsed;
 }

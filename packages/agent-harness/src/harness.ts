@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -153,12 +154,30 @@ export class MonoAgentHarness implements AgentHarness {
     };
     try {
       // Persist any inbound attachments to disk and reference them in the
-      // prompt so the agent opens them with its own file tools.
-      const activeRequest = await this.applyAttachments(request, runId, emit);
-      let resumeSessionId = sessionRecord?.providerSessionId;
-      // While a provider session is live it already holds the conversation,
-      // so history is omitted from the prompt — that is the optimization.
-      let prepared = await this.prepareContext(activeRequest, { omitHistory: resumeSessionId !== undefined }, emit);
+      // prompt so the agent opens them with its own file tools. The expanded
+      // request (absolute paths + inlined document text) feeds the provider
+      // call; `persistText` (original caption + redacted attachment metadata
+      // only) is what we write to durable history/memory so the extracted
+      // document body never leaks into future prompts or memory recall.
+      const { request: activeRequest, persistUserMessage: persistText } = await this.applyAttachments(request, runId, emit);
+      // Resume id: prefer a live in-memory session record; otherwise, when
+      // durable pi sessions are configured, derive a STABLE fs-safe id from the
+      // conversationId so a turn resumes the on-disk JSONL transcript across a
+      // restart (the in-memory conversationId→providerSessionId map is lost on
+      // restart). pi-native creates-on-miss with this id, so a first turn for a
+      // never-seen conversation still opens a durable session under this id.
+      let resumeSessionId = sessionRecord?.providerSessionId
+        ?? (this.sessionsEnabled() && this.options.piSessionsRoot !== undefined
+          ? deriveDurableSessionId(request.conversationId)
+          : undefined);
+      // Omit history ONLY for a confirmed LIVE session record — it already holds
+      // the conversation, so replaying history would double-count (the warm-resume
+      // optimization). For a DERIVED durable id (cold/cross-restart resume) we do
+      // NOT know whether the on-disk session exists, so we still send history:
+      // pi-native ignores it when it successfully resumes the JSONL (the session
+      // carries the transcript) and SEEDS it when it creates-on-miss — so a
+      // create-on-miss on an existing conversation never loses prior context.
+      let prepared = await this.prepareContext(activeRequest, { omitHistory: sessionRecord !== undefined }, emit);
       context = prepared.context;
 
       let runtimeResult: RuntimeResult | undefined;
@@ -189,6 +208,35 @@ export class MonoAgentHarness implements AgentHarness {
       }
       if (runtimeResult === undefined) {
         throw resumeError ?? new Error("Runtime did not produce a result.");
+      }
+
+      // Post-runtime cancellation guard (TOCTOU race): the live-session cancel
+      // signal can land AFTER runRuntime() returns a success-shaped result but
+      // BEFORE we commit it. Committing a cancelled turn would bake it into the
+      // warm session + history + memory, diverging from what the caller (whose
+      // promise the LiveSessionManager rejects) believes happened. So when the
+      // signal is aborted here, skip saveSession + persistSuccessfulTurn,
+      // evict/dispose any returned provider session (mirrors the empty-turn
+      // retirement below), and return a cancelled failure instead.
+      if (request.abortSignal.aborted) {
+        if (sessionRecord !== undefined) {
+          await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
+        } else if (this.sessionsEnabled() && typeof runtimeResult.providerSessionId === "string" && runtimeResult.providerSessionId.trim().length > 0) {
+          try {
+            await this.options.runtime.disposeSession?.(runtimeResult.providerSessionId);
+          } catch {
+            // Bridge TTL backstop reclaims it eventually.
+          }
+        }
+        const summary = await recorder.finish({ ...runtimeResult, cancelled: true, failureKind: "cancelled" });
+        return {
+          metadata: responseMetadata(runId, request, context, summary, runtimeResult),
+          failure: {
+            kind: "cancelled",
+            message: "Agent request was cancelled during the turn.",
+            details: runtimeResult,
+          },
+        };
       }
 
       const failure = failureFromRuntimeResult(runtimeResult);
@@ -228,7 +276,9 @@ export class MonoAgentHarness implements AgentHarness {
 
       this.saveSession(request.conversationId, runtimeResult.providerSessionId, sessionRecord);
 
-      await this.persistSuccessfulTurn(activeRequest, text);
+      // Persist the ORIGINAL caption + redacted attachment metadata (persistText),
+      // NOT the expanded prompt with inlined document text.
+      await this.persistSuccessfulTurn(request.conversationId, persistText, text);
       return {
         text,
         metadata: baseMetadata,
@@ -320,20 +370,28 @@ export class MonoAgentHarness implements AgentHarness {
   /**
    * Saves inbound attachments to `attachmentsDir` and returns a request whose
    * userMessage references the saved paths (and inlines extracted document
-   * text). The agent then opens the files with its own tools, so no provider
-   * multimodal contract is needed. Persistence failures degrade to a warning.
+   * text) for the PROVIDER call. The agent then opens the files with its own
+   * tools, so no provider multimodal contract is needed. Persistence failures
+   * degrade to a warning.
+   *
+   * Also returns `persistUserMessage`: the ORIGINAL caption plus a redacted,
+   * metadata-only attachment suffix (saved path + mime type + size + name, NEVER
+   * the extracted document body). This is what is written to durable
+   * history/memory so a sensitive document's content is not baked into future
+   * prompts or memory — only an actionable file reference is retained.
    */
   private async applyAttachments(
     request: AgentHarnessRequest,
     runId: string,
     emit: (event: RuntimeEventLike) => void,
-  ): Promise<AgentHarnessRequest> {
+  ): Promise<{ readonly request: AgentHarnessRequest; readonly persistUserMessage: string }> {
     const attachments = request.attachments;
     if (attachments === undefined || attachments.length === 0) {
-      return request;
+      return { request, persistUserMessage: request.userMessage };
     }
     const dir = this.options.attachmentsDir;
-    const lines: string[] = [];
+    const promptLines: string[] = [];
+    const persistLines: string[] = [];
     let dirEnsured = false;
     for (let index = 0; index < attachments.length; index += 1) {
       const attachment = attachments[index];
@@ -358,15 +416,19 @@ export class MonoAgentHarness implements AgentHarness {
           savedPath = undefined;
         }
       }
-      lines.push(describeAttachment(attachment, savedPath));
+      promptLines.push(describeAttachment(attachment, savedPath, { includeText: true }));
+      persistLines.push(describeAttachment(attachment, savedPath, { includeText: false }));
     }
-    if (lines.length === 0) {
-      return request;
+    if (promptLines.length === 0) {
+      return { request, persistUserMessage: request.userMessage };
     }
     const header = dir !== undefined
       ? `[The user attached ${attachments.length} file(s) — saved to disk so you can open them with your tools:]`
       : `[The user attached ${attachments.length} file(s):]`;
-    return { ...request, userMessage: `${request.userMessage}\n\n${header}\n${lines.join("\n")}` };
+    return {
+      request: { ...request, userMessage: `${request.userMessage}\n\n${header}\n${promptLines.join("\n")}` },
+      persistUserMessage: `${request.userMessage}\n\n${header}\n${persistLines.join("\n")}`,
+    };
   }
 
   private async loadMemory(
@@ -499,10 +561,18 @@ export class MonoAgentHarness implements AgentHarness {
     }
   }
 
-  private async persistSuccessfulTurn(request: AgentHarnessRequest, assistantText: string): Promise<void> {
+  /**
+   * Persists the turn to history + memory. `userMessage` here is the
+   * PERSIST text (original caption + redacted attachment metadata), NOT the
+   * provider-facing expanded prompt — see applyAttachments. Keeping the
+   * expanded prompt (absolute paths + up to 8KB extracted document body) out of
+   * durable history/memory prevents sensitive content leaking into future
+   * prompts replayed from history or into memory recall.
+   */
+  private async persistSuccessfulTurn(conversationId: string, userMessage: string, assistantText: string): Promise<void> {
     const timestamp = this.options.now?.().toISOString() ?? new Date().toISOString();
-    await this.options.historyStore?.append(request.conversationId, [
-      { role: "user", content: request.userMessage, timestamp },
+    await this.options.historyStore?.append(conversationId, [
+      { role: "user", content: userMessage, timestamp },
       { role: "assistant", content: assistantText, timestamp },
     ]);
 
@@ -510,12 +580,12 @@ export class MonoAgentHarness implements AgentHarness {
     if (this.options.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
       // Always write the deterministic rapid-log line (sync, durable).
       await this.options.memory.appendHostSummary(
-        request.conversationId,
-        deterministicHostSummary(request.userMessage, assistantText),
+        conversationId,
+        deterministicHostSummary(userMessage, assistantText),
       );
       // 'capture' additionally enqueues a best-effort intelligent capture (async, non-blocking).
       if (mode === "capture") {
-        this.options.memory.scheduleCapture?.(request.conversationId, captureTurnText(request.userMessage, assistantText));
+        this.options.memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText));
       }
     }
   }
@@ -810,7 +880,19 @@ function sanitizeAttachmentName(name: string | undefined): string | undefined {
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
-function describeAttachment(attachment: AgentAttachment, savedPath: string | undefined): string {
+/**
+ * One line per attachment. The prompt variant (`includeText: true`) inlines the
+ * extracted document body so the current turn sees it one-shot. The persistence
+ * variant (`includeText: false`) keeps ONLY the redacted metadata (saved path,
+ * mime type, size, original name) — never the extracted body — so durable
+ * history/memory retain an actionable file reference without baking the
+ * (potentially sensitive) document content into future prompts.
+ */
+function describeAttachment(
+  attachment: AgentAttachment,
+  savedPath: string | undefined,
+  options: { readonly includeText: boolean } = { includeText: true },
+): string {
   const parts: string[] = [];
   if (savedPath !== undefined) {
     parts.push(savedPath);
@@ -823,7 +905,7 @@ function describeAttachment(attachment: AgentAttachment, savedPath: string | und
   if (typeof attachment.name === "string" && attachment.name.length > 0) {
     line += ` (original: ${attachment.name})`;
   }
-  if (attachment.kind === "document" && typeof attachment.text === "string" && attachment.text.trim().length > 0) {
+  if (options.includeText && attachment.kind === "document" && typeof attachment.text === "string" && attachment.text.trim().length > 0) {
     const text = attachment.text.length > ATTACHMENT_TEXT_MAX_CHARS
       ? `${attachment.text.slice(0, ATTACHMENT_TEXT_MAX_CHARS)}…[truncated]`
       : attachment.text;
@@ -844,6 +926,21 @@ function formatAttachmentBytes(bytes: number): string {
 
 function createDefaultRunId(): string {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Derives a STABLE, fs-safe, collision-resistant provider-session id from a
+ * conversationId. Used (only when durable pi sessions are configured) as the
+ * resume id so a conversation reopens its on-disk JSONL transcript across a
+ * process restart — the in-memory conversationId→providerSessionId map is lost
+ * on restart, so without a deterministic id the harness would orphan the JSONL
+ * and start a fresh session. The output is sha256 hex (lowercase a-f0-9 only),
+ * which is always a safe filename component for pi's JsonlSessionRepo
+ * (`${timestamp}_${id}.jsonl`); 32 hex chars = 128 bits, far below any realistic
+ * collision risk.
+ */
+function deriveDurableSessionId(conversationId: string): string {
+  return createHash("sha256").update(conversationId).digest("hex").slice(0, 32);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -602,6 +602,79 @@ describe("createTelegramBot", () => {
     expect(downloadedFileIds).toEqual(["p1", "p2", "p3"]);
   });
 
+  it("preserves arrival order: an album runs before a later same-chat text buffered within its quiet window", async () => {
+    const received: { text: string; attachments: number }[] = [];
+    const { bot } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      // A short (non-zero) quiet window so the text lands while the album buffers,
+      // but the test still completes quickly under real timers.
+      albumAggregationDelayMs: 30,
+      responder: responderFrom(async (request) => {
+        received.push({ text: request.text, attachments: request.attachments?.length ?? 0 });
+        return { text: "ok" };
+      }),
+    });
+
+    // Two album parts (shared media_group_id) then an immediate same-chat text,
+    // ALL delivered back-to-back (well within the 30ms quiet window). The album
+    // reserves its admission slot on the first part, so the later text cannot
+    // overtake it even though the album only flushes after the window elapses.
+    // The text's handleUpdate stays parked behind the reserved album slot, so we
+    // must NOT await it inline (it would block until the album+text both ran).
+    await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p1", caption: "look at these", updateId: 1, messageId: 10 }));
+    await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p2", updateId: 2, messageId: 11 }));
+    const textTurn = bot.handleUpdate(textUpdate("what do you think?", { updateId: 3 }));
+
+    // Nothing has run yet: the album timer is still pending and the text is parked
+    // behind the reserved album slot.
+    expect(received).toEqual([]);
+
+    // After the quiet window the reserved album slot fills and runs first, then
+    // the text admitted behind it.
+    await vi.waitFor(() => expect(received).toHaveLength(2));
+    await textTurn;
+
+    expect(received.map((entry) => entry.text)).toEqual([
+      expect.stringContaining("look at these"),
+      "what do you think?",
+    ]);
+    // The album still carried all of its attachments.
+    expect(received[0]?.attachments).toBe(2);
+  });
+
+  it("settles the reserved album admission slot on stop() so a later same-chat turn is not wedged", async () => {
+    vi.useFakeTimers();
+    try {
+      const received: string[] = [];
+      const { bot, stop } = buildTestBot({
+        // Default (non-zero) quiet window so the album timer is pending at stop().
+        responder: responderFrom(async (request) => {
+          received.push(request.text);
+          return { text: "ok" };
+        }),
+      });
+
+      // Buffer an album (reserves a per-chat admission slot), then tear down.
+      await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p1", caption: "hi", updateId: 1, messageId: 10 }));
+      await bot.handleUpdate(albumPhotoUpdate({ groupId: "AG1", fileId: "p2", updateId: 2, messageId: 11 }));
+
+      await stop();
+      // Past the quiet window: no album turn fires (stopped guard), and crucially
+      // the reserved slot is settled so the per-chat admission queue is not wedged.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(received).toEqual([]);
+
+      // The parked admit() task settled rather than hanging forever: awaiting a
+      // microtask-bounded loop confirms the queue did not deadlock.
+      for (let i = 0; i < 20; i += 1) {
+        await Promise.resolve();
+      }
+      expect(received).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("downloads Telegram voice attachments now that audio/ogg is on the allowlist", async () => {
     const requests: AgentRequest[] = [];
     const { bot, downloadedFileIds } = buildTestBot({
@@ -1178,6 +1251,71 @@ describe("createTelegramBot", () => {
     await Promise.resolve();
 
     expect(crashes).toEqual([failure]);
+    await controller.stop();
+  });
+
+  it("re-arms message handling after stop() + start() (a message after restart IS handled)", async () => {
+    const received: string[] = [];
+    const sent: unknown[] = [];
+    // A stateful fake runner whose isRunning() reflects start/stop so the
+    // restart guard in start() behaves like the real runner.
+    const makeRunner = () => {
+      let running = false;
+      return {
+        start: () => { running = true; },
+        stop: () => { running = false; return Promise.resolve(); },
+        size: () => 0,
+        isRunning: () => running,
+        task: () => Promise.resolve(),
+      };
+    };
+    const controller = createTelegramBot({
+      botToken: "test-token",
+      allowAllChats: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        received.push(request.text);
+        return { text: "ok" };
+      }),
+      botFactory: () => {
+        const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+        bot.api.config.use(async (_prev, method, payload) => {
+          const typedPayload = payload as Record<string, unknown>;
+          if (method === "sendMessage") {
+            sent.push(typedPayload.text);
+            return ok({
+              message_id: 1,
+              date: 0,
+              chat: { id: typedPayload.chat_id, type: "private" },
+              text: typedPayload.text,
+            });
+          }
+          return ok(true);
+        });
+        return bot;
+      },
+      runnerFactory: () => {
+        const runner = makeRunner();
+        runner.start();
+        return runner;
+      },
+    });
+
+    // First start: a message is handled and a reply is sent.
+    await controller.start();
+    await controller.bot.handleUpdate(textUpdate("before stop", { updateId: 1 }));
+    expect(received).toEqual(["before stop"]);
+    expect(sent).toContain("ok");
+
+    // Stop latches `stopped = true`.
+    await controller.stop();
+
+    // Restart MUST reset the latch so the next message is handled (regresses to a
+    // silent drop before the fix).
+    await controller.start();
+    await controller.bot.handleUpdate(textUpdate("after restart", { updateId: 2 }));
+    expect(received).toEqual(["before stop", "after restart"]);
+
     await controller.stop();
   });
 });

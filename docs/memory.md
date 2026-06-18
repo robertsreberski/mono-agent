@@ -312,6 +312,8 @@ The agent gets a single read-only `memory_recall` tool — hybrid (keyword + sem
 
 Under the hood `agent-app` spawns a bundled stdio MCP child named `mono-agent-memory` (bundled in `@mono-agent/agent-app`) that exposes only `memory_recall`. It is configured automatically from `config.memory` — it uses the **same memory root + embeddings** as the in-app memory, so there is no separate config to keep in sync. Recall needs no chat LLM; durable writes stay in-app on the agent-host LLM via per-turn capture (`writeMode: "capture"`). This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture`/`memory_note` — both dropped, since in-app capture already covers durable writes).
 
+**Tool-policy note (fail-closed):** `memory_recall` is an MCP tool, and like every MCP server tool (config `mcpServers`, self-capabilities, ask-collaborator) it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…); it does **not** suppress app-injected MCP tools. So `tools.allowedTools: []` ("no built-in tools") still leaves `memory_recall` available when it is enabled. To fully withhold memory reads from the agent, set `config.memory.recallTool.enabled: false` (or use a `lite` tier with no recall) — that is the switch that controls this tool, not the allowlist.
+
 ## References
 
 - Design specs: `docs/superpowers/specs/2026-06-15-memory-bujo-design.md`, `docs/superpowers/specs/2026-06-16-memory-bujo-followups-design.md`

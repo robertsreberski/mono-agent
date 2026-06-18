@@ -166,8 +166,11 @@ Key responsibilities by subsystem:
 - `agent/tools/*`: implements built-in tools, path/workdir guards, sandbox
   policy checks, MCP tool adaptation, Playwright artifact routing, and output
   limits.
-- `agent/compaction.js`: estimates context pressure and compacts long agent
-  conversations for providers that support the package's compaction loop.
+- `agent/compaction.js`: legacy context-pressure/compaction helper retained from
+  the removed hand-rolled pi-sdk path. No active bridge wires it in today — the
+  sole pi bridge delegates context handling to pi-agent-core's `AgentHarness`, so
+  there is no automatic in-loop summarization pass and runs report
+  `context_compaction_applied: null`. Exported for back-compat / custom hosts only.
 - `agent/transcript.js`: builds bounded resume snapshots from prior provider
   events so a fallback or continuation can keep context.
 - `agent/approval.js`: provides host-driven human-in-the-loop tool approval
@@ -204,7 +207,8 @@ The host is responsible for:
 - resolving credentials and custom provider/model rows before provider calls
 - choosing model references, execution mode, effort, fallback chains, and
   runtime settings
-- persisting artifacts, compaction rows, raw logs, run rows, and UI-facing state
+- persisting artifacts, raw logs, run rows, and UI-facing state (the legacy
+  compaction-row hook is inert on the current pi bridge)
 - validating structured output against the host's domain contract
 - converting runtime failures into product workflow behavior
 - deciding when to retry, recover, continue, cancel, or ask for user input
@@ -219,7 +223,10 @@ current turn finishes** (queue-after-turn) rather than rejected — this is what
 powers follow-up messages in chat channels. Different conversations run
 concurrently; an optional `concurrency.maxConcurrentRuns` bounds simultaneous
 model runs via admission control around the provider call (queued follow-ups
-hold no slot, so the bound never deadlocks against the queue). Channels surface
+hold no slot, so the bound never deadlocks against the queue). Note this bound is
+**per harness instance** — the app builds one harness per channel, so the limiter
+is per-channel, not a single global cap; with N enabled channels the effective
+ceiling is N× the configured value. Channels surface
 a user cancel through `responder.cancel(conversationId)`, which aborts the
 in-flight turn and clears that conversation's queue.
 
@@ -227,8 +234,11 @@ in-flight turn and clears that conversation's queue.
 provider exposes queue-after-turn), not durability/cost:
 
 The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
-bridge was removed once native reached parity); it owns the session, native
-compaction, and pi-ai-managed retry.
+bridge was removed once native reached parity); it owns the session and
+pi-ai-managed retry, and context/window handling is delegated to the harness.
+There is **no** automatic in-loop summarization pass driven by this package, so
+runs report `context_compaction_applied: null` (unknown/unsupported) rather than
+asserting compaction ran.
 
 | Provider | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|

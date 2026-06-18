@@ -205,6 +205,117 @@ describe("Cron adapter", () => {
       .toContainEqual(expect.objectContaining({ kind: "succeeded", jobId: "slow" }));
   });
 
+  it("overlap:'replace' reports the replaced run as cancelled even if its responder ignores abort and returns text", async () => {
+    // Drive handleTick directly (as the "unrecognized overlap mode" test does) so
+    // we control the gate precisely. The first (replaced) responder IGNORES the
+    // abort signal and resolves with text after being replaced; the success path
+    // must still classify it as cancelled, not succeeded.
+    const gates: Array<() => void> = [];
+    let started = 0;
+    const responder: AgentResponder = {
+      async respond() {
+        started += 1;
+        // Note: deliberately does NOT honor request.abortSignal; it just waits
+        // for the gate and then resolves with text.
+        await new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+        return { text: "done (ignored abort)" };
+      },
+    };
+    const results: Array<{ kind: string; scheduledAt?: string }> = [];
+
+    const options = {
+      responder,
+      overlap: "replace" as const,
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
+      now: () => new Date(Date.now()),
+      onResult: (result: { kind: string; scheduledAt?: string }) => {
+        results.push(result);
+      },
+    };
+    const jobStates = new Map();
+
+    // tick 1 -> no active run, starts (and gates) the first run.
+    handleTick(options.jobs[0]!, new Date(0), options, jobStates);
+    await expect.poll(() => started).toBe(1);
+
+    // tick 2 -> overlaps with overlap:"replace": aborts run 1's controller and
+    // queues tick 2's firing.
+    handleTick(options.jobs[0]!, new Date(60_000), options, jobStates);
+    await expect
+      .poll(() => results)
+      .toContainEqual(expect.objectContaining({ kind: "queued", jobId: "slow" }));
+
+    // Release the (now-aborted) first responder so it resolves with text. The
+    // success path must reclassify it as cancelled because its controller was
+    // aborted by the replace.
+    gates[0]?.();
+    await expect
+      .poll(() => results)
+      .toContainEqual(
+        expect.objectContaining({ kind: "cancelled", scheduledAt: "1970-01-01T00:00:00.000Z" }),
+      );
+
+    // The replaced (first) firing must NOT be reported as succeeded.
+    expect(
+      results.some(
+        (r) => r.kind === "succeeded" && r.scheduledAt === "1970-01-01T00:00:00.000Z",
+      ),
+    ).toBe(false);
+
+    // Drain the queued (newest) firing and let it complete normally.
+    await expect.poll(() => started).toBe(2);
+    gates[1]?.();
+    await expect
+      .poll(() => results)
+      .toContainEqual(
+        expect.objectContaining({ kind: "succeeded", scheduledAt: "1970-01-01T00:01:00.000Z" }),
+      );
+  });
+
+  it("reports a stop()-aborted run as cancelled even if its responder ignores abort and returns text", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let finish!: () => void;
+    let started = 0;
+    const responder: AgentResponder = {
+      async respond() {
+        started += 1;
+        // Ignores request.abortSignal; resolves with text after the gate.
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return { text: "done (ignored abort)" };
+      },
+    };
+    const results: Array<{ kind: string }> = [];
+
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
+      now: () => new Date(Date.now()),
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000); // tick 1 -> run 1 active (gated)
+      await expect.poll(() => started).toBe(1);
+
+      scheduler.stop(); // aborts the active run's controller
+
+      finish(); // responder ignores abort and resolves with text
+      await expect
+        .poll(() => results)
+        .toContainEqual(expect.objectContaining({ kind: "cancelled", jobId: "slow" }));
+      expect(results.some((r) => r.kind === "succeeded")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects an invalid overlap mode at startup", () => {
     const responder: AgentResponder = {
       async respond() {

@@ -156,6 +156,39 @@ describe("createLiveSessionManager", () => {
     expect(manager.pendingCount("c1")).toBe(0);
   });
 
+  it("settles the active turn and unwedges the queue when the runner ignores the abort and never resolves", async () => {
+    const never = new Promise<void>(() => {});
+    let resolvingRan = false;
+    const manager = createLiveSessionManager({
+      // The first turn's runner ignores the abort signal AND never resolves
+      // (permanently hung provider turn); the second turn's runner resolves.
+      run: async (request) => {
+        if (request.userMessage === "hung") {
+          await never;
+          return response("never");
+        }
+        resolvingRan = true;
+        return response(`answer:${request.userMessage}`);
+      },
+    });
+
+    const p1 = manager.enqueue("c1", req("c1", "hung"));
+    await flush();
+
+    manager.cancel("c1");
+
+    // The active turn is settled despite the hung runner.
+    await expect(p1).rejects.toSatisfy(isAgentResponseCancelledError);
+    expect(manager.pendingCount("c1")).toBe(0);
+
+    // A new turn for the SAME conversation is no longer wedged: it runs and
+    // resolves (fails against pre-fix code because draining stayed true).
+    const p2 = manager.enqueue("c1", req("c1", "fresh"));
+    await expect(p2).resolves.toMatchObject({ text: "answer:fresh" });
+    expect(resolvingRan).toBe(true);
+    expect(manager.pendingCount("c1")).toBe(0);
+  });
+
   it("rejects the active turn when its own request abortSignal aborts mid-run and the runner returns success", async () => {
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => {

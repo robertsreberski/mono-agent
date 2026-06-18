@@ -129,8 +129,8 @@ export interface AgentHarnessOptions {
   readonly now?: () => Date;
   readonly session?: AgentHarnessSessionOptions;
   /**
-   * Optional global concurrency bounds across all conversations. Two
-   * independent tiers, both unset = unbounded (default):
+   * Optional concurrency bounds across all conversations served by this
+   * harness. Two independent tiers, both unset = unbounded (default):
    *
    * - `maxConcurrentRuns` bounds provider EXECUTION WIDTH: how many runs may be
    *   in the model call at once (a semaphore acquired around the provider call
@@ -141,8 +141,12 @@ export interface AgentHarnessOptions {
    *   in memory — before the costly pre-provider work runs. A request arriving
    *   when this counter is already at the bound fails fast (a "capacity_exceeded"
    *   failure) instead of doing the expensive work and parking in the unbounded
-   *   semaphore queue. This is global backpressure; it is deliberately NOT the
+   *   semaphore queue. This is backpressure; it is deliberately NOT the
    *   semaphore (whose waiter queue is unbounded — that is the gap it closes).
+   *
+   * Bounds apply per channel harness instance, not globally across channels:
+   * the app builds one harness per channel, so with N configured channels the
+   * effective ceiling is N× this value.
    */
   readonly concurrency?: { readonly maxConcurrentRuns?: number; readonly maxPendingRuns?: number };
 }

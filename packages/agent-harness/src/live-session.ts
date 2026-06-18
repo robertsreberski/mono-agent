@@ -171,11 +171,26 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
         return;
       }
       queue.activeController?.abort(reason);
+      // Settle the in-flight turn's promise directly (mirroring dispose()): an
+      // AbortController.abort() does not interrupt a pending `await options.run`,
+      // so a runner that ignores the abort and never resolves would otherwise
+      // hang the caller forever. A later resolve/reject from the drain loop is a
+      // no-op on a settled promise.
+      queue.activeTurn?.reject(new AgentResponseCancelledError("Cancelled during active turn.", { reason }));
       const dropped = queue.pending.splice(0);
       for (const turn of dropped) {
         turn.detachAbort();
         turn.reject(new AgentResponseCancelledError("Cancelled while queued.", { reason }));
       }
+      // Evict the (possibly wedged) queue so future turns are not blocked by an
+      // orphaned drain loop whose `draining` flag stays true while it is parked
+      // inside an awaited run that ignored the abort. A subsequent enqueue() then
+      // creates a fresh queue (draining=false) via queueFor() and drains
+      // normally. The orphaned drain's own finally is guarded by the
+      // `conversations.get(conversationId) === queue` identity check, so it will
+      // not clobber a fresh queue. cancel() keeps accepting future turns — unlike
+      // dispose(), we set no disposed flag; deleting the queue is sufficient.
+      conversations.delete(conversationId);
     },
     pendingCount(conversationId: string): number {
       return conversations.get(conversationId)?.pending.length ?? 0;

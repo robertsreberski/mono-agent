@@ -42,10 +42,12 @@ Generic agent runtime that supports four backends out of the box:
 - **Pi SDK** (`@earendil-works/pi-agent-core`, used for OpenAI / Codex / Gemini / OpenRouter / Ollama / etc. via Pi providers)
 - **Codex CLI** (the `codex` app-server)
 
-Hosts wire in their own pricing, persistence, credential, and compaction-recording callbacks. The runtime returns raw text + raw structured output; hosts that want a domain-specific contract parse it on their end.
+Hosts wire in their own pricing, persistence, and credential callbacks (plus a legacy compaction-recording hook that is inert on the current pi bridge — see "Context compaction"). The runtime returns raw text + raw structured output; hosts that want a domain-specific contract parse it on their end.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the package boundary, runtime
-selection flow, lifecycle diagrams, and host responsibilities.
+selection flow, lifecycle diagrams, and host responsibilities. Upgrading from
+`0.3.x`? See [MIGRATION.md](./MIGRATION.md) for the Pi-native bridge, removed run
+options, durable-session resume semantics, and fallback-router changes.
 
 ## Install / Usage
 
@@ -89,7 +91,7 @@ console.log(result.text);
 `@mono-agent/agent-runtime` is purpose-built for **autonomous, long-running agent work** with provider portability and operational resilience as first-class concerns. It is *not* a streaming-chat UI kit. Where each peer fits:
 
 - **Vercel AI SDK** — best when you're building a chat / generative-UI experience inside a React or Next.js app. `useChat`, `useCompletion`, streaming server components, and edge-runtime compatibility are their strengths. Their provider list is curated (Anthropic, OpenAI, Google, etc., via `@ai-sdk/*` packages); there's no Pi gateway, no Claude Code CLI, no Codex CLI app-server, and no per-call provider fallback. If you're rendering a streaming chat into a browser, use them. If you're orchestrating multi-turn autonomous work that must survive a rate-limited primary provider, use us.
-- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our four backends and add context compaction, transcript-resume across provider drops, a 22-kind failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
+- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our four backends and add transcript-resume across provider drops, a 22-kind failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling stays with the provider — the runtime does not run its own in-loop summarization pass. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
 - **Mastra** — a workflow engine + memory + RAG stack. Different category: it's the layer *above* a runtime. You can layer Mastra workflows on top of `@mono-agent/agent-runtime` if you want both.
 - **OpenAI Agents SDK** — first-party OpenAI SDK. Same trade-off as the Claude Agent SDK: tight integration with OpenAI, no other providers. Pi providers in our runtime cover OpenAI plus a dozen others through a single API.
 - **LangChain.js** — kitchen sink with deep abstraction stacks. We're deliberately lean; if you want chains, agents, vector stores, and parsers under one umbrella, LangChain is built for that. If you want a focused runtime kernel, use us.
@@ -109,7 +111,7 @@ console.log(result.text);
 | Multi-provider portability | ✓ (4 backends, 15+ providers) | partial | ✗ |
 | CLI providers (claude/codex binaries) | ✓ | ✗ | ✗ |
 | Provider fallback on rate limit / overload | ✓ (`createRouterRuntime`) | ✗ | ✗ |
-| Aggressive context compaction with summarization | ✓ | ✗ | partial |
+| Context handling delegated to the provider (no host auto-summarization) | ✓ | ✓ | ✓ |
 | Transcript-tail resume after provider drops | ✓ | ✗ | ✗ |
 | Tool-output bloat guard + artifact persistence | ✓ | ✗ | ✗ |
 | MCP transports out of the box (stdio/SSE/HTTP) | ✓ | partial | ✓ |
@@ -142,7 +144,9 @@ createRuntime({
   resolveCustomPricing,    // (parsed) => NormalizedPricing | null
   resolvePiApiKey,         // async (provider) => string | undefined
   persistArtifact,         // ({ filename, buffer, toolName, toolUseId }) => path | null
-  onCompactionRecorded,    // (compactionRow) => void
+  onCompactionRecorded,    // (compactionRow) => void — legacy hook; the sole pi
+                           // bridge (pi-agent-core AgentHarness) owns context
+                           // handling and never invokes this, so it is inert today
 
   // -- tool runtime context (process-level config for the tool kernel) --
   workspace,               // primary allowed root for path-based tools
@@ -404,7 +408,18 @@ Hosts that don't supply `persistArtifact` get the truncation summary but no on-d
 
 ## Context compaction
 
-`@mono-agent/agent-runtime/agent/compaction.js` provides `createAgentCompactionManager(...)` which the Pi SDK provider invokes automatically. Configure via the agent's settings (`agent_compaction_*` keys). When a compaction completes, the kernel hands a structured row to your `onCompactionRecorded(record)` callback so the host can persist it however it likes.
+Context/window management is delegated to the provider. The sole pi bridge runs on
+pi-agent-core's native `AgentHarness`, which owns its own context handling and does
+**not** perform an automatic in-loop summarization pass driven by this package; runs
+therefore report `context_compaction_applied: null` (unknown/unsupported) rather than
+asserting a compaction ran. The other backends manage their windows per their own
+behavior. (`docs/feature-registry.md` is the source of truth for this row.)
+
+`@mono-agent/agent-runtime/agent/compaction.js` (`createAgentCompactionManager(...)`,
+`agent_compaction_*` settings) and the `onCompactionRecorded(record)` host callback are
+retained from the removed hand-rolled pi-sdk path. They are exported for back-compat and
+custom hosts but are **not** wired into any active bridge today, so the callback never
+fires on a standard run.
 
 ## Advanced exports
 

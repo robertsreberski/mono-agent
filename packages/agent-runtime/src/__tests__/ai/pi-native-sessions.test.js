@@ -194,6 +194,97 @@ describe("pi-native sessions", () => {
     ]);
   });
 
+  it("rolls back a resumed turn when a host-side throw lands in the outer catch (F10)", async () => {
+    // The provider RESPONDS successfully (so the harness mutates the live
+    // session), but a throwing resolveCustomPricing — invoked by estimateCost
+    // AFTER the prompt ran — propagates into the OUTER catch. Without the F10
+    // rollback the mutated turn leaks into the next resume; with it, the live
+    // session is moved back to the pre-turn leaf.
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+    const first = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "turn-1" }],
+      sessionKeepAlive: true,
+    }));
+    expect(first.error).toBeNull();
+    const sessionId = first.providerSessionId;
+
+    faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
+    const failed = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "turn-2" }],
+      sessionKeepAlive: true,
+      sessionId,
+      resolveCustomPricing: () => { throw new Error("pricing resolver blew up"); },
+    }));
+    // Outer-catch path: surfaced as a (retryable) provider failure, not a success.
+    expect(failed.error).toBeTruthy();
+    expect(failed.cancelled).toBe(false);
+
+    let retryContext = null;
+    faux.setResponses([
+      (context) => { retryContext = context; return fauxAssistantMessage([fauxText("reply-3")]); },
+    ]);
+    const third = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "turn-3" }],
+      sessionKeepAlive: true,
+      sessionId,
+    }));
+    expect(third.error).toBeNull();
+    // The failed turn-2 (and its assistant reply-2) must be absent from the
+    // resumed transcript — only the last good turn-1 + the new turn-3 remain.
+    expect(transcriptOf(retryContext)).toEqual([
+      "user:turn-1",
+      "assistant:reply-1",
+      "user:turn-3",
+    ]);
+  });
+
+  it("rolls back a keep-alive resumed turn when a cancel lands at run-end after the provider succeeded (durable cancel TOCTOU)", async () => {
+    // The provider RESPONDS successfully (mutating the live session), then a
+    // cancel lands AFTER the run completed — modeled by flipping the abort signal
+    // on the `capabilities_resolved` event, which fires immediately before the
+    // session-lifecycle commit. The re-check there must take the rollback path so
+    // the cancelled turn never leaks into the next resume.
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+    const first = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "turn-1" }],
+      sessionKeepAlive: true,
+    }));
+    expect(first.error).toBeNull();
+    const sessionId = first.providerSessionId;
+
+    const lateSignal = { aborted: false, reason: undefined, addEventListener() {}, removeEventListener() {} };
+    faux.setResponses([fauxAssistantMessage([fauxText("reply-2")])]);
+    const cancelled = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "turn-2" }],
+      sessionKeepAlive: true,
+      sessionId,
+      abortSignal: lateSignal,
+      onEvent: (event) => { if (event?.type === "capabilities_resolved") lateSignal.aborted = true; },
+    }));
+    expect(cancelled.cancelled).toBe(true);
+    expect(cancelled.error).toBeNull();
+
+    let retryContext = null;
+    faux.setResponses([
+      (context) => { retryContext = context; return fauxAssistantMessage([fauxText("reply-3")]); },
+    ]);
+    const third = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "turn-3" }],
+      sessionKeepAlive: true,
+      sessionId,
+    }));
+    expect(third.error).toBeNull();
+    // The cancelled turn-2 (and reply-2) must be absent from the resumed
+    // transcript — only the last good turn-1 + the new turn-3 remain.
+    expect(transcriptOf(retryContext)).toEqual([
+      "user:turn-1",
+      "assistant:reply-1",
+      "user:turn-3",
+    ]);
+  });
+
   it("registers no session without sessionKeepAlive", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
@@ -279,6 +370,85 @@ describe("pi-native sessions", () => {
     ]);
   });
 
+  it("resumes a durable session across a restart by a caller-derived stable id (create-on-miss then reopen-from-disk) (F9)", async () => {
+    // Simulates the cross-restart resume the harness relies on: the
+    // conversationId→providerSessionId map is in-memory only, so after a restart
+    // the harness has NO live entry and instead passes a STABLE id it derived
+    // from the conversationId. On turn-1 that id has no live entry and no JSONL
+    // on disk, so the bridge CREATES a durable session under it (create-on-miss).
+    // Dropping the live registry entry models the process restart; turn-2 passes
+    // the SAME derived id and must REOPEN the prior transcript from disk rather
+    // than orphaning it in a fresh, randomly-named session.
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-restart-"));
+    try {
+      const derivedId = "conversation-derived-stable-id";
+
+      // Turn 1: requested id is set but nothing exists yet → create-on-miss.
+      faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+      const first = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "turn-1" }],
+        sessionKeepAlive: true,
+        sessionId: derivedId,
+        piSessionsRoot: root,
+      }));
+      expect(first.error).toBeNull();
+      expect(first.text).toBe("reply-1");
+      // The bridge must echo back the SAME id the harness passed, so the harness
+      // saves a consistent mapping.
+      expect(first.providerSessionId).toBe(derivedId);
+      // The durable transcript is on disk under the derived id.
+      expect(countJsonlFiles(root)).toBe(1);
+
+      // Model the restart: the live registry entry is gone, but the JSONL
+      // survives on disk (durable repos are not deleted on dispose).
+      await expect(disposeProviderSession(derivedId)).resolves.toBe(true);
+
+      // Turn 2: same derived id, fresh process (no live entry) → reopen-from-disk.
+      let resumedContext = null;
+      faux.setResponses([
+        (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("reply-2")]); },
+      ]);
+      const second = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "turn-2" }],
+        sessionKeepAlive: true,
+        sessionId: derivedId,
+        piSessionsRoot: root,
+      }));
+      expect(second.error).toBeNull();
+      expect(second.text).toBe("reply-2");
+      expect(second.providerSessionId).toBe(derivedId);
+      // The prior turn-1 transcript was reopened from disk, not lost: turn-1 is
+      // present, proving the restart resumed the same conversation.
+      expect(transcriptOf(resumedContext)).toEqual([
+        "user:turn-1",
+        "assistant:reply-1",
+        "user:turn-2",
+      ]);
+      // Still exactly one durable transcript — no orphaned second session.
+      expect(countJsonlFiles(root)).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("an in-memory resume miss (no piSessionsRoot) still fast-fails with session_not_found — create-on-miss is durable-only (F9)", async () => {
+    // Guards the gate: create-on-miss fires ONLY on a durable-repo miss. Without
+    // piSessionsRoot a resume miss must keep the existing per-process
+    // session_not_found contract (no session is silently fabricated in memory).
+    const model = setup();
+    let invoked = false;
+    faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "hello" }],
+      sessionId: "derived-but-no-durable-root",
+      sessionKeepAlive: true,
+    }));
+    expect(result.failureKind).toBe("session_not_found");
+    expect(result.diagnostics.pi_error_code).toBe("pi_session_not_found");
+    expect(invoked).toBe(false);
+  });
+
   it("serializes two concurrent cold resumes of an evicted durable session (one wins, the other returns session_busy)", async () => {
     const model = setup();
     // Fresh keep-alive turn with a durable jsonl on disk.
@@ -356,17 +526,24 @@ describe("pi-native sessions", () => {
       // No durable transcript may survive the failed fresh run.
       expect(countJsonlFiles(root)).toBe(0);
 
-      // And a resume against the (would-be) orphaned id must report
-      // session_not_found, proving the orphan is gone and not silently resumable.
-      let invoked = false;
-      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      // A later run against the (would-be) orphaned id must NOT resurrect the
+      // failed run's transcript. With durable create-on-miss (F9), a durable
+      // resume miss no longer fails with session_not_found; it CREATES a fresh
+      // session under that id. The proof the orphan is gone is that the fresh
+      // run sees ONLY its own turn-2 — never the leaked turn-1.
+      let resumedContext = null;
+      faux.setResponses([
+        (context) => { resumedContext = context; return fauxAssistantMessage([fauxText("reply-2")]); },
+      ]);
       const resume = await generatePiNativeResponse("system", runOptions(model, {
         messages: [{ role: "user", content: "turn-2" }],
         sessionId: leakedSessionId,
         piSessionsRoot: root,
       }));
-      expect(resume.failureKind).toBe("session_not_found");
-      expect(invoked).toBe(false);
+      expect(resume.error).toBeNull();
+      expect(resume.text).toBe("reply-2");
+      // Only turn-2 — the failed turn-1 transcript was dropped, not silently resumed.
+      expect(transcriptOf(resumedContext)).toEqual(["user:turn-2"]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

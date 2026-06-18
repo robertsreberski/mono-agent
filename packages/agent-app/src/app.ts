@@ -593,7 +593,9 @@ class MonoAgentAppController implements MonoAgentApp {
     if (settings === undefined) {
       return undefined;
     }
-    this.logger?.info?.("Read-only memory_recall tool enabled.", { provider: settings.embeddings.provider });
+    this.logger?.info?.("Read-only memory_recall tool enabled.", {
+      provider: settings.embeddings?.provider ?? "fts-only",
+    });
     return createMemoryRecallRuntimeExtension(settings, this.cwd);
   }
 

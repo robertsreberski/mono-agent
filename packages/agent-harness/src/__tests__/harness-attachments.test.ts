@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-store";
+import type { HistoryMessage } from "@mono-agent/context";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { createAgentHarness } from "../index.js";
+import type { ConversationHistoryStore } from "../index.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -49,6 +52,37 @@ function createCapturingRuntime() {
 function userContent(call: { options: RuntimeRunOptions }): string {
   const messages = call.options.messages as Array<{ role: string; content: unknown }> | undefined;
   return typeof messages?.[0]?.content === "string" ? (messages[0].content as string) : "";
+}
+
+function createSpyHistoryStore() {
+  const appended: HistoryMessage[] = [];
+  const store: ConversationHistoryStore = {
+    async load(): Promise<readonly HistoryMessage[]> {
+      return [];
+    },
+    async append(_conversationId: string, messages: readonly HistoryMessage[]): Promise<void> {
+      appended.push(...messages);
+    },
+  };
+  return { appended, store };
+}
+
+function createSpyMemoryStore() {
+  const hostSummaries: string[] = [];
+  const captures: string[] = [];
+  const store: MemoryStore = {
+    async load(): Promise<MemoryBlock | undefined> {
+      return undefined;
+    },
+    async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
+      hostSummaries.push(summary);
+      return { conversationId, source: "spy", bytesWritten: summary.length };
+    },
+    scheduleCapture(_conversationId: string, text: string): void {
+      captures.push(text);
+    },
+  };
+  return { hostSummaries, captures, store };
 }
 
 describe("AgentHarness attachments", () => {
@@ -243,5 +277,67 @@ describe("AgentHarness attachments", () => {
 
     releaseFirst();
     await first;
+  });
+
+  it("persists the original caption + redacted metadata to history/memory, never the extracted document body (F8)", async () => {
+    const identityPath = await identityFixture();
+    const attachmentsDir = await attachmentsDirFixture();
+    const fake = createCapturingRuntime();
+    const history = createSpyHistoryStore();
+    const memory = createSpyMemoryStore();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      attachmentsDir,
+      historyStore: history.store,
+      memory: memory.store,
+      memoryWriteMode: "capture",
+    });
+
+    const SECRET = "SECRET-DOC-BODY";
+    const CAPTION = "summarize this for me";
+    await harness.run({
+      conversationId: "c1",
+      userMessage: CAPTION,
+      abortSignal: new AbortController().signal,
+      attachments: [{
+        kind: "document",
+        mimeType: "text/plain",
+        data: Buffer.from(SECRET).toString("base64"),
+        name: "secret.txt",
+        text: SECRET,
+        sizeBytes: SECRET.length,
+      }],
+    });
+
+    // (a) The PROVIDER call still receives the expanded prompt with the extracted
+    // body and the saved-path reference — the current turn is unchanged.
+    const prompt = userContent(fake.calls[0] as { options: RuntimeRunOptions });
+    expect(prompt).toContain(CAPTION);
+    expect(prompt).toContain(SECRET);
+    expect(prompt).toContain(attachmentsDir);
+
+    // (b) The persisted history user message keeps the original caption +
+    // redacted metadata (path/type/size/name) but NOT the extracted body.
+    const persistedUser = history.appended.find((message) => message.role === "user");
+    expect(persistedUser).toBeDefined();
+    const persistedText = persistedUser?.content ?? "";
+    expect(persistedText).toContain(CAPTION);
+    expect(persistedText).not.toContain(SECRET);
+    expect(persistedText).not.toContain("--- extracted text ---");
+    // Redacted metadata IS retained so a follow-up can re-open the file.
+    expect(persistedText).toContain(attachmentsDir);
+    expect(persistedText).toContain("secret.txt");
+
+    // (c) The intelligent-capture payload must not carry the extracted body.
+    expect(memory.captures).toHaveLength(1);
+    expect(memory.captures[0]).not.toContain(SECRET);
+    expect(memory.captures[0]).toContain(CAPTION);
+
+    // (d) The deterministic host summary must not carry the extracted body.
+    expect(memory.hostSummaries).toHaveLength(1);
+    expect(memory.hostSummaries[0]).not.toContain(SECRET);
   });
 });

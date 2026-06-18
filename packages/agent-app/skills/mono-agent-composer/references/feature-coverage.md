@@ -14,7 +14,8 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Continuous provider sessions with idle eviction | config | `runtime.session.{mode,idleTimeoutMs}` |
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.local[]` |
 | Pi OAuth credentials | config | `providers.piAuthPath` |
-| Context compaction, tool-output bloat guard, cost tracking | auto | built into every run |
+| Tool-output bloat guard, cost tracking | auto | built into every run |
+| Context handling | provider | delegated to the provider; the pi bridge (pi-agent-core AgentHarness) runs no automatic in-loop summarization, so runs report `context_compaction_applied: null` |
 | Structured output (JSON schema), live input steering | code | harness `runtimeOptions` |
 | Tool approval gates (risk tiers, timeouts, always-allow) | code | `createMonoRuntime({ onToolApprovalRequest, ... })` — needs a host UI |
 | Fully custom runtime | code | `startMonoAgentApp({ runtime })` |

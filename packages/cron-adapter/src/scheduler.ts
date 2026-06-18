@@ -313,6 +313,28 @@ function startRun(
   void options.responder.respond(request, stream)
     .then(async (response) => {
       await stream.finish(response.text);
+      // Guard against a responder that ignores/races the abort signal and still
+      // resolves with text: if THIS run's controller was aborted (overlap:"replace"
+      // discarding the in-flight run, or stop()), report the run as cancelled
+      // rather than succeeded. `controller` is captured per-run, so this keys the
+      // abort check to this specific firing (not a newer run's controller). This
+      // mirrors the .catch() classification below and LiveSessionManager.drain().
+      if (controller.signal.aborted) {
+        const result: CronJobResult = {
+          kind: "cancelled",
+          jobId: job.id,
+          scheduledAt,
+          startedAt,
+          completedAt: (options.now?.() ?? new Date()).toISOString(),
+          error: "Cron job cancelled (responder resolved after abort).",
+        };
+        options.logger?.warn?.("Cron job responder resolved after abort; reporting cancelled.", {
+          jobId: job.id,
+          error: result.error,
+        });
+        await emitResult(options, result);
+        return;
+      }
       const result: CronJobResult = {
         kind: "succeeded",
         jobId: job.id,

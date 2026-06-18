@@ -335,7 +335,11 @@ describe("pi-native AgentHarness bridge", () => {
     expect(userTexts).toContain("turn-2");
   });
 
-  it("fails fast with session_not_found on a resume miss without invoking the provider", async () => {
+  it("fails fast with session_not_found on an in-memory resume miss without invoking the provider", async () => {
+    // In-memory resume miss (no piSessionsRoot): no live entry and no durable
+    // repo to create-on-miss into, so the per-process session_not_found contract
+    // holds. (The DURABLE resume miss now creates-on-miss under the requested id
+    // — see the cross-restart resume test in pi-native-sessions.test.js, F9.)
     const model = setup();
     let invoked = false;
     faux.setResponses([
@@ -344,7 +348,6 @@ describe("pi-native AgentHarness bridge", () => {
     const result = await generatePiNativeResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       sessionId: "no-such-native-session",
-      piSessionsRoot: sessionsRoot,
     }));
     expect(result.failureKind).toBe("session_not_found");
     expect(result.providerSessionId).toBe("no-such-native-session");
@@ -363,6 +366,40 @@ describe("pi-native AgentHarness bridge", () => {
     const result = await generatePiNativeResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
       abortSignal: controller.signal,
+    }));
+    expect(result.cancelled).toBe(true);
+    expect(result.error).toBeNull();
+    expect(invoked).toBe(false);
+  });
+
+  it("honors an abort that fires DURING setup, before the provider call (F5)", async () => {
+    // The bridge installs its abort handler only AFTER a long stretch of awaited
+    // setup (reopen/create/MCP-init/buildContext/appendMessage/getLeafId). An
+    // abort that lands during that window is dropped by the (not-yet-attached)
+    // handler, so the F5 re-check right before provider_request_started is the
+    // load-bearing guard. We model "abort fired during setup" with a signal that
+    // is NOT aborted at the entry pre-check (~:356) but flips to aborted exactly
+    // when the bridge attaches its handler (~:640) — i.e. AFTER all setup awaits
+    // and BEFORE the provider call (~:706). The faux response must never run.
+    const model = setup();
+    let invoked = false;
+    faux.setResponses([
+      () => { invoked = true; return fauxAssistantMessage([fauxText("never")]); },
+    ]);
+
+    let aborted = false;
+    const signal = {
+      get aborted() { return aborted; },
+      reason: undefined,
+      // The bridge attaches its handler here (post-setup); flipping aborted on
+      // that call deterministically simulates an abort the handler install missed.
+      addEventListener(_type, _handler, _opts) { aborted = true; },
+      removeEventListener() {},
+    };
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "hi" }],
+      abortSignal: signal,
     }));
     expect(result.cancelled).toBe(true);
     expect(result.error).toBeNull();

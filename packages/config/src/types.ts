@@ -76,13 +76,17 @@ export interface MonoAgentConfig {
     };
   };
   /**
-   * Global concurrency bounds across all conversations. Two independent tiers,
-   * both unset (default) = unbounded:
+   * Concurrency bounds across all conversations. Two independent tiers, both
+   * unset (default) = unbounded:
    * - `maxConcurrentRuns` caps how many runs execute against the provider at
    *   once (execution width, around the model call only).
    * - `maxPendingRuns` caps how many runs may be admitted before the expensive
    *   pre-provider work (attachment persistence + context prep); requests over
-   *   this bound fail fast instead of queuing, providing global backpressure.
+   *   this bound fail fast instead of queuing, providing backpressure.
+   *
+   * Bounds apply per channel harness instance, not globally across channels:
+   * the app builds one harness per channel, so with N configured channels the
+   * effective ceiling is N× this value.
    */
   readonly concurrency?: {
     readonly maxConcurrentRuns?: number;

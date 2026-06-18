@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { HistoryMessage } from "@mono-agent/context";
+import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-store";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { AgentHarnessError, createAgentHarness, createInMemoryHistoryStore } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../index.js";
+import type { AgentHarnessSessionOptions, ConversationHistoryStore } from "../index.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -68,6 +70,37 @@ function request(conversationId: string, userMessage = "hello") {
   return { conversationId, userMessage, abortSignal: new AbortController().signal };
 }
 
+function createSpyHistoryStore() {
+  const appended: HistoryMessage[] = [];
+  const store: ConversationHistoryStore = {
+    async load(): Promise<readonly HistoryMessage[]> {
+      return [];
+    },
+    async append(_conversationId: string, messages: readonly HistoryMessage[]): Promise<void> {
+      appended.push(...messages);
+    },
+  };
+  return { appended, store };
+}
+
+function createSpyMemoryStore() {
+  let hostSummaryCalls = 0;
+  let captureCalls = 0;
+  const store: MemoryStore = {
+    async load(): Promise<MemoryBlock | undefined> {
+      return undefined;
+    },
+    async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
+      hostSummaryCalls += 1;
+      return { conversationId, source: "spy", bytesWritten: summary.length };
+    },
+    scheduleCapture(): void {
+      captureCalls += 1;
+    },
+  };
+  return { store, hostSummaryCalls: () => hostSummaryCalls, captureCalls: () => captureCalls };
+}
+
 describe("AgentHarness continuous sessions", () => {
   it("first run goes fresh with history, second run resumes without history", async () => {
     const identityPath = await identityFixture();
@@ -87,6 +120,36 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.options.sessionId).toBe("ps-1");
     expect(fake.calls[1]?.options.providerSessionId).toBe("ps-1");
     expect(fake.calls[1]?.options.sessionKeepAlive).toBe(true);
+    expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
+  });
+
+  it("a cold/derived-id durable resume still sends history so create-on-miss keeps prior context (F9/Issue-2)", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = await primedHistoryStore("conv-d");
+    const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-d" }));
+    // piSessionsRoot configured → the harness derives a STABLE id for durable
+    // resume even on the FIRST turn (no live record).
+    const harness = createAgentHarness({
+      identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session,
+      piSessionsRoot: join(tmpdir(), "pi-sessions-issue2"),
+    });
+
+    const first = await harness.run(request("conv-d", "first question"));
+    expect(first.text).toBe("answer");
+    // A derived, non-empty session id is passed so a restart can resume the on-disk
+    // JSONL (rather than starting a fresh session and orphaning it).
+    expect(typeof fake.calls[0]?.options.sessionId).toBe("string");
+    expect((fake.calls[0]?.options.sessionId as string).length).toBeGreaterThan(0);
+    // ...AND history is NOT omitted: with no confirmed live session, the harness
+    // cannot assume the on-disk session exists, so it still sends history. pi-native
+    // ignores it on a real resume and SEEDS it on create-on-miss — so an existing
+    // conversation never loses prior context. (The Issue-2 regression keyed
+    // omitHistory on the derived id, dropping history on create-on-miss.)
+    expect(fake.calls[0]?.prompt).toContain(HISTORY_MARKER);
+
+    // Once a live record exists, the warm-resume optimization omits history again.
+    const second = await harness.run(request("conv-d", "second question"));
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-d");
     expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
   });
 
@@ -439,5 +502,76 @@ describe("AgentHarness continuous sessions", () => {
       warning_kind: "session_resume_retry",
       provider_session_id: "ps-1",
     }));
+  });
+
+  it("does not commit a cancelled turn that returns success after a mid-turn abort (F3)", async () => {
+    const identityPath = await identityFixture();
+    const history = createSpyHistoryStore();
+    const memory = createSpyMemoryStore();
+    const controller = new AbortController();
+    // The runtime ignores the abort and returns a success-shaped result, but the
+    // live-session cancel signal landed mid-turn — request.abortSignal is aborted
+    // by the time runRuntime() resolves. This is the TOCTOU race F3 guards.
+    const fake = createSessionFakeRuntime(async () => {
+      controller.abort(new Error("cancelled mid-turn"));
+      return { text: "done", providerSessionId: "ps-x" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      session,
+      historyStore: history.store,
+      memory: memory.store,
+      memoryWriteMode: "capture",
+    });
+
+    const response = await harness.run({ conversationId: "conv-1", userMessage: "hello", abortSignal: controller.signal });
+
+    // The response is a cancelled failure, not a committed success.
+    expect(response.text).toBeUndefined();
+    expect(response.failure?.kind).toBe("cancelled");
+    // No history committed for the cancelled turn.
+    expect(history.appended).toHaveLength(0);
+    // No memory written for the cancelled turn.
+    expect(memory.hostSummaryCalls()).toBe(0);
+    expect(memory.captureCalls()).toBe(0);
+    // The returned provider session was disposed, so the next message replays
+    // history into a fresh session rather than resuming a cancelled-turn session.
+    expect(fake.disposedSessions).toContain("ps-x");
+  });
+
+  it("does not retain a cancelled turn's warm session for the next turn (F3)", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = await primedHistoryStore("conv-1");
+    let runCount = 0;
+    // Turn 1 establishes a warm session (ps-1). Turn 2 resumes it, but aborts
+    // mid-turn while returning success — the cancelled turn must retire ps-1 so
+    // turn 3 goes fresh (no resume of a session diverged from history).
+    const abortOnSecond = new AbortController();
+    const fake = createSessionFakeRuntime(async (_prompt, _options, call) => {
+      runCount = call;
+      if (call === 2) {
+        abortOnSecond.abort(new Error("cancelled mid-turn"));
+        return { text: "ignored", providerSessionId: "ps-1" };
+      }
+      return { text: "answer", providerSessionId: "ps-1" };
+    });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session });
+
+    await harness.run(request("conv-1", "first"));
+    expect(fake.calls[0]?.options.sessionId).toBeUndefined();
+
+    const cancelled = await harness.run({ conversationId: "conv-1", userMessage: "second", abortSignal: abortOnSecond.signal });
+    expect(cancelled.failure?.kind).toBe("cancelled");
+    // ps-1 was retired (evicted) on the cancelled turn.
+    expect(fake.disposedSessions).toContain("ps-1");
+
+    // Turn 3 must go fresh (no sessionId) and replay history.
+    await harness.run(request("conv-1", "third"));
+    expect(runCount).toBe(3);
+    expect(fake.calls[2]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
   });
 });
