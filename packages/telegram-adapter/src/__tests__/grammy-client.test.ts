@@ -2,7 +2,7 @@ import { GrammyError, HttpError } from "grammy";
 import type { Api } from "grammy";
 import { describe, expect, it } from "vitest";
 
-import { createGrammyTelegramApi } from "../grammy-client.js";
+import { createGrammyTelegramApi, createTelegramMessageSender } from "../grammy-client.js";
 import { TelegramApiError } from "../telegram-error.js";
 
 interface RecordedCall {
@@ -35,6 +35,17 @@ function recordingApi(
 }
 
 describe("createGrammyTelegramApi", () => {
+  it("creates a TelegramMessageSender from a bot token", () => {
+    const client = createTelegramMessageSender(" 123:abc ");
+
+    expect(typeof client.sendMessage).toBe("function");
+    expect(typeof client.editMessageText).toBe("function");
+  });
+
+  it("rejects blank bot tokens", () => {
+    expect(() => createTelegramMessageSender(" ")).toThrow(/bot token is required/u);
+  });
+
   it("translates sendMessage params into grammY positional args plus options", async () => {
     const { api, calls } = recordingApi({
       sendMessage: (chat_id, text) => ({

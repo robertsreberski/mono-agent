@@ -1,4 +1,4 @@
-import { GrammyError, HttpError, type Api } from "grammy";
+import { Bot, GrammyError, HttpError, type Api } from "grammy";
 
 import {
   TelegramApiError,
@@ -102,6 +102,14 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
       }
     },
   };
+}
+
+export function createTelegramMessageSender(botToken: string): TelegramMessageSender {
+  const token = botToken.trim();
+  if (token.length === 0) {
+    throw new TypeError("Telegram bot token is required.");
+  }
+  return createGrammyTelegramApi(new Bot(token).api);
 }
 
 function buildSendOther(params: TelegramSendMessageParams): SendOther {

@@ -86,7 +86,7 @@ What tools or MCP servers does the agent actually need?
 4. Both
 ```
 
-Fills: `tools.allowedTools`, `tools.disallowedTools` (denylist wins), `tools.mcpConfigPath`. Record exact tool names; do not broaden access as a convenience.
+Fills: `tools.allowedTools`, `tools.disallowedTools` (denylist wins), `tools.mcpConfigPath`. Record exact tool names; do not broaden access as a convenience. To expose adapter-derived send tools, include `slack_send_message` / `telegram_send_message`; valid enabled Slack/Telegram adapter config and destination allowlists are still required.
 
 ## 6. Memory Strategy
 

@@ -6,6 +6,7 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 
 import { isAppCoreConfigError, loadAppCoreConfig, resolveAppConsoleSettings } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { adapterSendToolNames, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
 
@@ -54,7 +55,7 @@ export async function validateMonoAgentFolder(
     sections.push(runtimeSection(coreConfig));
     sections.push(await contextSection(coreConfig));
     sections.push(await memorySection(coreConfig));
-    sections.push(await toolsSection(coreConfig));
+    sections.push(await toolsSection(coreConfig, options));
     sections.push(sandboxSection(coreConfig));
   }
 
@@ -292,7 +293,7 @@ function memoryLlmLabel(llm: NonNullable<MonoAgentConfig["memory"]>["llm"]): str
     : `agent-host:${llm.model}${llm.executionMode === undefined ? "" : ` (${llm.executionMode})`}`;
 }
 
-async function toolsSection(config: MonoAgentConfig): Promise<ValidationSection> {
+async function toolsSection(config: MonoAgentConfig, input: MonoAgentAppConfigInput): Promise<ValidationSection> {
   const details: string[] = [];
   let status: ValidationStatus = "ok";
 
@@ -311,6 +312,15 @@ async function toolsSection(config: MonoAgentConfig): Promise<ValidationSection>
       status = "error";
       details.push(`MCP config file is missing: ${config.tools.mcpConfigPath}`);
     }
+  }
+  const adapterSendTools = await resolveAdapterSendToolsSettings(input, {
+    allowedTools: config.tools.allowedTools,
+    disallowedTools: config.tools.disallowedTools,
+  });
+  if (adapterSendTools === undefined) {
+    details.push("No adapter-derived send tools enabled.");
+  } else {
+    details.push(`Adapter send tools: ${adapterSendToolNames(adapterSendTools).join(", ")}.`);
   }
 
   return { id: "tools", label: "Tools & MCP", status, details };
