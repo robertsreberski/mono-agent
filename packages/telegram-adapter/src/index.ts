@@ -39,7 +39,7 @@ export type {
 } from "./message-stream.js";
 
 export { renderTelegramMarkdown } from "./telegram-markdown.js";
-export { createGrammyTelegramApi } from "./grammy-client.js";
+export { createGrammyTelegramApi, createTelegramMessageSender } from "./grammy-client.js";
 
 export { createTelegramBot } from "./bot.js";
 export type {

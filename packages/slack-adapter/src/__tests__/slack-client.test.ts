@@ -63,6 +63,24 @@ describe("SlackWebApiClient", () => {
     expect(init?.headers).toMatchObject({ authorization: `Bearer ${APP_TOKEN}` });
   });
 
+  it("allows send-only clients without an app token", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: true, channel: "C1", ts: "171.1" }),
+    ) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    await expect(client.chatPostMessage({ channel: "C1", text: "hello" })).resolves.toMatchObject({
+      ok: true,
+      channel: "C1",
+      ts: "171.1",
+    });
+    await expect(client.appsConnectionsOpen()).rejects.toThrow(/app token is required/u);
+  });
+
   it("throws sanitized errors for Slack ok=false envelopes", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ ok: false, error: "invalid_auth", needed: BOT_TOKEN }),
