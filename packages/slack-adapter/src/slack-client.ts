@@ -8,6 +8,7 @@ import type {
   SlackDownloadFileParams,
   SlackReactionsAddParams,
   SlackRequestOptions,
+  SlackSetAssistantStatusParams,
   SlackWebApi,
 } from "./types.js";
 
@@ -153,6 +154,18 @@ export class SlackWebApiClient implements SlackWebApi {
     options?: SlackRequestOptions,
   ): Promise<void> {
     await this.request<{ ok: true }>("reactions.add", params, this.botToken, options);
+  }
+
+  async setAssistantStatus(
+    params: SlackSetAssistantStatusParams,
+    options?: SlackRequestOptions,
+  ): Promise<void> {
+    await this.request<{ ok: true }>(
+      "assistant.threads.setStatus",
+      { channel_id: params.channelId, thread_ts: params.threadTs, status: params.status },
+      this.botToken,
+      options,
+    );
   }
 
   /**

@@ -73,6 +73,19 @@ export interface SlackReactionsAddParams {
   name: string;
 }
 
+/**
+ * Params for `assistant.threads.setStatus` — shows an ephemeral "App is <status>"
+ * indicator in a Slack AI-assistant thread while the app works. Requires the app
+ * to have the Agents & AI Apps feature + the `assistant:write` scope, and only
+ * applies inside an assistant thread (the method errors in regular channels/DMs).
+ */
+export interface SlackSetAssistantStatusParams {
+  channelId: SlackChannelId;
+  threadTs: SlackMessageTs;
+  /** Verb phrase rendered as "App is <status>", e.g. "is thinking…". "" clears it. */
+  status: string;
+}
+
 export interface SlackWebApi {
   authTest(options?: SlackRequestOptions): Promise<SlackAuthTestResult>;
   appsConnectionsOpen(options?: SlackRequestOptions): Promise<SlackAppsConnectionsOpenResult>;
@@ -86,6 +99,17 @@ export interface SlackWebApi {
    */
   reactionsAdd?(
     params: SlackReactionsAddParams,
+    options?: SlackRequestOptions,
+  ): Promise<void>;
+  /**
+   * Optional: set an assistant-thread status ("App is <status>") via
+   * `assistant.threads.setStatus`. Best-effort and assistant-thread-only (needs the
+   * `assistant:write` scope + the Agents & AI Apps feature); the message stream
+   * falls back to a 👀 reaction when this is absent or errors. Slack auto-clears
+   * the status when the app posts its next message to the thread.
+   */
+  setAssistantStatus?(
+    params: SlackSetAssistantStatusParams,
     options?: SlackRequestOptions,
   ): Promise<void>;
   chatUpdate(

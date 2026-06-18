@@ -20,6 +20,17 @@ Adapter settings can be loaded from nested JSON under `slack` or explicit enviro
 
 The adapter is opt-in: `slack.enabled` / `MONO_AGENT_SLACK_ENABLED` defaults to `false`. While disabled the loader skips token validation and the channel reports `disabled` rather than `waiting_for_config`. Set `enabled: true` to turn it on; missing tokens or allowlist then surface as a real `waiting_for_config` reason.
 
+## Activity indicator (assistant status / 👀)
+
+While the agent works, the message stream surfaces progress in the thread. It
+prefers Slack's official assistant-thread status — `assistant.threads.setStatus`
+("App is _thinking…_"), which Slack auto-clears when the next message posts — and
+falls back to a 👀 "seen" reaction on the triggering message. The status path only
+applies inside a Slack **AI-assistant thread** and requires the app to have the
+**Agents & AI Apps** feature enabled plus the **`assistant:write`** scope; in
+regular channels/DMs (or without the scope) the call errors and the adapter uses
+the reaction instead — no configuration needed for the fallback.
+
 ## Public API
 
 - `slackFieldGroup`

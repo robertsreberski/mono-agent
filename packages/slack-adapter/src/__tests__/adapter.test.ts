@@ -24,10 +24,25 @@ class FakeSlackApi implements SlackWebApi {
   readonly postMessageCalls: SlackChatPostMessageParams[] = [];
   readonly updateCalls: SlackChatUpdateParams[] = [];
   readonly reactionsAddCalls: SlackReactionsAddParams[] = [];
+  readonly setAssistantStatusCalls: Array<{ channelId: string; threadTs: string; status: string }> = [];
+  /**
+   * When true, setAssistantStatus rejects (simulating a regular channel/DM that is
+   * NOT a Slack AI-assistant thread). Defaults true since most threads are not
+   * assistant threads → the adapter falls back to the 👀 reaction. Assistant-thread
+   * tests set this false.
+   */
+  failSetAssistantStatus = true;
   nextTs = 200;
 
   async authTest() {
     return { ok: true as const };
+  }
+
+  async setAssistantStatus(params: { channelId: string; threadTs: string; status: string }): Promise<void> {
+    this.setAssistantStatusCalls.push(params);
+    if (this.failSetAssistantStatus) {
+      throw new Error("not_in_assistant_thread");
+    }
   }
 
   async appsConnectionsOpen() {
@@ -172,6 +187,52 @@ describe("SlackAdapter", () => {
     ]);
     expect(api.updateCalls).toEqual([]);
     // A 👀 "seen" reaction was added once to the triggering message while working.
+    expect(api.reactionsAddCalls).toEqual([
+      { channel: "D123", timestamp: "171.000001", name: "eyes" },
+    ]);
+  });
+
+  it("sets an assistant-thread status while working when setAssistantStatus is available", async () => {
+    const api = new FakeSlackApi();
+    api.failSetAssistantStatus = false; // this conversation IS an assistant thread
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.append("partial");
+        return { text: "final" };
+      }),
+    });
+
+    await adapter.handleEventCallback(directMessage("hello"));
+
+    // The official assistant-thread status is set (Slack auto-clears it when the
+    // final message posts), and the 👀 reaction fallback is NOT used.
+    expect(api.setAssistantStatusCalls).toEqual([
+      { channelId: "D123", threadTs: "171.000001", status: "is thinking…" },
+    ]);
+    expect(api.reactionsAddCalls).toEqual([]);
+  });
+
+  it("falls back to the 👀 reaction when assistant status is unavailable (not an assistant thread)", async () => {
+    const api = new FakeSlackApi();
+    api.failSetAssistantStatus = true;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (_request, stream) => {
+        await stream.append("partial");
+        return { text: "final" };
+      }),
+    });
+
+    await adapter.handleEventCallback(directMessage("hello"));
+
+    // It tried the assistant status, hit the not-an-assistant-thread error, and
+    // fell back to the 👀 reaction (added once).
+    expect(api.setAssistantStatusCalls.length).toBeGreaterThanOrEqual(1);
     expect(api.reactionsAddCalls).toEqual([
       { channel: "D123", timestamp: "171.000001", name: "eyes" },
     ]);

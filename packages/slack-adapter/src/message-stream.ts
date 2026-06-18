@@ -53,6 +53,12 @@ export interface SlackMessageStreamOptions {
   retryBaseDelayMs?: number;
   /** Render lightweight tool activity hints as the live status. Default true. */
   showHints?: boolean;
+  /**
+   * Status shown via `assistant.threads.setStatus` ("App is <status>") while the
+   * agent works, when this is a Slack AI-assistant thread. Falls back to the 👀
+   * reaction in regular channels/DMs. Default "is thinking…".
+   */
+  assistantStatusText?: string;
   /** Aborts in-flight retry waits (e.g. on /cancel). */
   abortSignal?: AbortSignal;
   logger?: SlackMessageStreamLogger;
@@ -87,6 +93,7 @@ export type SlackSendOutcome =
   | { kind: "fatal" };
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking...";
+const DEFAULT_ASSISTANT_STATUS_TEXT = "is thinking…";
 
 /**
  * Adapts a {@link SlackWebApi} to the transport-agnostic {@link ChannelTransport}
@@ -102,25 +109,51 @@ class SlackChannelTransport implements ChannelTransport {
   private readonly channelId: SlackChannelId;
   private readonly threadTs: SlackMessageTs | undefined;
   private readonly reactToTs: SlackMessageTs | undefined;
+  private readonly assistantStatusText: string;
   private reacted = false;
+  private assistantStatusUnavailable = false;
 
   constructor(options: {
     api: SlackWebApi;
     channelId: SlackChannelId;
     threadTs?: SlackMessageTs;
     reactToTs?: SlackMessageTs;
+    assistantStatusText: string;
     maxMessageChars: number;
   }) {
     this.api = options.api;
     this.channelId = options.channelId;
     this.threadTs = options.threadTs;
     this.reactToTs = options.reactToTs;
+    this.assistantStatusText = options.assistantStatusText;
     this.maxMessageChars = options.maxMessageChars;
   }
 
   async indicateActivity(): Promise<void> {
-    // Slack has no bot "typing" indicator, so signal "seen" with a 👀 reaction
-    // on the triggering message — added once (Slack rejects duplicates).
+    // Prefer Slack's official assistant-thread status ("App is <status>"), which
+    // Slack auto-clears when the app posts its next message to the thread. It only
+    // works inside an AI-assistant thread (needs the assistant:write scope), so if
+    // it is unavailable or errors we stop trying for this stream and fall back to
+    // the 👀 reaction used in regular channels/DMs.
+    if (
+      !this.assistantStatusUnavailable &&
+      this.threadTs !== undefined &&
+      this.api.setAssistantStatus !== undefined
+    ) {
+      try {
+        await this.api.setAssistantStatus({
+          channelId: this.channelId,
+          threadTs: this.threadTs,
+          status: this.assistantStatusText,
+        });
+        return;
+      } catch {
+        // Not an assistant thread (or missing scope): don't retry it this stream.
+        this.assistantStatusUnavailable = true;
+      }
+    }
+    // Slack has no bot "typing" indicator, so signal "seen" with a 👀 reaction on
+    // the triggering message — added once (Slack rejects duplicates).
     if (this.reacted || this.reactToTs === undefined || this.api.reactionsAdd === undefined) {
       return;
     }
@@ -183,6 +216,7 @@ export class SlackMessageStream implements AgentMessageStream {
       channelId: options.channelId,
       ...(options.threadTs === undefined ? {} : { threadTs: options.threadTs }),
       ...(options.reactToTs === undefined ? {} : { reactToTs: options.reactToTs }),
+      assistantStatusText: options.assistantStatusText ?? DEFAULT_ASSISTANT_STATUS_TEXT,
       maxMessageChars,
     });
 
