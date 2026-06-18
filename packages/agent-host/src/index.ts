@@ -10,11 +10,13 @@ import type {
   AgentHarnessRuntimeOptionsInput,
   ConversationHistoryStore,
 } from "@mono-agent/agent-harness";
+import { resolve as resolvePath } from "node:path";
+
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
 import type { LlmComplete } from "@mono-agent/memory-bujo";
-import { createEmbeddingProvider } from "@mono-agent/memory-search";
+import { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } from "@mono-agent/memory-search";
 import type { MemoryStore } from "@mono-agent/memory-store";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import {
@@ -120,10 +122,25 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     cwd: config.runtime.workspace,
     ...(config.runtime.effort === undefined ? {} : { effort: config.runtime.effort }),
     ...(config.runtime.maxTurns === undefined ? {} : { maxTurns: config.runtime.maxTurns }),
+    ...(config.providers?.piNative?.piSessionsRoot === undefined
+      ? {}
+      : { piSessionsRoot: config.providers.piNative.piSessionsRoot }),
     session: {
       mode: config.runtime.session.mode,
       idleTimeoutMs: config.runtime.session.idleTimeoutMs,
     },
+    ...(config.concurrency?.maxConcurrentRuns === undefined && config.concurrency?.maxPendingRuns === undefined
+      ? {}
+      : {
+          concurrency: {
+            ...(config.concurrency?.maxConcurrentRuns === undefined
+              ? {}
+              : { maxConcurrentRuns: config.concurrency.maxConcurrentRuns }),
+            ...(config.concurrency?.maxPendingRuns === undefined
+              ? {}
+              : { maxPendingRuns: config.concurrency.maxPendingRuns }),
+          },
+        }),
     runtimeOptions,
     ...(options.runtimeOptionsForRequest === undefined
       ? {}
@@ -131,6 +148,9 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: historyMaxMessages(config.runtime.maxTurns) }),
+    // Inbound channel attachments are saved here (under the artifacts dir, which
+    // sits inside a sandbox-readable root) so the agent can open them by path.
+    attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
     recorderFactory: ({ runId, conversationId }) => createJsonlRunRecorder({
@@ -153,6 +173,10 @@ function historyMaxMessages(maxTurns: number | undefined): number {
   return maxTurns === undefined || maxTurns <= 0 ? 0 : maxTurns * 2;
 }
 
+// Bound embeddings calls so a slow/cold backend cannot stall a turn for the
+// provider default (30s). The harness degrades recall to empty on timeout.
+const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
+
 export function createConfiguredMemory(
   config: MonoAgentConfig,
   deps: { logger?: { warn(message: string): void }; runtime?: MonoRuntimeLike } = {},
@@ -171,13 +195,28 @@ export function createConfiguredMemory(
     });
   }
 
-  // journal and bujo tiers both need embeddings for hybrid recall.
-  const embeddings = createEmbeddingProvider({
-    provider: embeddingsConfig?.provider ?? "ollama",
-    model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
-    ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
-    ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
-  });
+  // journal and bujo tiers both need embeddings for hybrid recall. A bounded
+  // timeout keeps a slow backend (e.g. Ollama loading the model) from stalling
+  // the request, and the circuit breaker fast-fails after repeated failures so
+  // a sustained outage stops blocking recall entirely. The harness degrades
+  // recall to empty (with a memory_degraded warning) when this errors.
+  const embeddings = createCircuitBreakerEmbeddingProvider(
+    createEmbeddingProvider({
+      provider: embeddingsConfig?.provider ?? "ollama",
+      model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
+      ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
+      ...(embeddingsConfig?.apiKey !== undefined && { apiKey: embeddingsConfig.apiKey }),
+      timeoutMs: embeddingsConfig?.timeoutMs ?? DEFAULT_EMBEDDINGS_TIMEOUT_MS,
+    }),
+    {
+      ...(embeddingsConfig?.circuitBreaker?.failureThreshold !== undefined && {
+        failureThreshold: embeddingsConfig.circuitBreaker.failureThreshold,
+      }),
+      ...(embeddingsConfig?.circuitBreaker?.cooldownMs !== undefined && {
+        cooldownMs: embeddingsConfig.circuitBreaker.cooldownMs,
+      }),
+    },
+  );
   const dim = embeddingsConfig?.dim ?? 768;
 
   if (mode === "journal") {
@@ -370,13 +409,24 @@ function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
 }
 
 function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
-  const { permissionMode, reasoningSummary } = config.runtime;
-  if (permissionMode === undefined && reasoningSummary === undefined) {
+  const { permissionMode } = config.runtime;
+  // NOTE: config.runtime.reasoningSummary is intentionally NOT forwarded. The
+  // sole pi runtime (pi-native) derives reasoning from `effort` and does not
+  // consume an explicit summary level, and the codex/claude CLIs emit summaries
+  // unconditionally — so the former `piReasoningSummary` runtime option was dead
+  // plumbing. The config field is retained for back-compat but has no effect here.
+  const piNative = config.providers?.piNative;
+  if (
+    permissionMode === undefined
+    && piNative?.piMaxRetries === undefined
+    && piNative?.maxRetryDelayMs === undefined
+  ) {
     return undefined;
   }
   return {
     ...(permissionMode === undefined ? {} : { permissionMode }),
-    ...(reasoningSummary === undefined ? {} : { piReasoningSummary: reasoningSummary }),
+    ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
+    ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
   };
 }
 

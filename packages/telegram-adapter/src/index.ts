@@ -47,10 +47,17 @@ export type {
   TelegramBotController,
 } from "./bot.js";
 
+export {
+  DEFAULT_ATTACHMENT_MAX_BYTES,
+  DEFAULT_ATTACHMENT_MIME_ALLOWLIST,
+  downloadTelegramAttachments,
+} from "./adapter.js";
 export type {
   AgentRequest,
   AgentResponder,
   AgentResponse,
+  DownloadTelegramAttachmentsOptions,
+  TelegramFileDownloader,
   TelegramAgentMessageInput,
   TelegramAttachment,
   TelegramAttachmentBase,

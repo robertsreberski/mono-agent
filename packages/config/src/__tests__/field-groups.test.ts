@@ -7,6 +7,7 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
     expect(CORE_AGENT_FIELD_GROUPS.map((group) => group.id)).toEqual([
       "identity",
       "runtime",
+      "concurrency",
       "memory",
       "tools",
       "sandbox",
@@ -49,6 +50,48 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
     expect(llmExecutionMode).toMatchObject({
       kind: "select",
       path: ["memory", "llm", "executionMode"],
+    });
+  });
+
+  it("exposes concurrency.maxConcurrentRuns on the concurrency group", () => {
+    const concurrency = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "concurrency");
+    expect(concurrency?.fields.find((field) => field.id === "concurrency.maxConcurrentRuns")).toMatchObject({
+      kind: "integer",
+      path: ["concurrency", "maxConcurrentRuns"],
+    });
+  });
+
+  it("exposes concurrency.maxPendingRuns on the concurrency group", () => {
+    const concurrency = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "concurrency");
+    expect(concurrency?.fields.find((field) => field.id === "concurrency.maxPendingRuns")).toMatchObject({
+      kind: "integer",
+      path: ["concurrency", "maxPendingRuns"],
+    });
+  });
+
+  it("exposes memory.recallTool.enabled as a switch on the memory group", () => {
+    const memory = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "memory");
+    expect(memory?.fields.find((field) => field.id === "memory.recallTool.enabled")).toMatchObject({
+      kind: "switch",
+      path: ["memory", "recallTool", "enabled"],
+    });
+  });
+
+  it("exposes embeddings timeoutMs and circuit breaker fields on the memory group", () => {
+    const memory = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "memory");
+    const ids = memory?.fields.map((field) => field.id) ?? [];
+    expect(ids).toContain("memory.embeddings.timeoutMs");
+    expect(ids).toContain("memory.embeddings.circuitBreaker.failureThreshold");
+    expect(ids).toContain("memory.embeddings.circuitBreaker.cooldownMs");
+    const timeout = memory?.fields.find((field) => field.id === "memory.embeddings.timeoutMs");
+    expect(timeout).toMatchObject({
+      kind: "integer",
+      path: ["memory", "embeddings", "timeoutMs"],
+    });
+    const threshold = memory?.fields.find((field) => field.id === "memory.embeddings.circuitBreaker.failureThreshold");
+    expect(threshold).toMatchObject({
+      kind: "integer",
+      path: ["memory", "embeddings", "circuitBreaker", "failureThreshold"],
     });
   });
 

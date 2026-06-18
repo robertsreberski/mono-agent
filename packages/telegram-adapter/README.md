@@ -10,7 +10,9 @@ Telegram communication adapter for agent hosts. It provides a Bot API client, lo
 
 The adapter is opt-in: `telegram.enabled` / `MONO_AGENT_TELEGRAM_ENABLED` defaults to `false`. While disabled the loader skips credential validation and the channel reports `disabled` rather than `waiting_for_config`. Set `enabled: true` to turn it on; a missing bot token or allowlist then surfaces as a real `waiting_for_config` reason.
 
-Inbound Telegram document, photo, audio, video, and voice messages are routed to the responder as Telegram-owned attachment metadata. Captions remain the request text; media-only messages get a concise text summary so existing text-only responder paths can still reason about what arrived. The adapter does not download file bytes, expose Bot API file URLs, or claim model-level file/vision support.
+Inbound Telegram document, photo, audio, video, and voice messages are downloaded (subject to the MIME allowlist and ~20 MB cap) and delivered to the responder as transport-agnostic `AgentAttachment` bytes on the shared `AgentRequestBase.attachments` contract (decoded `mimeType` + base64 `data` + `name`). Captions remain the request text; media-only messages still get a concise text summary so existing text-only responder paths can reason about what arrived. The original Telegram file metadata (file id, sizes, kind) is preserved under `metadata.telegram.attachments`.
+
+Downloads are gated by the configured allowlist and size cap, and a download failure skips the attachment without failing the run. Whether the model actually consumes the images/documents depends on the host runtime's vision/document support — the adapter forwards bytes but does not itself guarantee model-level understanding.
 
 ## Install / Usage
 
@@ -36,7 +38,8 @@ Load adapter settings separately from core config, then pass a structural `Agent
 - `createGrammyTelegramApi`, `TelegramApiError`
 - `TelegramMessageStream`, `classifyTelegramError`
 - `loadTelegramAdapterConfig`, `redactTelegramAdapterConfig`, `telegramFieldGroup`
-- `TelegramAttachment` and related Telegram-owned inbound attachment metadata types
+- `downloadTelegramAttachments` (+ `DownloadTelegramAttachmentsOptions`, `TelegramFileDownloader`): the inbound-bytes flow that maps `TelegramAttachment` metadata to `AgentAttachment` bytes on `request.attachments`
+- `TelegramAttachment` and related Telegram-owned inbound attachment metadata types (preserved under `metadata.telegram.attachments`)
 - Telegram Bot API, request/response, and config types
 
 ## Dependency Boundary

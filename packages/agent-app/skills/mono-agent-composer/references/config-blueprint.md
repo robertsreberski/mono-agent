@@ -42,6 +42,12 @@ my-agent/
   // Local/self-hosted providers for pi:<provider>:<model> references.
   "providers": {
     "piAuthPath": "~/.pi/agent/auth.json", // Pi OAuth credentials (openai-codex, ...)
+    // Pi-native bridge tuning (all optional).
+    "piNative": {
+      "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
+      "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
+      "piSessionsRoot": ".mono-agent/sessions" // durable JSONL sessions → resume across restarts (unset = in-memory)
+    },
     "local": [
       {
         "id": "ollama",
@@ -166,6 +172,11 @@ my-agent/
     "apiKey": "..."                        // optional bearer required from clients
   },
 
+  // Telegram & Slack deliver only the FINAL answer by default (no streamed
+  // interim edits) while showing a working indicator — Telegram a "typing…"
+  // action, Slack a 👀 "seen" reaction. This is built-in behavior (not a JSON
+  // field); restoring live interim streaming needs a custom channel driver with
+  // stream.finalOnly=false. The OpenAI-compatible endpoint still streams tokens.
   "telegram": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
     "botToken": "...",

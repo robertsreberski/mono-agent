@@ -276,6 +276,7 @@ describe("OpenAI API adapter", () => {
       async respond(request, stream) {
         seen.push({
           text: request.text,
+          imageAttachments: request.imageAttachments,
           attachments: request.attachments,
           metadata: request.metadata.openaiApi,
         });
@@ -327,7 +328,7 @@ describe("OpenAI API adapter", () => {
       expect(seen).toEqual([
         {
           text: "user: Describe this",
-          attachments: [
+          imageAttachments: [
             {
               type: "image",
               source: "image_url",
@@ -339,6 +340,11 @@ describe("OpenAI API adapter", () => {
               messageIndex: 0,
               contentPartIndex: 1,
             },
+          ],
+          // The base64 data: image is also forwarded on the shared attachments
+          // contract so it reaches the agent through the generic responder/harness.
+          attachments: [
+            { kind: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
           ],
           metadata: expect.objectContaining({
             attachments: {
@@ -358,6 +364,49 @@ describe("OpenAI API adapter", () => {
             },
           }),
         },
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("bridges only base64 data: images to request.attachments (remote URLs stay metadata-only)", async () => {
+    const seen: Array<{ imageAttachments: unknown; attachments: unknown }> = [];
+    const responder: AgentResponder<OpenAIApiChatRequest> = {
+      async respond(request, stream) {
+        seen.push({ imageAttachments: request.imageAttachments, attachments: request.attachments });
+        await stream.append("ok");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({ host: "127.0.0.1", port: 0, modelId: "agent", responder });
+
+    try {
+      await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "look" },
+                // Remote URL: structural only, NOT bridged to shared attachments.
+                { type: "image_url", image_url: { url: "https://example.com/cat.png" } },
+                // Parameterized base64 data URL: bridged (F157 parser must accept it).
+                { type: "image_url", image_url: { url: "data:image/png;charset=utf-8;base64,iVBORw0KGgo=" } },
+              ],
+            },
+          ],
+        }),
+      });
+
+      // Both images are in the full structural list.
+      expect((seen[0]?.imageAttachments as unknown[]).length).toBe(2);
+      // Only the base64 data: image reaches the shared attachments contract.
+      expect(seen[0]?.attachments).toEqual([
+        { kind: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
       ]);
     } finally {
       await server.stop();
@@ -517,6 +566,64 @@ describe("OpenAI API adapter", () => {
       expect(body).toContain("\"finish_reason\":\"stop\"");
       expect(body.trim().endsWith("data: [DONE]")).toBe(true);
     } finally {
+      await server.stop();
+    }
+  });
+
+  it("opens the SSE stream before the responder setup resolves", async () => {
+    const releaseRespond = deferred<void>();
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        // Simulate slow agent setup latency before any streaming happens.
+        await releaseRespond.promise;
+        await stream.append("hello after setup");
+        return {};
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "Stream early" }],
+        }),
+      });
+
+      // Headers must be visible immediately, before the responder resolves.
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+      expect(response.headers.get("x-accel-buffering")).toBe("no");
+
+      const reader = response.body?.getReader();
+      if (reader === undefined) {
+        throw new Error("Expected a streaming response body.");
+      }
+      // The assistant-role chunk must reach the client before setup completes,
+      // proving the stream opened eagerly. The stream opens with a real `data:`
+      // chunk — NOT a leading SSE comment (": open"), which some OpenAI-compatible
+      // clients (Open WebUI) mishandle when it precedes the first data event.
+      const earlyBody = await readUntil(reader, "\"role\":\"assistant\"");
+      expect(earlyBody.startsWith("data:")).toBe(true);
+      expect(earlyBody).not.toContain(": open");
+      expect(earlyBody).toContain("\"object\":\"chat.completion.chunk\"");
+      expect(earlyBody).not.toContain("hello after setup");
+
+      releaseRespond.resolve(undefined);
+      const body = earlyBody + await readRemaining(reader);
+      expect(body).toContain("\"content\":\"hello after setup\"");
+      expect(body).toContain("\"finish_reason\":\"stop\"");
+      expect(body.trim().endsWith("data: [DONE]")).toBe(true);
+    } finally {
+      releaseRespond.resolve(undefined);
       await server.stop();
     }
   });

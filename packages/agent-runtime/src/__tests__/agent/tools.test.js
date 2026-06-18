@@ -232,6 +232,61 @@ describe("ai tool helpers", () => {
     expect(result).toBe("Error: WebFetch only supports http(s) URLs.");
   });
 
+  it("retries a transient WebFetch error and returns the eventual success", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) {
+        const err = new Error("The operation was aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      return new Response("recovered body", { status: 200 });
+    };
+    try {
+      const result = await webFetchToolImpl({ url: "https://example.com" }, { retryDelaysMs: [0, 0] });
+      expect(result).toContain("recovered body");
+      expect(calls).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("gives up after exhausting WebFetch retries on a persistent transient error", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      const err = new Error("read ECONNRESET");
+      err.code = "ECONNRESET";
+      throw err;
+    };
+    try {
+      const result = await webFetchToolImpl({ url: "https://example.com" }, { retryDelaysMs: [0, 0] });
+      expect(result).toContain("Error fetching URL");
+      expect(calls).toBe(3); // initial attempt + 2 retries
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not retry a non-transient WebFetch error", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      throw new Error("certificate has expired");
+    };
+    try {
+      const result = await webFetchToolImpl({ url: "https://example.com" }, { retryDelaysMs: [0, 0] });
+      expect(result).toBe("Error fetching URL: certificate has expired");
+      expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("returns a clean error when ripgrep is unavailable", async () => {
     const root = tempWorkspace();
     configureToolRuntime({ workspace: root, ripgrepPath: join(root, "missing-rg") });

@@ -24,6 +24,9 @@ export const RUNTIME_CAPABILITIES = {
     // The pi bridge keeps a pi-agent-core Session transcript per provider
     // session id and seeds Agent initialState.messages on resume.
     supports_session_resume: true,
+    // The pi-native bridge does not (yet) wire native subagents / an AskAgent
+    // tool, so advertise no support rather than letting callers expect it.
+    supports_native_subagents: false,
   },
   codex: {
     runtime: "cli",

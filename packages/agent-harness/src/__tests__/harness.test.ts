@@ -150,7 +150,8 @@ describe("AgentHarness", () => {
     expect(response.failure).toBeUndefined();
     expect(response.metadata.summary).toMatchObject({
       status: "succeeded",
-      eventCount: 1,
+      // The assistant event plus the provider_bridge_latency observability event.
+      eventCount: 2,
       cost: { totalUsd: 0.01 },
       capabilitiesUsed: ["tools:read"],
     });
@@ -502,7 +503,7 @@ describe("AgentHarness", () => {
     expect(response.text).toBe("done");
   });
 
-  it("coalesces adjacent runtime text deltas before writing to the stream", async () => {
+  it("forwards each runtime text delta to the stream immediately, in order (no batching)", async () => {
     const harness = {
       async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {
         request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "hel" }] } });
@@ -525,7 +526,9 @@ describe("AgentHarness", () => {
       { append: async (delta) => { streamText.push(delta); } },
     );
 
-    expect(streamText).toEqual(["hello!"]);
+    // Each delta is flushed immediately (no microtask coalescing), so streaming
+    // consumers like the OpenAI SSE adapter emit tokens as they arrive.
+    expect(streamText).toEqual(["hel", "lo", "!"]);
     expect(response.text).toBe("hello!");
   });
 

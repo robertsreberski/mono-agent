@@ -9,6 +9,7 @@ export {
   disposeProviderSession,
 } from "./runtime/sessions.js";
 export { createMetricsObserver, createObserverHub } from "./observer.js";
+export { generatePiNativeResponse, piNativeRuntimeBridge } from "./providers/pi-native.js";
 export {
   buildCapabilitiesUsed,
   toolCompactionAppliedFromWarnings,

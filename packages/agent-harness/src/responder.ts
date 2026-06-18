@@ -19,22 +19,34 @@ export class AgentHarnessFailureError extends Error {
 
 export function createAgentResponder(options: { readonly harness: AgentHarness }): AgentResponder & {
   dispose(): Promise<void>;
+  cancel(conversationId: string, reason?: unknown): void;
 } {
   if (typeof options.harness?.run !== "function") {
     throw new TypeError("createAgentResponder requires a harness with run().");
   }
 
+  // Prefer submit() (queue-after-turn: a mid-run follow-up is answered on the
+  // warm session after the current turn) and fall back to run() for harnesses
+  // that do not implement it.
+  const invoke = typeof options.harness.submit === "function"
+    ? options.harness.submit.bind(options.harness)
+    : options.harness.run.bind(options.harness);
+
   return {
     async dispose(): Promise<void> {
       await options.harness.dispose?.();
     },
+    cancel(conversationId: string, reason?: unknown): void {
+      options.harness.cancel?.(conversationId, reason);
+    },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       const runtimeEventStream = createRuntimeEventStream(stream);
-      const response = await options.harness.run({
+      const response = await invoke({
         conversationId: request.conversationId,
         userMessage: request.text,
         abortSignal: request.abortSignal,
         ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+        ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
         onEvent: (event) => {
           const streamEvent = streamEventFromRuntimeEvent(event);
           if (streamEvent !== undefined) {
@@ -142,10 +154,13 @@ function createRuntimeEventStream(stream: AgentMessageStream): {
   enqueueEvent(event: AgentStreamEvent): void;
   flush(): Promise<void>;
 } {
+  // A serialized promise chain preserves the order of text deltas and events
+  // while letting the runtime's onEvent stay synchronous. Each delta is appended
+  // immediately (no microtask batching) so SSE consumers like Open WebUI receive
+  // tokens as they are produced rather than in coalesced bursts; the SSE adapter
+  // itself disables Nagle so each chunk leaves the socket promptly.
   let chain = Promise.resolve();
   let firstError: unknown;
-  let pendingText = "";
-  let textFlushScheduled = false;
   function enqueue(operation: () => Promise<void>): void {
     chain = chain
       .then(async () => {
@@ -160,33 +175,16 @@ function createRuntimeEventStream(stream: AgentMessageStream): {
         }
       });
   }
-  function flushPendingText(): void {
-    if (pendingText.length === 0) {
-      return;
-    }
-    const text = pendingText;
-    pendingText = "";
-    enqueue(async () => {
-      await stream.append(text);
-    });
-  }
-  function scheduleTextFlush(): void {
-    if (textFlushScheduled) {
-      return;
-    }
-    textFlushScheduled = true;
-    queueMicrotask(() => {
-      textFlushScheduled = false;
-      flushPendingText();
-    });
-  }
   return {
     enqueueText(delta: string): void {
-      pendingText += delta;
-      scheduleTextFlush();
+      if (delta.length === 0) {
+        return;
+      }
+      enqueue(async () => {
+        await stream.append(delta);
+      });
     },
     enqueueEvent(event: AgentStreamEvent): void {
-      flushPendingText();
       enqueue(async () => {
         if (typeof stream.event === "function") {
           await stream.event(event);
@@ -198,7 +196,6 @@ function createRuntimeEventStream(stream: AgentMessageStream): {
       });
     },
     async flush(): Promise<void> {
-      flushPendingText();
       await chain;
       if (firstError !== undefined) {
         throw firstError;

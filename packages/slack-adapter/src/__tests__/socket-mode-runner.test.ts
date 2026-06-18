@@ -35,6 +35,10 @@ class FakeSlackApi implements SlackWebApi {
   async chatUpdate(params: SlackChatUpdateParams) {
     return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
   }
+
+  async downloadFile() {
+    return new Uint8Array();
+  }
 }
 
 class FakeWebSocket extends EventEmitter {

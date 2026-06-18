@@ -6,8 +6,10 @@ export type {
   SlackChatPostMessageResult,
   SlackChatUpdateParams,
   SlackChatUpdateResult,
+  SlackDownloadFileParams,
   SlackEventBase,
   SlackEventCallback,
+  SlackFile,
   SlackMessageTs,
   SlackRequestOptions,
   SlackSocketModeEnvelope,
@@ -25,12 +27,15 @@ export type {
   SlackWebApiClientOptions,
 } from "./slack-client.js";
 export {
+  SlackDeliveryError,
   SlackMessageStream,
+  classifySlackError,
 } from "./message-stream.js";
 export type {
   AgentMessageStream,
   SlackMessageStreamLogger,
   SlackMessageStreamOptions,
+  SlackSendOutcome,
 } from "./message-stream.js";
 export {
   SlackAdapter,
@@ -43,6 +48,7 @@ export type {
   SlackAdapterMessages,
   SlackAdapterOptions,
   SlackAdapterStreamOptions,
+  SlackAttachmentOptions,
   SlackEventHandlingResult,
   SlackEventIgnoredReason,
   SlackRequestMetadata,

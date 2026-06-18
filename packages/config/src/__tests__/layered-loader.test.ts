@@ -74,6 +74,20 @@ describe("layerJsonOntoEnv", () => {
     ]);
   });
 
+  it("translates JSON providers.piNative knobs to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        providers: {
+          piNative: { piMaxRetries: 4, maxRetryDelayMs: 30000, piSessionsRoot: ".mono-agent/sessions" },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_PI_MAX_RETRIES).toBe("4");
+    expect(layered.MONO_AGENT_MAX_RETRY_DELAY_MS).toBe("30000");
+    expect(layered.MONO_AGENT_PI_SESSIONS_ROOT).toBe(".mono-agent/sessions");
+  });
+
   it("translates JSON runtime permission mode and reasoning summary to env keys", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { permissionMode: "bypassPermissions", reasoningSummary: "detailed" } },
@@ -93,6 +107,72 @@ describe("layerJsonOntoEnv", () => {
     );
     expect(layered.MONO_AGENT_PERMISSION_MODE).toBe("default");
     expect(layered.MONO_AGENT_REASONING_SUMMARY).toBe("concise");
+  });
+
+  it("translates JSON concurrency to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      { concurrency: { maxConcurrentRuns: 4 } },
+      {},
+    );
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS).toBe("4");
+  });
+
+  it("translates JSON concurrency.maxPendingRuns to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      { concurrency: { maxConcurrentRuns: 4, maxPendingRuns: 16 } },
+      {},
+    );
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS).toBe("4");
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS).toBe("16");
+  });
+
+  it("lets env override JSON concurrency", () => {
+    const layered = layerJsonOntoEnv(
+      { concurrency: { maxConcurrentRuns: 4, maxPendingRuns: 16 } },
+      {
+        MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "8",
+        MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: "32",
+      },
+    );
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS).toBe("8");
+    expect(layered.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS).toBe("32");
+  });
+
+  it("translates JSON memory embeddings timeoutMs and circuit breaker to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "journal",
+          path: ".mono-agent/memory",
+          embeddings: {
+            provider: "ollama",
+            model: "nomic-embed-text",
+            timeoutMs: 5000,
+            circuitBreaker: { failureThreshold: 5, cooldownMs: 20000 },
+          },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS).toBe("5000");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD).toBe("5");
+    expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS).toBe("20000");
+  });
+
+  it("translates JSON memory.recallTool.enabled to an env key", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "journal", path: ".mono-agent/memory", recallTool: { enabled: false } } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED).toBe("false");
+  });
+
+  it("lets env override JSON memory.recallTool.enabled", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "journal", path: ".mono-agent/memory", recallTool: { enabled: false } } },
+      { MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true" },
+    );
+    expect(layered.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED).toBe("true");
   });
 
   it("translates JSON runtime.session to env keys", () => {

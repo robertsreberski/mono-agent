@@ -1,8 +1,9 @@
 // Provider session registries.
 //
 // Bridges that support continuous provider sessions (codex-app keeps the
-// app-server subprocess + thread alive, pi-sdk keeps a pi Session transcript)
-// register their live sessions here, keyed by provider session id. The host
+// app-server subprocess + thread alive, pi-native keeps a pi Session
+// transcript) register their live sessions here, keyed by provider session id.
+// The host
 // owns session lifetime policy (which conversation maps to which session,
 // when to resume, when to retire); these registries only make sure nothing
 // leaks if the host forgets: every entry carries an idle TTL backstop with an

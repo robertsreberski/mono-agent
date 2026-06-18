@@ -10,6 +10,7 @@ export type {
 } from "./config.js";
 export type {
   EffortLevel,
+  MemoryEmbeddingsCircuitBreakerConfig,
   MemoryEmbeddingsConfig,
   MemoryEmbeddingsProvider,
   MemoryAgentHostLlmConfig,
@@ -39,6 +40,8 @@ export {
 export type {
   MonoAgentLocalProviderJson,
   MonoAgentLocalProviderModelJson,
+  MonoAgentMemoryEmbeddingsCircuitBreakerJson,
+  MonoAgentMemoryEmbeddingsJson,
   MonoAgentMemoryLlmJson,
   MonoAgentProvidersJson,
   MonoAgentConfigJson,
@@ -46,6 +49,7 @@ export type {
 } from "./json-source.js";
 export {
   artifactsFieldGroup,
+  concurrencyFieldGroup,
   CORE_AGENT_FIELD_GROUPS,
   EFFORT_LEVELS,
   PERMISSION_MODES,

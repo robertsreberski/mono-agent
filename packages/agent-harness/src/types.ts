@@ -1,6 +1,8 @@
+import type { AgentAttachment } from "@mono-agent/agent-contracts";
 import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
 import type { MemoryStore } from "@mono-agent/memory-store";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
+import type { SkillsCache } from "@mono-agent/skills";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/sandbox";
 import type { ToolPolicy } from "@mono-agent/tool-policy";
@@ -22,6 +24,13 @@ export interface AgentHarnessRequest {
   readonly abortSignal: AbortSignal;
   readonly metadata?: Record<string, unknown>;
   readonly onEvent?: (event: RuntimeEventLike) => void;
+  /**
+   * Multimodal attachments. The harness saves each to `attachmentsDir` and
+   * references the saved path (plus inlined text for documents) in the prompt,
+   * so the agent opens them with its own file tools — no provider multimodal
+   * contract required.
+   */
+  readonly attachments?: readonly AgentAttachment[];
 }
 
 export interface AgentHarnessFailure {
@@ -45,6 +54,16 @@ export interface AgentHarnessResponse {
 
 export interface AgentHarness {
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  /**
+   * Queue-after-turn entry point. In continuous-session mode a same-conversation
+   * request that arrives while a turn is in flight is queued and answered after
+   * the current turn finishes — so it resumes the warm session rather than
+   * racing fresh; different conversations still run concurrently. Falls back to
+   * run() outside continuous mode.
+   */
+  submit?(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  /** Abort the in-flight turn for a conversation and clear its queued follow-ups. */
+  cancel?(conversationId: string, reason?: unknown): void;
   /** Retire all live provider sessions (graceful shutdown). */
   dispose?(): Promise<void>;
 }
@@ -72,12 +91,30 @@ export interface AgentHarnessOptions {
   readonly skillsRoot?: string;
   readonly selectedSkills?: readonly string[];
   readonly skillMaxBytes?: number;
+  /**
+   * Optional shared skills cache. Skills are re-read from disk every turn
+   * otherwise; pass one cache instance across turns (and across harnesses for a
+   * conversation) to skip unchanged reads. Defaults to a per-harness cache.
+   */
+  readonly skillsCache?: SkillsCache;
+  /**
+   * Directory where inbound request attachments are saved before the agent
+   * opens them. Should sit under a sandbox-readable root. When unset,
+   * attachment bytes are not persisted (document text is still inlined).
+   */
+  readonly attachmentsDir?: string;
   readonly runtime: MonoRuntimeLike;
   readonly model: RuntimeModelReference;
   readonly executionMode?: string;
   readonly cwd?: string;
   readonly effort?: string;
   readonly maxTurns?: number;
+  /**
+   * Durable pi-native session root directory. When set, provider sessions are
+   * persisted to disk (JSONL) so a turn can resume across restarts instead of
+   * falling back to a full conversation-history re-send. Unset = in-memory only.
+   */
+  readonly piSessionsRoot?: string;
   readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent">;
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
@@ -91,6 +128,27 @@ export interface AgentHarnessOptions {
   readonly createRunId?: () => string;
   readonly now?: () => Date;
   readonly session?: AgentHarnessSessionOptions;
+  /**
+   * Optional concurrency bounds across all conversations served by this
+   * harness. Two independent tiers, both unset = unbounded (default):
+   *
+   * - `maxConcurrentRuns` bounds provider EXECUTION WIDTH: how many runs may be
+   *   in the model call at once (a semaphore acquired around the provider call
+   *   only). Queued follow-ups wait in the per-conversation queue, holding no
+   *   slot, until a slot frees.
+   * - `maxPendingRuns` bounds ADMISSION: how many runs may be simultaneously
+   *   past the front door — i.e. holding persisted attachments + built context
+   *   in memory — before the costly pre-provider work runs. A request arriving
+   *   when this counter is already at the bound fails fast (a "capacity_exceeded"
+   *   failure) instead of doing the expensive work and parking in the unbounded
+   *   semaphore queue. This is backpressure; it is deliberately NOT the
+   *   semaphore (whose waiter queue is unbounded — that is the gap it closes).
+   *
+   * Bounds apply per channel harness instance, not globally across channels:
+   * the app builds one harness per channel, so with N configured channels the
+   * effective ceiling is N× this value.
+   */
+  readonly concurrency?: { readonly maxConcurrentRuns?: number; readonly maxPendingRuns?: number };
 }
 
 export interface AgentHarnessRuntimeOptionsInput {

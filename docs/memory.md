@@ -254,7 +254,7 @@ MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 ```
 
 The standalone CLI reads the **same embedding/root `MONO_AGENT_MEMORY_*` env vars** as the
-agent and the `memory-mcp` server (the memory root is the positional `<root>` argument).
+agent (the memory root is the positional `<root>` argument).
 Embeddings are **opt-in**: set
 `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama`/`openai`) to enable semantic recall — without
 it, `recall`/`rebuild` run FTS-only and need no embedding service. When enabled, the model
@@ -263,6 +263,12 @@ defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and d
 built-in Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint
 for the chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL` is
 unset when running `reflect` or `migrate`, the command prints a clear error and exits 2.
+
+`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout (default `120000`). A
+single capture runs several sequential LLM calls (distil → reconcile → entity extraction), and
+slow local models can take tens of seconds each; because those steps swallow LLM errors
+(never-throw), a too-short timeout makes a capture *silently store nothing* rather than fail
+loudly. Raise it for slow models (the `memory-bujo` `reflect`/`migrate` CLI honors it).
 
 ## Liveness Check — `mono-agent validate`
 
@@ -300,18 +306,18 @@ tiers during the memory strategy step (question 6). See
 `packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md` for
 the full question flow and config blocks the composer writes.
 
-## Memory over MCP
+## Recall Tool (`memory_recall`)
 
-`@mono-agent/memory-mcp` exposes the engine over MCP (**stdio**) to any client — Claude Code, the agent itself, another tool. It is the v2 replacement for the retired `memory.tools` mechanism. Three tools:
+The agent gets a single read-only `memory_recall` tool — hybrid (keyword + semantic) search over the same memory it writes to. It is **auto-provisioned by `agent-app`** from the single `config.memory` block when `config.memory.recallTool.enabled` is true (default **on** for the journal/bujo tiers with embeddings configured; set it to `false` to disable). There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
 
-- `memory_recall({ query, limit? })` — hybrid (keyword + semantic) search. Read-only; works in every tier.
-- `memory_capture({ text })` — intelligent store (distil → reconcile → entities). **Bujo only**; returns an explicit error result when no chat LLM is configured.
-- `memory_note({ text })` — quick deterministic rapid-log append. All tiers.
+Under the hood `agent-app` spawns a bundled stdio MCP child named `mono-agent-memory` (bundled in `@mono-agent/agent-app`) that exposes only `memory_recall`. It is configured automatically from `config.memory` — it uses the **same memory root + embeddings** as the in-app memory, so there is no separate config to keep in sync. Recall needs no chat LLM; durable writes stay in-app on the agent-host LLM via per-turn capture (`writeMode: "capture"`). This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture`/`memory_note` — both dropped, since in-app capture already covers durable writes).
 
-It reads the same memory root and embeddings environment the agent and CLI use (`MONO_AGENT_MEMORY_PATH` required; embeddings env improves recall ranking). Its `memory_capture` LLM path uses the built-in Ollama adapter, so `MONO_AGENT_MEMORY_LLM_MODEL` is an Ollama chat model there; app-level `memory.llm.provider: "agent-host"` is not used by the standalone MCP server. It opens its own `memory.db` handle (WAL + `busy_timeout` make concurrent use alongside a running agent safe), and drains the capture queue on `SIGINT`/`SIGTERM`. Run the `memory-mcp` bin (or `node <dist>/main.js`) and register it as a stdio MCP server. Full details: `packages/memory-mcp/README.md`.
+**Migrating off `@mono-agent/memory-mcp` (external consumers):** the package is removed from this repo (the published `0.3.0` stays on npm but receives no further updates). If you depended on it directly: (1) **as an MCP server bin / `node .../memory-mcp/dist/main.js` in a `.mcp.json`** — drop that entry and instead set `config.memory.recallTool.enabled: true` so the host auto-provisions the bundled `mono-agent-memory` recall server (no hand-wired entry, no separate LLM); (2) **as a library import (`@mono-agent/memory-mcp`)** — build directly on `@mono-agent/memory-bujo` (`createBujoMemoryStore`) + `@mono-agent/memory-search` (`createEmbeddingProvider`), which is exactly what the recall server does; (3) **the `memory_capture` / `memory_note` write tools have no replacement tool** — durable writes are now host-driven per turn via `memory.writeMode: "capture"` (or `append-host-summary`), so the agent no longer needs an explicit write tool.
+
+**Tool-policy note (fail-closed):** `memory_recall` is an MCP tool, and like every MCP server tool (config `mcpServers`, self-capabilities, ask-collaborator) it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…); it does **not** suppress app-injected MCP tools. So `tools.allowedTools: []` ("no built-in tools") still leaves `memory_recall` available when it is enabled. To fully withhold memory reads from the agent, set `config.memory.recallTool.enabled: false` (or use a `lite` tier with no recall) — that is the switch that controls this tool, not the allowlist.
 
 ## References
 
 - Design specs: `docs/superpowers/specs/2026-06-15-memory-bujo-design.md`, `docs/superpowers/specs/2026-06-16-memory-bujo-followups-design.md`
 - Implementation plans: `docs/superpowers/plans/2026-06-15-memory-bujo-p*.md`, `docs/superpowers/plans/2026-06-16-memory-bujo-p5-tiered-offering.md`, `docs/superpowers/plans/2026-06-16-memory-bujo-p6-followups.md`
-- Feature registry rows: `docs/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.mcp`
+- Feature registry rows: `docs/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`

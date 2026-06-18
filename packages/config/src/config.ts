@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, PiNativeProviderConfig, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -101,12 +101,14 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const traceability = readTraceabilityConfig(input.env, cwd);
   const piAuthPath = readPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
   const localProviders = readLocalProviders(input.env);
+  const piNative = readPiNativeProviderConfig(input.env, cwd);
 
   assertModeCompatibility(model, executionMode);
 
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const reasoningSummary = readReasoningSummary(input.env.MONO_AGENT_REASONING_SUMMARY);
+  const concurrency = readConcurrencyConfig(input.env);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
     ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
@@ -135,6 +137,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
 
   const config: MonoAgentConfig = {
     runtime,
+    ...(concurrency === undefined ? {} : { concurrency }),
     context,
     tools,
     ...(sandbox === undefined ? {} : { sandbox }),
@@ -145,6 +148,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     providers: {
       piAuthPath,
       ...(localProviders.length === 0 ? {} : { local: localProviders }),
+      ...(piNative === undefined ? {} : { piNative }),
     },
   };
 
@@ -157,6 +161,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
   const redacted: RedactedMonoAgentConfig = {
     runtime: { ...config.runtime },
+    ...(config.concurrency === undefined ? {} : { concurrency: { ...config.concurrency } }),
     context: { ...config.context, selectedSkills: [...config.context.selectedSkills] },
     tools: {
       ...config.tools,
@@ -363,10 +368,14 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
       "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
       "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
       "MONO_AGENT_MEMORY_LLM_PROVIDER",
       "MONO_AGENT_MEMORY_LLM_MODEL",
       "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
       "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+      "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
       "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
       "MONO_AGENT_MEMORY_REFLECTION_CRON",
       "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
@@ -410,6 +419,17 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
         ? embeddings
         : { ...embeddings, dim };
 
+  // Read-only memory_recall tool. Recall needs only embeddings + FTS (no chat LLM),
+  // so it defaults on whenever the resolved tier can rank semantically — mode !== "lite"
+  // AND embeddings are configured — and off for lite. An explicit env/JSON value always wins.
+  const recallToolDefault = mode !== "lite" && embeddingsWithDim !== undefined;
+  const recallToolEnabled = readBoolean(
+    env.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED,
+    "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
+    recallToolDefault,
+    invalidEnv,
+  );
+
   return {
     mode,
     path: readPath(rawPath, cwd),
@@ -417,6 +437,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     writeMode,
     ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
     ...(llm === undefined ? {} : { llm }),
+    recallTool: { enabled: recallToolEnabled },
     ...(reflection === undefined ? {} : { reflection }),
     ...(migration === undefined ? {} : { migration }),
   };
@@ -429,6 +450,9 @@ function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): Me
     env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT,
     env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY,
     env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV,
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS,
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS,
   ].some((value) => normalizeOptionalString(value) !== undefined);
   if (!hasEmbeddingsEnv) {
     return undefined;
@@ -453,12 +477,42 @@ function readMemoryEmbeddingsConfig(env: Record<string, string | undefined>): Me
       { env: "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY" },
     );
   }
+  const timeoutMs = readOptionalInteger(
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS,
+    "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
+    { min: 1, max: 600_000 },
+  );
+  const circuitBreaker = readMemoryEmbeddingsCircuitBreakerConfig(env);
   return {
     provider,
     model,
     ...(endpoint === undefined ? {} : { endpoint }),
     ...(apiKey === undefined ? {} : { apiKey }),
     ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(circuitBreaker === undefined ? {} : { circuitBreaker }),
+  };
+}
+
+function readMemoryEmbeddingsCircuitBreakerConfig(
+  env: Record<string, string | undefined>,
+): MemoryEmbeddingsCircuitBreakerConfig | undefined {
+  const failureThreshold = readOptionalInteger(
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+    "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+    { min: 1, max: 100 },
+  );
+  const cooldownMs = readOptionalInteger(
+    env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS,
+    "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
+    { min: 1, max: 3_600_000 },
+  );
+  if (failureThreshold === undefined && cooldownMs === undefined) {
+    return undefined;
+  }
+  return {
+    ...(failureThreshold === undefined ? {} : { failureThreshold }),
+    ...(cooldownMs === undefined ? {} : { cooldownMs }),
   };
 }
 
@@ -754,6 +808,9 @@ function withRedactedProviders(
     ...redacted,
     providers: {
       ...(config.providers.piAuthPath === undefined ? {} : { piAuthPath: config.providers.piAuthPath }),
+      // pi-native knobs carry no secrets — pass them through so redacted config
+      // surfaces (e.g. the operator console) still show them.
+      ...(config.providers.piNative === undefined ? {} : { piNative: config.providers.piNative }),
       ...(config.providers.local === undefined
         ? {}
         : {
@@ -799,6 +856,48 @@ function readReasoningSummary(raw: string | undefined): ReasoningSummary | undef
     return undefined;
   }
   return readChoice<ReasoningSummary>(normalized, "MONO_AGENT_REASONING_SUMMARY", REASONING_SUMMARIES, REASONING_SUMMARIES[0], invalidEnv);
+}
+
+function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAgentConfig["concurrency"] | undefined {
+  const maxConcurrentRuns = readOptionalInteger(
+    env.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS,
+    "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS",
+    { min: 1, max: 100_000 },
+  );
+  const maxPendingRuns = readOptionalInteger(
+    env.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS,
+    "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS",
+    { min: 1, max: 100_000 },
+  );
+  if (maxConcurrentRuns === undefined && maxPendingRuns === undefined) {
+    return undefined;
+  }
+  return {
+    ...(maxConcurrentRuns === undefined ? {} : { maxConcurrentRuns }),
+    ...(maxPendingRuns === undefined ? {} : { maxPendingRuns }),
+  };
+}
+
+function readPiNativeProviderConfig(
+  env: Record<string, string | undefined>,
+  cwd: string,
+): PiNativeProviderConfig | undefined {
+  const hasAny = [
+    env.MONO_AGENT_PI_MAX_RETRIES,
+    env.MONO_AGENT_MAX_RETRY_DELAY_MS,
+    env.MONO_AGENT_PI_SESSIONS_ROOT,
+  ].some((value) => normalizeOptionalString(value) !== undefined);
+  if (!hasAny) {
+    return undefined;
+  }
+  const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
+  const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
+  const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
+  return {
+    ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
+    ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
+    ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),
+  };
 }
 
 function readOptionalInteger(

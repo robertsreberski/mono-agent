@@ -92,6 +92,13 @@ export interface RunningChannel {
   /** Channel-specific connection facts (invoke URL, agent card URL, job count). */
   readonly summary: Record<string, unknown>;
   stop(): Promise<void>;
+  /**
+   * Optional responder/harness teardown, set by the app (not the driver). Stopping
+   * the transport alone leaves the per-channel harness + live-session manager alive;
+   * on stop/reload the app disposes the responder so warm provider sessions and
+   * queued turns against stale config are retired. Transport stops first.
+   */
+  dispose?(): Promise<void>;
 }
 
 export interface ChannelStartInput<TConfig> {
@@ -367,6 +374,12 @@ export function createCronChannelDriver(
       const adapterFactory = overrides.adapterFactory ?? startCronAdapter;
       const adapter = adapterFactory({
         responder: input.responder,
+        // Skip overlapping firings (a job still running when its next tick fires)
+        // — the legacy/default app behavior. This avoids the scheduler's
+        // unbounded "queue" default retaining stale ticks in memory when a job
+        // runs longer than its interval. (Queue/replace remain available to
+        // programmatic callers of startCronAdapter.)
+        overlap: "skip",
         jobs: jobs.map((job) => ({
           id: job.id,
           expression: job.expression,

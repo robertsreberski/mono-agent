@@ -174,6 +174,50 @@ describe("startMonoAgentApp", () => {
     expect(stops).toEqual(["start-1", "start-2"]);
   });
 
+  it("disposes the channel responder (not just the transport) on reload and stop", async () => {
+    const configPath = await writeConfig({ ...baseConfig(), webhook: { enabled: true, port: 0 } });
+    const webhookFactory = vi.fn(async () => ({
+      invokeUrl: "http://127.0.0.1:9999/webhook/invoke",
+      stop: async () => undefined,
+    }));
+    const drivers = defaultChannelDrivers({ webhook: { adapterFactory: webhookFactory as never } });
+    const webhookDriver = drivers.find((driver) => driver.id === "webhook");
+    if (webhookDriver === undefined) throw new Error("webhook driver missing");
+    const disposeSpy = vi.fn(async () => {});
+    const wrapped = {
+      ...webhookDriver,
+      async start(input: Parameters<typeof webhookDriver.start>[0]) {
+        // The configured responder really exposes dispose(); replace it with a spy
+        // so we can prove the app tears the responder down on stop/reload — not just
+        // the transport (the F10 regression a transport-only stop misses).
+        (input.responder as { dispose?: () => Promise<void> }).dispose = disposeSpy;
+        return webhookDriver.start(input);
+      },
+    };
+    const finalDrivers = drivers.map((driver) => (driver.id === "webhook" ? wrapped : driver));
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsoleFactory: fakeConsoleFactory,
+      drivers: finalDrivers,
+    });
+    expect(app.channelStatus("webhook").kind).toBe("running");
+
+    // A reload that changes the webhook config restarts the channel; the OLD
+    // responder/harness must be disposed, not left running against stale config.
+    await writeFile(
+      configPath,
+      JSON.stringify({ ...baseConfig(), webhook: { enabled: true, path: "/hooks/x" } }, null, 2),
+    );
+    const result = await app.applyConfigChange("dispose-test");
+    expect(result.kind).toBe("applied");
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+
+    await app.stop();
+    expect(disposeSpy).toHaveBeenCalledTimes(2);
+  });
+
   it("dedupes concurrent start requests for the same channel", async () => {
     await writeConfig({
       ...baseConfig(),
@@ -355,6 +399,44 @@ describe("startMonoAgentApp", () => {
     expect(onFailure).toHaveBeenCalledWith("getUpdates died");
 
     await running.stop();
+  });
+
+  it("disposes the responder when a channel's transport dies after start (onFailure path)", async () => {
+    await writeConfig({ ...baseConfig(), webhook: { enabled: true, port: 0 } });
+    const webhookFactory = vi.fn(async () => ({
+      invokeUrl: "http://127.0.0.1:9999/webhook/invoke",
+      stop: async () => undefined,
+    }));
+    const drivers = defaultChannelDrivers({ webhook: { adapterFactory: webhookFactory as never } });
+    const webhookDriver = drivers.find((driver) => driver.id === "webhook");
+    if (webhookDriver === undefined) throw new Error("webhook driver missing");
+    const disposeSpy = vi.fn(async () => {});
+    const wrapped = {
+      ...webhookDriver,
+      async start(input: Parameters<typeof webhookDriver.start>[0]) {
+        (input.responder as { dispose?: () => Promise<void> }).dispose = disposeSpy;
+        const running = await webhookDriver.start(input);
+        // Simulate the transport dying after a successful start (a macrotask so it
+        // fires after startChannel has stored the running-channel record).
+        setTimeout(() => input.onFailure?.("transport died"), 0);
+        return running;
+      },
+    };
+    const finalDrivers = drivers.map((driver) => (driver.id === "webhook" ? wrapped : driver));
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      operatorConsoleFactory: fakeConsoleFactory,
+      drivers: finalDrivers,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // The dead channel reports failed AND its responder/harness was disposed (not
+    // orphaned), even though the running-channel record was already deleted.
+    expect(app.channelStatus("webhook").kind).toBe("failed");
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+    await app.stop();
   });
 
   it("logs an accurate skip (not 'started') when bujo mode has no chat LLM (tier downgrades to journal)", async () => {

@@ -450,7 +450,11 @@ export async function generateCliResponse(systemPrompt, options = {}) {
   const mcpConfigPath = hasEntries(mcpServers) && resolved.sdk === "claude-code"
     ? join(dir, "mcp.json")
     : null;
-  if (mcpConfigPath) writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers }, null, 2));
+  // Owner-only mode: this temp config carries full mcpServers env (including a
+  // resolved embedding apiKey) and lives under shared /tmp. The 0700 parent dir
+  // (mkdtempSync) already blocks cross-user traversal; 0o600 is defense-in-depth
+  // matching the idiom in packages/settings/src/json-source.ts and pi-auth.js.
+  if (mcpConfigPath) writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 });
   const reusableSessionId = (typeof options.sessionId === "string" && options.sessionId.trim())
     || (typeof options.providerSessionId === "string" && options.providerSessionId.trim())
     || null;

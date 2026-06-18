@@ -12,6 +12,13 @@ export interface MemoryRitualConfig {
   readonly cron?: string;
 }
 export type MemoryEmbeddingsProvider = "ollama" | "openai";
+/** Circuit-breaker tuning for the embeddings provider used by journal/bujo recall. */
+export interface MemoryEmbeddingsCircuitBreakerConfig {
+  /** Consecutive failures before the breaker trips OPEN (default 3). */
+  readonly failureThreshold?: number;
+  /** How long the breaker stays OPEN before a half-open trial, in ms (default 30000). */
+  readonly cooldownMs?: number;
+}
 export interface MemoryEmbeddingsConfig {
   readonly provider: MemoryEmbeddingsProvider;
   readonly model: string;
@@ -22,6 +29,10 @@ export interface MemoryEmbeddingsConfig {
   readonly apiKeyEnv?: string;
   /** Embedding vector dimension (bujo mode default: 768 for nomic-embed-text). */
   readonly dim?: number;
+  /** Per-call embeddings timeout in ms (default 10000 in the host). */
+  readonly timeoutMs?: number;
+  /** Circuit-breaker overrides; unset fields fall back to the breaker defaults. */
+  readonly circuitBreaker?: MemoryEmbeddingsCircuitBreakerConfig;
 }
 export type MemoryLlmProvider = "ollama" | "agent-host";
 export interface MemoryOllamaLlmConfig {
@@ -64,6 +75,23 @@ export interface MonoAgentConfig {
       readonly idleTimeoutMs: number;
     };
   };
+  /**
+   * Concurrency bounds across all conversations. Two independent tiers, both
+   * unset (default) = unbounded:
+   * - `maxConcurrentRuns` caps how many runs execute against the provider at
+   *   once (execution width, around the model call only).
+   * - `maxPendingRuns` caps how many runs may be admitted before the expensive
+   *   pre-provider work (attachment persistence + context prep); requests over
+   *   this bound fail fast instead of queuing, providing backpressure.
+   *
+   * Bounds apply per channel harness instance, not globally across channels:
+   * the app builds one harness per channel, so with N configured channels the
+   * effective ceiling is N× this value.
+   */
+  readonly concurrency?: {
+    readonly maxConcurrentRuns?: number;
+    readonly maxPendingRuns?: number;
+  };
   readonly context: {
     readonly identityPath: string;
     readonly soulPath?: string;
@@ -81,6 +109,12 @@ export interface MonoAgentConfig {
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture/reflect/migrate. */
     readonly llm?: MemoryLlmConfig;
+    /**
+     * Read-only `memory_recall` tool exposed to the agent (embeddings + FTS, no
+     * chat LLM). Derived from this single memory block — no hand-wired MCP entry.
+     * Defaults on when the resolved tier has embeddings; off for lite.
+     */
+    readonly recallTool?: { readonly enabled: boolean };
     /** Bujo-tier reflection ritual (nightly summarise/compress). Default cron: `0 3 * * *`. */
     readonly reflection?: MemoryRitualConfig;
     /** Bujo-tier migration ritual (monthly archive/rebalance). Default cron: `0 4 1 * *`. */
@@ -105,7 +139,21 @@ export interface MonoAgentConfig {
   readonly providers?: {
     readonly piAuthPath?: string;
     readonly local?: readonly LocalProviderDefinition[];
+    readonly piNative?: PiNativeProviderConfig;
   };
+}
+
+/** Tuning knobs for the pi-native provider bridge. */
+export interface PiNativeProviderConfig {
+  /** Max retry attempts for the pi provider transport (0-8; default 2). */
+  readonly piMaxRetries?: number;
+  /** Maximum delay between retry attempts, in milliseconds (default 60000). */
+  readonly maxRetryDelayMs?: number;
+  /**
+   * Directory for durable JSONL session storage. When set, provider sessions
+   * persist to disk and resume across restarts; unset keeps sessions in-memory.
+   */
+  readonly piSessionsRoot?: string;
 }
 
 export type RedactedLocalProviderDefinition = Omit<LocalProviderDefinition, "apiKey"> & {
@@ -122,6 +170,7 @@ export type RedactedMemoryConfig = Omit<NonNullable<MonoAgentConfig["memory"]>, 
 
 export interface RedactedMonoAgentConfig {
   readonly runtime: MonoAgentConfig["runtime"];
+  readonly concurrency?: MonoAgentConfig["concurrency"];
   readonly context: MonoAgentConfig["context"];
   readonly memory?: RedactedMemoryConfig;
   readonly tools: MonoAgentConfig["tools"];
@@ -131,5 +180,6 @@ export interface RedactedMonoAgentConfig {
   readonly providers?: {
     readonly piAuthPath?: string;
     readonly local?: readonly RedactedLocalProviderDefinition[];
+    readonly piNative?: PiNativeProviderConfig;
   };
 }

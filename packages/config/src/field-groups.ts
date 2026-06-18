@@ -173,6 +173,35 @@ export const runtimeFieldGroup = defineFieldGroup({
   ],
 });
 
+export const concurrencyFieldGroup = defineFieldGroup({
+  id: "concurrency",
+  label: "Concurrency",
+  description: "Global limits on how many runs execute at once (optional).",
+  fields: [
+    {
+      id: "concurrency.maxConcurrentRuns",
+      label: "Max concurrent runs",
+      description: "Upper bound on in-flight runs across all conversations; leave empty for unbounded.",
+      kind: "integer",
+      min: 1,
+      max: 100_000,
+      placeholder: "4",
+      path: ["concurrency", "maxConcurrentRuns"],
+    },
+    {
+      id: "concurrency.maxPendingRuns",
+      label: "Max pending runs",
+      description:
+        "Upper bound on admitted runs before attachment persistence + context prep; requests over this fail fast instead of queuing. Leave empty for unbounded.",
+      kind: "integer",
+      min: 1,
+      max: 100_000,
+      placeholder: "16",
+      path: ["concurrency", "maxPendingRuns"],
+    },
+  ],
+});
+
 export const memoryFieldGroup = defineFieldGroup({
   id: "memory",
   label: "Memory",
@@ -268,6 +297,36 @@ export const memoryFieldGroup = defineFieldGroup({
       path: ["memory", "embeddings", "dim"],
     },
     {
+      id: "memory.embeddings.timeoutMs",
+      label: "Embeddings timeout ms",
+      description: "Per-call embeddings timeout in ms; a slow backend degrades recall to empty instead of stalling the turn (default 10000).",
+      kind: "integer",
+      min: 1,
+      max: 600_000,
+      placeholder: "10000",
+      path: ["memory", "embeddings", "timeoutMs"],
+    },
+    {
+      id: "memory.embeddings.circuitBreaker.failureThreshold",
+      label: "Embeddings breaker failure threshold",
+      description: "Consecutive embeddings failures before the circuit breaker fast-fails recall (default 3).",
+      kind: "integer",
+      min: 1,
+      max: 100,
+      placeholder: "3",
+      path: ["memory", "embeddings", "circuitBreaker", "failureThreshold"],
+    },
+    {
+      id: "memory.embeddings.circuitBreaker.cooldownMs",
+      label: "Embeddings breaker cooldown ms",
+      description: "How long the embeddings circuit breaker stays open before a trial call, in ms (default 30000).",
+      kind: "integer",
+      min: 1,
+      max: 3_600_000,
+      placeholder: "30000",
+      path: ["memory", "embeddings", "circuitBreaker", "cooldownMs"],
+    },
+    {
       id: "memory.llm.provider",
       label: "LLM provider",
       description: "LLM provider for bujo capture/reflect/migrate.",
@@ -304,6 +363,13 @@ export const memoryFieldGroup = defineFieldGroup({
       kind: "string",
       placeholder: "http://localhost:11434",
       path: ["memory", "llm", "endpoint"],
+    },
+    {
+      id: "memory.recallTool.enabled",
+      label: "Recall tool enabled",
+      description: "Expose a read-only memory_recall tool (semantic + FTS keyword search; FTS-only when embeddings are absent; no chat LLM) to the agent. Default on for journal/bujo when embeddings are configured.",
+      kind: "switch",
+      path: ["memory", "recallTool", "enabled"],
     },
     {
       id: "memory.reflection.enabled",
@@ -533,12 +599,41 @@ export const providersFieldGroup = defineFieldGroup({
       placeholder: "~/.pi/agent/auth.json",
       path: ["providers", "piAuthPath"],
     },
+    {
+      id: "providers.piNative.piMaxRetries",
+      label: "Pi max retries",
+      description: "Max retry attempts for the pi provider transport on transient errors (0-8; default 2).",
+      kind: "integer",
+      min: 0,
+      max: 8,
+      placeholder: "2",
+      path: ["providers", "piNative", "piMaxRetries"],
+    },
+    {
+      id: "providers.piNative.maxRetryDelayMs",
+      label: "Pi max retry delay (ms)",
+      description: "Maximum backoff delay between pi provider retry attempts, in milliseconds (default 60000).",
+      kind: "integer",
+      min: 100,
+      max: 3_600_000,
+      placeholder: "60000",
+      path: ["providers", "piNative", "maxRetryDelayMs"],
+    },
+    {
+      id: "providers.piNative.piSessionsRoot",
+      label: "Pi sessions root",
+      description: "Directory for durable JSONL session storage (enables resume across restarts). Leave empty for in-memory sessions.",
+      kind: "path",
+      placeholder: ".mono-agent/sessions",
+      path: ["providers", "piNative", "piSessionsRoot"],
+    },
   ],
 });
 
 export const CORE_AGENT_FIELD_GROUPS: FieldGroupRegistry = [
   identityFieldGroup,
   runtimeFieldGroup,
+  concurrencyFieldGroup,
   memoryFieldGroup,
   toolsFieldGroup,
   sandboxFieldGroup,

@@ -3,6 +3,7 @@ import type { Bot } from "grammy";
 
 import type {
   AgentResponder,
+  DownloadTelegramAttachmentsOptions,
   TelegramAdapterLogger,
   TelegramAdapterMessages,
   TelegramAdapterStreamOptions,
@@ -25,6 +26,12 @@ export interface TelegramAdapterStartOptions {
   readonly messages?: TelegramAdapterMessages;
   /** Optional logger shared by the bot and stream. */
   readonly logger?: TelegramAdapterLogger;
+  /**
+   * Inbound attachment download tuning (byte cap + MIME allowlist + timeout).
+   * Inbound Telegram media bytes are fetched via the Bot API and inlined into
+   * `request.attachments`; failures skip the attachment without failing the run.
+   */
+  readonly attachments?: DownloadTelegramAttachmentsOptions;
   /** Restrict the update types polled from Telegram. Defaults to messages only. */
   readonly allowedUpdates?: readonly string[];
   /** Delete any configured webhook before polling. Defaults to true. */
@@ -72,6 +79,7 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.stream === undefined ? {} : { stream: options.stream }),
     ...(options.messages === undefined ? {} : { messages: options.messages }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
+    ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.allowedUpdates === undefined ? {} : { allowedUpdates: options.allowedUpdates }),
     ...(options.deleteWebhookOnStart === undefined
       ? {}

@@ -28,6 +28,7 @@
     "src/**/*.js",
     "!src/__tests__/**",
     "ARCHITECTURE.md",
+    "MIGRATION.md",
     "README.md",
     "LICENSE"
   ],

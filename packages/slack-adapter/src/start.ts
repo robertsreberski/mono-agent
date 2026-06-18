@@ -4,6 +4,7 @@ import {
   type SlackAdapterLogger,
   type SlackAdapterMessages,
   type SlackAdapterStreamOptions,
+  type SlackAttachmentOptions,
   type SlackEventHandlingResult,
 } from "./adapter.js";
 import { SlackWebApiClient } from "./slack-client.js";
@@ -38,6 +39,7 @@ export interface SlackAdapterStartOptions {
   readonly responder: AgentResponder;
   readonly stream?: SlackAdapterStreamOptions;
   readonly messages?: SlackAdapterMessages;
+  readonly attachments?: SlackAttachmentOptions;
   readonly logger?: SlackAdapterStartLogger;
 
   /** Reconnect backoff bounds forwarded to the Socket Mode runner. */
@@ -159,6 +161,9 @@ function buildAdapterOptions(
   }
   if (options.messages !== undefined) {
     adapterOptions.messages = options.messages;
+  }
+  if (options.attachments !== undefined) {
+    adapterOptions.attachments = options.attachments;
   }
   if (options.logger !== undefined) {
     adapterOptions.logger = options.logger;
