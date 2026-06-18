@@ -5,10 +5,12 @@ import { join, resolve } from "node:path";
 import type { AddressInfo } from "node:net";
 
 import { sendA2AMessage } from "@mono-agent/a2a-adapter";
+import { listTraceRuns, readTraceRun } from "@mono-agent/observability";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { startFinalAgentDemo } from "../final-demo.js";
+import type { FinalAgentDemo } from "../final-demo.js";
 import {
   buildFinalDemoDeploymentConfig,
   checkOllamaModel,
@@ -156,25 +158,20 @@ describe("final demo deployment", () => {
         display_name: "Gemma 4 31B",
       });
 
-      const traceability = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
+      const traceability = await getTraceabilityRuns(demo);
       expect(traceability.sources[0]).toMatchObject({
         sourceId: "final-agent-gemma4",
         label: "Final Agent Demo (Gemma 4)",
         health: "running",
       });
       await waitFor(async () => {
-        const runs = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
+        const runs = await getTraceabilityRuns(demo);
         return runs.runs.some((run) => run.source.sourceId === "final-agent-gemma4");
       });
-      const runs = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
+      const runs = await getTraceabilityRuns(demo);
       const run = runs.runs.find((candidate) => candidate.source.sourceId === "final-agent-gemma4");
       expect(run).toBeDefined();
-      const detail = await getTraceabilityRun(
-        demo.operatorConsole.url,
-        demo.operatorConsole.token,
-        "final-agent-gemma4",
-        run?.runId ?? "",
-      );
+      const detail = await getTraceabilityRun(demo, "final-agent-gemma4", run?.runId ?? "");
       expect(detail.detail?.run.events[0]).toMatchObject({ category: "runtime", type: "fake-deploy-event" });
     } finally {
       await demo.stop();
@@ -198,7 +195,7 @@ function createFakeRuntime(): {
           model: options.model.model,
           sdk: options.model.sdk,
           cost: { totalUsd: 0 },
-          capabilitiesUsed: ["a2a", "operator-console"],
+          capabilitiesUsed: ["a2a"],
         };
       },
     },
@@ -238,36 +235,41 @@ async function startOllamaTagsServer(
   };
 }
 
-async function getTraceabilityRuns(
-  url: string,
-  token: string,
-): Promise<{
-  enabled: boolean;
+/**
+ * The operator console reader was retired; the deployment smoke test now reads
+ * the trace-source registry directly via the retained observability reader API,
+ * keyed off the demo's running `traceabilityStatus`.
+ */
+function registryDirFor(demo: FinalAgentDemo): string {
+  const status = demo.traceabilityStatus;
+  if (status.kind !== "running") {
+    throw new Error(`Expected running traceability, got ${status.kind}.`);
+  }
+  return status.registryDir;
+}
+
+async function getTraceabilityRuns(demo: FinalAgentDemo): Promise<{
   sources: Array<{ sourceId: string; label: string; health: string }>;
   runs: Array<{ runId: string; conversationId: string; source: { sourceId: string; label: string } }>;
 }> {
-  const response = await fetch(`${url}/api/traceability/runs`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  expect(response.status).toBe(200);
-  return await response.json() as {
-    enabled: boolean;
-    sources: Array<{ sourceId: string; label: string; health: string }>;
-    runs: Array<{ runId: string; conversationId: string; source: { sourceId: string; label: string } }>;
+  const result = await listTraceRuns({ registryDir: registryDirFor(demo) });
+  return {
+    sources: result.sources.map((source) => ({ sourceId: source.sourceId, label: source.label, health: source.health })),
+    runs: result.runs.map((run) => ({
+      runId: run.runId,
+      conversationId: run.conversationId,
+      source: { sourceId: run.source.sourceId, label: run.source.label },
+    })),
   };
 }
 
 async function getTraceabilityRun(
-  url: string,
-  token: string,
+  demo: FinalAgentDemo,
   sourceId: string,
   runId: string,
-): Promise<{ detail?: { run: { events: Array<{ category: string; type?: string }> } } }> {
-  const response = await fetch(`${url}/api/traceability/runs/${encodeURIComponent(sourceId)}/${encodeURIComponent(runId)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  expect(response.status).toBe(200);
-  return await response.json() as { detail?: { run: { events: Array<{ category: string; type?: string }> } } };
+): Promise<{ detail?: { run: { events: readonly { category: string; type?: string }[] } } }> {
+  const detail = await readTraceRun({ registryDir: registryDirFor(demo) }, sourceId, runId);
+  return detail === undefined ? {} : { detail };
 }
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 1_000): Promise<void> {

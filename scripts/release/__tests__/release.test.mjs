@@ -8,6 +8,7 @@ import {
   releaseVersionFromTag,
   validateRelease,
 } from "../validate-release.mjs";
+import { describePublishedExportsDrift } from "../publish-release.mjs";
 
 function packageRecord({
   name,
@@ -116,9 +117,13 @@ describe("current launch manifest", () => {
     // memory-mcp was retired: the BuJo recall tool is now auto-provisioned in-app
     // from the single config.memory block (no separate stdio MCP package).
     expect(publishable.map((pkg) => pkg.name)).not.toContain("@mono-agent/memory-mcp");
+    // operator-console was retired: Phoenix (observability-otel) is the trace
+    // viewer and config is JSON-first, applied on `mono-agent restart`.
+    expect(publishable.map((pkg) => pkg.name)).not.toContain("@mono-agent/operator-console");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/agent-runtime");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/sandbox");
     expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/agent-app");
+    expect(publishable.map((pkg) => pkg.name)).toContain("@mono-agent/observability-otel");
   });
 
   test("validates the repository for its current release tag", async () => {
@@ -131,5 +136,40 @@ describe("current launch manifest", () => {
 
     expect(result.publishablePackages).toHaveLength(27);
     expect(result.publishablePackages.every((pkg) => pkg.version === version)).toBe(true);
+  });
+});
+
+describe("published exports drift guard", () => {
+  const local = {
+    name: "@mono-agent/observability",
+    version: "0.3.0",
+    packageJson: {
+      exports: { ".": {}, "./event-timeline": {}, "./run-export": {} },
+    },
+  };
+
+  test("flags a skipped package that adds a subpath the npm copy lacks", () => {
+    // The exact incident: local adds ./run-export, npm 0.3.0 only has . and ./event-timeline.
+    const published = { ".": {}, "./event-timeline": {} };
+    const reason = describePublishedExportsDrift(local, published);
+    expect(reason).toMatch(/run-export/u);
+    expect(reason).toMatch(/bump the release version/iu);
+  });
+
+  test("passes when the published export map already exposes every local subpath", () => {
+    const published = { ".": {}, "./event-timeline": {}, "./run-export": {} };
+    expect(describePublishedExportsDrift(local, published)).toBeUndefined();
+  });
+
+  test("passes when the published map is a superset of local subpaths", () => {
+    const published = { ".": {}, "./event-timeline": {}, "./run-export": {}, "./extra": {} };
+    expect(describePublishedExportsDrift(local, published)).toBeUndefined();
+  });
+
+  test("treats a missing/undefined exports field as the main entry only", () => {
+    const mainOnly = { name: "@mono-agent/x", version: "0.3.0", packageJson: {} };
+    expect(describePublishedExportsDrift(mainOnly, undefined)).toBeUndefined();
+    // Local exposes only ".", published has more -> still fine.
+    expect(describePublishedExportsDrift(mainOnly, { ".": {}, "./sub": {} })).toBeUndefined();
   });
 });

@@ -62,7 +62,7 @@ This package may depend on `agent-contracts`, `agent-harness`, `observability`, 
 
 ## What This Package Does Not Own
 
-It does not start Telegram, Slack, WhatsApp, A2A providers, or operator consoles. It does not choose production models, manage secrets, publish hosted dashboards, or replace package unit tests.
+It does not start Telegram, Slack, WhatsApp, or A2A providers. It does not choose production models, manage secrets, publish hosted dashboards, or replace package unit tests.
 
 ## Verification
 

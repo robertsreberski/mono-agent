@@ -15,18 +15,20 @@ import {
   safeJoin as safeJoinGuard,
   stringField,
 } from "./artifact-fs.js";
-import { classifyAssistantContent, compactString } from "./content.js";
+import { buildEventDescriptors, classifyRecordedRunEvent } from "./event-classify.js";
 import { redactJsonValue } from "./recorder.js";
 import type {
   JsonlRunReaderOptions,
   RecordedRunDetail,
   RecordedRunEvent,
-  RecordedRunEventCategory,
   RecordedRunListItem,
   RecordedRunListResult,
   RunSummary,
   RunSummaryStatus,
+  RuntimeEventLike,
 } from "./types.js";
+
+export { classifyRecordedRunEvent };
 
 const SUMMARY_SUFFIX = ".summary.json";
 const EVENTS_SUFFIX = ".events.jsonl";
@@ -95,41 +97,6 @@ export async function readRecordedRun(
     events,
     warnings,
   };
-}
-
-export function classifyRecordedRunEvent(event: unknown): RecordedRunEventCategory {
-  if (!isRecord(event)) {
-    return "runtime";
-  }
-  const type = stringField(event, "type")?.toLowerCase() ?? "";
-  if (
-    type.includes("error") ||
-    type.includes("failure") ||
-    type.includes("failed") ||
-    event.error !== undefined ||
-    event.failureKind !== undefined
-  ) {
-    return "error";
-  }
-  if (
-    type.includes("tool") ||
-    stringField(event, "toolName") !== undefined ||
-    stringField(event, "tool") !== undefined ||
-    stringField(event, "tool_call_id") !== undefined ||
-    stringField(event, "toolCallId") !== undefined
-  ) {
-    return "tool";
-  }
-  if (type.includes("thinking") || type.includes("reasoning") || type.includes("thought")) {
-    return "thinking";
-  }
-  if (assistantMessageContentKind(event) === "thinking") {
-    return "thinking";
-  }
-  if (type === "assistant" || type === "user" || type.includes("message") || event.message !== undefined) {
-    return "message";
-  }
-  return "runtime";
 }
 
 async function loadSummaryFiles(normalized: NormalizedReaderOptions): Promise<{
@@ -317,102 +284,23 @@ function summaryToListItem(summary: RunSummary, updatedAt: string, maxStringByte
 
 function toRecordedEvent(raw: unknown, index: number, maxStringBytes: number): RecordedRunEvent {
   const payload = redactJsonValue(raw, maxStringBytes);
-  const category = classifyRecordedRunEvent(payload);
   const record = isRecord(payload) ? payload : {};
   const type = stringField(record, "type");
   const timestamp = stringField(record, "timestamp") ?? stringField(record, "createdAt") ?? stringField(record, "time");
+  // Use the shared single-source-of-truth descriptors so the reader and the
+  // export path always agree on category/label/summary. buildEventDescriptors
+  // redacts the raw event itself (mirroring the prior inline path: redact ->
+  // classify -> eventLabel/eventSummary), so we pass the RAW event in.
+  const { category, label, summary } = buildEventDescriptors(raw as RuntimeEventLike, maxStringBytes);
   return {
     index,
     ...(type === undefined ? {} : { type }),
     category,
     ...(timestamp === undefined ? {} : { timestamp }),
-    label: eventLabel(record, category, type),
-    summary: eventSummary(record, category, payload, maxStringBytes),
+    label,
+    summary,
     payload,
   };
-}
-
-function eventLabel(record: Record<string, unknown>, category: RecordedRunEventCategory, type: string | undefined): string {
-  const toolName = stringField(record, "toolName") ?? stringField(record, "tool") ?? stringField(record, "name");
-  if (category === "tool" && toolName !== undefined) {
-    return `Tool: ${toolName}`;
-  }
-  const role = stringField(record, "role");
-  if (category === "message" && role !== undefined) {
-    return `Message: ${role}`;
-  }
-  if (category === "thinking") {
-    return type ?? "Reasoning event";
-  }
-  if (category === "error") {
-    return type ?? stringField(record, "failureKind") ?? "Error";
-  }
-  return type ?? "Runtime event";
-}
-
-function eventSummary(
-  record: Record<string, unknown>,
-  category: RecordedRunEventCategory,
-  payload: unknown,
-  maxStringBytes: number,
-): string {
-  const direct = stringField(record, "summary") ?? stringField(record, "text") ?? stringField(record, "delta") ?? stringField(record, "error");
-  if (direct !== undefined) {
-    return compactString(direct);
-  }
-  const messageText = textFromMessage(record.message);
-  if (messageText !== undefined) {
-    return compactString(messageText);
-  }
-  if (category === "tool") {
-    const status = stringField(record, "status") ?? stringField(record, "state");
-    const toolName = stringField(record, "toolName") ?? stringField(record, "tool") ?? stringField(record, "name");
-    if (toolName !== undefined && status !== undefined) {
-      return `${toolName} — ${status}`;
-    }
-    if (toolName !== undefined) {
-      return toolName;
-    }
-  }
-  if (category === "thinking") {
-    return "Runtime emitted a reasoning/thinking process event.";
-  }
-  return compactString(JSON.stringify(redactJsonValue(payload, maxStringBytes)));
-}
-
-function textFromMessage(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const content = value.content;
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const text = content
-    .map((block) => {
-      if (typeof block === "string") {
-        return block;
-      }
-      if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
-        return block.text;
-      }
-      return "";
-    })
-    .join("");
-  return text.length > 0 ? text : undefined;
-}
-
-function assistantMessageContentKind(event: Record<string, unknown>): "thinking" | "text" | undefined {
-  if (stringField(event, "type") !== "assistant") {
-    return undefined;
-  }
-  return classifyAssistantContent(event.message)?.kind;
 }
 
 function normalizeReaderOptions(options: JsonlRunReaderOptions): NormalizedReaderOptions {

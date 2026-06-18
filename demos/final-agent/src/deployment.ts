@@ -27,7 +27,6 @@ export interface FinalDemoDeploymentOptions {
   readonly model?: string;
   readonly ollamaBaseUrl?: string;
   readonly configPath?: string;
-  readonly operatorConsolePort?: number;
   readonly a2aPort?: number;
 }
 

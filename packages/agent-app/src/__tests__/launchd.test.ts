@@ -18,7 +18,6 @@ function plistInput(overrides: Partial<PlistInput> = {}): PlistInput {
     cliPath: "/opt/app/dist/cli.js",
     configPath: "/work/demo/mono-agent.config.json",
     cwd: "/work/demo",
-    noConsole: false,
     stdoutPath: "/home/u/.mono-agent/logs/com.mono-agent.demo-0a1b2c3d.out.log",
     stderrPath: "/home/u/.mono-agent/logs/com.mono-agent.demo-0a1b2c3d.err.log",
     pathEnv: "/usr/bin:/bin",
@@ -81,17 +80,6 @@ describe("buildPlistXml", () => {
     // Argument order: node, cli, start, --foreground, --config, <config>.
     expect(xml.indexOf("start")).toBeLessThan(xml.indexOf("--foreground"));
     expect(xml.indexOf("--foreground")).toBeLessThan(xml.indexOf("--config"));
-  });
-
-  it("adds --port and --no-console only when requested", () => {
-    const withExtras = buildPlistXml(plistInput({ port: 4100, noConsole: true }));
-    expect(withExtras).toContain("<string>--port</string>");
-    expect(withExtras).toContain("<string>4100</string>");
-    expect(withExtras).toContain("<string>--no-console</string>");
-
-    const without = buildPlistXml(plistInput());
-    expect(without).not.toContain("--port");
-    expect(without).not.toContain("--no-console");
   });
 
   it("passes --env-file to the worker when set", () => {

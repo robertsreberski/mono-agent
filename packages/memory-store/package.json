@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/memory-store",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local SQLite memory substrate: bi-temporal records, sqlite-vec + FTS5 hybrid retrieval, incremental upsert, rebuildable from files.",
   "type": "module",
   "license": "UNLICENSED",
@@ -20,7 +20,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/memory-search": "workspace:0.3.0",
+    "@mono-agent/memory-search": "workspace:0.4.0",
     "better-sqlite3": "^11.8.1",
     "sqlite-vec": "^0.1.7-alpha.2"
   },

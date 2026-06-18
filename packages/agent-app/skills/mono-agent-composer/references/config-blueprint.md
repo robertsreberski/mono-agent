@@ -132,7 +132,8 @@ my-agent/
     "unsafeAllowHostProcess": false        // explicit opt-in required for the unsafe fallback
   },
 
-  // Observability: JSONL artifacts + the trace-source registry dashboards read.
+  // Observability: JSONL artifacts (always written; the local fallback) + the
+  // trace-source registry that `mono-agent status` reads.
   "artifacts": { "dir": "./.mono-agent/artifacts" },
   "traceability": {
     "registryDir": "./.mono-agent/trace-sources",
@@ -142,10 +143,12 @@ my-agent/
     "staleAfterMs": 30000
   },
 
-  // Local operator console (browser settings + traceability). On by default.
-  "console": {
-    "enabled": true,
-    "port": 0                              // 0 or omitted picks a free loopback port
+  // Optional trace viewer: add a Phoenix (OTLP) exporter to browse traces in
+  // Phoenix. Omit this entry to keep only the local JSONL artifacts.
+  "observability": {
+    "exporters": [
+      { "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces" }
+    ]
   },
 
   // ----- Channels: one section per channel; all independent. An unconfigured
@@ -251,13 +254,12 @@ my-agent/
 
 ```bash
 mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory lite|journal|bujo]
-mono-agent validate     # per-section report incl. sandbox, console, every channel; exit 0 means ready
-mono-agent start        # console + traceability + every configured channel
-mono-agent start --no-console   # headless (or "console": { "enabled": false })
-mono-agent start --port 4400    # fixed console port (or "console": { "port": 4400 })
+mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means ready
+mono-agent start        # traceability + every configured channel
+mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
 ```
 
-A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `start` prints the operator console URL (config editing in the browser; saves re-apply live without restarting), the traceability source, and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
+A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
 
 For BuJo capture and rituals, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `codex:gpt-5.5` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. The standalone `memory-bujo` maintenance CLI remains Ollama-only; `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
 

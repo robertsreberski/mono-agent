@@ -8,8 +8,7 @@ import {
   MonoAgentConfigError,
   readMonoAgentConfigJson,
 } from "@mono-agent/config";
-import type { MonoAgentConfig } from "@mono-agent/config";
-import { defineFieldGroup } from "@mono-agent/settings";
+import type { MonoAgentConfig, ObservabilityExporterConfig } from "@mono-agent/config";
 import type { FieldGroup } from "@mono-agent/settings";
 import { a2aFieldGroup } from "@mono-agent/a2a-adapter";
 import { cronFieldGroup } from "@mono-agent/cron-adapter";
@@ -21,39 +20,12 @@ import { whatsappFieldGroup } from "@mono-agent/whatsapp-adapter";
 
 import { selfCapabilitiesFieldGroup } from "./self-capabilities.js";
 
-export const consoleFieldGroup = defineFieldGroup({
-  id: "console",
-  label: "Operator console",
-  description: "The local browser console started alongside the agent.",
-  fields: [
-    {
-      id: "console.enabled",
-      label: "Enabled",
-      description: "Start the loopback operator console with the app (on by default).",
-      kind: "switch",
-      path: ["console", "enabled"],
-    },
-    {
-      id: "console.port",
-      label: "Port",
-      description: "Fixed loopback port for the console; omit (or 0) to pick a free port.",
-      kind: "integer",
-      min: 0,
-      max: 65_535,
-      placeholder: "0",
-      path: ["console", "port"],
-    },
-  ],
-});
-
 /**
- * Every settings group a config-first host edits through the operator console:
- * the adapter-neutral core config, the console itself, plus one group per
- * communication channel.
+ * Every settings group a config-first host exposes: the adapter-neutral core
+ * config plus one group per communication channel.
  */
 export const MONO_AGENT_APP_FIELD_GROUPS: readonly FieldGroup[] = [
   ...CORE_AGENT_FIELD_GROUPS,
-  consoleFieldGroup,
   selfCapabilitiesFieldGroup,
   telegramFieldGroup,
   slackFieldGroup,
@@ -98,9 +70,9 @@ export interface AppTraceDefaults {
 
 /**
  * The resolvers below intentionally tolerate an incomplete or invalid config
- * file: observability and the operator console must stay usable while the
- * user is still fixing their config, so they fall back to defaults instead of
- * throwing on unreadable JSON.
+ * file: observability and traceability must stay usable while the user is still
+ * fixing their config, so they fall back to defaults instead of throwing on
+ * unreadable JSON.
  */
 export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Promise<string> {
   const envDir = input.env.MONO_AGENT_ARTIFACT_DIR?.trim();
@@ -121,64 +93,217 @@ export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Pro
   return resolve(input.cwd, ".mono-agent", "artifacts");
 }
 
-export interface AppConsoleSettings {
-  readonly enabled: boolean;
-  readonly port?: number;
-}
+const DEFAULT_PHOENIX_ENDPOINT = "http://127.0.0.1:6006/v1/traces";
+const DEFAULT_PHOENIX_TIMEOUT_MS = 5_000;
+const OBSERVABILITY_EXPORTER_TYPES = ["phoenix"] as const;
 
 /**
- * Operator console settings: env wins, then the `console` section of the
- * config file, then defaults (enabled, auto-selected port). Tolerates an
- * unreadable config file like the other app-level resolvers so the console
- * stays available while the user fixes their config.
+ * A validated observability exporter resolved for app startup/status/validate.
+ * Mirrors {@link ObservabilityExporterConfig} but with the endpoint always
+ * resolved (defaults applied) so callers never re-derive it.
  */
-export async function resolveAppConsoleSettings(input: MonoAgentAppConfigInput): Promise<AppConsoleSettings> {
-  let enabled = parseConsoleBoolean(input.env.MONO_AGENT_CONSOLE_ENABLED, "MONO_AGENT_CONSOLE_ENABLED");
-  let port = parseConsolePort(input.env.MONO_AGENT_CONSOLE_PORT, "MONO_AGENT_CONSOLE_PORT");
+export type ResolvedExporter = ObservabilityExporterConfig & { readonly endpoint: string };
 
-  if (enabled === undefined || port === undefined) {
-    try {
-      const { json } = await readMonoAgentConfigJson(input.configPath);
-      const section = json.console;
-      if (typeof section === "object" && section !== null && !Array.isArray(section)) {
-        const record = section as Record<string, unknown>;
-        if (enabled === undefined && typeof record.enabled === "boolean") {
-          enabled = record.enabled;
-        }
-        if (port === undefined && record.port !== undefined) {
-          port = parseConsolePort(record.port, "console.port");
-        }
-      }
-    } catch {
-      // Keep defaults while the user fixes an incomplete or invalid config.
-    }
+/**
+ * Resolve observability exporters for the app: env-first
+ * (`MONO_AGENT_OBSERVABILITY_EXPORTERS`, JSON array), then the
+ * `observability.exporters` block of the config file, then `[]`. Like the other
+ * app-level resolvers it tolerates an unreadable config file (returns `[]` so the
+ * host stays usable while the user fixes their config), but it DOES throw
+ * a {@link MonoAgentConfigError} for a present-but-invalid exporter shape so bad
+ * config fails clearly before startup. No reachability probe runs here —
+ * reachability is `validate`'s job (Phoenix may start after the agent).
+ */
+export async function resolveAppObservabilityExporters(
+  input: MonoAgentAppConfigInput,
+): Promise<readonly ResolvedExporter[]> {
+  const envRaw = input.env.MONO_AGENT_OBSERVABILITY_EXPORTERS?.trim();
+  if (envRaw !== undefined && envRaw.length > 0) {
+    return parseExporters(parseExporterJson(envRaw), "MONO_AGENT_OBSERVABILITY_EXPORTERS");
   }
 
+  let exportersJson: unknown;
+  try {
+    const { json } = await readMonoAgentConfigJson(input.configPath);
+    exportersJson = json.observability?.exporters;
+  } catch {
+    // Tolerate an unreadable config like the other resolvers.
+    return [];
+  }
+  if (exportersJson === undefined) {
+    return [];
+  }
+  return parseExporters(exportersJson, "observability.exporters");
+}
+
+function parseExporterJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_OBSERVABILITY_EXPORTERS must contain valid JSON.", {
+      env: "MONO_AGENT_OBSERVABILITY_EXPORTERS",
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function parseExporters(value: unknown, source: string): readonly ResolvedExporter[] {
+  if (!Array.isArray(value)) {
+    throw new MonoAgentConfigError("invalid_env", `${source} must be a JSON array.`, { env: source });
+  }
+  // Only the first exporter is wired (runtime/status/validate read exporters[0]).
+  // Reject >1 loudly rather than silently dropping the rest. Mirrors core config.
+  if (value.length > 1) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source} supports a single exporter; configure exactly one.`,
+      { env: source },
+    );
+  }
+  return value.map((entry, index) => parseExporter(entry, `${source}[${index}]`));
+}
+
+function parseExporter(value: unknown, source: string): ResolvedExporter {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
+  }
+  const record = value as Record<string, unknown>;
+  // A present-but-non-string type is invalid; an omitted type defaults to the
+  // first supported type (phoenix), matching core config normalization so the
+  // app resolver and core agree (`validate` no longer rejects what startup accepts).
+  if (record.type !== undefined && typeof record.type !== "string") {
+    throw new MonoAgentConfigError("invalid_env", `${source}.type must be a string.`, { env: source });
+  }
+  const rawType = typeof record.type === "string" ? record.type : undefined;
+  if (rawType !== undefined && !(OBSERVABILITY_EXPORTER_TYPES as readonly string[]).includes(rawType)) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.type must be one of ${OBSERVABILITY_EXPORTER_TYPES.join(", ")}.`,
+      { env: source },
+    );
+  }
+  const type = (rawType ?? OBSERVABILITY_EXPORTER_TYPES[0]) as (typeof OBSERVABILITY_EXPORTER_TYPES)[number];
+
+  const endpoint = record.endpoint === undefined
+    ? DEFAULT_PHOENIX_ENDPOINT
+    : validateExporterEndpoint(record.endpoint, source);
+
+  const headers = parseExporterHeaders(record.headers, source);
+
+  const includeSensitiveData = record.includeSensitiveData === undefined
+    ? false
+    : typeof record.includeSensitiveData === "boolean"
+      ? record.includeSensitiveData
+      : (() => {
+          throw new MonoAgentConfigError("invalid_env", `${source}.includeSensitiveData must be true or false.`, {
+            env: source,
+          });
+        })();
+
+  const timeoutMs = record.timeoutMs === undefined
+    ? DEFAULT_PHOENIX_TIMEOUT_MS
+    : validateExporterTimeout(record.timeoutMs, source);
+
+  const projectName = record.projectName === undefined
+    ? undefined
+    : typeof record.projectName === "string" && record.projectName.trim().length > 0
+      ? record.projectName
+      : (() => {
+          throw new MonoAgentConfigError("invalid_env", `${source}.projectName must be a non-empty string.`, {
+            env: source,
+          });
+        })();
+
   return {
-    enabled: enabled ?? true,
-    ...(port === undefined ? {} : { port }),
+    type,
+    endpoint,
+    ...(headers === undefined ? {} : { headers }),
+    includeSensitiveData,
+    timeoutMs,
+    ...(projectName === undefined ? {} : { projectName }),
   };
 }
 
-function parseConsoleBoolean(raw: string | undefined, name: string): boolean | undefined {
-  const value = raw?.trim().toLowerCase();
-  if (value === undefined || value.length === 0) {
+/**
+ * Derive the Phoenix app base URL (origin) from an OTLP traces endpoint so the
+ * CLI/status can point operators at the trace UI — e.g.
+ * `http://127.0.0.1:6006/v1/traces` -> `http://127.0.0.1:6006`. Returns
+ * undefined when the endpoint is not a parseable URL. Note: Phoenix does not
+ * return a stable per-run trace URL from the OTLP ingest endpoint, so callers
+ * print only the app base URL plus run identifiers.
+ */
+export function phoenixAppBaseUrl(endpoint: string): string | undefined {
+  try {
+    return new URL(endpoint).origin;
+  } catch {
     return undefined;
   }
-  if (value === "true" || value === "1") {
-    return true;
-  }
-  if (value === "false" || value === "0") {
-    return false;
-  }
-  throw new MonoAgentConfigError("invalid_env", `${name} must be true or false.`, { env: name });
 }
 
-function parseConsolePort(value: unknown, name: string): number | undefined {
-  if (value === undefined || (typeof value === "string" && value.trim().length === 0)) {
+function validateExporterEndpoint(value: unknown, source: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a non-empty string.`, { env: source });
+  }
+  let url: URL;
+  try {
+    // Shape-only validation — never performs a request (reachability is `validate`'s job).
+    url = new URL(value);
+  } catch {
+    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a valid URL.`, { env: source });
+  }
+  // The raw endpoint is displayed/persisted in plaintext (start/status/validate,
+  // trace-source metadata, transport errors), so reject credential-bearing URL
+  // components. Secrets belong in `headers`, which are redacted. Mirrors core config.
+  if (url.username !== "" || url.password !== "") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.endpoint must not embed credentials (user:pass@); put secrets in headers instead.`,
+      { env: source },
+    );
+  }
+  if (url.search !== "") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.endpoint must not contain a query string; put tokens in headers instead.`,
+      { env: source },
+    );
+  }
+  if (url.hash !== "") {
+    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must not contain a URL fragment.`, {
+      env: source,
+    });
+  }
+  return value;
+}
+
+function parseExporterHeaders(value: unknown, source: string): Readonly<Record<string, string>> | undefined {
+  if (value === undefined) {
     return undefined;
   }
-  return parseTraceInteger(value, name, 0, 65_535);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new MonoAgentConfigError("invalid_env", `${source}.headers must be an object.`, { env: source });
+  }
+  const out: Record<string, string> = {};
+  for (const [key, headerValue] of Object.entries(value)) {
+    if (typeof headerValue !== "string" || headerValue.length === 0) {
+      throw new MonoAgentConfigError("invalid_env", `${source}.headers.${key} must be a non-empty string.`, {
+        env: source,
+      });
+    }
+    out[key] = headerValue;
+  }
+  return out;
+}
+
+function validateExporterTimeout(value: unknown, source: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 60_000) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.timeoutMs must be an integer between 1 and 60000.`,
+      { env: source },
+    );
+  }
+  return value;
 }
 
 export async function resolveAppTraceRegistryDir(input: MonoAgentAppConfigInput): Promise<string> {

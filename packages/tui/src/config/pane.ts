@@ -101,9 +101,8 @@ function toField(
 
 /**
  * Build a compact, redacted view of the resolved configuration suitable for
- * the TUI's Config pane. The pane is read-only — any edits should go through
- * `@mono-agent/operator-console` so the console enforces the same registered-field
- * patch validator and atomic writes.
+ * the TUI's Config pane. The pane is read-only — edits are made directly in
+ * `mono-agent.config.json` and take effect on the next `mono-agent restart`.
  */
 export function buildTuiConfigSummary(
   input: BuildTuiConfigSummaryInput,

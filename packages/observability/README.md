@@ -32,6 +32,8 @@ import {
 - `combineRecordedRunEvents`
 - `registerTraceSource`, `listTraceSources`, `listTraceRuns`, `readTraceRun`
 - `redactJsonValue`
+- `createCompositeRunRecorder` plus the `RunExporter` / `RunExportContext` / `RunExportEventContext` contracts
+- `buildRootSpanAttributes`, `buildEventSpanAttributes`, `countRuntimeWarnings`, `spanKindHint` and the exporter-config types (`PhoenixExporterConfig`, `ObservabilityExporterConfig`)
 - `ObservabilityError`, `ObservabilityReadError`
 - Recorder, summary, list, detail, event, trace source, and trace run types
 
@@ -45,9 +47,17 @@ The trace registry is a directory of `agent-runtime.trace-source.v1` manifest JS
 
 Running sources become `stale` when their heartbeat is older than the configured stale interval. Stopped and failed sources remain listed so the dashboard can distinguish a clean shutdown from a crashed or misconfigured host. The registry reader validates source/run ids against path traversal, ignores malformed manifests with warnings, and reuses the recorded-run reader's redaction and bounded-read limits.
 
+## Run Export Contract
+
+The package defines the `RunExporter` contract (`start`/`onEvent`/`finish`/`fail`/`flush`/`close`, all optional and async-capable) and a pure `createCompositeRunRecorder` that wraps the unchanged JSONL recorder. The composite keeps `RunRecorder.onEvent` synchronous, runs the JSONL recorder first and unchanged, buffers events, and replays them to the exporter batch-on-finish under a bounded timeout. Exporter failures and timeouts are swallowed and surfaced as warnings, so export never changes the run outcome and never suppresses JSONL writes.
+
+The `./run-export` subpath exposes the pure, node-free event-to-span attribute mapping (`buildRootSpanAttributes`, `buildEventSpanAttributes`, `countRuntimeWarnings`, `spanKindHint`) plus the exporter-config types. It imports only node-free helpers (guards, redaction, event-classify, content) so it is safe for browser graphs, exactly like `./event-timeline`.
+
+Privacy default is metadata-only: when `includeSensitiveData` is `false`, raw payloads are omitted and only summaries/labels are mapped; when `true`, `redactJsonValue` still runs over the payload before it leaves the process. The actual network transport (OTLP/HTTP+JSON, the Phoenix preset) lives in the separate `@mono-agent/observability-otel` package, not here.
+
 ## Dependency Boundary
 
-This package writes and reads local artifact and registry files only. It has no runtime, adapter, UI, database, queue, or network dependency.
+This package writes and reads local artifact and registry files only. It has no runtime, adapter, UI, database, queue, or network dependency. The exporter contract and pure span mapping live here, but the OTLP network transport is out-of-package (in `@mono-agent/observability-otel`), keeping this package free of any network dependency.
 
 ## What This Package Does Not Own
 

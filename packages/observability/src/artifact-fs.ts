@@ -1,39 +1,32 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join, normalize, resolve, sep } from "node:path";
 
+import type { Raise } from "./guards.js";
+
 /**
  * Shared, security-critical filesystem and validation helpers for the
  * observability artifact store. These guards are duplicated nowhere else;
  * every recorder/reader/registry module imports from here so the traversal
  * defenses stay identical.
+ *
+ * The node-free validation helpers and limit constants now live in
+ * {@link ./guards.ts} and are re-exported here so every existing importer keeps
+ * its current import surface while the node:fs/node:path helpers stay co-located
+ * with the filesystem primitives.
  */
 
-export const DEFAULT_MAX_RUNS = 50;
-export const DEFAULT_MAX_EVENTS_PER_RUN = 500;
-export const DEFAULT_MAX_STRING_BYTES = 4_096;
-
-/** Thrown to abort with a caller-supplied, code-tagged error. */
-export type Raise = (message: string) => never;
-
-/** Variant that also forwards the offending field name into the error details. */
-export type RaiseField = (message: string, field: string) => never;
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function isErrno(error: unknown, code: string): boolean {
-  return isRecord(error) && error.code === code;
-}
-
-export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-export function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key];
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}
+export {
+  DEFAULT_MAX_RUNS,
+  DEFAULT_MAX_EVENTS_PER_RUN,
+  DEFAULT_MAX_STRING_BYTES,
+  errorMessage,
+  isErrno,
+  isRecord,
+  minInteger,
+  positiveInteger,
+  stringField,
+} from "./guards.js";
+export type { Raise, RaiseField } from "./guards.js";
 
 /**
  * Collapse a candidate identifier into a path-safe artifact base name. Any
@@ -75,26 +68,6 @@ export function safeJoin(root: string, fileName: string, raise: Raise): string {
     raise("escape");
   }
   return resolved;
-}
-
-export function positiveInteger(value: number | undefined, fallback: number, field: string, raise: RaiseField): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (!Number.isInteger(value) || value < 1) {
-    raise(`${field} must be a positive integer.`, field);
-  }
-  return value;
-}
-
-export function minInteger(value: number | undefined, fallback: number, min: number, field: string, raise: RaiseField): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (!Number.isInteger(value) || value < min) {
-    raise(`${field} must be an integer of at least ${min}.`, field);
-  }
-  return value;
 }
 
 let atomicWriteSequence = 0;

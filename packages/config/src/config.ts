@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, PermissionMode, PiNativeProviderConfig, ReasoningSummary, RedactedMonoAgentConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, ReasoningSummary, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -78,6 +78,9 @@ const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
 };
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
+const OBSERVABILITY_EXPORTER_TYPES = ["phoenix"] as const;
+const DEFAULT_PHOENIX_ENDPOINT = "http://127.0.0.1:6006/v1/traces";
+const DEFAULT_PHOENIX_TIMEOUT_MS = 5_000;
 const DEFAULT_PI_AUTH_PATH = resolve(homedir(), ".pi", "agent", "auth.json");
 
 export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentConfig {
@@ -99,6 +102,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const sandbox = readSandboxConfig(input.env, workspace);
   const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
   const traceability = readTraceabilityConfig(input.env, cwd);
+  const observability = readObservabilityConfig(input.env);
   const piAuthPath = readPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
   const localProviders = readLocalProviders(input.env);
   const piNative = readPiNativeProviderConfig(input.env, cwd);
@@ -145,6 +149,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       dir: artifactDir,
     },
     traceability,
+    ...(observability === undefined ? {} : { observability }),
     providers: {
       piAuthPath,
       ...(localProviders.length === 0 ? {} : { local: localProviders }),
@@ -171,6 +176,7 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
     ...(config.sandbox === undefined ? {} : { sandbox: { ...config.sandbox } }),
     artifacts: { ...config.artifacts },
     traceability: { ...config.traceability },
+    ...(config.observability === undefined ? {} : { observability: redactObservabilityConfig(config.observability) }),
   };
   if (config.memory !== undefined) {
     const { embeddings, ...memory } = config.memory;
@@ -665,6 +671,191 @@ function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: st
   };
 }
 
+/**
+ * Read the optional observability exporter block from
+ * `MONO_AGENT_OBSERVABILITY_EXPORTERS` (a JSON array). Modeled on
+ * {@link readLocalProvidersJson}: env-first, shape-only validation, no network.
+ * Endpoint reachability is intentionally NOT probed here — that is `validate`'s
+ * job (spec section 9). Returns undefined when the var is absent so the
+ * conditional-spread idiom keeps `observability` off the config when unused.
+ */
+function readObservabilityConfig(
+  env: Record<string, string | undefined>,
+): MonoAgentConfig["observability"] | undefined {
+  const raw = normalizeOptionalString(env.MONO_AGENT_OBSERVABILITY_EXPORTERS);
+  if (raw === undefined) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_OBSERVABILITY_EXPORTERS must contain valid JSON.", {
+      env: "MONO_AGENT_OBSERVABILITY_EXPORTERS",
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!Array.isArray(parsed)) {
+    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_OBSERVABILITY_EXPORTERS must be a JSON array.", {
+      env: "MONO_AGENT_OBSERVABILITY_EXPORTERS",
+    });
+  }
+  // Only the first exporter is wired (runtime/status/validate read exporters[0]).
+  // Reject >1 loudly rather than silently dropping the rest.
+  if (parsed.length > 1) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_OBSERVABILITY_EXPORTERS supports a single exporter; configure exactly one.",
+      { env: "MONO_AGENT_OBSERVABILITY_EXPORTERS" },
+    );
+  }
+  const exporters = parsed.map((value, index) =>
+    normalizeExporterFromUnknown(value, `MONO_AGENT_OBSERVABILITY_EXPORTERS[${index}]`),
+  );
+  return { exporters };
+}
+
+function normalizeExporterFromUnknown(value: unknown, source: string): ObservabilityExporterConfig {
+  if (!isRecord(value) || Array.isArray(value)) {
+    throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
+  }
+  // A present-but-non-string `type` is an invalid type and must fail clearly,
+  // not silently collapse to undefined (and thus the phoenix default).
+  if (value.type !== undefined && typeof value.type !== "string") {
+    throw new MonoAgentConfigError("invalid_env", `${source}.type must be a string.`, { env: source });
+  }
+  const type = readChoice<(typeof OBSERVABILITY_EXPORTER_TYPES)[number]>(
+    typeof value.type === "string" ? value.type : undefined,
+    source,
+    OBSERVABILITY_EXPORTER_TYPES,
+    OBSERVABILITY_EXPORTER_TYPES[0],
+    invalidEnv,
+  );
+  const endpointRaw = readObjectString(value, "endpoint", source, false);
+  const endpoint = endpointRaw === undefined ? DEFAULT_PHOENIX_ENDPOINT : validateEndpoint(endpointRaw, source);
+  const headers = readStringRecord(value.headers, "headers", source);
+  const includeSensitiveData = readObjectBoolean(value, "includeSensitiveData", false, source);
+  const timeoutMs = readObjectInteger(value, "timeoutMs", source, { min: 1, max: 60_000 });
+  const projectName = readObjectString(value, "projectName", source, false);
+  return {
+    type,
+    endpoint,
+    ...(headers === undefined ? {} : { headers }),
+    includeSensitiveData,
+    timeoutMs: timeoutMs ?? DEFAULT_PHOENIX_TIMEOUT_MS,
+    ...(projectName === undefined ? {} : { projectName }),
+  };
+}
+
+/**
+ * Shape-validate an endpoint string via `new URL` — never performs a request.
+ * Also rejects credential/secret-bearing URL components (userinfo, query,
+ * fragment): the raw endpoint is printed and persisted in plaintext via
+ * start/status/doctor and trace-source metadata, so a `user:pass@`, `?api_key=`
+ * or `#token` would leak. Secrets belong in `headers`, which are redacted.
+ */
+function validateEndpoint(value: string, source: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a valid URL.`, { env: source });
+  }
+  assertEndpointHasNoSecrets(url, source);
+  return value;
+}
+
+/**
+ * Reject URL components that can smuggle credentials into a plaintext-displayed
+ * endpoint. Shared shape so the core config and the app resolver agree.
+ */
+function assertEndpointHasNoSecrets(url: URL, source: string): void {
+  if (url.username !== "" || url.password !== "") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.endpoint must not embed credentials (user:pass@); put secrets in headers instead.`,
+      { env: source },
+    );
+  }
+  if (url.search !== "") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.endpoint must not contain a query string; put tokens in headers instead.`,
+      { env: source },
+    );
+  }
+  if (url.hash !== "") {
+    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must not contain a URL fragment.`, {
+      env: source,
+    });
+  }
+}
+
+/** Read an optional object of string->non-empty-string (e.g. HTTP headers). */
+function readStringRecord(
+  value: unknown,
+  key: string,
+  source: string,
+): Readonly<Record<string, string>> | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value) || Array.isArray(value)) {
+    throw new MonoAgentConfigError("invalid_env", `${source}.${key} must be an object.`, { env: source });
+  }
+  const out: Record<string, string> = {};
+  for (const [headerKey, headerValue] of Object.entries(value)) {
+    if (typeof headerValue !== "string" || headerValue.length === 0) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `${source}.${key}.${headerKey} must be a non-empty string.`,
+        { env: source },
+      );
+    }
+    out[headerKey] = headerValue;
+  }
+  return out;
+}
+
+/** Read an optional integer field from a parsed object, bounded and integer-checked. */
+function readObjectInteger(
+  object: Record<string, unknown>,
+  key: string,
+  source: string,
+  bounds: { readonly min: number; readonly max: number },
+): number | undefined {
+  const value = object[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < bounds.min || value > bounds.max) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.${key} must be an integer between ${bounds.min} and ${bounds.max}.`,
+      { env: source },
+    );
+  }
+  return value;
+}
+
+function redactObservabilityConfig(
+  observability: NonNullable<MonoAgentConfig["observability"]>,
+): RedactedObservabilityConfig {
+  return {
+    exporters: observability.exporters.map((exporter) => {
+      const { headers, ...rest } = exporter;
+      if (headers === undefined) {
+        return rest;
+      }
+      const redactedHeaders: Record<string, "[redacted]"> = {};
+      for (const headerKey of Object.keys(headers)) {
+        redactedHeaders[headerKey] = "[redacted]";
+      }
+      return { ...rest, headers: redactedHeaders };
+    }),
+  };
+}
+
 function readLocalProviders(env: Record<string, string | undefined>): readonly LocalProviderDefinition[] {
   const registryJson = normalizeOptionalString(env.MONO_AGENT_LOCAL_PROVIDERS_JSON);
   if (registryJson !== undefined) {
@@ -809,7 +1000,7 @@ function withRedactedProviders(
     providers: {
       ...(config.providers.piAuthPath === undefined ? {} : { piAuthPath: config.providers.piAuthPath }),
       // pi-native knobs carry no secrets — pass them through so redacted config
-      // surfaces (e.g. the operator console) still show them.
+      // surfaces (e.g. the TUI config pane) still show them.
       ...(config.providers.piNative === undefined ? {} : { piNative: config.providers.piNative }),
       ...(config.providers.local === undefined
         ? {}

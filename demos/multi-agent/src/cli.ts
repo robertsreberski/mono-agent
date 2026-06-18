@@ -18,7 +18,6 @@ async function main(): Promise<void> {
     env: process.env,
     cwd: process.cwd(),
     ...(args.configDir === undefined ? {} : { configDir: args.configDir }),
-    ...(args.port === undefined ? {} : { operatorConsolePort: args.port }),
     startTelegram: !args.noTelegram,
     startA2A: !args.noA2A,
     logger: console,
@@ -44,10 +43,8 @@ async function main(): Promise<void> {
 }
 
 function printDemoStatus(demo: Awaited<ReturnType<typeof startMultiAgentDemo>>): void {
-  console.log(`operator-console: ${demo.operatorConsole.appUrl}`);
-  console.log(`operator-api:     ${demo.operatorConsole.url}`);
-  console.log(`operator-token:   ${demo.operatorConsole.token}`);
-  console.log(`config:           ${demo.operatorConsole.configPath}`);
+  console.log(`config:           ${demo.configPath}`);
+  console.log("edits:            edit the role config JSON, then restart the demo to apply changes");
   printTraceabilityStatus(demo.traceabilityStatuses.orchestrator);
   printRoleStatus(demo.orchestratorStatus);
   printRoleStatus(demo.researcherStatus);
@@ -81,7 +78,7 @@ function printTraceabilityStatus(status: MultiAgentTraceabilityStatus): void {
 }
 
 function printHelp(): void {
-  console.log(`Usage: pnpm run demo:multi -- [--config-dir <path>] [--port <port>] [--no-telegram] [--no-a2a]\n\nStarts the non-package multi-agent demo from generated role configs.\n\nOptions:\n  --config-dir <path>  Config/state directory (default: ./.mono-agent/multi-agent)\n  --port <port>        Operator Console port (default: 0, choose a free port)\n  --no-telegram        Do not start the Telegram poller even if configured\n  --no-a2a             Do not start role A2A providers\n  -h, --help           Show this help`);
+  console.log(`Usage: pnpm run demo:multi -- [--config-dir <path>] [--no-telegram] [--no-a2a]\n\nStarts the headless multi-agent demo from generated role configs. Config edits apply on restart.\n\nOptions:\n  --config-dir <path>  Config/state directory (default: ./.mono-agent/multi-agent)\n  --no-telegram        Do not start the Telegram poller even if configured\n  --no-a2a             Do not start role A2A providers\n  -h, --help           Show this help`);
 }
 
 void main().catch((error: unknown) => {

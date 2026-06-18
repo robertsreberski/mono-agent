@@ -14,12 +14,11 @@ async function main(): Promise<void> {
     env: process.env,
     cwd: process.cwd(),
     ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-    ...(args.port === undefined ? {} : { operatorConsolePort: args.port }),
     logger: console,
   });
 
-  console.log(`operator-console: ${demo.operatorConsole.appUrl}`);
-  console.log(`config:    ${demo.operatorConsole.configPath}`);
+  console.log(`config:    ${demo.configPath}`);
+  console.log("edits:     edit the config JSON, then restart the demo to apply changes");
   printTraceabilityStatus(demo.traceabilityStatus);
   printTelegramStatus(demo.telegramStatus);
   printA2AStatus(demo.a2aStatus);
@@ -137,7 +136,7 @@ function printCronStatus(status: CronStatus): void {
 }
 
 function printHelp(): void {
-  console.log(`Usage: pnpm run demo:final -- [--config <path>] [--port <port>]\n\nStarts the final demo: operator console first, then optional Telegram, A2A, webhook, OpenAI API, and cron adapters once mono-agent.config.json is valid.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  --port <port>    Operator Console port (default: 0, choose a free port)\n  -h, --help       Show this help`);
+  console.log(`Usage: pnpm run demo:final -- [--config <path>]\n\nStarts the headless final demo: traceability first, then optional Telegram, A2A, webhook, OpenAI API, and cron adapters once mono-agent.config.json is valid. Config edits apply on restart.\n\nOptions:\n  --config <path>  Config file path (default: ./mono-agent.config.json)\n  -h, --help       Show this help`);
 }
 
 void main().catch((error: unknown) => {

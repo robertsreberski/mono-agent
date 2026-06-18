@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/context",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Deterministic context assembly for host-compatible agents.",
   "type": "module",
   "exports": {

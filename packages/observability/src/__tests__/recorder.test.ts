@@ -19,6 +19,20 @@ afterEach(async () => {
 });
 
 describe("JsonlRunRecorder", () => {
+  it("persists the user prompt into the summary so backfill can show it as input", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "run:1",
+      conversationId: "webhook:1",
+      artifactDir: dir,
+      userInput: "What is the capital of France?",
+    });
+    const summary = await recorder.finish({});
+    expect(summary.userInput).toBe("What is the capital of France?");
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as { userInput?: string };
+    expect(onDisk.userInput).toBe("What is the capital of France?");
+  });
+
   it("captures events and writes redacted summary artifacts", async () => {
     const dir = await tempDir();
     let now = 1000;

@@ -1,13 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve } from "node:path";
 
-import { startOperatorConsole } from "@mono-agent/operator-console";
-import type {
-  ConfigApplyResult,
-  OperatorConsoleEvent,
-  OperatorConsoleOptions,
-  OperatorConsoleStartResult,
-} from "@mono-agent/operator-console";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   createConfiguredAgentResponder,
@@ -19,21 +12,19 @@ import type { AgentMessageStream, AgentRequestBase, AgentResponse } from "@mono-
 import { registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
-import type { FieldGroup } from "@mono-agent/settings";
 
 import {
   isAppCoreConfigError,
   loadAppCoreConfig,
-  MONO_AGENT_APP_FIELD_GROUPS,
   resolveAppArtifactDir,
-  resolveAppConsoleSettings,
+  resolveAppObservabilityExporters,
   resolveAppTraceHeartbeatMs,
   resolveAppTraceRegistryDir,
   resolveAppTraceSourceId,
   resolveAppTraceSourceLabel,
   resolveAppTraceStaleAfterMs,
 } from "./app-config.js";
-import type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
+import type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import {
@@ -52,6 +43,15 @@ import {
   resolveSelfCapabilitiesSettings,
 } from "./self-capabilities.js";
 
+/**
+ * Outcome of a live config re-apply (`applyConfigChange`). Returned to the
+ * self-capabilities reload caller and consumed by demos that surface the result.
+ */
+export type ConfigApplyResult =
+  | { readonly kind: "applied"; readonly message: string; readonly transports: readonly string[] }
+  | { readonly kind: "waiting_for_config"; readonly message: string; readonly transports: readonly string[] }
+  | { readonly kind: "failed"; readonly message: string; readonly transports: readonly string[] };
+
 export interface MonoAgentAppOptions {
   readonly env?: Record<string, string | undefined>;
   readonly cwd?: string;
@@ -62,21 +62,7 @@ export interface MonoAgentAppOptions {
   readonly drivers?: readonly ChannelDriver[];
   /** Shared runtime override (testing / advanced composition). */
   readonly runtime?: MonoRuntimeLike;
-  /** Set false to run headless without the local operator console. */
-  readonly operatorConsole?: boolean;
-  readonly operatorConsolePort?: number;
-  readonly operatorConsoleFactory?: (options: OperatorConsoleOptions) => Promise<OperatorConsoleStartResult>;
-  readonly fieldGroups?: readonly FieldGroup[];
   readonly traceDefaults?: AppTraceDefaults;
-}
-
-export interface MonoAgentAppOperatorConsole {
-  /** Base loopback URL for API calls, without the token query string. */
-  readonly url: string;
-  /** Browser URL that includes the per-boot operator console token. */
-  readonly appUrl: string;
-  readonly token: string;
-  readonly configPath: string;
 }
 
 export type TraceabilityStatus =
@@ -89,10 +75,27 @@ export type TraceabilityStatus =
   | { readonly kind: "disabled"; readonly reason: string }
   | { readonly kind: "failed"; readonly reason: string };
 
+/**
+ * Best-effort observability exporter status. `configured` does not assert
+ * reachability (Phoenix may start later — only `validate` probes); export
+ * failures during runs surface as `lastWarning`/`lastError` without changing the
+ * run outcome.
+ */
+export type ExporterStatus =
+  | {
+      readonly kind: "configured";
+      readonly endpoint: string;
+      readonly includeSensitiveData: boolean;
+      readonly lastWarning?: string;
+      readonly lastError?: string;
+    }
+  | { readonly kind: "disabled"; readonly reason: string }
+  | { readonly kind: "failed"; readonly reason: string };
+
 export interface MonoAgentApp {
-  readonly operatorConsole: MonoAgentAppOperatorConsole | undefined;
   readonly configPath: string;
   readonly traceabilityStatus: TraceabilityStatus;
+  readonly exporterStatus: ExporterStatus;
   channelStatus(id: ChannelId): ChannelStatus;
   channelStatuses(): ReadonlyMap<ChannelId, ChannelStatus>;
   startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
@@ -101,58 +104,18 @@ export interface MonoAgentApp {
 }
 
 /**
- * Starts a config-first mono-agent host in `cwd`: operator console first (so
- * an incomplete config can be fixed in the browser), then traceability, then
- * every configured channel in parallel. Channels with incomplete config report
- * `waiting_for_config` instead of blocking the rest.
+ * Starts a config-first mono-agent host in `cwd`: traceability first, then every
+ * configured channel in parallel. Channels with incomplete config report
+ * `waiting_for_config` instead of blocking the rest. The host runs headless;
+ * config changes take effect on the next restart.
  */
 export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Promise<MonoAgentApp> {
   const cwd = resolve(options.cwd ?? process.cwd());
   const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
   const env = options.env ?? process.env;
   const drivers = options.drivers ?? defaultChannelDrivers();
-  const input: MonoAgentAppConfigInput = { env, cwd, configPath };
-  let controller: MonoAgentAppController | undefined;
 
-  let consoleServer: OperatorConsoleStartResult | undefined;
-  const consoleSettings = await resolveAppConsoleSettings(input);
-  const consolePort = options.operatorConsolePort ?? consoleSettings.port;
-  if (options.operatorConsole !== false && consoleSettings.enabled) {
-    const consoleFactory = options.operatorConsoleFactory ?? startOperatorConsole;
-    consoleServer = await consoleFactory({
-      configPath,
-      cwd,
-      fieldGroups: options.fieldGroups ?? MONO_AGENT_APP_FIELD_GROUPS,
-      observability: {
-        artifactDir: () => resolveAppArtifactDir(input),
-        maxRuns: 100,
-        maxEventsPerRun: 750,
-      },
-      traceability: {
-        registryDir: () => resolveAppTraceRegistryDir(input),
-        staleAfterMs: () => resolveAppTraceStaleAfterMs(input),
-        maxRuns: 100,
-        maxEventsPerRun: 750,
-      },
-      applyConfigWrite: async () => {
-        if (controller === undefined) {
-          return {
-            kind: "failed",
-            message: "Mono agent app lifecycle is not ready to apply config changes.",
-            transports: [],
-          };
-        }
-        return await controller.applyConfigChange("operator-console-write");
-      },
-      ...(consolePort === undefined ? {} : { port: consolePort }),
-      log: (event) => {
-        logOperatorConsoleEvent(options.logger, event);
-      },
-    });
-  }
-
-  controller = new MonoAgentAppController({
-    consoleServer,
+  const controller = new MonoAgentAppController({
     cwd,
     configPath,
     env,
@@ -163,6 +126,7 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
   });
 
   await controller.startTraceability("startup");
+  await controller.startExporters("startup");
   await Promise.all(drivers.map((driver) => controller?.startChannelIfConfigured(driver.id, "startup")));
   await controller.startMemoryRitualsIfConfigured("startup");
   await controller.refreshTraceSource("startup-complete");
@@ -170,7 +134,6 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
 }
 
 interface MonoAgentAppControllerInput {
-  readonly consoleServer: OperatorConsoleStartResult | undefined;
   readonly cwd: string;
   readonly configPath: string;
   readonly env: Record<string, string | undefined>;
@@ -181,9 +144,7 @@ interface MonoAgentAppControllerInput {
 }
 
 class MonoAgentAppController implements MonoAgentApp {
-  readonly operatorConsole: MonoAgentAppOperatorConsole | undefined;
   readonly configPath: string;
-  private readonly consoleServer: OperatorConsoleStartResult | undefined;
   private readonly cwd: string;
   private readonly env: Record<string, string | undefined>;
   private readonly drivers: readonly ChannelDriver[];
@@ -199,6 +160,12 @@ class MonoAgentAppController implements MonoAgentApp {
     kind: "disabled",
     reason: "Traceability has not started yet.",
   };
+  private exporterStatusValue: ExporterStatus = {
+    kind: "disabled",
+    reason: "No observability exporter configured.",
+  };
+  /** The exporter the responder threads into agent-host (first configured exporter). */
+  private resolvedExporter: ResolvedExporter | undefined;
   private traceSource: TraceSourceHandle | undefined;
   private memoryRituals: RunningRituals | undefined;
   // One shared memory store across all channel responders + the ritual scheduler, so there is a single
@@ -211,7 +178,6 @@ class MonoAgentAppController implements MonoAgentApp {
   private stopped = false;
 
   constructor(input: MonoAgentAppControllerInput) {
-    this.consoleServer = input.consoleServer;
     this.cwd = input.cwd;
     this.configPath = input.configPath;
     this.env = input.env;
@@ -226,18 +192,14 @@ class MonoAgentAppController implements MonoAgentApp {
         reason: `${driver.label} has not been configured yet.`,
       });
     }
-    this.operatorConsole = input.consoleServer === undefined
-      ? undefined
-      : {
-          url: input.consoleServer.url,
-          appUrl: `${input.consoleServer.url}/?t=${input.consoleServer.token}`,
-          token: input.consoleServer.token,
-          configPath: input.configPath,
-        };
   }
 
   get traceabilityStatus(): TraceabilityStatus {
     return this.traceabilityStatusValue;
+  }
+
+  get exporterStatus(): ExporterStatus {
+    return this.exporterStatusValue;
   }
 
   channelStatus(id: ChannelId): ChannelStatus {
@@ -268,6 +230,7 @@ class MonoAgentAppController implements MonoAgentApp {
       await this.resetSharedMemory();
       await this.stopTraceSource(`${reason}:reload`);
       await this.startTraceability(reason);
+      await this.startExporters(reason);
       await Promise.all(this.drivers.map((driver) => this.startChannelIfConfigured(driver.id, reason)));
       await this.startMemoryRitualsIfConfigured(reason);
       await this.refreshTraceSource(`${reason}:complete`);
@@ -288,11 +251,6 @@ class MonoAgentAppController implements MonoAgentApp {
       return this.channelStatus(id);
     }
     if (this.running.has(id)) {
-      if (reason === "operator-console-write") {
-        this.logger?.info?.(`${driver.label} is already running; restart the app to apply later config changes.`, {
-          status: "running",
-        });
-      }
       await this.refreshTraceSource(reason);
       return this.channelStatus(id);
     }
@@ -344,6 +302,66 @@ class MonoAgentAppController implements MonoAgentApp {
     return this.traceabilityStatusValue;
   }
 
+  /**
+   * Resolve the configured observability exporter(s) and publish the export
+   * status. No reachability probe runs here — Phoenix may start after the agent,
+   * so an unreachable endpoint must not block startup (that probe runs in
+   * `validate`). A present-but-invalid exporter config surfaces as `failed`.
+   */
+  async startExporters(reason: string): Promise<ExporterStatus> {
+    if (this.stopped) {
+      return this.exporterStatusValue;
+    }
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    let exporters: readonly ResolvedExporter[];
+    try {
+      exporters = await resolveAppObservabilityExporters(input);
+    } catch (error) {
+      this.resolvedExporter = undefined;
+      this.exporterStatusValue = { kind: "failed", reason: reasonOf(error) };
+      this.logger?.error?.("Observability exporter config is invalid.", { reason: reasonOf(error) });
+      return this.exporterStatusValue;
+    }
+
+    const exporter = exporters[0];
+    if (exporter === undefined) {
+      this.resolvedExporter = undefined;
+      this.exporterStatusValue = { kind: "disabled", reason: "No observability exporter configured." };
+      return this.exporterStatusValue;
+    }
+
+    this.resolvedExporter = exporter;
+    this.exporterStatusValue = {
+      kind: "configured",
+      endpoint: exporter.endpoint,
+      includeSensitiveData: exporter.includeSensitiveData ?? false,
+    };
+    this.logger?.info?.("Observability exporter configured.", {
+      reason,
+      endpoint: exporter.endpoint,
+      includeSensitiveData: exporter.includeSensitiveData ?? false,
+    });
+    return this.exporterStatusValue;
+  }
+
+  /** Record a best-effort export warning so `status` can surface it without failing the run. */
+  private recordExporterWarning(warning: { phase: string; message: string }): void {
+    const current = this.exporterStatusValue;
+    if (current.kind !== "configured") {
+      return;
+    }
+    const message = `${warning.phase}: ${warning.message}`;
+    // The "fail" phase fires only when export fails on the run-failure path;
+    // surface it as lastError so operators can tell it apart from a transient
+    // best-effort warning. The run outcome is unchanged either way.
+    this.exporterStatusValue =
+      warning.phase === "fail" ? { ...current, lastError: message } : { ...current, lastWarning: message };
+    this.logger?.warn?.("Observability export warning.", { phase: warning.phase, message: warning.message });
+    // Persist to the trace-source manifest so the detached `mono-agent status`
+    // (which reads the manifest, not this live object) can surface it too.
+    void this.refreshTraceSource("exporter-warning").catch(() => undefined);
+  }
+
   async refreshTraceSource(reason: string): Promise<void> {
     if (this.traceSource === undefined) {
       return;
@@ -369,7 +387,6 @@ class MonoAgentAppController implements MonoAgentApp {
     this.stopMemoryRituals();
     await this.resetSharedMemory();
     await this.stopTraceSource("stop");
-    await this.consoleServer?.stop();
     for (const runtime of this.activeRuntimes.splice(0)) {
       await runtime.disposeAllSessions?.().catch(() => undefined);
     }
@@ -566,17 +583,42 @@ class MonoAgentAppController implements MonoAgentApp {
     const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([selfCapabilities, memoryRecall, adapterSendTools]);
+    const observabilityContext = await this.observabilityContext();
     const responder = createConfiguredAgentResponder({
       config: coreConfig,
       runtime,
       ...(memory !== undefined && { memory }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
+      // Thread run-identifying context onto exported spans and surface per-run
+      // export warnings to `exporterStatus` (agent-host only builds the exporter
+      // when config.observability.exporters is non-empty).
+      observabilityContext,
+      exporterWarn: (warning) => this.recordExporterWarning(warning),
     });
     // Only self-capabilities can request an app reload, so wrapping is gated on it (not on the
     // composed options, which may carry only the read-only memory_recall server).
     return selfCapabilities === undefined
       ? responder
       : this.wrapResponderForSelfCapabilitiesReload(responder);
+  }
+
+  /**
+   * Run-identifying context threaded onto exported spans (Phoenix shows the same
+   * source/run identifiers as the local trace-source registry, so local artifact
+   * lookup stays possible). Resolved with the same source-id/label resolvers the
+   * trace source uses.
+   */
+  private async observabilityContext(): Promise<{
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly configPath?: string;
+  }> {
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const [sourceId, sourceLabel] = await Promise.all([
+      resolveAppTraceSourceId(input, this.traceDefaults),
+      resolveAppTraceSourceLabel(input, this.traceDefaults),
+    ]);
+    return { sourceId, sourceLabel, configPath: this.configPath };
   }
 
   private async selfCapabilitiesRuntimeOptions(coreConfig: MonoAgentConfig): Promise<RuntimeOptionsExtension | undefined> {
@@ -757,9 +799,6 @@ class MonoAgentAppController implements MonoAgentApp {
 
   private activeTransports(): readonly string[] {
     const transports: string[] = [];
-    if (this.consoleServer !== undefined) {
-      transports.push("operator-console");
-    }
     for (const driver of this.drivers) {
       if (this.statuses.get(driver.id)?.kind === "running") {
         transports.push(driver.id);
@@ -781,28 +820,27 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     return {
       reason,
-      ...(this.operatorConsole === undefined
-        ? {}
-        : {
-            operatorConsole: {
-              // Only the base loopback URL is persisted — never the per-boot
-              // access token. A detached `status`/`start` reader surfaces this
-              // URL and points at the logs for the tokenized link.
-              url: this.operatorConsole.url,
-              configPath: this.operatorConsole.configPath,
+      ...(this.exporterStatusValue.kind === "configured"
+        ? {
+            observability: {
+              // Persist only the endpoint + warning/error strings (never headers
+              // or secrets) so the detached `status` reader can surface exporter
+              // state. JSONL artifacts always remain local.
+              endpoint: this.exporterStatusValue.endpoint,
+              includeSensitiveData: this.exporterStatusValue.includeSensitiveData,
+              jsonlArtifactsLocal: true,
+              ...(this.exporterStatusValue.lastWarning === undefined
+                ? {}
+                : { lastWarning: this.exporterStatusValue.lastWarning }),
+              ...(this.exporterStatusValue.lastError === undefined
+                ? {}
+                : { lastError: this.exporterStatusValue.lastError }),
             },
-          }),
+          }
+        : {}),
       channels,
     };
   }
-}
-
-function logOperatorConsoleEvent(logger: MonoAgentAppLogger | undefined, event: OperatorConsoleEvent): void {
-  if (event.kind === "validation_failed" || event.kind === "unauthorized") {
-    logger?.warn?.("Operator Console event.", { event });
-    return;
-  }
-  logger?.debug?.("Operator Console event.", { event });
 }
 
 function reasonOf(error: unknown): string {

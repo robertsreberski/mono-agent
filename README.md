@@ -20,7 +20,7 @@ mono-agent validate
 mono-agent start
 ```
 
-`init` scaffolds `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, guarded self-capability authoring, and observability. `validate` reports every section before anything starts; `start` runs the operator console, traceability, and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status.
+`init` scaffolds `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, guarded self-capability authoring, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status.
 
 ## Skill-Based Composition Guide
 
@@ -29,7 +29,7 @@ The repo includes a composer skill that walks an agent (in mono-agent itself, Cl
 - Skill: [`packages/agent-app/skills/mono-agent-composer/SKILL.md`](./packages/agent-app/skills/mono-agent-composer/SKILL.md)
 - References: [`packages/agent-app/skills/mono-agent-composer/references/`](./packages/agent-app/skills/mono-agent-composer/references/)
 
-The skill asks discovery questions (runtime + backup models, channels incl. crons and webhooks, skills, MCP, memory strategy incl. semantic search, sandbox, operator console, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. [`docs/feature-registry.md`](./docs/feature-registry.md) is the source of truth mapping every framework feature to its config/CLI/programmatic surface; the skill ships a condensed copy as `references/feature-coverage.md`. The skill ships with `@mono-agent/agent-app`; install it into Claude Code and Codex with:
+The skill asks discovery questions (runtime + backup models, channels incl. crons and webhooks, skills, MCP, memory strategy incl. semantic search, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. [`docs/feature-registry.md`](./docs/feature-registry.md) is the source of truth mapping every framework feature to its config/CLI/programmatic surface; the skill ships a condensed copy as `references/feature-coverage.md`. The skill ships with `@mono-agent/agent-app`; install it into Claude Code and Codex with:
 
 ```bash
 mono-agent install-skill   # copies into ~/.claude/skills and ~/.codex/skills
@@ -52,8 +52,8 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 | `observability` | `@mono-agent/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
 | `evaluation` | `@mono-agent/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
-| `operator-surface` | `@mono-agent/operator-console`, `@mono-agent/tui` | `core`, `observability` | Local browser and terminal operator surfaces. The browser console can aggregate registered source runs, but does not own runtime hosting or communication transport. |
-| `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus operator console and traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
+| `operator-surface` | `@mono-agent/tui` | `core`, `observability` | Local terminal operator surface. Reads registered source runs but does not own runtime hosting or communication transport. |
+| `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
 | `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
 
 ## Dependency Direction
@@ -61,7 +61,6 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 ```text
 demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ agent-app ── all of the below; config-first host + mono-agent CLI
-  ├─ operator-console ── settings, observability
   ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
   ├─ cron-adapter ── agent-contracts, settings, cron-parser
   ├─ openai-api-adapter ── agent-contracts, settings, express
@@ -95,9 +94,9 @@ Rules for future packages:
 
 ## Final Demo
 
-The final demo lives at `demos/final-agent/`. It starts the local operator console first, then starts Telegram, A2A, webhook, OpenAI API, and/or cron independently when their own adapter config plus core runtime config are valid. Config saves through the operator console are applied in-process: the demo stops and rebuilds Telegram, A2A, webhook, OpenAI API, cron, and traceability with the freshly saved settings while keeping the operator console URL, token, and port stable.
+The final demo lives at `demos/final-agent/`. It starts Telegram, A2A, webhook, OpenAI API, and/or cron independently when their own adapter config plus core runtime config are valid. Config edits are made directly in `mono-agent.config.json` and take effect on the next restart.
 
-The preferred local deployment path generates an ignored config under `.mono-agent/deploy/`, verifies Ollama has Gemma 4 installed, then starts the operator console, traceability source, and loopback A2A provider:
+The preferred local deployment path generates an ignored config under `.mono-agent/deploy/`, verifies Ollama has Gemma 4 installed, then starts the traceability source and loopback A2A provider:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -112,7 +111,7 @@ ollama pull gemma4:31b
 curl http://localhost:11434/api/tags
 ```
 
-The operator console Traceability view should show source `final-agent-gemma4`. After a loopback A2A request to the printed Agent Card URL, the same view should show the recorded run from that source.
+The trace-source registry should show source `final-agent-gemma4` (visible via `mono-agent status` or a configured Phoenix exporter). After a loopback A2A request to the printed Agent Card URL, the recorded run from that source appears in the local JSONL artifacts (and Phoenix, if configured).
 
 The generic manual demo command remains available when you want to provide your own config:
 
@@ -132,9 +131,11 @@ const app = await startMonoAgentApp({ cwd, configPath });
 
 ### Host Traceability
 
-The workspace now has a local host traceability path. Each running host registers an `agent-runtime.trace-source.v1` manifest in a registry directory such as `~/.mono-agent/trace-sources`; each manifest points at that source's artifact directory, where run summaries and event JSONL files remain. The operator console Traceability view reads the registry, marks stale sources when their heartbeat ages out, aggregates recent runs across sources, and loads details by `(sourceId, runId)` so duplicate run ids do not collide.
+The workspace now has a local host traceability path. Each running host registers an `agent-runtime.trace-source.v1` manifest in a registry directory such as `~/.mono-agent/trace-sources`; each manifest points at that source's artifact directory, where run summaries and event JSONL files remain. `mono-agent status` reads the registry, marks stale sources when their heartbeat ages out, and aggregates recent runs across sources by `(sourceId, runId)` so duplicate run ids do not collide.
 
-This is local-first and bearer-protected through the loopback console. It is not a LangSmith dependency, database, or cloud collector. LangSmith/OpenTelemetry export remains a later sink option.
+This is local-first. It is not a LangSmith dependency, database, or cloud collector.
+
+Phoenix is the recommended trace viewer for local development. When an `observability.exporters` entry (currently the `phoenix` preset) is configured, the host additively exports each run lifecycle to Phoenix's OTLP HTTP traces endpoint as binary protobuf (`application/x-protobuf`) via `@mono-agent/observability-otel`. Spans use OpenInference semantics (AGENT/LLM/TOOL/CHAIN kinds with input/output) and land in a named project (`projectName`, defaulting to the trace source label/id). Export is best-effort and bounded by a timeout — it never changes the run outcome and never suppresses JSONL writes. Raw prompts, reasoning, and tool I/O are metadata-only by default (`includeSensitiveData: false`). The local JSONL artifacts remain the local fallback and source of truth. `mono-agent start`, `mono-agent status`, and `mono-agent validate` report the configured exporter endpoint (validate POSTs an empty protobuf to confirm Phoenix will accept exports, not just that the port is open). Use `mono-agent backfill --all` to retroactively export already-recorded runs with their historical timestamps; deterministic per-run ids make re-exports idempotent.
 
 See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
 
@@ -214,7 +215,7 @@ pnpm --filter @mono-agent/<package> run test
 
 - No secrets, `.env*`, OAuth files, provider keys, OpenAI API adapter keys, Telegram tokens, WhatsApp auth state, or transcripts are committed.
 - Settings JSON is local, schema-validated, and written with restrictive file permissions where the settings helper writes it.
-- Secret fields are write-only in the operator console and redacted in diagnostics.
+- Secret fields are redacted in diagnostics and status output.
 - Tool policy is explicit and fail-closed.
 - Sandbox policy is explicit, fail-closed by default, and routes runtime-owned process execution through a native sandbox engine when configured.
 - Memory writes are host-owned and optional.
@@ -236,7 +237,6 @@ flowchart TB
   Host["Host composition layer\n`demos/final-agent`"]
 
   subgraph Surfaces["Operator-surface choices"]
-    Console["`@mono-agent/operator-console`\nBrowser settings + runs"]
     Tui["`@mono-agent/tui`\nTerminal chat + read-only config"]
   end
 
@@ -282,7 +282,6 @@ flowchart TB
     PiSdk["Pi SDK providers\n`pi:<provider>:<model>` + `sdk`"]
   end
 
-  Host --> Console
   Host -. optional .-> Tui
   Host --> Telegram
   Host --> A2A
@@ -295,8 +294,6 @@ flowchart TB
   Host --> Config
   Host --> AgentHost
 
-  Console --> Settings
-  Console --> Observability
   Tui --> Contracts
   Tui --> Config
   Telegram --> Contracts

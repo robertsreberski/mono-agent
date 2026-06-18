@@ -680,7 +680,6 @@ describe("self capability authoring", () => {
       cwd: dir,
       configPath,
       env: {},
-      operatorConsole: false,
       drivers: [driver],
       runtime: fake.runtime,
     });
@@ -722,7 +721,6 @@ describe("self capability authoring", () => {
         cwd: dir,
         configPath,
         env: {},
-        operatorConsole: false,
         drivers: [driver],
         runtime: fake.runtime,
       });
@@ -757,7 +755,6 @@ describe("self capability authoring", () => {
       cwd: dir,
       configPath,
       env: {},
-      operatorConsole: false,
       drivers: [driver],
       runtime: fake.runtime,
     });

@@ -217,6 +217,9 @@ export function layerJsonOntoEnv(
   if (json.traceability?.staleAfterMs !== undefined) {
     fromJson.MONO_AGENT_TRACE_STALE_AFTER_MS = String(json.traceability.staleAfterMs);
   }
+  if (json.observability?.exporters !== undefined && !hasObservabilityEnv(env)) {
+    fromJson.MONO_AGENT_OBSERVABILITY_EXPORTERS = JSON.stringify(json.observability.exporters);
+  }
   if (json.providers?.piAuthPath !== undefined) {
     fromJson.MONO_AGENT_PI_AUTH_PATH = json.providers.piAuthPath;
   }
@@ -251,6 +254,11 @@ export function layerJsonOntoEnv(
 
 function csv(values: readonly string[]): string {
   return values.join(",");
+}
+
+function hasObservabilityEnv(env: Record<string, string | undefined>): boolean {
+  const value = env.MONO_AGENT_OBSERVABILITY_EXPORTERS;
+  return value !== undefined && value.trim().length > 0;
 }
 
 function hasLocalProviderEnv(env: Record<string, string | undefined>): boolean {

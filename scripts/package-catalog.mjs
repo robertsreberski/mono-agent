@@ -23,7 +23,7 @@ export const packageCatalog = [
     dir: "agent-app",
     name: "@mono-agent/agent-app",
     category: "app",
-    responsibility: "Runs a config-first agent host: loads mono-agent.config.json, builds the responder, and starts every configured channel, operator console, and traceability.",
+    responsibility: "Runs a config-first agent host: loads mono-agent.config.json, builds the responder, and starts every configured channel and traceability.",
     allowedDependencyCategories: [
       "core",
       "context",
@@ -140,19 +140,19 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "observability-otel",
+    name: "@mono-agent/observability-otel",
+    category: "observability",
+    responsibility: "OTLP HTTP protobuf trace exporter (Phoenix preset) that maps mono-agent run lifecycles to OTLP spans.",
+    allowedDependencyCategories: ["core", "observability"],
+    publishable: true,
+  },
+  {
     dir: "openai-api-adapter",
     name: "@mono-agent/openai-api-adapter",
     category: "communication",
     responsibility: "Exposes agent responders through OpenAI-compatible model discovery and Chat Completions endpoints.",
     allowedDependencyCategories: ["core"],
-    publishable: true,
-  },
-  {
-    dir: "operator-console",
-    name: "@mono-agent/operator-console",
-    category: "operator-surface",
-    responsibility: "Serves the local browser settings and traceability operator surface.",
-    allowedDependencyCategories: ["core", "observability"],
     publishable: true,
   },
   {

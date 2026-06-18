@@ -1,9 +1,12 @@
 import { join, resolve } from "node:path";
 
 import { DEFAULT_MAX_STRING_BYTES, mkdir, safeArtifactName, writeJsonAtomic } from "./artifact-fs.js";
+import { errorFailureKind, errorToJson, redactJsonValue } from "./redaction.js";
 import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
 
-const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|api[_-]?key|cookie)/iu;
+// `redactJsonValue` is re-exported so existing importers (recorder.test.ts
+// imports it via "../recorder.js") keep their import surface unchanged.
+export { redactJsonValue };
 
 export type ObservabilityErrorCode = "invalid_recorder_options" | "artifact_write_failed";
 export type ObservabilityErrorDetails = Record<string, unknown> & { readonly code: ObservabilityErrorCode };
@@ -29,6 +32,7 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly startedAt: number;
   private readonly startedAtIso: string;
   private readonly events: RuntimeEventLike[] = [];
+  private readonly userInput: string | undefined;
 
   constructor(options: JsonlRunRecorderOptions) {
     this.runId = normalizeId(options.runId, "runId");
@@ -42,6 +46,10 @@ class JsonlRunRecorder implements RunRecorder {
     this.artifactDir = resolve(options.artifactDir);
     this.clock = options.clock ?? (() => Date.now());
     this.maxStringBytes = options.maxStringBytes ?? DEFAULT_MAX_STRING_BYTES;
+    this.userInput =
+      typeof options.userInput === "string"
+        ? (redactJsonValue(options.userInput, this.maxStringBytes) as string)
+        : undefined;
     this.startedAt = this.clock();
     this.startedAtIso = new Date(this.startedAt).toISOString();
   }
@@ -87,6 +95,7 @@ class JsonlRunRecorder implements RunRecorder {
       ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
       eventCount: this.events.length,
       artifactPaths: this.artifactPaths(),
+      ...(this.userInput === undefined ? {} : { userInput: this.userInput }),
       ...(result.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(result.runtimeWarnings, this.maxStringBytes) }),
       ...(result.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(result.diagnostics, this.maxStringBytes) }),
       ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(result.capabilitiesUsed, this.maxStringBytes) }),
@@ -122,54 +131,6 @@ export function createJsonlRunRecorder(options: JsonlRunRecorderOptions): RunRec
   return new JsonlRunRecorder(options);
 }
 
-export function redactJsonValue(value: unknown, maxStringBytes = DEFAULT_MAX_STRING_BYTES): unknown {
-  return redact(value, maxStringBytes, 0, undefined, new WeakSet<object>());
-}
-
-function redact(value: unknown, maxStringBytes: number, depth: number, key: string | undefined, seen: WeakSet<object>): unknown {
-  if (key !== undefined && SENSITIVE_KEY_PATTERN.test(key)) {
-    return "[redacted]";
-  }
-  if (value === null || typeof value === "boolean" || typeof value === "number") {
-    return value;
-  }
-  if (typeof value === "string") {
-    return truncateString(value, maxStringBytes);
-  }
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol") {
-    return String(value);
-  }
-  if (value instanceof Error) {
-    return errorToJson(value);
-  }
-  if (depth >= 12) {
-    return "[max-depth]";
-  }
-  if (seen.has(value)) {
-    return "[circular]";
-  }
-  seen.add(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => redact(item, maxStringBytes, depth + 1, undefined, seen));
-  }
-  const out: Record<string, unknown> = {};
-  for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
-    out[entryKey] = redact(entryValue, maxStringBytes, depth + 1, entryKey, seen);
-  }
-  return out;
-}
-
-function truncateString(value: string, maxStringBytes: number): string {
-  const bytes = Buffer.byteLength(value, "utf8");
-  if (bytes <= maxStringBytes) {
-    return value;
-  }
-  return `${value.slice(0, maxStringBytes)}…[truncated ${bytes - maxStringBytes} bytes]`;
-}
-
 function normalizeId(value: string, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new ObservabilityError("invalid_recorder_options", `${field} must be a non-empty string.`, { field });
@@ -185,27 +146,4 @@ function runtimeFailureKind(result: RuntimeResultLike): string | undefined {
     return "runtime_error";
   }
   return undefined;
-}
-
-function errorFailureKind(error: unknown): string {
-  if (typeof error === "object" && error !== null && "failureKind" in error) {
-    const failureKind = (error as { readonly failureKind?: unknown }).failureKind;
-    if (typeof failureKind === "string" && failureKind.trim().length > 0) {
-      return failureKind;
-    }
-  }
-  if (error instanceof Error && error.name.length > 0) {
-    return error.name;
-  }
-  return "exception";
-}
-
-function errorToJson(error: unknown): Record<string, unknown> {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-    };
-  }
-  return { message: String(error) };
 }

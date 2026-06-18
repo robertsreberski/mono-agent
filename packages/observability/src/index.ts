@@ -7,8 +7,29 @@ export type {
   ObservabilityErrorDetails,
 } from "./recorder.js";
 export {
+  createCompositeRunRecorder,
+} from "./composite-recorder.js";
+export type {
+  CompositeRunRecorderOptions,
+  SetTimer,
+} from "./composite-recorder.js";
+export {
   combineRecordedRunEvents,
 } from "./event-timeline.js";
+export {
+  buildEventSpanAttributes,
+  buildRootSpanAttributes,
+  countRuntimeWarnings,
+  spanKindHint,
+  spanStatusFor,
+} from "./run-export-mapping.js";
+export type {
+  EventSpanMapping,
+  SpanAttributeValue,
+  SpanAttributes,
+  SpanKindHint,
+  SpanStatusHint,
+} from "./run-export-mapping.js";
 export {
   listRecordedRuns,
   ObservabilityReadError,
@@ -32,6 +53,11 @@ export type {
 export type {
   JsonlRunReaderOptions,
   JsonlRunRecorderOptions,
+  ObservabilityExporterConfig,
+  PhoenixExporterConfig,
+  RunExportContext,
+  RunExportEventContext,
+  RunExporter,
   RecordedRunDetail,
   RecordedRunEvent,
   RecordedRunEventCategory,

@@ -6,9 +6,9 @@ import { parseCliArgs } from "../cli-args.js";
 
 describe("final demo CLI args", () => {
   it("accepts pnpm's standalone -- separator before demo options", () => {
-    expect(parseCliArgs(["--", "--port", "5203"], "/repo")).toEqual({
+    expect(parseCliArgs(["--", "--config", "./mono-agent.config.json"], "/repo")).toEqual({
       help: false,
-      port: 5203,
+      configPath: resolve("/repo", "./mono-agent.config.json"),
     });
   });
 

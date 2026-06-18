@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { listTraceSources } from "@mono-agent/observability";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type {
   TelegramAdapterErrorText,
@@ -40,13 +41,6 @@ function baseConfig(): Record<string, unknown> {
   };
 }
 
-const fakeConsoleFactory = vi.fn(async () => ({
-  url: "http://127.0.0.1:7777",
-  token: "test-token",
-  stop: vi.fn(async () => undefined),
-}));
-
-
 describe("startMonoAgentApp", () => {
   it("starts configured channels, reports waiting/disabled for the rest, and stops cleanly", async () => {
     await writeConfig({
@@ -63,11 +57,9 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsoleFactory: fakeConsoleFactory,
       drivers: defaultChannelDrivers({ webhook: { adapterFactory: webhookFactory as never } }),
     });
 
-    expect(app.operatorConsole?.appUrl).toBe("http://127.0.0.1:7777/?t=test-token");
     expect(app.channelStatus("webhook")).toEqual({
       kind: "running",
       summary: { invokeUrl: "http://127.0.0.1:9999/webhook/invoke" },
@@ -85,6 +77,101 @@ describe("startMonoAgentApp", () => {
     expect(webhookStop).toHaveBeenCalledTimes(1);
   });
 
+  it("reports a configured exporter status when observability.exporters is set", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      observability: {
+        exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false }],
+      },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+    });
+
+    expect(app.exporterStatus.kind).toBe("configured");
+    if (app.exporterStatus.kind === "configured") {
+      expect(app.exporterStatus.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
+      expect(app.exporterStatus.includeSensitiveData).toBe(false);
+    }
+    await app.stop();
+  });
+
+  it("routes export warnings to lastWarning/lastError and persists them to the trace-source manifest", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+    });
+
+    const seam = app as unknown as {
+      recordExporterWarning(w: { phase: string; message: string }): void;
+      refreshTraceSource(reason: string): Promise<void>;
+    };
+    // Spy that calls through: lets us assert the auto-trigger AND deterministically
+    // await the otherwise fire-and-forget manifest writes (no polling, no races).
+    const refreshSpy = vi.spyOn(seam, "refreshTraceSource");
+    const flush = async (): Promise<void> => {
+      await Promise.all(refreshSpy.mock.results.map((r) => Promise.resolve(r.value).catch(() => undefined)));
+    };
+
+    // Serialize the two warnings so the stale snapshot of the first write cannot
+    // land after the second; in production at most one warning fires per run.
+    seam.recordExporterWarning({ phase: "finish", message: "export boom" });
+    await flush();
+    seam.recordExporterWarning({ phase: "fail", message: "fail boom" });
+    await flush();
+
+    // recordExporterWarning must route by phase and persist via refreshTraceSource.
+    expect(refreshSpy).toHaveBeenCalledWith("exporter-warning");
+    expect(app.exporterStatus.kind).toBe("configured");
+    if (app.exporterStatus.kind === "configured") {
+      expect(app.exporterStatus.lastWarning).toContain("export boom");
+      expect(app.exporterStatus.lastError).toContain("fail boom");
+    }
+
+    // The detached `mono-agent status` reads the manifest, not this live object,
+    // so the warning/error must reach the persisted trace-source metadata.
+    const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+    const meta = sources[0]?.metadata?.observability as { lastWarning?: string; lastError?: string } | undefined;
+    expect(meta?.lastWarning).toContain("export boom");
+    expect(meta?.lastError).toContain("fail boom");
+
+    await app.stop();
+  });
+
+  it("reports a disabled exporter status when no exporter is configured", async () => {
+    await writeConfig({ ...baseConfig() });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+    });
+
+    expect(app.exporterStatus.kind).toBe("disabled");
+    await app.stop();
+  });
+
+  it("reports a failed exporter status for an invalid exporter config", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      observability: { exporters: [{ type: "not-a-thing" }] },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+    });
+
+    expect(app.exporterStatus.kind).toBe("failed");
+    await app.stop();
+  });
+
   it("reports waiting_for_config for every channel when the core config is incomplete", async () => {
     await writeConfig({
       // No runtime.model: core config cannot load.
@@ -95,7 +182,6 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsoleFactory: fakeConsoleFactory,
     });
 
     const webhookStatus = app.channelStatus("webhook");
@@ -124,7 +210,6 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsoleFactory: fakeConsoleFactory,
       drivers: defaultChannelDrivers({
         webhook: { adapterFactory: webhookFactory as never },
         openaiApi: { adapterFactory: openAIApiFactory as never },
@@ -158,7 +243,6 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsoleFactory: fakeConsoleFactory,
       drivers: defaultChannelDrivers({ webhook: { adapterFactory: webhookFactory as never } }),
     });
     expect(starts).toBe(1);
@@ -199,7 +283,6 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsoleFactory: fakeConsoleFactory,
       drivers: finalDrivers,
     });
     expect(app.channelStatus("webhook").kind).toBe("running");
@@ -236,7 +319,6 @@ describe("startMonoAgentApp", () => {
     const appPromise = startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsoleFactory: fakeConsoleFactory,
       drivers: defaultChannelDrivers({ webhook: { adapterFactory: webhookFactory as never } }),
     });
 
@@ -252,86 +334,6 @@ describe("startMonoAgentApp", () => {
     expect(first.kind).toBe("running");
     expect(second.kind).toBe("running");
     expect(webhookFactory).toHaveBeenCalledTimes(1);
-    await app.stop();
-  });
-
-  it("disables the operator console from the config console section", async () => {
-    await writeConfig({ ...baseConfig(), console: { enabled: false } });
-    const consoleFactory = vi.fn(async () => ({
-      url: "http://127.0.0.1:7777",
-      token: "test-token",
-      stop: vi.fn(async () => undefined),
-    }));
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-      operatorConsoleFactory: consoleFactory,
-    });
-
-    expect(app.operatorConsole).toBeUndefined();
-    expect(consoleFactory).not.toHaveBeenCalled();
-    await app.stop();
-  });
-
-  it("uses the configured console port unless the host passes an explicit port", async () => {
-    await writeConfig({ ...baseConfig(), console: { port: 4321 } });
-    const consoleFactory = vi.fn(async () => ({
-      url: "http://127.0.0.1:7777",
-      token: "test-token",
-      stop: vi.fn(async () => undefined),
-    }));
-
-    const fromConfig = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-      operatorConsoleFactory: consoleFactory,
-    });
-    expect(consoleFactory).toHaveBeenLastCalledWith(expect.objectContaining({ port: 4321 }));
-    await fromConfig.stop();
-
-    const overridden = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-      operatorConsolePort: 9999,
-      operatorConsoleFactory: consoleFactory,
-    });
-    expect(consoleFactory).toHaveBeenLastCalledWith(expect.objectContaining({ port: 9999 }));
-    await overridden.stop();
-  });
-
-  it("lets env override the console config section", async () => {
-    await writeConfig({ ...baseConfig(), console: { enabled: true, port: 4321 } });
-    const consoleFactory = vi.fn(async () => ({
-      url: "http://127.0.0.1:7777",
-      token: "test-token",
-      stop: vi.fn(async () => undefined),
-    }));
-
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: { MONO_AGENT_CONSOLE_ENABLED: "false" },
-      operatorConsoleFactory: consoleFactory,
-    });
-
-    expect(app.operatorConsole).toBeUndefined();
-    expect(consoleFactory).not.toHaveBeenCalled();
-    await app.stop();
-  });
-
-  it("runs headless when the operator console is disabled", async () => {
-    await writeConfig(baseConfig());
-
-    const consoleFactory = vi.fn(fakeConsoleFactory);
-    const app = await startMonoAgentApp({
-      cwd: dir,
-      env: {},
-      operatorConsole: false,
-      operatorConsoleFactory: consoleFactory,
-    });
-
-    expect(app.operatorConsole).toBeUndefined();
-    expect(consoleFactory).not.toHaveBeenCalled();
     await app.stop();
   });
 
@@ -427,7 +429,6 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsoleFactory: fakeConsoleFactory,
       drivers: finalDrivers,
     });
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -457,8 +458,6 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsole: false,
-      operatorConsoleFactory: fakeConsoleFactory,
       logger,
     });
 
@@ -485,8 +484,6 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsole: false,
-      operatorConsoleFactory: fakeConsoleFactory,
       logger,
     });
 
@@ -508,8 +505,6 @@ describe("startMonoAgentApp", () => {
     const app = await startMonoAgentApp({
       cwd: dir,
       env: {},
-      operatorConsole: false,
-      operatorConsoleFactory: fakeConsoleFactory,
     });
 
     // Inject a fake store via the test-only seam.

@@ -1,5 +1,5 @@
-import { isRecord } from "./artifact-fs.js";
 import { classifyAssistantContent, compactString } from "./content.js";
+import { isRecord } from "./guards.js";
 import type { AssistantContentWalk } from "./content.js";
 import type {
   RecordedRunEvent,
