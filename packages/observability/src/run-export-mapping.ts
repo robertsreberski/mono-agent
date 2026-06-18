@@ -1,5 +1,6 @@
+import { compactString } from "./content.js";
 import { buildEventDescriptors } from "./event-classify.js";
-import { DEFAULT_MAX_STRING_BYTES } from "./guards.js";
+import { DEFAULT_MAX_STRING_BYTES, isRecord, stringField } from "./guards.js";
 import { redactJsonValue } from "./redaction.js";
 import type {
   RecordedRunEventCategory,
@@ -112,6 +113,254 @@ export function buildEventSpanAttributes(
     // Metadata-only by default: omit the raw payload entirely. When sensitive
     // export is opted in, STILL redact before attaching (spec section 7).
     ...(ctx.includeSensitiveData ? { payload: redactJsonValue(event, maxStringBytes) } : {}),
+  };
+}
+
+const EXPORT_CONTENT_MAX_CHARS = 4_000;
+const MIME_TEXT = "text/plain";
+const MIME_JSON = "application/json";
+
+/** OpenInference span kind for Phoenix rendering (LLM/TOOL/CHAIN) from a category. */
+function openInferenceKind(category: RecordedRunEventCategory): string {
+  switch (spanKindHint(category)) {
+    case "TOOL":
+      return "TOOL";
+    case "LLM":
+      return "LLM";
+    case "INTERNAL":
+      return "CHAIN";
+  }
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+/** Serialize tool args/results to a bounded, redacted display string. */
+function toContentString(value: unknown, maxStringBytes: number): string {
+  const raw = typeof value === "string" ? value : JSON.stringify(redactJsonValue(value, maxStringBytes));
+  return compactString(raw ?? "", EXPORT_CONTENT_MAX_CHARS);
+}
+
+function blockText(block: Record<string, unknown>): string {
+  return asString(block.text) ?? asString(block.thinking) ?? asString(block.content) ?? "";
+}
+
+interface SpanDraft {
+  readonly orderIndex: number;
+  readonly mapping: EventSpanMapping;
+}
+
+interface ToolDraft {
+  orderIndex: number;
+  name: string;
+  input: unknown;
+  output?: unknown;
+  executionMs?: number;
+  isError?: boolean;
+  toolUseId: string;
+}
+
+/**
+ * Build child-span mappings for a run as a SEMANTIC timeline rather than one span
+ * per raw event. Three things make the trace render nicely in Phoenix:
+ *  - Streaming assistant deltas of the same kind are coalesced into one
+ *    "Assistant thoughts" / "Assistant message" span carrying the full text.
+ *  - A tool invocation's four raw events (assistant `tool_use`, `tool_timing`,
+ *    and the `user` `tool_result`) are merged by `tool_use_id` into ONE TOOL
+ *    span whose input is the tool args and output is the tool result.
+ *  - Everything else (provider lifecycle, errors) passes through as a single
+ *    CHAIN span via the shared classifier.
+ * Each span carries OpenInference attributes (`openinference.span.kind`,
+ * `input.value`/`output.value`) so Phoenix shows LLM/Tool/Chain blocks with real
+ * content. Content is gated behind `includeSensitiveData`; structural labels are
+ * always present. Output order follows each unit's first contributing event.
+ */
+export function buildEventSpans(
+  events: readonly RuntimeEventLike[],
+  ctx: RunExportContext,
+  maxStringBytes: number = DEFAULT_MAX_STRING_BYTES,
+): readonly EventSpanMapping[] {
+  const drafts: SpanDraft[] = [];
+  const tools = new Map<string, ToolDraft>();
+  let buffer: { kind: "thinking" | "text"; orderIndex: number; texts: string[] } | undefined;
+
+  const flushBuffer = (): void => {
+    if (buffer === undefined) {
+      return;
+    }
+    const isThinking = buffer.kind === "thinking";
+    const category: RecordedRunEventCategory = isThinking ? "thinking" : "message";
+    const label = isThinking ? "Assistant thoughts" : "Assistant message";
+    const text = compactString(buffer.texts.join(""), EXPORT_CONTENT_MAX_CHARS);
+    const sourceCount = buffer.texts.length;
+    drafts.push({
+      orderIndex: buffer.orderIndex,
+      mapping: {
+        name: label,
+        category,
+        attributes: {
+          ...baseAttrs(ctx, buffer.orderIndex, isThinking ? "thinking" : "message", category, label),
+          ...(sourceCount > 1 ? { "mono.agent.event.source_count": sourceCount } : {}),
+          ...openInferenceAttrs(category, label, ctx.includeSensitiveData ? text : label, MIME_TEXT),
+          ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": text } : {}),
+        },
+      },
+    });
+    buffer = undefined;
+  };
+
+  const appendChunk = (kind: "thinking" | "text", orderIndex: number, text: string): void => {
+    if (buffer !== undefined && buffer.kind !== kind) {
+      flushBuffer();
+    }
+    if (buffer === undefined) {
+      buffer = { kind, orderIndex, texts: [] };
+    }
+    buffer.texts.push(text);
+  };
+
+  const emitTool = (tool: ToolDraft): void => {
+    const label = `Tool: ${tool.name}`;
+    const inputValue = ctx.includeSensitiveData ? toContentString(tool.input, maxStringBytes) : label;
+    const outputValue = ctx.includeSensitiveData
+      ? toContentString(tool.output, maxStringBytes)
+      : tool.isError === true
+        ? "error"
+        : "ok";
+    drafts.push({
+      orderIndex: tool.orderIndex,
+      mapping: {
+        name: label,
+        category: "tool",
+        attributes: {
+          ...baseAttrs(ctx, tool.orderIndex, "tool", "tool", label),
+          "mono.agent.tool.name": tool.name,
+          "mono.agent.tool.use_id": tool.toolUseId,
+          ...(tool.executionMs === undefined ? {} : { "mono.agent.tool.execution_ms": tool.executionMs }),
+          ...(tool.isError === undefined ? {} : { "mono.agent.tool.is_error": tool.isError }),
+          "tool.name": tool.name,
+          ...openInferenceAttrs("tool", inputValue, outputValue, ctx.includeSensitiveData ? MIME_JSON : MIME_TEXT),
+        },
+      },
+    });
+  };
+
+  events.forEach((event, index) => {
+    const type = typeof event.type === "string" ? event.type : "";
+
+    if (type === "tool_timing") {
+      const id = stringField(event, "tool_use_id");
+      const tool = id === undefined ? undefined : tools.get(id);
+      if (tool !== undefined) {
+        const ms = event.execution_ms;
+        if (typeof ms === "number") {
+          tool.executionMs = ms;
+        }
+        if (typeof event.is_error === "boolean") {
+          tool.isError = event.is_error;
+        }
+      }
+      return; // folds into the tool span; no standalone span
+    }
+
+    const message = isRecord(event.message) ? event.message : undefined;
+    const content = message !== undefined && Array.isArray(message.content) ? message.content : undefined;
+    if (content !== undefined) {
+      let handled = false;
+      for (const block of content) {
+        if (!isRecord(block)) {
+          continue;
+        }
+        if (block.type === "thinking") {
+          appendChunk("thinking", index, blockText(block));
+          handled = true;
+        } else if (block.type === "text") {
+          appendChunk("text", index, blockText(block));
+          handled = true;
+        } else if (block.type === "tool_use") {
+          flushBuffer();
+          const id = asString(block.id) ?? `tool-${index}`;
+          tools.set(id, {
+            orderIndex: index,
+            name: asString(block.name) ?? "tool",
+            input: block.input,
+            toolUseId: id,
+          });
+          handled = true;
+        } else if (block.type === "tool_result") {
+          flushBuffer();
+          const id = asString(block.tool_use_id);
+          const tool = id === undefined ? undefined : tools.get(id);
+          if (tool !== undefined) {
+            tool.output = block.content;
+            emitTool(tool);
+            tools.delete(id!);
+            handled = true;
+          }
+        }
+      }
+      if (handled) {
+        return;
+      }
+    }
+
+    // Generic event (provider lifecycle, errors, plain messages): one span.
+    flushBuffer();
+    const { category, label, summary } = buildEventDescriptors(event, maxStringBytes);
+    drafts.push({
+      orderIndex: index,
+      mapping: {
+        name: label,
+        category,
+        attributes: {
+          ...baseAttrs(ctx, index, type, category, label),
+          ...openInferenceAttrs(category, label, ctx.includeSensitiveData ? summary : label, MIME_TEXT),
+          ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": summary } : {}),
+        },
+        ...(ctx.includeSensitiveData ? { payload: redactJsonValue(event, maxStringBytes) } : {}),
+      },
+    });
+  });
+
+  flushBuffer();
+  // Tools whose result never arrived still get a span (with what we captured).
+  for (const tool of tools.values()) {
+    emitTool(tool);
+  }
+
+  return drafts.sort((a, b) => a.orderIndex - b.orderIndex).map((draft) => draft.mapping);
+}
+
+function baseAttrs(
+  ctx: RunExportContext,
+  index: number,
+  type: string,
+  category: RecordedRunEventCategory,
+  label: string,
+): SpanAttributes {
+  return {
+    "mono.agent.event.index": index,
+    "mono.agent.event.type": type,
+    "mono.agent.event.category": category,
+    "mono.agent.event.label": label,
+    "mono.agent.run_id": ctx.runId,
+    ...(ctx.sourceId === undefined ? {} : { "mono.agent.source_id": ctx.sourceId }),
+  };
+}
+
+function openInferenceAttrs(
+  category: RecordedRunEventCategory,
+  inputValue: string,
+  outputValue: string,
+  inputMime: string = MIME_TEXT,
+): SpanAttributes {
+  return {
+    "openinference.span.kind": openInferenceKind(category),
+    "input.value": inputValue,
+    "input.mime_type": inputMime,
+    "output.value": outputValue,
+    "output.mime_type": MIME_TEXT,
   };
 }
 

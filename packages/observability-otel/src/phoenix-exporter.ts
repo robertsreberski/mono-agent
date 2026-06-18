@@ -1,5 +1,3 @@
-import { randomFillSync } from "node:crypto";
-
 import type {
   PhoenixExporterConfig,
   RunExportContext,
@@ -9,9 +7,11 @@ import type {
   RuntimeEventLike,
 } from "@mono-agent/observability";
 
-import { buildOtlpTraceRequest } from "./otlp-json.js";
-import type { OtlpIdFactory } from "./otlp-json.js";
-import { postOtlpJson } from "./transport.js";
+import { createDeterministicIdFactory } from "./ids.js";
+import type { DeterministicIdFactory } from "./ids.js";
+import { serializeTraceSpans } from "./serialize.js";
+import { buildRunReadableSpans } from "./spans.js";
+import { postOtlpProtobuf } from "./transport.js";
 
 export const DEFAULT_PHOENIX_ENDPOINT = "http://127.0.0.1:6006/v1/traces";
 
@@ -26,22 +26,23 @@ export interface PhoenixRunExporterDeps {
   readonly fetch?: typeof fetch;
   /** Wall clock in milliseconds; defaults to `Date.now`. */
   readonly now?: () => number;
-  /** Injectable id source for hermetic tests; defaults to crypto-random bytes. */
-  readonly idFactory?: OtlpIdFactory;
+  /**
+   * Injectable id source for hermetic tests; defaults to deterministic ids keyed
+   * on the run id (so a re-export of the same run overwrites in Phoenix).
+   */
+  readonly idFactory?: (runId: string) => DeterministicIdFactory;
 }
 
-function defaultIdFactory(): OtlpIdFactory {
-  return {
-    traceId: () => randomFillSync(new Uint8Array(16)),
-    spanId: () => randomFillSync(new Uint8Array(8)),
-  };
+/** Resolve the Phoenix project a run's trace lands in. */
+function resolveProjectName(config: PhoenixExporterConfig, context: RunExportContext): string {
+  return config.projectName ?? context.sourceLabel ?? context.sourceId ?? "default";
 }
 
 /**
  * Phoenix preset exporter implementing the {@link RunExporter} contract with
  * batch-on-finish semantics: events are buffered as the composite replays them
- * through `onEvent`, and the entire run is mapped to an OTLP/HTTP+JSON request
- * and POSTed exactly once in `finish`/`fail`.
+ * through `onEvent`, and the entire run is mapped to OTLP `ReadableSpan[]`,
+ * serialized to binary protobuf, and POSTed exactly once in `finish`/`fail`.
  *
  * This exporter does NOT swallow errors: a rejected `fetch` or a non-2xx status
  * propagates so the composite recorder's best-effort wrapper records it as a
@@ -52,9 +53,8 @@ export function createPhoenixRunExporter(
   deps: PhoenixRunExporterDeps = {},
 ): RunExporter {
   const endpoint = config.endpoint ?? DEFAULT_PHOENIX_ENDPOINT;
-  const headers = config.headers;
   const now = deps.now ?? Date.now;
-  const idFactory = deps.idFactory ?? defaultIdFactory();
+  const makeIdFactory = deps.idFactory ?? createDeterministicIdFactory;
   const fetchImpl = deps.fetch;
   // The composite enforces the configured timeout; transport timeout is a backstop.
   const transportTimeoutMs =
@@ -68,18 +68,23 @@ export function createPhoenixRunExporter(
   async function exportRun(summary: RunSummary, context: RunExportContext): Promise<void> {
     const endMs = now();
     const startedMs = startMs ?? endMs;
-    const request = buildOtlpTraceRequest({
+    const projectName = resolveProjectName(config, context);
+    const spans = buildRunReadableSpans({
       summary,
       events,
       context,
+      projectName,
       startTimeUnixNanos: BigInt(Math.trunc(startedMs)) * 1_000_000n,
       endTimeUnixNanos: BigInt(Math.trunc(endMs)) * 1_000_000n,
-      idFactory,
+      idFactory: makeIdFactory(context.runId),
     });
-    await postOtlpJson({
+    const body = serializeTraceSpans(spans);
+    await postOtlpProtobuf({
       endpoint,
-      ...(headers === undefined ? {} : { headers }),
-      body: request,
+      // `x-project-name` is a belt-and-suspenders routing lever Phoenix honors;
+      // explicit user headers spread last and win if they set it themselves.
+      headers: { "x-project-name": projectName, ...(config.headers ?? {}) },
+      body,
       timeoutMs: transportTimeoutMs,
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });

@@ -1,6 +1,7 @@
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
+import { serializeTraceSpans } from "@mono-agent/observability-otel";
 import { describeMonoRuntimeSupport } from "@mono-agent/runtime-adapter";
 import type { MonoAgentConfig } from "@mono-agent/config";
 
@@ -389,7 +390,7 @@ async function exporterSection(input: MonoAgentAppConfigInput): Promise<Validati
   const probeError = await probeExporterEndpoint(exporter.endpoint);
   if (probeError !== undefined) {
     details.push(
-      `[WARN] Phoenix not reachable at ${exporter.endpoint} (${probeError}); exports will fail until it starts. This is non-fatal.`,
+      `[WARN] Phoenix export not confirmed at ${exporter.endpoint} (${probeError}); exports will fail until it accepts OTLP protobuf. This is non-fatal.`,
     );
     details.push(LOCAL_ARTIFACTS_NOTE);
     return { id: "observability", label: "Observability exporter", status: "waiting", details };
@@ -400,20 +401,28 @@ async function exporterSection(input: MonoAgentAppConfigInput): Promise<Validati
 }
 
 /**
- * Times a POST-less reachability probe of the OTLP endpoint; returns an error
- * string when unreachable or clearly wrong, else undefined. A throw (refused /
- * DNS / timeout) means nothing is listening. A response confirms the host:port
- * is live, but the status still matters: 2xx or 405 (path exists, OPTIONS just
- * isn't allowed) is healthy, while 404/5xx means something is listening but it
- * is not the OTLP endpoint we expect — surfaced so a typo'd path is not reported
- * as ready. Kept non-fatal upstream (`waiting`, not `error`).
+ * Live export-compatibility probe: POSTs a tiny but VALID empty OTLP protobuf
+ * `ExportTraceServiceRequest` (zero spans, so nothing is recorded) with
+ * `content-type: application/x-protobuf` — exactly the wire format a real export
+ * uses. Returns undefined when the endpoint accepts it (2xx), else an error
+ * string. This catches what the old OPTIONS reachability probe missed: a server
+ * that is listening but rejects the export (e.g. Phoenix returns 415 for the
+ * wrong content type), so `validate` no longer reports `[ok]` for an endpoint
+ * that every real export would 415. A throw (refused / DNS / timeout) means
+ * nothing is listening. Kept non-fatal upstream (`waiting`, not `error`): Phoenix
+ * may start after the agent.
  */
 async function probeExporterEndpoint(endpoint: string): Promise<string | undefined> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => { ctrl.abort(); }, BUJO_PROBE_TIMEOUT_MS);
   try {
-    const response = await fetch(endpoint, { method: "OPTIONS", signal: ctrl.signal });
-    if (!response.ok && response.status !== 405) {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-protobuf" },
+      body: serializeTraceSpans([]),
+      signal: ctrl.signal,
+    });
+    if (!response.ok) {
       return `HTTP ${response.status}`;
     }
     return undefined;

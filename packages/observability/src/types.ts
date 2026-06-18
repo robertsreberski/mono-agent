@@ -36,6 +36,8 @@ export interface RunSummary {
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
+  /** The user's prompt for this run, persisted so backfill can show it as input. */
+  readonly userInput?: string;
 }
 
 export interface RunRecorder {
@@ -53,6 +55,12 @@ export interface RunExportContext {
   readonly configPath?: string;
   readonly artifactDir?: string;
   readonly includeSensitiveData: boolean;
+  /**
+   * The user's prompt for this run, used as the root span's `input.value` so the
+   * trace shows what was asked. Available on the live path (threaded from the
+   * request); absent for backfill (not recorded in artifacts).
+   */
+  readonly userInput?: string;
 }
 
 export interface RunExportEventContext extends RunExportContext {
@@ -74,6 +82,11 @@ export interface PhoenixExporterConfig {
   readonly headers?: Readonly<Record<string, string>>;
   readonly includeSensitiveData?: boolean;
   readonly timeoutMs?: number;
+  /**
+   * Phoenix project the traces land in (resource attr `openinference.project.name`).
+   * Defaults to the run's trace source label/id, else "default".
+   */
+  readonly projectName?: string;
 }
 
 export type ObservabilityExporterConfig = PhoenixExporterConfig;
@@ -84,6 +97,8 @@ export interface JsonlRunRecorderOptions {
   readonly artifactDir: string;
   readonly clock?: () => number;
   readonly maxStringBytes?: number;
+  /** The user's prompt; persisted (redacted) into the summary as `userInput`. */
+  readonly userInput?: string;
 }
 
 export type RecordedRunEventCategory = "tool" | "thinking" | "message" | "runtime" | "error";

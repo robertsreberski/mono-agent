@@ -812,7 +812,9 @@ describe("agent host phoenix exporter wiring", () => {
 
     const bodies: string[] = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
-      bodies.push(String(init?.body ?? ""));
+      // The body is a binary OTLP protobuf; attribute keys/values are UTF-8, so
+      // decode the bytes to assert presence/absence of readable strings.
+      bodies.push(init?.body ? Buffer.from(init.body as Uint8Array).toString("utf8") : "");
       return new Response(null, { status: 200 });
     };
 
@@ -881,7 +883,9 @@ describe("agent host phoenix exporter wiring", () => {
 
     const bodies: string[] = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
-      bodies.push(String(init?.body ?? ""));
+      // The body is a binary OTLP protobuf; attribute keys/values are UTF-8, so
+      // decode the bytes to assert presence/absence of readable strings.
+      bodies.push(init?.body ? Buffer.from(init.body as Uint8Array).toString("utf8") : "");
       return new Response(null, { status: 200 });
     };
 

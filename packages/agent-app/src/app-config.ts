@@ -204,12 +204,23 @@ function parseExporter(value: unknown, source: string): ResolvedExporter {
     ? DEFAULT_PHOENIX_TIMEOUT_MS
     : validateExporterTimeout(record.timeoutMs, source);
 
+  const projectName = record.projectName === undefined
+    ? undefined
+    : typeof record.projectName === "string" && record.projectName.trim().length > 0
+      ? record.projectName
+      : (() => {
+          throw new MonoAgentConfigError("invalid_env", `${source}.projectName must be a non-empty string.`, {
+            env: source,
+          });
+        })();
+
   return {
     type,
     endpoint,
     ...(headers === undefined ? {} : { headers }),
     includeSensitiveData,
     timeoutMs,
+    ...(projectName === undefined ? {} : { projectName }),
   };
 }
 

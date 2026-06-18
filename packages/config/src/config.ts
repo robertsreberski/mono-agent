@@ -736,12 +736,14 @@ function normalizeExporterFromUnknown(value: unknown, source: string): Observabi
   const headers = readStringRecord(value.headers, "headers", source);
   const includeSensitiveData = readObjectBoolean(value, "includeSensitiveData", false, source);
   const timeoutMs = readObjectInteger(value, "timeoutMs", source, { min: 1, max: 60_000 });
+  const projectName = readObjectString(value, "projectName", source, false);
   return {
     type,
     endpoint,
     ...(headers === undefined ? {} : { headers }),
     includeSensitiveData,
     timeoutMs: timeoutMs ?? DEFAULT_PHOENIX_TIMEOUT_MS,
+    ...(projectName === undefined ? {} : { projectName }),
   };
 }
 

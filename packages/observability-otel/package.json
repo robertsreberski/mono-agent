@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/observability-otel",
   "version": "0.4.0",
-  "description": "Hand-rolled OTLP/HTTP+JSON trace exporter (Phoenix preset) for agent run lifecycles.",
+  "description": "OTLP/HTTP protobuf trace exporter (Phoenix preset) for agent run lifecycles.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
@@ -23,7 +23,11 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/observability": "workspace:0.4.0"
+    "@mono-agent/observability": "workspace:0.4.0",
+    "@opentelemetry/otlp-transformer": "0.219.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/sdk-trace-base": "2.8.0"
   },
   "publishConfig": {
     "access": "public"

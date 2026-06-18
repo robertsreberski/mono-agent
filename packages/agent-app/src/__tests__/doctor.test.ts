@@ -172,15 +172,33 @@ describe("validateMonoAgentFolder — observability exporter section", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("reports ok when OPTIONS is rejected with 405 (endpoint present, method not allowed)", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 405 }));
+  it("reports waiting (not a false ok) when the endpoint rejects the protobuf POST with 415", async () => {
+    // The old OPTIONS probe treated this endpoint as healthy; the real export
+    // POST returns 415 (wrong content type). The probe now POSTs protobuf, so it
+    // catches the export incompatibility instead of reporting a false ok.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 415 }));
     const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
 
     const section = sectionById(report, "observability");
-    expect(section.status).toBe("ok");
+    expect(section.status).toBe("waiting");
+    const text = section.details.join("\n");
+    expect(text).toMatch(/WARN/u);
+    expect(text).toContain("HTTP 415");
     expect(report.ok).toBe(true);
+  });
+
+  it("POSTs application/x-protobuf when probing (exercises the real export wire format)", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["content-type"]).toBe("application/x-protobuf");
   });
 
   it("reports waiting when the endpoint responds but with a non-ok status (wrong path)", async () => {

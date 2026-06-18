@@ -1,26 +1,29 @@
 /**
- * Native-fetch OTLP/HTTP+JSON POST. Zero runtime dependencies: uses the
- * `fetch` + `AbortController` + `setTimeout`/`clearTimeout` idiom already used
- * elsewhere in the repo (memory-bujo/ollama-llm.ts). The caller (the composite
- * recorder's best-effort wrapper) is responsible for swallowing failures; this
- * function either resolves with `{ ok, status }` or throws.
+ * Native-fetch OTLP/HTTP+protobuf POST. Uses the `fetch` + `AbortController` +
+ * `setTimeout`/`clearTimeout` idiom already used elsewhere in the repo
+ * (memory-bujo/ollama-llm.ts). The caller (the composite recorder's best-effort
+ * wrapper) is responsible for swallowing failures; this function either resolves
+ * with `{ ok, status }` or throws.
+ *
+ * Phoenix's `/v1/traces` accepts ONLY `application/x-protobuf`; the body is the
+ * binary `ExportTraceServiceRequest` produced by `serializeTraceSpans`.
  */
 
-export interface PostOtlpJsonInput {
+export interface PostOtlpProtobufInput {
   readonly endpoint: string;
   readonly headers?: Readonly<Record<string, string>>;
-  readonly body: unknown;
+  readonly body: Uint8Array;
   readonly timeoutMs: number;
   /** Injectable for tests; defaults to the global `fetch`. */
   readonly fetchImpl?: typeof fetch;
 }
 
-export interface PostOtlpJsonResult {
+export interface PostOtlpProtobufResult {
   readonly ok: boolean;
   readonly status: number;
 }
 
-export async function postOtlpJson(input: PostOtlpJsonInput): Promise<PostOtlpJsonResult> {
+export async function postOtlpProtobuf(input: PostOtlpProtobufInput): Promise<PostOtlpProtobufResult> {
   const { endpoint, headers, body, timeoutMs } = input;
   const fetchImpl = input.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
@@ -35,10 +38,10 @@ export async function postOtlpJson(input: PostOtlpJsonInput): Promise<PostOtlpJs
     const response = await fetchImpl(endpoint, {
       method: "POST",
       headers: {
-        "content-type": "application/json",
+        "content-type": "application/x-protobuf",
         ...(headers ?? {}),
       },
-      body: JSON.stringify(body),
+      body,
       signal: controller.signal,
     });
     if (!response.ok) {

@@ -63,6 +63,12 @@ export interface PhoenixExporterConfig {
   readonly includeSensitiveData?: boolean;
   /** Hard cap (ms) on a single export attempt; bounded {1..60000}, default 5000. */
   readonly timeoutMs?: number;
+  /**
+   * Phoenix project the traces land in (resource attr `openinference.project.name`,
+   * also sent as the `x-project-name` header). Defaults to the run's trace source
+   * label/id, else "default". Not a secret.
+   */
+  readonly projectName?: string;
 }
 
 /** Union of supported observability exporters (future: langfuse/otlp). */

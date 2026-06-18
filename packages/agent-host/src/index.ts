@@ -173,13 +173,14 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
-    recorderFactory: ({ runId, conversationId }) => {
+    recorderFactory: ({ runId, conversationId, userInput }) => {
       // The JSONL recorder is always built first and returned unchanged when no
       // exporter is configured, so default recording stays byte-identical.
       const jsonl = createJsonlRunRecorder({
         runId,
         conversationId,
         artifactDir: config.artifacts.dir,
+        ...(userInput === undefined ? {} : { userInput }),
       });
       const exporters = config.observability?.exporters ?? [];
       const exporterCfg = exporters[0];
@@ -203,6 +204,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
           : { configPath: options.observabilityContext.configPath }),
         artifactDir: config.artifacts.dir,
         includeSensitiveData: exporterCfg.includeSensitiveData ?? false,
+        ...(userInput === undefined ? {} : { userInput }),
       };
       return createCompositeRunRecorder({
         recorder: jsonl,

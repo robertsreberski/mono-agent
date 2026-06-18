@@ -38,6 +38,8 @@ describe("parseCliArgs", () => {
       force: false,
       foreground: false,
       follow: false,
+      all: false,
+      dryRun: false,
     });
   });
 
@@ -51,6 +53,8 @@ describe("parseCliArgs", () => {
       force: false,
       foreground: false,
       follow: false,
+      all: false,
+      dryRun: false,
     });
   });
 
@@ -83,9 +87,29 @@ describe("parseCliArgs", () => {
       force: true,
       foreground: false,
       follow: false,
+      all: false,
+      dryRun: false,
     });
     expect(parseCliArgs(["install-skill"])).toMatchObject({ command: "install-skill", force: false });
     expect(() => parseCliArgs(["install-skill", "--target", "browser"])).toThrow(/--target/u);
+  });
+
+  it("parses backfill flags (--run/--all/--since/--until/--dry-run)", () => {
+    expect(parseCliArgs(["backfill", "--all", "--dry-run"])).toMatchObject({
+      command: "backfill",
+      all: true,
+      dryRun: true,
+    });
+    expect(
+      parseCliArgs(["backfill", "--run", "run-x", "--since", "2026-06-01", "--until", "2026-06-30"]),
+    ).toMatchObject({
+      command: "backfill",
+      run: "run-x",
+      since: "2026-06-01",
+      until: "2026-06-30",
+      all: false,
+      dryRun: false,
+    });
   });
 
   it("defaults to help and rejects unknown commands and flags", () => {

@@ -32,6 +32,7 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly startedAt: number;
   private readonly startedAtIso: string;
   private readonly events: RuntimeEventLike[] = [];
+  private readonly userInput: string | undefined;
 
   constructor(options: JsonlRunRecorderOptions) {
     this.runId = normalizeId(options.runId, "runId");
@@ -45,6 +46,10 @@ class JsonlRunRecorder implements RunRecorder {
     this.artifactDir = resolve(options.artifactDir);
     this.clock = options.clock ?? (() => Date.now());
     this.maxStringBytes = options.maxStringBytes ?? DEFAULT_MAX_STRING_BYTES;
+    this.userInput =
+      typeof options.userInput === "string"
+        ? (redactJsonValue(options.userInput, this.maxStringBytes) as string)
+        : undefined;
     this.startedAt = this.clock();
     this.startedAtIso = new Date(this.startedAt).toISOString();
   }
@@ -90,6 +95,7 @@ class JsonlRunRecorder implements RunRecorder {
       ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
       eventCount: this.events.length,
       artifactPaths: this.artifactPaths(),
+      ...(this.userInput === undefined ? {} : { userInput: this.userInput }),
       ...(result.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(result.runtimeWarnings, this.maxStringBytes) }),
       ...(result.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(result.diagnostics, this.maxStringBytes) }),
       ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(result.capabilitiesUsed, this.maxStringBytes) }),

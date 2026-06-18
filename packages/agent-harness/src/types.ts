@@ -83,6 +83,8 @@ export interface AgentHarnessSessionOptions {
 export interface AgentHarnessRecorderFactoryInput {
   readonly runId: string;
   readonly conversationId: string;
+  /** The user's prompt for this run, so recorders/exporters can surface it. */
+  readonly userInput?: string;
 }
 
 export interface AgentHarnessOptions {

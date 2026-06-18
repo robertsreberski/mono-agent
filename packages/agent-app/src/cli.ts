@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp } from "./app.js";
 import { phoenixAppBaseUrl } from "./app-config.js";
+import { runBackfill } from "./backfill.js";
 import {
   defaultBackgroundDeps,
   resolveInstanceTarget,
@@ -27,7 +28,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill"] as const;
+const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -46,12 +47,22 @@ interface ParsedCliArgs {
   readonly follow: boolean;
   /** logs: number of trailing lines to print. */
   readonly lines?: number;
+  /** backfill: export exactly this run id. */
+  readonly run?: string;
+  /** backfill: export every recorded run. */
+  readonly all: boolean;
+  /** backfill: only runs whose startedAt is >= this ISO instant. */
+  readonly since?: string;
+  /** backfill: only runs whose startedAt is <= this ISO instant. */
+  readonly until?: string;
+  /** backfill: map + serialize but do not POST. */
+  readonly dryRun: boolean;
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    return { command: "help", force: false, foreground: false, follow: false };
+    return { command: "help", force: false, foreground: false, follow: false, all: false, dryRun: false };
   }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
@@ -69,12 +80,32 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let foreground = false;
   let follow = false;
   let lines: number | undefined;
+  let run: string | undefined;
+  let all = false;
+  let since: string | undefined;
+  let until: string | undefined;
+  let dryRun = false;
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
     switch (flag) {
       case "--config":
         configPath = requireValue(rest, ++i, flag);
+        break;
+      case "--run":
+        run = requireValue(rest, ++i, flag);
+        break;
+      case "--all":
+        all = true;
+        break;
+      case "--since":
+        since = requireValue(rest, ++i, flag);
+        break;
+      case "--until":
+        until = requireValue(rest, ++i, flag);
+        break;
+      case "--dry-run":
+        dryRun = true;
         break;
       case "--model":
         model = requireValue(rest, ++i, flag);
@@ -147,6 +178,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     foreground,
     follow,
     ...(lines === undefined ? {} : { lines }),
+    ...(run === undefined ? {} : { run }),
+    all,
+    ...(since === undefined ? {} : { since }),
+    ...(until === undefined ? {} : { until }),
+    dryRun,
   };
 }
 
@@ -203,6 +239,13 @@ Usage:
       Copy the bundled mono-agent-composer skill into ~/.claude/skills and
       ~/.codex/skills (default: both). Refuses to overwrite without --force.
 
+  mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]
+                      [--dry-run] [--config <path>] [--env-file <path>]
+      Export already-recorded run artifacts to the configured Phoenix exporter
+      with their historical timestamps. Trace ids are deterministic per run, so
+      re-running overwrites rather than duplicating. --dry-run maps and
+      serializes without sending.
+
 Background mode runs the agent under launchd, keeping it alive across logins
 (auto-restarting only on crash) until you run stop. Secrets are read from the
 .env file in the working directory, the same as foreground mode. The background
@@ -243,6 +286,15 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runBackgroundCommand(args, args.command);
     case "install-skill":
       return await runInstallSkill(args);
+    case "backfill":
+      return await runBackfill({
+        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
+        ...(args.run === undefined ? {} : { run: args.run }),
+        all: args.all,
+        ...(args.since === undefined ? {} : { since: args.since }),
+        ...(args.until === undefined ? {} : { until: args.until }),
+        dryRun: args.dryRun,
+      });
   }
 }
 

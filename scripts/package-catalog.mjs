@@ -143,7 +143,7 @@ export const packageCatalog = [
     dir: "observability-otel",
     name: "@mono-agent/observability-otel",
     category: "observability",
-    responsibility: "Hand-rolled OTLP HTTP+JSON trace exporter (Phoenix preset) that maps mono-agent run lifecycles to OTLP spans.",
+    responsibility: "OTLP HTTP protobuf trace exporter (Phoenix preset) that maps mono-agent run lifecycles to OTLP spans.",
     allowedDependencyCategories: ["core", "observability"],
     publishable: true,
   },
