@@ -77,4 +77,35 @@ describe("createOllamaLlm", () => {
     const [url] = (fakeFetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string];
     expect(url).toBe("http://localhost:11434/api/generate");
   });
+
+  it("aborts and throws an explicit timeout error when the call exceeds timeoutMs", async () => {
+    vi.useFakeTimers();
+    try {
+      // A fetch that never resolves until its abort signal fires (simulating a slow local model).
+      const hangingFetch = vi.fn((_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => {
+            const err = new Error("The operation was aborted.");
+            err.name = "AbortError";
+            reject(err);
+          });
+        }),
+      );
+      vi.stubGlobal("fetch", hangingFetch as unknown as typeof fetch);
+
+      const llm = createOllamaLlm({ model: "llama3.2", timeoutMs: 1_000 });
+      const pending = llm.complete("q");
+      const assertion = expect(pending).rejects.toThrow("ollama /api/generate timed out after 1000ms");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("propagates a non-timeout fetch error unchanged (not relabeled as a timeout)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")) as unknown as typeof fetch);
+    const llm = createOllamaLlm({ model: "llama3.2", timeoutMs: 1_000 });
+    await expect(llm.complete("q")).rejects.toThrow("ECONNREFUSED");
+  });
 });

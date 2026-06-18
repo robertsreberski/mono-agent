@@ -118,6 +118,59 @@ describe("SlackWebApiClient", () => {
     await expect(aborted.authTest()).rejects.toMatchObject({ kind: "aborted" });
     await expect(malformed.authTest()).rejects.toMatchObject({ kind: "malformed" });
   });
+
+  it("downloads a private file with bot bearer auth via GET", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const fetchImpl = vi.fn(async () => new Response(bytes)) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      appToken: APP_TOKEN,
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    const result = await client.downloadFile({ url: "https://files.slack.test/p.png" });
+
+    expect(Array.from(result)).toEqual([1, 2, 3, 4, 5]);
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://files.slack.test/p.png");
+    expect(init?.method).toBe("GET");
+    expect(init?.headers).toEqual({ authorization: `Bearer ${BOT_TOKEN}` });
+  });
+
+  it("rejects a download that exceeds the configured byte cap", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const fetchImpl = vi.fn(async () => new Response(bytes)) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      appToken: APP_TOKEN,
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    await expect(
+      client.downloadFile({ url: "https://files.slack.test/big.bin", maxBytes: 4 }),
+    ).rejects.toBeInstanceOf(SlackApiError);
+  });
+
+  it("surfaces a sanitized HTTP error for a failed download", async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(`body ${BOT_TOKEN}`, { status: 403 }),
+    ) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      appToken: APP_TOKEN,
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    const error = await captureError(() =>
+      client.downloadFile({ url: "https://files.slack.test/forbidden.png" }),
+    );
+    expect(error).toBeInstanceOf(SlackApiError);
+    expect(error).toMatchObject({ kind: "http", status: 403 });
+    expect(error.message).not.toContain(BOT_TOKEN);
+  });
 });
 
 async function captureError(action: () => Promise<unknown>): Promise<SlackApiError> {

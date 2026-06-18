@@ -542,6 +542,9 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   const warnings = [];
   const seen = new Set(reservedNames);
 
+  // Phase 1: collect connected clients in entry order (so tool registration is
+  // deterministic) and record connect failures.
+  const connectedList = [];
   for (const [index, result] of settled.entries()) {
     const serverName = entries[index]?.[0];
     if (result.status !== "fulfilled") {
@@ -553,18 +556,28 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
       });
       continue;
     }
+    clients.push(result.value);
+    connectedList.push({ serverName, connected: result.value });
+  }
 
-    const connected = result.value;
-    clients.push(connected);
-    let listed;
+  // Phase 2: list tools from every connected server CONCURRENTLY (previously
+  // serial, adding ~Nx the slowest listTools to turn startup, painful over a
+  // SOCKS proxy). Results are awaited in entry order to keep registration stable.
+  const listings = await Promise.all(connectedList.map(async ({ serverName, connected }) => {
     try {
-      listed = await connected.client.listTools();
+      return { serverName, connected, listed: await connected.client.listTools() };
     } catch (err) {
+      return { serverName, connected, error: err };
+    }
+  }));
+
+  for (const { serverName, connected, listed, error } of listings) {
+    if (error) {
       warnings.push({
         type: "runtime_warning",
         warning_kind: "mcp_list_tools_failed",
         server: serverName,
-        message: err?.message || String(err),
+        message: error?.message || String(error),
       });
       continue;
     }
@@ -583,12 +596,16 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           const textLimit = limits.mcpTextLimitChars || MCP_TEXT_RESULT_LIMIT;
           const imageInlineMaxBytes = limits.imageInlineMaxBytes ?? MCP_IMAGE_INLINE_MAX_BYTES;
           const normalizedParams = normalizeMcpToolParams(serverName, sourceTool.name, params || {}, { qaOutputDir });
+          // Measure the MCP round-trip so observability can separate slow MCP
+          // servers (e.g. context-a8c over a SOCKS proxy) from model latency.
+          const mcpCallStartMs = Date.now();
           const out = await withTimeout(
             connected.client.callTool({ name: sourceTool.name, arguments: normalizedParams || {} }),
             limits.mcpCallTimeoutMs || 120000,
             signal,
             `${serverName}:${sourceTool.name}`,
           );
+          const mcpCallDurationMs = Date.now() - mcpCallStartMs;
           const imageTruncations = [];
           return {
             content: coerceMcpContent(out, {
@@ -605,6 +622,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
             details: {
               server: serverName,
               tool: sourceTool.name,
+              mcp_call_duration_ms: mcpCallDurationMs,
               result_truncated: mcpContentWasTruncated(out, { textLimit, imageInlineMaxBytes }),
               raw: compactRawMcpResult(out),
               ...(imageTruncations.length ? {
@@ -629,10 +647,28 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   };
 }
 
-export async function closePiMcpClients(clients) {
-  for (const { client, transport } of clients || []) {
-    try { await client.close?.(); } catch { /* best-effort */ }
-    try { await transport.close?.(); } catch { /* best-effort */ }
-    try { await transport.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+async function closeWithTimeout(close, timeoutMs) {
+  if (typeof close !== "function") return;
+  const result = close();
+  if (!(result && typeof result.then === "function")) return;
+  let timer;
+  try {
+    await Promise.race([
+      result,
+      new Promise((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+}
+
+export async function closePiMcpClients(clients, { timeoutMs = 5000 } = {}) {
+  // Close the client first (stop accepting messages) then the transport (tear
+  // down I/O), each bounded by a timeout so a hung stdio pipe cannot stall
+  // shutdown — a common source of "Connection closed" churn on reconnect.
+  await Promise.all((clients || []).map(async ({ client, transport }) => {
+    try { await closeWithTimeout(client?.close?.bind(client), timeoutMs); } catch { /* best-effort */ }
+    try { await closeWithTimeout(transport?.close?.bind(transport), timeoutMs); } catch { /* best-effort */ }
+    try { await transport?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+  }));
 }

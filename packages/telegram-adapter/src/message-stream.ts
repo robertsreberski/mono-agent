@@ -1,11 +1,14 @@
 import type {
   AgentMessageStream as AgentMessageStreamBase,
   AgentStreamEvent,
+  ChannelSendOutcome,
+  ChannelTransport,
+  MessageRef,
 } from "@mono-agent/agent-contracts";
 import {
-  DEFAULT_EMPTY_FINAL_TEXT,
+  ChannelDeliveryError,
   DEFAULT_MAX_MESSAGE_CHARS,
-  buildStreamingTailPreview,
+  ResilientMessageStream,
   normalizeTrailing,
   splitTextByCodePoints,
 } from "@mono-agent/agent-contracts";
@@ -16,7 +19,6 @@ import type {
   TelegramEditMessageTextParams,
   TelegramMessageSender,
   TelegramSendMessageParams,
-  TelegramSentMessage,
 } from "./types.js";
 
 export interface AgentMessageStream extends AgentMessageStreamBase {
@@ -40,10 +42,23 @@ export interface TelegramMessageStreamOptions {
   retryCapMs?: number;
   /** Base delay for exponential backoff between final-delivery retries. Default 500. */
   retryBaseDelayMs?: number;
-  /** Render accumulated reasoning as a live "Thinking" message. Default true. */
+  /**
+   * Retained for compatibility. Reasoning prose is never rendered, so this is a
+   * no-op for assistant thoughts. Default false.
+   */
   showThoughts?: boolean;
+  /**
+   * Show lightweight, friendly activity hints (e.g. "Searching the web…") while
+   * the agent works, before any answer text has arrived. Default true.
+   */
+  showHints?: boolean;
   /** Render the final answer as Telegram MarkdownV2 (plain fallback). Default true. */
   formatMarkdown?: boolean;
+  /**
+   * Deliver only the final answer: suppress streaming interim edits and show a
+   * "typing…" chat action while the agent works. Default false.
+   */
+  finalOnly?: boolean;
   /** Aborts in-flight retry waits (e.g. on /cancel). */
   abortSignal?: AbortSignal;
   logger?: TelegramMessageStreamLogger;
@@ -59,16 +74,17 @@ export interface TelegramMessageStreamLogger {
  * Raised only when a *final* delivery cannot reach Telegram after retries and
  * the last-resort fresh send. The AI request itself already succeeded, so the
  * adapter treats this as a degraded delivery — never as an agent failure.
+ *
+ * A thin specialization of the shared {@link ChannelDeliveryError}: the substrate
+ * throws the shared base type, and the wrapper's `finish()` normalizes it to this
+ * Telegram type (preserving `{ cause, attempts }`) so callers catching
+ * `TelegramDeliveryError` keep working and the base type never escapes — parity
+ * with how the Slack adapter wraps delivery failures.
  */
-export class TelegramDeliveryError extends Error {
-  override readonly cause: unknown;
-  readonly attempts: number;
-
+export class TelegramDeliveryError extends ChannelDeliveryError {
   constructor(message: string, details: { cause: unknown; attempts: number }) {
-    super(message);
+    super(message, details);
     this.name = "TelegramDeliveryError";
-    this.cause = details.cause;
-    this.attempts = details.attempts;
   }
 }
 
@@ -81,447 +97,109 @@ export type TelegramSendOutcome =
   | { kind: "fatal" };
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
-const DEFAULT_EDIT_DEBOUNCE_MS = 750;
-const DEFAULT_MAX_SEND_RETRIES = 3;
-const DEFAULT_RETRY_CAP_MS = 60_000;
-const DEFAULT_RETRY_BASE_DELAY_MS = 500;
-const EMPTY_FINAL_TEXT = DEFAULT_EMPTY_FINAL_TEXT;
-const THINKING_HEADER = "Thinking\n\n";
-const ANSWER_HEADER = "Answer\n\n";
-const FINAL_ANSWER_HEADER = "Final answer\n\n";
 
-export class TelegramMessageStream implements AgentMessageStream {
+/** Sentinel raised by the transport when a rendered MarkdownV2 chunk overflows. */
+const MARKDOWN_OVERFLOW = Symbol("telegram-markdown-overflow");
+
+interface TelegramMarkdownOverflowError {
+  readonly [MARKDOWN_OVERFLOW]: true;
+}
+
+function isMarkdownOverflowError(error: unknown): error is TelegramMarkdownOverflowError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as Record<PropertyKey, unknown>)[MARKDOWN_OVERFLOW] === true
+  );
+}
+
+/**
+ * Telegram-specific {@link ChannelTransport}. Wraps the {@link TelegramMessageSender}
+ * (sendMessage / editMessageText), renders MarkdownV2, and maps Telegram failures
+ * onto {@link ChannelSendOutcome}. Markdown rendering and `parse_mode` are gated by
+ * a mutable `markdownEnabled` flag so the wrapper can deliver fixed system copy
+ * (e.g. "Cancelled.") as plain text without re-rendering it.
+ */
+class TelegramChannelTransport implements ChannelTransport {
+  readonly maxMessageChars: number;
+  /** Gates MarkdownV2 rendering + `parse_mode`. Toggled per finish() call. */
+  markdownEnabled: boolean;
+
   private readonly api: TelegramMessageSender;
   private readonly chatId: TelegramChatId;
-  private readonly initialStatusText: string;
-  private readonly editDebounceMs: number;
-  private readonly maxMessageChars: number;
   private readonly replyToMessageId: number | undefined;
-  private readonly maxSendRetries: number;
-  private readonly retryCapMs: number;
-  private readonly retryBaseDelayMs: number;
-  private readonly showThoughts: boolean;
-  private readonly formatMarkdown: boolean;
-  private readonly abortSignal: AbortSignal | undefined;
-  private readonly logger: TelegramMessageStreamLogger | undefined;
 
-  private currentText = "";
-  private thinkingText = "";
-  private hasAnswerText = false;
-  private statusText: string;
-  private sentMessage: TelegramSentMessage | undefined;
-  private sendMessagePromise: Promise<TelegramSentMessage> | undefined;
-  private editTimer: ReturnType<typeof setTimeout> | undefined;
-  private inFlightEdit: Promise<void> | undefined;
-  private lastFlushedText: string | undefined;
-  private lastFlushedMarkdown = false;
-  private finished = false;
-
-  constructor(options: TelegramMessageStreamOptions) {
+  constructor(options: {
+    api: TelegramMessageSender;
+    chatId: TelegramChatId;
+    maxMessageChars: number;
+    replyToMessageId: number | undefined;
+    markdownEnabled: boolean;
+  }) {
     this.api = options.api;
     this.chatId = options.chatId;
-    this.initialStatusText = normalizeTelegramText(
-      options.initialStatusText ?? DEFAULT_INITIAL_STATUS_TEXT,
-    );
-    this.statusText = this.initialStatusText;
-    this.editDebounceMs = options.editDebounceMs ?? DEFAULT_EDIT_DEBOUNCE_MS;
-    this.maxMessageChars = options.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
+    this.maxMessageChars = options.maxMessageChars;
     this.replyToMessageId = options.replyToMessageId;
-    this.maxSendRetries = options.maxSendRetries ?? DEFAULT_MAX_SEND_RETRIES;
-    this.retryCapMs = options.retryCapMs ?? DEFAULT_RETRY_CAP_MS;
-    this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
-    this.showThoughts = options.showThoughts ?? true;
-    this.formatMarkdown = options.formatMarkdown ?? true;
-    this.abortSignal = options.abortSignal;
-    this.logger = options.logger;
-
-    if (!Number.isInteger(this.maxMessageChars) || this.maxMessageChars < 32) {
-      throw new RangeError("maxMessageChars must be an integer of at least 32.");
-    }
-    if (!Number.isFinite(this.editDebounceMs) || this.editDebounceMs < 0) {
-      throw new RangeError("editDebounceMs must be a non-negative number.");
-    }
-    if (!Number.isInteger(this.maxSendRetries) || this.maxSendRetries < 0) {
-      throw new RangeError("maxSendRetries must be a non-negative integer.");
-    }
-    if (!Number.isFinite(this.retryCapMs) || this.retryCapMs < 0) {
-      throw new RangeError("retryCapMs must be a non-negative number.");
-    }
-    if (!Number.isFinite(this.retryBaseDelayMs) || this.retryBaseDelayMs < 0) {
-      throw new RangeError("retryBaseDelayMs must be a non-negative number.");
-    }
+    this.markdownEnabled = options.markdownEnabled;
   }
 
-  async status(text: string): Promise<void> {
-    this.assertOpen();
-    await this.awaitInFlightEdit();
-    this.statusText = normalizeTelegramText(text);
-    const hadMessage = this.sentMessage !== undefined;
-    await this.ensureMessage();
-    if (hadMessage) {
-      await this.deliverText(this.statusText, { final: false });
+  renderMarkdown(text: string): string {
+    if (!this.markdownEnabled) {
+      return text;
     }
+    return renderTelegramMarkdown(text);
   }
 
-  async append(delta: string): Promise<void> {
-    this.assertOpen();
-    await this.awaitInFlightEdit();
-    if (delta.length === 0) {
-      return;
-    }
-
-    this.currentText += delta;
-    if (!this.hasAnswerText && delta.trim().length > 0) {
-      this.hasAnswerText = true;
-    }
-    await this.ensureMessage();
-    this.scheduleEdit();
+  async post(text: string, options: { markdown: boolean }): Promise<MessageRef> {
+    const useMarkdown = options.markdown && this.markdownEnabled;
+    this.assertWithinLimit(text, useMarkdown);
+    const sent = await this.api.sendMessage(this.buildSendParams(text, useMarkdown));
+    return { id: String(sent.message_id), message_id: sent.message_id };
   }
 
-  async replace(text: string): Promise<void> {
-    this.assertOpen();
-    await this.awaitInFlightEdit();
-    this.currentText = text;
-    if (text.trim().length > 0) {
-      this.hasAnswerText = true;
-    }
-    await this.ensureMessage();
-    this.scheduleEdit();
+  async edit(ref: MessageRef, text: string, options: { markdown: boolean }): Promise<void> {
+    const useMarkdown = options.markdown && this.markdownEnabled;
+    this.assertWithinLimit(text, useMarkdown);
+    await this.api.editMessageText(this.buildEditParams(ref, text, useMarkdown));
   }
 
-  async event(event: AgentStreamEvent): Promise<void> {
-    this.assertOpen();
-    await this.awaitInFlightEdit();
-
-    if (event.type === "assistant_thought") {
-      // Reasoning is shown live as a labelled thinking message, then superseded
-      // the moment the answer starts streaming.
-      if (!this.showThoughts || this.hasAnswerText || event.text.length === 0) {
-        return;
-      }
-      this.thinkingText += event.text;
-      if (this.thinkingText.trim().length === 0) {
-        return;
-      }
-      await this.ensureMessage();
-      this.scheduleEdit();
-      return;
+  classifyError(error: unknown): ChannelSendOutcome {
+    if (isMarkdownOverflowError(error)) {
+      return { kind: "reformat_plain" };
     }
-
-    if (event.type === "runtime_warning") {
-      this.logger?.warn?.("Telegram stream received runtime warning.", {
-        warningKind: event.warningKind,
-        message: event.message,
-      });
-      return;
-    }
-
-    if (event.type === "tool_call_started") {
-      this.logger?.debug?.("Telegram stream received tool start event.", {
-        id: event.id,
-        name: event.name,
-      });
-      return;
-    }
-
-    if (event.type === "tool_call_completed") {
-      this.logger?.debug?.("Telegram stream received tool completion event.", {
-        id: event.id,
-        name: event.name,
-        isError: event.isError === true,
-      });
-    }
+    return classifyTelegramError(error);
   }
 
-  async finish(finalText?: string, options?: { format?: boolean }): Promise<void> {
-    if (this.finished) {
-      return;
-    }
-
-    this.finished = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
-      if (finalText.trim().length > 0) {
-        this.hasAnswerText = true;
-      }
-    }
-
-    this.cancelScheduledEdit();
-    await this.awaitInFlightEdit();
-
-    const formatFinal = options?.format ?? true;
-    const chunks = splitTelegramText(
-      this.finalDeliveryText({ label: formatFinal }),
-      this.maxMessageChars,
-    );
-    const [firstChunk, ...remainingChunks] = chunks;
-
-    await this.ensureMessage();
-    try {
-      await this.deliverText(firstChunk ?? EMPTY_FINAL_TEXT, {
-        final: true,
-        format: formatFinal,
-      });
-    } catch (error) {
-      if (this.abortSignal?.aborted === true) {
-        // Cancelled: deliver in place if we can, but never post a brand-new
-        // message carrying content the user has already asked us to drop.
-        this.logger?.warn?.("Telegram final delivery skipped after cancellation.", {
-          error: errorMessage(error),
-        });
-        return;
-      }
-      await this.lastResortSend(firstChunk ?? EMPTY_FINAL_TEXT, error);
-    }
-    if (this.abortSignal?.aborted === true) {
-      // Do not spray overflow continuation messages onto a cancelled run.
-      return;
-    }
-    for (const chunk of remainingChunks) {
-      await this.sendOverflowChunk(chunk);
-    }
-  }
-
-  private interimDisplayText(): string {
-    if (this.hasAnswerText || this.currentText.length > 0) {
-      return buildLabeledStreamingPreview(
-        ANSWER_HEADER,
-        this.currentText,
-        this.maxMessageChars,
-      );
-    }
-    if (this.showThoughts && this.thinkingText.length > 0) {
-      return buildLabeledStreamingPreview(
-        THINKING_HEADER,
-        this.thinkingText,
-        this.maxMessageChars,
-      );
-    }
-    return buildStreamingPreview(this.statusText, this.maxMessageChars);
-  }
-
-  private finalDeliveryText(options: { label: boolean }): string {
-    const finalText = normalizeTrailing(this.currentText, EMPTY_FINAL_TEXT);
-    if (!options.label) {
-      return finalText;
-    }
-    return `${FINAL_ANSWER_HEADER}${finalText}`;
-  }
-
-  private async ensureMessage(): Promise<TelegramSentMessage> {
-    if (this.sentMessage !== undefined) {
-      return this.sentMessage;
-    }
-
-    if (this.sendMessagePromise === undefined) {
-      const initialText = this.statusText;
-      const params: TelegramSendMessageParams = {
-        chat_id: this.chatId,
-        text: initialText,
-      };
-      if (this.replyToMessageId !== undefined) {
-        params.reply_to_message_id = this.replyToMessageId;
-      }
-
-      this.sendMessagePromise = this.api.sendMessage(params).then((message) => {
-        this.lastFlushedText = initialText;
-        this.lastFlushedMarkdown = false;
-        return message;
-      });
-    }
-
-    try {
-      this.sentMessage = await this.sendMessagePromise;
-    } catch (error) {
-      // Do not poison future sends with a rejected promise.
-      this.sendMessagePromise = undefined;
-      throw error;
-    }
-    return this.sentMessage;
-  }
-
-  private scheduleEdit(): void {
-    this.cancelScheduledEdit();
-
-    if (this.editDebounceMs === 0) {
-      this.startInFlightEdit();
-      return;
-    }
-
-    this.editTimer = setTimeout(() => {
-      this.editTimer = undefined;
-      this.startInFlightEdit();
-    }, this.editDebounceMs);
-  }
-
-  private startInFlightEdit(): void {
-    const text = this.interimDisplayText();
-    this.inFlightEdit = this.deliverText(text, { final: false }).catch((error: unknown) => {
-      // Interim edits are best-effort; deliverText already swallows, but guard
-      // against an abort rejection so a streaming hiccup never aborts the run.
-      this.logger?.warn?.("Telegram stream interim edit failed (ignored).", {
-        error: errorMessage(error),
-      });
-    });
-    void this.inFlightEdit;
+  async indicateActivity(): Promise<void> {
+    // Telegram "typing…" chat action; expires after ~5s so the substrate
+    // refreshes it while the agent works. No-op if the sender lacks the method.
+    await this.api.sendChatAction?.({ chat_id: this.chatId, action: "typing" });
   }
 
   /**
-   * Send `sourceText` to Telegram, classifying failures and recovering where
-   * possible. Interim edits (`final: false`) are best-effort and never throw;
-   * final delivery retries transient failures and throws TelegramDeliveryError
-   * only when every path is exhausted.
+   * MarkdownV2 escaping can expand a chunk past Telegram's size limit even though
+   * the plain source is within it (chunks are split on the source length). Rather
+   * than send and fail with "message is too long", we signal a reformat-to-plain
+   * recovery; the substrate then re-delivers the plain source within the limit.
+   * (We never test renderedText === source to decide this: telegramify renders
+   * inline code / links back to identical bytes that still need parse_mode, so
+   * equality is not a plain-text signal.)
    */
-  private async deliverText(
-    sourceText: string,
-    options: { final: boolean; format?: boolean },
-  ): Promise<void> {
-    const normalizedSource = normalizeTelegramText(sourceText);
-    let useMarkdown = options.final && this.formatMarkdown && (options.format ?? true);
-    let renderedText = useMarkdown ? renderTelegramMarkdown(normalizedSource) : normalizedSource;
-    if (useMarkdown && countCodePoints(renderedText) > this.maxMessageChars) {
-      // MarkdownV2 escaping can expand a chunk past Telegram's size limit, but
-      // chunks are split on the source length. The plain source is within the
-      // limit, so deliver it as plain text rather than fail with
-      // "message is too long". (We never test renderedText === source to decide
-      // this: telegramify renders inline code / links back to identical bytes
-      // that still need parse_mode to render, so equality is not a plain-text
-      // signal.)
-      useMarkdown = false;
-      renderedText = normalizedSource;
-    }
-
-    if (renderedText === this.lastFlushedText && useMarkdown === this.lastFlushedMarkdown) {
-      return;
-    }
-
-    const maxAttempts = options.final ? this.maxSendRetries + 1 : 1;
-    let recreate = false;
-    let lastError: unknown;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        if (recreate) {
-          const sent = await this.api.sendMessage(this.buildSendParams(renderedText, useMarkdown));
-          this.sentMessage = sent;
-        } else {
-          const message = await this.ensureMessage();
-          await this.api.editMessageText(this.buildEditParams(message, renderedText, useMarkdown));
-        }
-        this.lastFlushedText = renderedText;
-        this.lastFlushedMarkdown = useMarkdown;
-        return;
-      } catch (error) {
-        lastError = error;
-        const outcome = classifyTelegramError(error);
-        if (outcome.kind === "not_modified") {
-          this.lastFlushedText = renderedText;
-          this.lastFlushedMarkdown = useMarkdown;
-          return;
-        }
-        if (outcome.kind === "reformat_plain" && useMarkdown) {
-          useMarkdown = false;
-          renderedText = normalizedSource;
-          continue;
-        }
-        if (outcome.kind === "recreate" && this.abortSignal?.aborted !== true) {
-          recreate = true;
-          this.sentMessage = undefined;
-          this.lastFlushedText = undefined;
-          continue;
-        }
-        if (outcome.kind === "retry" && options.final && attempt < maxAttempts) {
-          await this.sleep(this.retryDelayMs(outcome.retryAfterMs, attempt));
-          if (this.abortSignal?.aborted === true) {
-            break;
-          }
-          continue;
-        }
-        break;
-      }
-    }
-
-    if (options.final) {
-      throw new TelegramDeliveryError("Telegram final delivery failed.", {
-        cause: lastError,
-        attempts: maxAttempts,
-      });
-    }
-    this.logger?.warn?.("Telegram stream interim edit failed (ignored).", {
-      error: errorMessage(lastError),
-    });
-  }
-
-  /**
-   * The streamed message could not be edited or recreated in place. Post the
-   * final answer as a brand-new plain message so the user still receives it.
-   */
-  private async lastResortSend(text: string, cause: unknown): Promise<void> {
-    const normalized = normalizeTelegramText(text);
-    const maxAttempts = this.maxSendRetries + 1;
-    let lastError: unknown = cause;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        const sent = await this.api.sendMessage(this.buildSendParams(normalized, false));
-        this.sentMessage = sent;
-        this.lastFlushedText = normalized;
-        this.lastFlushedMarkdown = false;
-        return;
-      } catch (error) {
-        lastError = error;
-        const outcome = classifyTelegramError(error);
-        if (outcome.kind === "retry" && attempt < maxAttempts) {
-          await this.sleep(this.retryDelayMs(outcome.retryAfterMs, attempt));
-          if (this.abortSignal?.aborted === true) {
-            break;
-          }
-          continue;
-        }
-        break;
-      }
-    }
-
-    throw new TelegramDeliveryError("Telegram delivery failed after fallback send.", {
-      cause: lastError,
-      attempts: maxAttempts,
-    });
-  }
-
-  /** Overflow continuation chunks are best-effort: the primary answer already landed. */
-  private async sendOverflowChunk(chunk: string): Promise<void> {
-    const normalized = normalizeTelegramText(chunk);
-    const maxAttempts = this.maxSendRetries + 1;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      try {
-        await this.api.sendMessage(this.buildSendParams(normalized, false));
-        return;
-      } catch (error) {
-        const outcome = classifyTelegramError(error);
-        if (outcome.kind === "retry" && attempt < maxAttempts) {
-          await this.sleep(this.retryDelayMs(outcome.retryAfterMs, attempt));
-          if (this.abortSignal?.aborted === true) {
-            return;
-          }
-          continue;
-        }
-        this.logger?.warn?.("Telegram overflow chunk failed (ignored).", {
-          error: errorMessage(error),
-        });
-        return;
-      }
+  private assertWithinLimit(text: string, useMarkdown: boolean): void {
+    if (useMarkdown && countCodePoints(text) > this.maxMessageChars) {
+      const overflow: TelegramMarkdownOverflowError = { [MARKDOWN_OVERFLOW]: true };
+      throw overflow;
     }
   }
 
   private buildEditParams(
-    message: TelegramSentMessage,
+    ref: MessageRef,
     text: string,
     useMarkdown: boolean,
   ): TelegramEditMessageTextParams {
     const params: TelegramEditMessageTextParams = {
       chat_id: this.chatId,
-      message_id: message.message_id,
+      message_id: messageIdOf(ref),
       text,
     };
     if (useMarkdown) {
@@ -535,54 +213,121 @@ export class TelegramMessageStream implements AgentMessageStream {
     if (useMarkdown) {
       params.parse_mode = "MarkdownV2";
     }
+    if (this.replyToMessageId !== undefined) {
+      params.reply_to_message_id = this.replyToMessageId;
+    }
     return params;
   }
+}
 
-  private retryDelayMs(retryAfterMs: number | undefined, attempt: number): number {
-    const backoff = this.retryBaseDelayMs * 2 ** (attempt - 1);
-    const chosen = retryAfterMs ?? backoff;
-    return Math.min(chosen, this.retryCapMs);
-  }
+function messageIdOf(ref: MessageRef): number {
+  const raw = (ref as { message_id?: unknown }).message_id;
+  return typeof raw === "number" ? raw : Number(ref.id);
+}
 
-  private sleep(ms: number): Promise<void> {
-    if (ms <= 0 || this.abortSignal?.aborted === true) {
-      return Promise.resolve();
+/**
+ * Thin wrapper over the shared {@link ResilientMessageStream}: builds a Telegram
+ * {@link ChannelTransport} and delegates all streaming/finish behavior to the
+ * substrate, preserving this adapter's public API and no-labels + activity-hints
+ * behavior. The only Telegram-specific lever the wrapper retains is the per-call
+ * `finish(text, { format })` toggle, which fixed system copy uses to deliver
+ * plain text without MarkdownV2 escaping.
+ */
+export class TelegramMessageStream implements AgentMessageStream {
+  private readonly transport: TelegramChannelTransport;
+  private readonly inner: ResilientMessageStream;
+  private readonly formatMarkdown: boolean;
+
+  constructor(options: TelegramMessageStreamOptions) {
+    const maxMessageChars = options.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
+    if (!Number.isInteger(maxMessageChars) || maxMessageChars < 32) {
+      throw new RangeError("maxMessageChars must be an integer of at least 32.");
     }
-    return new Promise<void>((resolve) => {
-      const signal = this.abortSignal;
-      const cleanup = (): void => {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", onAbort);
-      };
-      const onAbort = (): void => {
-        cleanup();
-        resolve();
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        resolve();
-      }, ms);
-      signal?.addEventListener("abort", onAbort, { once: true });
+    this.formatMarkdown = options.formatMarkdown ?? true;
+
+    this.transport = new TelegramChannelTransport({
+      api: options.api,
+      chatId: options.chatId,
+      maxMessageChars,
+      replyToMessageId: options.replyToMessageId,
+      // Streaming begins with the configured formatting; finish() may override it.
+      markdownEnabled: this.formatMarkdown,
     });
-  }
 
-  private cancelScheduledEdit(): void {
-    if (this.editTimer !== undefined) {
-      clearTimeout(this.editTimer);
-      this.editTimer = undefined;
+    const innerOptions: ConstructorParameters<typeof ResilientMessageStream>[0] = {
+      transport: this.transport,
+      maxMessageChars,
+      // The transport gates MarkdownV2 via `markdownEnabled`; the substrate always
+      // attempts the final render so its render() hook reaches our transport.
+      formatMarkdown: true,
+    };
+    if (options.initialStatusText !== undefined) {
+      innerOptions.initialStatusText = normalizeTelegramText(options.initialStatusText);
+    } else {
+      innerOptions.initialStatusText = DEFAULT_INITIAL_STATUS_TEXT;
     }
-  }
-
-  private async awaitInFlightEdit(): Promise<void> {
-    if (this.inFlightEdit !== undefined) {
-      await this.inFlightEdit;
-      this.inFlightEdit = undefined;
+    if (options.editDebounceMs !== undefined) {
+      innerOptions.editDebounceMs = options.editDebounceMs;
     }
+    if (options.maxSendRetries !== undefined) {
+      innerOptions.maxSendRetries = options.maxSendRetries;
+    }
+    if (options.retryCapMs !== undefined) {
+      innerOptions.retryCapMs = options.retryCapMs;
+    }
+    if (options.retryBaseDelayMs !== undefined) {
+      innerOptions.retryBaseDelayMs = options.retryBaseDelayMs;
+    }
+    if (options.showHints !== undefined) {
+      innerOptions.showHints = options.showHints;
+    }
+    if (options.finalOnly !== undefined) {
+      innerOptions.finalOnly = options.finalOnly;
+    }
+    if (options.abortSignal !== undefined) {
+      innerOptions.abortSignal = options.abortSignal;
+    }
+    if (options.logger !== undefined) {
+      innerOptions.logger = options.logger;
+    }
+
+    this.inner = new ResilientMessageStream(innerOptions);
   }
 
-  private assertOpen(): void {
-    if (this.finished) {
-      throw new Error("Cannot write to a finished TelegramMessageStream.");
+  async status(text: string): Promise<void> {
+    await this.inner.status(text);
+  }
+
+  async append(delta: string): Promise<void> {
+    await this.inner.append(delta);
+  }
+
+  async replace(text: string): Promise<void> {
+    await this.inner.replace(text);
+  }
+
+  async event(event: AgentStreamEvent): Promise<void> {
+    await this.inner.event(event);
+  }
+
+  async finish(finalText?: string, options?: { format?: boolean }): Promise<void> {
+    // Fixed system copy (e.g. "Cancelled.") is delivered as plain text — the
+    // transport's markdown gate is toggled for this finish so the answer is not
+    // re-rendered as MarkdownV2.
+    this.transport.markdownEnabled = this.formatMarkdown && (options?.format ?? true);
+    try {
+      await this.inner.finish(finalText);
+    } catch (error) {
+      // The substrate throws the shared ChannelDeliveryError. Normalize it to
+      // TelegramDeliveryError so callers that catch the Telegram type keep
+      // working and the base type never escapes the adapter (parity with Slack).
+      if (error instanceof ChannelDeliveryError && !(error instanceof TelegramDeliveryError)) {
+        throw new TelegramDeliveryError("Telegram final delivery failed.", {
+          cause: error.cause,
+          attempts: error.attempts,
+        });
+      }
+      throw error;
     }
   }
 }
@@ -642,27 +387,7 @@ export function classifyTelegramError(error: unknown): TelegramSendOutcome {
 }
 
 export function splitTelegramText(text: string, maxChars: number): string[] {
-  return splitTextByCodePoints(
-    normalizeTrailing(text, EMPTY_FINAL_TEXT),
-    maxChars,
-  );
-}
-
-function buildStreamingPreview(text: string, maxChars: number): string {
-  return buildStreamingTailPreview(
-    normalizeTrailing(text, EMPTY_FINAL_TEXT),
-    maxChars,
-    "…\n",
-  );
-}
-
-function buildLabeledStreamingPreview(
-  header: string,
-  text: string,
-  maxChars: number,
-): string {
-  const bodyChars = Math.max(1, maxChars - countCodePoints(header));
-  return `${header}${buildStreamingPreview(text, bodyChars)}`;
+  return splitTextByCodePoints(normalizeTrailing(text, ""), maxChars);
 }
 
 function normalizeTelegramText(text: string): string {
@@ -672,8 +397,4 @@ function normalizeTelegramText(text: string): string {
 /** Count Unicode code points — Telegram's message length is measured in them. */
 function countCodePoints(text: string): number {
   return [...text].length;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

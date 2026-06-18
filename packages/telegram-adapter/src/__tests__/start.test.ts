@@ -84,6 +84,26 @@ function messageUpdate(text: string, chatId = 42, updateId = 1): Parameters<Bot[
   } as Parameters<Bot["handleUpdate"]>[0];
 }
 
+function documentUpdate(mimeType: string, updateId = 1): Parameters<Bot["handleUpdate"]>[0] {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: 10,
+      date: 1234,
+      chat: { id: 42, type: "private" },
+      from: { id: 7, is_bot: false, first_name: "Person A" },
+      caption: "summarize",
+      document: {
+        file_id: "doc-file-id",
+        file_unique_id: "doc-unique-id",
+        file_name: "brief.pdf",
+        mime_type: mimeType,
+        file_size: 12_345,
+      },
+    },
+  } as Parameters<Bot["handleUpdate"]>[0];
+}
+
 describe("startTelegramAdapter", () => {
   it("wires the grammY bot + runner and starts polling", async () => {
     const { bot, calls } = recordingBot();
@@ -151,6 +171,40 @@ describe("startTelegramAdapter", () => {
 
     await result.stop();
     await expect(result.stop()).resolves.toBeUndefined();
+  });
+
+  it("forwards a narrower attachments policy through to the download path", async () => {
+    const { bot, calls } = recordingBot();
+    const requests: Array<{ attachments: unknown }> = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        requests.push({ attachments: request.attachments });
+        return { text: "ok" };
+      },
+    };
+
+    const result = await startTelegramAdapter({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder,
+      stream: { editDebounceMs: 0 },
+      // A policy NARROWER than the default: application/pdf is on the default
+      // allowlist but NOT on this custom one, so it must be filtered out before
+      // any download (proving the policy reached downloadTelegramAttachments).
+      attachments: { mimeAllowlist: ["text/plain"], maxBytes: 5 },
+      botFactory: () => bot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    await bot.handleUpdate(documentUpdate("application/pdf"));
+
+    expect(requests).toHaveLength(1);
+    // The disallowed MIME type was filtered: no download, no attachment bytes.
+    expect(requests[0]?.attachments).toBeUndefined();
+    // getFile is the first step of a download; it must never have been called.
+    expect(calls.some((call) => call.method === "getFile")).toBe(false);
+
+    await result.stop();
   });
 
   it("fails closed when neither allowedChatIds nor allowAllChats is provided", async () => {

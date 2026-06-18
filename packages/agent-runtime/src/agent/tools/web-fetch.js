@@ -5,8 +5,26 @@ import { resolveSandboxPolicy } from "./shared/runtime-context.js";
 
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_REDIRECTS = 5;
+// Backoff delays between retry attempts (length = number of retries). Retrying
+// transient failures in-tool stops the model from burning whole reasoning rounds
+// re-issuing the fetch (or falling back to Bash curl) on a momentary network blip.
+const DEFAULT_FETCH_RETRY_DELAYS_MS = [1000, 2000];
 
-export async function webFetchToolImpl({ url, headers = {}, max_output_chars }, { sandboxPolicy } = {}) {
+function isTransientFetchError(err) {
+  if (err === undefined || err === null) return false;
+  if (err.name === "AbortError" || err.name === "TimeoutError") return true; // timeout
+  const code = err.code ?? err.cause?.code;
+  return code === "ECONNRESET" || code === "ECONNREFUSED" || code === "ETIMEDOUT" || code === "EAI_AGAIN";
+}
+
+function fetchRetryDelay(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+export async function webFetchToolImpl(
+  { url, headers = {}, max_output_chars },
+  { sandboxPolicy, retryDelaysMs = DEFAULT_FETCH_RETRY_DELAYS_MS } = {},
+) {
   const maxChars = Number(max_output_chars) || DEFAULT_MAX_TOOL_OUTPUT_CHARS;
   let parsed;
   try { parsed = new URL(url); } catch { return "Error: Invalid URL"; }
@@ -16,18 +34,36 @@ export async function webFetchToolImpl({ url, headers = {}, max_output_chars }, 
   const policy = resolveSandboxPolicy(sandboxPolicy);
   if (!networkPolicyAllowsUrl(policy, parsed.href)) return "Error: Network access denied by sandbox policy.";
   const requestHeaders = { "User-Agent": "AgentRuntime/0.1", ...headers };
-  try {
-    const restricted = policy !== undefined && policy.network.mode !== "all";
-    const resp = restricted
-      ? await fetchCheckingRedirects(parsed, requestHeaders, policy)
-      : await fetch(url, { headers: requestHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-    if (typeof resp === "string") return resp;
-    const text = await resp.text();
-    if (!resp.ok) return `HTTP ${resp.status}: ${text.slice(0, 500)}`;
-    return capChars(text, { label: "WebFetch", maxChars });
-  } catch (err) {
-    return `Error fetching URL: ${err.message}`;
+  const restricted = policy !== undefined && policy.network.mode !== "all";
+  const maxRetries = Array.isArray(retryDelaysMs) ? retryDelaysMs.length : 0;
+
+  let lastErrorMessage = "request failed";
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      const resp = restricted
+        ? await fetchCheckingRedirects(parsed, requestHeaders, policy)
+        : await fetch(url, { headers: requestHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      if (typeof resp === "string") return resp; // policy/redirect error — not retryable
+      // Transient server errors (5xx) are worth one more attempt.
+      if (resp.status >= 500 && resp.status < 600 && attempt < maxRetries) {
+        try { await resp.body?.cancel(); } catch { /* best-effort */ }
+        lastErrorMessage = `HTTP ${resp.status}`;
+        await fetchRetryDelay(retryDelaysMs[attempt]);
+        continue;
+      }
+      const text = await resp.text();
+      if (!resp.ok) return `HTTP ${resp.status}: ${text.slice(0, 500)}`;
+      return capChars(text, { label: "WebFetch", maxChars });
+    } catch (err) {
+      lastErrorMessage = err.message;
+      if (isTransientFetchError(err) && attempt < maxRetries) {
+        await fetchRetryDelay(retryDelaysMs[attempt]);
+        continue;
+      }
+      return `Error fetching URL: ${err.message}`;
+    }
   }
+  return `Error fetching URL: ${lastErrorMessage}`;
 }
 
 // fetch() follows redirects transparently, which would let an allowed host
