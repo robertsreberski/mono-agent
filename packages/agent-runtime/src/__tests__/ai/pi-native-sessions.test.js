@@ -432,6 +432,55 @@ describe("pi-native sessions", () => {
     }
   });
 
+  it("drops the create-on-miss busy reservation when aborted during setup (no permanent session_busy wedge) (R8)", async () => {
+    // The create-on-miss reservation inserts a BUSY placeholder under the requested
+    // (stable derived) id BEFORE the durable session is created. If a transient
+    // abort fires during setup (after the entry pre-check, before the provider
+    // call), the pre-run abort guard must DROP that placeholder — otherwise it
+    // leaks busy:true and every future resume of the conversation returns
+    // session_busy forever (busy entries are never idle-evicted).
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-onmiss-abort-"));
+    try {
+      const derivedId = "conv-abort-wedge-id";
+      // aborted: false on the entry pre-check (so we proceed into create-on-miss),
+      // true at the pre-run guard (so we hit the abort cleanup path).
+      let reads = 0;
+      const flipSignal = {
+        get aborted() { reads += 1; return reads > 1; },
+        reason: undefined,
+        addEventListener() {},
+        removeEventListener() {},
+      };
+      let invoked = false;
+      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      const aborted = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "turn-1" }],
+        sessionKeepAlive: true,
+        sessionId: derivedId,
+        piSessionsRoot: root,
+        abortSignal: flipSignal,
+      }));
+      expect(aborted.cancelled).toBe(true);
+      expect(invoked).toBe(false); // aborted before the provider call
+
+      // The conversation must NOT be wedged: a fresh (non-aborted) resume of the
+      // SAME derived id must create-on-miss again and succeed — NOT session_busy.
+      faux.setResponses([fauxAssistantMessage([fauxText("reply-after")])]);
+      const next = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "turn-2" }],
+        sessionKeepAlive: true,
+        sessionId: derivedId,
+        piSessionsRoot: root,
+      }));
+      expect(next.error).toBeNull();
+      expect(next.text).toBe("reply-after");
+      expect(next.diagnostics?.pi_error_code).not.toBe("pi_session_busy");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("an in-memory resume miss (no piSessionsRoot) still fast-fails with session_not_found — create-on-miss is durable-only (F9)", async () => {
     // Guards the gate: create-on-miss fires ONLY on a durable-repo miss. Without
     // piSessionsRoot a resume miss must keep the existing per-process
@@ -497,6 +546,123 @@ describe("pi-native sessions", () => {
     expect(busy).toHaveLength(1);
     expect(winners[0].text).toBe("reply-2");
     expect(busy[0].diagnostics.pi_error_code).toBe("pi_session_busy");
+  });
+
+  it("serializes two concurrent FIRST turns (create-on-miss) for one durable id (one wins, the other returns session_busy, exactly ONE jsonl) (R8)", async () => {
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-coldcreate-"));
+    try {
+      // Both calls target the SAME requested id against an EMPTY sessions root, so
+      // each MISSES the registry AND finds no jsonl on disk → both take the
+      // create-on-miss branch. Without the R8 reservation both would create a
+      // durable session under the same id, leaving two transcripts for one logical
+      // id (JsonlSessionRepo names files by `${createdAt}_${id}`, no fs dedup). The
+      // fix reserves a BUSY placeholder synchronously before the create await, so
+      // the loser observes it and returns session_busy — exactly one create.
+      const derivedId = "concurrent-create-on-miss-id";
+
+      // Gate the winner mid-run so the session is observably busy (placeholder
+      // reserved) while the loser races through the create-on-miss branch. Count
+      // provider invocations: the loser must return BEFORE harness.prompt, so the
+      // faux provider runs exactly once.
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      let invocations = 0;
+      faux.setResponses([
+        async () => { invocations += 1; await gate; return fauxAssistantMessage([fauxText("reply-1")]); },
+      ]);
+
+      const optionsCreate = runOptions(model, {
+        messages: [{ role: "user", content: "turn-1" }],
+        sessionKeepAlive: true,
+        sessionId: derivedId,
+        piSessionsRoot: root,
+      });
+      // Fire BOTH first turns without an intervening await so the create await
+      // (the jsonl repo's async create) interleaves them through the window.
+      const runA = generatePiNativeResponse("system", optionsCreate);
+      const runB = generatePiNativeResponse("system", optionsCreate);
+
+      // Let the winner reserve the busy placeholder and the loser observe it,
+      // then release the gated winning turn.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      release();
+      const settled = await Promise.allSettled([runA, runB]);
+      expect(settled.every((entry) => entry.status === "fulfilled")).toBe(true);
+      const results = settled.map((entry) => entry.value);
+
+      const winners = results.filter((result) => result.error === null);
+      const busy = results.filter((result) => result.failureKind === "session_busy");
+      expect(winners).toHaveLength(1);
+      expect(busy).toHaveLength(1);
+      expect(winners[0].text).toBe("reply-1");
+      expect(winners[0].providerSessionId).toBe(derivedId);
+      expect(busy[0].diagnostics.pi_error_code).toBe("pi_session_busy");
+      // The loser returned before issuing a provider request, so exactly one
+      // create happened: exactly ONE durable transcript on disk, one invocation.
+      expect(countJsonlFiles(root)).toBe(1);
+      expect(invocations).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a single create-on-miss first turn does NOT observe itself as busy (R8 regression)", async () => {
+    // Guards the R8 reservation against over-firing: a lone create-on-miss must
+    // reserve, create, and run to success — never trip its own busy placeholder.
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-lonecreate-"));
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("reply-1")])]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "turn-1" }],
+        sessionKeepAlive: true,
+        sessionId: "lone-create-on-miss-id",
+        piSessionsRoot: root,
+      }));
+      expect(result.error).toBeNull();
+      expect(result.failureKind).toBeNull();
+      expect(result.text).toBe("reply-1");
+      expect(result.providerSessionId).toBe("lone-create-on-miss-id");
+      expect(countJsonlFiles(root)).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses create-on-miss for a path-traversal session id and writes no file (R4)", async () => {
+    // Defense in depth: providerSessionId can equal the caller-controlled
+    // options.sessionId, and create-on-miss passes it to durableRepo.create({ id }),
+    // which JsonlSessionRepo turns into the filename `${createdAt}_${id}.jsonl`. A
+    // traversal id like "../../../../tmp/pwn" would escape piSessionsRoot. The
+    // bridge must NOT create-on-miss for an unsafe id — it falls through to the
+    // existing session_not_found fast-fail, so a malicious id never names a file.
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-traversal-"));
+    const escapeDir = mkdtempSync(join(tmpdir(), "pi-native-escape-"));
+    try {
+      let invoked = false;
+      faux.setResponses([() => { invoked = true; return fauxAssistantMessage([fauxText("never")]); }]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "hello" }],
+        sessionKeepAlive: true,
+        // Points outside `root`; if create-on-miss ran, JsonlSessionRepo would
+        // write `<createdAt>_<...>/tmp/pwn.jsonl`, escaping the sessions root.
+        sessionId: `../../../../${escapeDir.replace(/^\//, "")}/pwn`,
+        piSessionsRoot: root,
+      }));
+
+      // Unsafe id → fast-fail, identical to the in-memory resume-miss contract.
+      expect(result.failureKind).toBe("session_not_found");
+      expect(result.diagnostics.pi_error_code).toBe("pi_session_not_found");
+      expect(invoked).toBe(false);
+      // No file under the sessions root, and nothing escaped to the sibling dir.
+      expect(countJsonlFiles(root)).toBe(0);
+      expect(countJsonlFiles(escapeDir)).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(escapeDir, { recursive: true, force: true });
+    }
   });
 
   it("drops the durable jsonl session when a fresh run throws during execution", async () => {

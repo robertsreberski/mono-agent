@@ -224,16 +224,48 @@ const FILE_BEARING_MESSAGE_SUBTYPES: ReadonlySet<string> = new Set([
   "thread_broadcast",
 ]);
 
+// Mirrors the harness LiveSessionManager's DEFAULT_MAX_PENDING_PER_CONVERSATION:
+// the per-conversation admission queue rejects past this depth so a flood of
+// same-conversation messages cannot grow the queue unbounded.
+const DEFAULT_ADMISSION_QUEUE_MAX_DEPTH = 100;
+
+/**
+ * Thrown synchronously by {@link SerialQueue.run} when the queue is already at
+ * its depth cap. The adapter catches this sentinel to answer with the busy
+ * terminal instead of admitting an unbounded backlog.
+ */
+export class SerialQueueFullError extends Error {
+  readonly code = "serial_queue_full" as const;
+
+  constructor(maxDepth: number) {
+    super(`Per-conversation admission queue is full (max ${maxDepth} pending).`);
+    this.name = "SerialQueueFullError";
+  }
+}
+
 /**
  * Minimal per-conversation serial queue: each submitted task runs only after the
  * previous one settles, preserving arrival order. A task's failure does not
  * poison the queue (the chain swallows it; the caller still sees the rejection).
+ *
+ * The queue is bounded by {@link maxDepth}: once `depth` reaches the cap, `run`
+ * rejects synchronously with a {@link SerialQueueFullError} BEFORE incrementing
+ * or chaining, so an over-cap task never enters the chain (mirroring the harness
+ * LiveSessionManager's maxPendingPerConversation rejection).
  */
-class SerialQueue {
+export class SerialQueue {
   private tail: Promise<void> = Promise.resolve();
   private depth = 0;
+  private readonly maxDepth: number;
+
+  constructor(maxDepth: number = DEFAULT_ADMISSION_QUEUE_MAX_DEPTH) {
+    this.maxDepth = maxDepth;
+  }
 
   run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.depth >= this.maxDepth) {
+      return Promise.reject(new SerialQueueFullError(this.maxDepth));
+    }
     this.depth += 1;
     const result = this.tail.then(() => task());
     this.tail = result.then(() => undefined, () => undefined);
@@ -248,6 +280,10 @@ class SerialQueue {
   get idle(): boolean {
     return this.depth === 0;
   }
+}
+
+function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
+  return error instanceof SerialQueueFullError;
 }
 
 export class SlackAdapter {
@@ -424,6 +460,21 @@ export class SlackAdapter {
     }
     try {
       return await queue.run(() => this.respondToEvent(event, text, runKey, controller));
+    } catch (error) {
+      if (isSerialQueueFullError(error)) {
+        // Over-cap: the task was rejected BEFORE entering the queue, so
+        // respondToEvent (and its finally) never ran. Unregister the eagerly
+        // created controller here so it does not leak in activeControllers, then
+        // answer with the busy terminal instead of admitting an unbounded backlog.
+        this.unregisterController(runKey, controller);
+        await this.api.chatPostMessage({
+          channel: event.channelId,
+          text: this.messages.busyText,
+          thread_ts: event.threadTs,
+        });
+        return { kind: "busy", eventId: event.eventId, channelId: event.channelId };
+      }
+      throw error;
     } finally {
       if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
         this.admissionQueues.delete(conversationId);

@@ -28,8 +28,8 @@ export interface CronJob {
 
 /**
  * Overlap policy when a job fires while a prior run is still active.
- * - "queue" (default): preserve the firing and run it after the current one.
- * - "skip": drop the new firing (legacy behavior).
+ * - "skip" (default): drop the new firing (legacy behavior).
+ * - "queue": preserve the firing and run it after the current one.
  * - "replace": abort the active run and run the newest firing instead.
  */
 export type CronOverlapMode = "queue" | "skip" | "replace";
@@ -231,7 +231,13 @@ export function handleTick(
     return;
   }
   if (mode === "replace") {
-    // Discard pending + the in-flight run; the newest firing wins.
+    // Discard pending + the in-flight run; the newest firing wins. Emit a
+    // terminal "dropped" for every firing we discard so a previously-reported
+    // kind:"queued" never becomes a dangling firing with no terminal — mirroring
+    // the queue branch's drop-oldest/coalesce observability below.
+    for (const dropped of state.pending) {
+      void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+    }
     state.pending = [{ scheduledAt }];
     state.active.abort(new Error("Cron job replaced by a newer scheduled run."));
     void emitResult(options, { kind: "queued", jobId: job.id, scheduledAt, queueDepth: state.pending.length });

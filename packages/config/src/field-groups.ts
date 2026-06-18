@@ -367,7 +367,7 @@ export const memoryFieldGroup = defineFieldGroup({
     {
       id: "memory.recallTool.enabled",
       label: "Recall tool enabled",
-      description: "Expose a read-only memory_recall tool (embeddings+FTS, no chat LLM) to the agent. Default on for journal/bujo.",
+      description: "Expose a read-only memory_recall tool (semantic + FTS keyword search; FTS-only when embeddings are absent; no chat LLM) to the agent. Default on for journal/bujo when embeddings are configured.",
       kind: "switch",
       path: ["memory", "recallTool", "enabled"],
     },

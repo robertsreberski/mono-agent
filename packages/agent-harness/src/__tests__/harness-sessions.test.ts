@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { HistoryMessage } from "@mono-agent/context";
 import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-store";
+import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import { AgentHarnessError, createAgentHarness, createInMemoryHistoryStore } from "../index.js";
@@ -573,5 +574,135 @@ describe("AgentHarness continuous sessions", () => {
     expect(runCount).toBe(3);
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
     expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+  });
+
+  it("does not commit a turn cancelled DURING recorder.finish() after runRuntime succeeds (R9)", async () => {
+    const identityPath = await identityFixture();
+    const history = createSpyHistoryStore();
+    const memory = createSpyMemoryStore();
+    const controller = new AbortController();
+    // The runtime returns success cleanly (no abort during the run). The abort
+    // is injected LATER, inside recorder.finish() — simulating a live-session
+    // cancel landing during the post-runtime commit path (after the line-221
+    // guard, while `await recorder.finish()` yields to the event loop). The
+    // pre-commit recheck (R9) must catch it before saveSession/persist.
+    const fake = createSessionFakeRuntime(async () => ({ text: "done", providerSessionId: "ps-x" }));
+    // A recorder whose finish() aborts the request before resolving — the abort
+    // lands AFTER runRuntime returned but BEFORE the commit.
+    const recorderFactory = (input: { readonly runId: string; readonly conversationId: string }): RunRecorder => {
+      const startedAt = Date.now();
+      const summary = (status: RunSummary["status"], result: RuntimeResultLike): RunSummary => ({
+        runId: input.runId,
+        conversationId: input.conversationId,
+        status,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
+        eventCount: 0,
+        artifactPaths: [],
+      });
+      return {
+        onEvent(_event: RuntimeEventLike): void {},
+        async start(): Promise<RunSummary> {
+          return summary("running", {});
+        },
+        async finish(result: RuntimeResultLike): Promise<RunSummary> {
+          // Simulate the disk-I/O yield in production finish(): flip the abort
+          // before resolving so the pre-commit recheck sees it.
+          controller.abort(new Error("cancelled during finish"));
+          await Promise.resolve();
+          return summary(result.cancelled === true ? "cancelled" : "succeeded", result);
+        },
+        async fail(): Promise<RunSummary> {
+          return summary("failed", {});
+        },
+      };
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      session,
+      historyStore: history.store,
+      memory: memory.store,
+      memoryWriteMode: "capture",
+      recorderFactory,
+    });
+
+    const response = await harness.run({ conversationId: "conv-1", userMessage: "hello", abortSignal: controller.signal });
+
+    // The response is a cancelled failure, not a committed success.
+    expect(response.text).toBeUndefined();
+    expect(response.failure?.kind).toBe("cancelled");
+    // No history committed for the cancelled turn.
+    expect(history.appended).toHaveLength(0);
+    // No memory written for the cancelled turn.
+    expect(memory.hostSummaryCalls()).toBe(0);
+    expect(memory.captureCalls()).toBe(0);
+    // The provider session returned by the (successful) run was disposed, so the
+    // next turn replays history into a fresh session.
+    expect(fake.disposedSessions).toContain("ps-x");
+  });
+
+  it("rejects the caller and persists nothing when cancel() lands during finish() on a continuous harness (R9 e2e)", async () => {
+    const identityPath = await identityFixture();
+    const history = createSpyHistoryStore();
+    const memory = createSpyMemoryStore();
+    // finishGate lets the test release recorder.finish() only after it has
+    // observed the active turn, so cancel() and finish() are deterministically
+    // ordered: finish() begins (signalling finishStarted), the test cancels,
+    // then releases finishGate so finish() resolves.
+    let signalFinishStarted!: () => void;
+    const finishStartedSignal = new Promise<void>((resolve) => { signalFinishStarted = resolve; });
+    let releaseFinish!: () => void;
+    const finishGate = new Promise<void>((resolve) => { releaseFinish = resolve; });
+    const fake = createSessionFakeRuntime(async () => ({ text: "done", providerSessionId: "ps-e2e" }));
+    const recorderFactory = (input: { readonly runId: string; readonly conversationId: string }): RunRecorder => {
+      const startedAt = Date.now();
+      const summary = (status: RunSummary["status"], result: RuntimeResultLike): RunSummary => ({
+        runId: input.runId,
+        conversationId: input.conversationId,
+        status,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
+        eventCount: 0,
+        artifactPaths: [],
+      });
+      return {
+        onEvent(): void {},
+        async start(): Promise<RunSummary> { return summary("running", {}); },
+        async finish(result: RuntimeResultLike): Promise<RunSummary> {
+          signalFinishStarted();
+          await finishGate;
+          return summary(result.cancelled === true ? "cancelled" : "succeeded", result);
+        },
+        async fail(): Promise<RunSummary> { return summary("failed", {}); },
+      };
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      session,
+      historyStore: history.store,
+      memory: memory.store,
+      memoryWriteMode: "capture",
+      recorderFactory,
+    });
+
+    const caller = harness.submit!({ conversationId: "conv-e2e", userMessage: "hello", abortSignal: new AbortController().signal });
+    // Once finish() is in flight, cancel the conversation — this aborts the
+    // active turn's request signal, which the pre-commit recheck must observe.
+    await finishStartedSignal;
+    harness.cancel!("conv-e2e");
+    releaseFinish();
+
+    // The caller promise rejects (cancelled), agreeing with the no-persist path.
+    await expect(caller).rejects.toMatchObject({ name: "AgentResponseCancelledError" });
+    expect(history.appended).toHaveLength(0);
+    expect(memory.hostSummaryCalls()).toBe(0);
+    expect(memory.captureCalls()).toBe(0);
+    expect(fake.disposedSessions).toContain("ps-e2e");
   });
 });

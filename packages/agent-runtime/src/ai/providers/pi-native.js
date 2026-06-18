@@ -230,6 +230,26 @@ function resolveDurableNativeSessionRepo(piSessionsRoot) {
   return repo;
 }
 
+// Defense in depth (R4): create-on-miss passes the caller-controlled session id
+// straight to durableRepo.create({ id }), and JsonlSessionRepo writes
+// `${createdAt}_${id}.jsonl` — so an id like "../../../../tmp/pwn" would escape
+// piSessionsRoot and name a file anywhere on disk. The harness-derived id is a
+// sha256 hex (always safe), but the public runtime API is caller-controlled.
+// Only an id that is a single safe filename component may CREATE a session;
+// anything else falls through to the existing session_not_found fast-fail, so a
+// malicious id can never name a file. (A genuinely on-disk session reopened by
+// reopenDurableNativeSession is matched by `.id`, never used to build a path, so
+// this gate is confined to the create path.)
+const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+function isSafeSessionId(id) {
+  return typeof id === "string"
+    && SAFE_SESSION_ID.test(id)
+    && !id.includes("..")
+    && !id.includes("/")
+    && !id.includes("\\");
+}
+
 async function reopenDurableNativeSession(repo, sessionId) {
   try {
     const metadata = (await repo.list()).find((entry) => entry?.id === sessionId);
@@ -366,6 +386,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   // set): the on-disk transcript is empty, so prior messages must still be
   // seeded — unlike a resume, where the session already holds them.
   let createdOnMiss = false;
+  // True once the create-on-miss path inserted its BUSY placeholder into the
+  // registry (R8 concurrent-first-turn reservation). Used to clean the
+  // placeholder up on the drop/error/abort paths, since createdOnMiss leaves
+  // sessionEntry null so the finally's busy-clear does not cover it.
+  let createdOnMissPlaceholder = false;
   let sessionBaselineCount = 0;
   // Leaf captured before a resumed turn runs, so a failed resume can be rolled
   // back to the last good transcript via moveTo. Hoisted to function scope so
@@ -397,7 +422,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         }
       }
       if (!entry) {
-        if (durableRepo) {
+        if (durableRepo && isSafeSessionId(providerSessionId)) {
           // Create-on-miss (durable resume only): the requested id has no live
           // registry entry AND no JSONL on disk under piSessionsRoot. This is
           // the cross-restart resume case — the harness derives a stable id from
@@ -409,10 +434,43 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           // conversation resolve to the same on-disk transcript. sessionEntry
           // stays null so this proceeds exactly like a fresh run (prior messages
           // are seeded, the keep-alive success path registers + persists it).
-          // The IN-MEMORY resume miss (no durableRepo) keeps fast-failing below,
-          // preserving the existing per-process session_not_found contract.
-          session = await durableRepo.create({ id: providerSessionId, cwd: options.cwd || process.cwd() });
-          createdOnMiss = true;
+          // The IN-MEMORY resume miss (no durableRepo) — and a create-on-miss
+          // with an UNSAFE id (R4) — keep fast-failing below, preserving the
+          // existing per-process session_not_found contract.
+          //
+          // Concurrent-first-turn race (R8): two concurrent first turns for the
+          // same durable id would BOTH miss here and BOTH create, producing two
+          // transcripts for one logical id (JsonlSessionRepo names files by
+          // `${createdAt}_${id}`, so there is no fs-level dedup). Mirror the
+          // cold-reopen-race defense: synchronously (NO await) re-check the
+          // registry, then reserve the id with a BUSY placeholder before the
+          // create await. The get→check→set span MUST stay await-free, so the
+          // loser observes the busy placeholder and returns session_busy via the
+          // same busy-claim path below — exactly one create per durable id.
+          const concurrent = nativeSessions.get(requestedSessionId);
+          if (concurrent) {
+            // A concurrent caller already reserved/created this id in the window
+            // since the miss above. Adopt its entry and fall into the busy-claim
+            // logic (session_busy if its turn is in flight, else resume).
+            entry = concurrent;
+          } else {
+            // Reserve the id with a busy placeholder BEFORE the create await so a
+            // second concurrent first turn observes busy and returns session_busy.
+            // The keep-alive success path (set(providerSessionId, ...) with
+            // busy:false) overwrites this placeholder on success; the drop/abort/
+            // catch paths delete it by requestedSessionId/providerSessionId (they
+            // are equal here). Keyed by requestedSessionId === providerSessionId.
+            nativeSessions.set(requestedSessionId, {
+              session: null,
+              metadata: null,
+              repo: durableRepo,
+              durable: true,
+              busy: true,
+            }, { idleTimeoutMs: sessionTtlMs });
+            createdOnMissPlaceholder = true;
+            session = await durableRepo.create({ id: providerSessionId, cwd: options.cwd || process.cwd() });
+            createdOnMiss = true;
+          }
         } else {
           return sessionUnavailableResult({
             resolved,
@@ -426,7 +484,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
             piErrorCode: "pi_session_not_found",
           });
         }
-      } else {
+      }
+      if (entry && !createdOnMiss) {
         // The busy claim MUST stay await-free between the registry adoption
         // above and `entry.busy = true` below: get/set + this check/claim are
         // all synchronous, which is what makes the cold-resume race (F4) safe.
@@ -739,6 +798,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       if (session && !sessionEntry) {
         try { await (durableRepo || nativeSessionRepo).delete(await session.getMetadata()); } catch { /* best-effort */ }
       }
+      // Drop the create-on-miss BUSY reservation too. The finally only clears
+      // sessionEntry.busy (null here), so without this the busy placeholder leaks
+      // and every future resume of this conversation's stable id returns
+      // session_busy forever (busy entries are never idle-evicted). Mirrors the
+      // lifecycle drop branch + outer catch cleanup.
+      if (createdOnMissPlaceholder) nativeSessions.delete(providerSessionId);
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId });
     }
 
@@ -996,6 +1061,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // Fresh, non-keep-alive (or failed first) run: never leave a live session
       // behind. A durable jsonl transcript on disk is dropped too, matching the
       // legacy default contract that a non-keep-alive run is not resumable.
+      // A create-on-miss BUSY placeholder (R8) is keyed under
+      // requestedSessionId === providerSessionId; drop it here too so a
+      // non-keep-alive / errored / aborted first turn never leaks a busy entry
+      // (the success keep-alive path overwrites it with the finalized entry, so
+      // it is only this drop branch that must clean it up).
+      if (createdOnMissPlaceholder) nativeSessions.delete(providerSessionId);
       try {
         await (durableRepo || nativeSessionRepo).delete(await session.getMetadata());
       } catch { /* best-effort */ }
@@ -1063,6 +1134,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     if (session && !sessionEntry) {
       try { await (durableRepo || nativeSessionRepo).delete(await session.getMetadata()); } catch { /* best-effort */ }
     }
+    // Drop a create-on-miss BUSY placeholder (R8) left in the registry by a throw
+    // during/after the reservation — including a throw inside the create await
+    // itself, where `session` is still null so the jsonl-delete above is skipped.
+    // Keyed under requestedSessionId === providerSessionId; never set on a resume
+    // (sessionEntry would be non-null), so this never deletes a live user session.
+    if (createdOnMissPlaceholder && !sessionEntry) nativeSessions.delete(providerSessionId);
     // Resumed-session rollback for host/runtime-side throws (e.g. a throwing
     // custom pricing resolver / bridge event callback) that land here AFTER the
     // harness already mutated the live session. Mirrors the success-path

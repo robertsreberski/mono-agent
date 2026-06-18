@@ -219,15 +219,7 @@ export class MonoAgentHarness implements AgentHarness {
       // evict/dispose any returned provider session (mirrors the empty-turn
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
-        if (sessionRecord !== undefined) {
-          await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
-        } else if (this.sessionsEnabled() && typeof runtimeResult.providerSessionId === "string" && runtimeResult.providerSessionId.trim().length > 0) {
-          try {
-            await this.options.runtime.disposeSession?.(runtimeResult.providerSessionId);
-          } catch {
-            // Bridge TTL backstop reclaims it eventually.
-          }
-        }
+        await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
         const summary = await recorder.finish({ ...runtimeResult, cancelled: true, failureKind: "cancelled" });
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
@@ -255,20 +247,36 @@ export class MonoAgentHarness implements AgentHarness {
         // Empty turns are not appended to history, so a retained provider
         // session would diverge from the history store. Retire it instead;
         // the next message replays history into a fresh session.
-        if (sessionRecord !== undefined) {
-          await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
-        } else if (this.sessionsEnabled() && typeof runtimeResult.providerSessionId === "string" && runtimeResult.providerSessionId.trim().length > 0) {
-          try {
-            await this.options.runtime.disposeSession?.(runtimeResult.providerSessionId);
-          } catch {
-            // Bridge TTL backstop reclaims it eventually.
-          }
-        }
+        await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
         return {
           metadata: baseMetadata,
           failure: {
             kind: "empty_response",
             message: "Runtime completed without assistant text.",
+            details: runtimeResult,
+          },
+        };
+      }
+
+      // Final cancellation recheck immediately before the commit (R9): the
+      // line-221 guard and the empty-text branch are point-in-time checks, but
+      // `await recorder.finish()` above yields to the event loop (real disk I/O
+      // in production), during which a live-session cancel()/request-signal
+      // abort can flip request.abortSignal.aborted. Committing here would bake a
+      // cancelled turn into the warm session + history + memory, diverging from
+      // what the caller (whose promise the LiveSessionManager already rejected)
+      // believes happened. So retire the session and return a cancelled failure
+      // WITHOUT saveSession/persistSuccessfulTurn. The summary from finish()
+      // above is reused as-is (calling finish() a second time would double-write
+      // artifacts); the only cosmetic cost is the recorded artifact says
+      // 'succeeded' for a turn that returns cancelled.
+      if (request.abortSignal.aborted) {
+        await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
+        return {
+          metadata: baseMetadata,
+          failure: {
+            kind: "cancelled",
+            message: "Agent request was cancelled during the turn.",
             details: runtimeResult,
           },
         };
@@ -341,6 +349,30 @@ export class MonoAgentHarness implements AgentHarness {
       return;
     }
     this.sessionStore?.save(conversationId, providerSessionId, owner);
+  }
+
+  /**
+   * Retires the provider session attached to a turn that will NOT be committed
+   * (cancelled mid-turn or empty-text). Evicts a confirmed warm sessionRecord
+   * via the store (its onEvict disposes the provider session), otherwise
+   * disposes the freshly returned providerSessionId directly. Shared by all
+   * three non-commit exits (post-runtime abort guard, the empty-text branch,
+   * and the pre-commit abort recheck) so they stay consistent.
+   */
+  private async retireRunResultSession(
+    conversationId: string,
+    sessionRecord: RuntimeSessionRecord | undefined,
+    providerSessionId: unknown,
+  ): Promise<void> {
+    if (sessionRecord !== undefined) {
+      await this.sessionStore?.evict(conversationId, "stale", sessionRecord.providerSessionId);
+    } else if (this.sessionsEnabled() && typeof providerSessionId === "string" && providerSessionId.trim().length > 0) {
+      try {
+        await this.options.runtime.disposeSession?.(providerSessionId);
+      } catch {
+        // Bridge TTL backstop reclaims it eventually.
+      }
+    }
   }
 
   private async prepareContext(
@@ -528,10 +560,28 @@ export class MonoAgentHarness implements AgentHarness {
     // (aborted while queued) still runs requestExtension.cleanup(); release()
     // is guarded by `acquired` so it only fires when a slot was actually taken.
     let acquired = false;
+    // Release-on-abort (R10): the permit's lifetime is otherwise coupled to
+    // runtime.run() settlement, but a /cancel severs the caller without forcing
+    // settlement. An abort-ignoring, never-resolving runtime.run would then
+    // retain its maxConcurrentRuns slot forever, stalling all subsequent turns.
+    // So once a slot is held, an abort frees it promptly and lets the orphaned
+    // run finish detached — the same "settle the resource on cancel, let the
+    // zombie finish" tradeoff the live-session queue already makes. `released`
+    // makes release idempotent so the finally never double-releases (and so the
+    // resume-retry's second runRuntime at run() scope is unaffected).
+    let released = false;
+    const releaseSlot = (): void => {
+      if (acquired && !released) {
+        released = true;
+        this.runLimiter?.release();
+      }
+    };
+    const onAbortReleaseSlot = (): void => releaseSlot();
     try {
       if (this.runLimiter !== undefined) {
         await this.runLimiter.acquire(request.abortSignal);
         acquired = true;
+        request.abortSignal.addEventListener("abort", onAbortReleaseSlot, { once: true });
       }
       // The provider call is starting: this run has left the admission-pending
       // tier (it now holds a provider slot rather than waiting for one), so
@@ -554,9 +604,11 @@ export class MonoAgentHarness implements AgentHarness {
         hostOnEvent?.(latencyEvent);
       }
     } finally {
-      if (acquired) {
-        this.runLimiter?.release();
-      }
+      // Remove the abort listener to avoid leaking it on the signal, then run
+      // the (idempotent) release so the slot frees exactly once whether the run
+      // settled normally or an abort already released it.
+      request.abortSignal.removeEventListener("abort", onAbortReleaseSlot);
+      releaseSlot();
       await requestExtension?.cleanup?.();
     }
   }

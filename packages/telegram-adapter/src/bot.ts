@@ -34,16 +34,52 @@ const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
 // request. Telegram sends album parts back-to-back (sub-second), so ~1s is safe.
 const DEFAULT_ALBUM_AGGREGATION_DELAY_MS = 1000;
 
+// Mirrors the harness LiveSessionManager's DEFAULT_MAX_PENDING_PER_CONVERSATION:
+// the per-chat admission queue rejects past this depth so a flood of same-chat
+// messages cannot grow the queue unbounded.
+const DEFAULT_ADMISSION_QUEUE_MAX_DEPTH = 100;
+
+/**
+ * Thrown synchronously by {@link SerialQueue.run} when the queue is already at
+ * its depth cap. The bot catches this sentinel to answer with the busy reply
+ * instead of admitting an unbounded backlog.
+ */
+export class SerialQueueFullError extends Error {
+  readonly code = "serial_queue_full" as const;
+
+  constructor(maxDepth: number) {
+    super(`Per-chat admission queue is full (max ${maxDepth} pending).`);
+    this.name = "SerialQueueFullError";
+  }
+}
+
+function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
+  return error instanceof SerialQueueFullError;
+}
+
 /**
  * Minimal per-conversation serial queue: each submitted task runs only after the
  * previous one settles, preserving arrival order. A task's failure does not
  * poison the queue (the chain swallows it; the caller still sees the rejection).
+ *
+ * The queue is bounded by {@link maxDepth}: once `depth` reaches the cap, `run`
+ * rejects synchronously with a {@link SerialQueueFullError} BEFORE incrementing
+ * or chaining, so an over-cap task never enters the chain (mirroring the harness
+ * LiveSessionManager's maxPendingPerConversation rejection).
  */
-class SerialQueue {
+export class SerialQueue {
   private tail: Promise<void> = Promise.resolve();
   private depth = 0;
+  private readonly maxDepth: number;
+
+  constructor(maxDepth: number = DEFAULT_ADMISSION_QUEUE_MAX_DEPTH) {
+    this.maxDepth = maxDepth;
+  }
 
   run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.depth >= this.maxDepth) {
+      return Promise.reject(new SerialQueueFullError(this.maxDepth));
+    }
     this.depth += 1;
     const result = this.tail.then(() => task());
     this.tail = result.then(() => undefined, () => undefined);
@@ -109,6 +145,11 @@ export interface TelegramBotController {
   start(): Promise<void>;
   /** Stop polling and wait for the runner to settle. */
   stop(): Promise<void>;
+  /**
+   * Test seam: total in-flight AbortControllers tracked across all chats. Used to
+   * assert the over-cap busy path does not leak an eagerly-created controller.
+   */
+  activeControllerCount(): number;
 }
 
 type TelegramControlCommand = "start" | "help" | "cancel";
@@ -288,10 +329,19 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
    * (preserving harness FIFO arrival order and bounding concurrent same-chat
    * downloads). Cross-chat concurrency is preserved because queues are keyed per
    * chat id (the same key /cancel uses for activeControllers).
+   *
+   * The queue is bounded: a same-chat flood past the depth cap is rejected by
+   * SerialQueue.run BEFORE the task enters the chain, so the over-cap message is
+   * never admitted. On that rejected path the task body never runs — its eager
+   * controller (and, for an album, its reserved slot) never reach the cleanup in
+   * runAgentTurn/flushAlbum — so the caller supplies an `onReject` callback to
+   * settle/unregister those eagerly-created resources, after which we reply with
+   * the busy terminal instead of admitting an unbounded backlog.
    */
   async function admit(
     chatId: TelegramChatId,
     task: () => Promise<void>,
+    onReject?: () => void | Promise<void>,
   ): Promise<void> {
     const key = String(chatId);
     let queue = admissionQueues.get(key);
@@ -301,6 +351,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     try {
       await queue.run(task);
+    } catch (error) {
+      if (isSerialQueueFullError(error)) {
+        await onReject?.();
+        return;
+      }
+      throw error;
     } finally {
       if (queue.idle && admissionQueues.get(key) === queue) {
         admissionQueues.delete(key);
@@ -342,7 +398,17 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     // Register the controller before admission so /cancel can abort this message
     // even while it is still parked behind an earlier same-chat run.
     const controller = registerController(chatId);
-    await admit(chatId, () => runAgentTurn(ctx, telegramMessage, input, controller));
+    await admit(
+      chatId,
+      () => runAgentTurn(ctx, telegramMessage, input, controller),
+      // Over-cap: the task was rejected before entering the queue, so runAgentTurn
+      // (and its finally) never ran. Unregister the eagerly created controller so
+      // it does not leak in activeControllers, then reply with the busy terminal.
+      async () => {
+        unregisterController(chatId, controller);
+        await ctx.reply(messages.busyText);
+      },
+    );
   }
 
   function bufferAlbumMessage(
@@ -369,11 +435,31 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // fires independently of queue progress, so there is no deadlock.
       const controller = registerController(chatId);
       const ready = createDeferred<AlbumWork>();
-      albumBuffers.set(key, { ctx, messages: [message], timer: schedule(), controller, ready });
-      void admit(chatId, async () => {
-        const work = await ready.promise;
-        await work();
-      });
+      const timer = schedule();
+      albumBuffers.set(key, { ctx, messages: [message], timer, controller, ready });
+      void admit(
+        chatId,
+        async () => {
+          const work = await ready.promise;
+          await work();
+        },
+        // Over-cap: the reserved album slot was rejected before entering the
+        // queue, so flushAlbum's later run/settle never executes for it. Drop the
+        // buffered album (clear its timer, remove it, settle the deferred), and
+        // unregister the eager controller so it does not leak; then reply busy.
+        async () => {
+          const buffered = albumBuffers.get(key);
+          if (buffered !== undefined) {
+            clearTimeout(buffered.timer);
+            albumBuffers.delete(key);
+            buffered.ready.resolve(noopAlbumWork);
+          } else {
+            ready.resolve(noopAlbumWork);
+          }
+          unregisterController(chatId, controller);
+          await ctx.reply(messages.busyText);
+        },
+      );
       return;
     }
     existing.messages.push(message);
@@ -601,6 +687,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   return {
     bot,
+    activeControllerCount(): number {
+      let total = 0;
+      for (const set of activeControllers.values()) {
+        total += set.size;
+      }
+      return total;
+    },
     async start(): Promise<void> {
       if (runnerHandle?.isRunning() === true) {
         return;

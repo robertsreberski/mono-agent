@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 
 import {
+  SerialQueue,
+  SerialQueueFullError,
   SlackAdapter,
   type AgentRequest,
   type AgentResponder,
@@ -316,6 +318,88 @@ describe("SlackAdapter", () => {
     // Delivered in arrival order, one final post each.
     expect(api.postMessageCalls.map((call) => call.text)).toEqual(["done-1", "done-2"]);
     expect(api.updateCalls).toEqual([]);
+  });
+
+  it("rejects an over-cap same-thread flood with a busy result and posts busyText without leaking its controller", async () => {
+    const api = new FakeSlackApi();
+    const active = createDeferred<{ text: string }>();
+    let respondCalls = 0;
+    let activeStarted = false;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async () => {
+        respondCalls += 1;
+        activeStarted = true;
+        // The first run blocks forever (until the test settles it), holding the
+        // queue's active slot so the flood parks behind it.
+        return active.promise;
+      }),
+    });
+
+    // One blocking active run takes the queue's running slot (depth 1).
+    const activeRun = adapter.handleEventCallback(directMessage("active"));
+    await vi.waitFor(() => expect(activeStarted).toBe(true));
+
+    // The admission SerialQueue caps depth at 100. The active run holds 1 slot, so
+    // 99 more same-thread messages fill the queue to the cap; the 100th queued
+    // message (the cap+1-th in total) must be rejected as busy.
+    const maxDepth = 100;
+    const queued: Array<Promise<unknown>> = [];
+    for (let i = 0; i < maxDepth - 1; i += 1) {
+      queued.push(
+        adapter.handleEventCallback(
+          directMessage(`fill-${i}`, {
+            eventId: `Evfill${i}`,
+            ts: `171.0001${i}`,
+            threadTs: "171.000001",
+          }),
+        ),
+      );
+    }
+
+    // This over-cap message is rejected synchronously by the queue (depth === cap)
+    // and never reaches the responder.
+    const overCap = await adapter.handleEventCallback(
+      directMessage("over-cap", {
+        eventId: "EvOverCap",
+        ts: "171.000999",
+        threadTs: "171.000001",
+      }),
+    );
+
+    expect(overCap).toEqual({ kind: "busy", eventId: "EvOverCap", channelId: "D123" });
+    // The busy terminal copy was posted to the thread.
+    expect(api.postMessageCalls.at(-1)).toEqual({
+      channel: "D123",
+      text: "I am still working on this Slack thread. Use /cancel to stop it.",
+      thread_ts: "171.000001",
+    });
+    // Only the active run reached the responder; the over-cap message did not.
+    expect(respondCalls).toBe(1);
+
+    // The over-cap message's controller was unregistered on the rejected path (no
+    // leak): only the active run + the 99 genuinely-queued fills remain tracked
+    // (exactly maxDepth), NOT maxDepth + 1. respondToEvent's finally never ran for
+    // the rejected message, so the busy path must clean its eager controller up.
+    const controllers = (
+      adapter as unknown as {
+        activeControllers: Map<string, Set<AbortController>>;
+      }
+    ).activeControllers;
+    const tracked = [...controllers.values()].reduce((sum, set) => sum + set.size, 0);
+    expect(tracked).toBe(maxDepth);
+
+    // Drain: settle the active run and let the genuinely-queued fills resolve.
+    active.resolve({ text: "done" });
+    await activeRun;
+    await Promise.allSettled(queued);
+
+    // After draining, every controller is unregistered (the rejected one left
+    // nothing behind, and the run-through fills cleaned up in their finally).
+    const remaining = [...controllers.values()].reduce((sum, set) => sum + set.size, 0);
+    expect(remaining).toBe(0);
   });
 
   it("preserves arrival order when an earlier same-thread message stalls on file download", async () => {
@@ -793,6 +877,51 @@ describe("SlackAdapter", () => {
     // Final-only delivery: the cancelled copy is the single final post.
     expect(api.postMessageCalls.at(-1)?.text).toBe("Cancelled.");
     expect(api.updateCalls).toEqual([]);
+  });
+});
+
+describe("SerialQueue", () => {
+  it("rejects synchronously with SerialQueueFullError once depth >= maxDepth, then admits later tasks after decrements", async () => {
+    const queue = new SerialQueue(2);
+    const gateA = createDeferred<void>();
+    const gateB = createDeferred<void>();
+
+    // Two blocking tasks fill the queue to its cap (depth 2).
+    let aStarted = false;
+    const a = queue.run(async () => {
+      aStarted = true;
+      await gateA.promise;
+      return "a";
+    });
+    const b = queue.run(async () => {
+      await gateB.promise;
+      return "b";
+    });
+
+    // The third task is rejected synchronously (before incrementing/chaining):
+    // run() returns an already-rejected promise carrying the sentinel error.
+    const overCap = queue.run(async () => "c");
+    await expect(overCap).rejects.toBeInstanceOf(SerialQueueFullError);
+
+    // A is running; B is queued behind it. The rejected task never ran.
+    await vi.waitFor(() => expect(aStarted).toBe(true));
+
+    // Draining A decrements depth (back to 1), so a later task is admitted.
+    gateA.resolve();
+    await expect(a).resolves.toBe("a");
+
+    let dStarted = false;
+    const d = queue.run(async () => {
+      dStarted = true;
+      return "d";
+    });
+    // d was admitted (not rejected) because the decrement freed a slot. It runs
+    // serially after B settles.
+    gateB.resolve();
+    await expect(b).resolves.toBe("b");
+    await expect(d).resolves.toBe("d");
+    expect(dStarted).toBe(true);
+    expect(queue.idle).toBe(true);
   });
 });
 

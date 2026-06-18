@@ -274,6 +274,75 @@ describe("Cron adapter", () => {
       );
   });
 
+  it("overlap:'replace' emits a terminal 'dropped' for a queued firing it discards on a second replace", async () => {
+    // Drive handleTick directly (as the prior replace test does) to bypass the
+    // validateOptions overlap gate and control the gates precisely. A double
+    // replace on one un-drained abort-ignoring run must surface a terminal
+    // "dropped" for the firing the second replace discards — otherwise that
+    // firing's earlier kind:"queued" is silently orphaned (no terminal).
+    const gates: Array<() => void> = [];
+    let started = 0;
+    const responder: AgentResponder = {
+      async respond() {
+        started += 1;
+        // Ignores request.abortSignal; waits for its gate, then resolves.
+        await new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+        return { text: "done (ignored abort)" };
+      },
+    };
+    const results: Array<{ kind: string; scheduledAt?: string; reason?: string }> = [];
+
+    const options = {
+      responder,
+      overlap: "replace" as const,
+      jobs: [{ id: "slow", expression: "* * * * *", prompt: "slow work" }],
+      now: () => new Date(Date.now()),
+      onResult: (result: { kind: string; scheduledAt?: string; reason?: string }) => {
+        results.push(result);
+      },
+    };
+    const jobStates = new Map();
+
+    // tick 1 -> no active run, starts (and gates) the first run.
+    handleTick(options.jobs[0]!, new Date(0), options, jobStates);
+    await expect.poll(() => started).toBe(1);
+
+    // tick 2 (replace) -> aborts run 1's controller and queues firing F1.
+    handleTick(options.jobs[0]!, new Date(60_000), options, jobStates);
+    await expect
+      .poll(() => results)
+      .toContainEqual(
+        expect.objectContaining({ kind: "queued", scheduledAt: "1970-01-01T00:01:00.000Z" }),
+      );
+
+    // tick 3 (replace) BEFORE F1 drains (run 1 is still gated/active) -> F1 must
+    // receive a terminal "dropped" instead of being silently orphaned.
+    handleTick(options.jobs[0]!, new Date(120_000), options, jobStates);
+    await expect
+      .poll(() => results)
+      .toContainEqual(
+        expect.objectContaining({
+          kind: "dropped",
+          jobId: "slow",
+          scheduledAt: "1970-01-01T00:01:00.000Z",
+          reason: "overflow",
+        }),
+      );
+
+    // Release the (aborted) first responder so the active slot clears and the
+    // newest firing (F2 from tick 3) drains.
+    gates[0]?.();
+    await expect.poll(() => started).toBe(2);
+    gates[1]?.();
+    await expect
+      .poll(() => results)
+      .toContainEqual(
+        expect.objectContaining({ kind: "succeeded", scheduledAt: "1970-01-01T00:02:00.000Z" }),
+      );
+  });
+
   it("reports a stop()-aborted run as cancelled even if its responder ignores abort and returns text", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

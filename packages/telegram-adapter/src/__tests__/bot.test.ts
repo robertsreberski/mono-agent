@@ -3,7 +3,12 @@ import { Bot } from "grammy";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentRequest, AgentResponder, TelegramAdapterLogger } from "../adapter.js";
-import { createTelegramBot, type CreateTelegramBotOptions } from "../bot.js";
+import {
+  createTelegramBot,
+  SerialQueue,
+  SerialQueueFullError,
+  type CreateTelegramBotOptions,
+} from "../bot.js";
 
 const FAKE_BOT_INFO = {
   id: 1,
@@ -47,6 +52,7 @@ function buildTestBot(
   downloads: Map<string, StubbedDownload>;
   downloadedFileIds: string[];
   stop: () => Promise<void>;
+  activeControllerCount: () => number;
 } {
   const calls: RecordedCall[] = [];
   const failures = new Map<string, () => unknown>();
@@ -124,6 +130,7 @@ function buildTestBot(
     downloads,
     downloadedFileIds,
     stop: () => controller.stop(),
+    activeControllerCount: () => controller.activeControllerCount(),
   };
 }
 
@@ -927,6 +934,70 @@ describe("createTelegramBot", () => {
     expect(received).toEqual([]);
   });
 
+  it("replies busyText for an over-cap same-chat flood without invoking the responder or leaking its controller", async () => {
+    const received: string[] = [];
+    const activeFinish = createDeferred<{ text: string }>();
+    let activeStarted = false;
+    const { bot, calls, activeControllerCount } = buildTestBot({
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        received.push(request.text);
+        if (received.length === 1) {
+          activeStarted = true;
+          // The first run blocks, holding the admission queue's active slot so the
+          // flood parks behind it.
+          return activeFinish.promise;
+        }
+        return { text: "ok" };
+      }),
+    });
+
+    // One blocking active run takes the queue's running slot (depth 1).
+    const activeRun = bot.handleUpdate(textUpdate("active", { updateId: 0 }));
+    while (!activeStarted) {
+      await Promise.resolve();
+    }
+
+    // The per-chat SerialQueue caps depth at 100. The active run holds 1 slot, so
+    // 99 more same-chat messages fill the queue to the cap; the 100th queued
+    // message (cap+1-th overall) must be rejected as busy.
+    const maxDepth = 100;
+    const fills: Array<Promise<void>> = [];
+    for (let i = 0; i < maxDepth - 1; i += 1) {
+      fills.push(bot.handleUpdate(textUpdate(`fill-${i}`, { updateId: i + 1 })));
+    }
+    // grammY dispatches each update through async middleware, so the fills reach
+    // the queue across microtasks. Wait until every fill has registered its
+    // controller (and thus incremented queue depth) so the queue is exactly at the
+    // cap before the over-cap message is dispatched.
+    await vi.waitFor(() => expect(activeControllerCount()).toBe(maxDepth));
+
+    // Over-cap message: rejected synchronously by the queue (depth === cap). Its
+    // runAgentTurn (the responder) is never invoked, and a busy reply is sent.
+    await bot.handleUpdate(textUpdate("over-cap", { updateId: 999 }));
+
+    // The over-cap message did not reach the responder (still only the active run).
+    expect(received).toEqual(["active"]);
+    // The busy terminal copy was replied.
+    expect(texts(calls, "sendMessage")).toContain(
+      "I am still working on your previous message. Use /cancel to stop it.",
+    );
+
+    // No controller leak: only the active run + the 99 genuinely-queued fills are
+    // tracked (exactly maxDepth), NOT maxDepth + 1. The over-cap message's eager
+    // controller was unregistered on the rejected path (runAgentTurn never ran).
+    expect(activeControllerCount()).toBe(maxDepth);
+
+    // Drain: release the active run so the fills resolve in order.
+    activeFinish.resolve({ text: "done" });
+    await activeRun;
+    await Promise.all(fills);
+
+    // After draining, every controller is unregistered (no orphan from the
+    // rejected message; the run-through turns cleaned up in their finally).
+    expect(activeControllerCount()).toBe(0);
+  });
+
   it("bounds concurrent same-chat downloads: the second download does not start until the first turn settles", async () => {
     const firstDownloadGate = createDeferred<void>();
     const respondCount: number[] = [];
@@ -1459,5 +1530,52 @@ describe("createTelegramBot default file downloader (streaming cap + timeout)", 
     // The download timed out and was skipped; the run still proceeded.
     expect(requests).toHaveLength(1);
     expect(requests[0]?.attachments).toBeUndefined();
+  });
+});
+
+describe("SerialQueue", () => {
+  it("rejects synchronously with SerialQueueFullError once depth >= maxDepth, then admits later tasks after decrements", async () => {
+    const queue = new SerialQueue(2);
+    const gateA = createDeferred<void>();
+    const gateB = createDeferred<void>();
+
+    // Two blocking tasks fill the queue to its cap (depth 2).
+    let aStarted = false;
+    const a = queue.run(async () => {
+      aStarted = true;
+      await gateA.promise;
+      return "a";
+    });
+    const b = queue.run(async () => {
+      await gateB.promise;
+      return "b";
+    });
+
+    // The third task is rejected synchronously (before incrementing/chaining):
+    // run() returns an already-rejected promise carrying the sentinel error.
+    const overCap = queue.run(async () => "c");
+    await expect(overCap).rejects.toBeInstanceOf(SerialQueueFullError);
+
+    // A is running; B is queued behind it. The rejected task never ran.
+    while (!aStarted) {
+      await Promise.resolve();
+    }
+
+    // Draining A decrements depth (back to 1), so a later task is admitted.
+    gateA.resolve();
+    await expect(a).resolves.toBe("a");
+
+    let dStarted = false;
+    const d = queue.run(async () => {
+      dStarted = true;
+      return "d";
+    });
+    // d was admitted (not rejected) because the decrement freed a slot. It runs
+    // serially after B settles.
+    gateB.resolve();
+    await expect(b).resolves.toBe("b");
+    await expect(d).resolves.toBe("d");
+    expect(dStarted).toBe(true);
+    expect(queue.idle).toBe(true);
   });
 });
