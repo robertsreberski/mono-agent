@@ -46,6 +46,7 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Fail-closed tool policy (empty allowlist = no tools) | auto | default |
 | Tool allow/deny lists (deny wins) | config | `tools.allowedTools`, `tools.disallowedTools` |
 | MCP servers (stdio/sse/http) from a JSON file | config | `tools.mcpConfigPath` |
+| Adapter-derived send tools for enabled Slack/Telegram adapters | config | `tools.allowedTools` must include `slack_send_message` / `telegram_send_message`; valid `slack.*` / `telegram.*` config and existing adapter allowlists provide credentials and destination bounds |
 | Sandbox on/off + srt engine | config | `sandbox.mode` |
 | Network policy (none/localhost/allowlist/all) | config | `sandbox.network.{mode,allowlist}` |
 | Filesystem scopes (readable/writable roots, deny-write globs) | config | `sandbox.readableRoots`, `sandbox.writableRoots`, `sandbox.denyWrite` |

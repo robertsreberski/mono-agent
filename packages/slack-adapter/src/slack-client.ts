@@ -79,7 +79,7 @@ export class SlackApiError extends Error {
 
 export interface SlackWebApiClientOptions {
   botToken: string;
-  appToken: string;
+  appToken?: string;
   apiBaseUrl?: string;
   fetchImpl?: typeof fetch;
   requestTimeoutMs?: number;
@@ -100,18 +100,18 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
 
 export class SlackWebApiClient implements SlackWebApi {
   private readonly botToken: string;
-  private readonly appToken: string;
+  private readonly appToken: string | undefined;
   private readonly apiBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly requestTimeoutMs: number;
 
   constructor(options: SlackWebApiClientOptions) {
     const botToken = options.botToken.trim();
-    const appToken = options.appToken.trim();
+    const appToken = options.appToken?.trim();
     if (botToken.length === 0) {
       throw new TypeError("Slack bot token is required.");
     }
-    if (appToken.length === 0) {
+    if (appToken !== undefined && appToken.length === 0) {
       throw new TypeError("Slack app token is required.");
     }
 
@@ -131,8 +131,8 @@ export class SlackWebApiClient implements SlackWebApi {
     return this.request<SlackAuthTestResult>("auth.test", {}, this.botToken, options);
   }
 
-  appsConnectionsOpen(options?: SlackRequestOptions): Promise<SlackAppsConnectionsOpenResult> {
-    return this.request<SlackAppsConnectionsOpenResult>("apps.connections.open", {}, this.appToken, options);
+  async appsConnectionsOpen(options?: SlackRequestOptions): Promise<SlackAppsConnectionsOpenResult> {
+    return this.request<SlackAppsConnectionsOpenResult>("apps.connections.open", {}, this.requiredAppToken(), options);
   }
 
   chatPostMessage(
@@ -140,6 +140,13 @@ export class SlackWebApiClient implements SlackWebApi {
     options?: SlackRequestOptions,
   ): Promise<SlackChatPostMessageResult> {
     return this.request<SlackChatPostMessageResult>("chat.postMessage", params, this.botToken, options);
+  }
+
+  private requiredAppToken(): string {
+    if (this.appToken === undefined) {
+      throw new TypeError("Slack app token is required for Socket Mode.");
+    }
+    return this.appToken;
   }
 
   chatUpdate(
