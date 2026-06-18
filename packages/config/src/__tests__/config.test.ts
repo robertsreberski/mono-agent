@@ -575,6 +575,7 @@ describe("loadMonoAgentConfig", () => {
       { MONO_AGENT_MEMORY_MAX_BYTES: "8000" },
       { MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama" },
       { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
+      { MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true" },
       { MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true" },
       { MONO_AGENT_MEMORY_MIGRATION_CRON: "0 3 * * *" },
     ]) {
@@ -587,6 +588,79 @@ describe("loadMonoAgentConfig", () => {
       }
       throw new Error("Expected memory extras without MONO_AGENT_MEMORY_PATH to fail.");
     }
+  });
+
+  it("defaults memory.recallTool on for journal/bujo with embeddings and off for lite", () => {
+    const withEmbeddings = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      },
+    });
+    expect(withEmbeddings.memory?.recallTool).toEqual({ enabled: true });
+
+    // lite tier (no embeddings) → off by default.
+    const lite = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
+    });
+    expect(lite.memory?.recallTool).toEqual({ enabled: false });
+
+    // journal mode but no embeddings configured → off by default (recall can't rank semantically).
+    const journalNoEmbeddings = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "journal" },
+    });
+    expect(journalNoEmbeddings.memory?.recallTool).toEqual({ enabled: false });
+  });
+
+  it("lets MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED override the recallTool default in both directions", () => {
+    // Explicit off on a tier that would default on.
+    const forcedOff = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "false",
+      },
+    });
+    expect(forcedOff.memory?.recallTool).toEqual({ enabled: false });
+
+    // Explicit on for lite (FTS-only): the operator opts in despite no embeddings default.
+    const forcedOn = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "lite",
+        MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true",
+      },
+    });
+    expect(forcedOn.memory?.recallTool).toEqual({ enabled: true });
+  });
+
+  it("rejects a non-boolean MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory",
+          MONO_AGENT_MEMORY_MODE: "journal",
+          MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "maybe",
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED" } });
+      return;
+    }
+    throw new Error("Expected an invalid recallTool flag to fail.");
   });
 
   it("redacts the embeddings api key", () => {

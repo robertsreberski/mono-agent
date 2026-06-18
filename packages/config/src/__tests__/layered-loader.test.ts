@@ -159,6 +159,22 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS).toBe("20000");
   });
 
+  it("translates JSON memory.recallTool.enabled to an env key", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "journal", path: ".mono-agent/memory", recallTool: { enabled: false } } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED).toBe("false");
+  });
+
+  it("lets env override JSON memory.recallTool.enabled", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "journal", path: ".mono-agent/memory", recallTool: { enabled: false } } },
+      { MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true" },
+    );
+    expect(layered.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED).toBe("true");
+  });
+
   it("translates JSON runtime.session to env keys", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000 } } },

@@ -365,6 +365,13 @@ export const memoryFieldGroup = defineFieldGroup({
       path: ["memory", "llm", "endpoint"],
     },
     {
+      id: "memory.recallTool.enabled",
+      label: "Recall tool enabled",
+      description: "Expose a read-only memory_recall tool (embeddings+FTS, no chat LLM) to the agent. Default on for journal/bujo.",
+      kind: "switch",
+      path: ["memory", "recallTool", "enabled"],
+    },
+    {
       id: "memory.reflection.enabled",
       label: "Reflection enabled",
       description: "Enable the nightly bujo-tier reflection ritual (summarise and compress older memories).",

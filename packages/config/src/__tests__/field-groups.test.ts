@@ -69,6 +69,14 @@ describe("CORE_AGENT_FIELD_GROUPS", () => {
     });
   });
 
+  it("exposes memory.recallTool.enabled as a switch on the memory group", () => {
+    const memory = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "memory");
+    expect(memory?.fields.find((field) => field.id === "memory.recallTool.enabled")).toMatchObject({
+      kind: "switch",
+      path: ["memory", "recallTool", "enabled"],
+    });
+  });
+
   it("exposes embeddings timeoutMs and circuit breaker fields on the memory group", () => {
     const memory = CORE_AGENT_FIELD_GROUPS.find((group) => group.id === "memory");
     const ids = memory?.fields.map((field) => field.id) ?? [];

@@ -39,6 +39,10 @@ import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, Runni
 import { startMemoryRituals } from "./memory-rituals.js";
 import type { RunningRituals } from "./memory-rituals.js";
 import {
+  createMemoryRecallRuntimeExtension,
+  resolveMemoryRecallSettings,
+} from "./memory-recall.js";
+import {
   createSelfCapabilitiesRuntimeExtension,
   resolveSelfCapabilitiesSettings,
 } from "./self-capabilities.js";
@@ -553,19 +557,23 @@ class MonoAgentAppController implements MonoAgentApp {
       this.activeRuntimes.push(runtime);
     }
     const memory = this.memoryStore(coreConfig, runtime);
-    const runtimeOptionsForRequest = await this.selfCapabilitiesRuntimeOptions(coreConfig);
+    const selfCapabilities = await this.selfCapabilitiesRuntimeOptions(coreConfig);
+    const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
+    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([selfCapabilities, memoryRecall]);
     const responder = createConfiguredAgentResponder({
       config: coreConfig,
       runtime,
       ...(memory !== undefined && { memory }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
     });
-    return runtimeOptionsForRequest === undefined
+    // Only self-capabilities can request an app reload, so wrapping is gated on it (not on the
+    // composed options, which may carry only the read-only memory_recall server).
+    return selfCapabilities === undefined
       ? responder
       : this.wrapResponderForSelfCapabilitiesReload(responder);
   }
 
-  private async selfCapabilitiesRuntimeOptions(coreConfig: MonoAgentConfig): Promise<Parameters<typeof createConfiguredAgentResponder>[0]["runtimeOptionsForRequest"] | undefined> {
+  private async selfCapabilitiesRuntimeOptions(coreConfig: MonoAgentConfig): Promise<RuntimeOptionsExtension | undefined> {
     const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
     const settings = await resolveSelfCapabilitiesSettings(input, coreConfig);
     if (!settings.enabled) {
@@ -578,6 +586,15 @@ class MonoAgentAppController implements MonoAgentApp {
         scope.token = token;
       }
     });
+  }
+
+  private memoryRecallRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
+    const settings = resolveMemoryRecallSettings(coreConfig);
+    if (settings === undefined) {
+      return undefined;
+    }
+    this.logger?.info?.("Read-only memory_recall tool enabled.", { provider: settings.embeddings.provider });
+    return createMemoryRecallRuntimeExtension(settings, this.cwd);
   }
 
   private wrapResponderForSelfCapabilitiesReload(responder: AgentResponder): AgentResponder {
@@ -767,4 +784,45 @@ function logOperatorConsoleEvent(logger: MonoAgentAppLogger | undefined, event: 
 
 function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** The per-request runtime-options extension function (self-capabilities, memory-recall, ...). */
+type RuntimeOptionsExtension = NonNullable<
+  Parameters<typeof createConfiguredAgentResponder>[0]["runtimeOptionsForRequest"]
+>;
+type RuntimeOptionsExtensionResult = Awaited<ReturnType<RuntimeOptionsExtension>>;
+
+/**
+ * Compose several per-request runtime-options extensions into one. Each extension is invoked per
+ * request; their `runtimeOptions.mcpServers` maps are unioned (the harness also merges mcpServers,
+ * so multiple servers coexist) and their cleanups are chained. Returns `undefined` when no extension
+ * is active, so the host omits `runtimeOptionsForRequest` entirely.
+ */
+function composeRuntimeOptionExtensions(
+  extensions: ReadonlyArray<RuntimeOptionsExtension | undefined>,
+): RuntimeOptionsExtension | undefined {
+  const active = extensions.filter((extension): extension is RuntimeOptionsExtension => extension !== undefined);
+  if (active.length === 0) {
+    return undefined;
+  }
+  if (active.length === 1) {
+    return active[0];
+  }
+  return async (input) => {
+    const results = await Promise.all(active.map((extension) => extension(input)));
+    const mcpServers: Record<string, unknown> = {};
+    for (const result of results) {
+      const servers = result.runtimeOptions?.mcpServers;
+      if (servers !== undefined) {
+        Object.assign(mcpServers, servers);
+      }
+    }
+    return {
+      runtimeOptions: { mcpServers },
+      cleanup: async () => {
+        // Chain every cleanup; run them all even if one rejects so no extension leaks resources.
+        await Promise.all(results.map(async (result) => result.cleanup?.()));
+      },
+    } satisfies RuntimeOptionsExtensionResult;
+  };
 }

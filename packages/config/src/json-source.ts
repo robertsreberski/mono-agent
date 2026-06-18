@@ -111,6 +111,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly writeMode?: MemoryWriteMode;
     readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;
+    readonly recallTool?: { readonly enabled?: boolean };
     readonly reflection?: MonoAgentMemoryRitualJson;
     readonly migration?: MonoAgentMemoryRitualJson;
   };

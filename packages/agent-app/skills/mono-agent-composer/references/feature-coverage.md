@@ -36,7 +36,7 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Memory out-of-band maintenance CLI (rebuild/recall/index/reflect/migrate) | cli | `memory-bujo <subcommand> <root>`; opt-in `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER`/`_MODEL`/`_DIM` for semantic recall; reflect/migrate are Ollama-only and require `MONO_AGENT_MEMORY_LLM_MODEL` (optional `MONO_AGENT_MEMORY_LLM_ENDPOINT`) |
 | Memory liveness check (root writable; provider-specific Ollama checks only when embeddings/chat use Ollama; BuJo LLM config + ritual cadence — loud warn, no silent fallback) | cli | `mono-agent validate` |
 | Host summaries appended after runs | config | `memory.writeMode: "append-host-summary"` |
-| MCP memory tools for external clients (`memory_recall`, `memory_capture`, `memory_note`) | cli | `memory-mcp` bin; env `MONO_AGENT_MEMORY_PATH` plus optional embeddings/LLM vars |
+| Auto-provisioned read-only `memory_recall` tool (hybrid keyword+semantic search) exposed to the agent from the single memory config; no chat LLM | config | `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on for journal/bujo with embeddings) |
 
 ## Tools, MCP, sandbox
 

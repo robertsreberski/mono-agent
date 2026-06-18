@@ -151,6 +151,9 @@ export function layerJsonOntoEnv(
   if (json.memory?.llm?.endpoint !== undefined && json.memory.llm.provider !== "agent-host") {
     fromJson.MONO_AGENT_MEMORY_LLM_ENDPOINT = json.memory.llm.endpoint;
   }
+  if (json.memory?.recallTool?.enabled !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED = String(json.memory.recallTool.enabled);
+  }
   if (json.memory?.reflection?.enabled !== undefined) {
     fromJson.MONO_AGENT_MEMORY_REFLECTION_ENABLED = String(json.memory.reflection.enabled);
   }

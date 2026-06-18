@@ -375,6 +375,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_LLM_MODEL",
       "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
       "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+      "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
       "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
       "MONO_AGENT_MEMORY_REFLECTION_CRON",
       "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
@@ -418,6 +419,17 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
         ? embeddings
         : { ...embeddings, dim };
 
+  // Read-only memory_recall tool. Recall needs only embeddings + FTS (no chat LLM),
+  // so it defaults on whenever the resolved tier can rank semantically — mode !== "lite"
+  // AND embeddings are configured — and off for lite. An explicit env/JSON value always wins.
+  const recallToolDefault = mode !== "lite" && embeddingsWithDim !== undefined;
+  const recallToolEnabled = readBoolean(
+    env.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED,
+    "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
+    recallToolDefault,
+    invalidEnv,
+  );
+
   return {
     mode,
     path: readPath(rawPath, cwd),
@@ -425,6 +437,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     writeMode,
     ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
     ...(llm === undefined ? {} : { llm }),
+    recallTool: { enabled: recallToolEnabled },
     ...(reflection === undefined ? {} : { reflection }),
     ...(migration === undefined ? {} : { migration }),
   };

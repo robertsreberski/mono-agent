@@ -105,6 +105,12 @@ export interface MonoAgentConfig {
     readonly embeddings?: MemoryEmbeddingsConfig;
     /** LLM for bujo capture/reflect/migrate. */
     readonly llm?: MemoryLlmConfig;
+    /**
+     * Read-only `memory_recall` tool exposed to the agent (embeddings + FTS, no
+     * chat LLM). Derived from this single memory block — no hand-wired MCP entry.
+     * Defaults on when the resolved tier has embeddings; off for lite.
+     */
+    readonly recallTool?: { readonly enabled: boolean };
     /** Bujo-tier reflection ritual (nightly summarise/compress). Default cron: `0 3 * * *`. */
     readonly reflection?: MemoryRitualConfig;
     /** Bujo-tier migration ritual (monthly archive/rebalance). Default cron: `0 4 1 * *`. */
