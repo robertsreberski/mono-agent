@@ -5,6 +5,7 @@ import type { MemoryDb, MemoryRecord } from "@mono-agent/memory-store";
 import { appendBullet, dailyFilePath } from "./daily.js";
 import { parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
+import { MemoryModelError } from "./model-error.js";
 import type { Bullet } from "./types.js";
 
 export interface ReflectDeps {
@@ -62,7 +63,9 @@ function insightRecordFor(bullet: Bullet, root: string, now: Date): MemoryRecord
  * note bullet with isInsight=true, upserts the index record, and adds `supports`
  * edges from the insight to valid source memory ids.
  *
- * Never throws — LLM/parse failures return 0.
+ * A malformed/parse-failed *reply* returns 0, but a model *failure* is rethrown as a
+ * {@link MemoryModelError} so a dead model surfaces (the ritual scheduler logs it) instead of
+ * looking like a reflection that simply found no insights.
  */
 export async function synthesizeInsights(deps: ReflectDeps, now: Date): Promise<number> {
   const candidates = deps.db.topSalient(20).filter((m) => !m.isInsight);
@@ -73,8 +76,8 @@ export async function synthesizeInsights(deps: ReflectDeps, now: Date): Promise<
   let raw: string;
   try {
     raw = await deps.llm.complete(prompt);
-  } catch {
-    return 0;
+  } catch (cause) {
+    throw new MemoryModelError("llm", "insights", cause);
   }
 
   const parsed = parseJsonLoose<InsightCandidate[]>(raw);

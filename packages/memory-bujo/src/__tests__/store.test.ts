@@ -384,9 +384,10 @@ describe("BujoMemoryStore async capture queue", () => {
       llm: recordingLlm(order),
       logger: { warn: (m) => warnings.push(m) },
     });
-    // Patch capture() directly so the POISON turn throws from capture() itself (not from
-    // the LLM, which is already caught inside distill/entities). This is the only way to
-    // reliably trigger the scheduleCapture catch block without reaching into internal LLM pipes.
+    // Patch capture() directly so the POISON turn throws from capture() itself — a simple way to
+    // exercise the chain's resilience (one failing capture must not block the next) in isolation.
+    // The model-failure path that now reaches this same catch is covered separately by the
+    // "scheduleCapture surfaces a REAL model failure through the logger" test.
     const original = store.capture.bind(store);
     store.capture = async (convId: string, text: string) => {
       if (text.includes("POISON")) throw new Error("boom");
@@ -427,6 +428,26 @@ describe("BujoMemoryStore async capture queue", () => {
     const store = createBujoMemoryStore({ root: tmpRoot() }); // lite
     expect(() => store.scheduleCapture("c1", "x")).not.toThrow();
     await expect(store.flush()).resolves.toBeUndefined();
+    await store.close();
+  });
+
+  it("scheduleCapture surfaces a REAL model failure through the logger (not silent)", async () => {
+    // The whole point of the fix: when the AI model is down, the failure must be visible. Previously
+    // the LLM error was swallowed inside distill/entities, so capture looked like a successful no-op
+    // and the logger never fired. Now a throwing LLM reaches scheduleCapture's catch and is logged
+    // with the underlying cause — so an operator can tell "the model failed" from "nothing to capture".
+    const warnings: string[] = [];
+    const throwingLlm: LlmComplete = { id: "throws", complete: async () => { throw new Error("ollama down"); } };
+    const store = createBujoMemoryStore({
+      root: tmpRoot(),
+      tier: "bujo",
+      llm: throwingLlm,
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    store.scheduleCapture("c1", "a sentence genuinely worth distilling into memory");
+    await store.flush();
+    expect(warnings.some((w) => /capture/i.test(w))).toBe(true);
+    expect(warnings.some((w) => /ollama down/i.test(w))).toBe(true);
     await store.close();
   });
 

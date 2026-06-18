@@ -5,6 +5,7 @@ import type { MemoryDb, MemoryRecord, SimilarHit } from "@mono-agent/memory-stor
 import { appendBullet, dailyFilePath, rewriteBullet } from "./daily.js";
 import { parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
+import { MemoryModelError } from "./model-error.js";
 import type { Bullet, CandidateMemory } from "./types.js";
 
 /** The outcome of reconciling a single candidate against the existing index. */
@@ -50,7 +51,14 @@ export async function reconcile(
 
   for (const candidate of candidates) {
     try {
-      const similar = await deps.db.findSimilar(candidate.text, 5);
+      // findSimilar embeds the query, so a down embedding model throws here for EVERY candidate —
+      // a systemic outage, not a per-item data problem. Tag it so the catch below surfaces it.
+      let similar: readonly SimilarHit[];
+      try {
+        similar = await deps.db.findSimilar(candidate.text, 5);
+      } catch (cause) {
+        throw new MemoryModelError("embedding", "findSimilar", cause);
+      }
 
       // Clearly novel (nothing close enough) → ADD outright, no LLM.
       if (similar.length === 0 || (similar[0]?.distance ?? Infinity) > dupThreshold) {
@@ -60,9 +68,12 @@ export async function reconcile(
 
       const decision = await classify(candidate, similar, deps);
       actions.push(await apply(candidate, decision, similar, deps, threadThreshold));
-    } catch {
-      // Per-candidate isolation: a failure on one candidate (e.g. a missing daily file during
-      // UPDATE/SUPERSEDE, or an embedding error) must not abort the rest of the batch. Skip it.
+    } catch (err) {
+      // A model outage (embedding or classify LLM) is systemic and must surface — every candidate
+      // would hit it, so swallowing it would make a dead model look like a no-op capture.
+      if (err instanceof MemoryModelError) throw err;
+      // Per-candidate isolation: a genuine per-item *data* failure (e.g. a missing daily file during
+      // UPDATE/SUPERSEDE) must not abort the rest of the batch. Skip it.
       continue;
     }
   }
@@ -70,7 +81,11 @@ export async function reconcile(
   return actions;
 }
 
-/** Ask the LLM to classify the candidate against its nearest neighbours; tolerate any malformed reply. */
+/**
+ * Ask the LLM to classify the candidate against its nearest neighbours. A malformed *reply* is
+ * tolerated (→ undefined → caller falls back to ADD), but a model *failure* is rethrown as a
+ * {@link MemoryModelError} so a dead model surfaces instead of silently degrading to ADD.
+ */
 async function classify(
   candidate: CandidateMemory,
   similar: readonly SimilarHit[],
@@ -79,8 +94,8 @@ async function classify(
   let raw: string;
   try {
     raw = await deps.llm.complete(classifyPrompt(candidate, similar));
-  } catch {
-    return undefined; // LLM error → caller falls back to ADD
+  } catch (cause) {
+    throw new MemoryModelError("llm", "classify", cause);
   }
   const parsed = parseJsonLoose<Classification>(raw);
   if (parsed === undefined || typeof parsed !== "object") return undefined;
