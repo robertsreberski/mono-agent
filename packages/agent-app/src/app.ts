@@ -36,6 +36,11 @@ import {
 import type { AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import {
+  adapterSendToolNames,
+  createAdapterSendToolsRuntimeExtension,
+  resolveAdapterSendToolsSettings,
+} from "./adapter-send-tools.js";
 import { startMemoryRituals } from "./memory-rituals.js";
 import type { RunningRituals } from "./memory-rituals.js";
 import {
@@ -559,7 +564,8 @@ class MonoAgentAppController implements MonoAgentApp {
     const memory = this.memoryStore(coreConfig, runtime);
     const selfCapabilities = await this.selfCapabilitiesRuntimeOptions(coreConfig);
     const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
-    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([selfCapabilities, memoryRecall]);
+    const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
+    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([selfCapabilities, memoryRecall, adapterSendTools]);
     const responder = createConfiguredAgentResponder({
       config: coreConfig,
       runtime,
@@ -597,6 +603,21 @@ class MonoAgentAppController implements MonoAgentApp {
       provider: settings.embeddings?.provider ?? "fts-only",
     });
     return createMemoryRecallRuntimeExtension(settings, this.cwd);
+  }
+
+  private async adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<RuntimeOptionsExtension | undefined> {
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const settings = await resolveAdapterSendToolsSettings(input, {
+      allowedTools: coreConfig.tools.allowedTools,
+      disallowedTools: coreConfig.tools.disallowedTools,
+      logger: this.logger,
+    });
+    if (settings === undefined) {
+      return undefined;
+    }
+    const toolNames = adapterSendToolNames(settings);
+    this.logger?.info?.("Adapter send tools enabled.", { tools: toolNames });
+    return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames);
   }
 
   private wrapResponderForSelfCapabilitiesReload(responder: AgentResponder): AgentResponder {
@@ -796,9 +817,8 @@ type RuntimeOptionsExtensionResult = Awaited<ReturnType<RuntimeOptionsExtension>
 
 /**
  * Compose several per-request runtime-options extensions into one. Each extension is invoked per
- * request; their `runtimeOptions.mcpServers` maps are unioned (the harness also merges mcpServers,
- * so multiple servers coexist) and their cleanups are chained. Returns `undefined` when no extension
- * is active, so the host omits `runtimeOptionsForRequest` entirely.
+ * request; mergeable runtime option maps/lists are unioned and their cleanups are chained. Returns
+ * `undefined` when no extension is active, so the host omits `runtimeOptionsForRequest` entirely.
  */
 function composeRuntimeOptionExtensions(
   extensions: ReadonlyArray<RuntimeOptionsExtension | undefined>,
@@ -812,19 +832,58 @@ function composeRuntimeOptionExtensions(
   }
   return async (input) => {
     const results = await Promise.all(active.map((extension) => extension(input)));
-    const mcpServers: Record<string, unknown> = {};
+    const runtimeOptions: Record<string, unknown> = {};
     for (const result of results) {
-      const servers = result.runtimeOptions?.mcpServers;
-      if (servers !== undefined) {
-        Object.assign(mcpServers, servers);
-      }
+      mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
     }
     return {
-      runtimeOptions: { mcpServers },
+      runtimeOptions,
       cleanup: async () => {
         // Chain every cleanup; run them all even if one rejects so no extension leaks resources.
         await Promise.all(results.map(async (result) => result.cleanup?.()));
       },
     } satisfies RuntimeOptionsExtensionResult;
   };
+}
+
+function mergeRuntimeOptions(target: Record<string, unknown>, next: RuntimeOptionsExtensionResult["runtimeOptions"]): void {
+  if (next === undefined) {
+    return;
+  }
+  for (const [key, value] of Object.entries(next)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (key === "allowedTools" || key === "disallowedTools") {
+      target[key] = mergeStringLists(target[key], value);
+      continue;
+    }
+    if (key === "mcpServers") {
+      target[key] = {
+        ...(isRecord(target[key]) ? target[key] : {}),
+        ...(isRecord(value) ? value : {}),
+      };
+      continue;
+    }
+    target[key] = value;
+  }
+}
+
+function mergeStringLists(current: unknown, next: unknown): readonly string[] {
+  const out: string[] = [];
+  for (const list of [current, next]) {
+    if (!Array.isArray(list)) {
+      continue;
+    }
+    for (const item of list) {
+      if (typeof item === "string" && !out.includes(item)) {
+        out.push(item);
+      }
+    }
+  }
+  return out;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -84,6 +84,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `tool-policy.fail-closed` | Empty allowlist = no tools | `auto` | Default when `tools` lists are empty |
 | `tool-policy.allowlist` / `tool-policy.denylist` | Tool allow/deny (deny wins; overlap rejected) | `config` | `tools.allowedTools`, `tools.disallowedTools` (`MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS`) |
 | `tool-policy.mcp-servers` | MCP servers (stdio/sse/http) from a JSON file; inlined for SDK runtimes, path forwarded for CLI runtimes | `config` | `tools.mcpConfigPath` (`MONO_AGENT_MCP_CONFIG_PATH`) → `mcp.json` |
+| `agent-app.adapter-send-tools` | App-owned MCP tools for sending through already-enabled Slack and Telegram adapters: `slack_send_message`, `telegram_send_message` | `config` | Requires exact tool names in `tools.allowedTools` plus valid `slack.*` / `telegram.*` adapter config; existing adapter allowlists remain the destination boundary |
 
 ## Channels (`@mono-agent/*-adapter`, composed by `@mono-agent/agent-app`)
 

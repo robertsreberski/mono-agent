@@ -74,6 +74,33 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(disabledReport, "console").status).toBe("disabled");
   });
 
+  it("reports adapter-derived send tools when enabled adapter configs are valid", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { allowedTools: ["slack_send_message", "telegram_send_message"] },
+      slack: {
+        enabled: true,
+        botToken: "xoxb-test",
+        appToken: "xapp-test",
+        allowedChannelIds: ["C1"],
+      },
+      telegram: {
+        enabled: true,
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).toContain("slack_send_message");
+    expect(tools.details.join("\n")).toContain("telegram_send_message");
+  });
+
   it("fails when the identity file is missing", async () => {
     const configPath = await writeConfig({
       runtime: { model: "pi:openai-codex:gpt-5.5" },
