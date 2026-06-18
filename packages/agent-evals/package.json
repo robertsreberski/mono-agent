@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/agent-evals",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local-first end-to-end eval runner for agent responders and harnesses.",
   "type": "module",
   "license": "UNLICENSED",
@@ -23,9 +23,9 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.3.0",
-    "@mono-agent/agent-harness": "workspace:0.3.0",
-    "@mono-agent/observability": "workspace:0.3.0",
+    "@mono-agent/agent-contracts": "workspace:0.4.0",
+    "@mono-agent/agent-harness": "workspace:0.4.0",
+    "@mono-agent/observability": "workspace:0.4.0",
     "agentevals": "^0.0.7"
   },
   "publishConfig": {
