@@ -248,4 +248,31 @@ describe("reconcile", () => {
     // GHOST was not partially mutated by the failed update (rewriteBullet threw before the index write).
     expect(db.get("GHOST")?.status).toBe("open");
   });
+
+  it("case 6 — surfaces an embedding-model failure (findSimilar throws) instead of isolating it", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    // Simulate the embedding model being down: findSimilar embeds the query, so it throws for EVERY
+    // candidate. That is a systemic model outage, not a per-item data problem — it must surface, not
+    // be swallowed by per-candidate isolation (which would make a dead embedder look like a no-op).
+    db.findSimilar = async () => { throw new Error("ollama embeddings 500"); };
+    const candidate: CandidateMemory = { type: "note", text: "anything worth remembering", salience: 0.5, isInsight: false };
+    await expect(reconcile([candidate], makeDeps(db, root, fakeLlm([])))).rejects.toThrow(/embedding/i);
+  });
+
+  it("case 7 — surfaces an LLM failure from classify instead of silently falling back to ADD", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    // A near-duplicate forces the LLM classify path; a thrown error there must surface, not degrade
+    // to a silent ADD that hides a dead model.
+    await seed(db, root, "DUP1", "ship the phase two reconcile engine across markdown and index");
+    const throwingLlm = { id: "throws", complete: async () => { throw new Error("ollama 500"); } };
+    const candidate: CandidateMemory = {
+      type: "task",
+      text: "ship the phase two reconcile engine across markdown and index now",
+      salience: 0.6,
+      isInsight: false,
+    };
+    await expect(reconcile([candidate], makeDeps(db, root, throwingLlm))).rejects.toThrow(/classif/i);
+  });
 });

@@ -17,9 +17,12 @@ describe("distill", () => {
     const llm = fakeLlm([["TEXT:", '[{"text":""},{"type":"note","text":"valid one","salience":0.5,"isInsight":false}]']]);
     expect((await distill("x", llm)).map((c) => c.text)).toEqual(["valid one"]);
   });
-  it("returns [] when the LLM throws (never-throw contract)", async () => {
-    const throwingLlm = { id: "throws", complete: async () => { throw new Error("boom"); } };
-    await expect(distill("some text", throwingLlm)).resolves.toEqual([]);
+  it("surfaces (rethrows) a model failure from the LLM instead of swallowing to []", async () => {
+    // A dead/erroring model must NOT look like "nothing to remember". The error propagates so the
+    // capture boundary can log it; the failure names the stage and preserves the underlying cause.
+    const throwingLlm = { id: "throws", complete: async () => { throw new Error("ECONNREFUSED"); } };
+    await expect(distill("some text", throwingLlm)).rejects.toThrow(/distill/i);
+    await expect(distill("some text", throwingLlm)).rejects.toThrow(/ECONNREFUSED/);
   });
 
   it("normalizes candidate text to a bullet-safe single line (no newlines, no delimiter)", async () => {

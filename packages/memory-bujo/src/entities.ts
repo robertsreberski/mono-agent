@@ -1,5 +1,6 @@
 import type { LlmComplete } from "./llm.js";
 import { parseJsonLoose } from "./json.js";
+import { MemoryModelError } from "./model-error.js";
 
 export interface ExtractedEntity {
   readonly id: string;
@@ -78,7 +79,9 @@ function normalizeRelation(raw: unknown, entityIds: Set<string>): ExtractedRelat
 /**
  * Use the LLM to extract named entities and their relations from `text`.
  * Empty/whitespace text → `{entities:[], relations:[]}`.
- * Never throws: malformed LLM output is handled defensively.
+ * Malformed LLM *output* is handled defensively (→ EMPTY), but a model *failure* (Ollama down,
+ * timeout, 5xx) is rethrown as a {@link MemoryModelError} so it surfaces rather than looking like
+ * "no entities found".
  */
 export async function extractEntities(text: string, llm: LlmComplete): Promise<Extraction> {
   if (text.trim().length === 0) return EMPTY;
@@ -86,8 +89,8 @@ export async function extractEntities(text: string, llm: LlmComplete): Promise<E
   let raw: string;
   try {
     raw = await llm.complete(PROMPT(text));
-  } catch {
-    return EMPTY;
+  } catch (cause) {
+    throw new MemoryModelError("llm", "entities", cause);
   }
 
   const parsed = parseJsonLoose<RawExtraction>(raw);

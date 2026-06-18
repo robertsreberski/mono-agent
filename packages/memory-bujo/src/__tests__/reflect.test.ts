@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { appendBullet, dailyFilePath } from "../daily.js";
 import { createIdFactory } from "../ids.js";
+import { MemoryModelError } from "../model-error.js";
 import { reflect, type ReflectDeps } from "../reflect.js";
 import type { Bullet } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
@@ -122,7 +123,7 @@ describe("reflect", () => {
     expect(edgeDsts).not.toContain("MEM3");
   });
 
-  it("returns insights:0 and does not throw when the LLM throws", async () => {
+  it("surfaces (rethrows) a model failure during insight synthesis instead of returning insights:0", async () => {
     const root = newRoot();
     const db = openDb(root);
 
@@ -137,9 +138,15 @@ describe("reflect", () => {
       },
     };
 
-    await expect(reflect(makeDeps(db, root, { llm: throwingLlm }))).resolves.toMatchObject({
-      insights: 0,
-    });
+    // A dead model during the nightly reflection must surface (the scheduler logs it) — not look
+    // like a successful reflection that simply found no insights worth synthesizing.
+    const err = await reflect(makeDeps(db, root, { llm: throwingLlm })).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MemoryModelError);
+    expect((err as MemoryModelError).kind).toBe("llm");
+    expect((err as MemoryModelError).stage).toBe("insights");
+    expect((err as Error).message).toMatch(/LLM unavailable/);
+    // The message must be scope-neutral: a reflection failure must NOT read as a "capture" failure.
+    expect((err as Error).message).not.toMatch(/capture/i);
   });
 
   it("returns insights:0 when fewer than 3 non-insight memories exist", async () => {
