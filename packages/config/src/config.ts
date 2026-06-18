@@ -700,6 +700,15 @@ function readObservabilityConfig(
       env: "MONO_AGENT_OBSERVABILITY_EXPORTERS",
     });
   }
+  // Only the first exporter is wired (runtime/status/validate read exporters[0]).
+  // Reject >1 loudly rather than silently dropping the rest.
+  if (parsed.length > 1) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_OBSERVABILITY_EXPORTERS supports a single exporter; configure exactly one.",
+      { env: "MONO_AGENT_OBSERVABILITY_EXPORTERS" },
+    );
+  }
   const exporters = parsed.map((value, index) =>
     normalizeExporterFromUnknown(value, `MONO_AGENT_OBSERVABILITY_EXPORTERS[${index}]`),
   );
@@ -736,14 +745,48 @@ function normalizeExporterFromUnknown(value: unknown, source: string): Observabi
   };
 }
 
-/** Shape-validate an endpoint string via `new URL` — never performs a request. */
+/**
+ * Shape-validate an endpoint string via `new URL` — never performs a request.
+ * Also rejects credential/secret-bearing URL components (userinfo, query,
+ * fragment): the raw endpoint is printed and persisted in plaintext via
+ * start/status/doctor and trace-source metadata, so a `user:pass@`, `?api_key=`
+ * or `#token` would leak. Secrets belong in `headers`, which are redacted.
+ */
 function validateEndpoint(value: string, source: string): string {
+  let url: URL;
   try {
-    new URL(value);
+    url = new URL(value);
   } catch {
     throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a valid URL.`, { env: source });
   }
+  assertEndpointHasNoSecrets(url, source);
   return value;
+}
+
+/**
+ * Reject URL components that can smuggle credentials into a plaintext-displayed
+ * endpoint. Shared shape so the core config and the app resolver agree.
+ */
+function assertEndpointHasNoSecrets(url: URL, source: string): void {
+  if (url.username !== "" || url.password !== "") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.endpoint must not embed credentials (user:pass@); put secrets in headers instead.`,
+      { env: source },
+    );
+  }
+  if (url.search !== "") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.endpoint must not contain a query string; put tokens in headers instead.`,
+      { env: source },
+    );
+  }
+  if (url.hash !== "") {
+    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must not contain a URL fragment.`, {
+      env: source,
+    });
+  }
 }
 
 /** Read an optional object of string->non-empty-string (e.g. HTTP headers). */

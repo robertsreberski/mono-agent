@@ -3,13 +3,8 @@ import type { RunExportContext, RunSummary, RuntimeEventLike } from "@mono-agent
 
 import { buildOtlpTraceRequest } from "../otlp-json.js";
 
-function decodeBase64Length(value: string): number {
-  return Buffer.from(value, "base64").length;
-}
-
-function isBase64(value: string): boolean {
-  return /^[A-Za-z0-9+/]+={0,2}$/u.test(value);
-}
+const HEX_TRACE_ID = /^[0-9a-f]{32}$/u;
+const HEX_SPAN_ID = /^[0-9a-f]{16}$/u;
 
 const summary: RunSummary = {
   runId: "run-1",
@@ -54,7 +49,7 @@ describe("buildOtlpTraceRequest", () => {
     expect(spans).toHaveLength(3);
   });
 
-  it("encodes traceId as 16-byte base64 and spanId as 8-byte base64 (NOT hex)", () => {
+  it("encodes traceId as 32-char hex and spanId as 16-char hex (OTLP/JSON spec, NOT base64)", () => {
     const request = buildOtlpTraceRequest({
       summary,
       events,
@@ -65,11 +60,15 @@ describe("buildOtlpTraceRequest", () => {
     });
     const spans = request.resourceSpans[0]!.scopeSpans[0]!.spans;
     for (const span of spans) {
-      expect(isBase64(span.traceId)).toBe(true);
-      expect(decodeBase64Length(span.traceId)).toBe(16);
-      expect(isBase64(span.spanId)).toBe(true);
-      expect(decodeBase64Length(span.spanId)).toBe(8);
+      // 16 trace bytes -> 32 hex chars; 8 span bytes -> 16 hex chars; lowercase only.
+      expect(span.traceId).toMatch(HEX_TRACE_ID);
+      expect(span.spanId).toMatch(HEX_SPAN_ID);
     }
+    // Exact hex of the deterministic factory's bytes (trace = 1..16, root span = all 1s).
+    const root = spans[0]!;
+    expect(root.traceId).toBe("0102030405060708090a0b0c0d0e0f10");
+    expect(root.spanId).toBe("0101010101010101");
+    expect(spans[1]!.spanId).toBe("0202020202020202");
     // all spans share the same trace id
     const traceIds = new Set(spans.map((s) => s.traceId));
     expect(traceIds.size).toBe(1);

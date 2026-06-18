@@ -71,7 +71,6 @@ The command builds the repo, verifies `gemma4:31b` is installed in Ollama, write
 Useful options:
 
 ```bash
-pnpm run deploy:final -- --port 5317
 pnpm run deploy:final -- --a2a-port 4317
 pnpm run deploy:final -- --config ./.mono-agent/deploy/custom.config.json
 pnpm run deploy:final -- --no-start

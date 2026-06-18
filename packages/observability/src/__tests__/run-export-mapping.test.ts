@@ -155,6 +155,28 @@ describe("buildEventSpanAttributes", () => {
     expect(JSON.stringify(result.payload)).not.toContain("secret-value");
     expect(JSON.stringify(result.payload)).toContain("[redacted]");
   });
+
+  it("omits the content-derived summary attribute in metadata-only mode but keeps the structural label", () => {
+    const result = buildEventSpanAttributes(
+      { type: "assistant_message", role: "assistant", text: "the secret answer is 42" },
+      0,
+      makeContext({ includeSensitiveData: false }),
+    );
+    expect(result.attributes["mono.agent.event.summary"]).toBeUndefined();
+    // No attribute value carries the message content.
+    expect(JSON.stringify(result.attributes)).not.toContain("the secret answer is 42");
+    // The structural label is still present for navigation.
+    expect(result.attributes["mono.agent.event.label"]).toBe("Message: assistant");
+  });
+
+  it("includes the summary attribute when includeSensitiveData is true", () => {
+    const result = buildEventSpanAttributes(
+      { type: "assistant_message", role: "assistant", text: "the secret answer is 42" },
+      0,
+      makeContext({ includeSensitiveData: true }),
+    );
+    expect(result.attributes["mono.agent.event.summary"]).toContain("the secret answer is 42");
+  });
 });
 
 describe("countRuntimeWarnings", () => {

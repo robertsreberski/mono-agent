@@ -45,22 +45,32 @@ describe("truncateString", () => {
     expect(truncateString(value, 64)).toBe(`${value.slice(0, 64)}…[truncated 1 bytes]`);
   });
 
-  it("uses UTF-8 byte length (not code-unit length) for multi-byte input", () => {
+  it("keeps the retained text within the byte cap for multi-byte input (no split code points)", () => {
     // "😀" is 1 code point, 2 UTF-16 code units, 4 UTF-8 bytes.
     const emoji = "😀".repeat(20); // 80 UTF-8 bytes
-    const expectedByteCount = new TextEncoder().encode(emoji).length;
-    expect(expectedByteCount).toBe(80);
-    // Parity with the prior Buffer.byteLength UTF-8 count.
-    expect(Buffer.byteLength(emoji, "utf8")).toBe(expectedByteCount);
-    expect(truncateString(emoji, 64)).toBe(`${emoji.slice(0, 64)}…[truncated ${expectedByteCount - 64} bytes]`);
+    const encoder = new TextEncoder();
+    expect(encoder.encode(emoji).length).toBe(80);
+
+    const out = truncateString(emoji, 64);
+    const head = out.split("…[truncated")[0]!;
+    // The kept head must not exceed the cap...
+    expect(encoder.encode(head).length).toBeLessThanOrEqual(64);
+    // ...and must remain whole emoji (4-byte boundary), not a split code point.
+    expect(head).toBe("😀".repeat(16)); // 16 * 4 = 64 bytes
+    expect(out).toBe(`${"😀".repeat(16)}…[truncated 16 bytes]`);
   });
 
-  it("matches prior Buffer-based byte count on CJK input", () => {
-    // Each CJK char is 3 UTF-8 bytes.
+  it("cuts CJK input on a UTF-8 boundary at or below the byte cap", () => {
+    // Each CJK char is 3 UTF-8 bytes; 64 is not a multiple of 3.
     const cjk = "観".repeat(30); // 90 UTF-8 bytes
-    const expectedByteCount = new TextEncoder().encode(cjk).length;
-    expect(expectedByteCount).toBe(90);
-    expect(Buffer.byteLength(cjk, "utf8")).toBe(expectedByteCount);
-    expect(truncateString(cjk, 64)).toBe(`${cjk.slice(0, 64)}…[truncated ${expectedByteCount - 64} bytes]`);
+    const encoder = new TextEncoder();
+    expect(encoder.encode(cjk).length).toBe(90);
+
+    const out = truncateString(cjk, 64);
+    const head = out.split("…[truncated")[0]!;
+    // 21 chars = 63 bytes is the largest whole-character cut at or below 64.
+    expect(encoder.encode(head).length).toBe(63);
+    expect(encoder.encode(head).length).toBeLessThanOrEqual(64);
+    expect(out).toBe(`${"観".repeat(21)}…[truncated 27 bytes]`);
   });
 });

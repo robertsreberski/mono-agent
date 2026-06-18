@@ -22,6 +22,10 @@ import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
 
 const DEFAULT_LOG_LINES = 200;
+// Node's maximum setInterval/setTimeout delay (2^31 - 1 ms, ~24.8 days). A
+// referenced timer at this delay keeps the foreground event loop alive without
+// busy-waiting; larger values silently overflow to a 1ms delay.
+const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
 const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill"] as const;
 
@@ -336,8 +340,11 @@ async function runForeground(args: ParsedCliArgs): Promise<number> {
   });
 
   printAppStatus(app);
-  installSignalHandlers(app);
-  return 0;
+  // Block until a shutdown signal. Returning here (the old behavior) let the
+  // process exit immediately whenever no channel owned a live handle — e.g. a
+  // traceability-only config, now that the operator console is retired and the
+  // trace heartbeat timer is unref'd.
+  return await waitForShutdownSignal(app);
 }
 
 async function runBackgroundCommand(
@@ -438,19 +445,34 @@ function describeChannelStatus(status: ChannelStatus): string {
   return `${status.kind}: ${status.reason}`;
 }
 
-function installSignalHandlers(app: MonoAgentApp): void {
-  let stopping = false;
-  const stop = async (signal: string): Promise<void> => {
-    if (stopping) {
-      return;
-    }
-    stopping = true;
-    process.stdout.write(`\nReceived ${signal}; stopping mono agent app...\n`);
-    await app.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void stop("SIGINT"));
-  process.on("SIGTERM", () => void stop("SIGTERM"));
+/**
+ * Block the foreground process until SIGINT/SIGTERM, then stop the app and
+ * resolve the exit code. A referenced no-op timer owns the event loop so the
+ * process stays alive even with no channel handle (signal listeners alone do
+ * NOT keep Node running, and the trace heartbeat is unref'd). Cleared on stop so
+ * the loop drains cleanly without a forceful `process.exit`. Exported for tests.
+ */
+export function waitForShutdownSignal(app: Pick<MonoAgentApp, "stop">): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const keepAlive = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
+    let stopping = false;
+    const onSignal = (signal: NodeJS.Signals): void => {
+      if (stopping) {
+        return;
+      }
+      stopping = true;
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      clearInterval(keepAlive);
+      void (async () => {
+        process.stdout.write(`\nReceived ${signal}; stopping mono agent app...\n`);
+        await app.stop();
+        resolve(0);
+      })();
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+  });
 }
 
 function consoleLogger() {

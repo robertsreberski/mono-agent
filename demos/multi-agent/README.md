@@ -39,7 +39,6 @@ Prerequisites: Node.js 20 or newer and an existing pnpm 10 or newer install.
 ```bash
 pnpm install --frozen-lockfile
 pnpm run deploy:multi -- \
-  --port 5417 \
   --orchestrator-a2a-port 5418 \
   --researcher-a2a-port 5419 \
   --worker-a2a-port 5420
@@ -80,7 +79,7 @@ After generated configs exist, start without rewriting them:
 
 ```bash
 pnpm run build
-pnpm run demo:multi -- --config-dir ./.mono-agent/multi-agent --port 5417
+pnpm run demo:multi -- --config-dir ./.mono-agent/multi-agent
 ```
 
 Use `SIGINT` or `SIGTERM` to stop the Telegram poller, A2A providers, and trace source heartbeats cleanly.

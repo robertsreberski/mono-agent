@@ -100,8 +100,11 @@ const SPAN_KIND_CLIENT = 3;
 const STATUS_CODE_UNSET = 0;
 const STATUS_CODE_ERROR = 2;
 
-function toBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+// OTLP/JSON (Protobuf JSON mapping) requires `traceId`/`spanId` byte fields to be
+// lowercase hex strings, NOT base64 — Phoenix and OTLP collectors reject or
+// mis-render base64 ids. See https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding
+function toHex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("hex");
 }
 
 function isIntegerValue(value: number): boolean {
@@ -146,8 +149,8 @@ function kindHintToOtlp(category: EventSpanMapping["category"]): number {
 export function buildOtlpTraceRequest(input: BuildOtlpTraceRequestInput): OtlpTraceRequest {
   const { summary, events, context, startTimeUnixNanos, endTimeUnixNanos, idFactory } = input;
 
-  const traceId = toBase64(idFactory.traceId());
-  const rootSpanId = toBase64(idFactory.spanId());
+  const traceId = toHex(idFactory.traceId());
+  const rootSpanId = toHex(idFactory.spanId());
   const start = startTimeUnixNanos.toString();
   const end = endTimeUnixNanos.toString();
 
@@ -186,7 +189,7 @@ export function buildOtlpTraceRequest(input: BuildOtlpTraceRequestInput): OtlpTr
     const eventStatusHint = spanStatusFor(summary.status, mapping.category);
     childSpans.push({
       traceId,
-      spanId: toBase64(idFactory.spanId()),
+      spanId: toHex(idFactory.spanId()),
       parentSpanId: rootSpanId,
       name: mapping.name,
       kind: kindHintToOtlp(mapping.category),

@@ -12,6 +12,7 @@ import { DEFAULT_MAX_STRING_BYTES } from "./guards.js";
 const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|api[_-]?key|cookie)/iu;
 
 const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
 
 export function redactJsonValue(value: unknown, maxStringBytes = DEFAULT_MAX_STRING_BYTES): unknown {
   return redact(value, maxStringBytes, 0, undefined, new WeakSet<object>());
@@ -54,11 +55,20 @@ function redact(value: unknown, maxStringBytes: number, depth: number, key: stri
 }
 
 export function truncateString(value: string, maxStringBytes: number): string {
-  const bytes = TEXT_ENCODER.encode(value).length;
-  if (bytes <= maxStringBytes) {
+  const encoded = TEXT_ENCODER.encode(value);
+  if (encoded.length <= maxStringBytes) {
     return value;
   }
-  return `${value.slice(0, maxStringBytes)}…[truncated ${bytes - maxStringBytes} bytes]`;
+  // Cut on a UTF-8 boundary so the kept text never EXCEEDS the byte cap and never
+  // splits a multi-byte code point. Slicing the string by `maxStringBytes` UTF-16
+  // code units (the prior bug) could emit several bytes per unit. Walk back from
+  // the byte cap past any continuation byte (0b10xxxxxx) to the start of its code point.
+  let end = maxStringBytes;
+  while (end > 0 && (encoded[end]! & 0b1100_0000) === 0b1000_0000) {
+    end -= 1;
+  }
+  const head = TEXT_DECODER.decode(encoded.subarray(0, end));
+  return `${head}…[truncated ${encoded.length - end} bytes]`;
 }
 
 export function errorFailureKind(error: unknown): string {

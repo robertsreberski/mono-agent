@@ -92,4 +92,42 @@ describe("resolveAppObservabilityExporters", () => {
     const exporters = await resolveAppObservabilityExporters(inputFor(configPath));
     expect(exporters).toEqual([]);
   });
+
+  it("defaults an omitted exporter type to phoenix (matches core config normalization)", async () => {
+    const configPath = await writeConfig({
+      observability: { exporters: [{ endpoint: "http://127.0.0.1:6006/v1/traces" }] },
+    });
+    const exporters = await resolveAppObservabilityExporters(inputFor(configPath));
+    expect(exporters).toHaveLength(1);
+    expect(exporters[0]?.type).toBe("phoenix");
+  });
+
+  it("throws for more than one configured exporter (only the first is wired)", async () => {
+    const configPath = await writeConfig({
+      observability: {
+        exporters: [
+          { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" },
+          { type: "phoenix", endpoint: "http://127.0.0.1:6007/v1/traces" },
+        ],
+      },
+    });
+    await expect(resolveAppObservabilityExporters(inputFor(configPath))).rejects.toSatisfy((error: unknown) =>
+      isAppCoreConfigError(error),
+    );
+  });
+
+  it("throws for an endpoint that embeds credentials or query/fragment secrets", async () => {
+    for (const endpoint of [
+      "https://user:pass@127.0.0.1:6006/v1/traces",
+      "http://127.0.0.1:6006/v1/traces?api_key=SECRET",
+      "http://127.0.0.1:6006/v1/traces#token",
+    ]) {
+      const configPath = await writeConfig({
+        observability: { exporters: [{ type: "phoenix", endpoint }] },
+      });
+      await expect(resolveAppObservabilityExporters(inputFor(configPath))).rejects.toSatisfy((error: unknown) =>
+        isAppCoreConfigError(error),
+      );
+    }
+  });
 });

@@ -95,8 +95,13 @@ export function buildEventSpanAttributes(
     "mono.agent.event.index": index,
     "mono.agent.event.type": eventType,
     "mono.agent.event.category": category,
+    // `label` is structural (e.g. "Tool: Read", "Message: assistant") and safe
+    // to always export. `summary` is content-derived (assistant text, tool-result
+    // JSON, error text, delta), so it is gated behind includeSensitiveData — in
+    // metadata-only mode it would otherwise leak run content the same way the raw
+    // payload does. The structural `label` remains for navigation.
     "mono.agent.event.label": label,
-    "mono.agent.event.summary": summary,
+    ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": summary } : {}),
     "mono.agent.run_id": ctx.runId,
     ...(ctx.sourceId === undefined ? {} : { "mono.agent.source_id": ctx.sourceId }),
   };

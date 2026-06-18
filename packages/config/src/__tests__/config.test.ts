@@ -1409,6 +1409,63 @@ describe("loadMonoAgentConfig", () => {
     throw new Error("Expected a non-string header value to fail.");
   });
 
+  it("rejects more than one configured exporter (only the first is wired)", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" },
+            { type: "phoenix", endpoint: "http://127.0.0.1:6007/v1/traces" },
+          ]),
+        },
+      }),
+    ).toThrow(/single exporter/iu);
+  });
+
+  it("rejects an endpoint that embeds credentials in userinfo", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "https://user:pass@127.0.0.1:6006/v1/traces" },
+          ]),
+        },
+      }),
+    ).toThrow(/credentials/iu);
+  });
+
+  it("rejects an endpoint with a query string (secrets belong in headers)", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces?api_key=SECRET" },
+          ]),
+        },
+      }),
+    ).toThrow(/query string/iu);
+  });
+
+  it("rejects an endpoint with a URL fragment", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces#token" },
+          ]),
+        },
+      }),
+    ).toThrow(/fragment/iu);
+  });
+
   it("rejects an exporter timeoutMs out of range or non-integer", () => {
     expect(() =>
       loadMonoAgentConfig({

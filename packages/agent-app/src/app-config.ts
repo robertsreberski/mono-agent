@@ -151,6 +151,15 @@ function parseExporters(value: unknown, source: string): readonly ResolvedExport
   if (!Array.isArray(value)) {
     throw new MonoAgentConfigError("invalid_env", `${source} must be a JSON array.`, { env: source });
   }
+  // Only the first exporter is wired (runtime/status/validate read exporters[0]).
+  // Reject >1 loudly rather than silently dropping the rest. Mirrors core config.
+  if (value.length > 1) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source} supports a single exporter; configure exactly one.`,
+      { env: source },
+    );
+  }
   return value.map((entry, index) => parseExporter(entry, `${source}[${index}]`));
 }
 
@@ -159,15 +168,21 @@ function parseExporter(value: unknown, source: string): ResolvedExporter {
     throw new MonoAgentConfigError("invalid_env", `${source} must be an object.`, { env: source });
   }
   const record = value as Record<string, unknown>;
+  // A present-but-non-string type is invalid; an omitted type defaults to the
+  // first supported type (phoenix), matching core config normalization so the
+  // app resolver and core agree (`validate` no longer rejects what startup accepts).
+  if (record.type !== undefined && typeof record.type !== "string") {
+    throw new MonoAgentConfigError("invalid_env", `${source}.type must be a string.`, { env: source });
+  }
   const rawType = typeof record.type === "string" ? record.type : undefined;
-  if (rawType === undefined || !(OBSERVABILITY_EXPORTER_TYPES as readonly string[]).includes(rawType)) {
+  if (rawType !== undefined && !(OBSERVABILITY_EXPORTER_TYPES as readonly string[]).includes(rawType)) {
     throw new MonoAgentConfigError(
       "invalid_env",
       `${source}.type must be one of ${OBSERVABILITY_EXPORTER_TYPES.join(", ")}.`,
       { env: source },
     );
   }
-  const type = rawType as (typeof OBSERVABILITY_EXPORTER_TYPES)[number];
+  const type = (rawType ?? OBSERVABILITY_EXPORTER_TYPES[0]) as (typeof OBSERVABILITY_EXPORTER_TYPES)[number];
 
   const endpoint = record.endpoint === undefined
     ? DEFAULT_PHOENIX_ENDPOINT
@@ -218,11 +233,34 @@ function validateExporterEndpoint(value: unknown, source: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a non-empty string.`, { env: source });
   }
+  let url: URL;
   try {
     // Shape-only validation — never performs a request (reachability is `validate`'s job).
-    new URL(value);
+    url = new URL(value);
   } catch {
     throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a valid URL.`, { env: source });
+  }
+  // The raw endpoint is displayed/persisted in plaintext (start/status/validate,
+  // trace-source metadata, transport errors), so reject credential-bearing URL
+  // components. Secrets belong in `headers`, which are redacted. Mirrors core config.
+  if (url.username !== "" || url.password !== "") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.endpoint must not embed credentials (user:pass@); put secrets in headers instead.`,
+      { env: source },
+    );
+  }
+  if (url.search !== "") {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source}.endpoint must not contain a query string; put tokens in headers instead.`,
+      { env: source },
+    );
+  }
+  if (url.hash !== "") {
+    throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must not contain a URL fragment.`, {
+      env: source,
+    });
   }
   return value;
 }
