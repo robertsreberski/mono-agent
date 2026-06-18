@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -8,7 +7,6 @@ import {
   createConfiguredMemory,
 } from "@mono-agent/agent-host";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import type { AgentMessageStream, AgentRequestBase, AgentResponse } from "@mono-agent/agent-contracts";
 import { registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
@@ -38,14 +36,10 @@ import {
   createMemoryRecallRuntimeExtension,
   resolveMemoryRecallSettings,
 } from "./memory-recall.js";
-import {
-  createSelfCapabilitiesRuntimeExtension,
-  resolveSelfCapabilitiesSettings,
-} from "./self-capabilities.js";
 
 /**
- * Outcome of a live config re-apply (`applyConfigChange`). Returned to the
- * self-capabilities reload caller and consumed by demos that surface the result.
+ * Outcome of a live config re-apply (`applyConfigChange`). Consumed by callers
+ * that trigger a reload and by demos that surface the result.
  */
 export type ConfigApplyResult =
   | { readonly kind: "applied"; readonly message: string; readonly transports: readonly string[] }
@@ -173,8 +167,6 @@ class MonoAgentAppController implements MonoAgentApp {
   private sharedMemory: ReturnType<typeof createConfiguredMemory> = undefined;
   private sharedMemoryBuilt = false;
   private configApplyTail: Promise<void> = Promise.resolve();
-  private selfCapabilitiesReloadScheduled = false;
-  private readonly selfCapabilitiesReloadScope = new AsyncLocalStorage<{ token?: string }>();
   private stopped = false;
 
   constructor(input: MonoAgentAppControllerInput) {
@@ -579,10 +571,9 @@ class MonoAgentAppController implements MonoAgentApp {
       this.activeRuntimes.push(runtime);
     }
     const memory = this.memoryStore(coreConfig, runtime);
-    const selfCapabilities = await this.selfCapabilitiesRuntimeOptions(coreConfig);
     const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
-    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([selfCapabilities, memoryRecall, adapterSendTools]);
+    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([memoryRecall, adapterSendTools]);
     const observabilityContext = await this.observabilityContext();
     const responder = createConfiguredAgentResponder({
       config: coreConfig,
@@ -595,11 +586,7 @@ class MonoAgentAppController implements MonoAgentApp {
       observabilityContext,
       exporterWarn: (warning) => this.recordExporterWarning(warning),
     });
-    // Only self-capabilities can request an app reload, so wrapping is gated on it (not on the
-    // composed options, which may carry only the read-only memory_recall server).
-    return selfCapabilities === undefined
-      ? responder
-      : this.wrapResponderForSelfCapabilitiesReload(responder);
+    return responder;
   }
 
   /**
@@ -619,21 +606,6 @@ class MonoAgentAppController implements MonoAgentApp {
       resolveAppTraceSourceLabel(input, this.traceDefaults),
     ]);
     return { sourceId, sourceLabel, configPath: this.configPath };
-  }
-
-  private async selfCapabilitiesRuntimeOptions(coreConfig: MonoAgentConfig): Promise<RuntimeOptionsExtension | undefined> {
-    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
-    const settings = await resolveSelfCapabilitiesSettings(input, coreConfig);
-    if (!settings.enabled) {
-      return undefined;
-    }
-    this.logger?.info?.("Self-capability authoring tools enabled.", { mode: settings.mode });
-    return createSelfCapabilitiesRuntimeExtension(settings, (token) => {
-      const scope = this.selfCapabilitiesReloadScope.getStore();
-      if (scope !== undefined) {
-        scope.token = token;
-      }
-    });
   }
 
   private memoryRecallRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
@@ -660,52 +632,6 @@ class MonoAgentAppController implements MonoAgentApp {
     const toolNames = adapterSendToolNames(settings);
     this.logger?.info?.("Adapter send tools enabled.", { tools: toolNames });
     return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames);
-  }
-
-  private wrapResponderForSelfCapabilitiesReload(responder: AgentResponder): AgentResponder {
-    return {
-      respond: async (
-        request: AgentRequestBase,
-        stream: AgentMessageStream,
-      ): Promise<AgentResponse> => {
-        return await this.selfCapabilitiesReloadScope.run({}, async () => {
-          try {
-            return await responder.respond(request, stream);
-          } finally {
-            const token = this.selfCapabilitiesReloadScope.getStore()?.token;
-            if (token !== undefined) {
-              this.scheduleSelfCapabilitiesReload(token);
-            }
-          }
-        });
-      },
-      // Forward cancellation so a channel /cancel still reaches the harness's
-      // live-session manager when the responder is wrapped.
-      ...(responder.cancel === undefined
-        ? {}
-        : { cancel: (conversationId: string, reason?: unknown) => responder.cancel?.(conversationId, reason) }),
-      // Forward dispose (duck-typed; not on the AgentResponder contract) so the app
-      // can still tear down the harness on stop/reload through the wrapper.
-      ...((responder as { dispose?: () => Promise<void> }).dispose === undefined
-        ? {}
-        : { dispose: () => (responder as { dispose?: () => Promise<void> }).dispose?.() }),
-    } as AgentResponder;
-  }
-
-  private scheduleSelfCapabilitiesReload(token: string): void {
-    if (this.stopped || this.selfCapabilitiesReloadScheduled) {
-      return;
-    }
-    this.selfCapabilitiesReloadScheduled = true;
-    setTimeout(() => {
-      this.selfCapabilitiesReloadScheduled = false;
-      if (this.stopped) {
-        return;
-      }
-      void this.applyConfigChange(`self-capabilities:${token.slice(0, 12)}`).catch((error: unknown) => {
-        this.logger?.error?.("Self-capability reload failed.", { reason: reasonOf(error) });
-      });
-    }, 0);
   }
 
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */
@@ -847,7 +773,7 @@ function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The per-request runtime-options extension function (self-capabilities, memory-recall, ...). */
+/** The per-request runtime-options extension function (memory-recall, adapter-send, ...). */
 type RuntimeOptionsExtension = NonNullable<
   Parameters<typeof createConfiguredAgentResponder>[0]["runtimeOptionsForRequest"]
 >;

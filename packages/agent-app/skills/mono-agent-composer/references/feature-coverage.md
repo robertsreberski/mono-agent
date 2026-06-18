@@ -27,7 +27,6 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Identity + optional soul documents | config | `context.identityPath`, `context.soulPath` |
 | Selected skills from a skills root | config | `context.skillsRoot`, `context.selectedSkills` |
 | Per-skill byte cap | config | `context.skillMaxBytes` |
-| Guarded self-authoring of local skills and cron jobs | config | `selfCapabilities.{enabled,mode,skillsRoot,cronDir,auditDir}`; default off, `mode: "propose"` persists proposals under `.mono-agent/self-capabilities/proposals/`; create tools require a saved `proposalId` plus a proposal-scoped approval token derived from `MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN` |
 | Conversation history (in-memory; unlimited unless turns are capped) | auto | sized from `runtime.maxTurns`; custom store via code |
 | Lite memory (FTS keyword recall + rapid-log capture; no external deps) | config | `memory.mode: "lite"`, `path`, `maxBytes`, `writeMode` |
 | Journal memory (hybrid recall BM25+vector + salience decay; needs configured embeddings) | config | `memory.mode: "journal"`, `path`, `memory.embeddings.{provider,model,dim}` (`provider: "ollama" | "openai"`) |

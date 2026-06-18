@@ -81,7 +81,6 @@ pnpm run test:demo
 | A2A | Send text to the Agent Card URL with `sendA2AMessage()`. |
 | Webhook | `curl` the invocation path and inspect the response body/status. |
 | Cron | Run a one-off scheduled invocation or wait for one tick. |
-| Self capabilities | In `propose` mode, ask for a proposed skill/cron and confirm the preview plus saved proposal file under `.mono-agent/self-capabilities/proposals/`. In `apply` mode, set `MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN`, explicitly provide the saved `proposalId` and a proposal-scoped approval token derived from that host secret in the confirming request, then confirm the file, linked audit record, and app reload. |
 | Observability | Confirm a run writes a redacted JSONL artifact; if an `observability.exporters` Phoenix entry is set, confirm the trace appears in Phoenix. |
 | Memory recall tool | With `memory.recallTool.enabled` (default on for journal/bujo with embeddings), ask the agent to recall an old note and confirm `memory_recall` appears in the run artifact and returns it. |
 | Semantic memory search | With `memory.embeddings` set (Ollama: `ollama pull nomic-embed-text:v1.5` first), ask a paraphrased question about an old note and confirm `memory_recall` (hybrid keyword + semantic) returns it. |

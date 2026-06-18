@@ -16,7 +16,6 @@ my-agent/
     artifacts/             # JSONL run summaries + events
     workspace/             # runtime working directory (if not ".")
     memory/                # journal memory root (daily notes, graph.jsonl, index/)
-    self-capabilities/     # audit records + reload requests for generated skills/crons
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     trace-sources/         # traceability registry (if kept folder-local)
 ```
@@ -106,19 +105,6 @@ my-agent/
     "allowedTools": ["Read", "Grep"],      // built-ins: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
     "disallowedTools": ["Bash"],
     "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
-  },
-
-  // Optional self-capability tools. Off by default. "propose" persists draft
-  // proposal records and previews them; "apply" exposes create tools only when
-  // the host process also sets MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN.
-  // Create tool calls must include a saved proposalId plus a proposal-scoped
-  // approval token derived from that host secret.
-  "selfCapabilities": {
-    "enabled": false,
-    "mode": "propose",                    // propose | apply
-    "skillsRoot": "./skills",             // defaults to context.skillsRoot or ./skills
-    "cronDir": "./cron",                  // defaults to cron.dir or ./cron
-    "auditDir": "./.mono-agent/self-capabilities"
   },
 
   // Sandbox for runtime commands. Omit for no sandboxing.
