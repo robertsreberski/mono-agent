@@ -675,7 +675,7 @@ function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: st
  * Read the optional observability exporter block from
  * `MONO_AGENT_OBSERVABILITY_EXPORTERS` (a JSON array). Modeled on
  * {@link readLocalProvidersJson}: env-first, shape-only validation, no network.
- * Endpoint reachability is intentionally NOT probed here — that is the doctor's
+ * Endpoint reachability is intentionally NOT probed here — that is `validate`'s
  * job (spec section 9). Returns undefined when the var is absent so the
  * conditional-spread idiom keeps `observability` off the config when unused.
  */

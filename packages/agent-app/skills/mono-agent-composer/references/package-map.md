@@ -109,7 +109,7 @@ Adapters must not import the harness, runtime adapter, memory packages (`memory-
 Use:
 
 - `@mono-agent/tui` for local terminal chat and redacted read-only config (`mono-agent-tui --config ./mono-agent.config.json`).
-- `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and the OTLP exporters (Phoenix) configured via `observability.exporters`.
+- `@mono-agent/observability` for JSONL event artifacts, summaries, and trace-source registration; add `@mono-agent/observability-otel` for the Phoenix OTLP exporter configured via `observability.exporters`.
 
 Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; local JSONL artifacts are the fallback otherwise.
 

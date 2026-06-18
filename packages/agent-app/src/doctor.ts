@@ -399,12 +399,23 @@ async function exporterSection(input: MonoAgentAppConfigInput): Promise<Validati
   return { id: "observability", label: "Observability exporter", status: "ok", details };
 }
 
-/** Times a POST-less reachability probe of the OTLP endpoint; returns an error string when unreachable, else undefined. */
+/**
+ * Times a POST-less reachability probe of the OTLP endpoint; returns an error
+ * string when unreachable or clearly wrong, else undefined. A throw (refused /
+ * DNS / timeout) means nothing is listening. A response confirms the host:port
+ * is live, but the status still matters: 2xx or 405 (path exists, OPTIONS just
+ * isn't allowed) is healthy, while 404/5xx means something is listening but it
+ * is not the OTLP endpoint we expect — surfaced so a typo'd path is not reported
+ * as ready. Kept non-fatal upstream (`waiting`, not `error`).
+ */
 async function probeExporterEndpoint(endpoint: string): Promise<string | undefined> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => { ctrl.abort(); }, BUJO_PROBE_TIMEOUT_MS);
   try {
-    await fetch(endpoint, { method: "OPTIONS", signal: ctrl.signal });
+    const response = await fetch(endpoint, { method: "OPTIONS", signal: ctrl.signal });
+    if (!response.ok && response.status !== 405) {
+      return `HTTP ${response.status}`;
+    }
     return undefined;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);

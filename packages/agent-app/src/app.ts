@@ -77,7 +77,7 @@ export type TraceabilityStatus =
 
 /**
  * Best-effort observability exporter status. `configured` does not assert
- * reachability (Phoenix may start later — only `doctor` probes); export
+ * reachability (Phoenix may start later — only `validate` probes); export
  * failures during runs surface as `lastWarning`/`lastError` without changing the
  * run outcome.
  */
@@ -305,8 +305,8 @@ class MonoAgentAppController implements MonoAgentApp {
   /**
    * Resolve the configured observability exporter(s) and publish the export
    * status. No reachability probe runs here — Phoenix may start after the agent,
-   * so an unreachable endpoint must not block startup (that probe lives in
-   * `doctor`). A present-but-invalid exporter config surfaces as `failed`.
+   * so an unreachable endpoint must not block startup (that probe runs in
+   * `validate`). A present-but-invalid exporter config surfaces as `failed`.
    */
   async startExporters(reason: string): Promise<ExporterStatus> {
     if (this.stopped) {

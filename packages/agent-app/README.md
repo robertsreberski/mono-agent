@@ -24,7 +24,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `mono-agent.config.json` and take effect on the next `mono-agent restart`.
 - Resolve and surface any configured `observability.exporters` (the Phoenix
   preset): `start`/`status` report the configured endpoint and a note that JSONL
-  artifacts remain local; `doctor` performs the live reachability probe. Export
+  artifacts remain local; `validate` performs the live reachability probe. Export
   is best-effort and never changes a run outcome.
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.

@@ -98,7 +98,7 @@ const DEFAULT_PHOENIX_TIMEOUT_MS = 5_000;
 const OBSERVABILITY_EXPORTER_TYPES = ["phoenix"] as const;
 
 /**
- * A validated observability exporter resolved for app startup/status/doctor.
+ * A validated observability exporter resolved for app startup/status/validate.
  * Mirrors {@link ObservabilityExporterConfig} but with the endpoint always
  * resolved (defaults applied) so callers never re-derive it.
  */
@@ -112,7 +112,7 @@ export type ResolvedExporter = ObservabilityExporterConfig & { readonly endpoint
  * host stays usable while the user fixes their config), but it DOES throw
  * a {@link MonoAgentConfigError} for a present-but-invalid exporter shape so bad
  * config fails clearly before startup. No reachability probe runs here —
- * reachability is the doctor's job (Phoenix may start after the agent).
+ * reachability is `validate`'s job (Phoenix may start after the agent).
  */
 export async function resolveAppObservabilityExporters(
   input: MonoAgentAppConfigInput,
@@ -219,7 +219,7 @@ function validateExporterEndpoint(value: unknown, source: string): string {
     throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a non-empty string.`, { env: source });
   }
   try {
-    // Shape-only validation — never performs a request (reachability is doctor's job).
+    // Shape-only validation — never performs a request (reachability is `validate`'s job).
     new URL(value);
   } catch {
     throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a valid URL.`, { env: source });

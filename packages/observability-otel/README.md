@@ -40,7 +40,7 @@ This package depends only on `@mono-agent/observability` (for the `RunExporter` 
 
 ## What This Package Does Not Own
 
-It does not write or read JSONL run artifacts (that stays in `@mono-agent/observability`), does not classify or summarize events (it reuses the pure mapping from the `./run-export` subpath), does not resolve config or env (that is `@mono-agent/config`), does not own the export timeout/best-effort isolation (the composite recorder does), and does not probe endpoint reachability (that is `doctor`). It never blocks or fails an agent run.
+It does not write or read JSONL run artifacts (that stays in `@mono-agent/observability`), does not classify or summarize events (it reuses the pure mapping from the `./run-export` subpath), does not resolve config or env (that is `@mono-agent/config`), does not own the export timeout/best-effort isolation (the composite recorder does), and does not probe endpoint reachability (that is `mono-agent validate`). It never blocks or fails an agent run.
 
 ## Verification
 

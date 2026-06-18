@@ -172,6 +172,32 @@ describe("validateMonoAgentFolder — observability exporter section", () => {
     expect(report.ok).toBe(true);
   });
 
+  it("reports ok when OPTIONS is rejected with 405 (endpoint present, method not allowed)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 405 }));
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("ok");
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports waiting when the endpoint responds but with a non-ok status (wrong path)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/wrong" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("waiting");
+    const text = section.details.join("\n");
+    expect(text).toMatch(/WARN/u);
+    expect(text).toContain("HTTP 404");
+    // Still non-fatal: a wrong/unready endpoint never fails the report.
+    expect(report.ok).toBe(true);
+  });
+
   it("reports error (fails the report) for an invalid exporter type", async () => {
     const configPath = await writeExporterConfig([{ type: "bogus", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
 
