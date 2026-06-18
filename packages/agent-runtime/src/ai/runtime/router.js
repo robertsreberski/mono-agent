@@ -191,20 +191,36 @@ function normaliseChain(chain) {
 
 function entrySatisfiesRequirements(entry, options) {
   const requires = entry.requires;
-  if (!requires) return true;
+  // Synthesize effective requirements: merge the entry's own `requires` with
+  // requirements inferred from per-run options, so a chain entry that carries
+  // no explicit `requires` (the agent-host + runtime-adapter paths cannot carry
+  // one today) still respects option-implied capability needs. Each option
+  // inference defers to an explicit entry pin, never overriding it.
+  const effectiveRequires = { ...(requires || null) };
+  // Honour request-time outputSchema → require structured_output unless the
+  // entry already pins it.
+  if (options.outputSchema && effectiveRequires.structured_output === undefined) {
+    effectiveRequires.structured_output = true;
+  }
+  // Honour native-subagent teammates → require supports_native_subagents unless
+  // the entry already pins it. A pi entry (supports_native_subagents:false) then
+  // fails here rather than silently dropping the teammates.
+  if (
+    Array.isArray(options.nativeSubagents?.teammates)
+    && options.nativeSubagents.teammates.length > 0
+    && effectiveRequires.supports_native_subagents === undefined
+  ) {
+    effectiveRequires.supports_native_subagents = true;
+  }
+  if (Object.keys(effectiveRequires).length === 0) return true;
   let caps;
   try {
     caps = runtimeCapabilities(entry.model);
   } catch {
     return false;
   }
-  for (const [key, expected] of Object.entries(requires)) {
+  for (const [key, expected] of Object.entries(effectiveRequires)) {
     if (caps[key] !== expected) return false;
-  }
-  // Honour request-time outputSchema → require structured_output unless
-  // already specified.
-  if (options.outputSchema && requires.structured_output !== false && caps.structured_output === false) {
-    return false;
   }
   return true;
 }

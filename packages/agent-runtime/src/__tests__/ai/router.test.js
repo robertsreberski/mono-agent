@@ -190,6 +190,63 @@ describe("createRouterRuntime — capability filtering", () => {
     expect(result.failoverHistory).toHaveLength(1);
     expect(result.failoverHistory[0].failureKind).toBe("skipped_capability_mismatch");
   });
+
+  it("skips a pi fallback when native-subagent teammates are required (F1)", async () => {
+    // Claude primary (supports_native_subagents:true) is handed native teammates,
+    // fails retryably; the pi fallback (supports_native_subagents:false) must be
+    // SKIPPED rather than silently succeeding with the teammates dropped — the run
+    // is then exhausted, surfacing the correct signal instead of false success.
+    executeMock.mockResolvedValueOnce({
+      text: null,
+      error: "Anthropic API overloaded — try again later",
+      failureKind: "provider_unavailable",
+      events: [],
+      cancelled: false,
+    });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "claude-opus-4-7" },
+        { sdk: "pi", model: "openai-gpt-4" },
+      ],
+    });
+    const result = await router.run("sys", {
+      messages: [],
+      nativeSubagents: { provider: "claude", teammates: [{ name: "researcher" }] },
+    });
+    // Claude attempted once (and failed retryably); pi never attempted.
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+    const piSkip = result.failoverHistory.find(
+      (h) => h.model?.sdk === "pi" && h.failureKind === "skipped_capability_mismatch",
+    );
+    expect(piSkip).toBeDefined();
+  });
+
+  it("still attempts a pi fallback when no native subagents are requested (F1 negative)", async () => {
+    // Guards against over-restricting normal fallback: with no teammates, the pi
+    // entry is NOT capability-filtered and the fallback succeeds.
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Anthropic API overloaded — try again later",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "claude-opus-4-7" },
+        { sdk: "pi", model: "openai-gpt-4" },
+      ],
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.text).toBe("recovered");
+    expect(
+      result.failoverHistory.some((h) => h.failureKind === "skipped_capability_mismatch"),
+    ).toBe(false);
+  });
 });
 
 describe("createRouterRuntime — chain entry shorthand", () => {

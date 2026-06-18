@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   splitTelegramText,
+  TelegramDeliveryError,
   TelegramMessageStream,
 } from "../message-stream.js";
 import { TelegramApiError } from "../telegram-error.js";
@@ -85,7 +86,7 @@ describe("TelegramMessageStream", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: 42, message_id: 100, text: "Answer\n\nHello" },
+      { chat_id: 42, message_id: 100, text: "Hello" },
     ]);
   });
 
@@ -101,38 +102,44 @@ describe("TelegramMessageStream", () => {
     await stream.finish("final answer");
 
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: "chat-a", message_id: 100, text: "Final answer\n\nfinal answer", parse_mode: "MarkdownV2" },
+      { chat_id: "chat-a", message_id: 100, text: "final answer", parse_mode: "MarkdownV2" },
     ]);
     await vi.runOnlyPendingTimersAsync();
     expect(api.editMessageTextCalls).toHaveLength(1);
   });
 
-  it("hides assistant thought events when showThoughts is disabled", async () => {
+  it("never renders assistant reasoning as message text", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
       api,
       chatId: 42,
       initialStatusText: "Working...",
       editDebounceMs: 0,
-      showThoughts: false,
     });
 
     await stream.status("Working...");
     await stream.event({ type: "assistant_thought", text: "private reasoning" });
     await stream.finish("final answer");
 
+    // Reasoning prose is never shown: the placeholder stays put until the final
+    // answer replaces it, and no edit ever carries the reasoning text.
     expect(api.sendMessageCalls).toEqual([{ chat_id: 42, text: "Working..." }]);
     expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
-      "Final answer\n\nfinal answer",
+      "final answer",
     ]);
+    expect(
+      api.editMessageTextCalls.some((call) => call.text.includes("private reasoning")),
+    ).toBe(false);
   });
 
-  it("renders accumulated thoughts live, then supersedes them with the MarkdownV2 answer", async () => {
+  it("does not render reasoning even with the legacy showThoughts flag set", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
       api,
       chatId: 42,
       editDebounceMs: 0,
+      // showThoughts is retained for compatibility but is a no-op for prose.
+      showThoughts: true,
     });
 
     await stream.event({ type: "assistant_thought", text: "I" });
@@ -140,18 +147,57 @@ describe("TelegramMessageStream", () => {
     await stream.append("Final answer.");
     await stream.finish("Final answer.");
 
-    // Thoughts and final text keep explicit labels. Interim edits stay plain,
-    // then the final delivery re-renders the answer as MarkdownV2 with the
+    // No "Thinking"/"Answer" labels; reasoning never appears. The streamed answer
+    // shows directly, then the final delivery re-renders it as MarkdownV2 with the
     // reserved "." escaped.
     expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
-      "Thinking\n\nI",
-      "Thinking\n\nI think",
-      "Answer\n\nFinal answer.",
-      "Final answer\n\nFinal answer\\.",
+      "Final answer.",
+      "Final answer\\.",
     ]);
-    // Interim edits stay plain; only the final answer carries parse_mode.
-    expect(api.editMessageTextCalls.slice(0, 3).every((call) => call.parse_mode === undefined)).toBe(true);
+    expect(api.editMessageTextCalls.slice(0, 1).every((call) => call.parse_mode === undefined)).toBe(true);
     expect(api.editMessageTextCalls.at(-1)?.parse_mode).toBe("MarkdownV2");
+  });
+
+  it("shows a friendly activity hint on tool_call_started, then is replaced by the answer", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      initialStatusText: "Thinking…",
+      editDebounceMs: 0,
+    });
+
+    // The channel establishes the placeholder first (as the bot does), then a
+    // tool starting before any answer text refreshes it with the shared friendly
+    // hint (never the raw tool name).
+    await stream.status("Thinking…");
+    await stream.event({ type: "tool_call_started", id: "t1", name: "WebSearch" });
+    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual(["Searching the web…"]);
+    expect(api.editMessageTextCalls.some((call) => call.text.includes("WebSearch"))).toBe(false);
+
+    // Once the answer starts streaming, the hint is superseded by the answer text.
+    await stream.append("here is the answer");
+    expect(api.editMessageTextCalls.at(-1)?.text).toBe("here is the answer");
+
+    // A later tool start does NOT clobber the streamed answer with a hint.
+    await stream.event({ type: "tool_call_started", id: "t2", name: "Bash" });
+    expect(api.editMessageTextCalls.at(-1)?.text).toBe("here is the answer");
+    expect(api.editMessageTextCalls.some((call) => call.text === "Running a command…")).toBe(false);
+  });
+
+  it("does not show activity hints when showHints is disabled", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      initialStatusText: "Thinking…",
+      editDebounceMs: 0,
+      showHints: false,
+    });
+
+    await stream.event({ type: "tool_call_started", id: "t1", name: "WebSearch" });
+
+    expect(api.editMessageTextCalls).toHaveLength(0);
   });
 
   it("re-renders the streamed answer as MarkdownV2 on the final edit", async () => {
@@ -168,8 +214,8 @@ describe("TelegramMessageStream", () => {
     // The interim edit streams plain text; the final edit re-applies MarkdownV2
     // (the formatting that interim streaming intentionally skips).
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: 42, message_id: 100, text: "Answer\n\nfinal answer" },
-      { chat_id: 42, message_id: 100, text: "Final answer\n\nfinal answer", parse_mode: "MarkdownV2" },
+      { chat_id: 42, message_id: 100, text: "final answer" },
+      { chat_id: 42, message_id: 100, text: "final answer", parse_mode: "MarkdownV2" },
     ]);
   });
 
@@ -185,12 +231,31 @@ describe("TelegramMessageStream", () => {
     await stream.finish();
 
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: 42, message_id: 100, text: "Answer\n\nstreamed answer" },
-      { chat_id: 42, message_id: 100, text: "Final answer\n\nstreamed answer", parse_mode: "MarkdownV2" },
+      { chat_id: 42, message_id: 100, text: "streamed answer" },
+      { chat_id: 42, message_id: 100, text: "streamed answer", parse_mode: "MarkdownV2" },
     ]);
   });
 
-  it("replaces a thought-only run with an explicit final placeholder", async () => {
+  it("replaces a hint-only run with an explicit final placeholder", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      editDebounceMs: 0,
+    });
+
+    await stream.status("Thinking…");
+    await stream.event({ type: "tool_call_started", id: "t1", name: "todoist" });
+    await stream.finish();
+
+    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
+      "Checking your tasks…",
+      "No response text was returned\\.",
+    ]);
+    expect(api.editMessageTextCalls.at(-1)?.parse_mode).toBe("MarkdownV2");
+  });
+
+  it("does not render any message text for assistant_thought reasoning", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
       api,
@@ -199,24 +264,6 @@ describe("TelegramMessageStream", () => {
     });
 
     await stream.event({ type: "assistant_thought", text: "Still checking" });
-    await stream.finish();
-
-    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
-      "Thinking\n\nStill checking",
-      "Final answer\n\nNo response text was returned\\.",
-    ]);
-    expect(api.editMessageTextCalls.at(-1)?.parse_mode).toBe("MarkdownV2");
-  });
-
-  it("does not render the empty-final placeholder for whitespace-only thoughts", async () => {
-    const api = new FakeTelegramApi();
-    const stream = new TelegramMessageStream({
-      api,
-      chatId: 42,
-      editDebounceMs: 0,
-    });
-
-    await stream.event({ type: "assistant_thought", text: "   " });
 
     expect(api.sendMessageCalls).toHaveLength(0);
     expect(api.editMessageTextCalls).toHaveLength(0);
@@ -234,15 +281,14 @@ describe("TelegramMessageStream", () => {
 
     await stream.finish(finalText);
 
-    const expectedChunks = splitTelegramText(`Final answer\n\n${finalText}`, 32);
+    const expectedChunks = splitTelegramText(finalText, 32);
     expect(api.editMessageTextCalls).toEqual([
       { chat_id: 99, message_id: 100, text: expectedChunks[0], parse_mode: "MarkdownV2" },
     ]);
     expect(api.sendMessageCalls[0]).toEqual({ chat_id: 99, text: "Thinking…" });
-    expect(api.sendMessageCalls.slice(1)).toEqual([
-      { chat_id: 99, text: expectedChunks[1] },
-      { chat_id: 99, text: expectedChunks[2] },
-    ]);
+    expect(api.sendMessageCalls.slice(1)).toEqual(
+      expectedChunks.slice(1).map((text) => ({ chat_id: 99, text })),
+    );
   });
 
   it("uses a bounded preview for long in-progress content", async () => {
@@ -258,10 +304,10 @@ describe("TelegramMessageStream", () => {
     await vi.runAllTimersAsync();
 
     expect(api.editMessageTextCalls[0]?.text).toHaveLength(32);
-    expect(api.editMessageTextCalls[0]?.text.startsWith("Answer\n\n…\n")).toBe(true);
+    expect(api.editMessageTextCalls[0]?.text.startsWith("…\n")).toBe(true);
   });
 
-  it("does not substitute the placeholder for blank status updates", async () => {
+  it("shows the empty-content placeholder for a blank interim status update", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
       api,
@@ -270,13 +316,14 @@ describe("TelegramMessageStream", () => {
       editDebounceMs: 0,
     });
 
-    // Establish the message, then push a whitespace-only status update.
+    // Establish the message, then push a whitespace-only status update. The shared
+    // resilience substrate surfaces the empty-content placeholder rather than an
+    // empty bubble, so a blank interim status never renders as nothing.
     await stream.status("first");
     await stream.status("   \n");
 
     const lastEdit = api.editMessageTextCalls.at(-1);
-    expect(lastEdit?.text).toBe("");
-    expect(lastEdit?.text).not.toBe("No response text was returned.");
+    expect(lastEdit?.text).toBe("No response text was returned.");
   });
 
   it("substitutes the placeholder only when finishing with empty content", async () => {
@@ -291,7 +338,7 @@ describe("TelegramMessageStream", () => {
       {
         chat_id: 8,
         message_id: 100,
-        text: "Final answer\n\nNo response text was returned\\.",
+        text: "No response text was returned\\.",
         parse_mode: "MarkdownV2",
       },
     ]);
@@ -320,7 +367,7 @@ describe("TelegramMessageStream", () => {
     await stream.finish("Run `npm i` now");
 
     expect(api.editMessageTextCalls).toEqual([
-      { chat_id: 9, message_id: 100, text: "Final answer\n\nRun `npm i` now", parse_mode: "MarkdownV2" },
+      { chat_id: 9, message_id: 100, text: "Run `npm i` now", parse_mode: "MarkdownV2" },
     ]);
   });
 
@@ -341,7 +388,7 @@ describe("TelegramMessageStream", () => {
 
     const call = api.editMessageTextCalls.at(-1);
     expect(call?.parse_mode).toBeUndefined();
-    expect(call?.text).toBe(`Final answer\n\n${dots}`);
+    expect(call?.text).toBe(dots);
   });
 
   it("still rejects append when the initial placeholder send fails", async () => {
@@ -351,6 +398,31 @@ describe("TelegramMessageStream", () => {
     await expect(
       new TelegramMessageStream({ api, chatId: 1 }).append("hello"),
     ).rejects.toThrow("send failed");
+  });
+
+  it("normalizes a substrate final-delivery failure to TelegramDeliveryError", async () => {
+    // Every send fails, so finish() exhausts the retry path and the last-resort
+    // fresh send: the substrate raises the shared ChannelDeliveryError, which the
+    // wrapper must re-throw as the Telegram type (the base type must not escape).
+    const api = new FakeTelegramApi();
+    api.failSendWith = new Error("send failed");
+
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 9,
+      editDebounceMs: 0,
+      maxSendRetries: 0,
+      retryBaseDelayMs: 0,
+    });
+
+    const error = await stream.finish("final answer").then(
+      () => undefined,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(TelegramDeliveryError);
+    expect((error as TelegramDeliveryError).name).toBe("TelegramDeliveryError");
+    expect((error as TelegramDeliveryError).attempts).toBeGreaterThanOrEqual(1);
+    expect((error as TelegramDeliveryError).cause).toBeDefined();
   });
 
   it("recovers a vanished edit target by sending a fresh message", async () => {
@@ -381,7 +453,7 @@ describe("TelegramMessageStream", () => {
 
     expect(sendCalls.map((call) => call.text)).toEqual([
       "Thinking…",
-      "Final answer\n\nrecovered answer",
+      "recovered answer",
     ]);
   });
 
@@ -484,9 +556,9 @@ describe("TelegramMessageStream", () => {
 
     expect(editParams).toHaveLength(2);
     expect(editParams[0]?.parse_mode).toBe("MarkdownV2");
-    expect(editParams[0]?.text).toBe("Final answer\n\n*bold* answer");
+    expect(editParams[0]?.text).toBe("*bold* answer");
     expect(editParams[1]?.parse_mode).toBeUndefined();
-    expect(editParams[1]?.text).toBe("Final answer\n\n**bold** answer");
+    expect(editParams[1]?.text).toBe("**bold** answer");
   });
 
   it("does not post a fresh message with the answer once aborted", async () => {
@@ -517,6 +589,60 @@ describe("TelegramMessageStream", () => {
 
     await expect(stream.finish("unwanted answer")).resolves.toBeUndefined();
     expect(sendCalls.map((call) => call.text)).toEqual(["Thinking…"]);
+  });
+});
+
+describe("TelegramMessageStream (substrate wrapper)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("delegates streaming + finish to the shared ResilientMessageStream substrate", async () => {
+    // Equivalence proof that the wrapper is a thin pass-through onto the substrate:
+    // the substrate owns the lazy placeholder, the debounced interim edit, and the
+    // final MarkdownV2 re-render — the wrapper only builds the Telegram transport.
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 77,
+      initialStatusText: "Thinking…",
+      editDebounceMs: 0,
+    });
+
+    await stream.append("Answer with a dot.");
+    await stream.finish("Answer with a dot.");
+
+    // Lazy placeholder posted once via transport.post -> sendMessage.
+    expect(api.sendMessageCalls).toEqual([{ chat_id: 77, text: "Thinking…" }]);
+    // Interim edit streams plain; final edit re-renders MarkdownV2 (substrate FSM).
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 77, message_id: 100, text: "Answer with a dot." },
+      { chat_id: 77, message_id: 100, text: "Answer with a dot\\.", parse_mode: "MarkdownV2" },
+    ]);
+  });
+
+  it("classifies a MarkdownV2 size overflow as a reformat-to-plain recovery", async () => {
+    // The transport pre-empts an oversized MarkdownV2 chunk by signalling
+    // reformat_plain to the substrate, which re-delivers the plain source. The
+    // oversized markdown attempt never reaches the Telegram API.
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 88,
+      editDebounceMs: 0,
+      maxMessageChars: 50,
+    });
+
+    const dots = ".".repeat(30);
+    await stream.finish(dots);
+
+    expect(api.editMessageTextCalls).toEqual([
+      { chat_id: 88, message_id: 100, text: dots },
+    ]);
   });
 });
 

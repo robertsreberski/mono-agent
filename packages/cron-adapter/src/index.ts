@@ -10,6 +10,8 @@ export type {
   CronAdapterStartResult,
   CronJob,
   CronJobResult,
+  CronOverflowPolicy,
+  CronOverlapMode,
   CronRequestMetadata,
 } from "./scheduler.js";
 

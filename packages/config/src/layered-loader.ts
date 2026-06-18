@@ -75,6 +75,12 @@ export function layerJsonOntoEnv(
   if (json.runtime?.session?.idleTimeoutMs !== undefined) {
     fromJson.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS = String(json.runtime.session.idleTimeoutMs);
   }
+  if (json.concurrency?.maxConcurrentRuns !== undefined) {
+    fromJson.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS = String(json.concurrency.maxConcurrentRuns);
+  }
+  if (json.concurrency?.maxPendingRuns !== undefined) {
+    fromJson.MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS = String(json.concurrency.maxPendingRuns);
+  }
   if (json.context?.identityPath !== undefined) {
     fromJson.MONO_AGENT_IDENTITY_PATH = json.context.identityPath;
   }
@@ -120,6 +126,19 @@ export function layerJsonOntoEnv(
   if (json.memory?.embeddings?.dim !== undefined) {
     fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_DIM = String(json.memory.embeddings.dim);
   }
+  if (json.memory?.embeddings?.timeoutMs !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS = String(json.memory.embeddings.timeoutMs);
+  }
+  if (json.memory?.embeddings?.circuitBreaker?.failureThreshold !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD = String(
+      json.memory.embeddings.circuitBreaker.failureThreshold,
+    );
+  }
+  if (json.memory?.embeddings?.circuitBreaker?.cooldownMs !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS = String(
+      json.memory.embeddings.circuitBreaker.cooldownMs,
+    );
+  }
   if (json.memory?.llm?.provider !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_PROVIDER = json.memory.llm.provider;
   }
@@ -131,6 +150,9 @@ export function layerJsonOntoEnv(
   }
   if (json.memory?.llm?.endpoint !== undefined && json.memory.llm.provider !== "agent-host") {
     fromJson.MONO_AGENT_MEMORY_LLM_ENDPOINT = json.memory.llm.endpoint;
+  }
+  if (json.memory?.recallTool?.enabled !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED = String(json.memory.recallTool.enabled);
   }
   if (json.memory?.reflection?.enabled !== undefined) {
     fromJson.MONO_AGENT_MEMORY_REFLECTION_ENABLED = String(json.memory.reflection.enabled);
@@ -200,6 +222,15 @@ export function layerJsonOntoEnv(
   }
   if (json.providers?.local !== undefined && !hasLocalProviderEnv(env)) {
     fromJson.MONO_AGENT_LOCAL_PROVIDERS_JSON = JSON.stringify(json.providers.local);
+  }
+  if (json.providers?.piNative?.piMaxRetries !== undefined) {
+    fromJson.MONO_AGENT_PI_MAX_RETRIES = String(json.providers.piNative.piMaxRetries);
+  }
+  if (json.providers?.piNative?.maxRetryDelayMs !== undefined) {
+    fromJson.MONO_AGENT_MAX_RETRY_DELAY_MS = String(json.providers.piNative.maxRetryDelayMs);
+  }
+  if (json.providers?.piNative?.piSessionsRoot !== undefined) {
+    fromJson.MONO_AGENT_PI_SESSIONS_ROOT = json.providers.piNative.piSessionsRoot;
   }
 
   // env wins: spread env last

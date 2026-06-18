@@ -1,4 +1,5 @@
 import type {
+  AgentAttachment,
   AgentRequestBase,
   AgentResponder as SharedAgentResponder,
   AgentResponse,
@@ -93,7 +94,19 @@ export interface AgentRequest extends AgentRequestBase {
   userId?: number;
   username?: string;
   text: string;
-  attachments?: readonly TelegramAttachment[];
+  /**
+   * Downloaded attachment bytes, ready for a vision/document-aware runtime, in
+   * the transport-agnostic {@link AgentAttachment} shape (base64 data + mime +
+   * name).
+   *
+   * BREAKING (intentional, unified contract): on earlier versions this field
+   * held Telegram-specific `TelegramAttachment[]` metadata. It is now
+   * `AgentAttachment[]` (matching Slack and the OpenAI-compatible channel). The
+   * original Telegram file metadata (fileId, sizes, kind, …) is preserved under
+   * `metadata.telegram.attachments` — custom responders that filtered by
+   * `fileId`/`sizes`/`kind` should read it from there.
+   */
+  attachments?: readonly AgentAttachment[];
   abortSignal: AbortSignal;
   metadata: {
     telegram: TelegramRequestMetadata;
@@ -154,7 +167,13 @@ export interface TelegramAdapterStreamOptions {
   retryCapMs?: number;
   retryBaseDelayMs?: number;
   showThoughts?: boolean;
+  showHints?: boolean;
   formatMarkdown?: boolean;
+  /**
+   * Deliver only the final answer with a "typing…" indicator while working,
+   * instead of streaming interim edits. Defaults to true for the Telegram bot.
+   */
+  finalOnly?: boolean;
 }
 
 export interface TelegramAdapterLogger extends TelegramMessageStreamLogger {
@@ -165,9 +184,9 @@ export const DEFAULT_ERROR_TEXT = "The agent failed while processing your messag
 
 export const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
   welcomeText:
-    "Hello! Send text or Telegram media. I will pass captions and attachment metadata to the configured agent.",
+    "Hello! Send text or Telegram media. I pass your caption and download allowed attachments to share with the configured agent.",
   helpText:
-    "Send text, documents, photos, audio, video, or voice messages. I forward captions and Telegram attachment metadata, not file contents. Use /cancel to stop the current response.",
+    "Send text, documents, photos, audio, video, or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
   busyText: "I am still working on your previous message. Use /cancel to stop it.",
   unauthorizedText: "This Telegram chat is not authorized to use this bot.",
   cancelledText: "Cancelled.",
@@ -179,12 +198,17 @@ export const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
  * Build the responder-facing {@link AgentRequest} from a Telegram update. The
  * grammY message handler passes `ctx.update` and `ctx.message`, which are
  * structurally compatible with the wire types this reads.
+ *
+ * `resolvedAttachments` are the downloaded {@link AgentAttachment} bytes (when
+ * available) that populate `request.attachments`; the original Telegram file
+ * metadata is always preserved under `metadata.telegram.attachments`.
  */
 export function buildAgentRequest(
   update: TelegramUpdate,
   message: TelegramMessage,
   input: TelegramAgentMessageInput,
   abortSignal: AbortSignal,
+  resolvedAttachments?: readonly AgentAttachment[],
 ): AgentRequest {
   const from = metadataFromUser(message.from);
   const telegramMetadata: TelegramRequestMetadata = {
@@ -207,8 +231,8 @@ export function buildAgentRequest(
     },
   };
 
-  if (input.attachments.length > 0) {
-    request.attachments = input.attachments;
+  if (resolvedAttachments !== undefined && resolvedAttachments.length > 0) {
+    request.attachments = resolvedAttachments;
   }
   if (message.from?.id !== undefined) {
     request.userId = message.from.id;
@@ -231,6 +255,39 @@ export function normalizeTelegramMessageInput(
   }
   const text = normalizeMessageText(message);
   const attachments = extractTelegramAttachments(message);
+  if (text.length === 0 && attachments.length === 0) {
+    return undefined;
+  }
+  return {
+    text: text.length > 0 ? text : summarizeTelegramAttachments(attachments),
+    attachments,
+  };
+}
+
+/**
+ * Merge a Telegram media-group (album) into a single input: Telegram delivers an
+ * album of N photos/videos as N separate messages sharing one `media_group_id`,
+ * with the caption on only one of them. We concatenate every message's
+ * attachments and take the single caption (first non-empty), so the agent sees
+ * all photos as one request instead of N single-attachment turns.
+ */
+export function mergeTelegramMessageInputs(
+  messages: readonly TelegramMessage[],
+): TelegramAgentMessageInput | undefined {
+  const attachments: TelegramAttachment[] = [];
+  let text = "";
+  for (const message of messages) {
+    if (message.animation !== undefined) {
+      continue;
+    }
+    if (text.length === 0) {
+      const messageText = normalizeMessageText(message);
+      if (messageText.length > 0) {
+        text = messageText;
+      }
+    }
+    attachments.push(...extractTelegramAttachments(message));
+  }
   if (text.length === 0 && attachments.length === 0) {
     return undefined;
   }
@@ -457,6 +514,207 @@ function formatBytes(bytes: number): string {
     return `${Math.round(bytes / 1024)} KB`;
   }
   return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/** Telegram's hard cap for bot file downloads is 20 MB. */
+export const DEFAULT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * MIME types the adapter will download and inline. Images flow to vision-capable
+ * runtimes; documents/text are saved to disk (and decoded inline for text/*).
+ */
+export const DEFAULT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "application/json",
+  "application/zip",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "text/html",
+  // Audio (Telegram voice messages normalize to audio/ogg; see attachmentMimeType).
+  "audio/ogg",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/aac",
+  "audio/wav",
+  "audio/webm",
+  // Video.
+  "video/mp4",
+  "video/mpeg",
+  "video/quicktime",
+  "video/webm",
+];
+
+/**
+ * Minimal seam over the Telegram Bot API needed to fetch attachment bytes:
+ * resolve a `file_id` to a `file_path` (getFile) then download it from the file
+ * URL. Both calls honor the request `abortSignal`.
+ */
+export interface TelegramFileDownloader {
+  /** Resolve a `file_id` to a downloadable `file_path` (Bot API `getFile`). */
+  resolveFilePath(fileId: string, signal: AbortSignal): Promise<string | undefined>;
+  /**
+   * Download the file at `file_path` (GET on the file URL). `maxBytes`, when
+   * provided, lets the downloader abort an oversized transfer mid-stream instead
+   * of buffering the whole body first; the caller still re-checks the cap as a
+   * backstop, so a custom downloader that ignores `maxBytes` stays bounded.
+   */
+  download(filePath: string, signal: AbortSignal, maxBytes?: number): Promise<Uint8Array>;
+}
+
+export interface DownloadTelegramAttachmentsOptions {
+  /** Skip files larger than this many decoded bytes. Default ~20 MB. */
+  readonly maxBytes?: number;
+  /** Only download files whose MIME type is allowed. Defaults to images + common docs/text. */
+  readonly mimeAllowlist?: readonly string[];
+  /**
+   * Per-file download timeout (ms) for the default downloader, composed with the
+   * run abort signal. Defaults to 30000. Only consulted by the built-in
+   * downloader; custom downloaders manage their own timeouts.
+   */
+  readonly downloadTimeoutMs?: number;
+  readonly logger?: TelegramAdapterLogger;
+}
+
+interface ResolvedTelegramAttachmentSource {
+  readonly fileId: string;
+  readonly mimeType: string;
+  readonly name: string | undefined;
+  readonly declaredSize: number | undefined;
+}
+
+/**
+ * Download the bytes for each inbound {@link TelegramAttachment} and map them to
+ * the transport-agnostic {@link AgentAttachment} shape. Enforces a byte cap and a
+ * MIME allowlist, ties every request to `abortSignal`, and skips (never throws on)
+ * an attachment whose download fails so the run still proceeds. Photos and audio
+ * without a declared MIME type fall back to sensible defaults.
+ */
+export async function downloadTelegramAttachments(
+  attachments: readonly TelegramAttachment[],
+  downloader: TelegramFileDownloader,
+  abortSignal: AbortSignal,
+  options?: DownloadTelegramAttachmentsOptions,
+): Promise<AgentAttachment[]> {
+  const maxBytes = options?.maxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES;
+  const allowlist = new Set(
+    (options?.mimeAllowlist ?? DEFAULT_ATTACHMENT_MIME_ALLOWLIST).map((mime) => mime.toLowerCase()),
+  );
+  const logger = options?.logger;
+  const resolved: AgentAttachment[] = [];
+
+  for (const attachment of attachments) {
+    if (abortSignal.aborted) {
+      break;
+    }
+    const source = attachmentSource(attachment);
+    const mimeType = source.mimeType.toLowerCase();
+    if (!allowlist.has(mimeType)) {
+      logger?.debug?.("Skipping Telegram attachment with disallowed MIME type.", {
+        mimeType: source.mimeType,
+        name: source.name,
+      });
+      continue;
+    }
+    if (source.declaredSize !== undefined && source.declaredSize > maxBytes) {
+      logger?.debug?.("Skipping oversized Telegram attachment.", {
+        sizeBytes: source.declaredSize,
+        maxBytes,
+        name: source.name,
+      });
+      continue;
+    }
+
+    try {
+      const filePath = await downloader.resolveFilePath(source.fileId, abortSignal);
+      if (filePath === undefined) {
+        logger?.warn?.("Telegram getFile returned no file_path; skipping attachment.", {
+          fileId: source.fileId,
+          name: source.name,
+        });
+        continue;
+      }
+      const bytes = await downloader.download(filePath, abortSignal, maxBytes);
+      if (bytes.byteLength > maxBytes) {
+        logger?.warn?.("Telegram attachment exceeded the size cap after download; skipping.", {
+          sizeBytes: bytes.byteLength,
+          maxBytes,
+          name: source.name,
+        });
+        continue;
+      }
+      resolved.push(buildAgentAttachment(source, mimeType, bytes));
+    } catch (error) {
+      // Download failures never fail the run — skip the attachment and continue.
+      logger?.warn?.("Failed to download Telegram attachment; skipping it.", {
+        fileId: source.fileId,
+        name: source.name,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return resolved;
+}
+
+function buildAgentAttachment(
+  source: ResolvedTelegramAttachmentSource,
+  mimeType: string,
+  bytes: Uint8Array,
+): AgentAttachment {
+  const kind: AgentAttachment["kind"] = mimeType.startsWith("image/") ? "image" : "document";
+  const attachment: { -readonly [K in keyof AgentAttachment]?: AgentAttachment[K] } = {
+    kind,
+    mimeType: source.mimeType,
+    data: Buffer.from(bytes).toString("base64"),
+    sizeBytes: bytes.byteLength,
+  };
+  if (source.name !== undefined) {
+    attachment.name = source.name;
+  }
+  if (mimeType.startsWith("text/")) {
+    attachment.text = Buffer.from(bytes).toString("utf8");
+  }
+  return attachment as AgentAttachment;
+}
+
+function attachmentSource(attachment: TelegramAttachment): ResolvedTelegramAttachmentSource {
+  const name = "fileName" in attachment ? attachment.fileName : undefined;
+  return {
+    fileId: attachment.fileId,
+    mimeType: attachmentMimeType(attachment),
+    name,
+    declaredSize: attachment.fileSize,
+  };
+}
+
+function attachmentMimeType(attachment: TelegramAttachment): string {
+  if ("mimeType" in attachment && attachment.mimeType !== undefined) {
+    return attachment.mimeType;
+  }
+  if (attachment.kind === "photo") {
+    return "image/jpeg";
+  }
+  if (attachment.kind === "voice") {
+    return "audio/ogg";
+  }
+  // Telegram may omit mime_type on audio/video; fall back to a sensible default
+  // on the allowlist so the attachment is not skipped as application/octet-stream.
+  if (attachment.kind === "audio") {
+    return "audio/mpeg";
+  }
+  if (attachment.kind === "video") {
+    return "video/mp4";
+  }
+  return "application/octet-stream";
 }
 
 function metadataFromUser(

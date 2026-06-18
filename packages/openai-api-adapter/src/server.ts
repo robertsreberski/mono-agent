@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import {
   BufferedMessageStream,
   isAgentResponseCancelledError,
+  type AgentAttachment,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
@@ -77,7 +78,7 @@ export interface OpenAIApiAttachmentMetadata {
 export interface OpenAIApiChatRequest extends AgentRequestBase {
   readonly conversationId: string;
   readonly text: string;
-  readonly attachments: readonly OpenAIApiAttachment[];
+  readonly imageAttachments: readonly OpenAIApiAttachment[];
   readonly abortSignal: AbortSignal;
   readonly metadata: {
     readonly openaiApi: OpenAIApiRequestMetadata;
@@ -116,7 +117,7 @@ export interface OpenAIApiAdapterStartResult {
 interface NormalizedChatBody {
   readonly model: string;
   readonly text: string;
-  readonly attachments: readonly OpenAIApiAttachment[];
+  readonly imageAttachments: readonly OpenAIApiAttachment[];
   readonly stream: boolean;
   readonly conversationId: string;
   readonly parameters: Record<string, unknown>;
@@ -228,10 +229,16 @@ export async function startOpenAIApiAdapter(
     const receivedAt = new Date().toISOString();
     const body = normalizeChatBody(req.body, req.headers, requestId, modelId);
     const controller = new AbortController();
+    // Inline base64 data: image_url parts into the shared attachments contract so
+    // they reach the agent through the generic responder/harness path (the
+    // imageAttachments field alone is not forwarded). Remote/file URL images are
+    // not downloaded here; they remain in metadata only.
+    const agentAttachments = agentAttachmentsFromImages(body.imageAttachments);
     const request: OpenAIApiChatRequest = {
       conversationId: body.conversationId,
       text: body.text,
-      attachments: body.attachments,
+      imageAttachments: body.imageAttachments,
+      ...(agentAttachments.length === 0 ? {} : { attachments: agentAttachments }),
       abortSignal: controller.signal,
       metadata: {
         openaiApi: {
@@ -244,7 +251,7 @@ export async function startOpenAIApiAdapter(
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
           headers: sanitizeRequestHeaders(req.headers),
           parameters: body.parameters,
-          ...(body.attachments.length === 0 ? {} : { attachments: summarizeAttachments(body.attachments) }),
+          ...(body.imageAttachments.length === 0 ? {} : { attachments: summarizeAttachments(body.imageAttachments) }),
         },
       },
     };
@@ -324,6 +331,18 @@ async function runStreamingResponder(input: {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
+  // Disable Nagle's algorithm on the underlying socket. SSE writes are many tiny
+  // chunks (often a single token); with Nagle on, the kernel coalesces them into
+  // larger TCP segments, so the client receives the reply in bursts that look
+  // "all at once" instead of streaming token-by-token. setNoDelay flushes each
+  // chunk immediately.
+  input.response.socket?.setNoDelay(true);
+  // Flush the response headers before awaiting the (potentially slow) responder
+  // so the client sees the stream open promptly. We deliberately do NOT write a
+  // leading SSE comment (": open") here: some OpenAI-compatible clients
+  // (e.g. Open WebUI) mishandle a comment that precedes the first data chunk,
+  // and real OpenAI streams never send one. The first `data:` chunk (the
+  // assistant-role delta) is the stream's opening signal.
   input.response.flushHeaders();
 
   const chunkInput = {
@@ -530,13 +549,13 @@ function normalizeChatBody(
   // chat, so user-keyed transcripts keep full-flatten semantics.
   const input = (conversationId === undefined ? undefined : latestUserTurn(messages))
     ?? flattenTranscript(messages);
-  if (input.text.length === 0 && input.attachments.length === 0) {
+  if (input.text.length === 0 && input.imageAttachments.length === 0) {
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion messages must include text or image content.");
   }
   return {
     model,
     text: input.text,
-    attachments: input.attachments,
+    imageAttachments: input.imageAttachments,
     stream: body.stream === true,
     conversationId: conversationId ?? normalizeOptionalString(body.user) ?? `openai-api:${requestId}`,
     parameters: readParameters(body),
@@ -546,12 +565,12 @@ function normalizeChatBody(
 interface ParsedChatMessage {
   readonly role: string;
   readonly content: string;
-  readonly attachments: readonly OpenAIApiAttachment[];
+  readonly imageAttachments: readonly OpenAIApiAttachment[];
 }
 
 interface NormalizedChatInput {
   readonly text: string;
-  readonly attachments: readonly OpenAIApiAttachment[];
+  readonly imageAttachments: readonly OpenAIApiAttachment[];
 }
 
 function parseChatMessage(value: unknown, messageIndex: number): ParsedChatMessage {
@@ -566,7 +585,7 @@ function parseChatMessage(value: unknown, messageIndex: number): ParsedChatMessa
     throw new OpenAIApiAdapterError("invalid_request", "Chat completion message tool/function calls are not supported.");
   }
   const content = normalizeContent(value.content, { messageIndex, messageRole: role });
-  return { role, content: content.text, attachments: content.attachments };
+  return { role, content: content.text, imageAttachments: content.imageAttachments };
 }
 
 function flattenTranscript(messages: readonly ParsedChatMessage[]): NormalizedChatInput {
@@ -576,7 +595,7 @@ function flattenTranscript(messages: readonly ParsedChatMessage[]): NormalizedCh
     .join("\n");
   return {
     text,
-    attachments: messages.flatMap((message) => message.attachments),
+    imageAttachments: messages.flatMap((message) => message.imageAttachments),
   };
 }
 
@@ -595,7 +614,7 @@ function latestUserTurn(messages: readonly ParsedChatMessage[]): NormalizedChatI
   }
   const trailing = messages
     .slice(lastAssistant + 1)
-    .filter((message) => message.role === "user" && (message.content.length > 0 || message.attachments.length > 0));
+    .filter((message) => message.role === "user" && (message.content.length > 0 || message.imageAttachments.length > 0));
   if (trailing.length === 0) {
     return undefined;
   }
@@ -604,23 +623,23 @@ function latestUserTurn(messages: readonly ParsedChatMessage[]): NormalizedChatI
       .map((message) => message.content)
       .filter((content) => content.length > 0)
       .join("\n"),
-    attachments: trailing.flatMap((message) => message.attachments),
+    imageAttachments: trailing.flatMap((message) => message.imageAttachments),
   };
 }
 
 function normalizeContent(
   value: unknown,
   context: { readonly messageIndex: number; readonly messageRole: string },
-): { readonly text: string; readonly attachments: readonly OpenAIApiAttachment[] } {
+): { readonly text: string; readonly imageAttachments: readonly OpenAIApiAttachment[] } {
   if (typeof value === "string") {
-    return { text: value, attachments: [] };
+    return { text: value, imageAttachments: [] };
   }
   if (value === null || value === undefined) {
-    return { text: "", attachments: [] };
+    return { text: "", imageAttachments: [] };
   }
   if (Array.isArray(value)) {
     const textParts: string[] = [];
-    const attachments: OpenAIApiAttachment[] = [];
+    const imageAttachments: OpenAIApiAttachment[] = [];
     value.forEach((part, contentPartIndex) => {
       if (!isRecord(part)) {
         throw new OpenAIApiAdapterError("invalid_request", "Chat completion message content parts must be JSON objects.");
@@ -636,14 +655,14 @@ function normalizeContent(
         return;
       }
       if (type === "image_url") {
-        attachments.push(normalizeImageAttachment(part, { ...context, contentPartIndex }));
+        imageAttachments.push(normalizeImageAttachment(part, { ...context, contentPartIndex }));
         return;
       }
       throw new OpenAIApiAdapterError("invalid_request", `Chat completion message content part type ${String(part.type)} is not supported.`);
     });
     return {
       text: textParts.join("\n"),
-      attachments,
+      imageAttachments,
     };
   }
   throw new OpenAIApiAdapterError("invalid_request", "Chat completion message content must be a string or text/image content parts.");
@@ -706,6 +725,47 @@ function classifyAttachmentUrl(url: string): OpenAIApiAttachmentUrlKind {
 function mediaTypeFromDataUrl(url: string): string | undefined {
   const match = /^data:([^;,]+)[;,]/iu.exec(url);
   return match?.[1]?.toLowerCase();
+}
+
+/**
+ * Convert base64 `data:` image_url parts into the shared {@link AgentAttachment}
+ * contract so they flow to the agent through the generic responder. Non-base64
+ * and remote/file URL images are skipped (no download is performed here).
+ */
+function agentAttachmentsFromImages(images: readonly OpenAIApiAttachment[]): AgentAttachment[] {
+  const attachments: AgentAttachment[] = [];
+  for (const image of images) {
+    if (image.urlKind !== "data") {
+      continue;
+    }
+    const parsed = parseBase64DataUrl(image.url);
+    if (parsed === undefined) {
+      continue;
+    }
+    attachments.push({ kind: "image", mimeType: parsed.mediaType, data: parsed.base64 });
+  }
+  return attachments;
+}
+
+function parseBase64DataUrl(url: string): { mediaType: string; base64: string } | undefined {
+  // data:[<mediaType>][;<param>=<value>]*[;base64],<data>. Split on the FIRST
+  // comma so parameterized media types (e.g. image/png;charset=utf-8;base64) are
+  // handled the same way mediaTypeFromDataUrl reads them. Only base64-encoded
+  // payloads become attachments (raw/url-encoded data is not inlined).
+  const match = /^data:([^,]*),([\s\S]*)$/iu.exec(url);
+  if (match === null) {
+    return undefined;
+  }
+  const meta = match[1] ?? "";
+  if (!/;base64$/iu.test(meta)) {
+    return undefined;
+  }
+  const base64 = (match[2] ?? "").trim();
+  if (base64.length === 0) {
+    return undefined;
+  }
+  const mediaType = (meta.split(";")[0] || "application/octet-stream").toLowerCase();
+  return { mediaType, base64 };
 }
 
 function summarizeAttachments(attachments: readonly OpenAIApiAttachment[]): OpenAIApiAttachmentMetadata {

@@ -1,5 +1,6 @@
 import {
   isAgentResponseCancelledError,
+  type AgentAttachment,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
@@ -15,6 +16,7 @@ import type {
   SlackChannelId,
   SlackEventBase,
   SlackEventCallback,
+  SlackFile,
   SlackMessageTs,
   SlackUserId,
   SlackWebApi,
@@ -33,10 +35,25 @@ export interface AgentRequest extends AgentRequestBase {
   text: string;
   trigger: SlackTriggerKind;
   abortSignal: AbortSignal;
+  attachments?: readonly AgentAttachment[];
   metadata: {
     slack: SlackRequestMetadata;
     [key: string]: unknown;
   };
+}
+
+/** Tunes how inbound Slack file attachments are downloaded. */
+export interface SlackAttachmentOptions {
+  /**
+   * Maximum decoded bytes to accept per file. Files whose advertised size
+   * exceeds this — or whose download exceeds it — are skipped. Default 10 MiB.
+   */
+  maxBytes?: number;
+  /**
+   * Allowed file mimetypes. A file whose mimetype is not listed is skipped.
+   * Defaults to a conservative allowlist of common image and document types.
+   */
+  allowedMimeTypes?: readonly string[];
 }
 
 export interface SlackRequestMetadata {
@@ -76,6 +93,15 @@ export interface SlackAdapterStreamOptions {
   initialStatusText?: string;
   editDebounceMs?: number;
   maxMessageChars?: number;
+  maxSendRetries?: number;
+  retryCapMs?: number;
+  retryBaseDelayMs?: number;
+  showHints?: boolean;
+  /**
+   * Deliver only the final answer with a 👀 "seen" reaction while working,
+   * instead of streaming interim edits. Defaults to true for the Slack adapter.
+   */
+  finalOnly?: boolean;
 }
 
 export interface SlackAdapterLogger extends SlackMessageStreamLogger {
@@ -93,6 +119,7 @@ export interface SlackAdapterOptions {
   stripMentionText?: boolean;
   stream?: SlackAdapterStreamOptions;
   messages?: SlackAdapterMessages;
+  attachments?: SlackAttachmentOptions;
   logger?: SlackAdapterLogger;
 }
 
@@ -100,6 +127,7 @@ export type SlackEventIgnoredReason =
   | "unsupported_event"
   | "unsupported_message"
   | "empty_text"
+  | "no_usable_attachments"
   | "from_bot"
   | "from_self";
 
@@ -141,10 +169,6 @@ export type SlackEventHandlingResult =
       error: unknown;
     };
 
-interface ActiveRun {
-  controller: AbortController;
-}
-
 interface NormalizedCommand {
   name: string;
 }
@@ -162,7 +186,21 @@ interface SlackTextEvent {
   threadTs: SlackMessageTs;
   eventTs?: SlackMessageTs;
   trigger: SlackTriggerKind;
+  files: readonly SlackFile[];
 }
+
+const DEFAULT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_ALLOWED_MIME_TYPES: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+];
 
 const DEFAULT_MESSAGES: Required<SlackAdapterMessages> = {
   welcomeText:
@@ -176,6 +214,78 @@ const DEFAULT_MESSAGES: Required<SlackAdapterMessages> = {
   unsupportedText: "I can only handle Slack text messages in this adapter for now.",
 };
 
+// Slack delivers file uploads as subtyped messages (`file_share`), and a message
+// posted to a thread "also sent to channel" arrives as `thread_broadcast`. Both
+// carry real user content (text and/or a `files` array), so they must NOT be
+// rejected alongside genuinely-unsupported subtypes (e.g. message_changed,
+// channel_join). Without this, attachments are silently dropped.
+const FILE_BEARING_MESSAGE_SUBTYPES: ReadonlySet<string> = new Set([
+  "file_share",
+  "thread_broadcast",
+]);
+
+// Mirrors the harness LiveSessionManager's DEFAULT_MAX_PENDING_PER_CONVERSATION:
+// the per-conversation admission queue rejects past this depth so a flood of
+// same-conversation messages cannot grow the queue unbounded.
+const DEFAULT_ADMISSION_QUEUE_MAX_DEPTH = 100;
+
+/**
+ * Thrown synchronously by {@link SerialQueue.run} when the queue is already at
+ * its depth cap. The adapter catches this sentinel to answer with the busy
+ * terminal instead of admitting an unbounded backlog.
+ */
+export class SerialQueueFullError extends Error {
+  readonly code = "serial_queue_full" as const;
+
+  constructor(maxDepth: number) {
+    super(`Per-conversation admission queue is full (max ${maxDepth} pending).`);
+    this.name = "SerialQueueFullError";
+  }
+}
+
+/**
+ * Minimal per-conversation serial queue: each submitted task runs only after the
+ * previous one settles, preserving arrival order. A task's failure does not
+ * poison the queue (the chain swallows it; the caller still sees the rejection).
+ *
+ * The queue is bounded by {@link maxDepth}: once `depth` reaches the cap, `run`
+ * rejects synchronously with a {@link SerialQueueFullError} BEFORE incrementing
+ * or chaining, so an over-cap task never enters the chain (mirroring the harness
+ * LiveSessionManager's maxPendingPerConversation rejection).
+ */
+export class SerialQueue {
+  private tail: Promise<void> = Promise.resolve();
+  private depth = 0;
+  private readonly maxDepth: number;
+
+  constructor(maxDepth: number = DEFAULT_ADMISSION_QUEUE_MAX_DEPTH) {
+    this.maxDepth = maxDepth;
+  }
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.depth >= this.maxDepth) {
+      return Promise.reject(new SerialQueueFullError(this.maxDepth));
+    }
+    this.depth += 1;
+    const result = this.tail.then(() => task());
+    this.tail = result.then(() => undefined, () => undefined);
+    void result.then(
+      () => { this.depth -= 1; },
+      () => { this.depth -= 1; },
+    );
+    return result;
+  }
+
+  /** True when no task is queued or running. */
+  get idle(): boolean {
+    return this.depth === 0;
+  }
+}
+
+function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
+  return error instanceof SerialQueueFullError;
+}
+
 export class SlackAdapter {
   private readonly api: SlackWebApi;
   private readonly responder: AgentResponder;
@@ -187,8 +297,25 @@ export class SlackAdapter {
   private readonly stripMentionText: boolean;
   private readonly streamOptions: SlackAdapterStreamOptions;
   private readonly messages: Required<SlackAdapterMessages>;
+  private readonly attachmentMaxBytes: number;
+  private readonly allowedMimeTypes: ReadonlySet<string>;
   private readonly logger: SlackAdapterLogger | undefined;
-  private readonly activeRuns = new Map<string, ActiveRun>();
+  /**
+   * In-flight abort controllers per thread. The harness serializes runs for a
+   * conversation, so several may be queued/active concurrently; /cancel aborts
+   * every controller for the thread (and clears the harness queue via
+   * responder.cancel).
+   */
+  private readonly activeControllers = new Map<string, Set<AbortController>>();
+  /**
+   * Per-conversation admission queue. Socket Mode dispatches envelopes
+   * concurrently, and pre-submit work (status + file download) is variable
+   * latency, so without this a later same-thread message could reach
+   * responder.respond() (and the harness FIFO) before an earlier one. We
+   * serialize respondToEvent per conversation to preserve message order.
+   * /cancel stays out-of-band (handled before this queue).
+   */
+  private readonly admissionQueues = new Map<string, SerialQueue>();
 
   constructor(options: SlackAdapterOptions) {
     this.api = options.api;
@@ -206,6 +333,12 @@ export class SlackAdapter {
       options.stripMentionText ?? (this.botUserIds.size > 0 || this.mentionTextAliases.length > 0);
     this.streamOptions = options.stream ?? {};
     this.messages = { ...DEFAULT_MESSAGES, ...options.messages };
+    this.attachmentMaxBytes = options.attachments?.maxBytes ?? DEFAULT_ATTACHMENT_MAX_BYTES;
+    this.allowedMimeTypes = new Set(
+      (options.attachments?.allowedMimeTypes ?? DEFAULT_ALLOWED_MIME_TYPES).map((mime) =>
+        mime.trim().toLowerCase(),
+      ),
+    );
     this.logger = options.logger;
 
     if (!this.allowAllChannels && this.allowedChannelIds.size === 0) {
@@ -238,7 +371,7 @@ export class SlackAdapter {
     }
 
     const text = event.text.trim();
-    if (text.length === 0) {
+    if (text.length === 0 && event.files.length === 0) {
       await this.api.chatPostMessage({
         channel: event.channelId,
         text: this.messages.unsupportedText,
@@ -286,10 +419,15 @@ export class SlackAdapter {
     }
 
     const runKey = runKeyFor(event);
-    const activeRun = this.activeRuns.get(runKey);
     if (command?.name === "cancel") {
-      if (activeRun !== undefined) {
-        activeRun.controller.abort(new Error("Cancelled by Slack user."));
+      // Clear any queued follow-ups for the conversation (the harness owns the
+      // queue) and abort every in-flight controller for this thread.
+      this.responder.cancel?.(conversationIdFor(event), new Error("Cancelled by Slack user."));
+      const controllers = this.activeControllers.get(runKey);
+      if (controllers !== undefined) {
+        for (const controller of controllers) {
+          controller.abort(new Error("Cancelled by Slack user."));
+        }
       }
       await this.api.chatPostMessage({
         channel: event.channelId,
@@ -303,35 +441,62 @@ export class SlackAdapter {
       };
     }
 
-    if (activeRun !== undefined) {
-      await this.api.chatPostMessage({
-        channel: event.channelId,
-        text: this.messages.busyText,
-        thread_ts: event.threadTs,
-      });
-      return {
-        kind: "busy",
-        eventId: event.eventId,
-        channelId: event.channelId,
-      };
+    // No per-thread "busy" rejection: the harness serializes runs for the
+    // conversation, queuing a concurrent message and answering it on the warm
+    // session after the current turn. We admit messages through a per-conversation
+    // serial queue first so they reach the harness in arrival order even when an
+    // earlier message stalls on file download.
+    const conversationId = conversationIdFor(event);
+    // Create and register the controller BEFORE entering the admission queue so a
+    // /cancel can abort a message still parked behind an earlier same-thread run.
+    // respondToEvent's first abort check then makes the queued-then-cancelled run
+    // bail before responder.respond and post only the cancelled terminal.
+    const controller = new AbortController();
+    this.registerController(runKey, controller);
+    let queue = this.admissionQueues.get(conversationId);
+    if (queue === undefined) {
+      queue = new SerialQueue();
+      this.admissionQueues.set(conversationId, queue);
     }
-
-    return await this.respondToEvent(event, text, runKey);
+    try {
+      return await queue.run(() => this.respondToEvent(event, text, runKey, controller));
+    } catch (error) {
+      if (isSerialQueueFullError(error)) {
+        // Over-cap: the task was rejected BEFORE entering the queue, so
+        // respondToEvent (and its finally) never ran. Unregister the eagerly
+        // created controller here so it does not leak in activeControllers, then
+        // answer with the busy terminal instead of admitting an unbounded backlog.
+        this.unregisterController(runKey, controller);
+        await this.api.chatPostMessage({
+          channel: event.channelId,
+          text: this.messages.busyText,
+          thread_ts: event.threadTs,
+        });
+        return { kind: "busy", eventId: event.eventId, channelId: event.channelId };
+      }
+      throw error;
+    } finally {
+      if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
+        this.admissionQueues.delete(conversationId);
+      }
+    }
   }
 
   private async respondToEvent(
     event: SlackTextEvent,
     text: string,
     runKey: string,
+    controller: AbortController,
   ): Promise<SlackEventHandlingResult> {
-    const controller = new AbortController();
-    const activeRun: ActiveRun = { controller };
-    this.activeRuns.set(runKey, activeRun);
-
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
       channelId: event.channelId,
       threadTs: event.threadTs,
+      reactToTs: event.messageTs,
+      // Default to a 👀 "seen" reaction + final-answer-only delivery (no streamed
+      // interim edits); a tuning override can restore interim streaming.
+      finalOnly: this.streamOptions.finalOnly ?? true,
+      abortSignal: controller.signal,
     };
     if (this.streamOptions.initialStatusText !== undefined) {
       streamOptions.initialStatusText = this.streamOptions.initialStatusText;
@@ -341,6 +506,18 @@ export class SlackAdapter {
     }
     if (this.streamOptions.maxMessageChars !== undefined) {
       streamOptions.maxMessageChars = this.streamOptions.maxMessageChars;
+    }
+    if (this.streamOptions.maxSendRetries !== undefined) {
+      streamOptions.maxSendRetries = this.streamOptions.maxSendRetries;
+    }
+    if (this.streamOptions.retryCapMs !== undefined) {
+      streamOptions.retryCapMs = this.streamOptions.retryCapMs;
+    }
+    if (this.streamOptions.retryBaseDelayMs !== undefined) {
+      streamOptions.retryBaseDelayMs = this.streamOptions.retryBaseDelayMs;
+    }
+    if (this.streamOptions.showHints !== undefined) {
+      streamOptions.showHints = this.streamOptions.showHints;
     }
     if (this.logger !== undefined) {
       streamOptions.logger = this.logger;
@@ -354,7 +531,22 @@ export class SlackAdapter {
         return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
       }
 
-      const request = buildAgentRequest(event, text, controller.signal);
+      const attachments = await this.downloadAttachments(event.files, controller.signal);
+      if (controller.signal.aborted) {
+        await stream.finish(this.messages.cancelledText);
+        return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
+      }
+
+      // A file-only message whose files were all skipped (MIME/size/missing
+      // URL/download failure) leaves no text and no attachments. Deliver a
+      // deterministic message instead of submitting an empty request the harness
+      // would reject.
+      if (text.length === 0 && attachments.length === 0) {
+        await stream.finish(this.messages.unsupportedText);
+        return { kind: "ignored", reason: "no_usable_attachments", eventId: event.eventId, channelId: event.channelId };
+      }
+
+      const request = buildAgentRequest(event, text, controller.signal, attachments);
       const response = await this.responder.respond(request, stream);
 
       if (controller.signal.aborted) {
@@ -386,9 +578,100 @@ export class SlackAdapter {
       await finishSafely(stream, this.messages.errorText, this.logger);
       return { kind: "error", eventId: event.eventId, channelId: event.channelId, error };
     } finally {
-      if (this.activeRuns.get(runKey) === activeRun) {
-        this.activeRuns.delete(runKey);
+      this.unregisterController(runKey, controller);
+    }
+  }
+
+  /**
+   * Download each inbound Slack file's bytes into an {@link AgentAttachment}.
+   * Files with a missing/disallowed mimetype, no private URL, or an advertised
+   * size over the cap are skipped before any network call. The byte cap is also
+   * enforced during the download. A failed download skips that file and
+   * continues; downloads are tied to the request abort signal.
+   */
+  private async downloadAttachments(
+    files: readonly SlackFile[],
+    signal: AbortSignal,
+  ): Promise<AgentAttachment[]> {
+    const attachments: AgentAttachment[] = [];
+    // downloadFile is optional on SlackWebApi: a text-only custom client may omit
+    // it. Without it we cannot fetch bytes, so skip attachment download entirely.
+    if (typeof this.api.downloadFile !== "function") {
+      if (files.length > 0) {
+        this.logger?.debug?.("Slack client has no downloadFile; skipping attachments.", { count: files.length });
       }
+      return attachments;
+    }
+    const downloadFile = this.api.downloadFile.bind(this.api);
+    for (const file of files) {
+      if (signal.aborted) {
+        break;
+      }
+
+      const mimeType = typeof file.mimetype === "string" ? file.mimetype : "";
+      if (mimeType.length === 0 || !this.allowedMimeTypes.has(mimeType.toLowerCase())) {
+        this.logger?.debug?.("Skipped Slack file with disallowed mimetype.", {
+          id: file.id,
+          mimeType,
+        });
+        continue;
+      }
+
+      if (typeof file.size === "number" && file.size > this.attachmentMaxBytes) {
+        this.logger?.debug?.("Skipped Slack file exceeding the byte cap.", {
+          id: file.id,
+          size: file.size,
+        });
+        continue;
+      }
+
+      const url = file.url_private ?? file.url_private_download;
+      if (typeof url !== "string" || url.length === 0) {
+        this.logger?.debug?.("Skipped Slack file without a private URL.", { id: file.id });
+        continue;
+      }
+
+      let bytes: Uint8Array;
+      try {
+        bytes = await downloadFile({ url, maxBytes: this.attachmentMaxBytes }, { signal });
+      } catch (error) {
+        this.logger?.warn?.("Failed to download a Slack file (skipped).", {
+          id: file.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+
+      if (bytes.byteLength > this.attachmentMaxBytes) {
+        this.logger?.debug?.("Skipped Slack file exceeding the byte cap.", {
+          id: file.id,
+          size: bytes.byteLength,
+        });
+        continue;
+      }
+
+      attachments.push(buildAttachment(file, mimeType, bytes));
+    }
+    return attachments;
+  }
+
+  private registerController(runKey: string, controller: AbortController): void {
+    let controllers = this.activeControllers.get(runKey);
+    if (controllers === undefined) {
+      controllers = new Set<AbortController>();
+      this.activeControllers.set(runKey, controllers);
+    }
+    controllers.add(controller);
+  }
+
+  private unregisterController(runKey: string, controller: AbortController): void {
+    const controllers = this.activeControllers.get(runKey);
+    if (controllers === undefined) {
+      return;
+    }
+    controllers.delete(controller);
+    if (controllers.size === 0) {
+      this.activeControllers.delete(runKey);
     }
   }
 
@@ -408,7 +691,7 @@ export class SlackAdapter {
     if (rawEvent.user !== undefined && this.botUserIds.has(normalizeIdForMatch(rawEvent.user))) {
       return ignored("from_self", callback, rawEvent);
     }
-    if (rawEvent.subtype !== undefined) {
+    if (rawEvent.subtype !== undefined && !FILE_BEARING_MESSAGE_SUBTYPES.has(rawEvent.subtype)) {
       return ignored("unsupported_message", callback, rawEvent);
     }
     if (
@@ -417,10 +700,13 @@ export class SlackAdapter {
     ) {
       return ignored("unsupported_event", callback, rawEvent);
     }
+    // A file upload may arrive with no caption (text absent/empty); accept it as
+    // long as it carries files so the attachment is not dropped.
+    const hasFiles = Array.isArray(rawEvent.files) && rawEvent.files.length > 0;
     if (
       typeof rawEvent.channel !== "string" ||
       typeof rawEvent.ts !== "string" ||
-      typeof rawEvent.text !== "string"
+      (typeof rawEvent.text !== "string" && !hasFiles)
     ) {
       return ignored("unsupported_message", callback, rawEvent);
     }
@@ -431,10 +717,11 @@ export class SlackAdapter {
     const event: SlackTextEvent = {
       eventId: callback.event_id,
       channelId: rawEvent.channel,
-      text: this.prepareText(rawEvent.text),
+      text: this.prepareText(typeof rawEvent.text === "string" ? rawEvent.text : ""),
       messageTs: rawEvent.ts,
       threadTs,
       trigger,
+      files: Array.isArray(rawEvent.files) ? rawEvent.files : [],
     };
     if (callback.team_id !== undefined) {
       event.teamId = callback.team_id;
@@ -510,6 +797,7 @@ function buildAgentRequest(
   event: SlackTextEvent,
   text: string,
   abortSignal: AbortSignal,
+  attachments: readonly AgentAttachment[],
 ): AgentRequest {
   const metadata: SlackRequestMetadata = {
     eventId: event.eventId,
@@ -544,7 +832,7 @@ function buildAgentRequest(
   }
 
   const request: AgentRequest = {
-    conversationId: `slack:${event.channelId}:${event.threadTs}`,
+    conversationId: conversationIdFor(event),
     channelId: event.channelId,
     messageTs: event.messageTs,
     threadTs: event.threadTs,
@@ -560,7 +848,52 @@ function buildAgentRequest(
   if (event.userId !== undefined) {
     request.userId = event.userId;
   }
+  if (attachments.length > 0) {
+    request.attachments = attachments;
+  }
   return request;
+}
+
+const TEXT_MIME_PATTERN = /^text\/|[/+](?:json|xml|csv)$/iu;
+
+/** Build an {@link AgentAttachment} from downloaded Slack file bytes. */
+function buildAttachment(
+  file: SlackFile,
+  mimeType: string,
+  bytes: Uint8Array,
+): AgentAttachment {
+  const attachment: {
+    kind: "image" | "document";
+    mimeType: string;
+    data: string;
+    name?: string;
+    sizeBytes?: number;
+    text?: string;
+  } = {
+    kind: mimeType.toLowerCase().startsWith("image/") ? "image" : "document",
+    mimeType,
+    data: toBase64(bytes),
+    sizeBytes: bytes.byteLength,
+  };
+
+  const name = typeof file.name === "string" && file.name.length > 0
+    ? file.name
+    : typeof file.title === "string" && file.title.length > 0
+      ? file.title
+      : undefined;
+  if (name !== undefined) {
+    attachment.name = name;
+  }
+
+  if (TEXT_MIME_PATTERN.test(mimeType)) {
+    attachment.text = new TextDecoder("utf-8").decode(bytes);
+  }
+
+  return attachment;
+}
+
+function toBase64(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
 }
 
 function parseCommand(text: string): NormalizedCommand | undefined {
@@ -587,6 +920,14 @@ async function finishSafely(
 
 function runKeyFor(event: SlackTextEvent): string {
   return `${event.channelId}:${event.threadTs}`;
+}
+
+/**
+ * The conversation key the harness serializes runs on. /cancel uses the same id
+ * so the responder clears the right conversation's queued follow-ups.
+ */
+function conversationIdFor(event: SlackTextEvent): string {
+  return `slack:${event.channelId}:${event.threadTs}`;
 }
 
 function normalizeIdForMatch(value: string): string {

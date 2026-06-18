@@ -103,6 +103,37 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.reasoningSummary).toBeUndefined();
   });
 
+  it("loads pi-native provider knobs from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PI_MAX_RETRIES: "4",
+        MONO_AGENT_MAX_RETRY_DELAY_MS: "30000",
+        MONO_AGENT_PI_SESSIONS_ROOT: ".mono-agent/sessions",
+      },
+    });
+    expect(config.providers?.piNative).toEqual({
+      piMaxRetries: 4,
+      maxRetryDelayMs: 30_000,
+      piSessionsRoot: join("/repo", ".mono-agent", "sessions"),
+    });
+  });
+
+  it("omits pi-native provider knobs when the env is unset", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.providers?.piNative).toBeUndefined();
+  });
+
+  it("rejects an out-of-range pi max retries value", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_PI_MAX_RETRIES: "99" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+  });
+
   it("rejects invalid permission mode and reasoning summary values", () => {
     expect(() =>
       loadMonoAgentConfig({
@@ -354,6 +385,24 @@ describe("loadMonoAgentConfig", () => {
     expect(JSON.stringify(redacted)).not.toContain("redacted-value");
   });
 
+  it("preserves non-secret pi-native provider knobs through redaction", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_PI_MAX_RETRIES: "4",
+        MONO_AGENT_MAX_RETRY_DELAY_MS: "30000",
+        MONO_AGENT_PI_SESSIONS_ROOT: ".mono-agent/sessions",
+      },
+    });
+    const redacted = redactMonoAgentConfig(config);
+    expect(redacted.providers?.piNative).toEqual({
+      piMaxRetries: 4,
+      maxRetryDelayMs: 30_000,
+      piSessionsRoot: join("/repo", ".mono-agent", "sessions"),
+    });
+  });
+
   it("defaults traceability to a host-shared registry path", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -526,6 +575,7 @@ describe("loadMonoAgentConfig", () => {
       { MONO_AGENT_MEMORY_MAX_BYTES: "8000" },
       { MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama" },
       { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
+      { MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true" },
       { MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true" },
       { MONO_AGENT_MEMORY_MIGRATION_CRON: "0 3 * * *" },
     ]) {
@@ -538,6 +588,79 @@ describe("loadMonoAgentConfig", () => {
       }
       throw new Error("Expected memory extras without MONO_AGENT_MEMORY_PATH to fail.");
     }
+  });
+
+  it("defaults memory.recallTool on for journal/bujo with embeddings and off for lite", () => {
+    const withEmbeddings = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      },
+    });
+    expect(withEmbeddings.memory?.recallTool).toEqual({ enabled: true });
+
+    // lite tier (no embeddings) → off by default.
+    const lite = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "lite" },
+    });
+    expect(lite.memory?.recallTool).toEqual({ enabled: false });
+
+    // journal mode but no embeddings configured → off by default (recall can't rank semantically).
+    const journalNoEmbeddings = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "memory", MONO_AGENT_MEMORY_MODE: "journal" },
+    });
+    expect(journalNoEmbeddings.memory?.recallTool).toEqual({ enabled: false });
+  });
+
+  it("lets MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED override the recallTool default in both directions", () => {
+    // Explicit off on a tier that would default on.
+    const forcedOff = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "false",
+      },
+    });
+    expect(forcedOff.memory?.recallTool).toEqual({ enabled: false });
+
+    // Explicit on for lite (FTS-only): the operator opts in despite no embeddings default.
+    const forcedOn = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "lite",
+        MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true",
+      },
+    });
+    expect(forcedOn.memory?.recallTool).toEqual({ enabled: true });
+  });
+
+  it("rejects a non-boolean MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory",
+          MONO_AGENT_MEMORY_MODE: "journal",
+          MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "maybe",
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED" } });
+      return;
+    }
+    throw new Error("Expected an invalid recallTool flag to fail.");
   });
 
   it("redacts the embeddings api key", () => {
@@ -579,6 +702,161 @@ describe("loadMonoAgentConfig", () => {
       }
       throw new Error(`Expected config load to fail for ${raw}.`);
     }
+  });
+
+  it("loads concurrency.maxConcurrentRuns from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "4" },
+    });
+
+    expect(config.concurrency?.maxConcurrentRuns).toBe(4);
+  });
+
+  it("loads concurrency.maxPendingRuns from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: "16" },
+    });
+
+    expect(config.concurrency?.maxPendingRuns).toBe(16);
+    // maxPendingRuns is independent of maxConcurrentRuns: setting only it still
+    // omits the unset sibling.
+    expect(config.concurrency?.maxConcurrentRuns).toBeUndefined();
+  });
+
+  it("loads both concurrency bounds together from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: "4",
+        MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: "16",
+      },
+    });
+
+    expect(config.concurrency?.maxConcurrentRuns).toBe(4);
+    expect(config.concurrency?.maxPendingRuns).toBe(16);
+  });
+
+  it("omits concurrency when the env is unset and rejects invalid values", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.concurrency).toBeUndefined();
+
+    for (const raw of ["not-a-number", "0", "-1"]) {
+      try {
+        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS: raw } });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS" } });
+        continue;
+      }
+      throw new Error(`Expected concurrency load to fail for ${raw}.`);
+    }
+
+    for (const raw of ["not-a-number", "0", "-1"]) {
+      try {
+        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS: raw } });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS" } });
+        continue;
+      }
+      throw new Error(`Expected pending-runs load to fail for ${raw}.`);
+    }
+  });
+
+  it("loads memory embeddings timeoutMs and circuit breaker from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: "5000",
+        MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "5",
+        MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS: "20000",
+      },
+    });
+
+    expect(config.memory?.embeddings).toMatchObject({
+      provider: "ollama",
+      timeoutMs: 5000,
+      circuitBreaker: { failureThreshold: 5, cooldownMs: 20000 },
+    });
+  });
+
+  it("omits embeddings timeoutMs/circuitBreaker when unset and rejects invalid values", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      },
+    });
+    expect(config.memory?.embeddings).not.toHaveProperty("timeoutMs");
+    expect(config.memory?.embeddings).not.toHaveProperty("circuitBreaker");
+
+    const invalidByEnv: ReadonlyArray<readonly [string, string]> = [
+      ["MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS", "0"],
+      ["MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS", "not-a-number"],
+      ["MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD", "0"],
+      ["MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS", "-1"],
+    ];
+    for (const [key, raw] of invalidByEnv) {
+      try {
+        loadMonoAgentConfig({
+          cwd: "/repo",
+          env: {
+            ...baseEnv,
+            MONO_AGENT_MEMORY_PATH: "memory",
+            MONO_AGENT_MEMORY_MODE: "journal",
+            MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+            [key]: raw,
+          },
+        });
+      } catch (error) {
+        expect(error).toMatchObject({ code: "invalid_env", details: { env: key } });
+        continue;
+      }
+      throw new Error(`Expected embeddings load to fail for ${key}=${raw}.`);
+    }
+  });
+
+  it("rejects embeddings timeoutMs and circuit breaker env without a memory path", () => {
+    for (const key of [
+      "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+      "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
+    ]) {
+      try {
+        loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [key]: "5000" } });
+      } catch (error) {
+        expect(error).toBeInstanceOf(MonoAgentConfigError);
+        expect(error).toMatchObject({ code: "invalid_env" });
+        continue;
+      }
+      throw new Error(`Expected ${key} without MONO_AGENT_MEMORY_PATH to fail.`);
+    }
+  });
+
+  it("redacts the non-secret embeddings tuning fields", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory",
+        MONO_AGENT_MEMORY_MODE: "journal",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+        MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: "5000",
+        MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "5",
+      },
+    });
+    const redacted = redactMonoAgentConfig(config);
+
+    expect(redacted.memory?.embeddings?.timeoutMs).toBe(5000);
+    expect(redacted.memory?.embeddings?.circuitBreaker).toEqual({ failureThreshold: 5 });
   });
 
   it("does not include adapter env values in validation errors", () => {

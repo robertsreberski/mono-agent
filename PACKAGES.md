@@ -39,7 +39,6 @@ flowchart TB
     Context["@mono-agent/context"]
     Skills["@mono-agent/skills"]
     MemoryBujo["@mono-agent/memory-bujo"]
-    MemoryMcp["@mono-agent/memory-mcp"]
     MemorySearch["@mono-agent/memory-search"]
     MemoryStore["@mono-agent/memory-store"]
   end
@@ -133,8 +132,6 @@ flowchart TB
   Skills --> Context
   MemoryBujo --> MemoryStore
   MemoryBujo --> MemorySearch
-  MemoryMcp --> MemoryBujo
-  MemoryMcp --> MemoryStore
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Sandbox
   AgentRuntime --> Sandbox
@@ -147,7 +144,7 @@ flowchart TB
 | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-mcp`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |
 | `evaluation` | `@mono-agent/agent-evals` |

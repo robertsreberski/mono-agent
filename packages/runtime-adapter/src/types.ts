@@ -116,7 +116,12 @@ export interface RuntimeRunOptions {
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
   readonly sandboxPolicy?: SandboxPolicy;
-  readonly piReasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
+  // Pi-native provider knobs (optional; ignored by other bridges).
+  readonly piMaxRetries?: number;
+  readonly maxRetryDelayMs?: number;
+  readonly piSessionsRoot?: string;
+  /** Tool steering: "one-at-a-time" (default) or "all" (concurrent tool calls). */
+  readonly piToolParallelismMode?: "one-at-a-time" | "all";
   readonly [key: string]: unknown;
 }
 
