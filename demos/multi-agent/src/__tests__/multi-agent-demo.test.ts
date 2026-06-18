@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { sendA2AMessage } from "@mono-agent/a2a-adapter";
+import { listTraceRuns } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
 import type {
@@ -67,7 +68,7 @@ describe("multi-agent demo", () => {
       expect(fakeRuntime.calls.find((call) => call.role === "researcher")?.options.allowedTools).toEqual(["WebSearch", "WebFetch"]);
       expect(fakeRuntime.calls.find((call) => call.role === "worker")?.options.allowedTools).toEqual(["Read", "Grep", "Bash"]);
 
-      const traceability = await getTraceabilityRuns(demo.operatorConsole.url, demo.operatorConsole.token);
+      const traceability = await listTraceRuns({ registryDir: demo.traceRegistryDir });
       expect(traceability.sources.map((source) => source.sourceId).sort()).toEqual([
         "multi-agent-orchestrator",
         "multi-agent-researcher",
@@ -252,21 +253,4 @@ function textFromToolResult(result: Awaited<ReturnType<Client["callTool"]>>): st
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-async function getTraceabilityRuns(
-  url: string,
-  token: string,
-): Promise<{
-  sources: Array<{ sourceId: string; label: string; health: string }>;
-  runs: Array<{ runId: string; source: { sourceId: string } }>;
-}> {
-  const response = await fetch(`${url}/api/traceability/runs`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  expect(response.status).toBe(200);
-  return await response.json() as {
-    sources: Array<{ sourceId: string; label: string; health: string }>;
-    runs: Array<{ runId: string; source: { sourceId: string } }>;
-  };
 }

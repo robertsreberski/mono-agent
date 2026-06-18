@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/webhook-adapter",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "HTTP webhook invocation adapter for agent responders.",
   "type": "module",
   "license": "UNLICENSED",
@@ -23,8 +23,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.3.0",
-    "@mono-agent/settings": "workspace:0.3.0",
+    "@mono-agent/agent-contracts": "workspace:0.4.0",
+    "@mono-agent/settings": "workspace:0.4.0",
     "express": "^5.1.0"
   },
   "devDependencies": {

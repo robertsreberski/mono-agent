@@ -6,7 +6,7 @@ import process from "node:process";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
-import { resolveAppTraceRegistryDir, resolveAppTraceStaleAfterMs } from "./app-config.js";
+import { phoenixAppBaseUrl, resolveAppTraceRegistryDir, resolveAppTraceStaleAfterMs } from "./app-config.js";
 import {
   bootout,
   bootstrap,
@@ -31,8 +31,6 @@ import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "./launchd.j
 export interface BackgroundCliArgs {
   readonly configPath?: string;
   readonly envFile?: string;
-  readonly port?: number;
-  readonly noConsole: boolean;
 }
 
 export interface InstanceTarget {
@@ -45,8 +43,6 @@ export interface InstanceTarget {
   readonly nodePath: string;
   readonly cliPath: string;
   readonly envFile?: string;
-  readonly port?: number;
-  readonly noConsole: boolean;
   readonly pathEnv: string;
 }
 
@@ -84,8 +80,6 @@ export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): 
     // Bake an explicit --env-file (resolved absolute) into the plist so the
     // launchd worker loads the same env file the launcher did.
     ...(input.args.envFile === undefined ? {} : { envFile: resolve(cwd, input.args.envFile) }),
-    ...(input.args.port === undefined ? {} : { port: input.args.port }),
-    noConsole: input.args.noConsole,
     pathEnv: defaultPathEnv(input.env),
   };
 }
@@ -195,8 +189,6 @@ async function writePlist(target: InstanceTarget, deps: BackgroundDeps): Promise
     configPath: target.configPath,
     cwd: target.cwd,
     ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
-    ...(target.port === undefined ? {} : { port: target.port }),
-    noConsole: target.noConsole,
     stdoutPath: target.paths.stdoutPath,
     stderrPath: target.paths.stderrPath,
     pathEnv: target.pathEnv,
@@ -389,12 +381,6 @@ function reportTimeout(target: InstanceTarget, deps: BackgroundDeps): number {
 }
 
 function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget, deps: BackgroundDeps): void {
-  const consoleUrl = consoleBaseUrl(source);
-  if (consoleUrl !== undefined) {
-    // The console's per-boot access token is not persisted to disk; the worker
-    // prints the full tokenized URL to its log at startup.
-    deps.stdout(`operator console  ${consoleUrl} (tokenized link in \`mono-agent logs${configFlag(target)}\`)\n`);
-  }
   deps.stdout(`config            ${target.configPath}\n`);
   deps.stdout(`label             ${target.label}\n`);
   deps.stdout(`pid               ${source.pid ?? "unknown"}\n`);
@@ -402,6 +388,10 @@ function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget
   deps.stdout(`started           ${source.startedAt}\n`);
   deps.stdout(`logs              ${target.paths.stdoutPath}\n`);
   deps.stdout(`                  ${target.paths.stderrPath}\n`);
+  const observability = describeObservabilityMetadata(source);
+  if (observability !== undefined) {
+    deps.stdout(`observability     ${observability}\n`);
+  }
   const channelLines = formatChannels(source);
   if (channelLines.length > 0) {
     deps.stdout("channels\n");
@@ -435,13 +425,38 @@ function startedAtMs(source: TraceSourceListItem): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function consoleBaseUrl(source: TraceSourceListItem): string | undefined {
-  const console = source.metadata?.operatorConsole;
-  if (console === null || typeof console !== "object") {
+/**
+ * Format the persisted observability exporter metadata for the detached
+ * `status` reader. Reads defensively (the worker persists only endpoint +
+ * warning/error strings, never headers/secrets) and always notes that JSONL
+ * artifacts remain local.
+ */
+function describeObservabilityMetadata(source: TraceSourceListItem): string | undefined {
+  const observability = source.metadata?.observability;
+  if (observability === null || typeof observability !== "object") {
     return undefined;
   }
-  const url = (console as Record<string, unknown>).url;
-  return typeof url === "string" && url.length > 0 ? url : undefined;
+  const record = observability as Record<string, unknown>;
+  const endpoint = record.endpoint;
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    return undefined;
+  }
+  const parts = [`phoenix ${endpoint}`];
+  const appUrl = phoenixAppBaseUrl(endpoint);
+  if (appUrl !== undefined) {
+    parts.push(`app ${appUrl}`);
+  }
+  if (record.includeSensitiveData === true) {
+    parts.push("includeSensitiveData=true");
+  }
+  if (typeof record.lastWarning === "string" && record.lastWarning.length > 0) {
+    parts.push(`last warning: ${record.lastWarning}`);
+  }
+  if (typeof record.lastError === "string" && record.lastError.length > 0) {
+    parts.push(`last error: ${record.lastError}`);
+  }
+  parts.push("JSONL artifacts remain local");
+  return parts.join("; ");
 }
 
 /** ` --config <path>` when a non-default config is in play, else empty. */

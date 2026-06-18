@@ -1,16 +1,6 @@
 import { resolve } from "node:path";
 
 import {
-  startOperatorConsole,
-} from "@mono-agent/operator-console";
-import type {
-  ConfigApplyResult,
-  OperatorConsoleEvent,
-  OperatorConsoleOptions,
-  OperatorConsoleStartResult,
-} from "@mono-agent/operator-console";
-import {
-  CORE_AGENT_FIELD_GROUPS,
   loadMonoAgentConfigWithSources,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -18,7 +8,6 @@ import {
   loadA2AAdapterConfig,
   createA2AConsumerResponder,
   startA2AProvider,
-  a2aFieldGroup,
 } from "@mono-agent/a2a-adapter";
 import type {
   A2AAdapterConfig,
@@ -42,7 +31,6 @@ import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import {
   loadTelegramAdapterConfig,
   startTelegramAdapter,
-  telegramFieldGroup,
 } from "@mono-agent/telegram-adapter";
 import type {
   TelegramAdapterConfig,
@@ -50,7 +38,6 @@ import type {
   TelegramAdapterStartOptions,
   TelegramAdapterStartResult,
 } from "@mono-agent/telegram-adapter";
-import type { FieldGroup } from "@mono-agent/settings";
 
 import {
   DEFAULT_MULTI_AGENT_CONFIG_DIR,
@@ -60,12 +47,6 @@ import {
 import {
   type MultiAgentRole,
 } from "./orchestrator-responder.js";
-
-export const MULTI_AGENT_FIELD_GROUPS: readonly FieldGroup[] = [
-  ...CORE_AGENT_FIELD_GROUPS,
-  telegramFieldGroup,
-  a2aFieldGroup,
-];
 
 export interface MultiAgentDemoLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -78,7 +59,6 @@ export interface MultiAgentDemoOptions {
   readonly env?: Record<string, string | undefined>;
   readonly cwd?: string;
   readonly configDir?: string;
-  readonly operatorConsolePort?: number;
   readonly startTelegram?: boolean;
   readonly startA2A?: boolean;
   readonly logger?: MultiAgentDemoLogger;
@@ -88,15 +68,6 @@ export interface MultiAgentDemoOptions {
     options: TelegramAdapterStartOptions,
   ) => Promise<TelegramAdapterStartResult>;
   readonly a2aProviderFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
-  readonly operatorConsoleFactory?: (options: OperatorConsoleOptions) => Promise<OperatorConsoleStartResult>;
-  readonly fieldGroups?: readonly FieldGroup[];
-}
-
-export interface MultiAgentDemoOperatorConsole {
-  readonly url: string;
-  readonly appUrl: string;
-  readonly token: string;
-  readonly configPath: string;
 }
 
 export type MultiAgentRoleStatus =
@@ -127,7 +98,10 @@ export type MultiAgentTraceabilityStatus =
   | { readonly kind: "failed"; readonly role: MultiAgentRole; readonly reason: string };
 
 export interface MultiAgentDemo {
-  readonly operatorConsole: MultiAgentDemoOperatorConsole;
+  /** Path to the orchestrator role's mono-agent.config.json. */
+  readonly configPath: string;
+  /** Shared trace-source registry directory for all roles. */
+  readonly traceRegistryDir: string;
   readonly orchestratorStatus: MultiAgentRoleStatus;
   readonly researcherStatus: MultiAgentRoleStatus;
   readonly workerStatus: MultiAgentRoleStatus;
@@ -175,35 +149,11 @@ export async function startMultiAgentDemo(options: MultiAgentDemoOptions = {}): 
     ...(options.runtimeFactory === undefined ? {} : { runtimeFactory: options.runtimeFactory }),
   });
 
-  let activeTransportNames = (): readonly string[] => ["operator-console"];
-  const consoleFactory = options.operatorConsoleFactory ?? startOperatorConsole;
-  const operatorConsole = await consoleFactory({
-    configPath: configPaths.orchestrator,
-    cwd,
-    fieldGroups: options.fieldGroups ?? MULTI_AGENT_FIELD_GROUPS,
-    observability: {
-      artifactDir: loaded.orchestrator.coreConfig.artifacts.dir,
-      maxRuns: 100,
-      maxEventsPerRun: 750,
-    },
-    traceability: {
-      registryDir: loaded.orchestrator.coreConfig.traceability.registryDir,
-      maxRuns: 100,
-      maxEventsPerRun: 750,
-      ...(loaded.orchestrator.coreConfig.traceability.staleAfterMs === undefined
-        ? {}
-        : { staleAfterMs: loaded.orchestrator.coreConfig.traceability.staleAfterMs }),
-    },
-    applyConfigWrite: async () => applyConfigRestartNotice(activeTransportNames),
-    ...(options.operatorConsolePort === undefined ? {} : { port: options.operatorConsolePort }),
-    log: (event) => logOperatorConsoleEvent(options.logger, event),
-  });
-
   const controller = new MultiAgentDemoController({
     cwd,
     env,
-    operatorConsole,
     configPath: configPaths.orchestrator,
+    traceRegistryDir: resolve(cwd, loaded.orchestrator.coreConfig.traceability.registryDir),
     loaded,
     startA2A: options.startA2A !== false,
     startTelegram: options.startTelegram !== false,
@@ -212,17 +162,15 @@ export async function startMultiAgentDemo(options: MultiAgentDemoOptions = {}): 
     ...(options.a2aProviderFactory === undefined ? {} : { a2aProviderFactory: options.a2aProviderFactory }),
   });
 
-  activeTransportNames = controller.activeTransportNames.bind(controller);
   await controller.start();
   return controller;
 }
 
 class MultiAgentDemoController implements MultiAgentDemo {
-  readonly operatorConsole: MultiAgentDemoOperatorConsole;
+  readonly configPath: string;
+  readonly traceRegistryDir: string;
   private readonly env: Record<string, string | undefined>;
   private readonly cwd: string;
-  private readonly configPath: string;
-  private readonly consoleServer: OperatorConsoleStartResult;
   private readonly loaded: Record<MultiAgentRole, LoadedRole>;
   private readonly shouldStartA2A: boolean;
   private readonly shouldStartTelegram: boolean;
@@ -244,7 +192,7 @@ class MultiAgentDemoController implements MultiAgentDemo {
     readonly env: Record<string, string | undefined>;
     readonly cwd: string;
     readonly configPath: string;
-    readonly operatorConsole: OperatorConsoleStartResult;
+    readonly traceRegistryDir: string;
     readonly loaded: Record<MultiAgentRole, LoadedRole>;
     readonly startA2A: boolean;
     readonly startTelegram: boolean;
@@ -257,19 +205,13 @@ class MultiAgentDemoController implements MultiAgentDemo {
     this.env = input.env;
     this.cwd = input.cwd;
     this.configPath = input.configPath;
-    this.consoleServer = input.operatorConsole;
+    this.traceRegistryDir = input.traceRegistryDir;
     this.loaded = input.loaded;
     this.shouldStartA2A = input.startA2A;
     this.shouldStartTelegram = input.startTelegram;
     this.logger = input.logger;
     this.telegramStartAdapter = input.telegramStartAdapter;
     this.a2aProviderFactory = input.a2aProviderFactory;
-    this.operatorConsole = {
-      url: input.operatorConsole.url,
-      appUrl: `${input.operatorConsole.url}/?t=${input.operatorConsole.token}`,
-      token: input.operatorConsole.token,
-      configPath: input.configPath,
-    };
   }
 
   get orchestratorStatus(): MultiAgentRoleStatus {
@@ -326,8 +268,8 @@ class MultiAgentDemoController implements MultiAgentDemo {
     }
   }
 
-  activeTransportNames(): readonly string[] {
-    const transports = ["operator-console"];
+  private activeTransportNames(): readonly string[] {
+    const transports: string[] = [];
     if (this.telegramStatusValue.kind === "running") {
       transports.push("telegram");
     }
@@ -364,7 +306,6 @@ class MultiAgentDemoController implements MultiAgentDemo {
         });
       }
     }));
-    await this.consoleServer.stop();
   }
 
   private async startRole(role: MultiAgentRole, responder: AgentResponder): Promise<RunningRole> {
@@ -614,10 +555,7 @@ class MultiAgentDemoController implements MultiAgentDemo {
     return {
       role,
       reason,
-      operatorConsole: {
-        url: this.operatorConsole.url,
-        configPath: this.operatorConsole.configPath,
-      },
+      configPath: this.configPath,
       telegram: summarizeTelegramStatus(this.telegramStatusValue),
       ...(agentCardUrl === undefined ? {} : { agentCardUrl }),
     };
@@ -664,24 +602,6 @@ function multiAgentTelegramMessages(): TelegramAdapterMessages {
     unauthorizedText: "This chat is not allowlisted for this Multi-Agent Demo.",
     errorText: "The Multi-Agent Demo failed honestly; check local trace artifacts for details.",
   };
-}
-
-function applyConfigRestartNotice(
-  activeTransportNames: () => readonly string[],
-): ConfigApplyResult {
-  return {
-    kind: "waiting_for_config",
-    message: "Saved config. Restart the multi-agent demo to apply role and collaborator changes.",
-    transports: activeTransportNames(),
-  };
-}
-
-function logOperatorConsoleEvent(logger: MultiAgentDemoLogger | undefined, event: OperatorConsoleEvent): void {
-  if (event.kind === "validation_failed" || event.kind === "unauthorized") {
-    logger?.warn?.("Operator Console event.", { event });
-    return;
-  }
-  logger?.debug?.("Operator Console event.", { event });
 }
 
 function summarizeTelegramStatus(status: MultiAgentTelegramStatus): Record<string, unknown> {

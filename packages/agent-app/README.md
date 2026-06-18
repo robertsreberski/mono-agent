@@ -2,7 +2,7 @@
 
 Config-first mono-agent host. Reads one `mono-agent.config.json` in a folder,
 builds the configured responder, and starts every configured communication
-channel plus the local operator console and traceability. Ships the
+channel plus traceability. Ships the
 `mono-agent` CLI (`init`, `validate`, `start`) so an agent folder works without
 hand-written composition code.
 
@@ -20,8 +20,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   (including `runtime.fallbackModels` backup chains).
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `failed` status.
-- Start the operator console first and re-apply config writes in-process.
-- Register the host as a traceability source.
+- Register the host as a traceability source. Config edits are made directly in
+  `mono-agent.config.json` and take effect on the next `mono-agent restart`.
+- Resolve and surface any configured `observability.exporters` (the Phoenix
+  preset): `start`/`status` report the configured endpoint and a note that JSONL
+  artifacts remain local; `validate` performs the live reachability probe. Export
+  is best-effort and never changes a run outcome.
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 - Optionally expose guarded self-capability tools so the running agent can
@@ -46,7 +50,7 @@ Programmatic:
 import { startMonoAgentApp } from "@mono-agent/agent-app";
 
 const app = await startMonoAgentApp({ cwd: "/path/to/agent-folder" });
-console.log(app.operatorConsole?.appUrl, app.channelStatuses());
+console.log(app.channelStatuses());
 await app.stop();
 ```
 
@@ -99,7 +103,7 @@ node -e 'const crypto=require("node:crypto"); console.log(crypto.createHmac("sha
   `create<Channel>ChannelDriver(overrides)` factories with test seams.
 - `initMonoAgentFolder(options)` / `validateMonoAgentFolder(options)`.
 - `MONO_AGENT_APP_FIELD_GROUPS` and the `resolveApp*` traceability/artifact
-  resolvers for operator-console wiring.
+  resolvers.
 - `runCli(argv)` / `parseCliArgs(argv)` backing the `mono-agent` bin.
 - Self-capability helpers (`proposeSelfSkill`, `applySelfSkill`,
   `proposeSelfCron`, `applySelfCron`) plus the

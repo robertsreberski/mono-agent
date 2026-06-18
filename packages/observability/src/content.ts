@@ -1,4 +1,4 @@
-import { isRecord } from "./artifact-fs.js";
+import { isRecord } from "./guards.js";
 
 /**
  * Shared content-shaping helpers for run-event summaries. Both the recorded-run

@@ -4,7 +4,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { startMonoAgentApp } from "./app.js";
-import type { MonoAgentApp } from "./app.js";
+import type { ExporterStatus, MonoAgentApp } from "./app.js";
+import { phoenixAppBaseUrl } from "./app-config.js";
+import { runBackfill } from "./backfill.js";
 import {
   defaultBackgroundDeps,
   resolveInstanceTarget,
@@ -21,21 +23,23 @@ import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
 
 const DEFAULT_LOG_LINES = 200;
+// Node's maximum setInterval/setTimeout delay (2^31 - 1 ms, ~24.8 days). A
+// referenced timer at this delay keeps the foreground event loop alive without
+// busy-waiting; larger values silently overflow to a 1ms delay.
+const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill"] as const;
+const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
 interface ParsedCliArgs {
   readonly command: CliCommand;
   readonly configPath?: string;
-  readonly port?: number;
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
   readonly memory?: "lite" | "journal" | "bujo";
   readonly envFile?: string;
   readonly target?: InstallSkillTarget;
-  readonly noConsole: boolean;
   readonly force: boolean;
   /** start: run the blocking foreground worker instead of backgrounding. */
   readonly foreground: boolean;
@@ -43,12 +47,22 @@ interface ParsedCliArgs {
   readonly follow: boolean;
   /** logs: number of trailing lines to print. */
   readonly lines?: number;
+  /** backfill: export exactly this run id. */
+  readonly run?: string;
+  /** backfill: export every recorded run. */
+  readonly all: boolean;
+  /** backfill: only runs whose startedAt is >= this ISO instant. */
+  readonly since?: string;
+  /** backfill: only runs whose startedAt is <= this ISO instant. */
+  readonly until?: string;
+  /** backfill: map + serialize but do not POST. */
+  readonly dryRun: boolean;
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    return { command: "help", noConsole: false, force: false, foreground: false, follow: false };
+    return { command: "help", force: false, foreground: false, follow: false, all: false, dryRun: false };
   }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
@@ -57,17 +71,20 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const isLogs = cmd === "logs";
 
   let configPath: string | undefined;
-  let port: number | undefined;
   let model: string | undefined;
   let fallbackModels: readonly string[] | undefined;
   let memory: "lite" | "journal" | "bujo" | undefined;
   let envFile: string | undefined;
   let target: InstallSkillTarget | undefined;
-  let noConsole = false;
   let force = false;
   let foreground = false;
   let follow = false;
   let lines: number | undefined;
+  let run: string | undefined;
+  let all = false;
+  let since: string | undefined;
+  let until: string | undefined;
+  let dryRun = false;
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
@@ -75,15 +92,21 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--config":
         configPath = requireValue(rest, ++i, flag);
         break;
-      case "--port": {
-        const raw = requireValue(rest, ++i, flag);
-        const parsed = Number(raw);
-        if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65_535) {
-          throw new Error("--port must be an integer between 0 and 65535.");
-        }
-        port = parsed;
+      case "--run":
+        run = requireValue(rest, ++i, flag);
         break;
-      }
+      case "--all":
+        all = true;
+        break;
+      case "--since":
+        since = requireValue(rest, ++i, flag);
+        break;
+      case "--until":
+        until = requireValue(rest, ++i, flag);
+        break;
+      case "--dry-run":
+        dryRun = true;
+        break;
       case "--model":
         model = requireValue(rest, ++i, flag);
         break;
@@ -114,9 +137,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       }
       case "--force":
         force = true;
-        break;
-      case "--no-console":
-        noConsole = true;
         break;
       case "--foreground":
         foreground = true;
@@ -149,17 +169,20 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   return {
     command: cmd,
     ...(configPath === undefined ? {} : { configPath }),
-    ...(port === undefined ? {} : { port }),
     ...(model === undefined ? {} : { model }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(memory === undefined ? {} : { memory }),
     ...(envFile === undefined ? {} : { envFile }),
     ...(target === undefined ? {} : { target }),
-    noConsole,
     force,
     foreground,
     follow,
     ...(lines === undefined ? {} : { lines }),
+    ...(run === undefined ? {} : { run }),
+    all,
+    ...(since === undefined ? {} : { since }),
+    ...(until === undefined ? {} : { until }),
+    dryRun,
   };
 }
 
@@ -195,12 +218,12 @@ Usage:
   mono-agent validate [--config <path>] [--env-file <path>]
       Load every config section and report what would run, wait, or fail.
 
-  mono-agent start [--config <path>] [--port <n>] [--no-console] [--env-file <path>] [--foreground|-f]
+  mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]
       Start the agent as a background macOS service (launchd), print its
       instance info, and return. Re-running restarts the running instance.
       Use --foreground (-f) to run in the blocking foreground instead.
 
-  mono-agent restart [--config <path>] [--port <n>] [--no-console]
+  mono-agent restart [--config <path>]
       Restart the background instance for this config (starts it if stopped).
 
   mono-agent stop [--config <path>]
@@ -215,6 +238,13 @@ Usage:
   mono-agent install-skill [--target claude|codex|both] [--force]
       Copy the bundled mono-agent-composer skill into ~/.claude/skills and
       ~/.codex/skills (default: both). Refuses to overwrite without --force.
+
+  mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]
+                      [--dry-run] [--config <path>] [--env-file <path>]
+      Export already-recorded run artifacts to the configured Phoenix exporter
+      with their historical timestamps. Trace ids are deterministic per run, so
+      re-running overwrites rather than duplicating. --dry-run maps and
+      serializes without sending.
 
 Background mode runs the agent under launchd, keeping it alive across logins
 (auto-restarting only on crash) until you run stop. Secrets are read from the
@@ -256,6 +286,15 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runBackgroundCommand(args, args.command);
     case "install-skill":
       return await runInstallSkill(args);
+    case "backfill":
+      return await runBackfill({
+        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
+        ...(args.run === undefined ? {} : { run: args.run }),
+        all: args.all,
+        ...(args.since === undefined ? {} : { since: args.since }),
+        ...(args.until === undefined ? {} : { until: args.until }),
+        dryRun: args.dryRun,
+      });
   }
 }
 
@@ -342,22 +381,22 @@ async function runStart(args: ParsedCliArgs): Promise<number> {
 
 /**
  * The blocking worker: builds the responder, starts every configured channel
- * plus the operator console and traceability, and stays alive until a signal.
- * This is what launchd invokes (via `start --foreground`) and what users get
- * with `--foreground`/`-f`.
+ * plus traceability, and stays alive until a signal. This is what launchd
+ * invokes (via `start --foreground`) and what users get with `--foreground`/`-f`.
  */
 async function runForeground(args: ParsedCliArgs): Promise<number> {
   const app = await startMonoAgentApp({
     cwd: process.cwd(),
     ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-    ...(args.port === undefined ? {} : { operatorConsolePort: args.port }),
-    ...(args.noConsole ? { operatorConsole: false } : {}),
     logger: consoleLogger(),
   });
 
   printAppStatus(app);
-  installSignalHandlers(app);
-  return 0;
+  // Block until a shutdown signal. Returning here (the old behavior) let the
+  // process exit immediately whenever no channel owned a live handle — e.g. a
+  // traceability-only config, now that the operator console is retired and the
+  // trace heartbeat timer is unref'd.
+  return await waitForShutdownSignal(app);
 }
 
 async function runBackgroundCommand(
@@ -373,8 +412,6 @@ async function runBackgroundCommand(
     args: {
       ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
       ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
-      ...(args.port === undefined ? {} : { port: args.port }),
-      noConsole: args.noConsole,
     },
     env: process.env,
     cwd: process.cwd(),
@@ -411,10 +448,7 @@ function requireDarwin(command: string): number | undefined {
   return 1;
 }
 
-function printAppStatus(app: MonoAgentApp): void {
-  if (app.operatorConsole !== undefined) {
-    process.stdout.write(`operator console  ${app.operatorConsole.appUrl}\n`);
-  }
+export function printAppStatus(app: MonoAgentApp): void {
   process.stdout.write(`config            ${app.configPath}\n`);
   const trace = app.traceabilityStatus;
   process.stdout.write(
@@ -422,9 +456,35 @@ function printAppStatus(app: MonoAgentApp): void {
       ? `traceability      running (source ${trace.sourceId})\n`
       : `traceability      ${trace.kind}: ${trace.reason}\n`,
   );
+  const artifactDir = app.traceabilityStatus.kind === "running" ? app.traceabilityStatus.artifactDir : undefined;
+  process.stdout.write(`observability     ${describeExporter(app.exporterStatus, artifactDir)}\n`);
   for (const [id, status] of app.channelStatuses()) {
     process.stdout.write(`${id.padEnd(17)} ${describeChannelStatus(status)}\n`);
   }
+}
+
+function describeExporter(status: ExporterStatus, artifactDir: string | undefined): string {
+  if (status.kind !== "configured") {
+    return `${status.kind}: ${status.reason}`;
+  }
+  const parts = [`phoenix ${status.endpoint}`];
+  const appUrl = phoenixAppBaseUrl(status.endpoint);
+  if (appUrl !== undefined) {
+    parts.push(`app ${appUrl}`);
+  }
+  if (status.includeSensitiveData) {
+    parts.push("includeSensitiveData=true");
+  }
+  if (status.lastWarning !== undefined) {
+    parts.push(`last warning: ${status.lastWarning}`);
+  }
+  if (status.lastError !== undefined) {
+    parts.push(`last error: ${status.lastError}`);
+  }
+  parts.push(artifactDir === undefined
+    ? "JSONL artifacts remain local"
+    : `JSONL artifacts remain local at ${artifactDir}`);
+  return parts.join("; ");
 }
 
 function describeChannelStatus(status: ChannelStatus): string {
@@ -437,19 +497,34 @@ function describeChannelStatus(status: ChannelStatus): string {
   return `${status.kind}: ${status.reason}`;
 }
 
-function installSignalHandlers(app: MonoAgentApp): void {
-  let stopping = false;
-  const stop = async (signal: string): Promise<void> => {
-    if (stopping) {
-      return;
-    }
-    stopping = true;
-    process.stdout.write(`\nReceived ${signal}; stopping mono agent app...\n`);
-    await app.stop();
-    process.exit(0);
-  };
-  process.on("SIGINT", () => void stop("SIGINT"));
-  process.on("SIGTERM", () => void stop("SIGTERM"));
+/**
+ * Block the foreground process until SIGINT/SIGTERM, then stop the app and
+ * resolve the exit code. A referenced no-op timer owns the event loop so the
+ * process stays alive even with no channel handle (signal listeners alone do
+ * NOT keep Node running, and the trace heartbeat is unref'd). Cleared on stop so
+ * the loop drains cleanly without a forceful `process.exit`. Exported for tests.
+ */
+export function waitForShutdownSignal(app: Pick<MonoAgentApp, "stop">): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const keepAlive = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
+    let stopping = false;
+    const onSignal = (signal: NodeJS.Signals): void => {
+      if (stopping) {
+        return;
+      }
+      stopping = true;
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      clearInterval(keepAlive);
+      void (async () => {
+        process.stdout.write(`\nReceived ${signal}; stopping mono agent app...\n`);
+        await app.stop();
+        resolve(0);
+      })();
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+  });
 }
 
 function consoleLogger() {
