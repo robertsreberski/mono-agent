@@ -35,7 +35,7 @@ Use `@mono-agent/settings/field-groups` from browser code when only field defini
 
 ## Dependency Boundary
 
-This package has no workspace runtime dependency. It is safe for core config loaders, adapter settings, and the operator console server. Browser bundles should import only `@mono-agent/settings/field-groups`.
+This package has no workspace runtime dependency. It is safe for core config loaders and adapter settings. Browser bundles should import only `@mono-agent/settings/field-groups`.
 
 ## What This Package Does Not Own
 

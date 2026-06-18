@@ -1291,4 +1291,242 @@ describe("loadMonoAgentConfig", () => {
       }),
     ).toThrow(/capture.*requires.*bujo/i);
   });
+
+  it("loads a valid phoenix observability exporter from env JSON", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+          {
+            type: "phoenix",
+            endpoint: "http://127.0.0.1:6006/v1/traces",
+            headers: { authorization: "Bearer secret-token" },
+            includeSensitiveData: true,
+            timeoutMs: 7000,
+          },
+        ]),
+      },
+    });
+
+    expect(config.observability?.exporters).toEqual([
+      {
+        type: "phoenix",
+        endpoint: "http://127.0.0.1:6006/v1/traces",
+        headers: { authorization: "Bearer secret-token" },
+        includeSensitiveData: true,
+        timeoutMs: 7000,
+      },
+    ]);
+  });
+
+  it("defaults the phoenix endpoint, timeout, and includeSensitiveData when omitted", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([{ type: "phoenix" }]),
+      },
+    });
+
+    expect(config.observability?.exporters[0]).toEqual({
+      type: "phoenix",
+      endpoint: "http://127.0.0.1:6006/v1/traces",
+      includeSensitiveData: false,
+      timeoutMs: 5000,
+    });
+  });
+
+  it("rejects an unknown observability exporter type", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([{ type: "langfuse" }]),
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_env" });
+      return;
+    }
+    throw new Error("Expected an unknown exporter type to fail.");
+  });
+
+  it("rejects a present-but-non-string exporter type instead of defaulting to phoenix", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([{ type: 123 }]),
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_env" });
+      return;
+    }
+    throw new Error("Expected a non-string exporter type to fail validation.");
+  });
+
+  it("rejects an invalid exporter endpoint string without any network attempt", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "not a url" },
+          ]),
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_env" });
+      return;
+    }
+    throw new Error("Expected an invalid endpoint to fail.");
+  });
+
+  it("rejects a non-string exporter header value", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", headers: { authorization: 123 } },
+          ]),
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_env" });
+      return;
+    }
+    throw new Error("Expected a non-string header value to fail.");
+  });
+
+  it("rejects more than one configured exporter (only the first is wired)", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" },
+            { type: "phoenix", endpoint: "http://127.0.0.1:6007/v1/traces" },
+          ]),
+        },
+      }),
+    ).toThrow(/single exporter/iu);
+  });
+
+  it("rejects an endpoint that embeds credentials in userinfo", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "https://user:pass@127.0.0.1:6006/v1/traces" },
+          ]),
+        },
+      }),
+    ).toThrow(/credentials/iu);
+  });
+
+  it("rejects an endpoint with a query string (secrets belong in headers)", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces?api_key=SECRET" },
+          ]),
+        },
+      }),
+    ).toThrow(/query string/iu);
+  });
+
+  it("rejects an endpoint with a URL fragment", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces#token" },
+          ]),
+        },
+      }),
+    ).toThrow(/fragment/iu);
+  });
+
+  it("rejects an exporter timeoutMs out of range or non-integer", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([{ type: "phoenix", timeoutMs: 0 }]),
+        },
+      }),
+    ).toThrow(MonoAgentConfigError);
+
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([{ type: "phoenix", timeoutMs: 1.5 }]),
+        },
+      }),
+    ).toThrow(MonoAgentConfigError);
+  });
+
+  it("rejects malformed observability exporter JSON with invalid_json", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: "{not-json",
+        },
+      });
+    } catch (error) {
+      expect(error).toBeInstanceOf(MonoAgentConfigError);
+      expect(error).toMatchObject({ code: "invalid_json" });
+      return;
+    }
+    throw new Error("Expected malformed exporter JSON to fail.");
+  });
+
+  it("redacts exporter header values in the redacted config", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+          {
+            type: "phoenix",
+            headers: { authorization: "Bearer super-secret-token" },
+          },
+        ]),
+      },
+    });
+
+    const redacted = redactMonoAgentConfig(config);
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain("super-secret-token");
+    expect(redacted.observability?.exporters[0]?.headers?.authorization).toBe("[redacted]");
+  });
+
+  it("leaves observability undefined when no exporter env is set", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(config.observability).toBeUndefined();
+  });
 });

@@ -4,7 +4,6 @@ This is the final agent demo. It is intentionally **not** an npm package: there 
 
 ## What it wires together
 
-- `@mono-agent/operator-console` starts a loopback settings UI for `mono-agent.config.json`, plus a Traceability view over registered agent sources and recorded run artifacts.
 - `@mono-agent/config` loads adapter-neutral core JSON plus environment overrides.
 - `@mono-agent/agent-host` turns the core config into a runtime-backed responder.
 - `@mono-agent/observability` registers this host in the local trace source registry.
@@ -22,7 +21,7 @@ const runtime = createConfiguredAgentRuntime(coreConfig);
 const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
 ```
 
-`src/configuration.ts` is the only demo-local place that registers field groups, loads core plus adapter config, redacts runtime status, and resolves the artifact directory. `src/final-demo.ts` handles lifecycle: start the operator console, start Telegram, A2A, webhook, OpenAI API, and cron independently when config is valid, build the responder, and stop cleanly.
+`src/configuration.ts` is the only demo-local place that registers field groups, loads core plus adapter config, redacts runtime status, and resolves the artifact directory. `src/final-demo.ts` handles lifecycle: start Telegram, A2A, webhook, OpenAI API, and cron independently when config is valid, build the responder, and stop cleanly.
 
 ## Run it
 
@@ -34,9 +33,8 @@ pnpm run build
 pnpm run demo:final
 ```
 
-The CLI prints:
+The demo starts headless and prints status to the terminal:
 
-- an operator console URL containing a per-boot local token,
 - the config file path,
 - whether Telegram is `running`, `waiting_for_config`, or `failed`,
 - whether A2A is `disabled`, `running`, `waiting_for_config`, or `failed`,
@@ -45,9 +43,9 @@ The CLI prints:
 - whether cron is `disabled`, `running`, `waiting_for_config`, or `failed`,
 - whether traceability source registration is `running`, `disabled`, or `failed`.
 
-Open the operator console and save a valid config. Telegram, A2A, webhook, OpenAI API, and cron start independently: missing Telegram credentials do not block the HTTP or scheduled adapters, and disabled adapters do not block the rest of the host. Later operator-console saves are applied in-process: the demo stops and rebuilds Telegram, A2A, webhook, OpenAI API, cron, and traceability from the freshly saved config while keeping the operator console URL, token, and port stable. Active Telegram polling, A2A requests, webhook requests, OpenAI API requests, or cron jobs may be briefly interrupted; new requests after the save use the new runtime, tool policy, tokens, allowlists, Agent Card metadata, webhook settings, OpenAI API settings, cron jobs, artifact directory, and trace source settings.
+Edit `mono-agent.config.json` directly (by hand or via an AI agent) to configure the demo. Telegram, A2A, webhook, OpenAI API, and cron start independently: missing Telegram credentials do not block the HTTP or scheduled adapters, and disabled adapters do not block the rest of the host. Config changes are applied on the next restart — there is no live in-process re-apply; stop the demo and start it again to pick up new runtime, tool policy, tokens, allowlists, Agent Card metadata, webhook settings, OpenAI API settings, cron jobs, artifact directory, and trace source settings.
 
-The top navigation includes **Settings** and **Traceability**. Traceability is refresh-based: the registry discovers running/stale/stopped/failed agent sources, and each source points at persisted `*.summary.json` / `*.events.jsonl` files. The timeline shows visible runtime/tool/message events and does not infer or expose private model chain-of-thought. The old `#observability` hash remains an alias for the traceability surface.
+Recorded runs are inspected via the local JSONL artifacts: each source writes persisted `*.summary.json` / `*.events.jsonl` files under its artifact directory. These capture visible runtime/tool/message events and do not infer or expose private model chain-of-thought. When an OTLP exporter is configured, the same runs are also viewable in Phoenix.
 
 ## Deploy with Ollama Gemma 4
 
@@ -60,7 +58,7 @@ curl http://localhost:11434/api/tags
 pnpm run deploy:final
 ```
 
-The command builds the repo, verifies `gemma4:31b` is installed in Ollama, writes `.mono-agent/deploy/final-agent-gemma4.config.json`, and starts the operator console plus loopback A2A provider. It does not write secrets. Generated deployment state is ignored by git:
+The command builds the repo, verifies `gemma4:31b` is installed in Ollama, writes `.mono-agent/deploy/final-agent-gemma4.config.json`, and starts the headless demo plus loopback A2A provider. It does not write secrets. Generated deployment state is ignored by git:
 
 ```text
 .mono-agent/deploy/final-agent-gemma4.config.json
@@ -73,13 +71,12 @@ The command builds the repo, verifies `gemma4:31b` is installed in Ollama, write
 Useful options:
 
 ```bash
-pnpm run deploy:final -- --port 5317
 pnpm run deploy:final -- --a2a-port 4317
 pnpm run deploy:final -- --config ./.mono-agent/deploy/custom.config.json
 pnpm run deploy:final -- --no-start
 ```
 
-The CLI prints the operator console URL/token, trace source id `final-agent-gemma4`, trace registry, artifact directory, model reference `pi:ollama:gemma4:31b`, and the A2A Agent Card URL. Send a no-secret local smoke request to the printed Agent Card URL:
+The CLI prints the trace source id `final-agent-gemma4`, trace registry, artifact directory, model reference `pi:ollama:gemma4:31b`, and the A2A Agent Card URL. Send a no-secret local smoke request to the printed Agent Card URL:
 
 ```bash
 node --input-type=module - <<'EOF'
@@ -94,7 +91,7 @@ console.log(response.text);
 EOF
 ```
 
-Then open the operator console Traceability view. It should list source `final-agent-gemma4` and show the new A2A run with runtime events loaded from `.mono-agent/deploy/artifacts/`. Stop the deployment with `Ctrl-C`; the trace source is marked stopped during shutdown. Telegram remains optional and is not required for this deployment smoke.
+Then inspect the recorded run via the local JSONL artifacts under `.mono-agent/deploy/artifacts/`: source `final-agent-gemma4` should have a new A2A run with its `*.summary.json` / `*.events.jsonl` runtime events. When an OTLP exporter is configured, the same run is also viewable in Phoenix. Stop the deployment with `Ctrl-C`; the trace source is marked stopped during shutdown. Telegram remains optional and is not required for this deployment smoke.
 
 ## Minimal `mono-agent.config.json`
 
@@ -182,7 +179,7 @@ Use fake placeholders here only as shape examples. Do not commit real bot tokens
 }
 ```
 
-Environment variables override the JSON file, including values saved through the operator console. Keep provider credentials in the provider/runtime environment expected by `@mono-agent/agent-runtime`; the operator console JSON is not a secret manager.
+Environment variables override the JSON file. Keep provider credentials in the provider/runtime environment expected by `@mono-agent/agent-runtime`; the `mono-agent.config.json` file is not a secret manager.
 
 ## OpenWebUI Smoke
 
@@ -303,7 +300,7 @@ pnpm run demo:final
 
 Standard local Ollama needs no API key. The demo validates local-provider URLs before Telegram starts: private/local HTTP(S) URLs are allowed, while public URLs must use `https://` and set `trustPublicUrl: true`.
 
-For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `mono-agent.config.json`, then the built-in `./.mono-agent/artifacts` default. This lets the traceability view show existing default artifacts even while the rest of the demo config is incomplete.
+For artifact lookup, `MONO_AGENT_ARTIFACT_DIR` wins, then `artifacts.dir` from `mono-agent.config.json`, then the built-in `./.mono-agent/artifacts` default. This lets the local JSONL artifacts capture existing default runs even while the rest of the demo config is incomplete.
 
 For source discovery, `MONO_AGENT_TRACE_REGISTRY_DIR` wins, then `traceability.registryDir`, then `~/.mono-agent/trace-sources`. The default is intentionally host-shared so multiple agent processes from different working directories appear in one local dashboard. Source id and label can be set with `MONO_AGENT_TRACE_SOURCE_ID` / `MONO_AGENT_TRACE_SOURCE_LABEL` or `traceability.sourceId` / `traceability.sourceLabel`; otherwise the demo uses a deterministic path-derived id and the label `Final Agent Demo`. Heartbeat and stale intervals follow `MONO_AGENT_TRACE_HEARTBEAT_MS` / `MONO_AGENT_TRACE_STALE_AFTER_MS`, then `traceability.heartbeatMs` / `traceability.staleAfterMs`, then the built-in defaults.
 
@@ -379,25 +376,23 @@ The agent supports three memory tiers, all sharing a single global brain across 
 ## CLI options
 
 ```bash
-pnpm run demo:final -- --config ./mono-agent.config.json --port 3007
-pnpm run deploy:final -- --model gemma4:31b --ollama-url http://localhost:11434 --port 3007 --a2a-port 4300
+pnpm run demo:final -- --config ./mono-agent.config.json
+pnpm run deploy:final -- --model gemma4:31b --ollama-url http://localhost:11434 --a2a-port 4300
 ```
 
 - `--config <path>` changes the config file path.
-- `--port <port>` pins the operator console port; omit it to choose a free loopback port.
 - `deploy:final` also accepts `--model <ollama-tag>`, `--ollama-url <url>`, `--a2a-port <port>`, and `--no-start`.
 
 ## Safety notes
 
-- The operator console binds to loopback and requires its per-boot bearer token for API calls.
 - Traceability is local-only. The registry stores source manifests; run details stay in each source's local artifact directory.
-- Telegram bot tokens are write-only in the operator console; GET responses redact them.
+- Telegram bot tokens are redacted in status output and demo diagnostics.
 - Telegram chat ids are redacted in demo diagnostics.
 - The A2A provider binds to loopback by default. Non-loopback bind or advertised public URLs require explicit opt-in and should be deployed only behind HTTPS plus bearer auth.
-- A2A bearer tokens are write-only in the operator console and redacted from statuses.
+- A2A bearer tokens are redacted from status output.
 - The webhook adapter binds to loopback by default and does not implement built-in authentication. Public exposure must be protected by the host or reverse proxy.
-- The OpenAI API adapter binds to loopback by default. Its API key is optional for local loopback use, write-only in the operator console, and required on every request when configured.
+- The OpenAI API adapter binds to loopback by default. Its API key is optional for local loopback use, redacted in status output, and required on every request when configured.
 - Cron jobs schedule future ticks only. Missed ticks are not persisted or replayed after restart, and overlapping ticks for the same job are skipped.
 - Trace event payloads are bounded and sensitive keys such as tokens, authorization headers, passwords, cookies, and API keys are redacted. Redaction is defensive, not a guarantee for arbitrary user-provided secret text.
 - The demo uses fake runtime/Telegram only in tests. The CLI path uses the real adapters, poller/server, and runtime adapter.
-- LangSmith/OpenTelemetry export is not part of this MVP. The current trace registry captures enough source/run timestamps to support a future export sink without adding external credentials to `mono-agent.config.json`.
+- Trace export to Phoenix is via an optional OTLP exporter. When unconfigured, runs stay local-only in the JSONL artifacts; configuring an exporter adds an OTLP endpoint without storing external secrets in `mono-agent.config.json`.

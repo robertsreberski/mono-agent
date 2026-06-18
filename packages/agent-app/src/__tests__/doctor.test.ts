@@ -52,28 +52,6 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "channel:telegram").status).toBe("disabled");
   });
 
-  it("reports the operator console section", async () => {
-    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
-    const configPath = await writeConfig({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      console: { port: 4321 },
-    });
-
-    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
-    const consoleSection = sectionById(report, "console");
-    expect(consoleSection.status).toBe("ok");
-    expect(consoleSection.details.join("\n")).toContain("4321");
-
-    const disabledPath = await writeConfig({
-      runtime: { model: "pi:openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md" },
-      console: { enabled: false },
-    });
-    const disabledReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: disabledPath });
-    expect(sectionById(disabledReport, "console").status).toBe("disabled");
-  });
-
   it("reports adapter-derived send tools when enabled adapter configs are valid", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
@@ -137,6 +115,115 @@ describe("validateMonoAgentFolder", () => {
     const core = sectionById(report, "core");
     expect(core.status).toBe("error");
     expect(core.details.join("\n")).toContain("MONO_AGENT_MODEL");
+  });
+});
+
+describe("validateMonoAgentFolder — observability exporter section", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function writeExporterConfig(exporters?: unknown): Promise<string> {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    return writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      ...(exporters === undefined ? {} : { observability: { exporters } }),
+    });
+  }
+
+  it("reports disabled when no exporter is configured", async () => {
+    const configPath = await writeExporterConfig();
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("disabled");
+    expect(section.details.join("\n")).toMatch(/no observability exporter/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports ok when the Phoenix endpoint is reachable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("ok");
+    const text = section.details.join("\n");
+    expect(text).toContain("http://127.0.0.1:6006/v1/traces");
+    expect(text).toMatch(/JSONL artifacts remain local/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports waiting (not error) when the endpoint is unreachable", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("waiting");
+    const text = section.details.join("\n");
+    expect(text).toMatch(/WARN/u);
+    expect(text).toMatch(/ECONNREFUSED|not reachable|unreachable/iu);
+    expect(text).toMatch(/JSONL artifacts remain local/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports waiting (not a false ok) when the endpoint rejects the protobuf POST with 415", async () => {
+    // The old OPTIONS probe treated this endpoint as healthy; the real export
+    // POST returns 415 (wrong content type). The probe now POSTs protobuf, so it
+    // catches the export incompatibility instead of reporting a false ok.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 415 }));
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("waiting");
+    const text = section.details.join("\n");
+    expect(text).toMatch(/WARN/u);
+    expect(text).toContain("HTTP 415");
+    expect(report.ok).toBe(true);
+  });
+
+  it("POSTs application/x-protobuf when probing (exercises the real export wire format)", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["content-type"]).toBe("application/x-protobuf");
+  });
+
+  it("reports waiting when the endpoint responds but with a non-ok status (wrong path)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint: "http://127.0.0.1:6006/wrong" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("waiting");
+    const text = section.details.join("\n");
+    expect(text).toMatch(/WARN/u);
+    expect(text).toContain("HTTP 404");
+    // Still non-fatal: a wrong/unready endpoint never fails the report.
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports error (fails the report) for an invalid exporter type", async () => {
+    const configPath = await writeExporterConfig([{ type: "bogus", endpoint: "http://127.0.0.1:6006/v1/traces" }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("error");
+    expect(report.ok).toBe(false);
   });
 });
 

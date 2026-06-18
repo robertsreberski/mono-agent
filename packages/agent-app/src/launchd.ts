@@ -33,8 +33,6 @@ export interface PlistInput {
   readonly configPath: string;
   readonly cwd: string;
   readonly envFile?: string;
-  readonly port?: number;
-  readonly noConsole: boolean;
   readonly stdoutPath: string;
   readonly stderrPath: string;
   readonly pathEnv: string;
@@ -99,8 +97,6 @@ export function buildPlistXml(input: PlistInput): string {
     "--config",
     input.configPath,
     ...(input.envFile === undefined ? [] : ["--env-file", input.envFile]),
-    ...(input.port === undefined ? [] : ["--port", String(input.port)]),
-    ...(input.noConsole ? ["--no-console"] : []),
   ];
   const argsXml = programArguments.map((arg) => `    <string>${escapeXml(arg)}</string>`).join("\n");
 

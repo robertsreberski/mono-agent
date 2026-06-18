@@ -103,7 +103,7 @@ export class MonoAgentHarness implements AgentHarness {
   async run(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
-    const recorder = this.options.recorderFactory?.({ runId, conversationId: request.conversationId }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId });
+    const recorder = this.options.recorderFactory?.({ runId, conversationId: request.conversationId, userInput: request.userMessage }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId });
     await recorder.start?.();
 
     if (request.abortSignal.aborted) {

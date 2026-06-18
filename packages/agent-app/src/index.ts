@@ -1,17 +1,17 @@
 export {
-  consoleFieldGroup,
   isAppCoreConfigError,
   loadAppCoreConfig,
   MONO_AGENT_APP_FIELD_GROUPS,
+  phoenixAppBaseUrl,
   resolveAppArtifactDir,
-  resolveAppConsoleSettings,
+  resolveAppObservabilityExporters,
   resolveAppTraceHeartbeatMs,
   resolveAppTraceRegistryDir,
   resolveAppTraceSourceId,
   resolveAppTraceSourceLabel,
   resolveAppTraceStaleAfterMs,
 } from "./app-config.js";
-export type { AppConsoleSettings, AppTraceDefaults, MonoAgentAppConfigInput } from "./app-config.js";
+export type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
 export {
   createA2AChannelDriver,
   createCronChannelDriver,
@@ -40,8 +40,9 @@ export type {
 } from "./channels.js";
 export { startMonoAgentApp } from "./app.js";
 export type {
+  ConfigApplyResult,
+  ExporterStatus,
   MonoAgentApp,
-  MonoAgentAppOperatorConsole,
   MonoAgentAppOptions,
   TraceabilityStatus,
 } from "./app.js";

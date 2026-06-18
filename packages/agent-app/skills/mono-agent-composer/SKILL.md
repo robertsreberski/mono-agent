@@ -5,7 +5,7 @@ description: Construct a working mono-agent in the current folder from one mono-
 
 # Mono Agent Composer
 
-Construct a working mono-agent in the user's current folder — empty or already holding knowledge — from one `mono-agent.config.json`. Discover what the user wants (runtime with backup models, communication channels incl. crons and webhooks, skills, MCP servers, memory strategy incl. semantic search, sandbox, operator console, observability), write the config, then make it run with the `mono-agent` CLI. No hand-written host code unless the user genuinely needs programmatic composition. `references/feature-coverage.md` maps every framework feature to a config key, CLI flag, or the programmatic escape hatch — consult it before declaring anything impossible or inventing keys.
+Construct a working mono-agent in the user's current folder — empty or already holding knowledge — from one `mono-agent.config.json`. Discover what the user wants (runtime with backup models, communication channels incl. crons and webhooks, skills, MCP servers, memory strategy incl. semantic search, sandbox, observability), write the config, then make it run with the `mono-agent` CLI. The config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it too); changes apply on the next `mono-agent restart`. No hand-written host code unless the user genuinely needs programmatic composition. `references/feature-coverage.md` maps every framework feature to a config key, CLI flag, or the programmatic escape hatch — consult it before declaring anything impossible or inventing keys.
 
 ## Operating Rules
 
@@ -60,11 +60,11 @@ Everything below runs in the user's agent folder, not the workspace.
    mono-agent start
    ```
 
-   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). The operator console URL printed at start lets the user edit config in the browser; saves re-apply live.
+   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` directly and run `mono-agent restart`; there is no live browser re-apply.
 
 ## When Config Is Not Enough
 
-Config-first covers one responder served over any combination of the seven channels (webhook, OpenAI-compatible API, Telegram, Slack, WhatsApp, A2A, cron) plus the operator console, sandbox, memory (lite with FTS-only recall, journal with hybrid BM25+vector recall + configured embeddings, or bujo with SQLite-indexed hybrid recall + LLM capture/reconcile + entity graph + auto-scheduled reflection/migration), and traceability. Drop to programmatic composition only for: custom `MonoRuntimeLike` implementations, request-scoped runtime extensions, tool approval gates, structured output schemas, multi-agent orchestration (`@mono-agent/agent-orchestrator`), custom channel message texts, or bespoke transports — `references/feature-coverage.md` lists which features are config keys and which are code-only. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue. For eval suites over the composed agent, use `@mono-agent/agent-evals`.
+Config-first covers one responder served over any combination of the seven channels (webhook, OpenAI-compatible API, Telegram, Slack, WhatsApp, A2A, cron) plus sandbox, memory (lite with FTS-only recall, journal with hybrid BM25+vector recall + configured embeddings, or bujo with SQLite-indexed hybrid recall + LLM capture/reconcile + entity graph + auto-scheduled reflection/migration), and traceability. Drop to programmatic composition only for: custom `MonoRuntimeLike` implementations, request-scoped runtime extensions, tool approval gates, structured output schemas, multi-agent orchestration (`@mono-agent/agent-orchestrator`), custom channel message texts, or bespoke transports — `references/feature-coverage.md` lists which features are config keys and which are code-only. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue. For eval suites over the composed agent, use `@mono-agent/agent-evals`.
 
 ## Implementation References
 

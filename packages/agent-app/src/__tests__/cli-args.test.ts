@@ -35,25 +35,26 @@ describe("parseCliArgs", () => {
       model: "claude:claude-sonnet-4-6",
       fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.5"],
       memory: "journal",
-      noConsole: false,
       force: false,
       foreground: false,
       follow: false,
+      all: false,
+      dryRun: false,
     });
   });
 
-  it("parses start with config, port, env file, and --no-console", () => {
+  it("parses start with config and env file", () => {
     expect(
-      parseCliArgs(["start", "--config", "agent.json", "--port", "4100", "--no-console", "--env-file", ".env.local"]),
+      parseCliArgs(["start", "--config", "agent.json", "--env-file", ".env.local"]),
     ).toEqual({
       command: "start",
       configPath: "agent.json",
-      port: 4100,
       envFile: ".env.local",
-      noConsole: true,
       force: false,
       foreground: false,
       follow: false,
+      all: false,
+      dryRun: false,
     });
   });
 
@@ -83,13 +84,32 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["install-skill", "--target", "codex", "--force"])).toEqual({
       command: "install-skill",
       target: "codex",
-      noConsole: false,
       force: true,
       foreground: false,
       follow: false,
+      all: false,
+      dryRun: false,
     });
     expect(parseCliArgs(["install-skill"])).toMatchObject({ command: "install-skill", force: false });
     expect(() => parseCliArgs(["install-skill", "--target", "browser"])).toThrow(/--target/u);
+  });
+
+  it("parses backfill flags (--run/--all/--since/--until/--dry-run)", () => {
+    expect(parseCliArgs(["backfill", "--all", "--dry-run"])).toMatchObject({
+      command: "backfill",
+      all: true,
+      dryRun: true,
+    });
+    expect(
+      parseCliArgs(["backfill", "--run", "run-x", "--since", "2026-06-01", "--until", "2026-06-30"]),
+    ).toMatchObject({
+      command: "backfill",
+      run: "run-x",
+      since: "2026-06-01",
+      until: "2026-06-30",
+      all: false,
+      dryRun: false,
+    });
   });
 
   it("defaults to help and rejects unknown commands and flags", () => {
@@ -97,7 +117,7 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["--help"]).command).toBe("help");
     expect(() => parseCliArgs(["serve"])).toThrow(/Unknown command/u);
     expect(() => parseCliArgs(["start", "--what"])).toThrow(/Unknown flag/u);
-    expect(() => parseCliArgs(["start", "--port", "no"])).toThrow(/--port/u);
+    expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/Unknown flag/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
   });
 

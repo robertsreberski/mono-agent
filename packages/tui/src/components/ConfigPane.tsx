@@ -126,8 +126,8 @@ export function ConfigPane({
     <Box flexDirection="column" paddingX={1}>
       <Box>
         <Text color="gray">
-          {configPath} · loaded {loadedLabel} · press r to reload · edits via
-          @mono-agent/operator-console
+          {configPath} · loaded {loadedLabel} · press r to reload · edit JSON +
+          restart to apply
         </Text>
       </Box>
       {state.sections?.map((section) => (

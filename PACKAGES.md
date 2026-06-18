@@ -15,7 +15,6 @@ flowchart TB
   end
 
   subgraph OperatorSurfaces["operator-surface"]
-    OperatorConsole["@mono-agent/operator-console"]
     Tui["@mono-agent/tui"]
   end
 
@@ -66,7 +65,6 @@ flowchart TB
 
   FinalDemo --> AgentApp
 
-  AgentApp --> OperatorConsole
   AgentApp --> A2A
   AgentApp --> Cron
   AgentApp --> OpenAIApi
@@ -78,15 +76,12 @@ flowchart TB
   AgentApp --> Config
   AgentApp --> Observability
 
-  MultiDemo --> OperatorConsole
   MultiDemo --> A2A
   MultiDemo --> Telegram
   MultiDemo --> Orchestrator
   MultiDemo --> Host
   MultiDemo --> Config
 
-  OperatorConsole --> Settings
-  OperatorConsole --> Observability
   Tui --> Contracts
   Tui --> Config
 
@@ -149,7 +144,7 @@ flowchart TB
 | `observability` | `@mono-agent/observability` |
 | `evaluation` | `@mono-agent/agent-evals` |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
-| `operator-surface` | `@mono-agent/operator-console`, `@mono-agent/tui` |
+| `operator-surface` | `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |
 
 `@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). Configured hosts use this one runtime implementation path by default; programmatic hosts may still pass any custom `MonoRuntimeLike` to `createConfiguredAgentResponder({ runtime, model })` when they genuinely need a private escape hatch.

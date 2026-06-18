@@ -28,7 +28,6 @@ export interface MultiAgentDeploymentOptions {
   readonly researcherModel?: string;
   readonly workerModel?: string;
   readonly ollamaBaseUrl?: string;
-  readonly operatorConsolePort?: number;
   readonly orchestratorA2APort?: number;
   readonly researcherA2APort?: number;
   readonly workerA2APort?: number;

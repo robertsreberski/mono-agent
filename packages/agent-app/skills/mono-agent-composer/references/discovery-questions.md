@@ -235,14 +235,13 @@ Fills: the `sandbox` section — `mode`, `network.mode` (`none`/`localhost`/`all
 Question:
 
 ```text
-Do you need browsable traceability or just local artifacts?
+Do you need a browsable trace viewer or just local artifacts?
 
-1. JSONL artifacts and the operator console (recommended; console is on by default)
-2. JSONL artifacts and the console on a fixed port
-3. JSONL artifacts only (headless)
+1. JSONL artifacts plus Phoenix as the trace viewer (recommended; add an `observability.exporters` Phoenix entry)
+2. JSONL artifacts only (the local fallback; no external viewer)
 ```
 
-Fills: `artifacts.dir`, `traceability.registryDir` / `sourceId` / `sourceLabel`, and the `console` section — `console.port` for a fixed loopback port, `console.enabled: false` (or `start --no-console`) for headless. Artifacts record runtime/tool/message events and summaries, not private chain-of-thought. For a local terminal chat instead of (or alongside) the browser console, mention `mono-agent-tui --config ./mono-agent.config.json`.
+Fills: `artifacts.dir`, `traceability.registryDir` / `sourceId` / `sourceLabel`, and — when Phoenix is wanted — an `observability.exporters` (phoenix) OTLP entry. Local JSONL artifacts are always written and are the fallback when no exporter is configured. Artifacts record runtime/tool/message events and summaries, not private chain-of-thought. For a local terminal chat, mention `mono-agent-tui --config ./mono-agent.config.json`. Config is JSON-first — edit `mono-agent.config.json` directly and run `mono-agent restart` to apply changes.
 
 ## 9. Acceptance Smoke Test
 

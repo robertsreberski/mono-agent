@@ -15,8 +15,6 @@ describe("multi-agent CLI args", () => {
       "gemma4:31b",
       "--researcher-model",
       "qwen3:8b",
-      "--port",
-      "5417",
       "--orchestrator-a2a-port",
       "5418",
       "--researcher-a2a-port",
@@ -28,7 +26,6 @@ describe("multi-agent CLI args", () => {
       configDir: "/repo/local-state",
       model: "gemma4:31b",
       researcherModel: "qwen3:8b",
-      port: 5417,
       orchestratorA2APort: 5418,
       researcherA2APort: 5419,
       workerA2APort: 5420,
@@ -49,9 +46,8 @@ describe("multi-agent CLI args", () => {
   });
 
   it("parses demo start flags", () => {
-    expect(parseMultiAgentCliArgs(["--", "--config-dir", "state", "--port", "5517", "--no-a2a"], "/repo")).toEqual({
+    expect(parseMultiAgentCliArgs(["--", "--config-dir", "state", "--no-a2a"], "/repo")).toEqual({
       configDir: "/repo/state",
-      port: 5517,
       noTelegram: false,
       noA2A: true,
       help: false,
