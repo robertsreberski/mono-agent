@@ -182,4 +182,15 @@ describe("captureTurn", () => {
     expect(graph.entities.some((e) => e.id === "person:robert")).toBe(true);
     expect(graph.relations.some((r) => r.src === "person:robert" && r.relation === "maintains")).toBe(true);
   });
+
+  it("propagates a model failure (does not silently no-op the whole turn)", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    // The capture LLM is down. distill is the first model call; the failure must propagate out of
+    // captureTurn so the async capture boundary logs it — rather than returning an empty summary that
+    // is indistinguishable from a turn with nothing worth remembering.
+    const throwingLlm = { id: "throws", complete: async () => { throw new Error("ollama unreachable"); } };
+    const deps: ReconcileDeps = { db, root, llm: throwingLlm, nextId: makeSeqNextId(), now: () => FIXED };
+    await expect(captureTurn("a memorable sentence about the project", deps)).rejects.toThrow(/ollama unreachable/);
+  });
 });

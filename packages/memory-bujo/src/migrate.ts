@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { parseJsonLoose } from "./json.js";
+import { MemoryModelError } from "./model-error.js";
 import type { ReflectDeps } from "./reflect.js";
 import { rewriteBullet } from "./daily.js";
 
@@ -58,7 +59,14 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
   for (const item of aging) {
     try {
       const prompt = buildMigratePrompt(item.id, item.text);
-      const raw = await deps.llm.complete(prompt);
+      let raw: string;
+      try {
+        raw = await deps.llm.complete(prompt);
+      } catch (cause) {
+        // A model outage fails every item, so tag it and let the catch below surface it rather than
+        // swallowing it as a per-item skip (which would make a dead model look like an empty migration).
+        throw new MemoryModelError("llm", "migrate", cause);
+      }
       const parsed = parseJsonLoose<LlmDecision>(raw);
 
       // Validate: must be a non-null object with a recognized action
@@ -119,8 +127,11 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
         forgotten += 1;
         decisions.push({ action, id: item.id, text: item.text });
       }
-    } catch {
-      // Per-item isolation: skip this item, continue with the rest
+    } catch (err) {
+      // A model outage is systemic — surface it (the ritual scheduler logs it).
+      if (err instanceof MemoryModelError) throw err;
+      // Per-item isolation: a genuine per-item data error (e.g. a missing daily file) is skipped so
+      // it doesn't abort the rest of the batch.
       continue;
     }
   }

@@ -9,6 +9,7 @@ import { appendBullet, dailyFilePath } from "../daily.js";
 import { parseDailyFile } from "../grammar.js";
 import { createIdFactory } from "../ids.js";
 import { migrate, type MigrateDeps } from "../migrate.js";
+import { MemoryModelError } from "../model-error.js";
 import type { Bullet } from "../types.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 
@@ -181,40 +182,54 @@ describe("migrate", () => {
     expect(monthlyContent).toContain("MIG-FORGET");
   });
 
-  it("skips an item whose LLM throws without aborting the rest", async () => {
+  it("surfaces (rethrows) a model failure during migration instead of swallowing it per-item", async () => {
     const root = newRoot();
     const db = openDb(root);
 
-    await seedAging(db, root, "MIG-THROW", "this item will cause the llm to throw");
-    await seedAging(db, root, "MIG-OK", "stoic philosophy reading list for the weekend");
+    await seedAging(db, root, "MIG-A", "this item will be reviewed by the migrator");
+    await seedAging(db, root, "MIG-B", "stoic philosophy reading list for the weekend");
 
-    // LLM throws for the throwing item, returns forget for the good one
-    let callCount = 0;
-    const intermittentLlm = {
-      id: "intermittent-llm",
-      complete: async (prompt: string): Promise<string> => {
-        callCount += 1;
-        if (prompt.includes("llm to throw")) throw new Error("LLM failed");
-        return JSON.stringify({ action: "forget" });
-      },
+    // A real model outage fails every call (not per-content). It must surface so the ritual
+    // scheduler logs it — not look like a migration that found nothing to do.
+    const throwingLlm = {
+      id: "throwing-llm",
+      complete: async (): Promise<string> => { throw new Error("ollama unavailable"); },
     };
 
-    const result = await migrate(makeDeps(db, root, { llm: intermittentLlm }));
+    const err = await migrate(makeDeps(db, root, { llm: throwingLlm })).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MemoryModelError);
+    expect((err as MemoryModelError).kind).toBe("llm");
+    expect((err as MemoryModelError).stage).toBe("migrate");
+    expect((err as Error).message).toMatch(/ollama unavailable/);
+    // A migration failure must NOT read as a "capture" failure.
+    expect((err as Error).message).not.toMatch(/capture/i);
+  });
 
-    // MIG-THROW was skipped, MIG-OK was forgotten
-    expect(result.reviewed).toBe(2);
+  it("isolates a genuine per-item data error (missing daily file) without aborting the batch", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+
+    // A good aging item with a real daily file...
+    await seedAging(db, root, "MIG-GOOD", "good item that the migrator forgets");
+    // ...and an aging index record whose canonical daily file is MISSING (index/markdown divergence).
+    // A "promote" decision will try to rewrite the missing file → a DATA error, isolated per-item.
+    await db.upsert({
+      id: "MIG-GHOST", type: "note", status: "open", text: "ghost item that the migrator promotes",
+      salience: 0.2, isInsight: false, createdAt: SIXTY_DAYS_AGO.toISOString(), accessCount: 0, tags: [],
+      source: { file: "daily/2099-01-01.md" },
+    });
+
+    const llm = fakeLlm([
+      ["ghost item that the migrator promotes", JSON.stringify({ action: "promote" })],
+      ["good item that the migrator forgets", JSON.stringify({ action: "forget" })],
+    ]);
+
+    // The data error on MIG-GHOST is isolated; the batch is not aborted and does not reject.
+    const result = await migrate(makeDeps(db, root, { llm }));
+
     expect(result.forgotten).toBe(1);
-    expect(result.promoted).toBe(0);
-
-    // MIG-THROW is unchanged
-    const throwItem = db.get("MIG-THROW");
-    expect(throwItem!.status).toBe("open");
-    expect(throwItem!.validTo).toBeUndefined();
-
-    // MIG-OK was forgotten
-    const okItem = db.get("MIG-OK");
-    expect(okItem!.status).toBe("dropped");
-    expect(okItem!.validTo).toBe(NOW.toISOString());
+    expect(db.get("MIG-GHOST")!.status).toBe("open"); // unchanged — its write failed and was skipped
+    expect(db.get("MIG-GOOD")!.status).toBe("dropped");
   });
 
   it("skips rewriteBullet when source.file is undefined, still mirrors index", async () => {

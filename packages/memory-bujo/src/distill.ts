@@ -1,6 +1,7 @@
 import type { MemoryType } from "@mono-agent/memory-store";
 import type { LlmComplete } from "./llm.js";
 import { parseJsonLoose } from "./json.js";
+import { MemoryModelError } from "./model-error.js";
 
 export interface CandidateMemory {
   readonly type: MemoryType;          // task | event | note
@@ -21,8 +22,10 @@ export async function distill(text: string, llm: LlmComplete): Promise<Candidate
   let raw: string;
   try {
     raw = await llm.complete(PROMPT(text));
-  } catch {
-    return []; // LLM failure → no candidates (keeps distill, and captureTurn, never-throw)
+  } catch (cause) {
+    // Surface model outages (Ollama down, timeout, 5xx) instead of returning [] — an empty result is
+    // indistinguishable from "nothing worth remembering", which is exactly how a dead model hides.
+    throw new MemoryModelError("llm", "distill", cause);
   }
   const parsed = parseJsonLoose<unknown[]>(raw);
   if (!Array.isArray(parsed)) return [];
