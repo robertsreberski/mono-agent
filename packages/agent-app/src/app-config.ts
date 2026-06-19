@@ -18,15 +18,12 @@ import { telegramFieldGroup } from "@mono-agent/telegram-adapter";
 import { webhookFieldGroup } from "@mono-agent/webhook-adapter";
 import { whatsappFieldGroup } from "@mono-agent/whatsapp-adapter";
 
-import { selfCapabilitiesFieldGroup } from "./self-capabilities.js";
-
 /**
  * Every settings group a config-first host exposes: the adapter-neutral core
  * config plus one group per communication channel.
  */
 export const MONO_AGENT_APP_FIELD_GROUPS: readonly FieldGroup[] = [
   ...CORE_AGENT_FIELD_GROUPS,
-  selfCapabilitiesFieldGroup,
   telegramFieldGroup,
   slackFieldGroup,
   a2aFieldGroup,

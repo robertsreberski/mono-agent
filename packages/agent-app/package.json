@@ -15,7 +15,6 @@
   },
   "bin": {
     "mono-agent": "./dist/cli.js",
-    "mono-agent-self-capabilities": "./dist/self-capabilities-main.js",
     "mono-agent-memory-recall": "./dist/memory-recall-main.js"
   },
   "files": [
