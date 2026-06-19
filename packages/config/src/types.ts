@@ -75,6 +75,14 @@ export interface PhoenixExporterConfig {
 export type ObservabilityExporterConfig = PhoenixExporterConfig;
 
 export type SessionMode = "continuous" | "per-message";
+
+/**
+ * Session rollover policy. "daily" appends a local-date bucket to each
+ * conversationId so a new calendar day starts a fresh session across ALL
+ * channels (cron, telegram, slack, …), bounding unbounded history growth;
+ * within-day growth is absorbed by context compaction. "none" = unchanged.
+ */
+export type SessionRollover = "none" | "daily";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 export type ReasoningSummary = (typeof REASONING_SUMMARIES)[number];
@@ -100,6 +108,10 @@ export interface MonoAgentConfig {
     readonly session: {
       readonly mode: SessionMode;
       readonly idleTimeoutMs: number;
+      /** Daily/none session rollover; default "none". */
+      readonly rollover?: SessionRollover;
+      /** IANA timezone for the rollover date boundary; default system-local. */
+      readonly rolloverTimezone?: string;
     };
   };
   /**
