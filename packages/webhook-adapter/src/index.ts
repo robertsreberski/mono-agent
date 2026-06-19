@@ -1,4 +1,5 @@
 export {
+  normalizePath,
   startWebhookAdapter,
   WebhookAdapterError,
 } from "./server.js";
@@ -9,6 +10,8 @@ export type {
   WebhookAdapterOptions,
   WebhookAdapterStartResult,
   WebhookBusyResponse,
+  WebhookEndpointOption,
+  WebhookEndpointSummary,
   WebhookInvocationMode,
   WebhookInvocationRequest,
   WebhookInvocationStatus,
@@ -24,4 +27,10 @@ export type {
   LoadWebhookAdapterConfigInput,
   RedactedWebhookAdapterConfig,
   WebhookAdapterConfig,
+  WebhookEndpointConfig,
 } from "./config.js";
+
+export {
+  loadWebhookEndpointsFromDirectory,
+  parseWebhookEndpointMarkdown,
+} from "./endpoints-dir.js";
