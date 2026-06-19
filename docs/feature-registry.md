@@ -124,6 +124,7 @@ rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | `app.cli-init` | Non-destructive scaffold (config + IDENTITY.md + `.mono-agent/`) | `cli` | `mono-agent init [--model] [--fallback-models] [--memory]` |
 | `app.cli-validate` | Per-section config report (core, runtime, context, memory, tools, sandbox, every channel) | `cli` | `mono-agent validate [--config] [--env-file]` |
 | `app.cli-start` | Traceability + every configured channel | `cli` | `mono-agent start [--config] [--env-file]` |
+| `app.cli-restart-clean` | Restart that first purges the persisted pi-session store (`providers.piNative.piSessionsRoot`) so the agent resumes nothing — a fresh start. Durable memory under `memory.path` is untouched; a no-op when sessions are in-memory | `cli` | `mono-agent restart [--config] [--force]` |
 | `app.cli-install-skill` | Copy the composer skill into `~/.claude/skills` / `~/.codex/skills` | `cli` | `mono-agent install-skill [--target claude\|codex\|both] [--force]` |
 | `app.env-file` | `.env` auto-load (exported shell vars win) | `cli` | automatic; `--env-file <path>` to override |
 | `harness.failure-handling` | Explicit failure objects (never fake success) | `auto` | Built into every run |

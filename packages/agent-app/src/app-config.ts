@@ -90,6 +90,35 @@ export async function resolveAppArtifactDir(input: MonoAgentAppConfigInput): Pro
   return resolve(input.cwd, ".mono-agent", "artifacts");
 }
 
+/**
+ * Resolve the durable pi-session store the runtime resumes from, the same way the
+ * runtime does: the `MONO_AGENT_PI_SESSIONS_ROOT` env override first, then
+ * `providers.piNative.piSessionsRoot` from the config file. Returns undefined when
+ * neither is set — that means sessions are kept in-memory only, so there is nothing
+ * on disk to purge. Tolerates an unreadable config like the resolvers above.
+ */
+export async function resolveAppSessionsRoot(input: MonoAgentAppConfigInput): Promise<string | undefined> {
+  const envDir = input.env.MONO_AGENT_PI_SESSIONS_ROOT?.trim();
+  if (envDir !== undefined && envDir.length > 0) {
+    return resolve(input.cwd, envDir);
+  }
+
+  try {
+    const { json } = await readMonoAgentConfigJson(input.configPath);
+    const configDir =
+      typeof json.providers?.piNative?.piSessionsRoot === "string"
+        ? json.providers.piNative.piSessionsRoot.trim()
+        : "";
+    if (configDir.length > 0) {
+      return resolve(input.cwd, configDir);
+    }
+  } catch {
+    // Tolerate an unreadable config; there is nothing to purge if we cannot resolve it.
+  }
+
+  return undefined;
+}
+
 const DEFAULT_PHOENIX_ENDPOINT = "http://127.0.0.1:6006/v1/traces";
 const DEFAULT_PHOENIX_TIMEOUT_MS = 5_000;
 const OBSERVABILITY_EXPORTER_TYPES = ["phoenix"] as const;

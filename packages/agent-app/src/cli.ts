@@ -17,12 +17,14 @@ import {
   stopBackground,
   tailLogs,
 } from "./background.js";
+import type { BackgroundDeps, InstanceTarget } from "./background.js";
 import type { ChannelStatus } from "./channels.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
 import { initMonoAgentFolder } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
+import { purgeSessions } from "./sessions.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -238,8 +240,12 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent restart [--config <path>]",
-    lines: ["Restart the background instance for this config (starts it if stopped)."],
+    signature: "mono-agent restart [--config <path>] [--force]",
+    lines: [
+      "Restart the background instance for this config (starts it if stopped).",
+      "--force also clears the persisted pi sessions so it starts with fresh",
+      "conversations instead of resuming saved ones (durable memory is untouched).",
+    ],
   },
   {
     signature: "mono-agent stop [--config <path>]",
@@ -554,7 +560,7 @@ async function runBackgroundCommand(
     case "start":
       return await startBackground(target, deps);
     case "restart":
-      return await restartBackground(target, deps);
+      return args.force ? await runForceRestart(target, deps) : await restartBackground(target, deps);
     case "stop":
       return await stopBackground(target, deps);
     case "status":
@@ -562,6 +568,27 @@ async function runBackgroundCommand(
     case "logs":
       return await tailLogs(target, deps, { follow: args.follow, lines: args.lines ?? DEFAULT_LOG_LINES });
   }
+}
+
+/**
+ * `restart --force`: stop the worker, purge its persisted pi-session store, then
+ * start fresh. Stopping first guarantees the worker is not writing sessions while
+ * they are deleted; the runtime recreates the store on the next session, and the
+ * agent's durable memory lives elsewhere, so only resumable transcripts are dropped.
+ */
+async function runForceRestart(target: InstanceTarget, deps: BackgroundDeps): Promise<number> {
+  const stopCode = await stopBackground(target, deps);
+  if (stopCode !== 0) {
+    return stopCode;
+  }
+  const result = await purgeSessions({ env: process.env, cwd: target.cwd, configPath: target.configPath });
+  if (result.removed) {
+    const count = result.files === 0 ? "" : ` (${result.files} session file${result.files === 1 ? "" : "s"})`;
+    process.stdout.write(`${ui.badge("ok")}${ui.style.bold("Cleared persisted sessions")}${count}.\n`);
+  } else {
+    process.stdout.write(ui.style.dim("No persisted sessions to clear (in-memory or none on disk).") + "\n");
+  }
+  return await startBackground(target, deps);
 }
 
 /**
