@@ -51,6 +51,16 @@ describe("startMonoAgentApp", () => {
     const webhookStop = vi.fn(async () => undefined);
     const webhookFactory = vi.fn(async () => ({
       invokeUrl: "http://127.0.0.1:9999/webhook/invoke",
+      port: 9999,
+      endpoints: [
+        {
+          name: "default",
+          path: "/webhook/invoke",
+          invokeUrl: "http://127.0.0.1:9999/webhook/invoke",
+          statusBasePath: "/webhook/requests",
+          mode: "sync",
+        },
+      ],
       stop: webhookStop,
     }));
 
@@ -62,7 +72,11 @@ describe("startMonoAgentApp", () => {
 
     expect(app.channelStatus("webhook")).toEqual({
       kind: "running",
-      summary: { invokeUrl: "http://127.0.0.1:9999/webhook/invoke" },
+      summary: {
+        invokeUrl: "http://127.0.0.1:9999/webhook/invoke",
+        port: 9999,
+        invokeUrls: { default: "http://127.0.0.1:9999/webhook/invoke" },
+      },
     });
     expect(app.channelStatus("telegram").kind).toBe("disabled");
     expect(app.channelStatus("slack").kind).toBe("disabled");
