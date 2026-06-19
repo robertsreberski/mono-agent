@@ -28,8 +28,6 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   is best-effort and never changes a run outcome.
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
-- Optionally expose guarded self-capability tools so the running agent can
-  propose, or explicitly create, local skills and markdown cron jobs.
 
 ## Install / Usage
 
@@ -54,47 +52,6 @@ console.log(app.channelStatuses());
 await app.stop();
 ```
 
-## Self-Capability Authoring
-
-`selfCapabilities` is off by default. When enabled, the app injects a
-request-scoped stdio MCP server into every app-served run. In `propose` mode it
-persists immutable skill/cron proposal records under
-`.mono-agent/self-capabilities/proposals/` and returns a `proposalId` with the
-preview. In `apply` mode it can also expose write tools, but only when the host
-process has `MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN` set; every write
-tool call must include the saved `proposalId` plus an operator-provided
-proposal-scoped approval token derived from that host secret. Successful writes
-create local files, write an audit record under
-`.mono-agent/self-capabilities/` that links back to the proposal, and request an
-app reload after the current response finishes.
-
-```jsonc
-{
-  "selfCapabilities": {
-    "enabled": true,
-    "mode": "propose",          // propose | apply
-    "skillsRoot": "./skills",   // defaults to context.skillsRoot or ./skills
-    "cronDir": "./cron",        // defaults to cron.dir or ./cron
-    "auditDir": "./.mono-agent/self-capabilities"
-  }
-}
-```
-
-The write path stays agent-folder-local. Generated skills are normal
-`<skillsRoot>/<name>/SKILL.md` files and can be added to
-`context.selectedSkills`; generated cron jobs are normal markdown jobs in the
-cron folder. Proposing never reloads the app; reload is requested only after a
-successful apply. Feature-specific env vars win first, then active runtime env
-such as `MONO_AGENT_SKILLS_ROOT` / `MONO_AGENT_CRON_DIR`, then JSON defaults.
-The tool reports warnings when env vars would hide a JSON patch.
-
-Generate the per-proposal approval token outside the chat from the host secret
-and returned proposal id:
-
-```bash
-node -e 'const crypto=require("node:crypto"); console.log(crypto.createHmac("sha256", process.env.MONO_AGENT_SELF_CAPABILITIES_CONFIRMATION_TOKEN).update(process.argv[1]).digest("hex"))' "$PROPOSAL_ID"
-```
-
 ## Public API
 
 - `startMonoAgentApp(options)` → `MonoAgentApp` (statuses, `applyConfigChange`,
@@ -105,9 +62,6 @@ node -e 'const crypto=require("node:crypto"); console.log(crypto.createHmac("sha
 - `MONO_AGENT_APP_FIELD_GROUPS` and the `resolveApp*` traceability/artifact
   resolvers.
 - `runCli(argv)` / `parseCliArgs(argv)` backing the `mono-agent` bin.
-- Self-capability helpers (`proposeSelfSkill`, `applySelfSkill`,
-  `proposeSelfCron`, `applySelfCron`) plus the
-  `mono-agent-self-capabilities` MCP stdio bin.
 
 ## Dependency Boundary
 
