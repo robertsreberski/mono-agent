@@ -564,14 +564,43 @@ describe("loadMonoAgentConfigWithSources", () => {
     );
 
     const fromJson = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
-    expect(fromJson.runtime.session).toEqual({ mode: "per-message", idleTimeoutMs: 120_000 });
+    expect(fromJson.runtime.session).toEqual({ mode: "per-message", idleTimeoutMs: 120_000, rollover: "none" });
 
     const withEnv = await loadMonoAgentConfigWithSources({
       env: { MONO_AGENT_SESSION_MODE: "continuous", MONO_AGENT_SESSION_IDLE_TIMEOUT_MS: "5000" },
       cwd: dir,
       jsonPath: path,
     });
-    expect(withEnv.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 5000 });
+    expect(withEnv.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 5000, rollover: "none" });
+  });
+
+  it("loads session.rollover + rolloverTimezone from json and env", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-rollover-"));
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: {
+          model: "pi:openai-codex:gpt-5.5",
+          session: { rollover: "daily", rolloverTimezone: "Europe/Rome" },
+        },
+        context: { identityPath: "IDENTITY.md" },
+      }),
+      "utf8",
+    );
+
+    const fromJson = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(fromJson.runtime.session.rollover).toBe("daily");
+    expect(fromJson.runtime.session.rolloverTimezone).toBe("Europe/Rome");
+
+    const withEnv = await loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_SESSION_ROLLOVER: "none", MONO_AGENT_SESSION_ROLLOVER_TIMEZONE: "UTC" },
+      cwd: dir,
+      jsonPath: path,
+    });
+    // Env overrides json (higher precedence).
+    expect(withEnv.runtime.session.rollover).toBe("none");
+    expect(withEnv.runtime.session.rolloverTimezone).toBe("UTC");
   });
 
   it("loads a sandbox policy from the JSON config file", async () => {

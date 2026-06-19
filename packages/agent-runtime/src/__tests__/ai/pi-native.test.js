@@ -450,15 +450,184 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
-  it("reports context_compaction_applied as null (AgentHarness has no automatic compaction)", async () => {
+  it("reports context_compaction_applied as false when enabled but not triggered", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const result = await generatePiNativeResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
     }));
     expect(result.error).toBeNull();
-    // null = unknown/unsupported tristate; NOT false (which would imply a
-    // compaction path exists and chose not to fire).
+    // false = the compaction path is enabled but did not need to fire this run.
+    expect(result.capabilitiesUsed.context_compaction_applied).toBe(false);
+  });
+
+  it("reports context_compaction_applied as null when disabled via settings", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "hi" }],
+      settings: { agent_compaction_enabled: false },
+    }));
+    expect(result.error).toBeNull();
     expect(result.capabilitiesUsed.context_compaction_applied).toBeNull();
+  });
+});
+
+describe("pi-native auto-compaction", () => {
+  const sessionsRoot = mkdtempSync(join(tmpdir(), "pi-native-compaction-"));
+  afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
+
+  // Build a transcript large enough that AgentHarness.compact() (keepRecent ~20k)
+  // finds a cut point and actually summarizes a prefix. The trailing user turn
+  // becomes the prompt; the rest is seeded as prior history.
+  function bigHistory(turns, chars) {
+    const blob = "x".repeat(chars);
+    const messages = [];
+    for (let i = 0; i < turns; i += 1) {
+      messages.push({ role: "user", content: `u${i} ${blob}` });
+      messages.push({ role: "assistant", content: `a${i} ${blob}` });
+    }
+    messages.push({ role: "user", content: "continue" });
+    return messages;
+  }
+
+  it("proactively compacts before the turn when near the window", async () => {
+    const base = setup();
+    const windowed = { ...base, contextWindow: 4000 };
+    let summaryCalled = false;
+    faux.setResponses([
+      () => { summaryCalled = true; return fauxAssistantMessage([fauxText("SUMMARY of earlier work")]); },
+      fauxAssistantMessage([fauxText("done")]),
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(base, {
+      piResolvedModel: windowed,
+      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:proactive" },
+      messages: bigHistory(60, 2000),
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+    }));
+    expect(result.error).toBeNull();
+    expect(result.text).toBe("done");
+    expect(summaryCalled).toBe(true);
+    expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
+    expect(result.diagnostics.context_compaction_proactive).toBe(true);
+  });
+
+  it("reactively compacts and re-prompts once when a turn overflows", async () => {
+    const base = setup();
+    // Huge window so the PROACTIVE trigger never fires; the overflow forces the
+    // REACTIVE path. The big transcript lets compact() actually find a cut.
+    const windowed = { ...base, contextWindow: 10_000_000 };
+    let summaryCalled = false;
+    faux.setResponses([
+      fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }),
+      () => { summaryCalled = true; return fauxAssistantMessage([fauxText("SUMMARY")]); },
+      fauxAssistantMessage([fauxText("recovered")]),
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(base, {
+      piResolvedModel: windowed,
+      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:reactive" },
+      messages: bigHistory(60, 2000),
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+    }));
+    expect(result.error).toBeNull();
+    expect(result.text).toBe("recovered");
+    expect(summaryCalled).toBe(true);
+    expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
+    expect(result.diagnostics.context_compaction_reactive).toBe(true);
+    expect(result.diagnostics.context_compaction_proactive).toBeUndefined();
+  });
+
+  it("does not re-compact (or loop) when a proactively-compacted turn still overflows", async () => {
+    const base = setup();
+    // Small window so the PROACTIVE trigger fires; the turn then still overflows.
+    const windowed = { ...base, contextWindow: 4000 };
+    let providerCalls = 0;
+    faux.setResponses([
+      () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); }, // proactive compact
+      () => { providerCalls += 1; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }); },
+      () => { providerCalls += 1; return fauxAssistantMessage([fauxText("should-not-happen")]); },
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(base, {
+      piResolvedModel: windowed,
+      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:guard" },
+      messages: bigHistory(60, 2000),
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+    }));
+    // Proactive compaction fired, the turn still overflowed, and the bridge
+    // surfaces the overflow WITHOUT a second compaction or a re-prompt.
+    expect(result.diagnostics.context_compaction_proactive).toBe(true);
+    expect(result.error).toBe("Your input exceeds the context window of this model.");
+    expect(result.failureKind).toBe("usage_limit");
+    expect(providerCalls).toBe(2); // summary + main overflow; no re-prompt
+  });
+
+  it("re-prompts at most once even if the overflow persists after compaction", async () => {
+    const base = setup();
+    const windowed = { ...base, contextWindow: 10_000_000 };
+    let providerCalls = 0;
+    faux.setResponses([
+      () => { providerCalls += 1; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }); },
+      () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); },
+      () => { providerCalls += 1; return fauxAssistantMessage([], { stopReason: "error", errorMessage: "Your input exceeds the context window of this model." }); },
+      () => { providerCalls += 1; return fauxAssistantMessage([fauxText("should-not-happen")]); },
+    ]);
+    const result = await generatePiNativeResponse("system", runOptions(base, {
+      piResolvedModel: windowed,
+      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:loop" },
+      messages: bigHistory(60, 2000),
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+    }));
+    expect(result.failureKind).toBe("usage_limit");
+    // overflow + summary + ONE re-prompt overflow = 3 calls; never the 4th.
+    expect(providerCalls).toBe(3);
+    expect(result.diagnostics.context_compaction_reactive).toBe(true);
+  });
+
+  it("learns the real context window from an overflow error and triggers proactively next run", async () => {
+    const base = setup();
+    // Declared window is large, so proactively nothing fires at first.
+    const windowed = { ...base, contextWindow: 200000 };
+    const runRef = { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:learn" };
+
+    // Run 1: a ~60k-token transcript stays under the declared-window trigger
+    // (~150k), so it does NOT compact proactively. The overflow names the real
+    // ceiling (120000), which the bridge records for this model.
+    faux.setResponses([
+      fauxAssistantMessage([], { stopReason: "error", errorMessage: "maximum context length is 120000 tokens" }),
+      fauxAssistantMessage([fauxText("SUMMARY")]),
+      fauxAssistantMessage([fauxText("recovered-1")]),
+    ]);
+    const run1 = await generatePiNativeResponse("system", runOptions(base, {
+      piResolvedModel: windowed,
+      model: runRef,
+      messages: bigHistory(60, 2000),
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+    }));
+    expect(run1.diagnostics.context_compaction_proactive).toBeUndefined();
+    expect(run1.diagnostics.context_compaction_reactive).toBe(true);
+
+    // Run 2: same model. A ~110k-token transcript is under the declared trigger
+    // (~150k) but OVER the learned-window trigger (~90k), so proactive fires only
+    // because the real ceiling (120000) was learned.
+    faux.setResponses([
+      fauxAssistantMessage([fauxText("SUMMARY")]),
+      fauxAssistantMessage([fauxText("done-2")]),
+    ]);
+    const run2 = await generatePiNativeResponse("system", runOptions(base, {
+      piResolvedModel: windowed,
+      model: runRef,
+      messages: bigHistory(110, 2000),
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+    }));
+    expect(run2.error).toBeNull();
+    expect(run2.text).toBe("done-2");
+    expect(run2.diagnostics.context_compaction_proactive).toBe(true);
+    expect(run2.diagnostics.context_window).toBe(120000);
   });
 });

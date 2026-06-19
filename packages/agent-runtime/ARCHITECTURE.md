@@ -166,11 +166,12 @@ Key responsibilities by subsystem:
 - `agent/tools/*`: implements built-in tools, path/workdir guards, sandbox
   policy checks, MCP tool adaptation, Playwright artifact routing, and output
   limits.
-- `agent/compaction.js`: legacy context-pressure/compaction helper retained from
-  the removed hand-rolled pi-sdk path. No active bridge wires it in today — the
-  sole pi bridge delegates context handling to pi-agent-core's `AgentHarness`, so
-  there is no automatic in-loop summarization pass and runs report
-  `context_compaction_applied: null`. Exported for back-compat / custom hosts only.
+- `agent/compaction.js`: two pure helpers consumed by the pi bridge —
+  `resolveAgentCompactionPolicy` (derives the context-window compaction trigger +
+  tool-output payload limits from `agent_compaction_*` settings and the running
+  model) and `isLikelyContextTermination` (classifies a context-pressure error).
+  The bridge drives compaction itself via `AgentHarness.compact()` (proactive +
+  reactive recovery); the legacy in-loop `transformContext` manager was removed.
 - `agent/transcript.js`: builds bounded resume snapshots from prior provider
   events so a fallback or continuation can keep context.
 - `agent/approval.js`: provides host-driven human-in-the-loop tool approval
