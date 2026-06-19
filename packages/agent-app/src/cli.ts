@@ -578,18 +578,30 @@ function requireDarwin(command: string): number | undefined {
 }
 
 export function printAppStatus(app: MonoAgentApp): void {
-  const rows: Array<[string, string]> = [["config", app.configPath]];
   const trace = app.traceabilityStatus;
-  rows.push([
-    "traceability",
-    trace.kind === "running" ? `running (source ${trace.sourceId})` : `${trace.kind}: ${trace.reason}`,
-  ]);
+  process.stdout.write(ui.rule("instance"));
+  process.stdout.write(
+    ui.keyValue(
+      [
+        ["config", app.configPath],
+        [
+          "traceability",
+          trace.kind === "running" ? `running (source ${trace.sourceId})` : `${trace.kind}: ${trace.reason}`,
+        ],
+      ],
+      2,
+    ),
+  );
   const artifactDir = app.traceabilityStatus.kind === "running" ? app.traceabilityStatus.artifactDir : undefined;
-  rows.push(["observability", describeExporter(app.exporterStatus, artifactDir)]);
-  for (const [id, status] of app.channelStatuses()) {
-    rows.push([id, describeChannelStatus(status)]);
+  process.stdout.write(ui.rule("observability"));
+  process.stdout.write(`  ${describeExporter(app.exporterStatus, artifactDir)}\n`);
+  const channels = [...app.channelStatuses()];
+  if (channels.length > 0) {
+    process.stdout.write(ui.rule("channels"));
+    for (const [id, status] of channels) {
+      process.stdout.write(`  ${ui.channelBadge(status.kind)}${ui.style.bold(id.padEnd(11))} ${describeChannelStatus(status)}\n`);
+    }
   }
-  process.stdout.write(ui.keyValue(rows));
 }
 
 function describeExporter(status: ExporterStatus, artifactDir: string | undefined): string {

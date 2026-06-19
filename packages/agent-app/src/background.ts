@@ -279,9 +279,9 @@ export async function statusBackground(target: InstanceTarget, deps: BackgroundD
     (source) => !matchesConfig(source, target.configPath) && source.health !== "stopped",
   );
   if (others.length > 0) {
-    deps.stdout("\n" + ui.heading("Other mono-agent instances"));
+    deps.stdout("\n" + ui.rule("Other mono-agent instances"));
     for (const source of others) {
-      deps.stdout(`  ${formatOtherInstance(source)}\n`);
+      deps.stdout(`${formatOtherInstance(source)}\n`);
     }
   }
 
@@ -330,7 +330,7 @@ export function printInstanceInfo(
   verb: string,
 ): void {
   const flag = configFlag(target);
-  deps.stdout(`${ui.badge("ok")}${ui.style.bold(`mono-agent ${verb} in the background.`)}\n`);
+  deps.stdout(`${ui.badge("ok")}${ui.style.bold(`mono-agent ${verb} in the background.`)}\n\n`);
   writeInstanceDetail(source, target, deps);
   deps.stdout("\n" + ui.hint(`Stop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow`));
 }
@@ -383,47 +383,39 @@ function reportTimeout(target: InstanceTarget, deps: BackgroundDeps): number {
 }
 
 function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget, deps: BackgroundDeps): void {
-  const rows: Array<[string, string]> = [
-    ["config", target.configPath],
-    ["label", target.label],
-    ["pid", String(source.pid ?? "unknown")],
-    ["health", colorHealth(source.health)],
-    ["started", source.startedAt],
-    ["logs", target.paths.stdoutPath],
-    ["", target.paths.stderrPath],
-  ];
+  deps.stdout(ui.rule("instance"));
+  deps.stdout(
+    ui.keyValue(
+      [
+        ["pid", String(source.pid ?? "unknown")],
+        ["health", `${ui.healthBadge(source.health)}${source.health}`],
+        ["config", target.configPath],
+        ["label", target.label],
+        ["started", source.startedAt],
+        ["logs", target.paths.stdoutPath],
+        ["", target.paths.stderrPath],
+      ],
+      2,
+    ),
+  );
   const observability = describeObservabilityMetadata(source);
   if (observability !== undefined) {
-    rows.push(["observability", observability]);
+    deps.stdout(ui.rule("observability"));
+    deps.stdout(`  ${observability}\n`);
   }
-  deps.stdout(ui.keyValue(rows));
   const channelLines = formatChannels(source);
   if (channelLines.length > 0) {
-    deps.stdout(ui.style.gray("channels") + "\n");
+    deps.stdout(ui.rule("channels"));
     for (const line of channelLines) {
       deps.stdout(`${line}\n`);
     }
   }
 }
 
-/** Color a health word by severity while leaving the literal text intact. */
-function colorHealth(health: string): string {
-  switch (health) {
-    case "running":
-      return ui.style.green(health);
-    case "stale":
-      return ui.style.yellow(health);
-    case "stopped":
-      return ui.style.dim(health);
-    default:
-      return ui.style.red(health);
-  }
-}
-
 function formatOtherInstance(source: TraceSourceListItem): string {
   const pid = source.pid === undefined ? "?" : String(source.pid);
   const config = source.configPath ?? "(unknown config)";
-  return `${source.health.padEnd(8)} pid ${pid.padEnd(7)} ${source.sourceId}  ${config}`;
+  return `  ${ui.healthBadge(source.health)}${source.health.padEnd(8)} pid ${pid.padEnd(7)} ${source.sourceId}  ${config}`;
 }
 
 function matchesConfig(source: TraceSourceListItem, configPath: string): boolean {
@@ -489,14 +481,15 @@ function formatChannels(source: TraceSourceListItem): string[] {
   if (channels === null || typeof channels !== "object") {
     return [];
   }
-  return Object.entries(channels as Record<string, unknown>).map(
-    ([id, value]) => `  ${id.padEnd(15)} ${describeChannelMetadata(value)}`,
-  );
+  return Object.entries(channels as Record<string, unknown>).map(([id, value]) => {
+    const { kind, text } = describeChannel(value);
+    return `  ${ui.channelBadge(kind)}${ui.style.bold(id.padEnd(11))} ${text}`;
+  });
 }
 
-function describeChannelMetadata(value: unknown): string {
+function describeChannel(value: unknown): { kind: string; text: string } {
   if (value === null || typeof value !== "object") {
-    return String(value);
+    return { kind: "unknown", text: String(value) };
   }
   const record = value as Record<string, unknown>;
   const kind = typeof record.kind === "string" ? record.kind : "unknown";
@@ -505,10 +498,10 @@ function describeChannelMetadata(value: unknown): string {
       .filter(([key]) => key !== "kind")
       .map(([key, fact]) => `${key}=${String(fact)}`)
       .join(" ");
-    return facts.length === 0 ? "running" : `running (${facts})`;
+    return { kind, text: facts.length === 0 ? "running" : `running (${facts})` };
   }
   const reason = typeof record.reason === "string" ? record.reason : "";
-  return reason.length === 0 ? kind : `${kind}: ${reason}`;
+  return { kind, text: reason.length === 0 ? kind : `${kind}: ${reason}` };
 }
 
 function isErrno(error: unknown, code: string): boolean {

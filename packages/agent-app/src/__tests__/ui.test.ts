@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { badge, computeColorEnabled, isColorEnabled, keyValue, style } from "../ui.js";
+import { badge, channelBadge, computeColorEnabled, healthBadge, isColorEnabled, keyValue, rule, style } from "../ui.js";
 
 describe("computeColorEnabled", () => {
   it("disables color when NO_COLOR is set (any value), even with a TTY", () => {
@@ -51,5 +51,39 @@ describe("styling helpers with color disabled (the vitest non-TTY harness)", () 
   it("aligns key/value rows to the widest label", () => {
     expect(keyValue([["a", "1"], ["bbb", "2"]])).toBe("a    1\nbbb  2\n");
     expect(keyValue([])).toBe("");
+  });
+
+  it("indents key/value rows when asked, preserving alignment", () => {
+    expect(keyValue([["a", "1"], ["bbb", "2"]], 2)).toBe("  a    1\n  bbb  2\n");
+  });
+});
+
+describe("section rules and domain badges", () => {
+  it("renders a labeled divider that ends with a newline and keeps the label verbatim", () => {
+    const out = rule("instance");
+    expect(out).toContain("── instance ");
+    expect(out.endsWith("\n")).toBe(true);
+    expect(out).toMatch(/─/u);
+  });
+
+  it("renders an unlabeled divider as a run of dashes", () => {
+    const out = rule();
+    expect(out.endsWith("\n")).toBe(true);
+    expect(out.trim()).toMatch(/^─+$/u);
+  });
+
+  it("maps channel kinds to the right badge", () => {
+    expect(channelBadge("running")).toBe(badge("ok"));
+    expect(channelBadge("waiting_for_config")).toBe(badge("waiting"));
+    expect(channelBadge("disabled")).toBe(badge("disabled"));
+    expect(channelBadge("crashed")).toBe(badge("error"));
+    expect(channelBadge("mystery")).toBe(badge("waiting"));
+  });
+
+  it("maps health words to the right badge", () => {
+    expect(healthBadge("running")).toBe(badge("ok"));
+    expect(healthBadge("stale")).toBe(badge("waiting"));
+    expect(healthBadge("stopped")).toBe(badge("disabled"));
+    expect(healthBadge("dead")).toBe(badge("error"));
   });
 });

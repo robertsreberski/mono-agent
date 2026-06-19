@@ -93,17 +93,74 @@ export function badge(status: ValidationStatus): string {
 
 /**
  * Render aligned `label  value` rows: labels are padded to the widest label so
- * values line up, replacing the hand-tuned `padEnd` blocks. Returns one string
- * with a trailing newline per row (empty when there are no rows).
+ * values line up, replacing the hand-tuned `padEnd` blocks. `indent` prefixes
+ * every row with that many spaces (used to nest rows under a section rule).
+ * Returns one string with a trailing newline per row (empty when there are no
+ * rows).
  */
-export function keyValue(rows: ReadonlyArray<readonly [label: string, value: string]>): string {
+export function keyValue(
+  rows: ReadonlyArray<readonly [label: string, value: string]>,
+  indent = 0,
+): string {
   if (rows.length === 0) {
     return "";
   }
+  const pad = " ".repeat(indent);
   const width = rows.reduce((max, [label]) => Math.max(max, label.length), 0);
   return rows
-    .map(([label, value]) => `${style.gray(label.padEnd(width))}  ${value}\n`)
+    .map(([label, value]) => `${pad}${style.gray(label.padEnd(width))}  ${value}\n`)
     .join("");
+}
+
+const RULE_FALLBACK_WIDTH = 44;
+const RULE_MAX_WIDTH = 72;
+
+/**
+ * A horizontal section divider, optionally labeled — `── instance ────────`.
+ * Width tracks the terminal (read at call time so resizes are honored), capped
+ * for readability and falling back to a fixed width when stdout is not a TTY.
+ * Rendered dim/gray (identity when color is off); the label appears verbatim so
+ * it stays greppable. Always ends with a newline.
+ */
+export function rule(label?: string): string {
+  const width = Math.min(process.stdout.columns ?? RULE_FALLBACK_WIDTH, RULE_MAX_WIDTH);
+  if (label === undefined) {
+    return `${style.gray("─".repeat(width))}\n`;
+  }
+  const prefix = `── ${label} `;
+  const fill = Math.max(0, width - prefix.length);
+  return `${style.gray(`${prefix}${"─".repeat(fill)}`)}\n`;
+}
+
+/** Badge for a channel status *kind* string (running/waiting…/disabled/error). */
+export function channelBadge(kind: string): string {
+  if (kind === "running") {
+    return badge("ok");
+  }
+  if (kind.startsWith("waiting")) {
+    return badge("waiting");
+  }
+  if (kind === "disabled") {
+    return badge("disabled");
+  }
+  if (/error|fail|crash/u.test(kind)) {
+    return badge("error");
+  }
+  return badge("waiting");
+}
+
+/** Badge for a trace-source health word (running/stale/stopped/…). */
+export function healthBadge(health: string): string {
+  switch (health) {
+    case "running":
+      return badge("ok");
+    case "stale":
+      return badge("waiting");
+    case "stopped":
+      return badge("disabled");
+    default:
+      return badge("error");
+  }
 }
 
 /** A bold/cyan section heading with a trailing newline. */
