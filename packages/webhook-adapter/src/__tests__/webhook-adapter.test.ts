@@ -325,12 +325,99 @@ describe("Webhook adapter", () => {
   });
 });
 
+describe("Webhook adapter multi-endpoint", () => {
+  it("serves multiple endpoints on one server and prepends each endpoint's prompt", async () => {
+    const seen: Array<{ text: string; endpoint: string | undefined }> = [];
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        const webhook = request.metadata?.webhook as { endpointName?: string } | undefined;
+        seen.push({ text: request.text, endpoint: webhook?.endpointName });
+        await stream.append("ok");
+        return {};
+      },
+    };
+
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      defaultMode: "sync",
+      endpoints: [
+        { name: "plain", path: "/plain" },
+        { name: "guided", path: "/guided", prompt: "PREAMBLE", mode: "sync" },
+      ],
+      responder,
+    });
+
+    try {
+      expect(server.endpoints.map((endpoint) => endpoint.name)).toEqual(["plain", "guided"]);
+      expect(server.endpoints[1]?.invokeUrl).toBe(`${server.url}/guided`);
+
+      await fetch(`${server.url}/guided`, postJson({ text: "hello", conversationId: "c1", mode: "sync" }));
+      await fetch(`${server.url}/plain`, postJson({ text: "hi", conversationId: "c2", mode: "sync" }));
+
+      expect(seen).toContainEqual({ text: "PREAMBLE\n\nhello", endpoint: "guided" });
+      expect(seen).toContainEqual({ text: "hi", endpoint: "plain" });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("namespaces active runs per endpoint so the same conversation is not busy across endpoints", async () => {
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [
+        { name: "a", path: "/a", mode: "async" },
+        { name: "b", path: "/b", mode: "async" },
+      ],
+      responder: blockingResponder(),
+    });
+
+    try {
+      const a1 = await fetch(`${server.url}/a`, postJson({ text: "x", conversationId: "same" }));
+      expect(a1.status).toBe(202);
+      await expect.poll(async () => server.activeRequestCount).toBe(1);
+
+      // Same conversation, different endpoint → must NOT be reported busy.
+      const b1 = await fetch(`${server.url}/b`, postJson({ text: "x", conversationId: "same" }));
+      expect(b1.status).toBe(202);
+      await expect.poll(async () => server.activeRequestCount).toBe(2);
+
+      // Same conversation AND same endpoint → busy.
+      const a2 = await fetch(`${server.url}/a`, postJson({ text: "x", conversationId: "same" }));
+      expect(a2.status).toBe(409);
+      await expect(a2.json()).resolves.toMatchObject({ status: "busy", conversationId: "same" });
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
 function echoResponder(): AgentResponder {
   return {
     async respond(request, stream) {
       await stream.append(`echo: ${request.text}`);
       return {};
     },
+  };
+}
+
+function blockingResponder(): AgentResponder {
+  return {
+    async respond(request) {
+      await new Promise<void>((resolve) => {
+        request.abortSignal.addEventListener("abort", () => resolve());
+      });
+      return { text: "aborted" };
+    },
+  };
+}
+
+function postJson(body: Record<string, unknown>): RequestInit {
+  return {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
   };
 }
 

@@ -22,6 +22,8 @@ export type WebhookInvocationMode = "sync" | "async";
 
 export interface WebhookRequestMetadata {
   readonly requestId: string;
+  /** Name of the endpoint that received the request (multi-endpoint routing). */
+  readonly endpointName: string;
   readonly mode: WebhookInvocationMode;
   readonly method: string;
   readonly path: string;
@@ -91,27 +93,63 @@ export interface WebhookAdapterLogger {
   error?(message: string, metadata?: Record<string, unknown>): void;
 }
 
+/**
+ * One HTTP endpoint of the webhook server. Multiple endpoints share one server,
+ * host and port; each has its own POST path, default mode, and optional `prompt`
+ * (pre-instructions prepended to the incoming request text).
+ */
+export interface WebhookEndpointOption {
+  readonly name: string;
+  readonly path: string;
+  readonly mode?: WebhookInvocationMode;
+  readonly prompt?: string;
+}
+
 export interface WebhookAdapterOptions {
   readonly host?: string;
   readonly port?: number;
-  readonly path?: string;
   readonly allowNonLoopback?: boolean;
-  readonly defaultMode?: WebhookInvocationMode;
   readonly retentionMs?: number;
   readonly maxStoredRequests?: number;
   readonly responder: AgentResponder<WebhookInvocationRequest, AgentMessageStream, AgentResponse>;
   readonly logger?: WebhookAdapterLogger;
+  /** Endpoints to serve. When omitted, a single legacy endpoint is built from `path`/`defaultMode`. */
+  readonly endpoints?: readonly WebhookEndpointOption[];
+  /** Legacy single-endpoint path. Folded into a one-element `endpoints` list when `endpoints` is omitted. */
+  readonly path?: string;
+  /** Default invocation mode for the legacy single endpoint and for endpoints that omit `mode`. */
+  readonly defaultMode?: WebhookInvocationMode;
+}
+
+export interface WebhookEndpointSummary {
+  readonly name: string;
+  readonly path: string;
+  readonly invokeUrl: string;
+  readonly statusBasePath: string;
+  readonly mode: WebhookInvocationMode;
 }
 
 export interface WebhookAdapterStartResult {
   readonly url: string;
+  /** Invoke URL of the first endpoint (back-compat). See `endpoints` for all of them. */
   readonly invokeUrl: string;
+  /** Status base path of the first endpoint (back-compat). */
   readonly statusBasePath: string;
   readonly host: string;
   readonly port: number;
+  readonly endpoints: readonly WebhookEndpointSummary[];
   readonly activeRequestCount: number;
   getStatus(requestId: string): WebhookInvocationStatus | undefined;
   stop(): Promise<void>;
+}
+
+/** A single resolved endpoint with all defaults applied. */
+interface ResolvedEndpoint {
+  readonly name: string;
+  readonly path: string;
+  readonly mode: WebhookInvocationMode;
+  readonly prompt?: string;
+  readonly statusBasePath: string;
 }
 
 export type WebhookAdapterErrorCode =
@@ -166,10 +204,9 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   validateOptions(options);
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
-  const path = normalizePath(options.path ?? DEFAULT_PATH);
   const retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS;
   const maxStoredRequests = options.maxStoredRequests ?? DEFAULT_MAX_STORED_REQUESTS;
-  const defaultMode = options.defaultMode ?? DEFAULT_MODE;
+  const endpoints = resolveEndpoints(options);
   assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
     new WebhookAdapterError(
       "unsafe_host",
@@ -179,31 +216,39 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
 
   const app = express();
   const server = createServer(app);
-  const activeByConversation = new Map<string, ActiveRun>();
+  // Active runs are keyed by `${endpoint.name}:${conversationId}` so the same
+  // conversation can be in-flight on two different endpoints without a false 409.
+  const activeByRun = new Map<string, ActiveRun>();
   const statuses = new Map<string, StoredStatus>();
-  const statusBasePath = `${dirname(path) === "/" ? "" : dirname(path)}/requests`;
 
   app.use(express.json({ limit: "1mb" }));
-  app.post(path, (req, res) => {
-    void handleInvoke(req, res).catch((error: unknown) => {
-      options.logger?.error?.("Webhook invocation failed before response.", {
-        error: errorToMessage(error),
+  for (const endpoint of endpoints) {
+    app.post(endpoint.path, (req, res) => {
+      void handleInvoke(req, res, endpoint).catch((error: unknown) => {
+        options.logger?.error?.("Webhook invocation failed before response.", {
+          endpoint: endpoint.name,
+          error: errorToMessage(error),
+        });
+        if (!res.headersSent) {
+          res.status(500).json({ status: "failed", error: errorToMessage(error) });
+        }
       });
-      if (!res.headersSent) {
-        res.status(500).json({ status: "failed", error: errorToMessage(error) });
-      }
     });
-  });
-  app.get(`${statusBasePath}/:requestId`, (req, res) => {
-    pruneStatuses(statuses, retentionMs, maxStoredRequests);
-    const requestId = req.params.requestId;
-    const stored = requestId === undefined ? undefined : statuses.get(requestId);
-    if (stored === undefined) {
-      res.status(404).json({ status: "not_found", requestId });
-      return;
-    }
-    res.status(200).json(stored.status);
-  });
+  }
+  // Register one status route per UNIQUE base path (endpoints sharing a parent
+  // directory share a status route; lookups hit the shared, requestId-keyed store).
+  for (const statusBasePath of new Set(endpoints.map((endpoint) => endpoint.statusBasePath))) {
+    app.get(`${statusBasePath}/:requestId`, (req, res) => {
+      pruneStatuses(statuses, retentionMs, maxStoredRequests);
+      const requestId = req.params.requestId;
+      const stored = requestId === undefined ? undefined : statuses.get(requestId);
+      if (stored === undefined) {
+        res.status(404).json({ status: "not_found", requestId });
+        return;
+      }
+      res.status(200).json(stored.status);
+    });
+  }
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
@@ -221,18 +266,19 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const boundPort = address.port;
   const url = `http://${hostForUrl(host)}:${boundPort}`;
 
-  async function handleInvoke(req: Request, res: Response): Promise<void> {
+  async function handleInvoke(req: Request, res: Response, endpoint: ResolvedEndpoint): Promise<void> {
     pruneStatuses(statuses, retentionMs, maxStoredRequests);
     const requestId = randomUUID();
     const receivedAt = new Date().toISOString();
     const body = normalizeBody(req.body, {
       requestId,
-      defaultMode,
+      defaultMode: endpoint.mode,
     });
-    const statusUrl = `${statusBasePath}/${requestId}`;
+    const statusUrl = `${endpoint.statusBasePath}/${requestId}`;
+    const runKey = `${endpoint.name}:${body.conversationId}`;
     const controller = new AbortController();
 
-    if (activeByConversation.has(body.conversationId)) {
+    if (activeByRun.has(runKey)) {
       const busy: WebhookBusyResponse = {
         status: "busy",
         requestId,
@@ -244,7 +290,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
     }
 
     const active: ActiveRun = { controller, requestId };
-    activeByConversation.set(body.conversationId, active);
+    activeByRun.set(runKey, active);
     const startedAt = new Date().toISOString();
     const running: WebhookInvocationStatus = {
       status: "running",
@@ -258,11 +304,12 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
 
     const request: WebhookInvocationRequest = {
       conversationId: body.conversationId,
-      text: body.text,
+      text: composePromptText(endpoint.prompt, body.text),
       abortSignal: controller.signal,
       metadata: {
         webhook: {
           requestId,
+          endpointName: endpoint.name,
           mode: body.mode,
           method: req.method,
           path: req.path,
@@ -282,7 +329,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
         statusUrl,
         receivedAt,
       });
-      void runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByConversation, active, options, retentionMs, maxStoredRequests });
+      void runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests });
       return;
     }
 
@@ -292,7 +339,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       }
     });
 
-    const status = await runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByConversation, active, options, retentionMs, maxStoredRequests });
+    const status = await runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests });
     if (status.status === "succeeded") {
       res.status(200).json(status);
       return;
@@ -304,23 +351,32 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
     res.status(500).json(status);
   }
 
+  const endpointSummaries: readonly WebhookEndpointSummary[] = endpoints.map((endpoint) => ({
+    name: endpoint.name,
+    path: endpoint.path,
+    invokeUrl: `${url}${endpoint.path}`,
+    statusBasePath: endpoint.statusBasePath,
+    mode: endpoint.mode,
+  }));
+
   return {
     url,
-    invokeUrl: `${url}${path}`,
-    statusBasePath,
+    invokeUrl: endpointSummaries[0]?.invokeUrl ?? url,
+    statusBasePath: endpointSummaries[0]?.statusBasePath ?? "/requests",
     host,
     port: boundPort,
+    endpoints: endpointSummaries,
     get activeRequestCount() {
-      return activeByConversation.size;
+      return activeByRun.size;
     },
     getStatus(requestId: string): WebhookInvocationStatus | undefined {
       return statuses.get(requestId)?.status;
     },
     async stop() {
-      for (const active of activeByConversation.values()) {
+      for (const active of activeByRun.values()) {
         active.controller.abort(new Error("Webhook adapter stopped."));
       }
-      activeByConversation.clear();
+      activeByRun.clear();
       await close(server);
     },
   };
@@ -332,7 +388,8 @@ async function runResponder(input: {
   readonly receivedAt: string;
   readonly startedAt: string;
   readonly statuses: Map<string, StoredStatus>;
-  readonly activeByConversation: Map<string, ActiveRun>;
+  readonly activeByRun: Map<string, ActiveRun>;
+  readonly runKey: string;
   readonly active: ActiveRun;
   readonly options: WebhookAdapterOptions;
   readonly retentionMs: number;
@@ -375,8 +432,8 @@ async function runResponder(input: {
       error: status.error,
     });
   } finally {
-    if (input.activeByConversation.get(input.request.conversationId) === input.active) {
-      input.activeByConversation.delete(input.request.conversationId);
+    if (input.activeByRun.get(input.runKey) === input.active) {
+      input.activeByRun.delete(input.runKey);
     }
   }
   setStatus(input.statuses, status, input.retentionMs, input.maxStoredRequests);
@@ -447,7 +504,53 @@ function validateOptions(options: WebhookAdapterOptions): void {
   if (mode !== "sync" && mode !== "async") {
     throw new WebhookAdapterError("invalid_config", "Webhook defaultMode must be sync or async.");
   }
-  normalizePath(options.path ?? DEFAULT_PATH);
+}
+
+/**
+ * Resolve the configured endpoints, applying defaults and validating uniqueness.
+ * When no `endpoints` are given, a single legacy endpoint is synthesized from
+ * `path`/`defaultMode` so existing single-webhook callers keep working.
+ */
+function resolveEndpoints(options: WebhookAdapterOptions): readonly ResolvedEndpoint[] {
+  const defaultMode = options.defaultMode ?? DEFAULT_MODE;
+  const source: readonly WebhookEndpointOption[] =
+    options.endpoints !== undefined && options.endpoints.length > 0
+      ? options.endpoints
+      : [{ name: "default", path: options.path ?? DEFAULT_PATH, mode: defaultMode }];
+
+  const resolved = source.map((endpoint): ResolvedEndpoint => {
+    const path = normalizePath(endpoint.path);
+    return {
+      name: endpoint.name,
+      path,
+      mode: endpoint.mode ?? defaultMode,
+      statusBasePath: statusBasePathFor(path),
+      ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
+    };
+  });
+
+  assertUnique(resolved.map((endpoint) => endpoint.name), "name");
+  assertUnique(resolved.map((endpoint) => endpoint.path), "path");
+  return resolved;
+}
+
+function assertUnique(values: readonly string[], label: string): void {
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) {
+      throw new WebhookAdapterError("invalid_config", `Duplicate webhook endpoint ${label} "${value}".`, { [label]: value });
+    }
+    seen.add(value);
+  }
+}
+
+function statusBasePathFor(path: string): string {
+  return `${dirname(path) === "/" ? "" : dirname(path)}/requests`;
+}
+
+/** Prepend an endpoint's `prompt` (pre-instructions) to the posted text, if any. */
+function composePromptText(prompt: string | undefined, text: string): string {
+  return prompt === undefined || prompt.length === 0 ? text : `${prompt}\n\n${text}`;
 }
 
 function validatePositiveInteger(value: number | undefined, name: string): void {
@@ -459,7 +562,7 @@ function validatePositiveInteger(value: number | undefined, name: string): void 
   }
 }
 
-function normalizePath(path: string): string {
+export function normalizePath(path: string): string {
   const normalized = path.trim();
   if (!normalized.startsWith("/") || normalized.includes("?") || normalized.includes("#")) {
     throw new WebhookAdapterError("invalid_config", "Webhook path must be an absolute path without query or hash.");
