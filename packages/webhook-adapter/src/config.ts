@@ -24,6 +24,12 @@ export interface WebhookEndpointConfig {
   readonly enabled: boolean;
   /** Pre-instructions prepended to the incoming request text. Same role as a cron job's prompt. */
   readonly prompt?: string;
+  /**
+   * Destination channel conversationId (`telegram:<chat>`, `slack:<ch>:<thread>`)
+   * for a proactive notification. When set, the composed trigger runs as a turn on
+   * that channel's own harness and is delivered there, instead of a headless run.
+   */
+  readonly notify?: string;
 }
 
 export interface WebhookAdapterConfig {
@@ -224,6 +230,7 @@ function loadConfigEndpoints(
   }
   const path = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_PATH);
   const prompt = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_PROMPT);
+  const notify = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_NOTIFY);
   if (path === undefined && prompt === undefined) {
     return [];
   }
@@ -233,6 +240,7 @@ function loadConfigEndpoints(
     mode: defaultMode,
     enabled: true,
     ...(prompt === undefined ? {} : { prompt }),
+    ...(notify === undefined ? {} : { notify }),
   }];
 }
 
@@ -325,6 +333,7 @@ function normalizeEndpointConfig(
   const path = normalizePath(rawPath);
   const mode = readEndpointMode(entry.mode, index, defaultMode);
   const prompt = asOptionalString(entry.prompt);
+  const notify = asOptionalString(entry.notify);
   const name = asOptionalString(entry.name) ?? deriveEndpointName(path);
   const enabled = typeof entry.enabled === "boolean" ? entry.enabled : true;
   return {
@@ -333,6 +342,7 @@ function normalizeEndpointConfig(
     mode,
     enabled,
     ...(prompt === undefined ? {} : { prompt }),
+    ...(notify === undefined ? {} : { notify }),
   };
 }
 
@@ -364,6 +374,7 @@ function layerWebhookJsonOntoEnv(
     { env: "MONO_AGENT_WEBHOOK_PORT", value: section.port, kind: "integer" },
     { env: "MONO_AGENT_WEBHOOK_PATH", value: section.path },
     { env: "MONO_AGENT_WEBHOOK_PROMPT", value: section.prompt },
+    { env: "MONO_AGENT_WEBHOOK_NOTIFY", value: section.notify },
     { env: "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", value: section.allowNonLoopback, kind: "boolean" },
     { env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", value: section.defaultMode },
     { env: "MONO_AGENT_WEBHOOK_RETENTION_MS", value: section.retentionMs, kind: "integer" },

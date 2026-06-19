@@ -9,6 +9,50 @@ import { startCronAdapter, toCronJobs } from "../index.js";
 import { handleTick } from "../scheduler.js";
 
 describe("Cron adapter", () => {
+  it("routes a job with a notify destination to the proactive notifier, not a headless turn", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const respond = vi.fn(async () => ({}));
+    const responder: AgentResponder = { respond };
+    const notified: { conversationId: string; text: string }[] = [];
+    const results: unknown[] = [];
+
+    const scheduler = startCronAdapter({
+      responder,
+      notify: async (input) => {
+        notified.push(input);
+      },
+      jobs: [{
+        id: "morning-brief",
+        expression: "* * * * *",
+        timezone: "UTC",
+        prompt: "Compose the brief",
+        notify: "telegram:1",
+      }],
+      now: () => new Date(Date.now()),
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(respond).not.toHaveBeenCalled();
+      expect(notified).toEqual([
+        {
+          conversationId: "telegram:1",
+          text: 'Proactive trigger from cron job "morning-brief".\n\nCompose the brief',
+        },
+      ]);
+      expect(results).toEqual([
+        expect.objectContaining({ kind: "succeeded", jobId: "morning-brief" }),
+      ]);
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("runs due cron jobs through a structural responder with cron metadata", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

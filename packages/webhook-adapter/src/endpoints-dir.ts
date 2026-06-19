@@ -89,6 +89,7 @@ export function parseWebhookEndpointMarkdown(
   const mode = normalizeMode(meta.mode, fileName) ?? defaultMode;
   const enabled = readBoolean(meta.enabled, `${fileName} frontmatter \`enabled\``, true, invalidConfig);
   const prompt = body.trim().length === 0 ? undefined : body.trim();
+  const notify = normalizeOptionalString(meta.notify);
 
   return {
     name,
@@ -96,6 +97,7 @@ export function parseWebhookEndpointMarkdown(
     mode,
     enabled,
     ...(prompt === undefined ? {} : { prompt }),
+    ...(notify === undefined ? {} : { notify }),
   };
 }
 

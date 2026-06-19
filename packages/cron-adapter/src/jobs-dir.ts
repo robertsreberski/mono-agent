@@ -87,6 +87,7 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
   const timezone = normalizeOptionalString(meta.timezone) ?? DEFAULT_TIMEZONE;
   const enabled = readBoolean(meta.enabled, `${fileName} frontmatter \`enabled\``, true, invalidConfig);
   const conversationId = normalizeOptionalString(meta.conversationId);
+  const notify = normalizeOptionalString(meta.notify);
 
   return {
     id,
@@ -95,6 +96,7 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
     timezone,
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
+    ...(notify === undefined ? {} : { notify }),
   };
 }
 

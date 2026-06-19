@@ -24,6 +24,13 @@ export interface CronJob {
   readonly timezone?: string;
   readonly prompt: string;
   readonly conversationId?: string;
+  /**
+   * Destination channel conversationId for a proactive notification, e.g.
+   * `telegram:<chat>` or `slack:<ch>:<thread>`. When set (and the host wires a
+   * {@link CronAdapterOptions.notify} router), the job's prompt is delivered as a
+   * turn on that channel's own harness instead of running a headless turn.
+   */
+  readonly notify?: string;
 }
 
 /**
@@ -87,6 +94,13 @@ export interface CronAdapterOptions {
   readonly now?: () => Date;
   readonly onResult?: (result: CronJobResult) => void | Promise<void>;
   readonly logger?: CronAdapterLogger;
+  /**
+   * Host-supplied router for a job's {@link CronJob.notify} destination. Delivers
+   * the framed trigger as a turn on the destination channel's own harness (shared
+   * session/history) rather than running a headless turn here. When a job has a
+   * `notify` destination but this is unset, the job falls back to a headless run.
+   */
+  readonly notify?: (input: { readonly conversationId: string; readonly text: string }) => Promise<void>;
   /** Overlap policy for a job that fires while still running. Default "skip". */
   readonly overlap?: CronOverlapMode;
   /** Soft cap on a job's pending-firing queue (overlap:"queue"). Unbounded if unset. */
@@ -297,6 +311,15 @@ function startRun(
   const controller = new AbortController();
   state.active = controller;
   const startedAt = (options.now?.() ?? new Date()).toISOString();
+
+  // A job with a notify destination is delivered as a turn on the destination
+  // channel's OWN harness (shared session/history + native delivery) instead of
+  // a headless run here, so the destination channel's next live turn sees it.
+  if (job.notify !== undefined && options.notify !== undefined) {
+    startNotifyRun(job, job.notify, options.notify, scheduledAt, startedAt, options, jobStates, state, controller);
+    return;
+  }
+
   const stream = new BufferedMessageStream({
     onClosed: () =>
       new CronAdapterError("stream_closed", "Cannot write to a finished cron stream."),
@@ -363,6 +386,72 @@ function startRun(
         error: errorToMessage(error),
       };
       options.logger?.[cancelled ? "warn" : "error"]?.("Cron job responder failed.", {
+        jobId: job.id,
+        error: result.error,
+      });
+      await emitResult(options, result);
+    })
+    .finally(() => {
+      state.active = undefined;
+      drainNext(job, options, jobStates, state);
+    });
+}
+
+/** Provenance-framed trigger text so the destination channel's agent knows the turn is a proactive cron nudge. */
+function frameCronTrigger(jobId: string, prompt: string): string {
+  return `Proactive trigger from cron job "${jobId}".\n\n${prompt}`;
+}
+
+/**
+ * Deliver a job to its notify destination by routing the framed prompt to the
+ * destination channel's harness. Mirrors the headless path's result emission +
+ * overlap drain so observability and queueing behave identically; the router
+ * resolves once the destination turn has been delivered.
+ */
+function startNotifyRun(
+  job: CronJob,
+  destination: string,
+  notify: NonNullable<CronAdapterOptions["notify"]>,
+  scheduledAt: string,
+  startedAt: string,
+  options: CronAdapterOptions,
+  jobStates: Map<string, JobRuntimeState>,
+  state: JobRuntimeState,
+  controller: AbortController,
+): void {
+  const completedAt = (): string => (options.now?.() ?? new Date()).toISOString();
+  void notify({ conversationId: destination, text: frameCronTrigger(job.id, job.prompt) })
+    .then(async () => {
+      if (controller.signal.aborted) {
+        await emitResult(options, {
+          kind: "cancelled",
+          jobId: job.id,
+          scheduledAt,
+          startedAt,
+          completedAt: completedAt(),
+          error: "Cron job cancelled (notify resolved after abort).",
+        });
+        return;
+      }
+      await emitResult(options, {
+        kind: "succeeded",
+        jobId: job.id,
+        scheduledAt,
+        startedAt,
+        completedAt: completedAt(),
+      });
+    })
+    .catch(async (error: unknown) => {
+      const cancelled = controller.signal.aborted || isAgentResponseCancelledError(error);
+      const result: CronJobResult = {
+        kind: cancelled ? "cancelled" : "failed",
+        jobId: job.id,
+        scheduledAt,
+        startedAt,
+        completedAt: completedAt(),
+        error: errorToMessage(error),
+      };
+      options.logger?.[cancelled ? "warn" : "error"]?.("Cron job proactive notify failed.", {
         jobId: job.id,
         error: result.error,
       });

@@ -25,6 +25,7 @@ import {
 import type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import { routeProactiveNotification } from "./proactive-notify.js";
 import {
   adapterSendToolNames,
   createAdapterSendToolsRuntimeExtension,
@@ -458,6 +459,22 @@ class MonoAgentAppController implements MonoAgentApp {
     this.logger?.info?.("Memory ritual scheduler stopped.");
   }
 
+  /**
+   * Deliver a proactive notification to whichever running channel owns the
+   * destination conversationId. Routes to that channel's `notify`, which runs the
+   * nudge as a turn on the channel's own harness (shared session/history) and
+   * delivers it natively. Best-effort: an unavailable/unsupported destination is
+   * warned and skipped, never thrown back to the cron/webhook trigger.
+   */
+  private async notifyDestination(conversationId: string, text: string): Promise<void> {
+    await routeProactiveNotification({
+      conversationId,
+      text,
+      running: this.running,
+      ...(this.logger === undefined ? {} : { logger: this.logger }),
+    });
+  }
+
   private async startChannel(driver: ChannelDriver, reason: string): Promise<ChannelStatus> {
     const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
 
@@ -510,6 +527,7 @@ class MonoAgentAppController implements MonoAgentApp {
         responder,
         cwd: this.cwd,
         ...(this.logger === undefined ? {} : { logger: this.logger }),
+        notifyDestination: (conversationId, text) => this.notifyDestination(conversationId, text),
         onFailure: (failureReason) => {
           this.running.delete(driver.id);
           this.setStatus(driver.id, { kind: "failed", reason: failureReason });

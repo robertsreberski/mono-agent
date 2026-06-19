@@ -1,10 +1,47 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import { startWebhookAdapter } from "../index.js";
 
 describe("Webhook adapter", () => {
+  it("routes a notify endpoint to the proactive notifier instead of a headless turn", async () => {
+    const respond = vi.fn(async () => ({}));
+    const notified: { conversationId: string; text: string }[] = [];
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: { respond } satisfies AgentResponder,
+      notify: async (input) => {
+        notified.push(input);
+      },
+      endpoints: [
+        { name: "gmail-scan", path: "/hooks/gmail", mode: "sync", prompt: "A new email arrived.", notify: "telegram:7" },
+      ],
+    });
+
+    try {
+      const response = await fetch(`${server.url}/hooks/gmail`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "from: boss; subject: urgent" }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ status: "succeeded" });
+      expect(respond).not.toHaveBeenCalled();
+      expect(notified).toEqual([
+        {
+          conversationId: "telegram:7",
+          text: 'Proactive trigger from webhook "gmail-scan".\n\nA new email arrived.\n\nfrom: boss; subject: urgent',
+        },
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+
   it("runs sync HTTP invocations through a structural responder", async () => {
     const seen: unknown[] = [];
     const responder: AgentResponder = {

@@ -20,6 +20,12 @@ export interface CronJobConfig {
   readonly timezone: string;
   readonly prompt: string;
   readonly conversationId?: string;
+  /**
+   * Destination channel conversationId (`telegram:<chat>`, `slack:<ch>:<thread>`)
+   * for a proactive notification. When set, the job's prompt runs as a turn on
+   * that channel's own harness and is delivered there, instead of a headless run.
+   */
+  readonly notify?: string;
 }
 
 export interface CronAdapterConfig {
@@ -139,6 +145,7 @@ function loadConfigJobs(
     throw invalidConfig("Cron prompt is required when cron is configured.");
   }
   const conversationId = normalizeOptionalString(layered.MONO_AGENT_CRON_CONVERSATION_ID);
+  const notify = normalizeOptionalString(layered.MONO_AGENT_CRON_NOTIFY);
   return [{
     id: DEFAULT_JOB_ID,
     enabled,
@@ -146,6 +153,7 @@ function loadConfigJobs(
     timezone: normalizeOptionalString(layered.MONO_AGENT_CRON_TIMEZONE) ?? DEFAULT_TIMEZONE,
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
+    ...(notify === undefined ? {} : { notify }),
   }];
 }
 
@@ -209,6 +217,7 @@ export function toCronJobs(config: CronAdapterConfig): CronJob[] {
       timezone: job.timezone,
       prompt: job.prompt,
       ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
+      ...(job.notify === undefined ? {} : { notify: job.notify }),
     }));
 }
 
@@ -246,6 +255,7 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
     throw invalidConfig("Cron jobs require id, expression, and prompt.", { index });
   }
   const conversationId = asOptionalString(entry.conversationId);
+  const notify = asOptionalString(entry.notify);
   return {
     id,
     enabled: typeof entry.enabled === "boolean" ? entry.enabled : true,
@@ -253,6 +263,7 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
     timezone: asOptionalString(entry.timezone) ?? DEFAULT_TIMEZONE,
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
+    ...(notify === undefined ? {} : { notify }),
   };
 }
 
@@ -267,6 +278,7 @@ function layerCronJsonOntoEnv(
     { env: "MONO_AGENT_CRON_TIMEZONE", value: section.timezone },
     { env: "MONO_AGENT_CRON_PROMPT", value: section.prompt },
     { env: "MONO_AGENT_CRON_CONVERSATION_ID", value: section.conversationId },
+    { env: "MONO_AGENT_CRON_NOTIFY", value: section.notify },
   ]);
 }
 

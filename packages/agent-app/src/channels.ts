@@ -41,6 +41,7 @@ import type {
   TelegramAdapterErrorTextInput,
   TelegramAdapterStartOptions,
   TelegramAdapterStartResult,
+  TelegramChatId,
 } from "@mono-agent/telegram-adapter";
 import {
   loadWebhookAdapterConfig,
@@ -99,6 +100,13 @@ export interface RunningChannel {
    * queued turns against stale config are retired. Transport stops first.
    */
   dispose?(): Promise<void>;
+  /**
+   * Deliver a proactive notification to a destination this channel owns: run it as
+   * a turn on the destination's own harness (shared session/history) and deliver
+   * through the channel's normal stream. Set only by push channels (telegram/slack);
+   * absent on request-driven channels. Used by the app's proactive-notify router.
+   */
+  notify?(input: { readonly conversationId: string; readonly text: string }): Promise<void>;
 }
 
 export interface ChannelStartInput<TConfig> {
@@ -109,6 +117,13 @@ export interface ChannelStartInput<TConfig> {
   readonly logger?: MonoAgentAppLogger;
   /** Reports a transport that died after a successful start (e.g. polling loop). */
   readonly onFailure: (reason: string) => void;
+  /**
+   * App router that delivers a proactive notification to whichever running channel
+   * owns the destination conversationId, by running it as a turn on that channel's
+   * harness. Wired by cron/webhook drivers into the adapter's notify hook; push
+   * channels (telegram/slack) provide delivery rather than consume this.
+   */
+  readonly notifyDestination?: (conversationId: string, text: string) => Promise<void>;
 }
 
 /**
@@ -158,9 +173,32 @@ export function createTelegramChannelDriver(
       return {
         summary: {},
         stop: () => result.stop(),
+        // Push delivery: a proactive nudge to telegram:<chat> runs as a turn on
+        // this chat's own harness and is delivered through the normal stream.
+        notify: async ({ conversationId, text }) => {
+          const chatId = telegramChatIdFromConversation(conversationId);
+          if (chatId === undefined) {
+            input.logger?.warn?.("Telegram proactive notify skipped: unparseable destination.", { conversationId });
+            return;
+          }
+          await result.notify(chatId, text);
+        },
       };
     },
   };
+}
+
+/** Extract the Telegram chat id from a `telegram:<chat>` conversationId (numeric ids become numbers; a rollover #bucket suffix is stripped). */
+export function telegramChatIdFromConversation(conversationId: string): TelegramChatId | undefined {
+  const prefix = "telegram:";
+  if (!conversationId.startsWith(prefix)) {
+    return undefined;
+  }
+  const raw = conversationId.slice(prefix.length).split("#", 1)[0];
+  if (raw === undefined || raw.length === 0) {
+    return undefined;
+  }
+  return /^-?\d+$/u.test(raw) ? Number(raw) : raw;
 }
 
 export interface SlackChannelOverrides {
@@ -202,9 +240,52 @@ export function createSlackChannelDriver(
       return {
         summary: {},
         stop: () => result.stop(),
+        // Push delivery: a proactive nudge to slack:<ch>[:<thread>] runs as a turn
+        // on that conversation's own harness and is delivered through the stream.
+        notify: async ({ conversationId, text }) => {
+          const target = slackTargetFromConversation(conversationId);
+          if (target === undefined) {
+            input.logger?.warn?.("Slack proactive notify skipped: unparseable destination.", { conversationId });
+            return;
+          }
+          await result.adapter.notify(target.channelId, target.threadTs, text);
+        },
       };
     },
   };
+}
+
+/** Extract `{channelId, threadTs?}` from a `slack:<ch>[:<thread>]` conversationId (a rollover #bucket suffix is stripped). */
+export function slackTargetFromConversation(
+  conversationId: string,
+): { readonly channelId: string; readonly threadTs?: string } | undefined {
+  const prefix = "slack:";
+  if (!conversationId.startsWith(prefix)) {
+    return undefined;
+  }
+  const rest = conversationId.slice(prefix.length).split("#", 1)[0];
+  if (rest === undefined || rest.length === 0) {
+    return undefined;
+  }
+  const colon = rest.indexOf(":");
+  if (colon < 0) {
+    return { channelId: rest };
+  }
+  const channelId = rest.slice(0, colon);
+  const threadTs = rest.slice(colon + 1);
+  if (channelId.length === 0) {
+    return undefined;
+  }
+  if (threadTs.length === 0) {
+    return { channelId };
+  }
+  // A canonical Slack threadTs (e.g. 1718800000.123456) never contains a colon, so a
+  // stray/double colon is an operator typo — reject it so the driver warns + skips
+  // cleanly rather than posting to the Slack API with a malformed thread_ts.
+  if (threadTs.includes(":")) {
+    return undefined;
+  }
+  return { channelId, threadTs };
 }
 
 export interface A2AChannelOverrides {
@@ -311,8 +392,13 @@ export function createWebhookChannelDriver(
             path: endpoint.path,
             mode: endpoint.mode,
             ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
+            ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
           })),
         responder: input.responder,
+        // Route a notify-endpoint's destination to the owning channel's harness.
+        ...(input.notifyDestination === undefined
+          ? {}
+          : { notify: ({ conversationId, text }) => input.notifyDestination!(conversationId, text) }),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
       return {
@@ -391,6 +477,12 @@ export function createCronChannelDriver(
       const adapterFactory = overrides.adapterFactory ?? startCronAdapter;
       const adapter = adapterFactory({
         responder: input.responder,
+        // Route a job's notify destination to the owning channel's harness so the
+        // proactive turn lands in that channel's session/history and is delivered
+        // there. Absent the router, a notify job falls back to a headless run.
+        ...(input.notifyDestination === undefined
+          ? {}
+          : { notify: ({ conversationId, text }) => input.notifyDestination!(conversationId, text) }),
         // Skip overlapping firings (a job still running when its next tick fires)
         // — the legacy/default app behavior. This avoids the scheduler's
         // unbounded "queue" default retaining stale ticks in memory when a job
@@ -403,6 +495,7 @@ export function createCronChannelDriver(
           timezone: job.timezone,
           prompt: job.prompt,
           ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
+          ...(job.notify === undefined ? {} : { notify: job.notify }),
         })),
         onResult: (result) => {
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";

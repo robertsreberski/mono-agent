@@ -103,6 +103,13 @@ export interface WebhookEndpointOption {
   readonly path: string;
   readonly mode?: WebhookInvocationMode;
   readonly prompt?: string;
+  /**
+   * Destination channel conversationId (`telegram:<chat>`, `slack:<ch>:<thread>`)
+   * for a proactive notification. When set (and the host wires {@link WebhookAdapterOptions.notify}),
+   * the composed trigger runs as a turn on that channel's own harness instead of
+   * a headless run. The destination is operator config, not body-supplied.
+   */
+  readonly notify?: string;
 }
 
 export interface WebhookAdapterOptions {
@@ -113,6 +120,13 @@ export interface WebhookAdapterOptions {
   readonly maxStoredRequests?: number;
   readonly responder: AgentResponder<WebhookInvocationRequest, AgentMessageStream, AgentResponse>;
   readonly logger?: WebhookAdapterLogger;
+  /**
+   * Host-supplied router for an endpoint's {@link WebhookEndpointOption.notify}
+   * destination. Delivers the framed trigger as a turn on the destination channel's
+   * own harness rather than running a headless turn here. When an endpoint has a
+   * `notify` destination but this is unset, the endpoint falls back to a headless run.
+   */
+  readonly notify?: (input: { readonly conversationId: string; readonly text: string }) => Promise<void>;
   /** Endpoints to serve. When omitted, a single legacy endpoint is built from `path`/`defaultMode`. */
   readonly endpoints?: readonly WebhookEndpointOption[];
   /** Legacy single-endpoint path. Folded into a one-element `endpoints` list when `endpoints` is omitted. */
@@ -149,6 +163,7 @@ interface ResolvedEndpoint {
   readonly path: string;
   readonly mode: WebhookInvocationMode;
   readonly prompt?: string;
+  readonly notify?: string;
   readonly statusBasePath: string;
 }
 
@@ -321,6 +336,11 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       },
     };
 
+    const notify =
+      endpoint.notify === undefined || options.notify === undefined
+        ? undefined
+        : { destination: endpoint.notify, text: frameWebhookTrigger(endpoint.name, request.text) };
+
     if (body.mode === "async") {
       res.status(202).json({
         status: "accepted",
@@ -329,7 +349,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
         statusUrl,
         receivedAt,
       });
-      void runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests });
+      void runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests, ...(notify === undefined ? {} : { notify }) });
       return;
     }
 
@@ -339,7 +359,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       }
     });
 
-    const status = await runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests });
+    const status = await runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests, ...(notify === undefined ? {} : { notify }) });
     if (status.status === "succeeded") {
       res.status(200).json(status);
       return;
@@ -394,7 +414,50 @@ async function runResponder(input: {
   readonly options: WebhookAdapterOptions;
   readonly retentionMs: number;
   readonly maxStoredRequests: number;
+  /** When set, route the trigger to a channel's harness instead of a headless run. */
+  readonly notify?: { readonly destination: string; readonly text: string };
 }): Promise<WebhookInvocationStatus> {
+  // Proactive-notify endpoint: route the framed trigger to the destination
+  // channel's own harness (shared session/history + native delivery) instead of
+  // running a headless turn. The webhook caller's status only reflects that the
+  // nudge was dispatched; the agent's reply lands on the destination channel.
+  const route = input.options.notify;
+  if (input.notify !== undefined && route !== undefined) {
+    const base = {
+      requestId: input.active.requestId,
+      conversationId: input.request.conversationId,
+      statusUrl: input.statusUrl,
+      receivedAt: input.receivedAt,
+      startedAt: input.startedAt,
+    };
+    let notifyStatus: WebhookInvocationStatus;
+    try {
+      await route({ conversationId: input.notify.destination, text: input.notify.text });
+      const cancelled = input.request.abortSignal.aborted;
+      notifyStatus = cancelled
+        ? { status: "cancelled", ...base, completedAt: new Date().toISOString(), error: "Webhook cancelled (notify resolved after abort)." }
+        : { status: "succeeded", ...base, completedAt: new Date().toISOString() };
+    } catch (error) {
+      const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
+      notifyStatus = {
+        status: cancelled ? "cancelled" : "failed",
+        ...base,
+        completedAt: new Date().toISOString(),
+        error: errorToMessage(error),
+      };
+      input.options.logger?.[cancelled ? "warn" : "error"]?.("Webhook proactive notify failed.", {
+        requestId: input.active.requestId,
+        destination: input.notify.destination,
+        error: notifyStatus.error,
+      });
+    } finally {
+      if (input.activeByRun.get(input.runKey) === input.active) {
+        input.activeByRun.delete(input.runKey);
+      }
+    }
+    setStatus(input.statuses, notifyStatus, input.retentionMs, input.maxStoredRequests);
+    return notifyStatus;
+  }
   const stream = new BufferedMessageStream({
     onClosed: () =>
       new WebhookAdapterError("invalid_config", "Cannot write to a finished webhook stream."),
@@ -526,6 +589,7 @@ function resolveEndpoints(options: WebhookAdapterOptions): readonly ResolvedEndp
       mode: endpoint.mode ?? defaultMode,
       statusBasePath: statusBasePathFor(path),
       ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
+      ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
     };
   });
 
@@ -551,6 +615,11 @@ function statusBasePathFor(path: string): string {
 /** Prepend an endpoint's `prompt` (pre-instructions) to the posted text, if any. */
 function composePromptText(prompt: string | undefined, text: string): string {
   return prompt === undefined || prompt.length === 0 ? text : `${prompt}\n\n${text}`;
+}
+
+/** Provenance-framed trigger text so the destination channel's agent knows the turn is a proactive webhook nudge. */
+function frameWebhookTrigger(endpointName: string, text: string): string {
+  return `Proactive trigger from webhook "${endpointName}".\n\n${text}`;
 }
 
 function validatePositiveInteger(value: number | undefined, name: string): void {
