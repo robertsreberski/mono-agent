@@ -144,6 +144,57 @@ export interface ChannelDriver<TConfig = unknown> {
   start(input: ChannelStartInput<TConfig>): Promise<RunningChannel>;
 }
 
+/** A channel's availability derived from config alone (no transport started). */
+export interface ChannelAvailability {
+  readonly id: ChannelId;
+  readonly label: string;
+  /** `enabled` = configured and ready to run (active); otherwise it would not start. */
+  readonly state: "enabled" | "disabled" | "waiting";
+  readonly reason?: string;
+}
+
+/**
+ * Report each channel's availability from config, mirroring the read-only checks
+ * {@link MonoAgentAppController.startChannel} runs before starting (loadConfig →
+ * disabledReason → waitingReason). Starts nothing, needs no running daemon, so it
+ * is safe to call from a standalone CLI. A non-config-error from loadConfig
+ * propagates (a genuine misconfiguration, not a "waiting" state).
+ */
+export async function listChannelAvailability(
+  input: MonoAgentAppConfigInput,
+  drivers: readonly ChannelDriver[] = defaultChannelDrivers(),
+): Promise<readonly ChannelAvailability[]> {
+  const results: ChannelAvailability[] = [];
+  for (const driver of drivers) {
+    let config: unknown;
+    try {
+      config = await driver.loadConfig(input);
+    } catch (error) {
+      if (driver.isConfigError(error)) {
+        results.push({ id: driver.id, label: driver.label, state: "waiting", reason: errorReason(error) });
+        continue;
+      }
+      throw error;
+    }
+    const disabled = driver.disabledReason?.(config);
+    if (disabled !== undefined) {
+      results.push({ id: driver.id, label: driver.label, state: "disabled", reason: disabled });
+      continue;
+    }
+    const waiting = driver.waitingReason?.(config);
+    if (waiting !== undefined) {
+      results.push({ id: driver.id, label: driver.label, state: "waiting", reason: waiting });
+      continue;
+    }
+    results.push({ id: driver.id, label: driver.label, state: "enabled" });
+  }
+  return results;
+}
+
+function errorReason(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export interface TelegramChannelOverrides {
   readonly botFactory?: TelegramAdapterStartOptions["botFactory"];
   readonly runnerFactory?: TelegramAdapterStartOptions["runnerFactory"];

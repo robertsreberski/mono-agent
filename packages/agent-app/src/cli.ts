@@ -17,6 +17,7 @@ import {
   stopBackground,
   tailLogs,
 } from "./background.js";
+import { listChannelAvailability } from "./channels.js";
 import type { ChannelStatus } from "./channels.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
@@ -31,7 +32,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
+const KNOWN_COMMANDS = ["init", "validate", "channels", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -229,6 +230,14 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     lines: ["Load every config section and report what would run, wait, or fail."],
   },
   {
+    signature: "mono-agent channels [--config <path>] [--env-file <path>]",
+    lines: [
+      "List every channel and its state from config (active / disabled /",
+      "waiting), and a summary of the active ones. Derived from config — it",
+      "does not query a running instance (use 'status' for live health).",
+    ],
+  },
+  {
     signature: "mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]",
     lines: [
       "Start the agent as a background macOS service (launchd), print its",
@@ -324,6 +333,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runInit(args);
     case "validate":
       return await runValidate(args);
+    case "channels":
+      return await runChannels(args);
     case "start":
       return await runStart(args);
     case "restart":
@@ -343,6 +354,27 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         dryRun: args.dryRun,
       });
   }
+}
+
+async function runChannels(args: ParsedCliArgs): Promise<number> {
+  const cwd = process.cwd();
+  const channels = await listChannelAvailability({
+    env: process.env,
+    cwd,
+    configPath: resolve(cwd, args.configPath ?? "mono-agent.config.json"),
+  });
+  for (const channel of channels) {
+    const detail =
+      channel.state === "enabled"
+        ? "active"
+        : `${channel.state}${channel.reason === undefined ? "" : `: ${channel.reason}`}`;
+    process.stdout.write(`${channel.id.padEnd(12)} ${detail}\n`);
+  }
+  const active = channels.filter((channel) => channel.state === "enabled").map((channel) => channel.id);
+  process.stdout.write(
+    `\n${active.length} active channel${active.length === 1 ? "" : "s"}${active.length === 0 ? "" : `: ${active.join(", ")}`}\n`,
+  );
+  return 0;
 }
 
 async function runInit(args: ParsedCliArgs): Promise<number> {
