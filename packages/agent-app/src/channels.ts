@@ -281,7 +281,8 @@ export function createWebhookChannelDriver(
     id: "webhook",
     label: "Webhook",
     async loadConfig(input) {
-      return await loadWebhookAdapterConfig({ env: input.env, jsonPath: input.configPath });
+      // cwd is required so `webhook/*.md` endpoint files are discovered.
+      return await loadWebhookAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
     },
     isConfigError(error) {
       return error instanceof WebhookAdapterError;
@@ -289,21 +290,37 @@ export function createWebhookChannelDriver(
     disabledReason(config) {
       return config.enabled ? undefined : "Webhook adapter is disabled.";
     },
+    waitingReason(config) {
+      return config.endpoints.some((endpoint) => endpoint.enabled)
+        ? undefined
+        : "Webhook adapter has no enabled endpoints.";
+    },
     async start(input) {
       const adapterFactory = overrides.adapterFactory ?? startWebhookAdapter;
       const adapter = await adapterFactory({
         host: input.config.host,
         port: input.config.port,
-        path: input.config.path,
         allowNonLoopback: input.config.allowNonLoopback,
         defaultMode: input.config.defaultMode,
         retentionMs: input.config.retentionMs,
         maxStoredRequests: input.config.maxStoredRequests,
+        endpoints: input.config.endpoints
+          .filter((endpoint) => endpoint.enabled)
+          .map((endpoint) => ({
+            name: endpoint.name,
+            path: endpoint.path,
+            mode: endpoint.mode,
+            ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
+          })),
         responder: input.responder,
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
       return {
-        summary: { invokeUrl: adapter.invokeUrl },
+        summary: {
+          invokeUrl: adapter.invokeUrl,
+          port: adapter.port,
+          invokeUrls: Object.fromEntries((adapter.endpoints ?? []).map((endpoint) => [endpoint.name, endpoint.invokeUrl])),
+        },
         stop: () => adapter.stop(),
       };
     },
