@@ -33,6 +33,14 @@ export interface ValidationReport {
 
 export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput {
   readonly drivers?: readonly ChannelDriver[];
+  /**
+   * When false, skip the live network probes (Ollama reachability and the
+   * Phoenix export probe) and validate only structure/shape. Those probes can
+   * only ever downgrade a section to `waiting`, never `error`, so skipping them
+   * leaves the pass/fail verdict (`ok`) unchanged while removing up to two
+   * 3s timeouts — the start preflight relies on this. Defaults to true.
+   */
+  readonly liveness?: boolean;
 }
 
 /**
@@ -45,6 +53,7 @@ export async function validateMonoAgentFolder(
 ): Promise<ValidationReport> {
   const sections: ValidationSection[] = [];
   const drivers = options.drivers ?? defaultChannelDrivers();
+  const liveness = options.liveness ?? true;
 
   let coreConfig: MonoAgentConfig | undefined;
   try {
@@ -60,12 +69,12 @@ export async function validateMonoAgentFolder(
   if (coreConfig !== undefined) {
     sections.push(runtimeSection(coreConfig));
     sections.push(await contextSection(coreConfig));
-    sections.push(await memorySection(coreConfig));
+    sections.push(await memorySection(coreConfig, liveness));
     sections.push(await toolsSection(coreConfig, options));
     sections.push(sandboxSection(coreConfig));
   }
 
-  sections.push(await exporterSection(options));
+  sections.push(await exporterSection(options, liveness));
 
   for (const driver of drivers) {
     sections.push(await channelSection(driver, options));
@@ -145,7 +154,7 @@ async function contextSection(config: MonoAgentConfig): Promise<ValidationSectio
 const DEFAULT_REFLECTION_CRON = "0 3 * * *";
 const DEFAULT_MIGRATION_CRON = "0 4 1 * *";
 
-async function memorySection(config: MonoAgentConfig): Promise<ValidationSection> {
+async function memorySection(config: MonoAgentConfig, liveness: boolean): Promise<ValidationSection> {
   if (config.memory === undefined) {
     return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
   }
@@ -183,7 +192,7 @@ async function memorySection(config: MonoAgentConfig): Promise<ValidationSection
   }
 
   if (config.memory.mode === "journal" || config.memory.mode === "bujo") {
-    const warns = await memoryLivenessWarnings(config.memory);
+    const warns = await memoryLivenessWarnings(config.memory, liveness);
     if (warns.length > 0) {
       return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...warns] };
     }
@@ -230,6 +239,7 @@ async function fetchOllamaModels(endpoint: string): Promise<string[]> {
 
 async function memoryLivenessWarnings(
   memory: NonNullable<MonoAgentConfig["memory"]>,
+  liveness: boolean,
 ): Promise<string[]> {
   const warns: string[] = [];
   const mode = memory.mode;
@@ -237,13 +247,19 @@ async function memoryLivenessWarnings(
   const llmUsesOllama = memory.llm?.provider === "ollama";
   const ollamaModelsByEndpoint = new Map<string, string[] | undefined>();
 
-  // 1. Memory root writable (every embedded tier)
+  // 1. Memory root writable (every embedded tier) — local I/O, always checked.
   try {
     await mkdir(memory.path, { recursive: true });
   } catch (err) {
     warns.push(
       `[WARN] ${mode} memory root is not writable: ${memory.path} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
     );
+  }
+
+  // Network-dependent probes below only ever produce `waiting`, so the start
+  // preflight skips them (liveness=false) without changing the pass/fail verdict.
+  if (!liveness) {
+    return warns;
   }
 
   async function modelsForOllamaEndpoint(endpoint: string): Promise<string[] | undefined> {
@@ -357,7 +373,7 @@ const LOCAL_ARTIFACTS_NOTE = "JSONL artifacts remain local (the exporter is addi
  * may start after the agent, mirroring the Ollama-unreachable precedent so
  * `validate` still passes. Probe failures are swallowed into a warning.
  */
-async function exporterSection(input: MonoAgentAppConfigInput): Promise<ValidationSection> {
+async function exporterSection(input: MonoAgentAppConfigInput, liveness: boolean): Promise<ValidationSection> {
   let exporters;
   try {
     exporters = await resolveAppObservabilityExporters(input);
@@ -385,6 +401,14 @@ async function exporterSection(input: MonoAgentAppConfigInput): Promise<Validati
   }
   if (exporter.includeSensitiveData) {
     details.push("includeSensitiveData=true (redacted payloads are exported).");
+  }
+
+  // The reachability probe only ever yields `waiting`, so the start preflight
+  // skips it (liveness=false): the exporter shape is valid, and Phoenix may
+  // legitimately come up after the agent.
+  if (!liveness) {
+    details.push(LOCAL_ARTIFACTS_NOTE);
+    return { id: "observability", label: "Observability exporter", status: "ok", details };
   }
 
   const probeError = await probeExporterEndpoint(exporter.endpoint);

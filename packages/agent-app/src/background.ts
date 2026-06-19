@@ -19,6 +19,7 @@ import {
   makeLaunchctlRunner,
 } from "./launchd.js";
 import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "./launchd.js";
+import * as ui from "./ui.js";
 
 /**
  * Background-service orchestration for the mono-agent CLI. The interactive
@@ -169,6 +170,7 @@ async function launchBackground(target: InstanceTarget, deps: BackgroundDeps, po
   if (!outcome.ok) {
     return failLaunch(target, deps, outcome.restarted ? "restart" : "start", outcome.failure);
   }
+  deps.stdout(ui.hint("Waiting for the worker to report ready…"));
   const ready = await pollInstanceReady(target, deps, { ...poll, sinceMs });
   if (ready === undefined) {
     return reportTimeout(target, deps);
@@ -242,21 +244,21 @@ export async function stopBackground(target: InstanceTarget, deps: BackgroundDep
   // fine. A non-zero exit is only a real failure if the service is still loaded
   // afterwards — otherwise we'd silently swallow genuine stop failures.
   if (result.code !== 0 && (await isLoaded(deps.runner, target.label, uid))) {
-    deps.stderr(`Failed to stop ${target.label}: launchctl bootout exited ${result.code}.\n`);
+    deps.stderr(ui.errorLine(`Failed to stop ${target.label}: launchctl bootout exited ${result.code}.`));
     const detail = (result.stderr || result.stdout).trim();
     if (detail.length > 0) {
-      deps.stderr(`${detail}\n`);
+      deps.stderr(ui.style.dim(detail) + "\n");
     }
-    deps.stderr(`The plist was removed, but the service is still running.\n`);
+    deps.stderr(ui.hint("The plist was removed, but the service is still running."));
     return 1;
   }
 
   deps.stdout(
     wasLoaded
-      ? `Stopped ${target.label} and removed its LaunchAgent.\n`
-      : `${target.label} was not running; removed its LaunchAgent if present.\n`,
+      ? `${ui.badge("ok")}${ui.style.bold(`Stopped ${target.label}`)} and removed its LaunchAgent.\n`
+      : `${ui.style.dim(`${target.label} was not running; removed its LaunchAgent if present.`)}\n`,
   );
-  deps.stdout(`config  ${target.configPath}\n`);
+  deps.stdout(ui.keyValue([["config", target.configPath]]));
   return 0;
 }
 
@@ -265,8 +267,8 @@ export async function statusBackground(target: InstanceTarget, deps: BackgroundD
   const current = result.sources.find((source) => matchesConfig(source, target.configPath));
 
   if (current === undefined) {
-    deps.stdout(`No running mono-agent instance for ${target.configPath}.\n`);
-    deps.stdout(`Start it with: mono-agent start${configFlag(target)}\n`);
+    deps.stdout(ui.style.dim(`No running mono-agent instance for ${target.configPath}.`) + "\n");
+    deps.stdout(ui.hint(`Start it with: mono-agent start${configFlag(target)}`));
   } else {
     writeInstanceDetail(current, target, deps);
   }
@@ -277,7 +279,7 @@ export async function statusBackground(target: InstanceTarget, deps: BackgroundD
     (source) => !matchesConfig(source, target.configPath) && source.health !== "stopped",
   );
   if (others.length > 0) {
-    deps.stdout(`\nOther mono-agent instances:\n`);
+    deps.stdout("\n" + ui.heading("Other mono-agent instances"));
     for (const source of others) {
       deps.stdout(`  ${formatOtherInstance(source)}\n`);
     }
@@ -328,9 +330,9 @@ export function printInstanceInfo(
   verb: string,
 ): void {
   const flag = configFlag(target);
-  deps.stdout(`mono-agent ${verb} in the background.\n`);
+  deps.stdout(`${ui.badge("ok")}${ui.style.bold(`mono-agent ${verb} in the background.`)}\n`);
   writeInstanceDetail(source, target, deps);
-  deps.stdout(`\nStop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow\n`);
+  deps.stdout("\n" + ui.hint(`Stop with: mono-agent stop${flag}   ·   Logs: mono-agent logs${flag} --follow`));
 }
 
 async function findInstance(target: InstanceTarget, deps: BackgroundDeps): Promise<TraceSourceListItem | undefined> {
@@ -357,47 +359,64 @@ function failLaunch(
   verb: string,
   result: LaunchctlResult | undefined,
 ): number {
-  deps.stderr(`Failed to ${verb} ${target.label} via launchctl${result === undefined ? "" : ` (exit ${result.code})`}.\n`);
+  deps.stderr(ui.errorLine(`Failed to ${verb} ${target.label} via launchctl${result === undefined ? "" : ` (exit ${result.code})`}.`));
   const detail = (result?.stderr || result?.stdout || "").trim();
   if (detail.length > 0) {
-    deps.stderr(`${detail}\n`);
+    deps.stderr(ui.style.dim(detail) + "\n");
   }
-  deps.stderr(`Logs: ${target.paths.stderrPath}\n`);
+  deps.stderr(ui.hint(`Logs: ${target.paths.stderrPath}`));
   return 1;
 }
 
 function reportTimeout(target: InstanceTarget, deps: BackgroundDeps): number {
   const flag = configFlag(target);
+  deps.stderr(ui.errorLine("mono-agent did not report ready within the timeout."));
+  deps.stderr(ui.style.dim("It may still be starting, or it may have failed. Inspect:") + "\n");
   deps.stderr(
-    "mono-agent did not report ready within the timeout.\n" +
-      "It may still be starting, or it may have failed. Inspect:\n" +
-      `  logs:   ${target.paths.stderrPath}\n` +
+    `  ${ui.style.gray("logs:  ")} ${target.paths.stderrPath}\n` +
       `          ${target.paths.stdoutPath}\n` +
-      `  follow: mono-agent logs${flag} --follow\n` +
-      `  status: mono-agent status${flag}\n` +
-      `  stop:   mono-agent stop${flag}\n`,
+      `  ${ui.style.gray("follow:")} mono-agent logs${flag} --follow\n` +
+      `  ${ui.style.gray("status:")} mono-agent status${flag}\n` +
+      `  ${ui.style.gray("stop:  ")} mono-agent stop${flag}\n`,
   );
   return 1;
 }
 
 function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget, deps: BackgroundDeps): void {
-  deps.stdout(`config            ${target.configPath}\n`);
-  deps.stdout(`label             ${target.label}\n`);
-  deps.stdout(`pid               ${source.pid ?? "unknown"}\n`);
-  deps.stdout(`health            ${source.health}\n`);
-  deps.stdout(`started           ${source.startedAt}\n`);
-  deps.stdout(`logs              ${target.paths.stdoutPath}\n`);
-  deps.stdout(`                  ${target.paths.stderrPath}\n`);
+  const rows: Array<[string, string]> = [
+    ["config", target.configPath],
+    ["label", target.label],
+    ["pid", String(source.pid ?? "unknown")],
+    ["health", colorHealth(source.health)],
+    ["started", source.startedAt],
+    ["logs", target.paths.stdoutPath],
+    ["", target.paths.stderrPath],
+  ];
   const observability = describeObservabilityMetadata(source);
   if (observability !== undefined) {
-    deps.stdout(`observability     ${observability}\n`);
+    rows.push(["observability", observability]);
   }
+  deps.stdout(ui.keyValue(rows));
   const channelLines = formatChannels(source);
   if (channelLines.length > 0) {
-    deps.stdout("channels\n");
+    deps.stdout(ui.style.gray("channels") + "\n");
     for (const line of channelLines) {
       deps.stdout(`${line}\n`);
     }
+  }
+}
+
+/** Color a health word by severity while leaving the literal text intact. */
+function colorHealth(health: string): string {
+  switch (health) {
+    case "running":
+      return ui.style.green(health);
+    case "stale":
+      return ui.style.yellow(health);
+    case "stopped":
+      return ui.style.dim(health);
+    default:
+      return ui.style.red(health);
   }
 }
 
