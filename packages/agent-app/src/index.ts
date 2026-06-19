@@ -55,7 +55,9 @@ export type {
   ValidationSection,
   ValidationStatus,
 } from "./doctor.js";
-export { parseCliArgs, runCli, loadCliEnvFile } from "./cli.js";
+export { parseCliArgs, runCli, loadCliEnvFile, ensureStartable, renderHelp, printAppStatus } from "./cli.js";
+export type { PreflightResult } from "./cli.js";
+export { badge, channelBadge, computeColorEnabled, healthBadge, isColorEnabled, keyValue, rule, style } from "./ui.js";
 export { COMPOSER_SKILL_NAME, installComposerSkill } from "./install-skill.js";
 export type { InstallSkillOptions, InstallSkillResult, InstallSkillTarget } from "./install-skill.js";
 export { startMemoryRituals } from "./memory-rituals.js";

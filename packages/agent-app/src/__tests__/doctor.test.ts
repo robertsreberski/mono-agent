@@ -627,3 +627,96 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(text).toMatch(/migration disabled/iu);
   });
 });
+
+describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("skips the Phoenix probe — exporter stays ok and fetch is never called", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "observability").status).toBe("ok");
+    expect(report.ok).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("skips the Ollama probe — memory stays ok, no WARNs, fetch never called", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
+    // The descriptive (non-probe) detail lines still render.
+    expect(memory.details.join("\n")).toContain("bujo");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("still flags the memory root as not writable (a local, non-network check)", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const blocker = join(dir, "blocker");
+    await writeFile(blocker, "x");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: join(blocker, "root"),
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("yields the same ok verdict as a full run when only waiting differs", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:6006/v1/traces" }] },
+    });
+
+    const live = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const fast = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(live.ok).toBe(true);
+    expect(fast.ok).toBe(true);
+    // The full run downgrades the exporter to waiting; the fast run keeps it ok —
+    // either way the report passes, which is what the gate relies on.
+    expect(sectionById(live, "observability").status).toBe("waiting");
+    expect(sectionById(fast, "observability").status).toBe("ok");
+  });
+});
