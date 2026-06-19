@@ -5,8 +5,8 @@
 // from edge layers.
 
 export {
-  createAgentCompactionManager,
   isLikelyContextTermination,
+  resolveAgentCompactionPolicy,
 } from "./compaction.js";
 
 export {
