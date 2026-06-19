@@ -243,6 +243,7 @@ mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gem
 mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means ready
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
+mono-agent restart --force  # restart AND purge persisted pi sessions (fresh start; durable memory kept)
 ```
 
 A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
