@@ -34,7 +34,7 @@ describe('buildSkillIndex', () => {
 });
 
 describe('loadSkillIndexFromDirectory', () => {
-  it('loads immediate child SKILL.md files and derives descriptions', async () => {
+  it('falls back to the first body paragraph when there is no frontmatter description', async () => {
     const skills = await loadSkillIndexFromDirectory(validSkillsRoot);
 
     expect(skills).toEqual([
@@ -46,14 +46,14 @@ describe('loadSkillIndexFromDirectory', () => {
     ]);
   });
 
-  it('skips YAML frontmatter when deriving the description', async () => {
+  it('prefers the frontmatter description over body prose', async () => {
     const frontmatterSkillsRoot = join(fixturesRoot, 'skills-frontmatter');
     const skills = await loadSkillIndexFromDirectory(frontmatterSkillsRoot);
 
     expect(skills).toEqual([
       {
         name: 'frontmatter',
-        description: 'Works in harnesses that read YAML frontmatter and in mono-agent.',
+        description: 'Use the YAML frontmatter description as the canonical skill summary.',
         mainFile: join(frontmatterSkillsRoot, 'frontmatter', 'SKILL.md'),
       },
     ]);

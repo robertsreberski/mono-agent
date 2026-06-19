@@ -151,6 +151,15 @@ function compareSkillEntries(left: SkillIndexEntry, right: SkillIndexEntry): num
 }
 
 function deriveSkillDescription(markdown: string): string {
+  const fromFrontmatter = readFrontmatterField(markdown, 'description');
+  if (fromFrontmatter.length > 0) {
+    return fromFrontmatter;
+  }
+
+  return deriveDescriptionFromBody(markdown);
+}
+
+function deriveDescriptionFromBody(markdown: string): string {
   const paragraphs: string[] = [];
   let currentParagraph: string[] = [];
 
@@ -178,14 +187,52 @@ function deriveSkillDescription(markdown: string): string {
   return paragraphs.find((paragraph) => paragraph.length > 0) ?? '';
 }
 
+const FRONTMATTER_PATTERN = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/u;
+
 /**
- * Skill files shared with other harnesses (e.g. Claude Code) open with a YAML
- * frontmatter block. The block is metadata, not prose, so the derived
- * description starts after it.
+ * Skill files shared with other harnesses (e.g. Claude Code, Codex) open with a
+ * YAML frontmatter block whose `description` is the canonical, harness-facing
+ * summary (often the "use when…" trigger text). Prefer it for the index; the
+ * first body paragraph is only a fallback for skills authored without
+ * frontmatter. Flat single-line scalars only, mirroring the cron/webhook job
+ * parsers, so `@mono-agent/context` stays dependency-free.
  */
+function readFrontmatterField(markdown: string, field: string): string {
+  const normalized = markdown.replace(/\r\n?/g, '\n');
+  const match = FRONTMATTER_PATTERN.exec(normalized);
+  if (match === null) {
+    return '';
+  }
+
+  for (const rawLine of (match[1] ?? '').split('\n')) {
+    const line = rawLine.trim();
+    if (line.length === 0 || line.startsWith('#')) {
+      continue;
+    }
+    const separator = line.indexOf(':');
+    if (separator === -1 || line.slice(0, separator).trim() !== field) {
+      continue;
+    }
+    return normalizeInlineText(stripFrontmatterQuotes(line.slice(separator + 1).trim()));
+  }
+
+  return '';
+}
+
+function stripFrontmatterQuotes(value: string): string {
+  if (value.length >= 2) {
+    const first = value[0];
+    const last = value[value.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
+}
+
 function stripFrontmatter(markdown: string): string {
   const normalized = markdown.replace(/\r\n?/g, '\n');
-  const match = /^---\n[\s\S]*?\n---[ \t]*(?:\n|$)/u.exec(normalized);
+  const match = FRONTMATTER_PATTERN.exec(normalized);
   return match === null ? normalized : normalized.slice(match[0].length);
 }
 

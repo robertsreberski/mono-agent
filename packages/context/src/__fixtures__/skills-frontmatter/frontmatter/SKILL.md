@@ -1,11 +1,11 @@
 ---
 name: frontmatter
-description: Harness-facing metadata that the index must not treat as prose.
+description: Use the YAML frontmatter description as the canonical skill summary.
 ---
 
 # Frontmatter Skill
 
-Works in harnesses that read YAML frontmatter and in mono-agent.
+Body prose the index falls back to only when frontmatter has no description.
 
 ## Usage
 
