@@ -2,6 +2,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { bucketConversationId, createSqliteHistoryStore } from "@mono-agent/history-store";
 import {
   SlackWebApiClient,
   loadSlackAdapterConfig,
@@ -65,6 +66,39 @@ export interface AdapterSendToolsRuntimeExtension {
   readonly cleanup: () => Promise<void>;
 }
 
+/**
+ * Where a proactive send is recorded so the destination channel sees it next
+ * turn. `dbPath` is the shared history db; `rollover`/`rolloverTimezone` mirror
+ * the responder's daily bucketing so the record keys to the same thread.
+ */
+export interface AdapterSendToolsHistoryConfig {
+  readonly dbPath: string;
+  readonly rollover?: string;
+  readonly rolloverTimezone?: string;
+}
+
+/** Appends a sent message into the destination conversation's shared history. */
+export interface SendRecorder {
+  record(conversationId: string, text: string): Promise<void>;
+}
+
+/**
+ * Build a recorder backed by the shared SQLite history store. A send is recorded
+ * as an `assistant` turn tagged `source: "proactive"` so the next live turn can
+ * tell a pushed message apart from an in-channel reply.
+ */
+export function createHistorySendRecorder(history: AdapterSendToolsHistoryConfig): SendRecorder {
+  const store = createSqliteHistoryStore({ path: history.dbPath });
+  return {
+    async record(conversationId, text) {
+      const bucketed = bucketConversationId(conversationId, history.rollover, history.rolloverTimezone, () => new Date());
+      await store.append(bucketed, [
+        { role: "assistant", content: text, source: "proactive", timestamp: new Date().toISOString() },
+      ]);
+    },
+  };
+}
+
 export interface AdapterSendToolsResolveOptions {
   readonly allowedTools?: readonly string[] | undefined;
   readonly disallowedTools?: readonly string[] | undefined;
@@ -105,16 +139,28 @@ export function adapterSendToolNames(settings: AdapterSendToolsSettings): readon
   return names;
 }
 
-export function adapterSendToolsMcpEnv(configPath: string, allowedTools: readonly string[]): Record<string, string> {
+export function adapterSendToolsMcpEnv(
+  configPath: string,
+  allowedTools: readonly string[],
+  history?: AdapterSendToolsHistoryConfig,
+): Record<string, string> {
   return {
     MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH: configPath,
     MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(allowedTools),
+    ...(history === undefined
+      ? {}
+      : {
+          MONO_AGENT_HISTORY_DB_PATH: history.dbPath,
+          ...(history.rollover === undefined ? {} : { MONO_AGENT_HISTORY_ROLLOVER: history.rollover }),
+          ...(history.rolloverTimezone === undefined ? {} : { MONO_AGENT_HISTORY_ROLLOVER_TZ: history.rolloverTimezone }),
+        }),
   };
 }
 
 export interface AdapterSendToolsChildConfig {
   readonly input: MonoAgentAppConfigInput;
   readonly allowedTools: readonly string[];
+  readonly history?: AdapterSendToolsHistoryConfig;
 }
 
 export function adapterSendToolsChildConfigFromEnv(env: Record<string, string | undefined>, cwd: string): AdapterSendToolsChildConfig {
@@ -122,9 +168,21 @@ export function adapterSendToolsChildConfigFromEnv(env: Record<string, string | 
   if (configPath === undefined) {
     throw new Error("adapter-send-tools: missing required environment (MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH).");
   }
+  const dbPath = optionalString(env.MONO_AGENT_HISTORY_DB_PATH);
+  const rollover = optionalString(env.MONO_AGENT_HISTORY_ROLLOVER);
+  const rolloverTimezone = optionalString(env.MONO_AGENT_HISTORY_ROLLOVER_TZ);
+  const history: AdapterSendToolsHistoryConfig | undefined =
+    dbPath === undefined
+      ? undefined
+      : {
+          dbPath,
+          ...(rollover === undefined ? {} : { rollover }),
+          ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
+        };
   return {
     input: { env, cwd, configPath },
     allowedTools: parseAllowedToolNames(env.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS),
+    ...(history === undefined ? {} : { history }),
   };
 }
 
@@ -132,13 +190,14 @@ export function adapterSendToolsMcpServerSpec(
   configPath: string,
   cwd: string,
   allowedTools: readonly string[],
+  history?: AdapterSendToolsHistoryConfig,
 ): Record<string, unknown> {
   return {
     type: "stdio",
     command: process.execPath,
     args: [fileURLToPath(new URL("./adapter-send-tools-main.js", import.meta.url))],
     cwd,
-    env: adapterSendToolsMcpEnv(configPath, allowedTools),
+    env: adapterSendToolsMcpEnv(configPath, allowedTools, history),
   };
 }
 
@@ -146,11 +205,12 @@ export function createAdapterSendToolsRuntimeExtension(
   configPath: string,
   cwd: string,
   allowedTools: readonly string[],
+  history?: AdapterSendToolsHistoryConfig,
 ): () => Promise<AdapterSendToolsRuntimeExtension> {
   return async () => ({
     runtimeOptions: {
       mcpServers: {
-        [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(configPath, cwd, allowedTools),
+        [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(configPath, cwd, allowedTools, history),
       },
     },
     cleanup: async () => {},
@@ -177,23 +237,41 @@ export function createAdapterSendToolsClients(settings: AdapterSendToolsSettings
 export function createAdapterSendToolsServer(
   settings: AdapterSendToolsSettings,
   clients: AdapterSendToolsClients,
+  recorder?: SendRecorder,
 ): McpServer {
   const server = new McpServer({ name: "agent-adapter-send-tools", version: "0.3.0" });
 
   if (settings.slack !== undefined && clients.slack !== undefined) {
-    registerSlackSendTool(server, settings.slack, clients.slack);
+    registerSlackSendTool(server, settings.slack, clients.slack, recorder);
   }
   if (settings.telegram !== undefined && clients.telegram !== undefined) {
-    registerTelegramSendTool(server, settings.telegram, clients.telegram);
+    registerTelegramSendTool(server, settings.telegram, clients.telegram, recorder);
   }
 
   return server;
+}
+
+/**
+ * Record a proactive send into the destination conversation's shared history,
+ * best-effort: the message already went out, so a recording failure must not
+ * fail the tool call.
+ */
+async function recordSend(recorder: SendRecorder | undefined, conversationId: string, text: string): Promise<void> {
+  if (recorder === undefined) {
+    return;
+  }
+  try {
+    await recorder.record(conversationId, text);
+  } catch {
+    // Best-effort: the send succeeded; swallow recording errors.
+  }
 }
 
 function registerSlackSendTool(
   server: McpServer,
   settings: SlackSendToolSettings,
   client: Pick<SlackWebApi, "chatPostMessage">,
+  recorder?: SendRecorder,
 ): void {
   server.registerTool(
     "slack_send_message",
@@ -219,6 +297,9 @@ function registerSlackSendTool(
         ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
         ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
       });
+      // Record the proactive send under the same conversationId the Slack adapter
+      // derives (slack:<channel>:<threadTs>) so the destination thread sees it.
+      await recordSend(recorder, `slack:${result.channel}:${args.thread_ts ?? result.ts}`, args.text);
       return {
         content: [{ type: "text", text: `Sent Slack message to ${result.channel} at ${result.ts}.` }],
         structuredContent: { ok: true, channel: result.channel, ts: result.ts },
@@ -231,6 +312,7 @@ function registerTelegramSendTool(
   server: McpServer,
   settings: TelegramSendToolSettings,
   client: Pick<TelegramMessageSender, "sendMessage">,
+  recorder?: SendRecorder,
 ): void {
   server.registerTool(
     "telegram_send_message",
@@ -254,6 +336,9 @@ function registerTelegramSendTool(
         ...(args.reply_to_message_id === undefined ? {} : { reply_to_message_id: args.reply_to_message_id }),
         ...(args.disable_web_page_preview === undefined ? {} : { disable_web_page_preview: args.disable_web_page_preview }),
       });
+      // Record under the same conversationId the Telegram adapter derives
+      // (telegram:<chat.id>) so the destination chat sees it next turn.
+      await recordSend(recorder, `telegram:${String(result.chat.id)}`, args.text);
       return {
         content: [{ type: "text", text: `Sent Telegram message ${result.message_id} to ${String(result.chat.id)}.` }],
         structuredContent: { ok: true, chat_id: result.chat.id, message_id: result.message_id },

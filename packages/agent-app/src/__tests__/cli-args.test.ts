@@ -40,6 +40,7 @@ describe("parseCliArgs", () => {
       follow: false,
       all: false,
       dryRun: false,
+      positionals: [],
     });
   });
 
@@ -55,6 +56,7 @@ describe("parseCliArgs", () => {
       follow: false,
       all: false,
       dryRun: false,
+      positionals: [],
     });
   });
 
@@ -89,9 +91,21 @@ describe("parseCliArgs", () => {
       follow: false,
       all: false,
       dryRun: false,
+      positionals: [],
     });
     expect(parseCliArgs(["install-skill"])).toMatchObject({ command: "install-skill", force: false });
     expect(() => parseCliArgs(["install-skill", "--target", "browser"])).toThrow(/--target/u);
+  });
+
+  it("parses conversations subcommands, positionals, and --limit", () => {
+    expect(parseCliArgs(["conversations"])).toMatchObject({ command: "conversations", positionals: [] });
+    expect(parseCliArgs(["conversations", "list"])).toMatchObject({ command: "conversations", positionals: ["list"] });
+    expect(parseCliArgs(["conversations", "show", "telegram:42", "--limit", "5"])).toMatchObject({
+      command: "conversations",
+      positionals: ["show", "telegram:42"],
+      limit: 5,
+    });
+    expect(() => parseCliArgs(["conversations", "show", "telegram:42", "--limit", "0"])).toThrow(/--limit/u);
   });
 
   it("parses backfill flags (--run/--all/--since/--until/--dry-run)", () => {

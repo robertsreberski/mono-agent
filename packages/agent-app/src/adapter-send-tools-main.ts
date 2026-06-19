@@ -5,6 +5,7 @@ import {
   adapterSendToolsChildConfigFromEnv,
   createAdapterSendToolsClients,
   createAdapterSendToolsServer,
+  createHistorySendRecorder,
   resolveAdapterSendToolsSettings,
 } from "./adapter-send-tools.js";
 
@@ -17,7 +18,8 @@ async function main(): Promise<void> {
     throw new Error("no adapter send tools configured.");
   }
   const clients = createAdapterSendToolsClients(settings);
-  const server = createAdapterSendToolsServer(settings, clients);
+  const recorder = childConfig.history === undefined ? undefined : createHistorySendRecorder(childConfig.history);
+  const server = createAdapterSendToolsServer(settings, clients, recorder);
   await server.connect(new StdioServerTransport());
 }
 

@@ -3,9 +3,12 @@ import { basename, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { createSqliteHistoryStore } from "@mono-agent/history-store";
+
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp } from "./app.js";
 import { phoenixAppBaseUrl } from "./app-config.js";
+import { resolveHistoryDbPath } from "./history.js";
 import { runBackfill } from "./backfill.js";
 import {
   defaultBackgroundDeps,
@@ -28,7 +31,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
+const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "conversations"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -57,12 +60,16 @@ interface ParsedCliArgs {
   readonly until?: string;
   /** backfill: map + serialize but do not POST. */
   readonly dryRun: boolean;
+  /** conversations: positional args (subcommand + conversationId). */
+  readonly positionals: readonly string[];
+  /** conversations show: cap the number of turns printed. */
+  readonly limit?: number;
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    return { command: "help", force: false, foreground: false, follow: false, all: false, dryRun: false };
+    return { command: "help", force: false, foreground: false, follow: false, all: false, dryRun: false, positionals: [] };
   }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
@@ -85,10 +92,21 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let since: string | undefined;
   let until: string | undefined;
   let dryRun = false;
+  let limit: number | undefined;
+  const positionals: string[] = [];
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
     switch (flag) {
+      case "--limit": {
+        const raw = requireValue(rest, ++i, flag);
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100_000) {
+          throw new Error("--limit must be a positive integer between 1 and 100000.");
+        }
+        limit = parsed;
+        break;
+      }
       case "--config":
         configPath = requireValue(rest, ++i, flag);
         break;
@@ -162,7 +180,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       }
       default:
-        throw new Error(`Unknown flag \`${flag}\` for \`mono-agent ${command}\`.`);
+        if (flag === undefined || flag.startsWith("-")) {
+          throw new Error(`Unknown flag \`${flag}\` for \`mono-agent ${command}\`.`);
+        }
+        positionals.push(flag);
+        break;
     }
   }
 
@@ -183,6 +205,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(since === undefined ? {} : { since }),
     ...(until === undefined ? {} : { until }),
     dryRun,
+    positionals,
+    ...(limit === undefined ? {} : { limit }),
   };
 }
 
@@ -246,6 +270,13 @@ Usage:
       re-running overwrites rather than duplicating. --dry-run maps and
       serializes without sending.
 
+  mono-agent conversations [list]
+  mono-agent conversations show <conversationId> [--limit <n>]
+      Inspect durable conversation history. 'list' shows known conversationIds
+      (e.g. telegram:42) with message counts and the last snippet — useful for
+      finding the id a cron/webhook should send to. 'show' prints recent turns;
+      proactively-sent messages are tagged.
+
 Background mode runs the agent under launchd, keeping it alive across logins
 (auto-restarting only on crash) until you run stop. Secrets are read from the
 .env file in the working directory, the same as foreground mode. The background
@@ -295,6 +326,56 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.until === undefined ? {} : { until: args.until }),
         dryRun: args.dryRun,
       });
+    case "conversations":
+      return await runConversations(args);
+  }
+}
+
+async function runConversations(args: ParsedCliArgs): Promise<number> {
+  const sub = args.positionals[0] ?? "list";
+  const cwd = process.cwd();
+  const dbPath = await resolveHistoryDbPath({
+    env: process.env,
+    cwd,
+    configPath: resolve(cwd, args.configPath ?? "mono-agent.config.json"),
+  });
+  const store = createSqliteHistoryStore({ path: dbPath });
+  try {
+    if (sub === "list") {
+      const rows = store.listConversations();
+      if (rows.length === 0) {
+        process.stdout.write("No conversations recorded yet.\n");
+        return 0;
+      }
+      for (const row of rows) {
+        const last = row.lastTimestamp === undefined ? "" : `, last ${row.lastTimestamp}`;
+        const role = row.lastRole === undefined ? "" : ` (${row.lastRole})`;
+        process.stdout.write(`${row.conversationId}\n    ${row.messageCount} messages${last}${role}\n    ${row.lastSnippet}\n`);
+      }
+      return 0;
+    }
+    if (sub === "show") {
+      const id = args.positionals[1];
+      if (id === undefined) {
+        process.stderr.write("Usage: mono-agent conversations show <conversationId> [--limit <n>]\n");
+        return 2;
+      }
+      const messages = store.showConversation(id, args.limit);
+      if (messages.length === 0) {
+        process.stdout.write(`No messages recorded for ${id}.\n`);
+        return 0;
+      }
+      for (const message of messages) {
+        const tag = message.source === undefined ? "" : ` (${message.source})`;
+        const ts = message.timestamp === undefined ? "" : ` — ${message.timestamp}`;
+        process.stdout.write(`[${message.role}${tag}${ts}]\n${message.content}\n\n`);
+      }
+      return 0;
+    }
+    process.stderr.write(`Unknown conversations subcommand \`${sub}\`. Expected list or show.\n`);
+    return 2;
+  } finally {
+    store.close();
   }
 }
 

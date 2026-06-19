@@ -108,6 +108,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "history-store",
+    name: "@mono-agent/history-store",
+    category: "context",
+    responsibility: "Provides a durable per-conversation chat history substrate over SQLite, shared across channels by conversationId.",
+    allowedDependencyCategories: ["core", "context"],
+    publishable: true,
+  },
+  {
     dir: "memory-bujo",
     name: "@mono-agent/memory-bujo",
     category: "context",

@@ -112,7 +112,7 @@ function normalizeHistory(history: BuildContextInput['history']): readonly Histo
     }
 
     const content = normalizeRequiredMarkdown(raw.content, `history[${index}].content`);
-    const normalized: { role: ContextRole; content: string; name?: string; timestamp?: string } = {
+    const normalized: { role: ContextRole; content: string; name?: string; timestamp?: string; source?: string } = {
       role: role as ContextRole,
       content,
     };
@@ -122,6 +122,9 @@ function normalizeHistory(history: BuildContextInput['history']): readonly Histo
     }
     if (raw.timestamp !== undefined) {
       normalized.timestamp = normalizeOptionalInlineString(raw.timestamp, `history[${index}].timestamp`);
+    }
+    if (raw.source !== undefined) {
+      normalized.source = normalizeOptionalInlineString(raw.source, `history[${index}].source`);
     }
 
     return normalized;
@@ -268,7 +271,8 @@ function renderHistory(history: readonly HistoryMessage[]): NormalizedBlock {
   return {
     content: history
       .map((message, index) => {
-        const labelParts = [`${index + 1}. ${message.role}`];
+        const role = message.source === undefined ? message.role : `${message.role} (${message.source})`;
+        const labelParts = [`${index + 1}. ${role}`];
         if (message.name !== undefined) {
           labelParts.push(message.name);
         }

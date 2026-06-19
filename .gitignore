@@ -16,6 +16,8 @@ packages/*/dist/
 demos/*/dist/
 # memory-bujo SQLite index — disposable, rebuildable from canonical markdown (spec §6.1)
 memory.db
+# conversation-history SQLite store (@mono-agent/history-store) — disposable runtime artifact
+history.db
 *.db-wal
 *.db-shm
 

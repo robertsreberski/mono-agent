@@ -21,6 +21,12 @@ export interface HistoryMessage {
   readonly content: string;
   readonly name?: string;
   readonly timestamp?: string;
+  /**
+   * Optional provenance annotation rendered alongside the role, e.g. `proactive`
+   * for a message the agent pushed to the channel out-of-band (a cron/webhook
+   * send) rather than as a live reply. Lets the next turn tell the two apart.
+   */
+  readonly source?: string;
 }
 
 export interface SkillIndexEntry {

@@ -138,6 +138,9 @@ importers:
       '@mono-agent/cron-adapter':
         specifier: workspace:0.4.0
         version: link:../cron-adapter
+      '@mono-agent/history-store':
+        specifier: workspace:0.4.0
+        version: link:../history-store
       '@mono-agent/memory-bujo':
         specifier: workspace:0.4.0
         version: link:../memory-bujo
@@ -319,6 +322,19 @@ importers:
       cron-parser:
         specifier: ^5.5.0
         version: 5.5.0
+
+  packages/history-store:
+    dependencies:
+      '@mono-agent/context':
+        specifier: workspace:0.4.0
+        version: link:../context
+      better-sqlite3:
+        specifier: ^11.8.1
+        version: 11.10.0
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.12
+        version: 7.6.13
 
   packages/memory-bujo:
     dependencies:

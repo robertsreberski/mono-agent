@@ -7,6 +7,8 @@ import {
   createConfiguredMemory,
 } from "@mono-agent/agent-host";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { createSqliteHistoryStore } from "@mono-agent/history-store";
+import type { SqliteConversationHistoryStore } from "@mono-agent/history-store";
 import { registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
@@ -30,6 +32,8 @@ import {
   createAdapterSendToolsRuntimeExtension,
   resolveAdapterSendToolsSettings,
 } from "./adapter-send-tools.js";
+import { resolveHistorySettings } from "./history.js";
+import type { HistorySettings } from "./history.js";
 import { startMemoryRituals } from "./memory-rituals.js";
 import type { RunningRituals } from "./memory-rituals.js";
 import {
@@ -166,6 +170,13 @@ class MonoAgentAppController implements MonoAgentApp {
   // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
   private sharedMemory: ReturnType<typeof createConfiguredMemory> = undefined;
   private sharedMemoryBuilt = false;
+  // One shared persistent conversation-history store across all channel responders
+  // (and reachable from the send-tool subprocess via its db path), so a proactive
+  // send lands where the destination channel reads. Rows are isolated per
+  // conversationId — this is a shared substrate, not a cross-channel merge.
+  private sharedHistory: SqliteConversationHistoryStore | undefined;
+  private sharedHistoryBuilt = false;
+  private historySettings: HistorySettings | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
 
@@ -220,6 +231,7 @@ class MonoAgentAppController implements MonoAgentApp {
       }
       this.stopMemoryRituals();
       await this.resetSharedMemory();
+      this.resetSharedHistory();
       await this.stopTraceSource(`${reason}:reload`);
       await this.startTraceability(reason);
       await this.startExporters(reason);
@@ -378,6 +390,7 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     this.stopMemoryRituals();
     await this.resetSharedMemory();
+    this.resetSharedHistory();
     await this.stopTraceSource("stop");
     for (const runtime of this.activeRuntimes.splice(0)) {
       await runtime.disposeAllSessions?.().catch(() => undefined);
@@ -571,6 +584,7 @@ class MonoAgentAppController implements MonoAgentApp {
       this.activeRuntimes.push(runtime);
     }
     const memory = this.memoryStore(coreConfig, runtime);
+    const history = await this.historyStore(coreConfig);
     const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([memoryRecall, adapterSendTools]);
@@ -579,6 +593,7 @@ class MonoAgentAppController implements MonoAgentApp {
       config: coreConfig,
       runtime,
       ...(memory !== undefined && { memory }),
+      ...(history !== undefined && { historyStore: history }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
       // Thread run-identifying context onto exported spans and surface per-run
       // export warnings to `exporterStatus` (agent-host only builds the exporter
@@ -631,7 +646,19 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     const toolNames = adapterSendToolNames(settings);
     this.logger?.info?.("Adapter send tools enabled.", { tools: toolNames });
-    return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames);
+    // When persistent history is on, let send tools record each proactive send
+    // into the destination conversation's shared history. historySettings is
+    // populated by historyStore(), called earlier in buildResponder.
+    const history = this.historySettings?.persist
+      ? {
+          dbPath: this.historySettings.dbPath,
+          ...(this.historySettings.rollover === undefined ? {} : { rollover: this.historySettings.rollover }),
+          ...(this.historySettings.rolloverTimezone === undefined
+            ? {}
+            : { rolloverTimezone: this.historySettings.rolloverTimezone }),
+        }
+      : undefined;
+    return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames, history);
   }
 
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */
@@ -645,6 +672,40 @@ class MonoAgentAppController implements MonoAgentApp {
       this.sharedMemoryBuilt = true;
     }
     return this.sharedMemory;
+  }
+
+  /**
+   * Build the shared persistent conversation-history store once and share it
+   * across every channel responder. Resolves persistence settings (default on)
+   * and caches them so the adapter send tools can reach the same db. Returns
+   * undefined when persistence is disabled (channels fall back to the per-harness
+   * in-memory default).
+   */
+  private async historyStore(coreConfig: MonoAgentConfig): Promise<SqliteConversationHistoryStore | undefined> {
+    if (!this.sharedHistoryBuilt) {
+      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      const settings = await resolveHistorySettings(input, coreConfig);
+      this.historySettings = settings;
+      if (settings.persist) {
+        this.sharedHistory = createSqliteHistoryStore({ path: settings.dbPath, maxMessages: settings.maxMessages });
+        this.logger?.info?.("Persistent conversation history enabled.", { path: settings.dbPath });
+      }
+      this.sharedHistoryBuilt = true;
+    }
+    return this.sharedHistory;
+  }
+
+  /** Close + clear the shared history store (on config reload or stop) so the next build is fresh. */
+  private resetSharedHistory(): void {
+    const store = this.sharedHistory;
+    this.sharedHistory = undefined;
+    this.sharedHistoryBuilt = false;
+    this.historySettings = undefined;
+    try {
+      store?.close();
+    } catch {
+      // Closing a SQLite handle never throws meaningfully here; ignore.
+    }
   }
 
   /** Close + clear the shared memory store (on config reload or stop) so the next build is fresh. */

@@ -34,6 +34,7 @@
     "@mono-agent/agent-host": "workspace:0.4.0",
     "@mono-agent/config": "workspace:0.4.0",
     "@mono-agent/cron-adapter": "workspace:0.4.0",
+    "@mono-agent/history-store": "workspace:0.4.0",
     "@mono-agent/memory-bujo": "workspace:0.4.0",
     "@mono-agent/memory-search": "workspace:0.4.0",
     "@mono-agent/observability": "workspace:0.4.0",

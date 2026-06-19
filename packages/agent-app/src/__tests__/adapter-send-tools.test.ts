@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { createSqliteHistoryStore } from "@mono-agent/history-store";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import type {
   SlackChatPostMessageParams,
@@ -25,9 +26,10 @@ import {
   adapterSendToolsMcpEnv,
   adapterSendToolsMcpServerSpec,
   createAdapterSendToolsServer,
+  createHistorySendRecorder,
   resolveAdapterSendToolsSettings,
 } from "../adapter-send-tools.js";
-import type { AdapterSendToolsSettings } from "../adapter-send-tools.js";
+import type { AdapterSendToolsSettings, SendRecorder } from "../adapter-send-tools.js";
 
 let dir: string;
 
@@ -164,6 +166,106 @@ describe("adapter send tools MCP spec/env", () => {
     expect(String((spec.args as string[])[0])).not.toContain("xoxb-slack");
     expect(String((spec.args as string[])[0])).not.toContain("telegram-token");
   });
+
+  it("round-trips history recording config through child-process env", () => {
+    const allowedTools = ["telegram_send_message"];
+    const env = adapterSendToolsMcpEnv("/agent/mono-agent.config.json", allowedTools, {
+      dbPath: "/data/history.db",
+      rollover: "daily",
+      rolloverTimezone: "Europe/Rome",
+    });
+    expect(env).toMatchObject({
+      MONO_AGENT_HISTORY_DB_PATH: "/data/history.db",
+      MONO_AGENT_HISTORY_ROLLOVER: "daily",
+      MONO_AGENT_HISTORY_ROLLOVER_TZ: "Europe/Rome",
+    });
+    expect(adapterSendToolsChildConfigFromEnv(env, "/agent").history).toEqual({
+      dbPath: "/data/history.db",
+      rollover: "daily",
+      rolloverTimezone: "Europe/Rome",
+    });
+  });
+});
+
+describe("send recording with provenance", () => {
+  it("records each successful send under the destination conversationId", async () => {
+    const recorded: Array<{ conversationId: string; text: string }> = [];
+    const recorder: SendRecorder = {
+      async record(conversationId, text) {
+        recorded.push({ conversationId, text });
+      },
+    };
+    const server = createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+            return { ok: true, channel: params.channel, ts: "171.999" };
+          },
+        },
+        telegram: {
+          async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+            return { message_id: 5, chat: { id: params.chat_id }, text: params.text };
+          },
+        },
+      },
+      recorder,
+    );
+
+    await withMcpClient(server, async (client) => {
+      // Slack in-thread → keys on the thread_ts the adapter would use.
+      await client.callTool({ name: "slack_send_message", arguments: { channel: "C1", text: "threaded", thread_ts: "171.1" } });
+      // Slack without a thread → keys on the new message ts.
+      await client.callTool({ name: "slack_send_message", arguments: { channel: "C1", text: "fresh" } });
+      // Telegram → keys on the chat id.
+      await client.callTool({ name: "telegram_send_message", arguments: { chat_id: -100, text: "ping" } });
+    });
+
+    expect(recorded).toEqual([
+      { conversationId: "slack:C1:171.1", text: "threaded" },
+      { conversationId: "slack:C1:171.999", text: "fresh" },
+      { conversationId: "telegram:-100", text: "ping" },
+    ]);
+  });
+
+  it("does not record when a destination is rejected by the allowlist", async () => {
+    const recorded: string[] = [];
+    const recorder: SendRecorder = {
+      async record(conversationId) {
+        recorded.push(conversationId);
+      },
+    };
+    const server = createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      { slack: { chatPostMessage: vi.fn() }, telegram: { sendMessage: vi.fn() } },
+      recorder,
+    );
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({ name: "telegram_send_message", arguments: { chat_id: 999, text: "blocked" } });
+      expect(result.isError).toBe(true);
+    });
+    expect(recorded).toEqual([]);
+  });
+
+  it("createHistorySendRecorder writes a proactive turn into the bucketed conversation (SQLite)", async () => {
+    const dbPath = join(dir, "history.db");
+    const recorder = createHistorySendRecorder({ dbPath, rollover: "daily", rolloverTimezone: "UTC" });
+    await recorder.record("telegram:42", "morning brief");
+
+    const store = createSqliteHistoryStore({ path: dbPath });
+    try {
+      // Recorded under today's daily bucket, tagged proactive.
+      const conversations = store.listConversations();
+      expect(conversations).toHaveLength(1);
+      const id = conversations[0]!.conversationId;
+      expect(id).toMatch(/^telegram:42#\d{4}-\d{2}-\d{2}$/u);
+      const messages = await store.load(id);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ role: "assistant", content: "morning brief", source: "proactive" });
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("adapter send MCP tools", () => {
@@ -284,12 +386,27 @@ describe("adapter send tool app composition", () => {
       { append: async () => undefined },
     );
 
+    // The shared persistent history store is injected into the responder, so the
+    // turn is durably written under its conversationId (read back from disk).
+    const historyDb = createSqliteHistoryStore({ path: join(dir, ".mono-agent", "history.db") });
+    try {
+      expect((await historyDb.load("c")).map((message) => `${message.role}:${message.content}`)).toEqual([
+        "user:hi",
+        "assistant:ok",
+      ]);
+    } finally {
+      historyDb.close();
+    }
+
     const server = fake.calls[0]?.options.mcpServers?.[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as { env?: Record<string, string> } | undefined;
     expect(server).toMatchObject({ type: "stdio", command: process.execPath, cwd: dir });
     expect(server?.env).toMatchObject({
       MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH: configPath,
       MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(["slack_send_message", "telegram_send_message"]),
     });
+    // Persistent history is on by default, so the send tools receive the shared
+    // history db path to record proactive sends into the destination channel.
+    expect(server?.env?.MONO_AGENT_HISTORY_DB_PATH).toMatch(/history\.db$/u);
     expect(JSON.stringify(server?.env)).not.toContain("xoxb-slack");
     expect(JSON.stringify(server?.env)).not.toContain("telegram-token");
 
