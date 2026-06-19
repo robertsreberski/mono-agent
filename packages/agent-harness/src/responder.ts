@@ -17,7 +17,22 @@ export class AgentHarnessFailureError extends Error {
   }
 }
 
-export function createAgentResponder(options: { readonly harness: AgentHarness }): AgentResponder & {
+export type SessionRollover = "none" | "daily";
+
+export function createAgentResponder(options: {
+  readonly harness: AgentHarness;
+  /**
+   * Session rollover policy applied centrally to EVERY channel (cron, telegram,
+   * slack, whatsapp, …) that routes through this responder. "daily" appends a
+   * local-date bucket to the conversationId so a new calendar day starts a fresh
+   * session (queue/warm-session/durable transcript/history all key off
+   * conversationId), bounding unbounded growth. Default "none" = unchanged.
+   */
+  readonly rollover?: SessionRollover;
+  readonly rolloverTimezone?: string;
+  /** Injectable clock for the rollover date; defaults to the system clock. */
+  readonly now?: () => Date;
+}): AgentResponder & {
   dispose(): Promise<void>;
   cancel(conversationId: string, reason?: unknown): void;
 } {
@@ -32,17 +47,23 @@ export function createAgentResponder(options: { readonly harness: AgentHarness }
     ? options.harness.submit.bind(options.harness)
     : options.harness.run.bind(options.harness);
 
+  const now = options.now ?? ((): Date => new Date());
+  const bucket = (conversationId: string): string =>
+    bucketConversationId(conversationId, options.rollover, options.rolloverTimezone, now);
+
   return {
     async dispose(): Promise<void> {
       await options.harness.dispose?.();
     },
     cancel(conversationId: string, reason?: unknown): void {
-      options.harness.cancel?.(conversationId, reason);
+      // Bucket identically to respond() so the cancel targets the same queue/
+      // session key the in-flight turn is using.
+      options.harness.cancel?.(bucket(conversationId), reason);
     },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       const runtimeEventStream = createRuntimeEventStream(stream);
       const response = await invoke({
-        conversationId: request.conversationId,
+        conversationId: bucket(request.conversationId),
         userMessage: request.text,
         abortSignal: request.abortSignal,
         ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
@@ -225,4 +246,37 @@ function hasOwn(value: Record<string, unknown>, key: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Append a local-date bucket (`#YYYY-MM-DD`) to a conversationId under the
+ * "daily" rollover policy. Idempotent — re-bucketing within the same day is a
+ * no-op — and a passthrough when rollover is off. Exported for unit testing.
+ */
+export function bucketConversationId(
+  conversationId: string,
+  rollover: SessionRollover | undefined,
+  timezone: string | undefined,
+  now: () => Date,
+): string {
+  if (rollover !== "daily") {
+    return conversationId;
+  }
+  const suffix = `#${formatRolloverDay(now(), timezone)}`;
+  return conversationId.endsWith(suffix) ? conversationId : `${conversationId}${suffix}`;
+}
+
+function formatRolloverDay(date: Date, timezone: string | undefined): string {
+  // en-CA renders as YYYY-MM-DD. Fall back to the system-local date when the
+  // configured timezone is invalid rather than throwing on a hot path.
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      ...(timezone === undefined ? {} : { timeZone: timezone }),
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+  }
 }

@@ -144,9 +144,9 @@ createRuntime({
   resolveCustomPricing,    // (parsed) => NormalizedPricing | null
   resolvePiApiKey,         // async (provider) => string | undefined
   persistArtifact,         // ({ filename, buffer, toolName, toolUseId }) => path | null
-  onCompactionRecorded,    // (compactionRow) => void — legacy hook; the sole pi
-                           // bridge (pi-agent-core AgentHarness) owns context
-                           // handling and never invokes this, so it is inert today
+  onCompactionRecorded,    // (compactionRow) => void — fired when the pi bridge
+                           // runs an automatic compaction (proactive or reactive
+                           // recovery) via AgentHarness.compact()
 
   // -- tool runtime context (process-level config for the tool kernel) --
   workspace,               // primary allowed root for path-based tools
@@ -408,18 +408,20 @@ Hosts that don't supply `persistArtifact` get the truncation summary but no on-d
 
 ## Context compaction
 
-Context/window management is delegated to the provider. The sole pi bridge runs on
-pi-agent-core's native `AgentHarness`, which owns its own context handling and does
-**not** perform an automatic in-loop summarization pass driven by this package; runs
-therefore report `context_compaction_applied: null` (unknown/unsupported) rather than
-asserting a compaction ran. The other backends manage their windows per their own
-behavior. (`docs/feature-registry.md` is the source of truth for this row.)
+The sole pi bridge runs on pi-agent-core's native `AgentHarness`. pi performs **no**
+automatic in-loop compaction, so the bridge drives it: before each turn it estimates the
+running model's context usage and calls `AgentHarness.compact()` when near the window
+(proactive), and if a turn still overflows it compacts once and re-prompts (reactive
+recovery). The context window auto-tracks the model actually serving the request
+(`harness.getModel()`), self-correcting from any real ceiling stated in an overflow error.
+Runs report `context_compaction_applied: true` (fired), `false` (enabled but not needed),
+or `null` (disabled). The other backends manage their windows per their own behavior.
+(`docs/feature-registry.md` is the source of truth for this row.)
 
-`@mono-agent/agent-runtime/agent/compaction.js` (`createAgentCompactionManager(...)`,
-`agent_compaction_*` settings) and the `onCompactionRecorded(record)` host callback are
-retained from the removed hand-rolled pi-sdk path. They are exported for back-compat and
-custom hosts but are **not** wired into any active bridge today, so the callback never
-fires on a standard run.
+`resolveAgentCompactionPolicy(...)` (the `agent_compaction_*` settings: trigger ratio,
+keep-recent, enable/disable) and the `onCompactionRecorded(record)` host callback (fired
+on each automatic compaction) are exported from
+`@mono-agent/agent-runtime/agent/compaction.js` and consumed by the pi bridge.
 
 ## Advanced exports
 
@@ -428,7 +430,7 @@ The package exposes its inner pieces via subpath imports:
 ```js
 import { resolveRuntimeBridge, listRuntimeBridges, runtimeCapabilities } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 import { generateClaudeResponse } from "@mono-agent/agent-runtime/ai/providers/claude-sdk.js";
-import { createAgentCompactionManager, estimateFirstTurnInput } from "@mono-agent/agent-runtime/agent/compaction.js";
+import { resolveAgentCompactionPolicy, isLikelyContextTermination } from "@mono-agent/agent-runtime/agent/compaction.js";
 import { configureToolRuntime, readToolRuntime } from "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js";
 // ...
 ```

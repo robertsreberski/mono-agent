@@ -19,7 +19,14 @@
 // The result/event contract is the package's unified runtime-result shape, so
 // callers and the test suite see the same artifact the retired bridge produced.
 
-import { AgentHarness, InMemorySessionRepo, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
+import {
+  AgentHarness,
+  InMemorySessionRepo,
+  JsonlSessionRepo,
+  calculateContextTokens,
+  estimateTokens,
+  getLastAssistantUsage,
+} from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
@@ -53,6 +60,7 @@ import {
 import {
   isContextLimitError,
   normalizePiErrorMessage,
+  parseContextLimitFromError,
 } from "./pi-errors.js";
 
 function usageFromMessages(messages = []) {
@@ -134,6 +142,129 @@ function failureKindForPiError(message, diagnostics, { maxTurnsHit = false } = {
     return "usage_limit";
   }
   return "provider_unavailable";
+}
+
+// AUTO-COMPACTION. pi-agent-core performs NO automatic in-loop compaction
+// (shouldCompact/compact are exported helpers its loop never calls), so this
+// bridge drives it: proactively before a turn when the running model's context
+// is near the window, and reactively (compact + single re-prompt) if a turn
+// still overflows. The window auto-tracks the model actually serving the request
+// and self-corrects from any real ceiling stated in an overflow error.
+
+// Per-process cache of real context-window ceilings discovered from overflow
+// errors, keyed by model reference/id. The long-running host re-learns quickly
+// after a restart; this just spares repeated first-overflow round-trips.
+const discoveredContextWindows = new Map();
+
+function modelWindowKey(harness, runtime, resolved) {
+  const live = typeof harness?.getModel === "function" ? harness.getModel() : null;
+  return resolved?.reference || runtime?.model?.id || live?.id || "unknown";
+}
+
+// The window of the model that ACTUALLY serves this request: prefer the harness's
+// live model (authoritative for native pi models), fall back to the resolved
+// runtime model. Returns 0 when unknown so callers can skip the proactive trigger.
+function liveModelContextWindow(harness, runtime) {
+  const live = typeof harness?.getModel === "function" ? harness.getModel() : null;
+  const win = Number(live?.contextWindow) || Number(runtime?.model?.contextWindow) || 0;
+  return win > 0 ? win : 0;
+}
+
+function effectiveContextWindow(harness, runtime, resolved) {
+  const declared = liveModelContextWindow(harness, runtime);
+  const discovered = discoveredContextWindows.get(modelWindowKey(harness, runtime, resolved));
+  if (Number.isFinite(discovered) && discovered > 0) {
+    return declared > 0 ? Math.min(declared, discovered) : discovered;
+  }
+  return declared;
+}
+
+function recordDiscoveredContextWindow(harness, runtime, resolved, limit) {
+  const n = Number(limit);
+  if (!Number.isFinite(n) || n <= 0) return;
+  const key = modelWindowKey(harness, runtime, resolved);
+  const existing = discoveredContextWindows.get(key);
+  discoveredContextWindows.set(key, Number.isFinite(existing) && existing > 0 ? Math.min(existing, n) : n);
+}
+
+// Best-effort estimate of the current session's context size. The last assistant
+// usage is authoritative (it reflects what the provider actually counted,
+// including cache reads), but it can be stale/zero (e.g. seeded history), so we
+// take the MAX of the usage-based count and a raw per-message estimate. Either
+// being large is a reason to compact; overcounting only compacts slightly early.
+async function estimateCurrentContextTokens(session) {
+  let usageTokens = 0;
+  let rawTokens = 0;
+  try {
+    const usage = getLastAssistantUsage(await session.getEntries());
+    if (usage) usageTokens = Number(calculateContextTokens(usage)) || 0;
+  } catch { /* ignore — fall back to the raw estimate */ }
+  try {
+    const context = await session.buildContext();
+    for (const message of context?.messages || []) rawTokens += Number(estimateTokens(message)) || 0;
+  } catch { /* ignore — usage-based estimate stands */ }
+  if (usageTokens === 0 && rawTokens === 0) return { tokens: 0, source: "unavailable" };
+  return usageTokens >= rawTokens
+    ? { tokens: usageTokens, source: "usage" }
+    : { tokens: rawTokens, source: "estimate" };
+}
+
+// Run a single guarded compaction. Requires the harness idle (callers
+// waitForIdle first). Never throws — classifies AgentHarnessError into a warning
+// and reports back whether anything was compacted. Fires onCompactionRecorded on
+// success so a host can persist the compaction row.
+async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, onCompactionRecorded, runId, model }) {
+  try {
+    const result = await harness.compact();
+    const tokensBefore = Number(result?.tokensBefore) || null;
+    onEvent?.({
+      type: "runtime_warning",
+      warning_kind: "context_compaction_applied",
+      source: "pi",
+      trigger,
+      tokens_before: tokensBefore,
+    });
+    if (typeof onCompactionRecorded === "function") {
+      try {
+        onCompactionRecorded({
+          task_run_id: runId || null,
+          trigger,
+          provider_kind: "pi",
+          model: model || null,
+          tokens_before: tokensBefore,
+          summary: result?.summary || "",
+          first_kept_entry_id: result?.firstKeptEntryId || null,
+          status: "succeeded",
+          created_at: Date.now(),
+        });
+      } catch (err) {
+        runtimeWarnings.push({
+          warning_kind: "context_compaction_record_failed",
+          source: "pi",
+          message: err?.message || String(err),
+        });
+      }
+    }
+    return { applied: true, tokensBefore, nothingToCompact: false };
+  } catch (err) {
+    const message = err?.message || String(err);
+    const code = err?.code;
+    const nothingToCompact = code === "compaction" && /nothing to compact/i.test(message);
+    const warningKind = nothingToCompact
+      ? "context_compaction_nothing_to_compact"
+      : code === "auth"
+        ? "context_compaction_auth_failed"
+        : code === "busy"
+          ? "context_compaction_busy"
+          : "context_compaction_failed";
+    runtimeWarnings.push({ warning_kind: warningKind, source: "pi", trigger, message });
+    return { applied: false, tokensBefore: null, nothingToCompact };
+  }
+}
+
+function isReactiveCompactionCandidate(errorMessage, diagnostics) {
+  if (!errorMessage) return false;
+  return isContextLimitError(errorMessage) || isLikelyContextTermination(errorMessage, diagnostics);
 }
 
 async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnings }) {
@@ -544,6 +675,16 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // agent_search_result_limit, ...) on top of the 256KB hard ceiling.
     const toolLimits = resolveAgentCompactionPolicy(options.settings || {}, runtime.model);
 
+    // Auto-compaction state. The compaction policy is (re)computed at the
+    // decision point (Hook B) against the model actually serving the request, so
+    // it is declared there; these flags track whether a compaction fired so the
+    // run reports context_compaction_applied honestly and never double-compacts.
+    let contextCompactionApplied = false;
+    let contextCompactionReactiveAttempted = false;
+    let contextCompactedThisRun = false;
+    let compactionPolicy = null;
+    const contextCompactionDiagnostics = {};
+
     const onTruncate = (info) => {
       try {
         onEvent({
@@ -807,6 +948,47 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId });
     }
 
+    // Compaction policy against the LIVE model's context window (auto-recognized
+    // from the model actually serving the request, lowered by any ceiling learned
+    // from a prior overflow). Drives the proactive trigger + reactive recovery.
+    compactionPolicy = resolveAgentCompactionPolicy(
+      options.settings || {},
+      { contextWindow: effectiveContextWindow(harness, runtime, resolved) },
+    );
+
+    // Proactive compaction: if the session is already near the window, compact
+    // BEFORE issuing the request so a long-lived session never overflows.
+    if (compactionPolicy.enabled && compactionPolicy.contextWindow > 0 && !options.abortSignal?.aborted) {
+      const est = await estimateCurrentContextTokens(session);
+      if (est.tokens >= compactionPolicy.triggerTokens) {
+        await harness.waitForIdle();
+        if (!options.abortSignal?.aborted) {
+          const res = await tryCompact(harness, {
+            trigger: "proactive",
+            onEvent,
+            runtimeWarnings,
+            onCompactionRecorded: options.onCompactionRecorded,
+            runId: options.runId,
+            model: reference,
+          });
+          if (res.applied) {
+            contextCompactionApplied = true;
+            contextCompactedThisRun = true;
+            Object.assign(contextCompactionDiagnostics, {
+              context_compaction_proactive: true,
+              context_compaction_tokens_before: res.tokensBefore,
+              context_compaction_estimate_source: est.source,
+              context_window: compactionPolicy.contextWindow,
+            });
+            // Compaction collapses the transcript prefix, so the pre-run baseline
+            // no longer aligns. Re-anchor it to the compacted length so the run's
+            // own turns (issued next) slice out correctly in captureState.
+            sessionBaselineCount = (await session.buildContext()).messages.length;
+          }
+        }
+      }
+    }
+
     onEvent({
       type: "provider_request_started",
       sdk: resolved.sdk,
@@ -906,6 +1088,65 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       state = await captureState();
     }
 
+    // Reactive recovery: if the turn ended in a context overflow and we have not
+    // already compacted-and-retried this run, compact once and re-prompt once.
+    if (
+      compactionPolicy?.enabled
+      && !contextCompactionReactiveAttempted
+      && !externalAbort
+      && !maxTurnsHit
+      && !options.abortSignal?.aborted
+    ) {
+      const provisionalRaw = state.stopReason === "error" || state.stopReason === "aborted"
+        ? state.lastAssistant?.errorMessage || runError?.message || null
+        : (runError ? runError.message || String(runError) : null);
+      const provisionalError = normalizePiErrorMessage(provisionalRaw);
+      if (provisionalError && isReactiveCompactionCandidate(provisionalError, contextCompactionDiagnostics)) {
+        contextCompactionReactiveAttempted = true;
+        // Learn the real ceiling from the error so future runs trigger
+        // proactively at it even when the configured contextWindow was wrong.
+        recordDiscoveredContextWindow(harness, runtime, resolved, parseContextLimitFromError(provisionalError));
+        // A second compaction immediately after a fresh proactive one is almost
+        // always "nothing to compact"; skip it and surface the original error.
+        if (!contextCompactedThisRun) {
+          await harness.waitForIdle();
+          const res = await tryCompact(harness, {
+            trigger: "reactive_overflow",
+            onEvent,
+            runtimeWarnings,
+            onCompactionRecorded: options.onCompactionRecorded,
+            runId: options.runId,
+            model: reference,
+          });
+          if (res.applied) {
+            contextCompactionApplied = true;
+            contextCompactedThisRun = true;
+            Object.assign(contextCompactionDiagnostics, {
+              context_compaction_reactive: true,
+              context_compaction_tokens_before: res.tokensBefore,
+            });
+            // Re-anchor the transcript baseline to the compacted length so the
+            // re-prompt's turn (and its stopReason/usage) slices out correctly.
+            sessionBaselineCount = (await session.buildContext()).messages.length;
+            // Re-prompt ONCE in the now-compacted session. The trailing user turn
+            // is already persisted, so a fresh prompt continues against it.
+            runError = null;
+            try {
+              if (Array.isArray(promptImages) && promptImages.length > 0) {
+                await harness.prompt(promptText, { images: promptImages });
+              } else {
+                await harness.prompt(promptText);
+              }
+            } catch (err) {
+              runError = err;
+            }
+            await harness.waitForIdle();
+            state = await captureState();
+          }
+        }
+      }
+    }
+
     const { runTranscript, lastAssistant, stopReason, finalText, finalThinking } = state;
     const runAssistantCount = state.assistantMessages.length;
 
@@ -970,6 +1211,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         structuredOutputFinalizationRetryReason,
         structuredOutputFinalizationRetryFailed,
       ),
+      ...contextCompactionDiagnostics,
     };
     const errorDetails = errorMessage ? {
       pi_stop_reason: stopReason || "error",
@@ -984,6 +1226,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         structuredOutputFinalizationRetryReason,
         structuredOutputFinalizationRetryFailed,
       ),
+      ...contextCompactionDiagnostics,
     } : null;
 
     const capabilitiesUsed = buildCapabilitiesUsed({
@@ -994,11 +1237,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       mcpServersUsed: mcpClients.map((entry) => entry?.name).filter(Boolean),
       nativeSubagentsUsed: [],
       toolCompactionApplied: toolCompactionAppliedFromWarnings(runtimeWarnings),
-      // null = unknown/unsupported (tristate). AgentHarness performs no automatic
-      // in-loop compaction (no transformContext hook), so we cannot honestly
-      // assert it "did not apply" — false would imply a compaction path exists
-      // and chose not to fire. See docs/feature-registry.md runtime.context-compaction.
-      contextCompactionApplied: null,
+      // Tristate: true = a compaction fired this run (proactive or reactive),
+      // false = the path is enabled but did not need to fire, null = disabled via
+      // agent_compaction_enabled. See docs/feature-registry.md runtime.context-compaction.
+      contextCompactionApplied: compactionPolicy?.enabled ? contextCompactionApplied : null,
     });
     onEvent({ type: "capabilities_resolved", sdk: resolved.sdk, model: reference, capabilitiesUsed });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isContextLimitError, normalizePiErrorMessage } from "../../ai/providers/pi-errors.js";
+import { isContextLimitError, normalizePiErrorMessage, parseContextLimitFromError } from "../../ai/providers/pi-errors.js";
 
 describe("isContextLimitError", () => {
   const contextLimitMessages = [
@@ -63,4 +63,36 @@ describe("normalizePiErrorMessage", () => {
   it("returns null for empty input", () => {
     expect(normalizePiErrorMessage("")).toBeNull();
   });
+});
+
+describe("parseContextLimitFromError", () => {
+  const cases = [
+    ["This model's maximum context length is 128000 tokens", 128000],
+    ["maximum context length is 200000 tokens, however you requested 210000 tokens", 200000],
+    ["context window of 128000", 128000],
+    ["context length: 32768", 32768],
+    ["this model supports at most 8192 tokens", 8192],
+    ["supports up to 1000000 tokens", 1000000],
+    ["token limit is 16385", 16385],
+    ["maximum context length is 128,000 tokens", 128000],
+  ];
+  for (const [message, expected] of cases) {
+    it(`extracts ${expected} from "${message}"`, () => {
+      expect(parseContextLimitFromError(message)).toBe(expected);
+    });
+  }
+
+  const noLimit = [
+    "",
+    "Your input exceeds the context window of this model. Please adjust your input and try again.",
+    "rate limit exceeded",
+    "context_length_exceeded",
+    "internal server error",
+    "8 tokens", // too small to be a real window
+  ];
+  for (const message of noLimit) {
+    it(`returns null for "${message}"`, () => {
+      expect(parseContextLimitFromError(message)).toBeNull();
+    });
+  }
 });

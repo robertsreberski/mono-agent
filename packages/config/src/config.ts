@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, ReasoningSummary, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, ReasoningSummary, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -354,7 +354,20 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
     invalidEnv,
     { min: 1_000, max: 86_400_000 },
   );
-  return { mode, idleTimeoutMs };
+  const rollover = readChoice<SessionRollover>(env.MONO_AGENT_SESSION_ROLLOVER, "MONO_AGENT_SESSION_ROLLOVER", [
+    "none",
+    "daily",
+  ], "none", invalidEnv);
+  const rolloverTimezone = typeof env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE === "string"
+    && env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE.trim()
+    ? env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE.trim()
+    : undefined;
+  return {
+    mode,
+    idleTimeoutMs,
+    rollover,
+    ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
+  };
 }
 
 function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {

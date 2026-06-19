@@ -42,20 +42,25 @@ These were Pi-bridge knobs the native path does not consume.
   for back-compat but is not wired to a runtime option.)
 - `piCodexTransport` was doc-only and is removed. No replacement is needed.
 
-## 3. Pi context compaction: no automatic in-loop summarization
+## 3. Pi context compaction: bridge-driven via AgentHarness.compact()
 
-The legacy Pi bridge wired `transformContext` / `afterToolCall` into the
-low-level Agent loop. `AgentHarness` has no automatic compaction, so:
+`AgentHarness` has no automatic compaction, so the pi bridge drives it directly
+(the legacy low-level `transformContext` / `afterToolCall` hooks and
+`createAgentCompactionManager` were removed):
 
-- Runs now report **`capabilitiesUsed.context_compaction_applied: null`**
-  (unknown/unsupported) for Pi — previously `false`. If you assert on this value,
-  update to expect `null` on the Pi path.
-- The host **`onCompactionRecorded`** callback is **inert on the Pi path** (it
-  never fires). `resolveAgentCompactionPolicy` / `createAgentCompactionManager`
-  remain exported for back-compat but are not wired into a standard Pi run.
-- Context handling is delegated to the provider (pi-ai / `AgentHarness`). If you
-  relied on host-driven in-loop summarization for long Pi runs, drive
-  `AgentHarness.compact()` yourself or budget context another way.
+- Before each turn the bridge estimates the running model's context usage and
+  calls `AgentHarness.compact()` when near the window (proactive). If a turn still
+  overflows the bridge compacts once and re-prompts (reactive recovery).
+- Runs report **`capabilitiesUsed.context_compaction_applied`** as `true` (a
+  compaction fired), `false` (enabled but not needed), or `null` (disabled via
+  `agent_compaction_enabled: false`). If you assert on this value, expect this
+  tristate on the Pi path.
+- The host **`onCompactionRecorded`** callback now **fires on each automatic
+  compaction** on the Pi path (previously inert).
+- The trigger window auto-tracks the model actually serving the request
+  (`harness.getModel()`) and self-corrects from any real ceiling stated in an
+  overflow error, so a wrong/default `context_window` no longer defeats it.
+  `resolveAgentCompactionPolicy` (`agent_compaction_*` settings) remains exported.
 
 ## 4. Durable Pi session resume: create-on-miss semantics
 

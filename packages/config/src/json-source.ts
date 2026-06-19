@@ -100,6 +100,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly session?: {
       readonly mode?: string;
       readonly idleTimeoutMs?: number;
+      readonly rollover?: string;
+      readonly rolloverTimezone?: string;
     };
   };
   readonly concurrency?: {

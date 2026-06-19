@@ -75,6 +75,12 @@ export function layerJsonOntoEnv(
   if (json.runtime?.session?.idleTimeoutMs !== undefined) {
     fromJson.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS = String(json.runtime.session.idleTimeoutMs);
   }
+  if (json.runtime?.session?.rollover !== undefined) {
+    fromJson.MONO_AGENT_SESSION_ROLLOVER = json.runtime.session.rollover;
+  }
+  if (json.runtime?.session?.rolloverTimezone !== undefined) {
+    fromJson.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE = json.runtime.session.rolloverTimezone;
+  }
   if (json.concurrency?.maxConcurrentRuns !== undefined) {
     fromJson.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS = String(json.concurrency.maxConcurrentRuns);
   }

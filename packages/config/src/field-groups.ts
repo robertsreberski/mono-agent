@@ -170,6 +170,25 @@ export const runtimeFieldGroup = defineFieldGroup({
       placeholder: "1800000",
       path: ["runtime", "session", "idleTimeoutMs"],
     },
+    {
+      id: "runtime.session.rollover",
+      label: "Session rollover",
+      description: "daily starts a fresh session per calendar day on every channel (cron, telegram, slack, …); none keeps one continuous session. Compaction handles within-day growth.",
+      kind: "select",
+      options: [
+        { value: "none", label: "none" },
+        { value: "daily", label: "daily" },
+      ],
+      path: ["runtime", "session", "rollover"],
+    },
+    {
+      id: "runtime.session.rolloverTimezone",
+      label: "Session rollover timezone",
+      description: "IANA timezone for the daily rollover boundary (e.g. Europe/Rome). Defaults to system-local.",
+      kind: "string",
+      placeholder: "Europe/Rome",
+      path: ["runtime", "session", "rolloverTimezone"],
+    },
   ],
 });
 

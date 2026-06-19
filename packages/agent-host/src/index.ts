@@ -220,8 +220,12 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
 }
 
 export function createConfiguredAgentResponder(options: ConfiguredAgentResponderOptions): AgentResponder {
+  const session = options.config.runtime.session;
   return createAgentResponder({
     harness: createConfiguredAgentHarness(options),
+    ...(session.rollover === undefined ? {} : { rollover: session.rollover }),
+    ...(session.rolloverTimezone === undefined ? {} : { rolloverTimezone: session.rolloverTimezone }),
+    ...(options.now === undefined ? {} : { now: options.now }),
   }) as AgentResponder;
 }
 

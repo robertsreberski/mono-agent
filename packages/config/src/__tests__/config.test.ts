@@ -215,7 +215,7 @@ describe("loadMonoAgentConfig", () => {
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
 
-    expect(config.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 1_800_000 });
+    expect(config.runtime.session).toEqual({ mode: "continuous", idleTimeoutMs: 1_800_000, rollover: "none" });
     expect(config.sandbox).toBeUndefined();
   });
 
@@ -314,7 +314,7 @@ describe("loadMonoAgentConfig", () => {
       },
     });
 
-    expect(config.runtime.session).toEqual({ mode: "per-message", idleTimeoutMs: 60000 });
+    expect(config.runtime.session).toEqual({ mode: "per-message", idleTimeoutMs: 60000, rollover: "none" });
   });
 
   it("rejects an invalid session mode", () => {
