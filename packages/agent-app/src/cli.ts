@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp } from "./app.js";
-import { phoenixAppBaseUrl } from "./app-config.js";
+import { phoenixAppBaseUrl, resolveAppArtifactDir } from "./app-config.js";
 import { runBackfill } from "./backfill.js";
 import {
   defaultBackgroundDeps,
@@ -18,7 +18,9 @@ import {
   tailLogs,
 } from "./background.js";
 import { listChannelAvailability } from "./channels.js";
-import type { ChannelStatus } from "./channels.js";
+import type { ChannelId, ChannelStatus } from "./channels.js";
+import { listSeenNotifyDestinations } from "./seen-conversations.js";
+import type { SeenConversation } from "./seen-conversations.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
 import { initMonoAgentFolder } from "./init.js";
@@ -232,9 +234,11 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     signature: "mono-agent channels [--config <path>] [--env-file <path>]",
     lines: [
-      "List every channel and its state from config (active / disabled /",
-      "waiting), and a summary of the active ones. Derived from config — it",
-      "does not query a running instance (use 'status' for live health).",
+      "List every channel and its state (active / disabled / waiting), and under",
+      "each active push channel the real conversation ids a proactive 'notify' can",
+      "push to — the conversations the agent has handled, read from run artifacts.",
+      "Channel state is from config; ids are from artifacts (use 'status' for live",
+      "health).",
     ],
   },
   {
@@ -356,24 +360,58 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   }
 }
 
+// Channels whose proactive `notify` delivery is wired today. Seen conversations
+// on these (and active) channels are listed as pushable destinations.
+const NOTIFY_CAPABLE: ReadonlySet<ChannelId> = new Set<ChannelId>(["telegram", "slack"]);
+
 async function runChannels(args: ParsedCliArgs): Promise<number> {
   const cwd = process.cwd();
-  const channels = await listChannelAvailability({
+  const input = {
     env: process.env,
     cwd,
     configPath: resolve(cwd, args.configPath ?? "mono-agent.config.json"),
-  });
+  };
+  const channels = await listChannelAvailability(input);
+  const seen = await listSeenNotifyDestinations(await resolveAppArtifactDir(input));
+  const seenByChannel = new Map<ChannelId, SeenConversation[]>();
+  for (const sighting of seen) {
+    const list = seenByChannel.get(sighting.channelId) ?? [];
+    list.push(sighting);
+    seenByChannel.set(sighting.channelId, list);
+  }
+
+  let notifyCount = 0;
   for (const channel of channels) {
     const detail =
       channel.state === "enabled"
         ? "active"
         : `${channel.state}${channel.reason === undefined ? "" : `: ${channel.reason}`}`;
     process.stdout.write(`${channel.id.padEnd(12)} ${detail}\n`);
+    if (channel.state !== "enabled") {
+      continue;
+    }
+    const sightings = seenByChannel.get(channel.id) ?? [];
+    if (NOTIFY_CAPABLE.has(channel.id)) {
+      if (sightings.length === 0) {
+        process.stdout.write("    (no conversations seen yet)\n");
+      }
+      for (const sighting of sightings) {
+        notifyCount += 1;
+        const when = sighting.lastSeen === undefined ? "" : `  (last seen ${sighting.lastSeen})`;
+        process.stdout.write(`    ${sighting.conversationId}${when}\n`);
+      }
+    } else if (channel.id === "whatsapp") {
+      for (const sighting of sightings) {
+        process.stdout.write(`    ${sighting.conversationId}  (notify not yet supported)\n`);
+      }
+    }
   }
+
   const active = channels.filter((channel) => channel.state === "enabled").map((channel) => channel.id);
   process.stdout.write(
     `\n${active.length} active channel${active.length === 1 ? "" : "s"}${active.length === 0 ? "" : `: ${active.join(", ")}`}\n`,
   );
+  process.stdout.write(`${notifyCount} notify destination${notifyCount === 1 ? "" : "s"} seen\n`);
   return 0;
 }
 
