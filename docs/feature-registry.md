@@ -124,6 +124,7 @@ rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | --- | --- | --- | --- |
 | `app.cli-init` | Non-destructive scaffold (config + IDENTITY.md + `.mono-agent/`) | `cli` | `mono-agent init [--model] [--fallback-models] [--memory]` |
 | `app.cli-validate` | Per-section config report (core, runtime, context, memory, tools, sandbox, every channel) | `cli` | `mono-agent validate [--config] [--env-file]` |
+| `app.cli-channels` | List every channel and its state (active / disabled / waiting) from config + a summary of the active ones. Standalone (starts nothing, no daemon query); helps discover which channels can receive a proactive `notify`. Use `status` for live runtime health | `cli` | `mono-agent channels [--config] [--env-file]` |
 | `app.cli-start` | Traceability + every configured channel | `cli` | `mono-agent start [--config] [--env-file]` |
 | `app.cli-install-skill` | Copy the composer skill into `~/.claude/skills` / `~/.codex/skills` | `cli` | `mono-agent install-skill [--target claude\|codex\|both] [--force]` |
 | `app.env-file` | `.env` auto-load (exported shell vars win) | `cli` | automatic; `--env-file <path>` to override |
