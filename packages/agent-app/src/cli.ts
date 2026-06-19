@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -18,9 +19,11 @@ import {
 } from "./background.js";
 import type { ChannelStatus } from "./channels.js";
 import { validateMonoAgentFolder } from "./doctor.js";
+import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
 import { initMonoAgentFolder } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
+import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
 // Node's maximum setInterval/setTimeout delay (2^31 - 1 ms, ~24.8 days). A
@@ -208,45 +211,69 @@ function requireValue(args: readonly string[], index: number, flag: string): str
   return value;
 }
 
-const HELP_TEXT = `mono-agent — config-first agent host
+interface HelpEntry {
+  readonly signature: string;
+  readonly lines: readonly string[];
+}
 
-Usage:
-  mono-agent init [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]
-      Scaffold mono-agent.config.json, IDENTITY.md, and .mono-agent/ in the
-      current folder. Existing files are never overwritten.
+const HELP_COMMANDS: readonly HelpEntry[] = [
+  {
+    signature: "mono-agent init [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]",
+    lines: [
+      "Scaffold mono-agent.config.json, IDENTITY.md, and .mono-agent/ in the",
+      "current folder. Existing files are never overwritten.",
+    ],
+  },
+  {
+    signature: "mono-agent validate [--config <path>] [--env-file <path>]",
+    lines: ["Load every config section and report what would run, wait, or fail."],
+  },
+  {
+    signature: "mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]",
+    lines: [
+      "Start the agent as a background macOS service (launchd), print its",
+      "instance info, and return. Re-running restarts the running instance.",
+      "Refuses to start without a valid mono-agent.config.json in the folder.",
+      "Use --foreground (-f) to run in the blocking foreground instead.",
+    ],
+  },
+  {
+    signature: "mono-agent restart [--config <path>]",
+    lines: ["Restart the background instance for this config (starts it if stopped)."],
+  },
+  {
+    signature: "mono-agent stop [--config <path>]",
+    lines: ["Stop the background instance and remove its LaunchAgent."],
+  },
+  {
+    signature: "mono-agent status [--config <path>]",
+    lines: ["Show this config's instance plus any other running instances."],
+  },
+  {
+    signature: "mono-agent logs [--config <path>] [--follow|-f] [--lines <n>]",
+    lines: ["Print (and optionally follow) the background instance's log files."],
+  },
+  {
+    signature: "mono-agent install-skill [--target claude|codex|both] [--force]",
+    lines: [
+      "Copy the bundled mono-agent-composer skill into ~/.claude/skills and",
+      "~/.codex/skills (default: both). Refuses to overwrite without --force.",
+    ],
+  },
+  {
+    signature:
+      "mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]\n" +
+      "                    [--dry-run] [--config <path>] [--env-file <path>]",
+    lines: [
+      "Export already-recorded run artifacts to the configured Phoenix exporter",
+      "with their historical timestamps. Trace ids are deterministic per run, so",
+      "re-running overwrites rather than duplicating. --dry-run maps and",
+      "serializes without sending.",
+    ],
+  },
+];
 
-  mono-agent validate [--config <path>] [--env-file <path>]
-      Load every config section and report what would run, wait, or fail.
-
-  mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]
-      Start the agent as a background macOS service (launchd), print its
-      instance info, and return. Re-running restarts the running instance.
-      Use --foreground (-f) to run in the blocking foreground instead.
-
-  mono-agent restart [--config <path>]
-      Restart the background instance for this config (starts it if stopped).
-
-  mono-agent stop [--config <path>]
-      Stop the background instance and remove its LaunchAgent.
-
-  mono-agent status [--config <path>]
-      Show this config's instance plus any other running instances.
-
-  mono-agent logs [--config <path>] [--follow|-f] [--lines <n>]
-      Print (and optionally follow) the background instance's log files.
-
-  mono-agent install-skill [--target claude|codex|both] [--force]
-      Copy the bundled mono-agent-composer skill into ~/.claude/skills and
-      ~/.codex/skills (default: both). Refuses to overwrite without --force.
-
-  mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]
-                      [--dry-run] [--config <path>] [--env-file <path>]
-      Export already-recorded run artifacts to the configured Phoenix exporter
-      with their historical timestamps. Trace ids are deterministic per run, so
-      re-running overwrites rather than duplicating. --dry-run maps and
-      serializes without sending.
-
-Background mode runs the agent under launchd, keeping it alive across logins
+const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
 (auto-restarting only on crash) until you run stop. Secrets are read from the
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS; elsewhere use start --foreground.
@@ -258,12 +285,32 @@ A .env file in the current folder is loaded automatically when present;
 already-exported shell variables take precedence.
 `;
 
+/** Build the colorized help screen (plain text when color is disabled). */
+export function renderHelp(): string {
+  let out = ui.banner("mono-agent", "config-first agent host") + "\n";
+  out += ui.heading("Usage");
+  for (const entry of HELP_COMMANDS) {
+    const [first, ...rest] = entry.signature.split("\n");
+    out += `  ${ui.style.bold(ui.style.cyan(first ?? ""))}\n`;
+    for (const cont of rest) {
+      out += `  ${ui.style.cyan(cont)}\n`;
+    }
+    for (const line of entry.lines) {
+      out += `      ${ui.style.dim(line)}\n`;
+    }
+    out += "\n";
+  }
+  out += ui.style.dim(HELP_NOTES);
+  return out;
+}
+
 export async function runCli(argv: readonly string[]): Promise<number> {
   let args: ParsedCliArgs;
   try {
     args = parseCliArgs(argv);
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n\n${HELP_TEXT}`);
+    process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
+    process.stdout.write(`\n${renderHelp()}`);
     return 2;
   }
 
@@ -271,7 +318,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 
   switch (args.command) {
     case "help":
-      process.stdout.write(HELP_TEXT);
+      process.stdout.write(renderHelp());
       return 0;
     case "init":
       return await runInit(args);
@@ -307,19 +354,20 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
   });
 
   for (const path of result.created) {
-    process.stdout.write(`created  ${path}\n`);
+    process.stdout.write(`${ui.badge("ok")}${ui.style.green("created")}  ${path}\n`);
   }
   for (const path of result.skipped) {
-    process.stdout.write(`kept     ${path}\n`);
+    process.stdout.write(ui.style.dim(`  kept     ${path}`) + "\n");
   }
   if (result.knowledgeFiles.length > 0) {
-    process.stdout.write(`\nIdentity references existing knowledge: ${result.knowledgeFiles.join(", ")}\n`);
+    process.stdout.write(`\nIdentity references existing knowledge: ${ui.style.cyan(result.knowledgeFiles.join(", "))}\n`);
   }
   process.stdout.write(
-    "\nNext steps:\n" +
-      `  1. Edit ${result.configPath} (model, channels, skills, memory, sandbox).\n` +
-      "  2. mono-agent validate\n" +
-      "  3. mono-agent start\n",
+    "\n" +
+      ui.heading("Next steps") +
+      `  ${ui.style.bold("1.")} Edit ${result.configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
+      `  ${ui.style.bold("2.")} mono-agent validate\n` +
+      `  ${ui.style.bold("3.")} mono-agent start\n`,
   );
   return 0;
 }
@@ -332,11 +380,11 @@ async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
       force: args.force,
     });
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
     return 1;
   }
   for (const path of result.installed) {
-    process.stdout.write(`installed  ${path}\n`);
+    process.stdout.write(`${ui.badge("ok")}${ui.style.green("installed")}  ${path}\n`);
   }
   return 0;
 }
@@ -350,25 +398,90 @@ async function runValidate(args: ParsedCliArgs): Promise<number> {
   });
 
   for (const section of report.sections) {
-    process.stdout.write(`${statusIcon(section.status)} ${section.label}\n`);
-    for (const detail of section.details) {
-      process.stdout.write(`    ${detail}\n`);
-    }
+    process.stdout.write(formatSection(section));
   }
-  process.stdout.write(report.ok ? "\nConfig is ready to start.\n" : "\nFix the errors above, then re-run mono-agent validate.\n");
+  process.stdout.write(
+    report.ok
+      ? `\n${ui.style.green("✓ Config is ready to start.")}\n`
+      : `\n${ui.hint("Fix the errors above, then re-run mono-agent validate.")}`,
+  );
   return report.ok ? 0 : 1;
 }
 
-function statusIcon(status: "ok" | "waiting" | "disabled" | "error"): string {
-  switch (status) {
-    case "ok":
-      return "[ok]      ";
-    case "waiting":
-      return "[waiting] ";
-    case "disabled":
-      return "[off]     ";
-    case "error":
-      return "[error]   ";
+/** Render one validation section: a status badge, a bold label, and its details. */
+function formatSection(section: ValidationSection): string {
+  let out = `${ui.badge(section.status)}${ui.style.bold(section.label)}\n`;
+  for (const detail of section.details) {
+    out += `    ${colorDetail(section.status, detail)}\n`;
+  }
+  return out;
+}
+
+function colorDetail(status: ValidationStatus, detail: string): string {
+  if (status === "error") {
+    return ui.style.red(detail);
+  }
+  if (detail.startsWith("[WARN]")) {
+    return ui.style.yellow(detail);
+  }
+  return ui.style.dim(detail);
+}
+
+/**
+ * Outcome of the start/restart preflight. `code` is the process exit status to
+ * return when refusing: 2 for a missing config file (a usage problem, matching
+ * the arg-parse convention) and 1 for a config that loads but has errors.
+ */
+export type PreflightResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly code: 2; readonly kind: "missing-config"; readonly configPath: string }
+  | { readonly ok: false; readonly code: 1; readonly kind: "validation"; readonly report: ValidationReport };
+
+type PreflightFailure = Extract<PreflightResult, { ok: false }>;
+
+/**
+ * Gate for `start`/`restart`: refuse unless the directory has a present, valid
+ * config. First the config FILE must exist (env vars alone are not enough — a
+ * folder without a config is not a configured agent). Then run the structural
+ * validation with `liveness:false` (network probes only yield `waiting`, never
+ * `error`, so skipping them keeps the verdict but avoids ~6s of timeouts) and
+ * refuse on any `error` section. `waiting` (e.g. Ollama/Phoenix not up yet) is
+ * runtime-soft and never blocks.
+ */
+export async function ensureStartable(args: ParsedCliArgs): Promise<PreflightResult> {
+  const cwd = process.cwd();
+  const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
+  if (!(await pathExists(configPath))) {
+    return { ok: false, code: 2, kind: "missing-config", configPath };
+  }
+  const report = await validateMonoAgentFolder({ env: process.env, cwd, configPath, liveness: false });
+  if (!report.ok) {
+    return { ok: false, code: 1, kind: "validation", report };
+  }
+  return { ok: true };
+}
+
+function printPreflightFailure(result: PreflightFailure): void {
+  if (result.kind === "missing-config") {
+    process.stderr.write(ui.errorLine(`No mono-agent config found at ${result.configPath}.`));
+    process.stderr.write(ui.hint("Run `mono-agent init` to scaffold one, or pass --config <path>."));
+    return;
+  }
+  process.stderr.write(ui.heading("Cannot start: config has errors"));
+  for (const section of result.report.sections) {
+    if (section.status === "error") {
+      process.stderr.write(formatSection(section));
+    }
+  }
+  process.stderr.write(ui.hint("Run `mono-agent validate` for the full report, fix the errors, then retry."));
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -385,6 +498,12 @@ async function runStart(args: ParsedCliArgs): Promise<number> {
  * invokes (via `start --foreground`) and what users get with `--foreground`/`-f`.
  */
 async function runForeground(args: ParsedCliArgs): Promise<number> {
+  const pre = await ensureStartable(args);
+  if (!pre.ok) {
+    printPreflightFailure(pre);
+    return pre.code;
+  }
+
   const app = await startMonoAgentApp({
     cwd: process.cwd(),
     ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
@@ -406,6 +525,18 @@ async function runBackgroundCommand(
   const guard = requireDarwin(command);
   if (guard !== undefined) {
     return guard;
+  }
+
+  // Refuse to launch (or relaunch) an unconfigured/broken folder BEFORE writing
+  // the plist and bootstrapping launchctl — otherwise the worker would crash and
+  // launchd's KeepAlive would retry it forever. stop/status/logs stay ungated so
+  // a broken instance can still be inspected and torn down.
+  if (command === "start" || command === "restart") {
+    const pre = await ensureStartable(args);
+    if (!pre.ok) {
+      printPreflightFailure(pre);
+      return pre.code;
+    }
   }
 
   const target = await resolveInstanceTarget({
@@ -441,25 +572,35 @@ function requireDarwin(command: string): number | undefined {
   if (process.platform === "darwin") {
     return undefined;
   }
-  process.stderr.write(
-    `Background service mode (mono-agent ${command}) requires macOS (launchd).\n` +
-      "Run `mono-agent start --foreground` to run in the foreground on this platform.\n",
-  );
+  process.stderr.write(ui.errorLine(`Background service mode (mono-agent ${command}) requires macOS (launchd).`));
+  process.stderr.write(ui.hint("Run `mono-agent start --foreground` to run in the foreground on this platform."));
   return 1;
 }
 
 export function printAppStatus(app: MonoAgentApp): void {
-  process.stdout.write(`config            ${app.configPath}\n`);
   const trace = app.traceabilityStatus;
+  process.stdout.write(ui.rule("instance"));
   process.stdout.write(
-    trace.kind === "running"
-      ? `traceability      running (source ${trace.sourceId})\n`
-      : `traceability      ${trace.kind}: ${trace.reason}\n`,
+    ui.keyValue(
+      [
+        ["config", app.configPath],
+        [
+          "traceability",
+          trace.kind === "running" ? `running (source ${trace.sourceId})` : `${trace.kind}: ${trace.reason}`,
+        ],
+      ],
+      2,
+    ),
   );
   const artifactDir = app.traceabilityStatus.kind === "running" ? app.traceabilityStatus.artifactDir : undefined;
-  process.stdout.write(`observability     ${describeExporter(app.exporterStatus, artifactDir)}\n`);
-  for (const [id, status] of app.channelStatuses()) {
-    process.stdout.write(`${id.padEnd(17)} ${describeChannelStatus(status)}\n`);
+  process.stdout.write(ui.rule("observability"));
+  process.stdout.write(`  ${describeExporter(app.exporterStatus, artifactDir)}\n`);
+  const channels = [...app.channelStatuses()];
+  if (channels.length > 0) {
+    process.stdout.write(ui.rule("channels"));
+    for (const [id, status] of channels) {
+      process.stdout.write(`  ${ui.channelBadge(status.kind)}${ui.style.bold(id.padEnd(11))} ${describeChannelStatus(status)}\n`);
+    }
   }
 }
 
@@ -517,7 +658,7 @@ export function waitForShutdownSignal(app: Pick<MonoAgentApp, "stop">): Promise<
       process.off("SIGTERM", onSignal);
       clearInterval(keepAlive);
       void (async () => {
-        process.stdout.write(`\nReceived ${signal}; stopping mono agent app...\n`);
+        process.stdout.write("\n" + ui.hint(`Received ${signal}; stopping mono agent app…`));
         await app.stop();
         resolve(0);
       })();
@@ -551,7 +692,7 @@ if (isDirectCliInvocation) {
       }
     })
     .catch((error: unknown) => {
-      process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+      process.stderr.write(`${ui.style.red("✗")} ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
       process.exitCode = 1;
     });
 }
