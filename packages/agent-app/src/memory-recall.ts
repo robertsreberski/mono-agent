@@ -28,9 +28,8 @@ import * as z from "zod/v4";
  * `apiKeyEnv`) still has to transit the child env as a value — that residual is documented on
  * {@link memoryRecallMcpEnv}.
  *
- * This mirrors the self-capabilities runtime extension: a stdio MCP server is injected purely as an
- * `mcpServers` entry via the per-request runtime options. MCP tools are not gated by
- * `tools.allowedTools`, so no allowlist entry is required.
+ * A stdio MCP server is injected purely as an `mcpServers` entry via the per-request runtime
+ * options. MCP tools are not gated by `tools.allowedTools`, so no allowlist entry is required.
  */
 
 export const MEMORY_RECALL_MCP_SERVER_NAME = "mono-agent-memory";

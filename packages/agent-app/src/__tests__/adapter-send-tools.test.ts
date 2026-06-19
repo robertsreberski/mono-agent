@@ -28,7 +28,6 @@ import {
   resolveAdapterSendToolsSettings,
 } from "../adapter-send-tools.js";
 import type { AdapterSendToolsSettings } from "../adapter-send-tools.js";
-import { SELF_CAPABILITIES_MCP_SERVER_NAME } from "../self-capabilities.js";
 
 let dir: string;
 
@@ -239,12 +238,11 @@ describe("adapter send MCP tools", () => {
 });
 
 describe("adapter send tool app composition", () => {
-  it("injects adapter send and self-capability MCP servers into app-served runtime requests", async () => {
+  it("injects adapter send MCP server into app-served runtime requests", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),
       tools: { allowedTools: ["slack_send_message", "telegram_send_message"], disallowedTools: [] },
       webhook: { enabled: true },
-      selfCapabilities: { enabled: true, mode: "propose" },
       slack: {
         enabled: true,
         botToken: "xoxb-slack",
@@ -278,7 +276,6 @@ describe("adapter send tool app composition", () => {
       cwd: dir,
       configPath,
       env: {},
-      operatorConsole: false,
       drivers: [driver],
       runtime: fake.runtime,
     });
@@ -295,11 +292,6 @@ describe("adapter send tool app composition", () => {
     });
     expect(JSON.stringify(server?.env)).not.toContain("xoxb-slack");
     expect(JSON.stringify(server?.env)).not.toContain("telegram-token");
-    expect(fake.calls[0]?.options.mcpServers?.[SELF_CAPABILITIES_MCP_SERVER_NAME]).toMatchObject({
-      type: "stdio",
-      command: process.execPath,
-      cwd: dir,
-    });
 
     await app.stop();
   });
