@@ -167,6 +167,70 @@ describe("AgentHarness", () => {
     await expect(historyStore.load("telegram:1")).resolves.toHaveLength(3);
   });
 
+  it("lists every discovered skill in the index while inlining only the selected skill bodies", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const skillsRoot = join(dir, "skills");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(join(skillsRoot, "research"), { recursive: true });
+    await writeFile(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nFind evidence.", "utf8");
+    await mkdir(join(skillsRoot, "writing"), { recursive: true });
+    await writeFile(join(skillsRoot, "writing", "SKILL.md"), "# Writing\n\nDraft concise prose.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const harness = createAgentHarness({
+      identityPath,
+      skillsRoot,
+      selectedSkills: ["research"],
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      cwd: dir,
+    });
+
+    await harness.run({ conversationId: "telegram:1", userMessage: "hi", abortSignal: new AbortController().signal });
+
+    const prompt = fake.calls[0]?.prompt ?? "";
+    // The index lists BOTH discovered skills, not just the selected one.
+    expect(prompt).toContain("- **research** — Find evidence.");
+    expect(prompt).toContain("- **writing** — Draft concise prose.");
+    // Only the selected skill's full body is inlined.
+    expect(prompt).toContain("# Skill: research");
+    expect(prompt).not.toContain("# Skill: writing");
+  });
+
+  it("recalls memory using the user message as the query, not the conversation id", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const recalls: Array<{ conversationId: string; query?: string }> = [];
+    const memory = {
+      async load(conversationId: string, query?: string) {
+        recalls.push({ conversationId, query });
+        return undefined;
+      },
+      async appendHostSummary() {
+        return { conversationId: "telegram:1", source: "", bytesWritten: 0 };
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      cwd: dir,
+      memory,
+    });
+
+    await harness.run({
+      conversationId: "telegram:1",
+      userMessage: "What did we decide about pricing?",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(recalls).toEqual([{ conversationId: "telegram:1", query: "What did we decide about pricing?" }]);
+  });
+
   it("propagates runtime failure results without success text", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

@@ -36,7 +36,13 @@ async function loadMergedSkillIndex(input: FileContextInput): Promise<readonly S
     return [];
   }
 
-  return buildSkillIndex([...explicit, ...discovered]);
+  // `skills` (explicit) and `skillsRoot` (discovered) can name the same skill — e.g. a caller
+  // passing selected entries alongside the directory they came from. Prefer the explicit entry and
+  // drop the discovered duplicate so buildSkillIndex (which rejects duplicate names) merges the two
+  // sources instead of throwing.
+  const explicitNames = new Set(explicit.map((entry) => entry.name.toLowerCase()));
+  const merged = [...explicit, ...discovered.filter((entry) => !explicitNames.has(entry.name.toLowerCase()))];
+  return buildSkillIndex(merged);
 }
 
 async function readMarkdownFile(filePath: string, field: string): Promise<MarkdownContextBlock> {

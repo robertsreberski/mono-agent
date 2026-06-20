@@ -14,6 +14,10 @@ import { migrate as migrateFn, type MigrateResult } from "./migrate.js";
 import { writeFutureLog, writeIndex } from "./projections.js";
 import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
 
+// Cap the recall query so an attachment turn's inlined document text (the user message can carry
+// up to a few KB of extracted file content) cannot drown the FTS/embedding signal.
+const MAX_RECALL_QUERY_CHARS = 4_000;
+
 export class BujoMemoryStore implements MemoryStore {
   private readonly root: string;
   private readonly db: MemoryDb;
@@ -53,10 +57,21 @@ export class BujoMemoryStore implements MemoryStore {
     return this._tier;
   }
 
-  async load(conversationId: string): Promise<MemoryBlock | undefined> {
-    // Phase 1: prime with recent high-salience memories. The query is the conversation id
-    // as a coarse seed; richer session-aware priming arrives with reflection (P3).
-    return composeRecallBlock(this.db, conversationId, { topK: 8, maxBytes: this.maxBytes });
+  async load(conversationId: string, query?: string): Promise<MemoryBlock | undefined> {
+    // Recall against what the user actually said. Legacy callers pass no query, so fall back to the
+    // conversation id as a coarse seed; an explicit empty query carries no usable signal, so skip
+    // recall rather than surface near-random hits.
+    let recallQuery: string;
+    if (query === undefined) {
+      recallQuery = conversationId;
+    } else {
+      const trimmed = query.trim();
+      if (trimmed.length === 0) {
+        return undefined;
+      }
+      recallQuery = trimmed.slice(0, MAX_RECALL_QUERY_CHARS);
+    }
+    return composeRecallBlock(this.db, recallQuery, { topK: 8, maxBytes: this.maxBytes });
   }
 
   /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */

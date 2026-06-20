@@ -335,6 +335,36 @@ describe("BujoMemoryStore", () => {
   });
 });
 
+describe("BujoMemoryStore — recall query (load 2nd arg)", () => {
+  it("recalls against the query argument, not the conversation id", async () => {
+    const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-q-")) });
+    await store.appendHostSummary("c1", "The launch date is March 3rd.");
+    await store.appendHostSummary("c1", "Team lunch was pizza on Tuesday.");
+
+    // The query drives recall even when the conversation id shares nothing with the memories.
+    const block = await store.load("unrelated-conversation-id", "launch date");
+    expect(block?.content).toContain("launch");
+    expect(block?.content).not.toContain("pizza");
+
+    await store.close();
+  });
+
+  it("skips recall (returns undefined) when the query is empty/whitespace", async () => {
+    const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-empty-")) });
+    await store.appendHostSummary("c1", "The launch date is March 3rd.");
+    expect(await store.load("c1", "   ")).toBeUndefined();
+    await store.close();
+  });
+
+  it("falls back to the conversation id as a coarse seed when no query is supplied (back-compat)", async () => {
+    const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-seed-")) });
+    await store.appendHostSummary("c1", "The launch date is March 3rd.");
+    const block = await store.load("launch");
+    expect(block?.content).toContain("launch");
+    await store.close();
+  });
+});
+
 // ─── Async capture queue tests ───────────────────────────────────────────────
 
 import type { LlmComplete } from "../llm.js";

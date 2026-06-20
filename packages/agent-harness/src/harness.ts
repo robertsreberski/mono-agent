@@ -381,7 +381,7 @@ export class MonoAgentHarness implements AgentHarness {
     emit?: (event: RuntimeEventLike) => void,
   ): Promise<{ readonly context: BuiltAgentContext }> {
     const history = options.omitHistory ? [] : await this.loadHistory(request.conversationId);
-    const memory = await this.loadMemory(request.conversationId, emit);
+    const memory = await this.loadMemory(request.conversationId, request.userMessage, emit);
     const selectedSkills = await this.loadSkills();
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
@@ -389,7 +389,11 @@ export class MonoAgentHarness implements AgentHarness {
       ...(this.options.soulPath === undefined ? {} : { soulPath: this.options.soulPath }),
       ...(memory === undefined ? {} : { memory }),
       ...(history.length === 0 ? {} : { history }),
-      ...(selectedSkills.index.length > 0 ? { skills: selectedSkills.index } : this.options.skillsRoot === undefined ? {} : { skillsRoot: this.options.skillsRoot }),
+      ...(this.options.skillsRoot !== undefined
+        ? { skillsRoot: this.options.skillsRoot }
+        : selectedSkills.index.length > 0
+          ? { skills: selectedSkills.index }
+          : {}),
       ...(selectedSkills.instructions.length === 0 ? {} : { skillInstructions: selectedSkills.instructions }),
     });
     return { context };
@@ -465,11 +469,12 @@ export class MonoAgentHarness implements AgentHarness {
 
   private async loadMemory(
     conversationId: string,
+    query: string,
     emit?: (event: RuntimeEventLike) => void,
   ): Promise<ContextBlockInput | undefined> {
     let block;
     try {
-      block = await this.options.memory?.load(conversationId);
+      block = await this.options.memory?.load(conversationId, query);
     } catch (error) {
       // A slow or failing memory backend (e.g. embeddings timeout / circuit
       // breaker open) must never block or fail the turn — degrade to empty
