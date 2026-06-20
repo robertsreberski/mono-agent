@@ -32,6 +32,21 @@ describe('loadContextFromFiles', () => {
     ]);
   });
 
+  it('merges explicit skills with skillsRoot discovery, deduping by name (prefers the explicit entry)', async () => {
+    const context = await loadContextFromFiles({
+      identityPath: join(filesRoot, 'IDENTITY.md'),
+      userMessage: 'Load fixture context.',
+      skills: [{ name: 'research', description: 'Explicit research blurb.', mainFile: join(skillsRoot, 'research', 'SKILL.md') }],
+      skillsRoot,
+    });
+
+    // research is both explicit and discovered — it must appear once (no duplicate-name throw),
+    // using the explicit description rather than the one derived from the file.
+    expect(context.metadata.skillCount).toBe(1);
+    expect(context.prompt).toContain('- **research** — Explicit research blurb.');
+    expect(context.prompt).not.toContain('Find source-grounded evidence before making claims.');
+  });
+
   it('uses the default SOUL text only when SOUL.md is omitted', async () => {
     const context = await loadContextFromFiles({
       identityPath: join(filesRoot, 'IDENTITY.md'),
