@@ -1,12 +1,12 @@
 # Feature Coverage
 
-Every framework capability and how a composed agent reaches it. Use this to answer "can the config do X?" without guessing: `config` = a `mono-agent.config.json` key (env var override always exists), `cli` = a `mono-agent` CLI flag/command, `auto` = always on when the app runs, `code` = programmatic escape hatch only, `dev` = development/test tooling. The repo's `docs/feature-registry.md` is the long-form source of truth.
+Every framework capability and how a composed agent reaches it. Use this to answer "can the config do X?" without guessing: `config` = a `mono-agent.config.json` key (env var override always exists), `cli` = a `mono-agent` CLI flag/command, `auto` = always on when the app runs, `code` = programmatic escape hatch only, `dev` = development/test tooling. The repo's `docs/feature-registry.md` is the long-form source of truth; the human-facing companion is the published documentation site at <https://robertsreberski.github.io/mono-agent/>.
 
 ## Runtime
 
 | Capability | Coverage | Where |
 | --- | --- | --- |
-| Model backends: claude (sdk/cli), codex (cli), pi sdk providers (OpenAI, Copilot, OpenRouter, Ollama, ...) | config | `runtime.model` |
+| Model backends: claude (sdk/cli), codex (cli), pi sdk providers (OpenAI, Copilot, OpenRouter, Ollama, ...), opencode (cli, `opencode:<provider>:<model>` via the OpenCode server) | config | `runtime.model` |
 | Backup models on retryable provider failure | config | `runtime.fallbackModels` |
 | Execution mode (sdk/cli), effort, max turns, workspace | config | `runtime.executionMode`, `runtime.effort`, `runtime.maxTurns`, `runtime.workspace` |
 | Tool-permission posture for CLI backends | config | `runtime.permissionMode` |
@@ -15,7 +15,7 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.local[]` |
 | Pi OAuth credentials | config | `providers.piAuthPath` |
 | Tool-output bloat guard, cost tracking | auto | built into every run |
-| Context handling | provider | delegated to the provider; the pi bridge (pi-agent-core AgentHarness) runs no automatic in-loop summarization, so runs report `context_compaction_applied: null` |
+| Context handling / auto-compaction | provider + auto | delegated to the provider; the pi bridge drives `AgentHarness.compact()` (proactive before a near-window turn + reactive recovery on overflow). Runs report `context_compaction_applied: true` / `false` / `null` |
 | Structured output (JSON schema), live input steering | code | harness `runtimeOptions` |
 | Tool approval gates (risk tiers, timeouts, always-allow) | code | `createMonoRuntime({ onToolApprovalRequest, ... })` — needs a host UI |
 | Fully custom runtime | code | `startMonoAgentApp({ runtime })` |

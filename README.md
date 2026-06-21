@@ -2,6 +2,10 @@
 
 This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
 
+## Documentation
+
+Full documentation and end-to-end playbooks: **<https://robertsreberski.github.io/mono-agent/>** (source under [`docs/`](./docs/), served via GitHub Pages). [`docs/feature-registry.md`](./docs/feature-registry.md) remains the canonical feature reference, and [`docs/playbooks/`](./docs/playbooks/) holds copy-paste recipes for every channel and memory tier.
+
 ## Quickstart: An Agent Folder From One Config File
 
 Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a working agent with the `mono-agent` CLI from `@mono-agent/agent-app`:
