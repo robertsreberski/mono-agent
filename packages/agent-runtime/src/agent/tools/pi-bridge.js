@@ -331,6 +331,7 @@ export function getPiBuiltinTools(allowedTools, {
   persistArtifact = null,
   onTruncate = null,
   toolPayloadMaxBytes = MAX_TOOL_RESULT_BYTES,
+  imageInlineMaxBytes = toolPayloadMaxBytes,
   toolPolicy = null,
   sandboxPolicy = null,
   sandboxEngine = null,
@@ -411,6 +412,7 @@ export function getPiBuiltinTools(allowedTools, {
   return wrapToolsWithBloatGuard(gated, {
     persistArtifact,
     maxBytes: toolPayloadMaxBytes,
+    imageMaxBytes: imageInlineMaxBytes,
     onTruncate,
   });
 }

@@ -25,7 +25,12 @@ const DEFAULT_TOOL_TEXT_LIMIT_CHARS = 64000;
 const DEFAULT_BASH_OUTPUT_LIMIT_CHARS = 64000;
 const DEFAULT_MCP_TEXT_LIMIT_CHARS = 48000;
 const DEFAULT_SEARCH_RESULT_LIMIT = 100;
-const DEFAULT_IMAGE_INLINE_MAX_BYTES = 250000;
+// Images are returned to vision models whole (a Read of an image attachment, an
+// MCP screenshot). The byte size is large but token cost is driven by image
+// tokens, not base64 length, so allow multi-MB screenshots through instead of
+// clipping them to a "[truncated]" summary the model can't see. Clamp ceiling
+// (10MB) is enforced in resolveAgentCompactionPolicy.
+const DEFAULT_IMAGE_INLINE_MAX_BYTES = 5_000_000;
 const DEFAULT_TOOL_PAYLOAD_MAX_BYTES = 262144;
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 120000;
 
