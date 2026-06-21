@@ -1,0 +1,75 @@
+---
+title: "OpenAI-Compatible Endpoint for Open WebUI"
+parent: "Playbooks"
+nav_order: 4
+---
+
+# OpenAI-Compatible Endpoint for Open WebUI
+
+This playbook exposes a mono-agent agent as an OpenAI-compatible `/v1` endpoint so [Open WebUI](https://github.com/open-webui/open-webui) (or any OpenAI client) can list the model, stream responses token-by-token over SSE, and keep multi-turn conversation state per chat.
+
+## Who this is for
+
+AI infra engineers fronting the agent with a chat UI.
+
+## Goal
+
+Expose the agent as an OpenAI-compatible `/v1` endpoint so Open WebUI can stream responses and keep multi-turn conversation state.
+
+## Features used
+
+- [`openai-api.chat-completions`](../channels/openai-api.md) — `/v1/models` + `/v1/chat/completions` with SSE streaming and an optional bearer key.
+- [`openai-api.session-headers`](../channels/openai-api.md) — session continuity via the `X-OpenWebUI-Chat-Id` / `X-Conversation-Id` request headers (only the latest user turn is forwarded per conversation).
+- [`runtime.provider-sessions`](../runtime/sessions-concurrency.md) — continuous provider sessions that retain context across requests.
+
+All three are `config` coverage — no code required.
+
+## Configuration
+
+```json
+{
+  "runtime": {
+    "model": "claude:claude-sonnet-4-6",
+    "session": {
+      "mode": "continuous",
+      "idleTimeoutMs": 1800000
+    }
+  },
+  "openaiApi": {
+    "enabled": true,
+    "host": "0.0.0.0",
+    "port": 4040,
+    "basePath": "/v1",
+    "allowNonLoopback": true,
+    "modelId": "my-agent",
+    "apiKey": "sk-secret"
+  }
+}
+```
+
+Binding to a non-loopback host (`0.0.0.0`) requires `allowNonLoopback: true` — the server refuses public binds otherwise. Always set `apiKey` when the endpoint is reachable off-host; clients must then send `Authorization: Bearer sk-...`.
+{: .warning }
+
+The same settings can be supplied via environment variables (`MONO_AGENT_*`); see [Environment variables](../config/env-vars.md) for the full mapping.
+
+## Steps
+
+1. `mono-agent init --model claude:claude-sonnet-4-6`
+2. Add the `openaiApi` section; set `allowNonLoopback: true` for a non-loopback bind, set `apiKey` and `modelId`, and enable continuous session mode under `runtime.session`.
+3. `mono-agent validate`, then `mono-agent start` and confirm the status line reports `openaiApi` `running` with its endpoint.
+4. In Open WebUI, add an OpenAI connection pointing at `http://host:4040/v1` with the bearer key.
+5. Send two consecutive messages in one Open WebUI chat and confirm continuity (only the latest user turn is forwarded per conversation; prior context comes from the continuous session keyed by the chat id header).
+6. Verify SSE streaming token-by-token in the UI.
+
+## Smoke test
+
+`curl /v1/models` returns `my-agent`; `curl /v1/chat/completions` with the `x-openwebui-chat-id` header twice and confirm the second call resumes the session (continuity) and streams via SSE.
+{: .tip }
+
+## Related
+
+- [OpenAI-compatible API channel](../channels/openai-api.md)
+- [Sessions & concurrency](../runtime/sessions-concurrency.md)
+- [Runtime backends](../runtime/backends.md)
+- [Environment variables](../config/env-vars.md)
+- [mono-agent composer skill](../../packages/agent-app/skills/mono-agent-composer/SKILL.md)

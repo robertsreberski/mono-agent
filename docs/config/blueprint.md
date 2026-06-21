@@ -1,13 +1,18 @@
-# Config Blueprint
+---
+title: "Annotated config file"
+parent: "Configuration"
+nav_order: 1
+---
 
-> A prose, per-domain version of this reference (runtime, channels, memory, …)
-> lives on the published docs site:
-> <https://robertsreberski.github.io/mono-agent/config/>. This annotated JSON
-> stays the offline canonical shape.
+# Annotated config file
 
-One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; every field also has a `MONO_AGENT_*` env var that overrides it (env > JSON > defaults). Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
+A single `mono-agent.config.json` declares the whole agent: runtime, providers, context, memory, tools, sandbox, observability, and every channel. This page reproduces the complete annotated file so you can copy any section verbatim. Each top-level section links out to its deep-dive page at the bottom.
 
-## Folder Layout
+Paths are relative to the agent folder. Every field also has a `MONO_AGENT_*` env var that overrides it — precedence is **env > JSON > defaults**. Omit a section to leave that capability off: every section except `runtime.model` and `context.identityPath` is optional.
+
+This is a **config**-coverage reference. Capabilities that config cannot express need the [programmatic escape hatch](../programmatic/index.md) — see the note at the end.
+
+## Folder layout
 
 ```text
 my-agent/
@@ -25,7 +30,9 @@ my-agent/
     trace-sources/         # traceability registry (if kept folder-local)
 ```
 
-## Annotated Config
+See [Folder layout](folder-layout.md) for the full directory contract.
+
+## The full annotated config
 
 ```jsonc
 {
@@ -163,7 +170,7 @@ my-agent/
     "basePath": "/v1",                     // serves /v1/models + /v1/chat/completions (SSE)
     "allowNonLoopback": false,
     "modelId": "my-agent",                 // model id advertised to API clients
-    "apiKey": "..."                        // optional bearer required from clients
+    "apiKey": "sk-..."                     // optional bearer required from clients
   },
 
   // Telegram & Slack deliver only the FINAL answer by default (no streamed
@@ -251,24 +258,33 @@ mono-agent restart      # apply config edits (config is JSON-first; restart to r
 mono-agent restart --force  # restart AND purge persisted pi sessions (fresh start; durable memory kept)
 ```
 
-A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
+Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it too) and run `mono-agent restart` to apply. There is no live browser re-apply. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
 
-For BuJo capture and rituals, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `codex:gpt-5.5` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. The standalone `memory-bujo` maintenance CLI remains Ollama-only; `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
+A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. Keep all secrets there or in `MONO_AGENT_*` env vars — never commit real tokens.
 
-For a local terminal chat, `@mono-agent/tui` ships a `mono-agent-tui` bin. The TUI is a communication adapter, not a harness: `--responder <file>` (an ESM module that default-exports an `AgentResponderLike`, or exports `createResponder(env, cwd, configJson)`) is **required**; `--config <path>` is optional and only enables the Config pane (forwarded to `createResponder()`). Example: `mono-agent-tui --responder ./responder.mjs --config ./mono-agent.config.json`.
+{: .warning }
+For `memory.llm`, CLI-backed refs such as `codex:gpt-5.5` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](../memory/capture-and-recall.md).
 
-## Programmatic Escape Hatch
+## Section reference
 
-When config cannot express the host (custom runtime, request-scoped runtime extensions, custom channels, tool approval gates, structured output schemas), compose on the same package the CLI uses:
+Every top-level section maps to a deep-dive page:
 
-```ts
-import { startMonoAgentApp, defaultChannelDrivers } from "@mono-agent/agent-app";
+| Section | What it controls | Deep dive |
+| --- | --- | --- |
+| `runtime` | Model, fallback chain, execution mode, effort, sessions | [Backends](../runtime/backends.md), [Effort & permissions](../runtime/execution-effort-permissions.md), [Fallback](../runtime/fallback.md), [Sessions & concurrency](../runtime/sessions-concurrency.md) |
+| `providers` | Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Local providers](../runtime/local-providers.md) |
+| `context` | Identity, soul, skills selection | [Identity & soul](../context/identity-and-soul.md), [Skills](../context/skills.md), [Assembly](../context/assembly.md) |
+| `memory` | Tier, embeddings, capture LLM, reflection/migration rituals | [Embeddings](../memory/embeddings.md), [Capture & recall](../memory/capture-and-recall.md), [Rituals](../memory/rituals.md), [Entity graph](../memory/entity-graph.md) |
+| `tools` | Allow/deny tool policy, MCP servers | [Tool policy](../tools/policy.md), [MCP](../tools/mcp.md) |
+| `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](../tools/sandbox.md) |
+| `artifacts`, `traceability` | JSONL run summaries + the trace-source registry | [Artifacts & traces](../observability/artifacts-and-traces.md) |
+| `observability` | Optional Phoenix (OTLP) exporter | [Phoenix & backfill](../observability/phoenix-and-backfill.md) |
+| `webhook` | HTTP invoke endpoint (sync/async) | [Webhook](../channels/webhook.md) |
+| `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](../channels/openai-api.md) |
+| `telegram` | Telegram bot channel | [Telegram](../channels/telegram.md) |
+| `slack` | Slack Socket Mode channel | [Slack](../channels/slack.md) |
+| `whatsapp` | WhatsApp (Baileys) channel | [WhatsApp](../channels/whatsapp.md) |
+| `a2a` | Agent-to-Agent provider + consumer settings | [A2A](../channels/a2a.md), [A2A consumer](../programmatic/a2a-consumer.md) |
+| `cron` | Scheduled prompt jobs (inline + `cron/*.md`) | [Cron](../channels/cron.md) |
 
-const app = await startMonoAgentApp({
-  cwd: process.cwd(),
-  runtime: myCustomRuntime,            // any MonoRuntimeLike
-  drivers: [...defaultChannelDrivers(), myCustomDriver],
-});
-```
-
-For a bare responder without channels, use `@mono-agent/config` + `@mono-agent/agent-host` (`createConfiguredAgentResponder` — also takes `memory`, `historyStore`, `runtimeOptions`, `runtimeOptionsForRequest`). For multi-agent orchestration, add `@mono-agent/agent-orchestrator` (`createCollaboratorToolRuntimeExtension`) — see `references/package-map.md`. Channel message texts and stream tuning (welcome/help/error texts, edit debounce) are channel-driver overrides, not config keys.
+For per-section env vars see [Environment variables](env-vars.md). When config cannot express what you need (custom runtime, request-scoped extensions, custom channels, tool-approval gates, structured-output schemas), use the [programmatic escape hatch](../programmatic/index.md).

@@ -1,3 +1,9 @@
+---
+title: "Feature registry (source of truth)"
+parent: "Reference"
+nav_order: 3
+---
+
 # Mono-Agent Feature Registry
 
 Source of truth mapping **every framework capability** to (a) how a config-first
@@ -115,7 +121,7 @@ rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | `observability.trace-registry` | Host publishes a heartbeat manifest so dashboards discover running agents | `config` | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` (`MONO_AGENT_TRACE_*`) |
 | `observability.phoenix-exporter` | Additive best-effort OTLP/HTTP **protobuf** export of each run lifecycle to Phoenix as a SEMANTIC timeline: streaming assistant deltas coalesce into one "Assistant thoughts"/"Assistant message" span, and a tool's `tool_use`+`tool_timing`+`tool_result` events merge by `tool_use_id` into one TOOL span (input=args, output=result). Spans carry OpenInference semantics (`openinference.span.kind` AGENT/LLM/TOOL/CHAIN, `input.value`/`output.value`) and route to a named project via `openinference.project.name` (defaults to the trace source label/id). Deterministic per-run ids make re-export idempotent. Metadata-only by default; failures are bounded by timeout and never change the run outcome or suppress JSONL writes. Transport lives in `@mono-agent/observability-otel` (via `@opentelemetry/otlp-transformer`); `start`/`status` show the endpoint, `validate` POSTs an empty protobuf to confirm export-compatibility (not just reachability) | `config` | `observability.exporters[]: {type:"phoenix", endpoint, projectName, includeSensitiveData, headers, timeoutMs}` (`MONO_AGENT_OBSERVABILITY_EXPORTERS` JSON array) |
 | `observability.backfill` | Retroactively export already-recorded run artifacts (`run-*.summary.json` + `run-*.events.jsonl`) to Phoenix with their historical timestamps, reusing the live OTLP mapping. Deterministic ids make re-runs overwrite rather than duplicate | `cli` | `mono-agent backfill (--run <id> \| --all) [--since <iso>] [--until <iso>] [--dry-run]` |
-| `tui.chat` | Terminal chat + transcript + redacted config pane | `cli` | `mono-agent-tui --config ./mono-agent.config.json` (ships with `@mono-agent/tui`) |
+| `tui.chat` | Terminal chat + transcript + redacted config pane. The TUI is a communication adapter, not a harness: `--responder <file>` (ESM module exporting an `AgentResponderLike` or `createResponder(env, cwd, configJson)`) is **required**; `--config` is optional (enables the Config pane, forwarded to `createResponder()`) | `cli` | `mono-agent-tui --responder <file> [--config <path>]` (ships with `@mono-agent/tui`) |
 
 ## Execution & composition (`agent-harness`, `agent-host`, `agent-orchestrator`, `agent-app`)
 
@@ -123,8 +129,10 @@ rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | --- | --- | --- | --- |
 | `app.cli-init` | Non-destructive scaffold (config + IDENTITY.md + `.mono-agent/`) | `cli` | `mono-agent init [--model] [--fallback-models] [--memory]` |
 | `app.cli-validate` | Per-section config report (core, runtime, context, memory, tools, sandbox, every channel) | `cli` | `mono-agent validate [--config] [--env-file]` |
-| `app.cli-start` | Traceability + every configured channel | `cli` | `mono-agent start [--config] [--env-file]` |
-| `app.cli-restart-clean` | Restart that first purges the persisted pi-session store (`providers.piNative.piSessionsRoot`) so the agent resumes nothing — a fresh start. Durable memory under `memory.path` is untouched; a no-op when sessions are in-memory | `cli` | `mono-agent restart [--config] [--force]` |
+| `app.cli-start` | Start the agent — traceability + every configured channel. Defaults to a **background macOS service (launchd)** that survives logins (auto-restart on crash) until `stop`; `--foreground`/`-f` runs blocking in the foreground (use this off macOS) | `cli` | `mono-agent start [--config] [--env-file] [--foreground\|-f]` |
+| `app.cli-stop` | Stop the background instance for this config and remove its LaunchAgent (macOS background mode) | `cli` | `mono-agent stop [--config]` |
+| `app.cli-logs` | Print (and optionally follow) the background instance's log files | `cli` | `mono-agent logs [--config] [--follow\|-f] [--lines <n>]` |
+| `app.cli-restart-clean` | Restart the background instance (starts it if stopped). `--force` first purges the persisted pi-session store (`providers.piNative.piSessionsRoot`) so the agent resumes nothing — a fresh start. Durable memory under `memory.path` is untouched; a no-op when sessions are in-memory | `cli` | `mono-agent restart [--config] [--force]` |
 | `app.cli-install-skill` | Copy the composer skill into `~/.claude/skills` / `~/.codex/skills` | `cli` | `mono-agent install-skill [--target claude\|codex\|both] [--force]` |
 | `app.env-file` | `.env` auto-load (exported shell vars win) | `cli` | automatic; `--env-file <path>` to override |
 | `harness.failure-handling` | Explicit failure objects (never fake success) | `auto` | Built into every run |
@@ -139,5 +147,12 @@ rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
   justification), and coverage in the composer skill references.
 - The composer skill files that must stay in sync:
   `packages/agent-app/skills/mono-agent-composer/SKILL.md`,
-  `references/config-blueprint.md`, `references/discovery-questions.md`,
-  `references/package-map.md`, `references/validation.md`.
+  `references/config-blueprint.md`, `references/feature-coverage.md`,
+  `references/discovery-questions.md`, `references/package-map.md`,
+  `references/validation.md`, and `references/playbooks.md` (when a recipe changes).
+- The published documentation site under `docs/` (served on GitHub Pages from
+  `/docs` on `main`) is the reader-friendly projection of this registry. When a
+  feature row changes, also update its prose page under `docs/<area>/`, the
+  scannable `docs/reference/feature-matrix.md`, and — if a recipe is affected —
+  the matching `docs/playbooks/<slug>.md` and the composer's `references/playbooks.md`.
+  This file (`docs/feature-registry.md`) remains the canonical source of truth.

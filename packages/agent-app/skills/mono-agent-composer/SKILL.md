@@ -38,7 +38,7 @@ Everything below runs in the user's agent folder, not the workspace.
 
 ## Composition Flow
 
-1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test.
+1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test. Then scan `references/playbooks.md` for a recipe matching the user's intent — if one fits, use it as the starting shape.
 2. **Scaffold.** In the user's folder run:
 
    ```bash
@@ -46,7 +46,7 @@ Everything below runs in the user's agent folder, not the workspace.
    ```
 
    This writes a minimal `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories. It never overwrites existing files.
-3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models.
+3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models. If a `references/playbooks.md` recipe matches, start from its config block and adapt it rather than assembling from scratch.
 4. **Validate.**
 
    ```bash
@@ -71,8 +71,16 @@ Config-first covers one responder served over any combination of the seven chann
 - `references/discovery-questions.md` — the question sequence and which config keys each answer fills.
 - `references/config-blueprint.md` — annotated `mono-agent.config.json` covering every section, plus the folder layout and programmatic escape hatch.
 - `references/feature-coverage.md` — every framework feature mapped to config / CLI / code / dev-tooling coverage; the answer to "can the config do X?".
+- `references/playbooks.md` — 13 end-to-end recipes (persona → config block → `init`/`validate`/`start`/smoke). Check for a matching recipe before hand-assembling a config.
 - `references/package-map.md` — which package owns what, for programmatic composition and troubleshooting.
 - `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
+
+Human-facing companion: the published documentation site at
+<https://robertsreberski.github.io/mono-agent/> (notably its Playbooks index and
+Feature Matrix). The LLM-facing source of truth stays the in-repo markdown
+(`docs/feature-registry.md` plus these `references/*` files) — these work offline
+when the skill is bundled with `@mono-agent/agent-app`, so do not depend on the
+live site being reachable.
 
 ## Done Criteria
 

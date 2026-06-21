@@ -1,3 +1,9 @@
+---
+title: "Memory"
+nav_order: 6
+has_children: true
+---
+
 # Memory — Operator Guide
 
 This guide covers the three memory tiers available in mono-agent, all backed by the
