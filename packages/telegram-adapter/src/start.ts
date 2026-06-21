@@ -49,6 +49,13 @@ export interface TelegramAdapterStartOptions {
 export interface TelegramAdapterStartResult {
   /** Stops polling and waits for the runner to settle. */
   stop(): Promise<void>;
+  /**
+   * Deliver a proactive notification to a chat by running it as a turn on that
+   * chat's own harness (same session/history/per-chat queue as inbound messages)
+   * and posting the answer through the normal stream. Used by cron/webhook nudges
+   * so the destination channel's agent — not a side channel — owns the message.
+   */
+  notify(chatId: TelegramChatId, text: string): Promise<void>;
 }
 
 /**
@@ -67,6 +74,7 @@ export async function startTelegramAdapter(
   await controller.start();
   return {
     stop: () => controller.stop(),
+    notify: (chatId, text) => controller.notify(chatId, text),
   };
 }
 

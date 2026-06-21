@@ -30,6 +30,7 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
   const usedDefaultCore = input.core === undefined;
   const core = normalizeContextBlock(input.core === undefined ? DEFAULT_SOUL_TEXT : input.core, 'core');
   const identity = normalizeContextBlock(input.identity, 'identity');
+  const session = input.session === undefined ? undefined : normalizeContextBlock(input.session, 'session');
   const memory = normalizeMemory(input.memory);
   const history = normalizeHistory(input.history);
   const skills = input.skills === undefined ? [] : buildSkillIndex(input.skills);
@@ -40,6 +41,10 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
     makeSection('core', 'Core Guardrails', core),
     makeSection('identity', 'Identity', identity),
   ];
+
+  if (session !== undefined) {
+    sections.push(makeSection('session', 'Session', session));
+  }
 
   if (memory.length > 0) {
     sections.push(makeSection('memory', 'Memory', renderNumberedBlocks(memory, 'Memory')));

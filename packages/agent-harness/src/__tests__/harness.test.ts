@@ -157,7 +157,7 @@ describe("AgentHarness", () => {
     });
     expect(recorder.startCount).toBe(1);
     expect(response.metadata.runtime).toMatchObject({ cost: { totalUsd: 0.01 }, capabilitiesUsed: ["tools:read"] });
-    expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "memory", "history", "skills", "skill-instructions", "user-message"]);
+    expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "session", "memory", "history", "skills", "skill-instructions", "user-message"]);
     expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(dir, "memory.md"), join(skillsRoot, "research", "SKILL.md")]);
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0]?.prompt).toContain("Remember: terse.");

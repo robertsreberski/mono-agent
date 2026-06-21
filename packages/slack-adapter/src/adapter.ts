@@ -482,6 +482,135 @@ export class SlackAdapter {
     }
   }
 
+  /**
+   * Deliver a proactive notification to a Slack destination by running it as a
+   * turn on that destination's OWN harness (shared session/history + the same
+   * per-conversation admission queue as inbound messages) and posting the answer
+   * through the normal stream. `threadTs` targets an existing thread (clean
+   * continuity — the user's in-thread replies share the session); omitting it
+   * posts top-level (fire-and-forget: a fresh top-level post has no pre-existing
+   * thread to share continuity with). Used by cron/webhook nudges. Best-effort:
+   * a failed or empty turn posts nothing.
+   */
+  async notify(
+    channelId: SlackChannelId,
+    threadTs: SlackMessageTs | undefined,
+    text: string,
+  ): Promise<void> {
+    const conversationId = threadTs === undefined ? `slack:${channelId}` : `slack:${channelId}:${threadTs}`;
+    const runKey = `proactive:${conversationId}`;
+    const controller = new AbortController();
+    this.registerController(runKey, controller);
+    let queue = this.admissionQueues.get(conversationId);
+    if (queue === undefined) {
+      queue = new SerialQueue();
+      this.admissionQueues.set(conversationId, queue);
+    }
+    try {
+      await queue.run(() => this.runProactiveTurn(conversationId, channelId, threadTs, text, runKey, controller));
+    } catch (error) {
+      if (isSerialQueueFullError(error)) {
+        this.unregisterController(runKey, controller);
+        this.logger?.warn?.("Slack proactive notify dropped: conversation is at its concurrency cap.", {
+          conversationId,
+        });
+        return;
+      }
+      throw error;
+    } finally {
+      if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
+        this.admissionQueues.delete(conversationId);
+      }
+    }
+  }
+
+  private async runProactiveTurn(
+    conversationId: string,
+    channelId: SlackChannelId,
+    threadTs: SlackMessageTs | undefined,
+    text: string,
+    runKey: string,
+    controller: AbortController,
+  ): Promise<void> {
+    const streamOptions: SlackMessageStreamOptions = {
+      api: this.api,
+      channelId,
+      // No reactToTs: a proactive turn has no inbound message to react to.
+      finalOnly: this.streamOptions.finalOnly ?? true,
+      abortSignal: controller.signal,
+    };
+    if (threadTs !== undefined) {
+      streamOptions.threadTs = threadTs;
+    }
+    if (this.streamOptions.maxMessageChars !== undefined) {
+      streamOptions.maxMessageChars = this.streamOptions.maxMessageChars;
+    }
+    if (this.streamOptions.maxSendRetries !== undefined) {
+      streamOptions.maxSendRetries = this.streamOptions.maxSendRetries;
+    }
+    if (this.streamOptions.retryCapMs !== undefined) {
+      streamOptions.retryCapMs = this.streamOptions.retryCapMs;
+    }
+    if (this.streamOptions.retryBaseDelayMs !== undefined) {
+      streamOptions.retryBaseDelayMs = this.streamOptions.retryBaseDelayMs;
+    }
+    if (this.logger !== undefined) {
+      streamOptions.logger = this.logger;
+    }
+    const stream = new SlackMessageStream(streamOptions);
+    try {
+      if (controller.signal.aborted) {
+        return;
+      }
+      const request: AgentRequest = {
+        conversationId,
+        channelId,
+        messageTs: threadTs ?? "",
+        threadTs: threadTs ?? "",
+        eventId: "proactive",
+        text,
+        trigger: "direct",
+        abortSignal: controller.signal,
+        metadata: {
+          slack: {
+            eventId: "proactive",
+            channel: { id: channelId },
+            message: { ts: threadTs ?? "" },
+            trigger: "direct",
+          },
+        },
+      };
+      let response: AgentResponse;
+      try {
+        response = await this.responder.respond(request, stream);
+      } catch (error) {
+        if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
+          return;
+        }
+        this.logger?.error?.("Slack proactive notify failed.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+      const answer = response.text;
+      if (controller.signal.aborted || answer === undefined || answer.trim().length === 0) {
+        return;
+      }
+      try {
+        await stream.finish(answer);
+      } catch (error) {
+        if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
+          return;
+        }
+        this.logger?.error?.("Slack proactive delivery failed after a successful AI run.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    } finally {
+      this.unregisterController(runKey, controller);
+    }
+  }
+
   private async respondToEvent(
     event: SlackTextEvent,
     text: string,

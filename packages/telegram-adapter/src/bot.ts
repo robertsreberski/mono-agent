@@ -10,6 +10,7 @@ import {
   mergeTelegramMessageInputs,
   normalizeTelegramMessageInput,
   resolveErrorText,
+  type AgentRequest,
   type AgentResponder,
   type AgentResponse,
   type DownloadTelegramAttachmentsOptions,
@@ -145,6 +146,12 @@ export interface TelegramBotController {
   start(): Promise<void>;
   /** Stop polling and wait for the runner to settle. */
   stop(): Promise<void>;
+  /**
+   * Run a proactive (externally triggered) turn on `chatId` and deliver the
+   * answer to that chat, serialized through the same per-chat queue as inbound
+   * messages. Used by cron/webhook nudges.
+   */
+  notify(chatId: TelegramChatId, text: string): Promise<void>;
   /**
    * Test seam: total in-flight AbortControllers tracked across all chats. Used to
    * assert the over-cap busy path does not leak an eagerly-created controller.
@@ -616,6 +623,91 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
   }
 
+  /**
+   * Run a proactive (externally triggered) turn on a chat: a cron/webhook nudge
+   * routed here so the message becomes a REAL turn on this chat's own harness
+   * (same session + history + per-chat queue as inbound messages), delivered
+   * through the normal stream. No inbound message, so the request carries
+   * sentinel ids and the stream posts top-level (no reply-to). Best-effort: a
+   * failed or empty turn posts nothing rather than an unprompted error.
+   */
+  async function runProactiveTurn(
+    chatId: TelegramChatId,
+    text: string,
+    controller: AbortController,
+  ): Promise<void> {
+    try {
+      if (controller.signal.aborted) {
+        return;
+      }
+      const request: AgentRequest = {
+        conversationId: `telegram:${String(chatId)}`,
+        chatId,
+        messageId: 0,
+        updateId: 0,
+        text,
+        abortSignal: controller.signal,
+        metadata: {
+          telegram: {
+            updateId: 0,
+            chat: { id: chatId },
+            message: { id: 0 },
+          },
+        },
+      };
+      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal));
+      let response: AgentResponse;
+      try {
+        response = await options.responder.respond(request, stream);
+      } catch (error) {
+        if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
+          return;
+        }
+        logger?.error?.("Telegram proactive notify failed.", { error: errorMessage(error) });
+        return;
+      }
+      const answer = response.text;
+      if (controller.signal.aborted || answer === undefined || answer.trim().length === 0) {
+        return;
+      }
+      try {
+        await stream.finish(answer);
+      } catch (error) {
+        if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
+          return;
+        }
+        // The AI run succeeded; a delivery failure is degraded, never an error.
+        logger?.error?.("Telegram proactive delivery failed after a successful AI run.", {
+          error: errorMessage(error),
+        });
+      }
+    } finally {
+      unregisterController(chatId, controller);
+    }
+  }
+
+  /**
+   * Deliver a proactive notification to `chatId` by running it as a turn on this
+   * chat through the same per-chat admission queue as inbound messages, so it
+   * serializes with live traffic on the same conversation.
+   */
+  async function notify(chatId: TelegramChatId, text: string): Promise<void> {
+    if (stopped) {
+      return;
+    }
+    const controller = registerController(chatId);
+    await admit(
+      chatId,
+      () => runProactiveTurn(chatId, text, controller),
+      () => {
+        unregisterController(chatId, controller);
+        logger?.warn?.("Telegram proactive notify dropped: chat is at its concurrency cap.", {
+          chatId: String(chatId),
+        });
+      },
+    );
+  }
+
   async function handleControlCommand(
     ctx: Context,
     command: TelegramControlCommand,
@@ -637,18 +729,22 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   function buildStreamOptions(
     chatId: TelegramChatId,
-    replyToMessageId: number,
+    replyToMessageId: number | undefined,
     signal: AbortSignal,
   ): TelegramMessageStreamOptions {
     const streamOptions: TelegramMessageStreamOptions = {
       api: sender,
       chatId,
-      replyToMessageId,
       abortSignal: signal,
       // Default to "typing…" + final-answer-only delivery (no streamed interim
       // edits); a tuning override can restore interim streaming.
       finalOnly: options.stream?.finalOnly ?? true,
     };
+    // Proactive notifications have no inbound message to reply to, so the caller
+    // may omit replyToMessageId (a top-level send rather than a threaded reply).
+    if (replyToMessageId !== undefined) {
+      streamOptions.replyToMessageId = replyToMessageId;
+    }
     const tuning = options.stream;
     if (tuning?.initialStatusText !== undefined) {
       streamOptions.initialStatusText = tuning.initialStatusText;
@@ -687,6 +783,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   return {
     bot,
+    notify,
     activeControllerCount(): number {
       let total = 0;
       for (const set of activeControllers.values()) {

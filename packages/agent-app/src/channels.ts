@@ -41,6 +41,7 @@ import type {
   TelegramAdapterErrorTextInput,
   TelegramAdapterStartOptions,
   TelegramAdapterStartResult,
+  TelegramChatId,
 } from "@mono-agent/telegram-adapter";
 import {
   loadWebhookAdapterConfig,
@@ -65,6 +66,7 @@ import type {
 } from "@mono-agent/whatsapp-adapter";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
+import type { NotifyDeliveryResult } from "./proactive-notify.js";
 
 export type ChannelId =
   | "telegram"
@@ -99,6 +101,17 @@ export interface RunningChannel {
    * queued turns against stale config are retired. Transport stops first.
    */
   dispose?(): Promise<void>;
+  /**
+   * Deliver a proactive notification to a destination this channel owns: run it as
+   * a turn on the destination's own harness (shared session/history) and deliver
+   * through the channel's normal stream. Set only by push channels (telegram/slack);
+   * absent on request-driven channels. Used by the app's proactive-notify router.
+   *
+   * Enforces the channel's own adapter allowlist (so a payload-supplied destination
+   * cannot reach a non-allowlisted chat) and reports the outcome so the caller can
+   * surface it to the model and the run summary.
+   */
+  notify?(input: { readonly conversationId: string; readonly text: string }): Promise<NotifyDeliveryResult>;
 }
 
 export interface ChannelStartInput<TConfig> {
@@ -158,9 +171,39 @@ export function createTelegramChannelDriver(
       return {
         summary: {},
         stop: () => result.stop(),
+        // Push delivery: a proactive nudge to telegram:<chat> runs as a turn on
+        // this chat's own harness and is delivered through the normal stream.
+        // Enforces the adapter allowlist so a payload-supplied destination cannot
+        // reach a chat the operator never allowlisted.
+        notify: async ({ conversationId, text }) => {
+          const chatId = telegramChatIdFromConversation(conversationId);
+          if (chatId === undefined) {
+            input.logger?.warn?.("Telegram proactive notify skipped: unparseable destination.", { conversationId });
+            return { delivered: false, reason: "unparseable telegram destination" };
+          }
+          if (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId))) {
+            input.logger?.warn?.("Telegram proactive notify skipped: destination not in allowlist.", { conversationId });
+            return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
+          }
+          await result.notify(chatId, text);
+          return { delivered: true };
+        },
       };
     },
   };
+}
+
+/** Extract the Telegram chat id from a `telegram:<chat>` conversationId (numeric ids become numbers; a rollover #bucket suffix is stripped). */
+export function telegramChatIdFromConversation(conversationId: string): TelegramChatId | undefined {
+  const prefix = "telegram:";
+  if (!conversationId.startsWith(prefix)) {
+    return undefined;
+  }
+  const raw = conversationId.slice(prefix.length).split("#", 1)[0];
+  if (raw === undefined || raw.length === 0) {
+    return undefined;
+  }
+  return /^-?\d+$/u.test(raw) ? Number(raw) : raw;
 }
 
 export interface SlackChannelOverrides {
@@ -202,9 +245,63 @@ export function createSlackChannelDriver(
       return {
         summary: {},
         stop: () => result.stop(),
+        // Push delivery: a proactive nudge to slack:<ch>[:<thread>] runs as a turn
+        // on that conversation's own harness and is delivered through the stream.
+        // Enforces the adapter allowlist so a payload-supplied destination cannot
+        // reach a channel the operator never allowlisted.
+        notify: async ({ conversationId, text }) => {
+          const target = slackTargetFromConversation(conversationId);
+          if (target === undefined) {
+            input.logger?.warn?.("Slack proactive notify skipped: unparseable destination.", { conversationId });
+            return { delivered: false, reason: "unparseable slack destination" };
+          }
+          const normalized = target.channelId.trim().toLowerCase();
+          const allowed =
+            input.config.allowAllChannels ||
+            input.config.allowedChannelIds.some((id) => id.trim().toLowerCase() === normalized);
+          if (!allowed) {
+            input.logger?.warn?.("Slack proactive notify skipped: destination not in allowlist.", { conversationId });
+            return { delivered: false, reason: "slack channel is not in the adapter allowlist" };
+          }
+          await result.adapter.notify(target.channelId, target.threadTs, text);
+          return { delivered: true };
+        },
       };
     },
   };
+}
+
+/** Extract `{channelId, threadTs?}` from a `slack:<ch>[:<thread>]` conversationId (a rollover #bucket suffix is stripped). */
+export function slackTargetFromConversation(
+  conversationId: string,
+): { readonly channelId: string; readonly threadTs?: string } | undefined {
+  const prefix = "slack:";
+  if (!conversationId.startsWith(prefix)) {
+    return undefined;
+  }
+  const rest = conversationId.slice(prefix.length).split("#", 1)[0];
+  if (rest === undefined || rest.length === 0) {
+    return undefined;
+  }
+  const colon = rest.indexOf(":");
+  if (colon < 0) {
+    return { channelId: rest };
+  }
+  const channelId = rest.slice(0, colon);
+  const threadTs = rest.slice(colon + 1);
+  if (channelId.length === 0) {
+    return undefined;
+  }
+  if (threadTs.length === 0) {
+    return { channelId };
+  }
+  // A canonical Slack threadTs (e.g. 1718800000.123456) never contains a colon, so a
+  // stray/double colon is an operator typo — reject it so the driver warns + skips
+  // cleanly rather than posting to the Slack API with a malformed thread_ts.
+  if (threadTs.includes(":")) {
+    return undefined;
+  }
+  return { channelId, threadTs };
 }
 
 export interface A2AChannelOverrides {
