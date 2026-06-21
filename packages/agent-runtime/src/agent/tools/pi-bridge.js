@@ -345,7 +345,7 @@ export function getPiBuiltinTools(allowedTools, {
   };
   const toolContext = { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine };
   const all = {
-    Read: createBuiltinTool("Read", "Read", "Read a local file with line numbers.", objectSchema({
+    Read: createBuiltinTool("Read", "Read", "Read a local file. Text files return line-numbered content; image files (PNG, JPEG, GIF, WebP, BMP) are returned as a viewable image you can see directly — use this to look at image attachments.", objectSchema({
       file_path: { type: "string" },
       offset: { type: "integer" },
       start_line: { type: "integer" },
