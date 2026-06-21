@@ -45,6 +45,12 @@ export interface MemoryAgentHostLlmConfig {
   /** Runtime model reference string, parsed by the host when constructing the LLM. */
   readonly model: string;
   readonly executionMode?: RuntimeExecutionMode;
+  /**
+   * Record each memory LLM `complete()` as a run through the same JSONL + Phoenix
+   * pipeline as channel runs (per-ritual labelled, `mem-*` run ids). Defaults to
+   * `true`; set `false` to keep memory LLM calls unrecorded.
+   */
+  readonly trace?: boolean;
 }
 export type MemoryLlmConfig = MemoryOllamaLlmConfig | MemoryAgentHostLlmConfig;
 

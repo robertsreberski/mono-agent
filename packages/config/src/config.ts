@@ -568,10 +568,15 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
       );
     }
     const executionMode = readMemoryLlmExecutionMode(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE, model);
+    const trace =
+      normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) === undefined
+        ? undefined
+        : readBoolean(env.MONO_AGENT_MEMORY_LLM_TRACE, "MONO_AGENT_MEMORY_LLM_TRACE", true, invalidEnv);
     return {
       provider,
       model: rawModel,
       executionMode,
+      ...(trace === undefined ? {} : { trace }),
     };
   }
   if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE) !== undefined) {
@@ -579,6 +584,13 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
       "invalid_env",
       "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
       { env: "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE" },
+    );
+  }
+  if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) !== undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_MEMORY_LLM_TRACE is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
+      { env: "MONO_AGENT_MEMORY_LLM_TRACE" },
     );
   }
   return {

@@ -88,7 +88,7 @@ export async function extractEntities(text: string, llm: LlmComplete): Promise<E
 
   let raw: string;
   try {
-    raw = await llm.complete(PROMPT(text));
+    raw = await llm.complete(PROMPT(text), { label: "capture:entities" });
   } catch (cause) {
     throw new MemoryModelError("llm", "entities", cause);
   }

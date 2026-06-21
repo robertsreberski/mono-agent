@@ -23,6 +23,7 @@ import type {
   PhoenixExporterConfig,
   RunExportContext,
   RunExporter,
+  RunRecorder,
 } from "@mono-agent/observability";
 import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
 import {
@@ -82,6 +83,86 @@ export interface ConfiguredAgentHarnessOptions {
 }
 
 export interface ConfiguredAgentResponderOptions extends ConfiguredAgentHarnessOptions {}
+
+/**
+ * Inputs the recorder composition needs that are stable across a run: the
+ * artifact directory, the configured exporters, and the per-host export
+ * context. Shared by the channel-run `recorderFactory` and the memory LLM so
+ * both produce identical JSONL artifacts + Phoenix spans.
+ */
+interface RecorderCompositionDeps {
+  readonly artifactDir: string;
+  readonly exporters: readonly PhoenixExporterConfig[];
+  readonly observabilityContext?: ConfiguredAgentHarnessOptions["observabilityContext"];
+  readonly exporterWarn?: ConfiguredAgentHarnessOptions["exporterWarn"];
+  readonly exporterFactory?: ConfiguredAgentHarnessOptions["exporterFactory"];
+}
+
+/**
+ * Build a recorder for one run. The JSONL recorder is always built first and
+ * returned unchanged when no exporter is configured, so default recording stays
+ * byte-identical. When an exporter is present the JSONL recorder is wrapped so
+ * export is best-effort and additive — exporter failures only surface as
+ * warnings and never change the run outcome.
+ */
+function composeRunRecorder(
+  deps: RecorderCompositionDeps,
+  args: { readonly runId: string; readonly conversationId: string; readonly userInput?: string },
+): RunRecorder {
+  const jsonl = createJsonlRunRecorder({
+    runId: args.runId,
+    conversationId: args.conversationId,
+    artifactDir: deps.artifactDir,
+    ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
+  });
+  const exporterCfg = deps.exporters[0];
+  if (exporterCfg === undefined) {
+    return jsonl;
+  }
+  const exporter = (deps.exporterFactory ?? createPhoenixRunExporter)(exporterCfg);
+  const context: RunExportContext = {
+    runId: args.runId,
+    conversationId: args.conversationId,
+    ...(deps.observabilityContext?.sourceId === undefined
+      ? {}
+      : { sourceId: deps.observabilityContext.sourceId }),
+    ...(deps.observabilityContext?.sourceLabel === undefined
+      ? {}
+      : { sourceLabel: deps.observabilityContext.sourceLabel }),
+    ...(deps.observabilityContext?.configPath === undefined
+      ? {}
+      : { configPath: deps.observabilityContext.configPath }),
+    artifactDir: deps.artifactDir,
+    includeSensitiveData: exporterCfg.includeSensitiveData ?? false,
+    ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
+  };
+  return createCompositeRunRecorder({
+    recorder: jsonl,
+    exporter,
+    context,
+    timeoutMs: exporterCfg.timeoutMs ?? 5000,
+    ...(deps.exporterWarn === undefined ? {} : { onWarning: deps.exporterWarn }),
+  });
+}
+
+/** Collect the recorder-composition deps from the host config + harness options. */
+function recorderCompositionDeps(
+  config: MonoAgentConfig,
+  options: Pick<
+    ConfiguredAgentHarnessOptions,
+    "observabilityContext" | "exporterWarn" | "exporterFactory"
+  >,
+): RecorderCompositionDeps {
+  return {
+    artifactDir: config.artifacts.dir,
+    exporters: config.observability?.exporters ?? [],
+    ...(options.observabilityContext === undefined
+      ? {}
+      : { observabilityContext: options.observabilityContext }),
+    ...(options.exporterWarn === undefined ? {} : { exporterWarn: options.exporterWarn }),
+    ...(options.exporterFactory === undefined ? {} : { exporterFactory: options.exporterFactory }),
+  };
+}
 
 export function createConfiguredAgentRuntime(config: MonoAgentConfig): MonoRuntimeLike;
 export function createConfiguredAgentRuntime(options: ConfiguredAgentRuntimeOptions): MonoRuntimeLike;
@@ -173,47 +254,12 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
-    recorderFactory: ({ runId, conversationId, userInput }) => {
-      // The JSONL recorder is always built first and returned unchanged when no
-      // exporter is configured, so default recording stays byte-identical.
-      const jsonl = createJsonlRunRecorder({
+    recorderFactory: ({ runId, conversationId, userInput }) =>
+      composeRunRecorder(recorderCompositionDeps(config, options), {
         runId,
         conversationId,
-        artifactDir: config.artifacts.dir,
         ...(userInput === undefined ? {} : { userInput }),
-      });
-      const exporters = config.observability?.exporters ?? [];
-      const exporterCfg = exporters[0];
-      if (exporterCfg === undefined) {
-        return jsonl;
-      }
-      // Best-effort, additive export: wrap the JSONL recorder so exporter
-      // failures only surface as warnings and never change the run outcome.
-      const exporter = (options.exporterFactory ?? createPhoenixRunExporter)(exporterCfg);
-      const context: RunExportContext = {
-        runId,
-        conversationId,
-        ...(options.observabilityContext?.sourceId === undefined
-          ? {}
-          : { sourceId: options.observabilityContext.sourceId }),
-        ...(options.observabilityContext?.sourceLabel === undefined
-          ? {}
-          : { sourceLabel: options.observabilityContext.sourceLabel }),
-        ...(options.observabilityContext?.configPath === undefined
-          ? {}
-          : { configPath: options.observabilityContext.configPath }),
-        artifactDir: config.artifacts.dir,
-        includeSensitiveData: exporterCfg.includeSensitiveData ?? false,
-        ...(userInput === undefined ? {} : { userInput }),
-      };
-      return createCompositeRunRecorder({
-        recorder: jsonl,
-        exporter,
-        context,
-        timeoutMs: exporterCfg.timeoutMs ?? 5000,
-        ...(options.exporterWarn === undefined ? {} : { onWarning: options.exporterWarn }),
-      });
-    },
+      }),
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
     ...(options.now === undefined ? {} : { now: options.now }),
   });
@@ -239,7 +285,19 @@ const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
 
 export function createConfiguredMemory(
   config: MonoAgentConfig,
-  deps: { logger?: { warn(message: string): void }; runtime?: MonoRuntimeLike } = {},
+  deps: {
+    logger?: { warn(message: string): void };
+    runtime?: MonoRuntimeLike;
+    /**
+     * When supplied, the bujo memory LLM records each `complete()` as a run via
+     * the same JSONL + Phoenix pipeline as channel runs (subject to the
+     * `memory.llm.trace` toggle). Omitted → memory LLM runs unrecorded.
+     */
+    observability?: Pick<
+      ConfiguredAgentHarnessOptions,
+      "observabilityContext" | "exporterWarn" | "exporterFactory"
+    >;
+  } = {},
 ): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
@@ -291,7 +349,11 @@ export function createConfiguredMemory(
   }
 
   // bujo tier: full stack — embeddings + optional chat LLM for capture/reflect/migrate.
-  const llm = configuredMemoryLlm(config, llmConfig, deps.runtime);
+  const recording =
+    deps.observability === undefined
+      ? undefined
+      : recorderCompositionDeps(config, deps.observability);
+  const llm = configuredMemoryLlm(config, llmConfig, deps.runtime, recording);
   return createBujoMemoryStore({
     root,
     embeddings,
@@ -316,11 +378,13 @@ function configuredMemoryLlm(
   config: MonoAgentConfig,
   llmConfig: NonNullable<MonoAgentConfig["memory"]>["llm"],
   runtimeOverride: MonoRuntimeLike | undefined,
+  recording: RecorderCompositionDeps | undefined,
 ): LlmComplete | undefined {
   if (llmConfig === undefined) {
     return undefined;
   }
   if (llmConfig.provider === "ollama") {
+    // The ollama memory LLM does not ride `runtime.run`, so it is not recorded.
     return createOllamaLlm({
       model: llmConfig.model,
       ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
@@ -342,6 +406,11 @@ function configuredMemoryLlm(
       runtimeOptionsForLocalProvider(model, config.providers?.local),
       configRuntimeFlags(config),
     ),
+    // `memory.llm.trace` (default on) gates recording; it only takes effect when
+    // the app threaded observability deps into createConfiguredMemory.
+    ...(recording !== undefined && llmConfig.trace !== false
+      ? { recording: { deps: recording, baseConversationId: MEMORY_CONVERSATION_ID } }
+      : {}),
   });
 }
 
@@ -351,6 +420,9 @@ const MEMORY_LLM_SYSTEM_PROMPT = [
   "Do not use tools, inspect files, or perform external actions.",
 ].join(" ");
 
+/** Fallback conversation id for recorded memory LLM runs that carry no ritual label. */
+const MEMORY_CONVERSATION_ID = "memory:bujo";
+
 function createAgentHostMemoryLlm(options: {
   readonly runtime: MonoRuntimeLike;
   readonly model: RuntimeModelReference;
@@ -358,32 +430,95 @@ function createAgentHostMemoryLlm(options: {
   readonly cwd: string;
   readonly runtimeOptions?: StaticRuntimeOptions;
   readonly timeoutMs?: number;
+  /**
+   * When set, each `complete()` is recorded as one run through the shared
+   * JSONL + Phoenix pipeline. The per-call `label` (e.g. "capture:distill")
+   * selects the run's conversation id and id slug. Omitted → bare, unrecorded run.
+   */
+  readonly recording?: {
+    readonly deps: RecorderCompositionDeps;
+    readonly baseConversationId?: string;
+  };
 }): LlmComplete {
   const timeoutMs = options.timeoutMs ?? 60_000;
   return {
     id: `agent-host:${referenceOf(options.model)}`,
-    async complete(prompt: string): Promise<string> {
+    async complete(prompt: string, opts?: { readonly label?: string }): Promise<string> {
       const ctrl = new AbortController();
       const timer = setTimeout(() => { ctrl.abort(); }, timeoutMs);
+      const recorder =
+        options.recording === undefined
+          ? undefined
+          : composeRunRecorder(options.recording.deps, {
+              runId: createMemoryRunId(opts?.label),
+              conversationId: memoryConversationId(options.recording.baseConversationId, opts?.label),
+              userInput: prompt,
+            });
       try {
-        const result = await options.runtime.run(MEMORY_LLM_SYSTEM_PROMPT, {
-          ...options.runtimeOptions,
-          model: options.model,
-          messages: [{ role: "user", content: prompt }],
-          abortSignal: ctrl.signal,
-          executionMode: options.executionMode,
-          cwd: options.cwd,
-          maxTurns: 1,
-          allowedTools: [],
-          disallowedTools: [],
-          mcpServers: {},
-        } satisfies RuntimeRunOptions);
+        await safeRecorderCall(() => recorder?.start?.());
+        let result: RuntimeResult;
+        try {
+          result = await options.runtime.run(MEMORY_LLM_SYSTEM_PROMPT, {
+            ...options.runtimeOptions,
+            model: options.model,
+            messages: [{ role: "user", content: prompt }],
+            abortSignal: ctrl.signal,
+            executionMode: options.executionMode,
+            cwd: options.cwd,
+            maxTurns: 1,
+            allowedTools: [],
+            disallowedTools: [],
+            mcpServers: {},
+            ...(recorder === undefined ? {} : { onEvent: (event) => { recorder.onEvent(event); } }),
+          } satisfies RuntimeRunOptions);
+        } catch (error) {
+          // `runtime.run` itself threw (e.g. the abort/timeout above) — record the
+          // failure, then re-throw the original error unchanged.
+          await safeRecorderCall(() => recorder?.fail(error));
+          throw error;
+        }
+        // Record with the real outcome BEFORE textFromMemoryRuntimeResult, which throws
+        // on failureKind/error; recorder.finish() classifies failed/succeeded/cancelled itself.
+        await safeRecorderCall(() => recorder?.finish(result));
         return textFromMemoryRuntimeResult(result);
       } finally {
         clearTimeout(timer);
       }
     },
   };
+}
+
+/**
+ * Run a recorder lifecycle call best-effort. Recording is additive: a recorder
+ * or artifact-write failure must never mask the memory LLM's real result or error.
+ */
+async function safeRecorderCall(fn: () => Promise<unknown> | undefined): Promise<void> {
+  try {
+    await fn();
+  } catch {
+    // Swallow: recording failures are non-fatal by design.
+  }
+}
+
+/** Build a `mem-`-prefixed run id (distinct from channel `run-` ids) with the ritual slug. */
+function createMemoryRunId(label: string | undefined): string {
+  return `mem-${memorySlug(label)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Conversation id for a recorded memory run: `memory:<label>` (per-ritual), else the base. */
+function memoryConversationId(base: string | undefined, label: string | undefined): string {
+  if (label !== undefined && label.length > 0) {
+    return `memory:${label}`;
+  }
+  return base ?? MEMORY_CONVERSATION_ID;
+}
+
+function memorySlug(label: string | undefined): string {
+  const slug = (label ?? "bujo")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+  return slug.length > 0 ? slug : "bujo";
 }
 
 function textFromMemoryRuntimeResult(result: RuntimeResult): string {

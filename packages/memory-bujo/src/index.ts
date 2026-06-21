@@ -5,7 +5,7 @@ export { parseBullet, serializeBullet, parseDailyFile, serializeDailyFile } from
 export { appendBullet, dailyFilePath } from "./daily.js";
 export { createIdFactory } from "./ids.js";
 export type { Bullet, BujoOptions, BujoTier } from "./types.js";
-export type { LlmComplete } from "./llm.js";
+export type { LlmComplete, LlmCompleteOptions } from "./llm.js";
 export { MemoryModelError } from "./model-error.js";
 export type { MemoryModelKind } from "./model-error.js";
 
