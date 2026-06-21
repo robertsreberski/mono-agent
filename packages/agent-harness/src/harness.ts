@@ -386,6 +386,7 @@ export class MonoAgentHarness implements AgentHarness {
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
       userMessage: request.userMessage,
+      session: sessionContextBlock(request.conversationId),
       ...(this.options.soulPath === undefined ? {} : { soulPath: this.options.soulPath }),
       ...(memory === undefined ? {} : { memory }),
       ...(history.length === 0 ? {} : { history }),
@@ -843,6 +844,22 @@ function responseMetadata(
     ...(runtimeResult === undefined ? {} : { runtime: runtimeMetadata(runtimeResult) }),
     ...(summary === undefined ? {} : { summary }),
   };
+}
+
+/**
+ * A small "Session" context block telling the agent the conversationId of the turn
+ * it is currently handling. This lets a live agent that kicks off a long-running
+ * external operation embed this id in the callback it asks the service to make, so
+ * the eventual result can be delivered back to THIS conversation (the inbound
+ * webhook turn reads the id from the payload and routes a follow-up here). The
+ * daily-rollover bucket suffix is stripped so the id is the stable, deliverable one.
+ */
+function sessionContextBlock(conversationId: string): string {
+  const baseId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
+  return [
+    `You are currently handling the conversation \`${baseId}\`.`,
+    `If you start a long-running external operation and want its result delivered back to THIS conversation later, have the service include \`"conversationId": "${baseId}"\` in the JSON body of its callback to your inbound webhook — the follow-up will be routed here.`,
+  ].join("\n\n");
 }
 
 function runtimeMetadata(result: RuntimeResult): Record<string, unknown> {

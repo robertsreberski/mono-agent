@@ -25,6 +25,8 @@ import {
 import type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import { routeProactiveNotification } from "./proactive-notify.js";
+import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import {
   adapterSendToolNames,
   createAdapterSendToolsRuntimeExtension,
@@ -36,6 +38,10 @@ import {
   createMemoryRecallRuntimeExtension,
   resolveMemoryRecallSettings,
 } from "./memory-recall.js";
+import { startNotifyToolsServer } from "./notify-tool.js";
+import type { NotifyToolsServer } from "./notify-tool.js";
+import { createNotifyToolsRuntimeExtension } from "./notify-runtime.js";
+import { resolveNotifyDestinations } from "./notify-destinations.js";
 
 /**
  * Outcome of a live config re-apply (`applyConfigChange`). Consumed by callers
@@ -168,6 +174,10 @@ class MonoAgentAppController implements MonoAgentApp {
   private sharedMemoryBuilt = false;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
+  // One in-process MCP server hosting the proactive notify_conversation tools,
+  // started lazily on first responder build and shared across channel responders.
+  private notifyToolsServer: NotifyToolsServer | undefined;
+  private notifyToolsServerStart: Promise<NotifyToolsServer> | undefined;
 
   constructor(input: MonoAgentAppControllerInput) {
     this.cwd = input.cwd;
@@ -382,6 +392,11 @@ class MonoAgentAppController implements MonoAgentApp {
     for (const runtime of this.activeRuntimes.splice(0)) {
       await runtime.disposeAllSessions?.().catch(() => undefined);
     }
+    if (this.notifyToolsServer !== undefined) {
+      await this.notifyToolsServer.close().catch(() => undefined);
+      this.notifyToolsServer = undefined;
+      this.notifyToolsServerStart = undefined;
+    }
   }
 
   async startMemoryRitualsIfConfigured(reason: string): Promise<void> {
@@ -456,6 +471,59 @@ class MonoAgentAppController implements MonoAgentApp {
     this.memoryRituals = undefined;
     rituals.stop();
     this.logger?.info?.("Memory ritual scheduler stopped.");
+  }
+
+  /**
+   * Deliver a proactive notification to whichever running channel owns the
+   * destination conversationId. Routes to that channel's `notify`, which runs the
+   * nudge as a turn on the channel's own harness (shared session/history) and
+   * delivers it natively. Best-effort: an unavailable/unsupported destination is
+   * warned and skipped, never thrown back to the cron/webhook trigger.
+   */
+  private async notifyDestination(conversationId: string, text: string): Promise<NotifyDeliveryResult> {
+    const result = await routeProactiveNotification({
+      conversationId,
+      text,
+      running: this.running,
+      ...(this.logger === undefined ? {} : { logger: this.logger }),
+    });
+    // Make the delivery outcome inspectable (the failure cases already warn inside
+    // the router / channel hooks; log the success path too so a notify is auditable).
+    if (result.delivered) {
+      this.logger?.info?.("Proactive notification delivered.", { conversationId });
+    }
+    return result;
+  }
+
+  /** The conversations the agent may proactively notify, for the `list_notify_destinations` tool. */
+  private async listNotifyDestinations(): Promise<readonly import("./notify-tool.js").NotifyToolDestination[]> {
+    const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+    const artifactDir = await resolveAppArtifactDir(input);
+    return await resolveNotifyDestinations({
+      input,
+      artifactDir,
+      isRunning: (id) => this.running.has(id),
+      ...(this.logger === undefined ? {} : { logger: this.logger }),
+    });
+  }
+
+  /** Start (once) the in-process MCP server hosting the proactive notify tools. */
+  private async ensureNotifyToolsServer(): Promise<NotifyToolsServer> {
+    if (this.notifyToolsServer !== undefined) {
+      return this.notifyToolsServer;
+    }
+    if (this.notifyToolsServerStart === undefined) {
+      this.notifyToolsServerStart = startNotifyToolsServer({
+        deliver: (conversationId, text) => this.notifyDestination(conversationId, text),
+        listDestinations: () => this.listNotifyDestinations(),
+        ...(this.logger === undefined ? {} : { logger: this.logger }),
+      }).then((server) => {
+        this.notifyToolsServer = server;
+        this.logger?.info?.("Proactive notify tools server started.", { url: server.url });
+        return server;
+      });
+    }
+    return await this.notifyToolsServerStart;
   }
 
   private async startChannel(driver: ChannelDriver, reason: string): Promise<ChannelStatus> {
@@ -573,7 +641,8 @@ class MonoAgentAppController implements MonoAgentApp {
     const memory = this.memoryStore(coreConfig, runtime);
     const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
-    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([memoryRecall, adapterSendTools]);
+    const notifyTools = await this.notifyToolsRuntimeOptions();
+    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([memoryRecall, adapterSendTools, notifyTools]);
     const observabilityContext = await this.observabilityContext();
     const responder = createConfiguredAgentResponder({
       config: coreConfig,
@@ -632,6 +701,15 @@ class MonoAgentAppController implements MonoAgentApp {
     const toolNames = adapterSendToolNames(settings);
     this.logger?.info?.("Adapter send tools enabled.", { tools: toolNames });
     return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames);
+  }
+
+  /**
+   * Inject the proactive `notify_conversation`/`list_notify_destinations` tools — the
+   * extension self-gates to cron/webhook turns, so live channel turns never see them.
+   */
+  private async notifyToolsRuntimeOptions(): Promise<RuntimeOptionsExtension> {
+    const server = await this.ensureNotifyToolsServer();
+    return createNotifyToolsRuntimeExtension(server);
   }
 
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */

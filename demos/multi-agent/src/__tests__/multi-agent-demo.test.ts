@@ -101,6 +101,9 @@ describe("multi-agent demo", () => {
       async stop() {
         stopped = true;
       },
+      async notify() {
+        // No-op proactive delivery for the demo's fake Telegram adapter.
+      },
     };
 
     const demo = await startMultiAgentDemo({

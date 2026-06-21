@@ -82,6 +82,50 @@ describe("SlackAdapter", () => {
     ).toThrow(/allowedChannelIds/);
   });
 
+  it("notify() runs a proactive turn on the target thread and posts the answer there", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "morning brief" };
+      }),
+    });
+
+    await adapter.notify("C1", "171.5", "Compose the brief");
+
+    expect(captured?.conversationId).toBe("slack:C1:171.5");
+    expect(captured?.text).toBe("Compose the brief");
+    const post = api.postMessageCalls.at(-1);
+    expect(post?.channel).toBe("C1");
+    expect(post?.thread_ts).toBe("171.5");
+    expect(post?.text).toContain("morning brief");
+    // A proactive turn does not react to a (non-existent) inbound message.
+    expect(api.reactionsAddCalls).toEqual([]);
+  });
+
+  it("notify() without a thread posts top-level and keys on the bare channel", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "channel ping" };
+      }),
+    });
+
+    await adapter.notify("C2", undefined, "Post an announcement");
+
+    expect(captured?.conversationId).toBe("slack:C2");
+    const post = api.postMessageCalls.at(-1);
+    expect(post?.channel).toBe("C2");
+    expect(post?.thread_ts).toBeUndefined();
+  });
+
   it("handles /start and /help commands with deterministic replies", async () => {
     const api = new FakeSlackApi();
     const responder = { respond: vi.fn() } satisfies AgentResponder;
