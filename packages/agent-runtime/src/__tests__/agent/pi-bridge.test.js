@@ -159,6 +159,49 @@ describe("pi MCP tool helpers", () => {
     expect(bashSchema.properties.workdir.type).toBe("string");
   });
 
+  it("returns image files read by the builtin Read tool as an image content block", async () => {
+    const root = tempWorkspace();
+    configureToolRuntime({ workspace: root });
+    const pngBytes = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    writeFileSync(join(root, "shot.png"), pngBytes);
+
+    const read = getPiBuiltinTools(["Read"], { cwd: root }).find((tool) => tool.name === "Read");
+    const result = await read.execute("Read:1", { file_path: "shot.png" });
+
+    expect(Array.isArray(result.content)).toBe(true);
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toMatchObject({
+      type: "image",
+      mimeType: "image/png",
+      data: pngBytes.toString("base64"),
+    });
+  });
+
+  it("caps oversize Read images through the shared tool-result bloat guard", async () => {
+    const root = tempWorkspace();
+    configureToolRuntime({ workspace: root });
+    const runArtifactDir = join(root, ".mono-agent", "artifacts", "run-read-image");
+    writeFileSync(join(root, "big.png"), Buffer.alloc(2048, 7));
+    const truncations = [];
+
+    const read = getPiBuiltinTools(["Read"], {
+      cwd: root,
+      toolPayloadMaxBytes: 10,
+      persistArtifact: makeSink(runArtifactDir),
+      onTruncate: (event) => truncations.push(event),
+    }).find((tool) => tool.name === "Read");
+    const result = await read.execute("Read:2", { file_path: "big.png" });
+
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[0].text).toContain("saved_to=");
+    expect(truncations[0]).toMatchObject({ tool: "Read", max_bytes: 10 });
+    // The oversize payload is persisted as an image (.png), proving it was an
+    // image block — not the JSON-stringified object on the text path.
+    const files = readdirSync(join(runArtifactDir, "tool-output"));
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/\.png$/);
+  });
+
   it("resolves stdio MCP cwd from the run workdir", () => {
     expect(resolveMcpStdioCwd({}, "/repo/project")).toBe("/repo/project");
     expect(resolveMcpStdioCwd({ cwd: "tools" }, "/repo/project")).toBe("/repo/project/tools");

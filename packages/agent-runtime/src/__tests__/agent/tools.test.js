@@ -142,6 +142,42 @@ describe("ai tool helpers", () => {
     expect(second).toContain("already read");
   });
 
+  it("reads PNG files as an image result instead of line-numbered text", async () => {
+    const root = tempWorkspace();
+    // PNG signature + start of IHDR — binary bytes that are garbage as utf8.
+    const pngBytes = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    writeFileSync(join(root, "shot.png"), pngBytes);
+
+    const result = await readToolImpl({ file_path: "shot.png" });
+
+    expect(typeof result).not.toBe("string");
+    expect(result.kind).toBe("image");
+    expect(result.mimeType).toBe("image/png");
+    expect(result.data).toBe(pngBytes.toString("base64"));
+  });
+
+  it("reads JPEG files as image/jpeg content", async () => {
+    const root = tempWorkspace();
+    const jpgBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+    writeFileSync(join(root, "photo.JPG"), jpgBytes);
+
+    const result = await readToolImpl({ file_path: "photo.JPG" });
+
+    expect(result.kind).toBe("image");
+    expect(result.mimeType).toBe("image/jpeg");
+    expect(result.data).toBe(jpgBytes.toString("base64"));
+  });
+
+  it("still reads non-image files as line-numbered text", async () => {
+    const root = tempWorkspace();
+    writeFile(join(root, "src", "note.txt"), "hello world");
+
+    const result = await readToolImpl({ file_path: "src/note.txt" });
+
+    expect(typeof result).toBe("string");
+    expect(result).toContain("1\thello world");
+  });
+
   it("supports bounded grep output modes", async () => {
     const root = tempWorkspace();
     writeFile(join(root, "src", "one.ts"), "needle one");
