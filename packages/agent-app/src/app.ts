@@ -405,7 +405,7 @@ class MonoAgentAppController implements MonoAgentApp {
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
-    const store = this.memoryStore(coreConfig, runtime);
+    const store = await this.memoryStore(coreConfig, runtime);
     // Duck-type: only bujo-tier BujoMemoryStore has reflect/migrate.
     // Cast through unknown to bypass the MemoryStore contract's type mismatch.
     const storeAsAny = store as unknown as Record<string, unknown>;
@@ -570,7 +570,7 @@ class MonoAgentAppController implements MonoAgentApp {
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
-    const memory = this.memoryStore(coreConfig, runtime);
+    const memory = await this.memoryStore(coreConfig, runtime);
     const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([memoryRecall, adapterSendTools]);
@@ -635,13 +635,28 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */
-  private memoryStore(coreConfig: MonoAgentConfig, runtime: MonoRuntimeLike): ReturnType<typeof createConfiguredMemory> {
+  private async memoryStore(
+    coreConfig: MonoAgentConfig,
+    runtime: MonoRuntimeLike,
+  ): Promise<ReturnType<typeof createConfiguredMemory>> {
     if (!this.sharedMemoryBuilt) {
       const appLogger = this.logger;
       const logger = appLogger?.warn !== undefined
         ? { warn: (message: string) => { appLogger.warn?.(message); } }
         : undefined;
-      this.sharedMemory = createConfiguredMemory(coreConfig, { ...(logger === undefined ? {} : { logger }), runtime });
+      // Thread the per-app observability context so the bujo memory LLM records
+      // each capture/reflect/migrate run through the same JSONL + Phoenix pipeline
+      // as channel runs (gated by `memory.llm.trace`, default on). The context is
+      // per-app (not per-request), so caching it into the shared store is correct.
+      const observabilityContext = await this.observabilityContext();
+      this.sharedMemory = createConfiguredMemory(coreConfig, {
+        ...(logger === undefined ? {} : { logger }),
+        runtime,
+        observability: {
+          observabilityContext,
+          exporterWarn: (warning) => this.recordExporterWarning(warning),
+        },
+      });
       this.sharedMemoryBuilt = true;
     }
     return this.sharedMemory;

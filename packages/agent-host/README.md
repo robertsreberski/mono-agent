@@ -69,6 +69,8 @@ Use `agent-host` when BuJo memory should run through the same configured runtime
 
 For `provider: "agent-host"`, `model` is a normal SDK runtime model reference parsed by `@mono-agent/config`, so values such as `pi:openai-codex:gpt-5.5` use the runtime adapter/provider configuration instead of an Ollama endpoint. CLI-backed refs such as `codex:gpt-5.5`, and explicit `executionMode: "cli"`, are rejected for memory LLMs until runtimes can enforce no external actions. `agent-host` turns that runtime path into the `LlmComplete` dependency that `memory-bujo` needs; `memory-bujo` still owns the BuJo capture and ritual logic, and its standalone CLI remains Ollama-only.
 
+When the host threads observability deps into `createConfiguredMemory` (the app does this automatically), `provider: "agent-host"` memory `complete()` calls are recorded through the **same** JSONL artifact + Phoenix exporter pipeline as channel runs — one run per call, with a `mem-*` run id and a per-ritual conversation id (`memory:capture:distill`, `memory:capture:reconcile`, `memory:capture:entities`, `memory:reflect`, `memory:migrate`). Set `"trace": false` on the `memory.llm` block to disable recording (default on). The `ollama` memory provider does not ride `runtime.run` and is not recorded.
+
 ## Public API
 
 - `createConfiguredAgentRuntime`

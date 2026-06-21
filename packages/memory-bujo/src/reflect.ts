@@ -75,7 +75,7 @@ export async function synthesizeInsights(deps: ReflectDeps, now: Date): Promise<
 
   let raw: string;
   try {
-    raw = await deps.llm.complete(prompt);
+    raw = await deps.llm.complete(prompt, { label: "reflect" });
   } catch (cause) {
     throw new MemoryModelError("llm", "insights", cause);
   }

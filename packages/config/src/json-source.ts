@@ -67,6 +67,7 @@ export type MonoAgentMemoryLlmJson = {
   readonly model?: string;
   readonly executionMode?: string;
   readonly endpoint?: string;
+  readonly trace?: boolean;
 };
 
 /** JSON-serialisable shape for a single observability exporter block. */
