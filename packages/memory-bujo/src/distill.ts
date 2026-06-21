@@ -21,7 +21,7 @@ export async function distill(text: string, llm: LlmComplete): Promise<Candidate
   if (text.trim().length === 0) return [];
   let raw: string;
   try {
-    raw = await llm.complete(PROMPT(text));
+    raw = await llm.complete(PROMPT(text), { label: "capture:distill" });
   } catch (cause) {
     // Surface model outages (Ollama down, timeout, 5xx) instead of returning [] — an empty result is
     // indistinguishable from "nothing worth remembering", which is exactly how a dead model hides.

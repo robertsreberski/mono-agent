@@ -61,7 +61,7 @@ export async function migrate(deps: MigrateDeps): Promise<MigrateResult> {
       const prompt = buildMigratePrompt(item.id, item.text);
       let raw: string;
       try {
-        raw = await deps.llm.complete(prompt);
+        raw = await deps.llm.complete(prompt, { label: "migrate" });
       } catch (cause) {
         // A model outage fails every item, so tag it and let the catch below surface it rather than
         // swallowing it as a per-item skip (which would make a dead model look like an empty migration).

@@ -4,7 +4,7 @@
  * the harness (no embedding/network at construction); the direct-store tests inject
  * a fake embeddings provider so no Ollama call is made.
  */
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
+import type {
+  PhoenixExporterConfig,
+  RunExportContext,
+  RunExporter,
+  RunSummary,
+} from "@mono-agent/observability";
 import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
@@ -161,11 +167,153 @@ describe("createConfiguredMemory — bujo mode", () => {
   });
 });
 
+describe("createConfiguredMemory — memory LLM tracing", () => {
+  const agentHostLlm: NonNullable<MonoAgentConfig["memory"]>["llm"] = {
+    provider: "agent-host",
+    model: "pi:openai-codex:gpt-5.5",
+    executionMode: "sdk",
+  };
+
+  it("records each memory LLM call as a mem-* run with a per-ritual conversation id", async () => {
+    const dir = await tempDir();
+    const store = createConfiguredMemory(
+      bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
+      { runtime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
+    ) as unknown as CapturableStore;
+
+    await store.capture("conv-1", "Robert prefers agent-host memory LLM calls.");
+    await store.close();
+
+    const summaries = await readSummaries(join(dir, "artifacts"));
+    expect(summaries.length).toBeGreaterThanOrEqual(2);
+    for (const s of summaries) {
+      expect(s.runId).toMatch(/^mem-/u);
+      expect(s.status).toBe("succeeded");
+      expect(s.conversationId).toMatch(/^memory:/u);
+    }
+    const convs = summaries.map((s) => s.conversationId);
+    // distill + entities both fire on a first capture; their labels flow from memory-bujo through to the recorder.
+    expect(convs).toContain("memory:capture:distill");
+    expect(convs).toContain("memory:capture:entities");
+  });
+
+  it("exports memory runs through the configured exporter", async () => {
+    const dir = await tempDir();
+    const spy = createSpyExporter();
+    const store = createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "m"),
+        llm: agentHostLlm,
+        observabilityExporters: [{ type: "phoenix" }],
+      }),
+      {
+        runtime: createRecordingRuntime(),
+        observability: { observabilityContext: { sourceId: "s1" }, exporterFactory: () => spy.exporter },
+      },
+    ) as unknown as CapturableStore;
+
+    await store.capture("conv-1", "some text");
+    await store.close();
+
+    expect(spy.finished.length).toBeGreaterThanOrEqual(2);
+    expect(spy.finished.map((s) => s.conversationId)).toContain("memory:capture:distill");
+  });
+
+  it("records a failed run AND rethrows when the memory LLM fails", async () => {
+    const dir = await tempDir();
+    const store = createConfiguredMemory(
+      bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
+      { runtime: createFailingRuntime(), observability: { observabilityContext: { sourceId: "s1" } } },
+    ) as unknown as CapturableStore;
+
+    await expect(store.capture("conv-1", "text")).rejects.toThrow();
+    await store.close();
+
+    const summaries = await readSummaries(join(dir, "artifacts"));
+    expect(summaries.length).toBeGreaterThanOrEqual(1);
+    expect(summaries.some((s) => s.status === "failed")).toBe(true);
+  });
+
+  it("stays a bare, unrecorded run when no observability deps are threaded", async () => {
+    const dir = await tempDir();
+    const runtime = createRecordingRuntime();
+    const store = createConfiguredMemory(
+      bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
+      { runtime },
+    ) as unknown as CapturableStore;
+
+    await store.capture("conv-1", "text");
+    await store.close();
+
+    expect(runtime.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of runtime.calls) {
+      expect("onEvent" in call.options).toBe(false);
+    }
+    expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
+  });
+
+  it("stays bare when memory.llm.trace is false even with observability threaded", async () => {
+    const dir = await tempDir();
+    const runtime = createRecordingRuntime();
+    const store = createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "m"),
+        llm: { ...agentHostLlm, trace: false },
+      }),
+      { runtime, observability: { observabilityContext: { sourceId: "s1" } } },
+    ) as unknown as CapturableStore;
+
+    await store.capture("conv-1", "text");
+    await store.close();
+
+    for (const call of runtime.calls) {
+      expect("onEvent" in call.options).toBe(false);
+    }
+    expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
+  });
+});
+
+type CapturableStore = {
+  capture(conversationId: string, text: string): Promise<unknown>;
+  close(): Promise<void>;
+};
+
+async function readSummaries(artifactsDir: string): Promise<RunSummary[]> {
+  let files: string[];
+  try {
+    files = await readdir(artifactsDir);
+  } catch {
+    return [];
+  }
+  const summaries: RunSummary[] = [];
+  for (const file of files) {
+    if (file.endsWith(".summary.json")) {
+      summaries.push(JSON.parse(await readFile(join(artifactsDir, file), "utf8")) as RunSummary);
+    }
+  }
+  return summaries;
+}
+
+function createSpyExporter(): { exporter: RunExporter; finished: RunSummary[] } {
+  const finished: RunSummary[] = [];
+  const exporter: RunExporter = {
+    finish(summary: RunSummary, _context: RunExportContext) {
+      finished.push(summary);
+    },
+  };
+  return { exporter, finished };
+}
+
 function bujoConfig(input: {
   readonly dir: string;
   readonly identityPath: string;
   readonly memoryRoot: string;
   readonly llm?: NonNullable<MonoAgentConfig["memory"]>["llm"];
+  readonly observabilityExporters?: readonly PhoenixExporterConfig[];
 }): MonoAgentConfig {
   return {
     runtime: {
@@ -187,6 +335,9 @@ function bujoConfig(input: {
     tools: { allowedTools: [], disallowedTools: [] },
     artifacts: { dir: join(input.dir, "artifacts") },
     traceability: { registryDir: join(input.dir, "trace-sources") },
+    ...(input.observabilityExporters === undefined
+      ? {}
+      : { observability: { exporters: input.observabilityExporters } }),
   };
 }
 
@@ -197,6 +348,17 @@ function createRecordingRuntime() {
     async run(systemPrompt: string, options: RuntimeRunOptions) {
       calls.push({ systemPrompt, options });
       return { text: "[]" };
+    },
+  };
+}
+
+function createFailingRuntime() {
+  const calls: Array<{ systemPrompt: string; options: RuntimeRunOptions }> = [];
+  return {
+    calls,
+    async run(systemPrompt: string, options: RuntimeRunOptions) {
+      calls.push({ systemPrompt, options });
+      return { failureKind: "provider_error", error: "boom" };
     },
   };
 }

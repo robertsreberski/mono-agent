@@ -93,7 +93,7 @@ async function classify(
 ): Promise<Classification | undefined> {
   let raw: string;
   try {
-    raw = await deps.llm.complete(classifyPrompt(candidate, similar));
+    raw = await deps.llm.complete(classifyPrompt(candidate, similar), { label: "capture:reconcile" });
   } catch (cause) {
     throw new MemoryModelError("llm", "classify", cause);
   }

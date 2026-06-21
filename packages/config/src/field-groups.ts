@@ -376,6 +376,13 @@ export const memoryFieldGroup = defineFieldGroup({
       path: ["memory", "llm", "executionMode"],
     },
     {
+      id: "memory.llm.trace",
+      label: "LLM trace",
+      description: "Record each agent-host memory LLM call (capture/reflect/migrate) as a run through the JSONL + Phoenix pipeline, labelled per ritual. Default on; switch off to keep memory LLM calls unrecorded.",
+      kind: "switch",
+      path: ["memory", "llm", "trace"],
+    },
+    {
       id: "memory.llm.endpoint",
       label: "LLM endpoint",
       description: "Ollama endpoint for provider ollama (default http://localhost:11434). Clear this when switching the LLM provider to agent-host.",
