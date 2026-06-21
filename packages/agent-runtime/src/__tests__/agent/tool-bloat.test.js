@@ -112,6 +112,53 @@ describe("summarisePayload", () => {
     expect(result.savedPaths).toEqual([]);
     expect(result.rewrittenBlocks[0].text).toMatch(/persistence unavailable/);
   });
+
+  it("keeps image blocks over maxBytes when within imageMaxBytes", () => {
+    const data = Buffer.alloc(2048, 0xff).toString("base64");
+    const blocks = [{ type: "image", data, mimeType: "image/png" }];
+    const result = summarisePayload("Read", blocks, makeSink(runDir), {
+      maxBytes: 256,
+      imageMaxBytes: 1_000_000,
+      toolUseId: "img_keep",
+    });
+    expect(result.truncated).toBe(false);
+    expect(result.savedPaths).toEqual([]);
+    expect(result.rewrittenBlocks).toBe(blocks);
+  });
+
+  it("truncates image blocks that exceed imageMaxBytes", () => {
+    const data = Buffer.alloc(4096, 0xff).toString("base64");
+    const blocks = [{ type: "image", data, mimeType: "image/png" }];
+    const result = summarisePayload("Read", blocks, makeSink(runDir), {
+      maxBytes: 256,
+      imageMaxBytes: 1024,
+      toolUseId: "img_big",
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.savedPaths).toHaveLength(1);
+    expect(result.savedPaths[0]).toMatch(/\.png$/);
+  });
+
+  it("still truncates oversized text even when imageMaxBytes is large", () => {
+    const blocks = [{ type: "text", text: "a".repeat(2048) }];
+    const result = summarisePayload("Bash", blocks, makeSink(runDir), {
+      maxBytes: 256,
+      imageMaxBytes: 10_000_000,
+      toolUseId: "txt_big",
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.rewrittenBlocks[0].text).toMatch(/truncated tool_result/);
+  });
+
+  it("defaults imageMaxBytes to maxBytes (back-compat: large image still truncates)", () => {
+    const data = Buffer.alloc(2048, 0xff).toString("base64");
+    const blocks = [{ type: "image", data, mimeType: "image/png" }];
+    const result = summarisePayload("Read", blocks, makeSink(runDir), {
+      maxBytes: 256,
+      toolUseId: "img_default",
+    });
+    expect(result.truncated).toBe(true);
+  });
 });
 
 describe("applyToolBloatGuard", () => {

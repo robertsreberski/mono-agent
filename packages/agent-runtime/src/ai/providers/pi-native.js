@@ -711,6 +711,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         onTruncate,
         toolLimits,
         toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
+        imageInlineMaxBytes: toolLimits.imageInlineMaxBytes,
         toolPolicy: options.toolPolicy,
         sandboxPolicy: options.sandboxPolicy,
         sandboxEngine: options.sandboxEngine,

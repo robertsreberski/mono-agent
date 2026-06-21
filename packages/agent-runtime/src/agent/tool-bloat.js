@@ -88,12 +88,17 @@ function summaryText(toolName, originalBytes, maxBytes, savedPaths) {
 export function summarisePayload(toolName, contentBlocks, persistArtifact, options = {}) {
   const {
     maxBytes = MAX_TOOL_RESULT_BYTES,
+    imageMaxBytes = maxBytes,
     toolUseId = null,
     now = Date.now,
   } = options;
   const blocks = Array.isArray(contentBlocks) ? contentBlocks : [];
   const originalBytes = totalBytes(blocks);
-  if (originalBytes <= maxBytes) {
+  // Images get their own (typically larger) budget so a vision model can still
+  // see large screenshots; text/other payloads stay bound by maxBytes.
+  const imageBytes = blocks.reduce((sum, block) => sum + (block?.type === "image" ? blockBytes(block) : 0), 0);
+  const otherBytes = originalBytes - imageBytes;
+  if (otherBytes <= maxBytes && imageBytes <= imageMaxBytes) {
     return { rewrittenBlocks: blocks, savedPaths: [], originalBytes, truncated: false };
   }
 
@@ -117,11 +122,12 @@ export async function applyToolBloatGuard(toolName, executePromise, options = {}
     persistArtifact = null,
     toolUseId = null,
     maxBytes = MAX_TOOL_RESULT_BYTES,
+    imageMaxBytes = maxBytes,
     onTruncate = null,
   } = options;
   const result = await executePromise;
   if (!result || typeof result !== "object" || !Array.isArray(result.content)) return result;
-  const summary = summarisePayload(toolName, result.content, persistArtifact, { maxBytes, toolUseId });
+  const summary = summarisePayload(toolName, result.content, persistArtifact, { maxBytes, imageMaxBytes, toolUseId });
   if (!summary.truncated) return result;
   if (typeof onTruncate === "function") {
     try {
