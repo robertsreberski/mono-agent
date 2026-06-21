@@ -202,6 +202,29 @@ describe("pi MCP tool helpers", () => {
     expect(files[0]).toMatch(/\.png$/);
   });
 
+  it("lets large Read images through when imageInlineMaxBytes is high", async () => {
+    const root = tempWorkspace();
+    configureToolRuntime({ workspace: root });
+    // Larger than toolPayloadMaxBytes but within imageInlineMaxBytes.
+    const big = Buffer.alloc(4096, 7);
+    writeFileSync(join(root, "big.png"), big);
+
+    const read = getPiBuiltinTools(["Read"], {
+      cwd: root,
+      toolPayloadMaxBytes: 256,
+      imageInlineMaxBytes: 1_000_000,
+      persistArtifact: makeSink(join(root, ".mono-agent", "artifacts", "run-big-img")),
+    }).find((tool) => tool.name === "Read");
+    const result = await read.execute("Read:big", { file_path: "big.png" });
+
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toMatchObject({
+      type: "image",
+      mimeType: "image/png",
+      data: big.toString("base64"),
+    });
+  });
+
   it("resolves stdio MCP cwd from the run workdir", () => {
     expect(resolveMcpStdioCwd({}, "/repo/project")).toBe("/repo/project");
     expect(resolveMcpStdioCwd({ cwd: "tools" }, "/repo/project")).toBe("/repo/project/tools");
