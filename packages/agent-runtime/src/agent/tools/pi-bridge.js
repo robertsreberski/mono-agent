@@ -37,6 +37,17 @@ function textResult(text, details = {}) {
   };
 }
 
+function imageResult(data, mimeType, details = {}) {
+  return {
+    content: [{ type: "image", data: String(data ?? ""), mimeType: mimeType || "image/png" }],
+    details,
+  };
+}
+
+function isImageToolResult(raw) {
+  return Boolean(raw) && typeof raw === "object" && raw.kind === "image" && typeof raw.data === "string";
+}
+
 const MCP_TEXT_RESULT_LIMIT = 12_000;
 const MCP_RAW_DETAIL_LIMIT = 4_000;
 const MCP_IMAGE_INLINE_MAX_BYTES = 250_000;
@@ -243,6 +254,12 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
       }
 
       const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine });
+      // Image reads (e.g. Read on a .png) come back as a structured image
+      // result so vision models see pixels; emit an image content block and let
+      // the shared bloat guard cap oversize payloads.
+      if (isImageToolResult(raw)) {
+        return imageResult(raw.data, raw.mimeType, { tool: name, params: normalized });
+      }
       const text = toolText(raw);
       if (isFileEdit && editState) {
         const failed = isErrorText(text);

@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { extname } from "node:path";
 import {
   DEFAULT_MAX_READ_CHARS,
   DEFAULT_READ_LINES,
@@ -8,10 +9,29 @@ import { boundedInt, rememberRead, trimLine } from "./shared/dedup.js";
 import { capChars } from "./shared/output-truncation.js";
 import { isPathAllowed, resolveToolPath } from "./shared/path-resolver.js";
 
+// Raster image formats a vision model can consume directly. SVG is intentionally
+// excluded — it is XML text, so it stays on the line-numbered text path.
+const IMAGE_MIME_BY_EXT = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+};
+
 export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy } = {}) {
   const target = resolveToolPath(file_path, workdir);
   if (!isPathAllowed(target, workdir, { sandboxPolicy })) return `Error: Path not allowed: ${file_path}`;
   if (!existsSync(target)) return `Error: File not found: ${file_path}`;
+  // Image files are returned as an image result so vision models see pixels
+  // rather than the raw bytes decoded (and garbled) as utf8 text. The builtin
+  // tool wrapper turns this into an image content block; oversize images are
+  // capped by the shared tool-result bloat guard.
+  const imageMime = IMAGE_MIME_BY_EXT[extname(target).toLowerCase()];
+  if (imageMime !== undefined) {
+    return { kind: "image", data: readFileSync(target).toString("base64"), mimeType: imageMime };
+  }
   const content = readFileSync(target, "utf8");
   let lines = content.split("\n");
   const total = lines.length;
