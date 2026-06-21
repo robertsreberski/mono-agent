@@ -90,4 +90,4 @@ Run a one-off cron tick; verify the agent calls `slack_send_message` and the dig
 - [Delivery and Send Tools](../channels/delivery-and-send-tools.md)
 - [Capture and Recall](../memory/capture-and-recall.md)
 - [Tool Policy](../tools/policy.md)
-- [mono-agent-composer skill](../../packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

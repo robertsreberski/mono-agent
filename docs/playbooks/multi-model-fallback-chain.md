@@ -78,4 +78,4 @@ Trigger a retryable failure on the primary; confirm the run result shows the fal
 - [Local providers](../runtime/local-providers.md)
 - [Sessions and concurrency](../runtime/sessions-concurrency.md)
 - [Config blueprint](../config/blueprint.md)
-- [mono-agent-composer skill](../../packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

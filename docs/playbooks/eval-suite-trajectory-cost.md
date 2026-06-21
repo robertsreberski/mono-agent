@@ -91,4 +91,4 @@ Run `runAgentEvalSuite` with `MONO_AGENT_EVAL_LIVE=1`; confirm `eval-result.json
 - [Artifacts and traces](../observability/artifacts-and-traces.md)
 - [Programmatic composition](../programmatic/composition.md)
 - [Tool policy](../tools/policy.md)
-- [mono-agent composer skill](../../packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [mono-agent composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

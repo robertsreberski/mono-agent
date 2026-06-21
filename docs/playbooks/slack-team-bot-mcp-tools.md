@@ -79,4 +79,4 @@ Mention `@agent` in the allowed channel; verify the seen reaction, a final answe
 - [Tool policy](../tools/policy.md)
 - [MCP servers](../tools/mcp.md)
 - [Sessions, concurrency & Pi-native tuning](../runtime/sessions-concurrency.md)
-- [Composer skill](../../packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [Composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

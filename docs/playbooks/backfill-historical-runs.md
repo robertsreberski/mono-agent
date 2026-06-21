@@ -64,4 +64,4 @@ Run `backfill --dry-run` first, then the real export; confirm in Phoenix that hi
 - [Phoenix and backfill](../observability/phoenix-and-backfill.md)
 - [Artifacts and traces](../observability/artifacts-and-traces.md)
 - [Observability CLI reference](../observability/cli-reference.md)
-- [mono-agent composer skill](../../packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [mono-agent composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)
