@@ -92,4 +92,4 @@ From the allowed Telegram chat, send a message; verify the typing indicator then
 - [Capture and recall](../memory/capture-and-recall.md)
 - [Embeddings](../memory/embeddings.md)
 - [Artifacts and traces](../observability/artifacts-and-traces.md) — where the run JSONL lands
-- [mono-agent-composer skill](../../packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config
+- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config
