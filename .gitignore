@@ -21,3 +21,7 @@ memory.db
 
 # Superpowers working docs (specs/plans) — local-only, not tracked in git
 docs/superpowers/
+
+# Local-only agent notes + git hooks (never commit; keep personal identity/policy off the public repo)
+AGENTS.local.md
+.githooks/
