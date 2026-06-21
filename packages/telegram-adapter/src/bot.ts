@@ -59,6 +59,17 @@ function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
 }
 
 /**
+ * Outcome of a proactive {@link TelegramBotController.notify}: whether the nudge
+ * reached the chat, plus a machine-readable reason for the silent-failure paths
+ * (queue-full, cancelled, empty answer, responder/delivery failure). Structurally
+ * matches the agent-app NotifyDeliveryResult so channel hooks can return it as-is.
+ */
+export interface TelegramNotifyResult {
+  readonly delivered: boolean;
+  readonly reason?: string;
+}
+
+/**
  * Minimal per-conversation serial queue: each submitted task runs only after the
  * previous one settles, preserving arrival order. A task's failure does not
  * poison the queue (the chain swallows it; the caller still sees the rejection).
@@ -151,7 +162,7 @@ export interface TelegramBotController {
    * answer to that chat, serialized through the same per-chat queue as inbound
    * messages. Used by cron/webhook nudges.
    */
-  notify(chatId: TelegramChatId, text: string): Promise<void>;
+  notify(chatId: TelegramChatId, text: string): Promise<TelegramNotifyResult>;
   /**
    * Test seam: total in-flight AbortControllers tracked across all chats. Used to
    * assert the over-cap busy path does not leak an eagerly-created controller.
@@ -635,10 +646,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     chatId: TelegramChatId,
     text: string,
     controller: AbortController,
-  ): Promise<void> {
+  ): Promise<TelegramNotifyResult> {
     try {
       if (controller.signal.aborted) {
-        return;
+        return { delivered: false, reason: "cancelled" };
       }
       const request: AgentRequest = {
         conversationId: `telegram:${String(chatId)}`,
@@ -661,26 +672,31 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         response = await options.responder.respond(request, stream);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          return;
+          return { delivered: false, reason: "cancelled" };
         }
         logger?.error?.("Telegram proactive notify failed.", { error: errorMessage(error) });
-        return;
+        return { delivered: false, reason: "responder failed" };
       }
       const answer = response.text;
-      if (controller.signal.aborted || answer === undefined || answer.trim().length === 0) {
-        return;
+      if (controller.signal.aborted) {
+        return { delivered: false, reason: "cancelled" };
+      }
+      if (answer === undefined || answer.trim().length === 0) {
+        return { delivered: false, reason: "agent produced no answer" };
       }
       try {
         await stream.finish(answer);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          return;
+          return { delivered: false, reason: "cancelled" };
         }
         // The AI run succeeded; a delivery failure is degraded, never an error.
         logger?.error?.("Telegram proactive delivery failed after a successful AI run.", {
           error: errorMessage(error),
         });
+        return { delivered: false, reason: "delivery failed" };
       }
+      return { delivered: true };
     } finally {
       unregisterController(chatId, controller);
     }
@@ -691,14 +707,20 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
    * chat through the same per-chat admission queue as inbound messages, so it
    * serializes with live traffic on the same conversation.
    */
-  async function notify(chatId: TelegramChatId, text: string): Promise<void> {
+  async function notify(chatId: TelegramChatId, text: string): Promise<TelegramNotifyResult> {
     if (stopped) {
-      return;
+      return { delivered: false, reason: "adapter stopped" };
     }
     const controller = registerController(chatId);
+    // `admit` returns void, so capture the run's outcome in a closure variable.
+    // It defaults to the queue-full reason and is only overwritten when the task
+    // actually runs (an over-cap rejection settles via onReject, leaving it).
+    let outcome: TelegramNotifyResult = { delivered: false, reason: "chat at concurrency cap" };
     await admit(
       chatId,
-      () => runProactiveTurn(chatId, text, controller),
+      async () => {
+        outcome = await runProactiveTurn(chatId, text, controller);
+      },
       () => {
         unregisterController(chatId, controller);
         logger?.warn?.("Telegram proactive notify dropped: chat is at its concurrency cap.", {
@@ -706,6 +728,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         });
       },
     );
+    return outcome;
   }
 
   async function handleControlCommand(

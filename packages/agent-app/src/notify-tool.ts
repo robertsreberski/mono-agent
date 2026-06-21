@@ -125,10 +125,17 @@ async function handleHttpRequest(
   // tracking, so a fresh server+transport per request is the correct pattern and
   // concurrent triggers never share state.
   const transport = new StreamableHTTPServerTransport({});
-  res.on("close", () => {
+  // Idempotent: with HTTP keep-alive the response can `finish` without firing
+  // `close`, so bind both and guard against a double-close leaking nothing.
+  let cleaned = false;
+  const cleanup = (): void => {
+    if (cleaned) return;
+    cleaned = true;
     void transport.close();
     void server.close();
-  });
+  };
+  res.on("close", cleanup);
+  res.on("finish", cleanup);
   try {
     // The transport implements the SDK Transport interface at runtime; the cast
     // bridges an exactOptionalPropertyTypes mismatch in the SDK's own typings.

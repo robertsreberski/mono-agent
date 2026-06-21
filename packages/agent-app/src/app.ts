@@ -392,11 +392,10 @@ class MonoAgentAppController implements MonoAgentApp {
     for (const runtime of this.activeRuntimes.splice(0)) {
       await runtime.disposeAllSessions?.().catch(() => undefined);
     }
-    if (this.notifyToolsServer !== undefined) {
-      await this.notifyToolsServer.close().catch(() => undefined);
-      this.notifyToolsServer = undefined;
-      this.notifyToolsServerStart = undefined;
-    }
+    const server = this.notifyToolsServer ?? (await this.notifyToolsServerStart?.catch(() => undefined));
+    if (server !== undefined) await server.close().catch(() => undefined);
+    this.notifyToolsServer = undefined;
+    this.notifyToolsServerStart = undefined;
   }
 
   async startMemoryRitualsIfConfigured(reason: string): Promise<void> {
@@ -521,6 +520,11 @@ class MonoAgentAppController implements MonoAgentApp {
         this.notifyToolsServer = server;
         this.logger?.info?.("Proactive notify tools server started.", { url: server.url });
         return server;
+      }).catch((error) => {
+        // A transient start failure must not permanently cache a rejected promise —
+        // clear it so the next responder build can retry.
+        this.notifyToolsServerStart = undefined;
+        throw error;
       });
     }
     return await this.notifyToolsServerStart;

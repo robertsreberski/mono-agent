@@ -21,6 +21,8 @@ export interface ListSeenOptions {
 const DEFAULT_LIMIT = 2000;
 const SUMMARY_SUFFIX = ".summary.json";
 const ROLLOVER_BUCKET = /#\d{4}-\d{2}-\d{2}$/u;
+/** Max summary files statted concurrently, to bound open fds and avoid EMFILE. */
+const STAT_BATCH_SIZE = 64;
 
 /**
  * Distinct push-channel conversationIds the agent has actually handled, read from
@@ -43,16 +45,26 @@ export async function listSeenNotifyDestinations(
   }
 
   const summaries = entries.filter((name) => name.endsWith(SUMMARY_SUFFIX));
+  // Summary filenames are conversationId-based with no embedded time ordering, so a
+  // full stat pass is required to learn each file's mtime before we can take the
+  // newest `limit`. We stat in bounded batches (not one big Promise.all over every
+  // summary) to keep open file descriptors capped and avoid EMFILE/IO spikes on a
+  // busy agent with thousands of artifacts.
+  const withMtime: { name: string; mtimeMs: number }[] = [];
+  for (let i = 0; i < summaries.length; i += STAT_BATCH_SIZE) {
+    const batch = summaries.slice(i, i + STAT_BATCH_SIZE);
+    const stated = await Promise.all(
+      batch.map(async (name) => {
+        try {
+          return { name, mtimeMs: (await stat(join(artifactDir, name))).mtimeMs };
+        } catch {
+          return { name, mtimeMs: 0 };
+        }
+      }),
+    );
+    withMtime.push(...stated);
+  }
   // Newest files first, then cap, so a busy agent's scan stays bounded.
-  const withMtime = await Promise.all(
-    summaries.map(async (name) => {
-      try {
-        return { name, mtimeMs: (await stat(join(artifactDir, name))).mtimeMs };
-      } catch {
-        return { name, mtimeMs: 0 };
-      }
-    }),
-  );
   withMtime.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
   const latest = new Map<string, SeenConversation>();

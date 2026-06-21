@@ -834,6 +834,7 @@ function createFakeTelegramAdapter(): {
         },
         async notify() {
           // No-op proactive delivery for the demo's fake Telegram adapter.
+          return { delivered: true };
         },
       };
     },

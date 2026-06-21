@@ -361,7 +361,7 @@ describe("startMonoAgentApp", () => {
     const driver = createTelegramChannelDriver({
       startAdapter: async (options) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => undefined };
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
       },
     });
 
@@ -399,7 +399,7 @@ describe("startMonoAgentApp", () => {
       // Simulate the adapter starting, then its polling loop crashing later.
       startAdapter: async (options: TelegramAdapterStartOptions) => {
         queueMicrotask(() => options.onPollingError?.(new Error("getUpdates died")));
-        return { stop: async () => undefined, notify: async () => undefined };
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
       },
     });
 

@@ -34,6 +34,22 @@ describe("routeProactiveNotification", () => {
     expect(notify).toHaveBeenCalledWith({ conversationId: "telegram:42", text: "morning brief" });
   });
 
+  it("returns a failure result (does not throw) when the channel's notify rejects", async () => {
+    const warn = vi.fn();
+    const notify = vi.fn(async () => {
+      throw new Error("delivery failed");
+    });
+    const result = await routeProactiveNotification({
+      conversationId: "telegram:42",
+      text: "morning brief",
+      running: running({ telegram: { notify } }),
+      logger: { warn },
+    });
+    expect(result.delivered).toBe(false);
+    expect(result.reason).toBe("delivery failed");
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
   it("skips + warns when the destination prefix is not a push channel", async () => {
     const warn = vi.fn();
     const result = await routeProactiveNotification({

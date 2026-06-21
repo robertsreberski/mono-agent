@@ -94,8 +94,9 @@ describe("SlackAdapter", () => {
       }),
     });
 
-    await adapter.notify("C1", "171.5", "Compose the brief");
+    const result = await adapter.notify("C1", "171.5", "Compose the brief");
 
+    expect(result).toEqual({ delivered: true });
     expect(captured?.conversationId).toBe("slack:C1:171.5");
     expect(captured?.text).toBe("Compose the brief");
     const post = api.postMessageCalls.at(-1);
@@ -104,6 +105,96 @@ describe("SlackAdapter", () => {
     expect(post?.text).toContain("morning brief");
     // A proactive turn does not react to a (non-existent) inbound message.
     expect(api.reactionsAddCalls).toEqual([]);
+  });
+
+  it("notify() reports an honest drop when the agent produces no answer", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async () => ({ text: "   " })),
+    });
+
+    const result = await adapter.notify("C1", "171.5", "Compose the brief");
+
+    expect(result).toEqual({ delivered: false, reason: "agent produced no answer" });
+    // Nothing is posted when the agent has nothing to say.
+    expect(api.postMessageCalls).toEqual([]);
+  });
+
+  it("notify() reports an honest drop when the conversation is at its concurrency cap", async () => {
+    const api = new FakeSlackApi();
+    const blocked = createDeferred<{ text: string }>();
+    let activeStarted = false;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async () => {
+        activeStarted = true;
+        // The active proactive run holds the queue's running slot so the flood
+        // parks behind it and the cap+1-th notify is rejected.
+        return blocked.promise;
+      }),
+    });
+
+    // One blocking active run takes the queue's running slot (depth 1).
+    const activeRun = adapter.notify("C1", "171.5", "active");
+    await vi.waitFor(() => expect(activeStarted).toBe(true));
+
+    // The admission SerialQueue caps depth at 100. Fill it to the cap with 99
+    // more same-conversation notifies, then the next one must be dropped.
+    const maxDepth = 100;
+    const queued: Array<Promise<unknown>> = [];
+    for (let i = 0; i < maxDepth - 1; i += 1) {
+      queued.push(adapter.notify("C1", "171.5", `fill-${i}`));
+    }
+
+    const overCap = await adapter.notify("C1", "171.5", "over-cap");
+
+    expect(overCap).toEqual({ delivered: false, reason: "conversation at concurrency cap" });
+
+    // Drain: settle the active run and let the genuinely-queued fills resolve.
+    blocked.resolve({ text: "done" });
+    await activeRun;
+    await Promise.allSettled(queued);
+  });
+
+  it("notify() into a thread registers under the /cancel key so a concurrent /cancel aborts it", async () => {
+    const api = new FakeSlackApi();
+    let capturedSignal: AbortSignal | undefined;
+    const responderStarted = createDeferred<void>();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(
+        async (request) =>
+          await new Promise<{ text: string }>((resolve) => {
+            capturedSignal = request.abortSignal;
+            request.abortSignal.addEventListener(
+              "abort",
+              () => resolve({ text: "should not be used" }),
+              { once: true },
+            );
+            responderStarted.resolve(undefined);
+          }),
+      ),
+    });
+
+    // A threaded proactive run registers under the inbound /cancel runKey
+    // `${channelId}:${threadTs}` rather than `proactive:...`, so a /cancel
+    // posted to the same thread can abort it mid-flight.
+    const notifyRun = adapter.notify("D123", "171.000001", "nudge");
+    await responderStarted.promise;
+
+    await expect(
+      adapter.handleEventCallback(
+        directMessage("/cancel", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" }),
+      ),
+    ).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+    expect(capturedSignal?.aborted).toBe(true);
+
+    await expect(notifyRun).resolves.toEqual({ delivered: false, reason: "cancelled" });
   });
 
   it("notify() without a thread posts top-level and keys on the bare channel", async () => {

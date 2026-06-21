@@ -848,17 +848,27 @@ function responseMetadata(
 
 /**
  * A small "Session" context block telling the agent the conversationId of the turn
- * it is currently handling. This lets a live agent that kicks off a long-running
- * external operation embed this id in the callback it asks the service to make, so
- * the eventual result can be delivered back to THIS conversation (the inbound
- * webhook turn reads the id from the payload and routes a follow-up here). The
- * daily-rollover bucket suffix is stripped so the id is the stable, deliverable one.
+ * it is currently handling. When that id is a deliverable push destination
+ * (`telegram:`/`slack:`), a live agent that kicks off a long-running external
+ * operation can embed this id in the callback it asks the service to make, so the
+ * eventual result can be delivered back to THIS conversation (the inbound webhook
+ * turn reads the id from the payload and routes a follow-up here). For non-push
+ * conversations (cron/webhook/openai-api/a2a) the block instead clarifies that this
+ * conversation cannot itself receive a proactive follow-up. The daily-rollover
+ * bucket suffix is stripped so the id is the stable, deliverable one.
  */
 function sessionContextBlock(conversationId: string): string {
   const baseId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
+  const deliverable = baseId.startsWith("telegram:") || baseId.startsWith("slack:");
+  if (deliverable) {
+    return [
+      `You are currently handling the conversation \`${baseId}\`.`,
+      `If you start a long-running external operation and want its result delivered back to THIS conversation later, have the service include \`"conversationId": "${baseId}"\` in the JSON body of its callback to your inbound webhook — the follow-up will be routed here.`,
+    ].join("\n\n");
+  }
   return [
     `You are currently handling the conversation \`${baseId}\`.`,
-    `If you start a long-running external operation and want its result delivered back to THIS conversation later, have the service include \`"conversationId": "${baseId}"\` in the JSON body of its callback to your inbound webhook — the follow-up will be routed here.`,
+    `This conversation cannot itself receive a proactive follow-up — only \`telegram:\`/\`slack:\` conversations are valid \`notify_conversation\` destinations (use \`list_notify_destinations\` to find one).`,
   ].join("\n\n");
 }
 

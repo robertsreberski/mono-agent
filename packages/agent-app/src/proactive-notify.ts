@@ -68,5 +68,19 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
     );
     return { delivered: false, reason: `${channelId} channel is not running or does not support proactive delivery` };
   }
-  return await channel.notify({ conversationId: input.conversationId, text: input.text });
+  try {
+    return await channel.notify({ conversationId: input.conversationId, text: input.text });
+  } catch (error) {
+    const reason = reasonOf(error);
+    input.logger?.warn?.("Proactive notification failed: destination channel notify threw.", {
+      conversationId: input.conversationId,
+      channelId,
+      reason,
+    });
+    return { delivered: false, reason };
+  }
+}
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

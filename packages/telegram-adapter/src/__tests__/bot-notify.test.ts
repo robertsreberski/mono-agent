@@ -79,8 +79,9 @@ describe("createTelegramBot notify (proactive)", () => {
     };
     const { controller, calls } = buildNotifiableBot(responder);
 
-    await controller.notify(42, "Compose and report the morning brief.");
+    const result = await controller.notify(42, "Compose and report the morning brief.");
 
+    expect(result).toEqual({ delivered: true });
     expect(captured?.conversationId).toBe("telegram:42");
     expect(captured?.text).toBe("Compose and report the morning brief.");
     const sent = calls.filter((call) => call.method === "sendMessage");
@@ -90,7 +91,7 @@ describe("createTelegramBot notify (proactive)", () => {
     });
   });
 
-  it("posts nothing when the proactive turn produces no answer", async () => {
+  it("posts nothing (and reports the reason) when the proactive turn produces no answer", async () => {
     const responder: AgentResponder = {
       async respond() {
         return { text: "" };
@@ -98,8 +99,35 @@ describe("createTelegramBot notify (proactive)", () => {
     };
     const { controller, calls } = buildNotifiableBot(responder);
 
-    await controller.notify(7, "Anything urgent?");
+    const result = await controller.notify(7, "Anything urgent?");
 
+    expect(result).toEqual({ delivered: false, reason: "agent produced no answer" });
     expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(0);
+  });
+
+  it("reports the queue-full reason when the chat is at its concurrency cap", async () => {
+    // Hold the first turn open so a flood past the depth cap is rejected by the
+    // per-chat admission queue while the run is still in-flight.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const responder: AgentResponder = {
+      async respond() {
+        await gate;
+        return { text: "done" };
+      },
+    };
+    const { controller } = buildNotifiableBot(responder);
+
+    // Fill the queue to its depth cap (100) with notifies that park on `gate`,
+    // then the next notify is rejected synchronously as queue-full.
+    const inflight = Array.from({ length: 100 }, () => controller.notify(5, "tick"));
+    const rejected = await controller.notify(5, "one too many");
+
+    expect(rejected).toEqual({ delivered: false, reason: "chat at concurrency cap" });
+
+    release?.();
+    await Promise.all(inflight);
   });
 });

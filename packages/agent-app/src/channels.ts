@@ -185,8 +185,7 @@ export function createTelegramChannelDriver(
             input.logger?.warn?.("Telegram proactive notify skipped: destination not in allowlist.", { conversationId });
             return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
           }
-          await result.notify(chatId, text);
-          return { delivered: true };
+          return await result.notify(chatId, text);
         },
       };
     },
@@ -199,7 +198,7 @@ export function telegramChatIdFromConversation(conversationId: string): Telegram
   if (!conversationId.startsWith(prefix)) {
     return undefined;
   }
-  const raw = conversationId.slice(prefix.length).split("#", 1)[0];
+  const raw = conversationId.slice(prefix.length).split("#", 1)[0]?.trim();
   if (raw === undefined || raw.length === 0) {
     return undefined;
   }
@@ -263,8 +262,7 @@ export function createSlackChannelDriver(
             input.logger?.warn?.("Slack proactive notify skipped: destination not in allowlist.", { conversationId });
             return { delivered: false, reason: "slack channel is not in the adapter allowlist" };
           }
-          await result.adapter.notify(target.channelId, target.threadTs, text);
-          return { delivered: true };
+          return await result.adapter.notify(target.channelId, target.threadTs, text);
         },
       };
     },
@@ -285,10 +283,14 @@ export function slackTargetFromConversation(
   }
   const colon = rest.indexOf(":");
   if (colon < 0) {
-    return { channelId: rest };
+    const channelId = rest.trim();
+    if (channelId.length === 0) {
+      return undefined;
+    }
+    return { channelId };
   }
-  const channelId = rest.slice(0, colon);
-  const threadTs = rest.slice(colon + 1);
+  const channelId = rest.slice(0, colon).trim();
+  const threadTs = rest.slice(colon + 1).trim();
   if (channelId.length === 0) {
     return undefined;
   }

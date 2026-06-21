@@ -120,8 +120,9 @@ describe("startTelegramAdapter", () => {
       runnerFactory: () => new FakeRunner(),
     });
 
-    await result.notify(99, "say hi");
+    const outcome = await result.notify(99, "say hi");
 
+    expect(outcome).toEqual({ delivered: true });
     const sent = calls.filter((call) => call.method === "sendMessage");
     expect(sent.at(-1)?.payload).toMatchObject({ chat_id: 99, text: "ping delivered" });
     await result.stop();

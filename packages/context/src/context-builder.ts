@@ -71,7 +71,7 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
       usedDefaultCore,
       skillCount: skills.length,
       historyCount: history.length,
-      sources: collectSources(core, identity, memory, skills, skillInstructions),
+      sources: collectSources(core, identity, session, memory, skills, skillInstructions),
     },
   };
 }
@@ -290,6 +290,7 @@ function renderHistory(history: readonly HistoryMessage[]): NormalizedBlock {
 function collectSources(
   core: NormalizedBlock,
   identity: NormalizedBlock,
+  session: NormalizedBlock | undefined,
   memory: readonly NormalizedBlock[],
   skills: readonly SkillIndexEntry[],
   skillInstructions: readonly NormalizedBlock[],
@@ -297,6 +298,9 @@ function collectSources(
   const sources: string[] = [];
   addSource(sources, core.source);
   addSource(sources, identity.source);
+  if (session !== undefined) {
+    addSource(sources, session.source);
+  }
   for (const block of memory) {
     addSource(sources, block.source);
   }

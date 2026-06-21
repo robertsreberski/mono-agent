@@ -8,8 +8,14 @@ import type {
   TelegramAdapterMessages,
   TelegramAdapterStreamOptions,
 } from "./adapter.js";
-import { createTelegramBot, type CreateTelegramBotOptions } from "./bot.js";
+import {
+  createTelegramBot,
+  type CreateTelegramBotOptions,
+  type TelegramNotifyResult,
+} from "./bot.js";
 import type { TelegramChatId } from "./types.js";
+
+export type { TelegramNotifyResult } from "./bot.js";
 
 export interface TelegramAdapterStartOptions {
   /** Bot API token used to construct the grammY {@link Bot}. */
@@ -55,7 +61,7 @@ export interface TelegramAdapterStartResult {
    * and posting the answer through the normal stream. Used by cron/webhook nudges
    * so the destination channel's agent — not a side channel — owns the message.
    */
-  notify(chatId: TelegramChatId, text: string): Promise<void>;
+  notify(chatId: TelegramChatId, text: string): Promise<TelegramNotifyResult>;
 }
 
 /**

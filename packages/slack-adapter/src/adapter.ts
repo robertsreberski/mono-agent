@@ -79,6 +79,17 @@ export interface SlackRequestMetadata {
 export type { AgentResponse };
 export type AgentResponder = SharedAgentResponder<AgentRequest, AgentMessageStream, AgentResponse>;
 
+/**
+ * Outcome of a proactive {@link SlackAdapter.notify} delivery. `delivered` is
+ * true only when the answer reached the channel; otherwise `reason` carries a
+ * short, human-readable cause for the silent drop (e.g. concurrency cap, the
+ * agent produced no answer, a cancelled or failed run).
+ */
+export interface SlackNotifyResult {
+  readonly delivered: boolean;
+  readonly reason?: string;
+}
+
 export interface SlackAdapterMessages {
   welcomeText?: string;
   helpText?: string;
@@ -496,9 +507,12 @@ export class SlackAdapter {
     channelId: SlackChannelId,
     threadTs: SlackMessageTs | undefined,
     text: string,
-  ): Promise<void> {
+  ): Promise<SlackNotifyResult> {
     const conversationId = threadTs === undefined ? `slack:${channelId}` : `slack:${channelId}:${threadTs}`;
-    const runKey = `proactive:${conversationId}`;
+    // A threaded proactive run shares the inbound /cancel key so a user's
+    // /cancel in that thread can abort it; a top-level post (no thread) has no
+    // inbound /cancel target, so it keeps its own proactive key.
+    const runKey = threadTs === undefined ? `proactive:${conversationId}` : `${channelId}:${threadTs}`;
     const controller = new AbortController();
     this.registerController(runKey, controller);
     let queue = this.admissionQueues.get(conversationId);
@@ -507,14 +521,14 @@ export class SlackAdapter {
       this.admissionQueues.set(conversationId, queue);
     }
     try {
-      await queue.run(() => this.runProactiveTurn(conversationId, channelId, threadTs, text, runKey, controller));
+      return await queue.run(() => this.runProactiveTurn(conversationId, channelId, threadTs, text, runKey, controller));
     } catch (error) {
       if (isSerialQueueFullError(error)) {
         this.unregisterController(runKey, controller);
         this.logger?.warn?.("Slack proactive notify dropped: conversation is at its concurrency cap.", {
           conversationId,
         });
-        return;
+        return { delivered: false, reason: "conversation at concurrency cap" };
       }
       throw error;
     } finally {
@@ -531,7 +545,7 @@ export class SlackAdapter {
     text: string,
     runKey: string,
     controller: AbortController,
-  ): Promise<void> {
+  ): Promise<SlackNotifyResult> {
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
       channelId,
@@ -560,7 +574,7 @@ export class SlackAdapter {
     const stream = new SlackMessageStream(streamOptions);
     try {
       if (controller.signal.aborted) {
-        return;
+        return { delivered: false, reason: "cancelled" };
       }
       const request: AgentRequest = {
         conversationId,
@@ -585,27 +599,32 @@ export class SlackAdapter {
         response = await this.responder.respond(request, stream);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          return;
+          return { delivered: false, reason: "cancelled" };
         }
         this.logger?.error?.("Slack proactive notify failed.", {
           error: error instanceof Error ? error.message : String(error),
         });
-        return;
+        return { delivered: false, reason: "responder failed" };
       }
       const answer = response.text;
-      if (controller.signal.aborted || answer === undefined || answer.trim().length === 0) {
-        return;
+      if (controller.signal.aborted) {
+        return { delivered: false, reason: "cancelled" };
+      }
+      if (answer === undefined || answer.trim().length === 0) {
+        return { delivered: false, reason: "agent produced no answer" };
       }
       try {
         await stream.finish(answer);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
-          return;
+          return { delivered: false, reason: "cancelled" };
         }
         this.logger?.error?.("Slack proactive delivery failed after a successful AI run.", {
           error: error instanceof Error ? error.message : String(error),
         });
+        return { delivered: false, reason: "delivery failed" };
       }
+      return { delivered: true };
     } finally {
       this.unregisterController(runKey, controller);
     }
