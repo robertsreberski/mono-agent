@@ -95,6 +95,15 @@ export type SessionMode = "continuous" | "per-message";
  * within-day growth is absorbed by context compaction. "none" = unchanged.
  */
 export type SessionRollover = "none" | "daily";
+
+/**
+ * Skill disclosure mode. "index" injects only the skill index (names +
+ * descriptions) plus a `read_skill` tool the agent calls to pull a full body on
+ * demand; "full" inlines `selectedSkills` bodies into the prompt up front. See
+ * `MonoAgentConfig.context.skillDisclosure`. Default "full" (legacy behavior); set
+ * "index" to opt in to progressive disclosure.
+ */
+export type SkillDisclosureMode = "index" | "full";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 export type ReasoningSummary = (typeof REASONING_SUMMARIES)[number];
@@ -124,6 +133,13 @@ export interface MonoAgentConfig {
       readonly rollover?: SessionRollover;
       /** IANA timezone for the rollover date boundary; default system-local. */
       readonly rolloverTimezone?: string;
+      /**
+       * When true, cron/proactive runs are handled as one-shot ephemeral turns:
+       * they neither resume nor persist into the shared continuous session, so
+       * their large tool dumps stay out of the interactive transcript. Interactive
+       * (non-cron) turns are unaffected. Default false (no behavior change).
+       */
+      readonly isolateProactive?: boolean;
     };
   };
   /**
@@ -150,6 +166,14 @@ export interface MonoAgentConfig {
     readonly selectedSkills: readonly string[];
     /** Hard byte cap per selected skill body (default 48000 in the harness). */
     readonly skillMaxBytes?: number;
+    /**
+     * How skill bodies reach the agent. "full" (default) preserves the legacy
+     * behavior where `selectedSkills` bodies are inlined into the prompt up front
+     * (via skillInstructions). "index" injects only the skill INDEX (names +
+     * descriptions) and exposes a `read_skill` tool so the agent pulls a full body
+     * on demand — keeping the system prompt small. Unset = "full".
+     */
+    readonly skillDisclosure?: SkillDisclosureMode;
   };
   readonly memory?: {
     readonly mode: MemoryMode;

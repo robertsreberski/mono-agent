@@ -370,6 +370,57 @@ describe("pi MCP tool helpers", () => {
     expect(code.filename).toBe("result.json");
   });
 
+  it("creates a reachable read_skill tool from an explicit skillsRoot", async () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "---\nname: research\n---\n# Research\n\nFull research skill body.\n");
+
+    const tools = getPiBuiltinTools(["Read"], { skillsRoot, skillNames: ["research"] });
+    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    expect(readSkill).toBeTruthy();
+    // The enum is restricted to the supplied skill names.
+    expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
+
+    const result = await readSkill.execute("read_skill:1", { name: "research" });
+    expect(result.content[0].text).toContain("Full research skill body.");
+    // Frontmatter is stripped from the returned body.
+    expect(result.content[0].text).not.toContain("name: research");
+  });
+
+  it("read_skill rejects path traversal and unknown skills", async () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
+    // A sibling SKILL.md OUTSIDE the skills root must never be reachable.
+    writeFileSync(join(root, "SKILL.md"), "# secret\n\nshould not be reachable\n");
+
+    const tools = getPiBuiltinTools([], { skillsRoot, skillNames: ["research", "..", "../secret"] });
+    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    // Traversal-shaped names are filtered out of the enum entirely.
+    expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
+    // Executing with a non-existent skill throws rather than reading anything.
+    await expect(readSkill.execute("read_skill:miss", { name: "missing" })).rejects.toThrow("SKILL.md not found");
+  });
+
+  it("read_skill falls back to dataDir (skills under <dataDir>/skills) for back-compat", async () => {
+    const dataDir = tempWorkspace();
+    mkdirSync(join(dataDir, "skills", "writing"), { recursive: true });
+    writeFileSync(join(dataDir, "skills", "writing", "SKILL.md"), "# Writing\n\nThe writing body.\n");
+
+    const tools = getPiBuiltinTools([], { dataDir, skillNames: ["writing"] });
+    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    expect(readSkill).toBeTruthy();
+    const result = await readSkill.execute("read_skill:dd", { name: "writing" });
+    expect(result.content[0].text).toContain("The writing body.");
+  });
+
+  it("does not create read_skill when neither skillsRoot nor dataDir is supplied", () => {
+    const tools = getPiBuiltinTools([], { skillNames: ["research"] });
+    expect(tools.find((tool) => tool.name === "read_skill")).toBeUndefined();
+  });
+
   it("passes abort signals to Bash tool execution", async () => {
     const root = tempWorkspace();
     const bash = getPiBuiltinTools(["Bash"], { cwd: root }).find((tool) => tool.name === "Bash");

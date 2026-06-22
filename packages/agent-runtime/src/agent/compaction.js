@@ -80,6 +80,52 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
   };
 }
 
+// Estimate the FIXED per-request overhead the provider meters but the raw
+// transcript estimate excludes: the system prompt, the tool/MCP schemas, and the
+// per-turn user message(s). estimateCurrentContextTokens' raw branch sums ONLY
+// session.buildContext().messages (the transcript), so on a seeded session whose
+// last-assistant usage is stale/0 the proactive-compaction trigger under-counts
+// and under-fires, letting the real request overflow the window. Adding this
+// overhead to the raw estimate makes the trigger reflect what the provider counts.
+//
+// Uses Math.ceil(len/4) to mirror pi-ai's chars/4 heuristic — consistency with
+// the transcript estimate matters more than precision. Pure + dependency-free.
+export function estimateFixedOverheadTokens({ systemPrompt, tools, messages } = {}) {
+  const tokensForChars = (value) => Math.ceil(String(value ?? "").length / 4);
+
+  const systemPromptTokens = tokensForChars(systemPrompt);
+
+  let toolSchemaTokens = 0;
+  for (const tool of Array.isArray(tools) ? tools : []) {
+    try {
+      const serialized = JSON.stringify({
+        name: tool?.name,
+        description: tool?.description,
+        parameters: tool?.parameters ?? tool?.inputSchema ?? {},
+      });
+      toolSchemaTokens += tokensForChars(serialized);
+    } catch {
+      // Circular/unserializable tool schema — count it as 0 rather than throw.
+    }
+  }
+
+  let userMessageTokens = 0;
+  for (const message of Array.isArray(messages) ? messages : []) {
+    try {
+      userMessageTokens += tokensForChars(JSON.stringify(message?.content ?? ""));
+    } catch {
+      // Unserializable content — count it as 0 rather than throw.
+    }
+  }
+
+  return {
+    systemPromptTokens,
+    toolSchemaTokens,
+    userMessageTokens,
+    fixedOverheadTokens: systemPromptTokens + toolSchemaTokens + userMessageTokens,
+  };
+}
+
 export function isLikelyContextTermination(message, diagnostics = {}) {
   const text = String(message || "");
   if (!/terminated|aborted before final output|aborted before final|stream.*aborted|context window|context budget/i.test(text)) return false;

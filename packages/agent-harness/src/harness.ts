@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AgentAttachment } from "@mono-agent/agent-contracts";
-import { loadContextFromFiles } from "@mono-agent/context";
+import { loadContextFromFiles, loadSkillIndexFromDirectory } from "@mono-agent/context";
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono-agent/context";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import { monoRuntimeSupportsSessionResume } from "@mono-agent/runtime-adapter";
@@ -134,7 +134,13 @@ export class MonoAgentHarness implements AgentHarness {
         return { metadata: responseMetadata(runId, request, undefined, summary), failure };
       }
     }
-    const sessionRecord = this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
+    // Proactive isolation (opt-in): a cron/proactive run is treated as a one-shot
+    // ephemeral turn — it neither resumes nor persists the shared continuous
+    // session, so its large tool dumps stay out of the interactive transcript.
+    // Computed once and applied as a minimal gate on the session machinery below;
+    // interactive (non-cron) runs are byte-for-byte unchanged.
+    const isolated = this.isProactiveIsolated(request);
+    const sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
       recorder.onEvent(event);
@@ -166,8 +172,11 @@ export class MonoAgentHarness implements AgentHarness {
       // restart (the in-memory conversationId→providerSessionId map is lost on
       // restart). pi-native creates-on-miss with this id, so a first turn for a
       // never-seen conversation still opens a durable session under this id.
+      // An isolated proactive run skips the durable resume-id derivation entirely
+      // (sessionRecord is already undefined), so resumeSessionId stays undefined
+      // and the turn opens no shared/durable session to resume.
       let resumeSessionId = sessionRecord?.providerSessionId
-        ?? (this.sessionsEnabled() && this.options.piSessionsRoot !== undefined
+        ?? (!isolated && this.sessionsEnabled() && this.options.piSessionsRoot !== undefined
           ? deriveDurableSessionId(request.conversationId)
           : undefined);
       // Omit history ONLY for a confirmed LIVE session record — it already holds
@@ -183,7 +192,7 @@ export class MonoAgentHarness implements AgentHarness {
       let runtimeResult: RuntimeResult | undefined;
       let resumeError: unknown;
       try {
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, resumeSessionId, leavePending);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, resumeSessionId, prepared.skillDisclosureNames, leavePending);
       } catch (error) {
         if (resumeSessionId === undefined || request.abortSignal.aborted) {
           throw error;
@@ -204,7 +213,7 @@ export class MonoAgentHarness implements AgentHarness {
         resumeSessionId = undefined;
         prepared = await this.prepareContext(activeRequest, { omitHistory: false }, emit);
         context = prepared.context;
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, leavePending);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, prepared.skillDisclosureNames, leavePending);
       }
       if (runtimeResult === undefined) {
         throw resumeError ?? new Error("Runtime did not produce a result.");
@@ -289,7 +298,15 @@ export class MonoAgentHarness implements AgentHarness {
         };
       }
 
-      this.saveSession(request.conversationId, runtimeResult.providerSessionId, sessionRecord);
+      if (isolated) {
+        // An isolated proactive turn must not warm the shared conversation's
+        // session, so it is never saved. Any provider session the runtime opened
+        // for this one-shot turn is retired here so it does not leak (sessionRecord
+        // is undefined, so this disposes the freshly returned providerSessionId).
+        await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
+      } else {
+        this.saveSession(request.conversationId, runtimeResult.providerSessionId, sessionRecord);
+      }
 
       // Persist the ORIGINAL caption + redacted attachment metadata (persistText),
       // NOT the expanded prompt with inlined document text.
@@ -324,6 +341,16 @@ export class MonoAgentHarness implements AgentHarness {
     // registries are process-global and other harnesses may share them.
     this.liveSessionManager?.dispose();
     await this.sessionStore?.disposeAll();
+  }
+
+  /**
+   * Whether THIS run should be handled as an isolated proactive turn: the
+   * `session.isolateProactive` opt-in is on AND the request is a cron/proactive
+   * request (it carries `metadata.cron`, set by the cron scheduler). When false,
+   * the run uses the shared continuous-session machinery exactly as before.
+   */
+  private isProactiveIsolated(request: AgentHarnessRequest): boolean {
+    return this.options.session?.isolateProactive === true && isCronRequest(request);
   }
 
   private sessionsEnabled(): boolean {
@@ -386,7 +413,7 @@ export class MonoAgentHarness implements AgentHarness {
     request: AgentHarnessRequest,
     options: { readonly omitHistory: boolean },
     emit?: (event: RuntimeEventLike) => void,
-  ): Promise<{ readonly context: BuiltAgentContext; readonly memory: ContextBlockInput | undefined }> {
+  ): Promise<{ readonly context: BuiltAgentContext; readonly memory: ContextBlockInput | undefined; readonly skillDisclosureNames: readonly string[] }> {
     const history = options.omitHistory ? [] : await this.loadHistory(request.conversationId);
     // Recalled memory deliberately does NOT go into the system prompt. It rides on
     // the per-turn USER MESSAGE instead (see runRuntime): the user message is the
@@ -410,7 +437,32 @@ export class MonoAgentHarness implements AgentHarness {
           : {}),
       ...(selectedSkills.instructions.length === 0 ? {} : { skillInstructions: selectedSkills.instructions }),
     });
-    return { context, memory };
+    // Progressive skill disclosure (index mode, opt-in): the index is in the
+    // prompt but the bodies are not — so expose a `read_skill` tool whose enum is
+    // the discovered skill names, letting the agent pull a full body on demand.
+    // 'full' mode (the default) keeps today's behavior (selectedSkills bodies
+    // inlined up front) and does NOT add read_skill. Names load only when a
+    // skillsRoot is set.
+    const skillDisclosureNames = await this.loadSkillDisclosureNames();
+    return { context, memory, skillDisclosureNames };
+  }
+
+  /**
+   * Discovers the skill names the `read_skill` tool may load (its enum) for
+   * progressive disclosure. Returns [] in "full" disclosure mode or when no
+   * skillsRoot is configured, so the runtime never creates the tool there —
+   * preserving the legacy index-only-without-read_skill behavior in those cases.
+   */
+  private async loadSkillDisclosureNames(): Promise<readonly string[]> {
+    if (this.skillDisclosureMode() !== "index" || this.options.skillsRoot === undefined) {
+      return [];
+    }
+    const entries = await loadSkillIndexFromDirectory(this.options.skillsRoot);
+    return entries.map((entry) => entry.name);
+  }
+
+  private skillDisclosureMode(): "index" | "full" {
+    return this.options.skillDisclosure ?? "full";
   }
 
   private async loadHistory(conversationId: string): Promise<readonly HistoryMessage[]> {
@@ -539,6 +591,7 @@ export class MonoAgentHarness implements AgentHarness {
     memory: ContextBlockInput | undefined,
     runId: string,
     resumeSessionId: string | undefined,
+    skillDisclosureNames: readonly string[],
     onProviderStart?: () => void,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
@@ -567,6 +620,17 @@ export class MonoAgentHarness implements AgentHarness {
       // Durable provider-session root (pi-native): when set, sessions persist to
       // disk so resume recovers from there instead of re-sending full history.
       ...(this.options.piSessionsRoot === undefined ? {} : { piSessionsRoot: this.options.piSessionsRoot }),
+      // Progressive skill disclosure (index mode): pass the discovered skill names
+      // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
+      // `read_skill` tool. These live after the merge so request extensions cannot
+      // clobber them. Empty in 'full' mode / when no skillsRoot is set, so the
+      // tool is not created and behavior matches the legacy path.
+      ...(skillDisclosureNames.length > 0 && this.options.skillsRoot !== undefined
+        ? {
+          skills: skillDisclosureNames.map((name) => ({ name })),
+          skillsRoot: this.options.skillsRoot,
+        }
+        : {}),
       // Session keys live after the merge so request extensions cannot
       // clobber the harness's session decision — including forcing the keys
       // back to undefined on fresh runs.
@@ -1089,4 +1153,13 @@ function deriveDurableSessionId(conversationId: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A cron/proactive request carries a `cron` metadata block (set by the cron
+ * scheduler when it fires a job). Used to scope the proactive-session-isolation
+ * opt-in to scheduled runs without touching interactive turns.
+ */
+function isCronRequest(request: AgentHarnessRequest): boolean {
+  return isRecord(request.metadata) && request.metadata.cron !== undefined;
 }
