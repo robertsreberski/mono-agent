@@ -15,7 +15,7 @@ This page covers where artifacts land, the latency-attribution events inside the
 Each run writes two files into `artifacts.dir`:
 
 - `run-<id>.events.jsonl` — an append-only event stream (assistant deltas, tool calls/results, timing, usage/cost).
-- `run-<id>.summary.json` — a roll-up of the run (final outcome, aggregate usage/cost).
+- `run-<id>.summary.json` — a roll-up of the run (final `status`, aggregate usage/cost, model). See [Run status](#run-status-and-stale-run-reconciliation) for the status values.
 
 Artifacts are written for every run regardless of whether any exporter is configured. Secrets are redacted and long strings are truncated before they hit disk, so the files are safe to keep and to ship to a viewer. The same tool-bloat guard that truncates oversized tool output persists the full payload here as an artifact (coverage: `auto`).
 
@@ -31,9 +31,23 @@ Artifacts are written for every run regardless of whether any exporter is config
 
 These files are exactly what the [backfill command](/observability/phoenix-and-backfill/) replays into Phoenix after the fact — `run-*.summary.json` plus `run-*.events.jsonl` are read back and exported with their original historical timestamps.
 
+### Run status and stale-run reconciliation
+
+A run summary's `status` is one of:
+
+| Status | Meaning |
+| --- | --- |
+| `running` | The run is in flight (not yet settled). |
+| `succeeded` | The turn completed normally. |
+| `failed` | The turn ended with an error. |
+| `cancelled` | The turn was aborted by a caller (e.g. a newer follow-up cancelled it). |
+| `interrupted` | The run never settled on its own — the process died mid-run, or a watchdog (e.g. the [cron run watchdog](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve)) aborted a wedged run. |
+
+A crashed process can leave a summary stuck at `running` forever. To self-heal that, the host runs `reconcileStaleRunArtifacts()` **once at startup**: it scans the artifacts directory and rewrites any summary left at `running` by a *previous* process to `interrupted` (failure kind `process_death`). It is fire-and-forget — best-effort, runs in the background, and never gates readiness — so a large artifacts directory can never delay start. In the [Phoenix export](/observability/phoenix-and-backfill/), `interrupted` maps to an ERROR span, alongside `failed` and `cancelled`.
+
 :::tip
-:::
 The artifacts directory is the durable record of what your agent did. Keep it out of version control (it grows per run) but back it up if you care about historical runs you might want to backfill or audit later.
+:::
 
 ## Latency attribution
 

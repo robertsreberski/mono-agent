@@ -6,7 +6,7 @@ sidebar:
 
 # Context assembly
 
-Every turn, mono-agent builds one prompt from several ordered sections — core guardrails, identity, memory recall, conversation history, the skill index, selected skill instructions, and finally the current user message. This page documents that order, how history is sized, and the truncation/bloat guards that keep prompts bounded. Assembly is mostly `auto`: you configure the inputs (identity, soul, skills, memory) and the framework assembles them.
+Every turn, mono-agent builds one prompt from several ordered sections — core guardrails, identity, a session block, conversation history, the skill index, selected skill instructions, and finally the current user message. Recalled long-term memory is **not** one of these system-prompt sections; it is appended to the user message instead (see [Memory recall](#memory-recall) below). This page documents that order, how history is sized, and the truncation/bloat guards that keep prompts bounded. Assembly is mostly `auto`: you configure the inputs (identity, soul, skills, memory) and the framework assembles them.
 
 ## Section order
 
@@ -16,16 +16,20 @@ Every turn, mono-agent builds one prompt from several ordered sections — core 
 |---|---------|--------|-----------------|
 | 1 | Core Guardrails | `context.soulPath`, else the built-in default soul | Yes |
 | 2 | Identity | `context.identityPath` | Yes (identity is required) |
-| 3 | Memory | recalled memory blocks (when memory is enabled) | Optional |
+| 3 | Session | the current turn's `conversationId` + delivery/callback guidance | Yes |
 | 4 | Conversation History | in-memory history store | Optional (empty on first turn) |
 | 5 | Skill Index | name/description of selected skills | Optional |
 | 6 | Selected Skill Instructions | full `SKILL.md` bodies of selected skills | Optional |
-| 7 | Current User Message | the inbound request text | Yes |
+| 7 | Current User Message | the inbound request text, with any recalled memory appended | Yes |
 
-The user message is always last, so the model reads its instructions, recall, and history before the task it must act on. See [Identity and soul](/context/identity-and-soul/) for sections 1–2 and [Skills](/context/skills/) for sections 5–6.
+The user message is always last, so the model reads its guardrails, identity, and history before the task it must act on — and any recalled memory travels **with** that user message. See [Identity and soul](/context/identity-and-soul/) for sections 1–2, [Session](#session) for section 3, and [Skills](/context/skills/) for sections 5–6.
 
 :::note
 `context.identityPath` is one of only two required config fields (the other is `runtime.model`); omit `context.soulPath` to fall back to the built-in core guardrails.
+:::
+
+:::note
+Recalled long-term memory used to be section 3 of this prompt. It is no longer assembled into the system-prompt sections above — it now rides the user message each turn (see [Memory recall](#memory-recall)). The `@mono-agent/context` package still exposes a `memory` section for custom/programmatic callers that pass `memory` directly, but the standard agent appends recall to the user message.
 :::
 
 ## Configuring the inputs
@@ -47,9 +51,31 @@ Matching env vars (env > JSON > defaults): `MONO_AGENT_IDENTITY_PATH`, `MONO_AGE
 
 Skills are loaded from `<skillsRoot>/<name>/SKILL.md`, one per entry in `selectedSkills` — there is no auto-selection. Each skill's instruction body is capped at `context.skillMaxBytes` (default 48000, range 256–1,000,000). See [Skills](/context/skills/).
 
+## Session
+
+The **Session** block (section 3) is auto-generated each turn (coverage `auto`, no config) and tells the agent which conversation it is currently handling — the turn's `conversationId`, with any daily-rollover date suffix stripped so the id is the stable, deliverable one.
+
+- For a deliverable push destination (`telegram:` / `slack:`), it also tells the agent how to wire an **async callback**: if the agent starts a long-running external operation, it can ask the service to include `"conversationId": "<id>"` in the JSON body of its callback to an inbound webhook, and the follow-up is routed back to this same conversation. See [Webhook](/channels/webhook/) and the [`notify_conversation` tool](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
+- For non-push conversations (cron / webhook / openai-api / a2a), it instead clarifies that this conversation cannot itself receive a proactive follow-up — only `telegram:`/`slack:` ids are valid `notify_conversation` destinations (the agent uses `list_notify_destinations` to find one).
+
 ## Memory recall
 
-When `memory` is configured, recalled entries become the Memory section (3). For the `journal`/`bujo` tiers with embeddings, an auto-provisioned read-only `memory_recall` tool also lets the agent pull more context mid-turn via `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on). Recall combines keyword (FTS) and semantic search with no chat LLM. See [Capture and recall](/memory/capture-and-recall/) and [Embeddings](/memory/embeddings/).
+Recalled long-term memory is **not** part of the system-prompt sections above. When `memory` is configured and a recall returns hits, the harness appends the recalled block to the **user message** each turn — after the user's text and any attachment block — clearly delimited so the model reads it as injected background context rather than the user's words:
+
+```text
+[Recalled long-term memory — background context for this turn, not the user's words:]
+…recalled entries…
+```
+
+This injection happens on **every** turn, including the resume-retry path, because the user message is the one field every runtime re-sends verbatim. So memory survives a session resume even on runtimes that drop the system prompt on a resumed turn (e.g. codex-app sends developer instructions only on a fresh thread start). Keeping memory off the system prompt also leaves that prompt stable across a session, which is better for provider prompt caching.
+
+A few specifics:
+
+- **Not persisted.** Injected memory is added only to the provider-facing message, never written back to history or capture, so it cannot compound into future prompts.
+- **Skipped when empty.** A recall that returns no hits injects nothing — no delimiter, no header.
+- **Still traced.** A lightweight `memory_recalled` diagnostic (source + byte size, not the content) keeps the fact that recall fired visible in the run record even though memory no longer appears in the prompt sections.
+
+For the `journal`/`bujo` tiers with embeddings, an auto-provisioned read-only `memory_recall` tool also lets the agent pull more context mid-turn via `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on). Recall combines keyword (FTS) and semantic search with no chat LLM. See [Capture and recall](/memory/capture-and-recall/) and [Embeddings](/memory/embeddings/).
 
 ## Conversation history
 
@@ -91,6 +117,7 @@ Assembly produces the prompt; **compaction** keeps it within the model's context
 
 - [Identity and soul](/context/identity-and-soul/) — sections 1–2
 - [Skills](/context/skills/) — sections 5–6 and the skill index
-- [Capture and recall](/memory/capture-and-recall/) — the Memory section and `memory_recall`
+- [Capture and recall](/memory/capture-and-recall/) — the user-message memory injection and `memory_recall`
+- [Delivery and send tools](/channels/delivery-and-send-tools/) — the `notify_conversation` tool the Session block references
 - [Tools and guards](/runtime/tools-and-guards/) — the bloat guard in context
 - [Composition](/programmatic/composition/) — custom history store and per-request runtime options

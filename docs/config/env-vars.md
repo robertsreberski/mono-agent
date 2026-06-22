@@ -99,9 +99,10 @@ See [../runtime/local-providers.md](/runtime/local-providers/) for the local pro
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for capture/reflection/migration. |
 | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | `memory.llm.executionMode` | `sdk` for `agent-host` refs. |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama-only endpoint override. |
+| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | In-app per-call memory-LLM timeout (`1000`–`600000`, **default `60000`**). The standalone CLI reads the same var but defaults to `120000`; see [the two memory-LLM timeouts](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
 
 :::note
-The standalone `memory-bujo` maintenance CLI reads `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` / `_MODEL` / `_DIM` to enable semantic recall, and `MONO_AGENT_MEMORY_LLM_MODEL` / `MONO_AGENT_MEMORY_LLM_ENDPOINT` for `reflect`/`migrate`. See [../memory/validation-and-cli.md](/memory/validation-and-cli/).
+The standalone `memory-bujo` maintenance CLI reads `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` / `_MODEL` / `_DIM` to enable semantic recall, and `MONO_AGENT_MEMORY_LLM_MODEL` / `MONO_AGENT_MEMORY_LLM_ENDPOINT` / `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` for `reflect`/`migrate`. See [../memory/validation-and-cli.md](/memory/validation-and-cli/).
 :::
 
 ## Tools

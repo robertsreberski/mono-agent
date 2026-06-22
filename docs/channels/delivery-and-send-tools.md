@@ -6,7 +6,7 @@ sidebar:
 
 # Delivery, streaming & send tools
 
-This page explains how mono-agent delivers answers across channels (final-only vs. token streaming), which delivery and message-text knobs are config vs. code-only, and how the app-owned MCP send tools (`slack_send_message`, `telegram_send_message`) let the agent push messages back through an already-configured chat adapter.
+This page explains how mono-agent delivers answers across channels (final-only vs. token streaming), which delivery and message-text knobs are config vs. code-only, how the app-owned MCP send tools (`slack_send_message`, `telegram_send_message`) let the agent push messages back through an already-configured chat adapter, and the cron/webhook-only [proactive notify tools](#proactive-notify-tools-cronwebhook-turns) (`notify_conversation`, `list_notify_destinations`) that deliver a remembered turn into another conversation.
 
 ## Delivery semantics per channel
 
@@ -85,9 +85,45 @@ The allowlist also accepts `MONO_AGENT_ALLOWED_TOOLS` (and `MONO_AGENT_DISALLOWE
 Allowing a send tool but leaving the adapter disabled or unconfigured means the tool is present in name but has no working destination — the send fails. Enable and configure the adapter (Slack / Telegram) as well.
 :::
 
+## Proactive notify tools (cron/webhook turns)
+
+On a **cron or webhook turn** — and only there — the agent is given two extra tools so it can proactively message a conversation it is **not currently handling**:
+
+- **`notify_conversation(conversationId, text)`** — delivers `text` to `conversationId` by running it as a **real turn on that conversation's own live session**. The destination's agent composes the user-facing reply with its own context and history, the user sees it as a native message, and **the conversation remembers it** — this is not a side-channel post. Returns `{ delivered, reason }`.
+- **`list_notify_destinations()`** — discovery: lists conversations the agent has handled (from the run artifacts) plus single-entry channel allowlists it could reach. Each entry carries the `conversationId` to pass to `notify_conversation`, an optional `lastSeen`, and a `fromAllowlist` flag for not-yet-used allowlisted destinations. WhatsApp is excluded.
+
+`conversationId` is a channel-scoped id such as `telegram:42`, `slack:C123`, or `slack:C123:1718.99` (a Slack thread).
+
+### How they differ from send tools
+
+| | **Notify tools** (`notify_conversation`) | **Send tools** (`slack_send_message` / `telegram_send_message`) |
+|---|---|---|
+| Effect | Runs a **real, remembered turn** in the destination conversation | Posts a message into a **channel** (side-channel; not a turn) |
+| Available on | **cron / webhook turns only** | any turn |
+| Allowlist entry | **Not required** in `tools.allowedTools` (auto-injected) | **Required** — exact tool name in `tools.allowedTools` |
+| Destination bound | The owning channel's allowlist | The owning channel's allowlist |
+| Channels | Telegram + Slack (`whatsapp:` → `delivered:false`) | Telegram + Slack |
+
+### Constraints and security
+
+- **Auto-injected, gated by turn type.** The tools are hosted by an in-process loopback HTTP MCP server (stateless, bearer-token-authenticated) and injected only when the turn's request metadata marks it as a cron or webhook trigger. Live channel turns never see them. Because they are app-injected MCP tools, they are **not** filtered by `tools.allowedTools` / `tools.disallowedTools` (see [MCP tools](/tools/mcp/)).
+- **Allowlist is the destination boundary.** Each delivery is enforced against the owning channel's allowlist (`telegram.allowedChatIds` / `slack.allowedChannelIds`, or `allowAllChats` / `allowAllChannels`). A payload-supplied id outside the allowlist is refused with `delivered:false`. There is **no** per-job or per-endpoint notify config — destinations are bounded entirely by the channels you already allow.
+- **WhatsApp is not yet notify-capable** — a `whatsapp:` destination returns `delivered:false`.
+
+### Two use cases
+
+1. **Async webhook callback (the key one).** A live chat asks the agent to kick off a long-running external operation; the agent embeds the current `conversationId` (surfaced in the [Session context block](/context/assembly/#session)) in the callback it asks the service to make. When the service later calls the inbound [webhook](/channels/webhook/), the webhook turn reads that id from the payload and calls `notify_conversation` to deliver the result back into the original conversation — which still remembers the request.
+2. **Proactive cron.** A scheduled job pings the user without the operator hardcoding a chat id: the job calls `list_notify_destinations()` to find where to reach the user, then `notify_conversation`.
+
+:::note
+This replaces the older static `notify:<id>` cron/webhook config: the destination is now chosen by the agent at turn time, so there is nothing per-job to configure beyond making sure the relevant Telegram/Slack allowlist includes the intended destination.
+:::
+
 ## Related pages
 
 - [Telegram](/channels/telegram/) and [Slack](/channels/slack/) — adapter config and allowlists.
 - [OpenAI-compatible endpoint](/channels/openai-api/) — token streaming over SSE.
+- [Cron](/channels/cron/) and [Webhook](/channels/webhook/) — the proactive turns that get the notify tools.
 - [Tool policy](/tools/policy/) — `allowedTools` / `disallowedTools` precedence.
+- [MCP tools](/tools/mcp/) — why app-injected tools sit outside the allowlist.
 - [Custom channels](/programmatic/custom-channels/) — building a driver to override `stream.finalOnly`, debounce, and message texts.

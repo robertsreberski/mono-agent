@@ -14,7 +14,8 @@ When you add a `phoenix` entry to `observability.exporters[]`, the host exports 
 
 - **Streaming assistant deltas coalesce** into one "Assistant thoughts" / "Assistant message" span instead of one span per token chunk.
 - **A tool's three events merge into one span.** The `tool_use`, `tool_timing`, and `tool_result` events that share a `tool_use_id` are merged into a single `TOOL` span (input = args, output = result).
-- **Spans carry OpenInference semantics** — `openinference.span.kind` is one of `AGENT`, `LLM`, `TOOL`, or `CHAIN`, with `input.value` / `output.value` attributes. Spans route to a named project via `openinference.project.name`, which defaults to the trace source label/id.
+- **Spans carry OpenInference semantics** — `openinference.span.kind` is one of `AGENT`, `LLM`, `TOOL`, `CHAIN`, or `memory` (for memory-maintenance runs — see [below](#memory-maintenance-runs)), with `input.value` / `output.value` attributes. Spans route to a named project via `openinference.project.name`, which defaults to the trace source label/id.
+- **Root spans carry rich roll-up attributes** — model, token counts, cost, and duration on every run (see [Per-run attributes](#per-run-attributes)).
 - **Per-run span ids are deterministic**, so re-exporting the same run is idempotent — it overwrites rather than duplicates.
 
 Export is **metadata-only by default**: span inputs/outputs are exported, but raw message/tool payloads are withheld unless you opt in (see `includeSensitiveData`). Failures are bounded by `timeoutMs` and are swallowed — a Phoenix outage cannot fail or stall a run.
@@ -22,6 +23,29 @@ Export is **metadata-only by default**: span inputs/outputs are exported, but ra
 :::note
 The transport lives in `@mono-agent/observability-otel` (built on `@opentelemetry/otlp-transformer`). Coverage: **config**.
 :::
+
+### Per-run attributes
+
+Every exported run span — channel and memory alike — carries roll-up attributes, so you can see model, cost, and token usage in Phoenix without opening the JSONL:
+
+- `llm.model_name` / `mono.agent.model` — the serving model.
+- `llm.token_count.prompt` / `.completion` / `.total`, plus `.prompt_details.cache_read` / `.cache_write` — token usage including prompt-cache hits.
+- `mono.agent.cost_usd` — run cost (prefers the observer aggregate, falls back to `usage.cost_usd`).
+- `mono.agent.duration_ms` — wall-clock duration.
+- The system prompt as `llm.input_messages.0.message.{role,content}` (plus `llm.system` / `mono.agent.system_prompt`) — exported **only when `includeSensitiveData: true`**, redacted and capped at 32 KB. For channel runs this is the compiled identity prompt; for memory runs it is the maintenance prompt.
+
+:::note
+The secret-redaction pass that runs before export no longer clobbers numeric token *counts*: fields like `input_tokens` match the `/token/` secret pattern but are numbers, so usage now survives into spans and summaries. (Secrets are strings; numeric values are skipped.)
+:::
+
+### Memory-maintenance runs
+
+BuJo memory work — per-turn capture (`distill` → `reconcile` → `entities`) and the nightly `reflect` / monthly `migrate` rituals — records as its own `mem-*` runs. These export with:
+
+- `openinference.span.kind = "memory"` (channel runs stay `AGENT`), so memory work is filterable in Phoenix.
+- `mono.agent.run.kind` and `mono.agent.memory.operation` — the operation is one of `distill` / `reconcile` / `entities` / `reflect` / `migrate`.
+
+This surfaces memory cost and latency alongside channel runs instead of hiding it inside generic `AGENT` spans. See [Capture & recall](/memory/capture-and-recall/) and [Rituals](/memory/rituals/) for what each operation does.
 
 ## Configuration
 

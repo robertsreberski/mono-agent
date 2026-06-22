@@ -13,6 +13,11 @@ The Slack channel connects your agent to a Slack workspace over **Socket Mode** 
 - **Socket Mode transport.** The adapter opens a WebSocket to Slack using an app-level token, so you do not host a public endpoint. The app-level token must carry the `connections:write` scope.
 - **Mention-triggered.** The agent responds when it is mentioned (a real `@bot` mention matching `botUserIds`, or a text alias from `mentionTextAliases`). Channels must be allowed via `allowedChannelIds` or `allowAllChannels`.
 - **Final-only delivery.** Like Telegram, Slack delivers only the final answer rather than streaming interim edits. While the run is in flight the adapter adds a 👀 reaction to the triggering message as a working indicator. This is the default (`stream.finalOnly: true`); see [Delivery and send tools](/channels/delivery-and-send-tools/).
+- **Heartbeat watchdog.** A long-lived Socket Mode connection can go *half-open* — after the host sleeps or a network blip, the WebSocket stops delivering frames but never fires `close`/`error`, so the agent silently stops responding to Slack while still looking healthy. To recover, the adapter probes an otherwise-idle socket with a ping every **30 s** and force-recycles it if no frame (message, ping, or pong) arrives within **90 s** of silence; the recycle fires `close`, which the existing reconnect/backoff loop picks up. A healthy-but-idle socket stays up because Slack's own server pings refresh the activity timer, so there are no false recycles. This is **on by default** and needs no configuration.
+
+:::note
+The heartbeat is a **code-only** tuning knob — there is no `mono-agent.config.json` key and no `MONO_AGENT_SLACK_HEARTBEAT_*` env var. The defaults (30 s probe / 90 s silence budget) apply automatically. To change or disable it you build a custom driver and pass `heartbeat: { intervalMs, timeoutMs }` to `startSlackAdapter` / `SlackSocketModeRunner` (`timeoutMs: 0` disables the watchdog). See [Custom channels](/programmatic/custom-channels/).
+:::
 
 ## Configuration
 

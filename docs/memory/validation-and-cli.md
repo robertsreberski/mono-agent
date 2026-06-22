@@ -109,6 +109,19 @@ The `agent-host` provider runs memory LLM passes through the agent's own SDK run
 `agent-host` memory LLMs are SDK-only for now. CLI-backed refs (e.g. `codex:gpt-5.5`) or an explicit `executionMode: "cli"` are **rejected** at config validation, because those runtimes cannot yet guarantee a no-tools / no-external-actions memory turn.
 :::
 
+## The two memory-LLM timeouts
+
+There are **two** per-call memory-LLM timeouts. They share the env var name `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` but belong to different binaries and have **different defaults** — a common source of confusion:
+
+| Path | Config / env | Default | Governs |
+| --- | --- | --- | --- |
+| **In-app** (the running agent) | `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`) | `60000` | Per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) (distil → reconcile → entities) and the in-app [ritual scheduler](/memory/rituals/) |
+| **Standalone CLI** | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` only | `120000` | `memory-bujo reflect` / `migrate` run by hand |
+
+So in the app, raise `memory.llm.timeoutMs` (config) when a slow local memory model trips the cap on the heavier `reconcile`/`entities` steps — its default is **`60000`**, not the CLI's `120000`. The value is bounded `1000`–`600000` ms.
+
+When the in-app memory LLM does exceed its timeout, the run reports it explicitly — `agent-host memory LLM timed out after 60000ms (provider too slow or unavailable)` — rather than the generic `cancelled` it used to surface, so a slow or dead provider is diagnosable from the run record. (Capture still swallows the error and stores nothing for that turn rather than failing the user's turn — see [Capture & recall](/memory/capture-and-recall/).)
+
 ## `memory-bujo` CLI — out-of-band maintenance
 
 The `memory-bujo` binary runs maintenance directly against a bujo memory root (the positional `<root>` argument). It is available for all tiers for manual runs; the in-app [auto-scheduler](/memory/rituals/) handles the routine cadence for `bujo` automatically.
@@ -146,7 +159,7 @@ The standalone CLI reads the **same `MONO_AGENT_MEMORY_*` env vars** as the app.
 
 ### reflect / migrate are Ollama-only
 
-The standalone CLI uses the built-in Ollama chat adapter for `reflect` / `migrate` — it does **not** route through the agent host, so `memory.llm.provider: "agent-host"` does not apply to the CLI. You must set `MONO_AGENT_MEMORY_LLM_MODEL`; if it is unset when running `reflect` or `migrate`, the command prints a clear error and exits `2` (no silent fallback). `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default `http://localhost:11434`), and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call timeout (default `120000`); raise it for slow models.
+The standalone CLI uses the built-in Ollama chat adapter for `reflect` / `migrate` — it does **not** route through the agent host, so `memory.llm.provider: "agent-host"` does not apply to the CLI. You must set `MONO_AGENT_MEMORY_LLM_MODEL`; if it is unset when running `reflect` or `migrate`, the command prints a clear error and exits `2` (no silent fallback). `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default `http://localhost:11434`), and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call timeout (CLI default `120000` — distinct from the in-app default; see [The two memory-LLM timeouts](#the-two-memory-llm-timeouts)); raise it for slow models.
 
 For the in-app runtime you can instead use `memory.llm.provider: "agent-host"` to run rituals through an SDK model — see the [provider choices](#memoryllm-provider-choices) above and [Rituals](/memory/rituals/) for the auto-scheduler the CLI complements.
 

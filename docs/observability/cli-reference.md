@@ -80,11 +80,22 @@ Each section prints a status badge, a label, and its details. The statuses are:
 | Status | Meaning |
 | --- | --- |
 | `ok` | The section is configured and ready. |
-| `waiting` | Configured but a runtime dependency is not up yet (e.g. Ollama or Phoenix not reachable). Runtime-soft — never blocks start. |
-| `warn` | A non-fatal advisory (details lines prefixed `[WARN]`). |
+| `waiting` | Configured but a runtime dependency is not up yet (e.g. Ollama or Phoenix not reachable), or a credential is missing/expired. Runtime-soft — never blocks start. Advisory detail lines are prefixed `[WARN]`. |
+| `disabled` | The section is intentionally off — a channel with `enabled: false`, or no models of a kind that needs this check. Never blocks start. |
 | `error` | A structural problem that must be fixed; any `error` section fails the run. |
 
 `validate` runs liveness probes, so it can show `waiting` for unreachable network dependencies. The Phoenix exporter check additionally POSTs an empty protobuf to confirm export compatibility, not just reachability — see [Phoenix & backfill](/observability/phoenix-and-backfill/).
+
+### Provider credentials
+
+`validate` includes a **Provider credentials** section that resolves every referenced Pi model — the primary `runtime.model`, every `runtime.fallbackModels` entry, and the `agent-host` `memory.llm` model — against the Pi auth store (`providers.piAuthPath`) and its sibling `models.json`. It is **static and read-only**: it never mints tokens or hits the network. For each Pi provider:
+
+- A provider configured via `models.json` (custom/local) needs no OAuth → `ok`.
+- A provider **absent** from both the auth store and `models.json` → `waiting`, with a `[WARN]` line and a `pi auth login <provider>` hint.
+- An OAuth provider whose access token has **expired** → `waiting`, with a `[WARN]` line noting the expiry and the `pi auth login <provider>` re-auth hint (the runtime auto-refreshes, but a dead refresh shows up as `No API key for provider: <provider>` at run time).
+- If no Pi provider-key models are referenced at all (e.g. an all-`claude:` config), the section reports `disabled` — SDK-authenticated models are checked by their own SDK.
+
+This catches the class of silent failure where an expired OAuth token quietly breaks crons or memory capture without any structural config error. Because the worst it returns is `waiting`, it never blocks `start` — read the section.
 
 ## `start`
 

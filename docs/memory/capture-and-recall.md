@@ -63,7 +63,7 @@ MONO_AGENT_MEMORY_WRITE_MODE=capture
 ```
 
 :::caution
-The capture pipeline swallows LLM errors (never-throw), so a too-short timeout makes a capture **silently store nothing** rather than fail loudly. Raise `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` (default `120000`) for slow local chat models.
+The capture pipeline swallows LLM errors (never-throw), so a too-short timeout makes a capture **silently store nothing** rather than fail loudly. Raise the in-app memory-LLM timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** in the app — for slow local chat models. (The standalone `memory-bujo` CLI reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).)
 :::
 
 The bujo chat model used by capture is the same `memory.llm` referenced for the [rituals](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.5`); the standalone CLI remains Ollama-only.
@@ -73,6 +73,10 @@ The bujo chat model used by capture is the same `memory.llm` referenced for the 
 The agent reads memory back through a single, read-only `memory_recall` tool: hybrid **keyword (FTS) + vector** search over the same memory it writes to. Coverage: **config** (env: `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`).
 
 `memory_recall` runs **no chat LLM** — recall is embeddings + full-text search only. Durable writes stay in-app on the agent-host LLM via [per-turn capture](#capture--per-turn-intelligent-capture-bujo); recall just reads.
+
+:::note
+**Where recalled memory appears in the prompt.** Beyond this on-demand tool, the harness *automatically* appends recalled memory to the **user message** at the start of each turn (when a recall returns hits), clearly delimited as background context — it is **not** folded into the system prompt. Riding the user message is what lets memory survive a session resume on runtimes that drop the system prompt. The injected block is not persisted to history, and a `memory_recalled` diagnostic records that recall fired (source + byte size, not the content). See [Context assembly → Memory recall](/context/assembly/#memory-recall).
+:::
 
 ### How it is provisioned
 
@@ -133,7 +137,7 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and CLI reflect/migrate) |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
-| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | — | Per-call chat-LLM timeout (default `120000`) |
+| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | Per-call chat-LLM timeout. **In-app (agent-app) default `60000`**; the standalone `memory-bujo` CLI reads the same var but defaults to `120000`. See [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `openai`; required for vector recall |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Required in the app; the standalone CLI defaults to `nomic-embed-text:v1.5` |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Required in the app; the standalone CLI defaults to `768` |

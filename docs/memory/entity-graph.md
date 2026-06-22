@@ -55,7 +55,7 @@ During each capture the pipeline runs `distil → reconcile → entity extractio
 Each entity is identified by a stable **slug** (a normalized identifier derived from its name) so that mentions across many captures collapse onto the same node instead of creating duplicates. Relations are directed edges between two entity slugs (for example, a `person` works on a `project`, a `project` belongs to an `org`). New facts about an existing entity reconcile onto the existing node rather than appending a fresh one.
 
 :::caution
-Because extraction is part of the async, per-turn capture pipeline, it runs in the background and never blocks the reply. Capture is serialized per store and drained on graceful shutdown, so queued extractions are not lost on stop. If the chat LLM call fails or times out, the capture stores nothing for that turn rather than throwing — keep `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` generous for slow local models so extraction is not silently dropped.
+Because extraction is part of the async, per-turn capture pipeline, it runs in the background and never blocks the reply. Capture is serialized per store and drained on graceful shutdown, so queued extractions are not lost on stop. If the chat LLM call fails or times out, the capture stores nothing for that turn rather than throwing — keep the in-app memory-LLM timeout (`memory.llm.timeoutMs`, env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`, default `60000`) generous for slow local models so extraction is not silently dropped. See [the two memory-LLM timeouts](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
 :::
 
 ## One-hop expansion during recall

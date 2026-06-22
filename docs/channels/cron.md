@@ -10,7 +10,11 @@ The cron channel fires scheduled prompts at the agent's responder on a timezone-
 
 ## What a cron job is
 
-Each tick invokes the responder with the job's `prompt` text, exactly as if a message arrived on a channel. The result is produced inside the agent process. If you want a tick to *deliver* output somewhere (a Telegram chat, a Slack channel), wire delivery through the proactive send tooling — see [Delivery & send tools](/channels/delivery-and-send-tools/).
+Each tick invokes the responder with the job's `prompt` text, exactly as if a message arrived on a channel. The result is produced inside the agent process. If you want a tick to *deliver* output somewhere, you have two mechanisms (both in [Delivery & send tools](/channels/delivery-and-send-tools/)): a **send tool** (`slack_send_message` / `telegram_send_message`) posts into a channel, while the **notify tools** deliver a remembered turn into a conversation.
+
+### Proactive delivery from a cron turn
+
+A cron turn automatically gets the `notify_conversation(conversationId, text)` and `list_notify_destinations()` tools — injected only on cron/webhook turns, and not gated by `tools.allowedTools`. `notify_conversation` runs `text` as a real turn on the destination channel's own live session (so the conversation remembers it, unlike a side-channel post); `list_notify_destinations()` discovers where to reach the user when the job has no destination in hand. Delivery is bounded by the destination channel's allowlist; Telegram and Slack are supported. See [Proactive notify tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
 
 ## Configuration
 
@@ -81,6 +85,12 @@ If a tick fires while the previous run of the **same job** is still in flight, t
 :::note
 Pick an `expression` whose interval comfortably exceeds the job's typical runtime; otherwise the agent will quietly drop overlapping firings.
 :::
+
+## Run watchdog: a wedged run is aborted, not left to starve
+
+Skip-on-overlap protects against a *still-running* prior tick. A separate watchdog protects against a *wedged* one. If a run never settles (a hung responder, a stuck provider call), it would otherwise hold the job's slot forever and skip **every** future firing as "a prior run is still active." To prevent that, the cron channel runs each job under a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time is aborted and its slot reclaimed, so the next tick can fire.
+
+The watchdog is **per job** — a wedged job does not affect its siblings — and is comfortably above any real briefing/scan. It is set by the cron channel and can only be changed **programmatically** (the `maxRunMs` override on `startCronAdapter`); there is no `mono-agent.config.json` key for it. An aborted run is recorded with an `interrupted` status — see [Run artifacts & traces](/observability/artifacts-and-traces/).
 
 ## Sharing memory and history with `conversationId`
 

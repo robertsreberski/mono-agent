@@ -30,6 +30,8 @@ Run artifacts are the local source of truth and are written for every run regard
 
 Override the directory with `MONO_AGENT_ARTIFACT_DIR`. The [tool bloat-guard](/runtime/tools-and-guards/) also persists truncated tool output here, so artifacts double as the overflow store for large results.
 
+Each summary carries a final `status` (`succeeded` / `failed` / `cancelled` / `interrupted`). A run left at `running` by a crashed process is reconciled to `interrupted` at the next startup, so a dead process never leaves a run "running" forever. See [Run status and stale-run reconciliation](/observability/artifacts-and-traces/#run-status-and-stale-run-reconciliation).
+
 See [Run artifacts & traces](/observability/artifacts-and-traces/) for the event schema and how to read a run.
 
 ## Trace-source registry

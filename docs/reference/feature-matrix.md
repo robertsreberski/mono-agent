@@ -74,6 +74,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `memory.write-mode` | config | `memory.writeMode` | `MONO_AGENT_MEMORY_WRITE_MODE` | [Capture & recall](/memory/capture-and-recall/) | — |
 | `memory.per-turn-capture` | config | `memory.writeMode: "capture"` (requires `memory.mode: "bujo"`) | `MONO_AGENT_MEMORY_WRITE_MODE=capture`, `MONO_AGENT_MEMORY_MODE=bujo` | [Capture & recall](/memory/capture-and-recall/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
 | `memory.recall-tool` | config | `memory.recallTool.enabled` | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | [Capture & recall](/memory/capture-and-recall/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
+| `memory.llm-timeout` | config | `memory.llm.timeoutMs` (in-app; 1000–600000, default 60000) | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` (standalone CLI default 120000) | [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts) | — |
 | `memory.custom-store` | code | `createConfiguredAgentResponder({ memory })` | — | [Composition](/programmatic/composition/) | — |
 
 :::note
@@ -106,13 +107,15 @@ All channels are independent JSON sections and opt-in via an `enabled` flag (def
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
 | `telegram.long-polling` | config | `telegram.enabled`, `telegram.botToken`, `telegram.allowedChatIds` / `telegram.allowAllChats` | `MONO_AGENT_TELEGRAM_*` | [Telegram](/channels/telegram/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
-| `slack.socket-mode` | config | `slack.enabled`, `slack.botToken`, `slack.appToken`, `slack.allowedChannelIds` / `slack.allowAllChannels`, `slack.botUserIds`, `slack.mentionTextAliases`, `slack.stripMentionText` | `MONO_AGENT_SLACK_*` | [Slack](/channels/slack/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
+| `slack.socket-mode` | config | `slack.enabled`, `slack.botToken`, `slack.appToken`, `slack.allowedChannelIds` / `slack.allowAllChannels`, `slack.botUserIds`, `slack.mentionTextAliases`, `slack.stripMentionText` (+ a built-in heartbeat watchdog, on by default; code-only tuning, no config/env key) | `MONO_AGENT_SLACK_*` | [Slack](/channels/slack/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
 | `whatsapp.baileys` | config | `whatsapp.enabled`, `whatsapp.allowedChatJids` / `whatsapp.allowAllChats`, `whatsapp.groupMode`, `whatsapp.botJids`, `whatsapp.mentionTextAliases`, `whatsapp.stripMentionText` | `MONO_AGENT_WHATSAPP_*` | [WhatsApp](/channels/whatsapp/) | — |
 | `webhook.http-invoke` | config | `webhook.enabled`, `host`, `port`, `path`, `prompt`, `defaultMode`, `allowNonLoopback`, `retentionMs`, `maxStoredRequests`, `webhook.endpoints[]`, `webhook.dir` | `MONO_AGENT_WEBHOOK_*`, `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON`, `MONO_AGENT_WEBHOOK_DIR` | [Webhook](/channels/webhook/) | [Webhook automation (sync/async)](/playbooks/webhook-automation-sync-async/) |
 | `openai-api.chat-completions` | config | `openaiApi.enabled`, `host`, `port`, `basePath`, `allowNonLoopback`, `apiKey`, `modelId` | `MONO_AGENT_OPENAI_API_*` | [OpenAI-compatible API](/channels/openai-api/) | [OpenAI endpoint + Open WebUI](/playbooks/openai-endpoint-open-webui/) |
 | `a2a.provider` | config | `a2a.provider.*`, `a2a.agent.*`, `a2a.skill.*` | `MONO_AGENT_A2A_*` | [A2A](/channels/a2a/) | [A2A provider & consumer](/playbooks/a2a-provider-and-consumer/) |
 | `a2a.consumer` | config + code | `a2a.consumer.{remoteAgentUrls,defaultRemoteAgentUrl,bearerToken,timeoutMs}`; invocation via `createA2AConsumerResponder` | `MONO_AGENT_A2A_*` | [A2A consumer](/programmatic/a2a-consumer/) | [A2A provider & consumer](/playbooks/a2a-provider-and-consumer/) |
 | `cron.scheduled-prompts` | config | `cron.jobs[]: {id, enabled, expression, timezone, prompt, conversationId}`, `cron.dir` | `MONO_AGENT_CRON_JOBS_JSON`, `MONO_AGENT_CRON_*`, `MONO_AGENT_CRON_DIR` | [Cron](/channels/cron/) | [Cron digest + proactive notify](/playbooks/cron-digest-proactive-notify/) |
+| `cron.run-watchdog` | code | `maxRunMs` (default 1200000 / 20 min) via `startCronAdapter`; no JSON/env key | — | [Cron](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve) | — |
+| `channel.proactive-notify` | config | auto-injected on cron/webhook turns (no `allowedTools` entry needed); bounded by `telegram.allowedChatIds` / `slack.allowedChannelIds` or `allowAll*` | — | [Delivery & send tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns) | [Cron digest + proactive notify](/playbooks/cron-digest-proactive-notify/) |
 | `channel.final-only-delivery` | code | Adapter `stream.finalOnly` (default `true` for telegram/slack) | — | [Delivery & send tools](/channels/delivery-and-send-tools/) | — |
 | `channel.stream-tuning` | code | Adapter `stream` / `messages` options (`createTelegramChannelDriver` etc.) | — | [Custom channels](/programmatic/custom-channels/) | — |
 | `channel.custom` | code | `startMonoAgentApp({ drivers })` (implement `ChannelDriver`) | — | [Custom channels](/programmatic/custom-channels/) | — |
@@ -126,6 +129,8 @@ All channels are independent JSON sections and opt-in via an `enabled` flag (def
 | `observability.trace-registry` | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` | `MONO_AGENT_TRACE_*` | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `observability.phoenix-exporter` | config | `observability.exporters[]: {type:"phoenix", endpoint, projectName, includeSensitiveData, headers, timeoutMs}` | `MONO_AGENT_OBSERVABILITY_EXPORTERS` | [Phoenix & backfill](/observability/phoenix-and-backfill/) | [Phoenix-observed agent](/playbooks/phoenix-observed-agent/) |
 | `observability.backfill` | cli | `mono-agent backfill (--run <id> \| --all) [--since] [--until] [--dry-run]` | — | [Phoenix & backfill](/observability/phoenix-and-backfill/) | [Backfill historical runs](/playbooks/backfill-historical-runs/) |
+| `observability.rich-traces` | auto | (model / token counts / cost / duration on every span; system prompt gated by `includeSensitiveData`; memory runs get `span.kind=memory` + `memory.operation`) | — | [Phoenix & backfill](/observability/phoenix-and-backfill/#per-run-attributes) | — |
+| `observability.stale-run-reconciliation` | auto | (`reconcileStaleRunArtifacts()` at startup over `artifacts.dir`; rewrites orphaned `running` → `interrupted`) | — | [Artifacts & traces](/observability/artifacts-and-traces/#run-status-and-stale-run-reconciliation) | — |
 | `tui.chat` | cli | `mono-agent-tui --config ./mono-agent.config.json` | — | [TUI](/observability/tui/) | — |
 
 ## Execution & composition
@@ -134,6 +139,7 @@ All channels are independent JSON sections and opt-in via an `enabled` flag (def
 | --- | --- | --- | --- | --- | --- |
 | `app.cli-init` | cli | `mono-agent init [--model] [--fallback-models] [--memory]` | — | [Quickstart](/getting-started/quickstart/) | — |
 | `app.cli-validate` | cli | `mono-agent validate [--config] [--env-file]` | — | [Blueprint](/config/blueprint/) | — |
+| `app.provider-credentials-check` | cli | part of `mono-agent validate`; resolves Pi models against `providers.piAuthPath` + `models.json` | `MONO_AGENT_PI_AUTH_PATH` | [CLI reference](/observability/cli-reference/#provider-credentials) | — |
 | `app.cli-start` | cli | `mono-agent start [--config] [--env-file] [--foreground\|-f]` | — | [Install](/getting-started/install/) | — |
 | `app.cli-stop` | cli | `mono-agent stop [--config]` | — | [Install](/getting-started/install/) | — |
 | `app.cli-logs` | cli | `mono-agent logs [--config] [--follow\|-f] [--lines <n>]` | — | [CLI reference](/observability/cli-reference/) | — |
