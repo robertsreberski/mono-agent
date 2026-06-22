@@ -34,6 +34,8 @@ class FakeSlackApi implements SlackWebApi {
    * tests set this false.
    */
   failSetAssistantStatus = true;
+  /** When set, chatPostMessage throws for any message whose text includes this — used to simulate an ack failure. */
+  failPostMessageWhenTextIncludes: string | undefined = undefined;
   nextTs = 200;
 
   async authTest() {
@@ -53,6 +55,12 @@ class FakeSlackApi implements SlackWebApi {
 
   async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
     this.postMessageCalls.push(params);
+    if (
+      this.failPostMessageWhenTextIncludes !== undefined &&
+      params.text.includes(this.failPostMessageWhenTextIncludes)
+    ) {
+      throw new Error("post_failed");
+    }
     return { ok: true, channel: params.channel, ts: `${this.nextTs++}.000001` };
   }
 
@@ -1190,6 +1198,97 @@ describe("SlackAdapter.handleShortcut", () => {
     expect(result).toEqual({ kind: "unauthorized", id: "sync_now", channelId: "D-evil" });
     expect(respond).not.toHaveBeenCalled();
   });
+
+  it("threads a message shortcut's reply in its source channel when no channelId is pinned", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync." }],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "done" };
+      }),
+    });
+
+    const result = await adapter.handleShortcut({
+      type: "message_action",
+      callback_id: "sync_now",
+      channel: { id: "C1" },
+      message: { ts: "171.5" },
+    });
+
+    expect(result).toMatchObject({ kind: "triggered", id: "sync_now", channelId: "C1", delivered: true });
+    // Destination == source channel → the reply threads under the source message.
+    expect(captured?.conversationId).toBe("slack:C1:171.5");
+    expect(api.postMessageCalls.at(-1)?.thread_ts).toBe("171.5");
+  });
+
+  it("posts top-level (no foreign thread_ts) when a binding redirects to a different channel", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D2"],
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync.", channelId: "D2" }],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "done" };
+      }),
+    });
+
+    // Message shortcut invoked in D1, but the binding pins D2 — the D1 thread_ts is
+    // channel-scoped and must NOT be carried into D2.
+    const result = await adapter.handleShortcut({
+      type: "message_action",
+      callback_id: "sync_now",
+      channel: { id: "D1" },
+      message: { ts: "171.1" },
+    });
+
+    expect(result).toMatchObject({ kind: "triggered", channelId: "D2", delivered: true });
+    expect(captured?.conversationId).toBe("slack:D2");
+    expect(api.postMessageCalls.at(-1)?.channel).toBe("D2");
+    expect(api.postMessageCalls.at(-1)?.thread_ts).toBeUndefined();
+  });
+
+  it("ignores a global shortcut with no resolvable destination channel", async () => {
+    const api = new FakeSlackApi();
+    const respond = vi.fn(async () => ({ text: "should not run" }));
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true, // no allowlist → no default destination
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync." }],
+      responder: { respond },
+    });
+
+    const result = await adapter.handleShortcut({ type: "shortcut", callback_id: "sync_now" });
+
+    expect(result).toEqual({ kind: "ignored", reason: "missing_channel", id: "sync_now" });
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("still runs when the instant ack post fails (best-effort)", async () => {
+    const api = new FakeSlackApi();
+    api.failPostMessageWhenTextIncludes = "Syncing"; // only the ack fails
+    let ran = false;
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync.", channelId: "D1", ackText: "🔄 Syncing…" }],
+      responder: responderFrom(async () => {
+        ran = true;
+        return { text: "done" };
+      }),
+    });
+
+    const result = await adapter.handleShortcut({ type: "shortcut", callback_id: "sync_now" });
+
+    expect(ran).toBe(true);
+    expect(result).toMatchObject({ kind: "triggered", delivered: true });
+    expect(api.postMessageCalls.at(-1)?.text).toContain("done");
+  });
 });
 
 describe("SlackAdapter App Home tab", () => {
@@ -1209,14 +1308,75 @@ describe("SlackAdapter App Home tab", () => {
     const result = await adapter.handleEventCallback(appHomeOpened("U1"));
 
     expect(result).toEqual({ kind: "home_published", eventId: "EvHome", userId: "U1" });
-    const view = api.viewsPublishCalls.at(-1)?.view;
     expect(api.viewsPublishCalls.at(-1)?.userId).toBe("U1");
+    const view = api.viewsPublishCalls.at(-1)?.view;
     expect(view?.type).toBe("home");
-    // The view carries the header plus an actions block whose button matches the config.
-    const json = JSON.stringify(view);
-    expect(json).toContain("Controls");
-    expect(json).toContain("🔄 Sync");
-    expect(json).toContain("sync_now");
+    // Structured: header section first, then an actions block whose button maps
+    // action_id (and value) to the configured id and renders the configured label.
+    const blocks = (view?.blocks ?? []) as Array<Record<string, any>>;
+    expect(blocks[0]).toMatchObject({ type: "section", text: { type: "mrkdwn", text: "Controls" } });
+    expect(blocks[1]).toMatchObject({ type: "actions" });
+    expect(blocks[1]?.elements?.[0]).toMatchObject({
+      type: "button",
+      action_id: "sync_now",
+      value: "sync_now",
+      text: { type: "plain_text", text: "🔄 Sync" },
+    });
+  });
+
+  it("publishes a button-only Home view (no header) with just the actions block", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      homeTab: { enabled: true, buttons: [{ actionId: "sync_now", label: "Sync", prompt: "Run.", channelId: "D1" }] },
+      responder: responderFrom(async () => ({ text: "ok" })),
+    });
+
+    await adapter.handleEventCallback(appHomeOpened("U1"));
+
+    const blocks = (api.viewsPublishCalls.at(-1)?.view?.blocks ?? []) as Array<Record<string, any>>;
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ type: "actions" });
+  });
+
+  it("skips publishing (no error) when the Home client cannot publish views", async () => {
+    const api = new FakeSlackApi();
+    (api as { viewsPublish?: unknown }).viewsPublish = undefined; // text-only client
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      homeTab: { enabled: true, buttons: [{ actionId: "sync_now", label: "Sync", prompt: "Run.", channelId: "D1" }] },
+      responder: responderFrom(async () => ({ text: "ok" })),
+    });
+
+    const result = await adapter.handleEventCallback(appHomeOpened("U1"));
+
+    expect(result).toMatchObject({ kind: "ignored" });
+    expect(api.viewsPublishCalls).toEqual([]);
+  });
+
+  it("acts on the first BOUND action when a block_actions payload carries several", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      homeTab: { enabled: true, buttons: [{ actionId: "sync_now", label: "Sync", prompt: "Run the sync.", channelId: "D1" }] },
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    // First action is unbound; the bound one is second.
+    const result = await adapter.handleBlockActions({
+      type: "block_actions",
+      actions: [{ action_id: "unrelated" }, { action_id: "sync_now", value: "sync_now" }],
+    });
+
+    expect(result).toMatchObject({ kind: "triggered", id: "sync_now" });
+    expect(captured?.text).toBe("Run the sync.");
   });
 
   it("runs a Home button's prompt and replies in its channel on block_actions", async () => {

@@ -264,7 +264,9 @@ function readSlackShortcuts(json: SettingsJson): readonly SlackShortcutConfig[] 
   if (!Array.isArray(raw)) {
     throw invalidConfig("slack.shortcuts must be an array of { callbackId, prompt } objects.");
   }
-  return raw.map((entry, index) => normalizeShortcutConfig(entry, index));
+  const shortcuts = raw.map((entry, index) => normalizeShortcutConfig(entry, index));
+  assertUniqueIds(shortcuts.map((shortcut) => shortcut.callbackId), "slack.shortcuts callbackId");
+  return shortcuts;
 }
 
 function normalizeShortcutConfig(entry: unknown, index: number): SlackShortcutConfig {
@@ -325,6 +327,12 @@ function readSlackHomeTab(json: SettingsJson): SlackHomeTabConfig {
     throw invalidConfig("slack.homeTab.buttons must be an array of button objects.");
   }
   const buttons = (rawButtons ?? []).map((entry, index) => normalizeHomeButtonConfig(entry, index));
+  assertUniqueIds(buttons.map((button) => button.actionId), "slack.homeTab.buttons actionId");
+  // An enabled Home tab with neither buttons nor a header would publish an empty
+  // view, which Slack's views.publish rejects (1–100 blocks) on every open.
+  if (enabled && buttons.length === 0 && headerText === undefined) {
+    throw invalidConfig("slack.homeTab is enabled but has no buttons and no headerText to render.");
+  }
   const config: { enabled: boolean; headerText?: string; buttons: readonly SlackHomeButtonConfig[] } = {
     enabled,
     buttons,
@@ -333,6 +341,18 @@ function readSlackHomeTab(json: SettingsJson): SlackHomeTabConfig {
     config.headerText = headerText;
   }
   return config;
+}
+
+/** Reject duplicate ids (case-insensitive) so a copy-paste typo surfaces loudly at load. */
+function assertUniqueIds(ids: readonly string[], label: string): void {
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const key = id.trim().toLowerCase();
+    if (seen.has(key)) {
+      throw invalidConfig(`${label} must be unique; "${id}" is declared more than once.`);
+    }
+    seen.add(key);
+  }
 }
 
 function normalizeHomeButtonConfig(entry: unknown, index: number): SlackHomeButtonConfig {

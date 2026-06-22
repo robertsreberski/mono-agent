@@ -224,6 +224,92 @@ describe("loadSlackAdapterConfig", () => {
     });
   });
 
+  it("rejects duplicate slack.shortcuts callbackId", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "b",
+          appToken: "a",
+          allowedChannelIds: ["D111"],
+          shortcuts: [
+            { callbackId: "dup", prompt: "one", channelId: "D111" },
+            { callbackId: "dup", prompt: "two", channelId: "D111" },
+          ],
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("rejects duplicate slack.homeTab actionId", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "b",
+          appToken: "a",
+          allowedChannelIds: ["D111"],
+          homeTab: {
+            enabled: true,
+            buttons: [
+              { actionId: "dup", label: "A", prompt: "one", channelId: "D111" },
+              { actionId: "dup", label: "B", prompt: "two", channelId: "D111" },
+            ],
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("rejects an enabled homeTab with no buttons and no headerText", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: { enabled: true, botToken: "b", appToken: "a", allowedChannelIds: ["D111"], homeTab: { enabled: true } },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("accepts an enabled header-only homeTab (no buttons)", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "b",
+          appToken: "a",
+          allowedChannelIds: ["D111"],
+          homeTab: { enabled: true, headerText: "Welcome" },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
+    expect(config.homeTab).toEqual({ enabled: true, headerText: "Welcome", buttons: [] });
+  });
+
   it("rejects invalid booleans", async () => {
     await expect(
       loadSlackAdapterConfig({

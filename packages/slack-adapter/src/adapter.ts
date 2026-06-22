@@ -134,7 +134,12 @@ export interface SlackAdapterLogger extends SlackMessageStreamLogger {
 export interface SlackShortcutBinding {
   readonly callbackId: string;
   readonly prompt: string;
-  /** Destination channel for the run's reply. Required for global shortcuts. */
+  /**
+   * Destination channel for the run's reply. Required for global shortcuts.
+   * For a MESSAGE shortcut this falls back to the invoking channel — so under
+   * `allowAllChannels` the invoker chooses where operator-authored output lands;
+   * pin `channelId` to bound the destination.
+   */
   readonly channelId?: SlackChannelId;
   /**
    * Optional message posted immediately when the shortcut is invoked, before the
@@ -754,7 +759,7 @@ export class SlackAdapter {
     id: string,
     binding: { readonly prompt: string; readonly channelId?: SlackChannelId; readonly ackText?: string },
     payloadChannelId: SlackChannelId | undefined,
-    threadTs: SlackMessageTs | undefined,
+    payloadThreadTs: SlackMessageTs | undefined,
   ): Promise<SlackInteractionHandlingResult> {
     const channelId = firstNonEmpty(binding.channelId, payloadChannelId, this.defaultShortcutChannelId);
     if (channelId === undefined) {
@@ -765,6 +770,12 @@ export class SlackAdapter {
       this.logger?.warn?.("Slack interaction targets an unauthorized channel; ignored.", { id, channelId });
       return { kind: "unauthorized", id, channelId };
     }
+
+    // A Slack `thread_ts` is channel-scoped, so only thread the reply when the
+    // destination IS the channel the interaction came from. A binding that pins a
+    // different channelId (or a global shortcut / Home-tab click with no source
+    // channel) posts top-level — otherwise a foreign thread_ts 404s the post.
+    const threadTs = channelId === payloadChannelId ? payloadThreadTs : undefined;
 
     // Instant feedback: the result lands seconds later (and a global shortcut or a
     // Home-tab click shows no on-click UI), so post the ack now (best-effort)
@@ -812,11 +823,16 @@ export class SlackAdapter {
       this.logger?.warn?.("Home tab is enabled but the Slack client cannot publish views.");
       return { kind: "ignored", reason: "unsupported_event", eventId: callback.event_id };
     }
+    const blocks = this.buildHomeTabBlocks();
+    if (blocks.length === 0) {
+      // views.publish requires 1–100 blocks; an enabled-but-empty Home tab would
+      // error on every open. Skip the publish instead (config load also rejects
+      // this combination, so it should not happen in practice).
+      this.logger?.warn?.("Skipping App Home publish: the Home view has no blocks.");
+      return { kind: "ignored", reason: "unsupported_event", eventId: callback.event_id };
+    }
     try {
-      await this.api.viewsPublish({
-        userId,
-        view: { type: "home", blocks: this.buildHomeTabBlocks() },
-      });
+      await this.api.viewsPublish({ userId, view: { type: "home", blocks } });
       return { kind: "home_published", eventId: callback.event_id, userId };
     } catch (error) {
       this.logger?.error?.("Failed to publish the Slack App Home tab.", {
