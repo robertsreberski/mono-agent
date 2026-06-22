@@ -13,12 +13,19 @@ export interface SlackSocketModeRunnerBackoffOptions {
 }
 
 export interface SlackSocketModeRunnerHeartbeatOptions {
-  /** How often to probe the socket with a ping when it is otherwise idle. */
+  /**
+   * How often the watchdog wakes to probe an idle socket with a ping and to
+   * check for silence. Because the silence check only runs on these ticks,
+   * recycling can lag the `timeoutMs` deadline by up to one `intervalMs`.
+   * Setting this to 0 disables the watchdog entirely.
+   */
   intervalMs?: number;
   /**
-   * If no inbound frame (message, ping, or pong) arrives within this window,
-   * the socket is treated as silently dead and force-recycled so the reconnect
-   * loop can re-establish it. Set to 0 to disable the heartbeat watchdog.
+   * Silence budget: if no inbound frame (message, ping, or pong) arrives within
+   * this window, the socket is treated as silently dead and force-recycled on
+   * the next watchdog tick so the reconnect loop can re-establish it. The actual
+   * recycle therefore happens between `timeoutMs` and `timeoutMs + intervalMs`
+   * after the last frame. Setting this to 0 disables the watchdog entirely.
    */
   timeoutMs?: number;
 }
@@ -57,8 +64,30 @@ export interface SlackWebSocketLike {
   on(event: "message", listener: (data: unknown) => void): this;
   on(event: "close", listener: (code?: number, reason?: unknown) => void): this;
   on(event: "error", listener: (error: unknown) => void): this;
-  on(event: "ping", listener: () => void): this;
-  on(event: "pong", listener: () => void): this;
+}
+
+/**
+ * `ping`/`pong` are not part of the required {@link SlackWebSocketLike} surface
+ * (a custom transport may not emit them), so we register those listeners only
+ * when the socket supports `on`, via this widened view — keeping the public
+ * interface unchanged for existing implementations.
+ */
+type SlackWebSocketPingListenable = {
+  on(event: "ping" | "pong", listener: () => void): unknown;
+};
+
+function onPingPong(socket: SlackWebSocketLike, listener: () => void): void {
+  const listenable = socket as unknown as Partial<SlackWebSocketPingListenable>;
+  if (typeof listenable.on !== "function") {
+    return;
+  }
+  try {
+    listenable.on("ping", listener);
+    listenable.on("pong", listener);
+  } catch {
+    // A transport whose `on` rejects unknown events simply opts out of
+    // ping/pong-based liveness; inbound messages still refresh the watchdog.
+  }
 }
 
 const DEFAULT_INITIAL_BACKOFF_MS = 500;
@@ -242,8 +271,7 @@ export class SlackSocketModeRunner {
         this.logger?.info?.("Slack Socket Mode connected.");
         startHeartbeat();
       });
-      socket.on("ping", markActivity);
-      socket.on("pong", markActivity);
+      onPingPong(socket, markActivity);
       socket.on("message", (data: unknown) => {
         markActivity();
         const envelope = parseSocketEnvelope(data);
