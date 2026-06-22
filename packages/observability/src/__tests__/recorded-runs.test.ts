@@ -9,6 +9,7 @@ import {
   listRecordedRuns,
   readRecordedRun,
   ObservabilityReadError,
+  reconcileStaleRunArtifacts,
 } from "../index.js";
 import { classifyRecordedRunEvent } from "../recorded-runs.js";
 
@@ -106,5 +107,49 @@ describe("recorded run reader", () => {
     const dir = await tempDir();
     await expect(readRecordedRun({ artifactDir: dir }, "../secrets")).rejects.toBeInstanceOf(ObservabilityReadError);
     await expect(readRecordedRun({ artifactDir: dir }, "nested/run")).rejects.toMatchObject({ code: "invalid_run_id" });
+  });
+});
+
+describe("reconcileStaleRunArtifacts", () => {
+  async function writeSummary(dir: string, name: string, summary: Record<string, unknown>): Promise<void> {
+    await writeFile(join(dir, name), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  }
+
+  it("rewrites orphaned running runs (started before the cutoff) to interrupted, leaving live and terminal runs", async () => {
+    const dir = await tempDir();
+    const cutoff = Date.parse("2026-05-15T12:00:00.000Z");
+    await writeSummary(dir, "orphan.summary.json", {
+      runId: "orphan", conversationId: "c", status: "running", startedAt: "2026-05-15T11:00:00.000Z",
+    });
+    await writeSummary(dir, "live.summary.json", {
+      runId: "live", conversationId: "c", status: "running", startedAt: "2026-05-15T12:30:00.000Z",
+    });
+    await writeSummary(dir, "done.summary.json", {
+      runId: "done", conversationId: "c", status: "succeeded", startedAt: "2026-05-15T10:00:00.000Z", endedAt: "2026-05-15T10:01:00.000Z",
+    });
+
+    const result = await reconcileStaleRunArtifacts(dir, {
+      startedBeforeMs: cutoff,
+      clock: () => Date.parse("2026-05-15T13:00:00.000Z"),
+    });
+
+    expect(result.reconciled).toEqual(["orphan"]);
+    expect(result.warnings).toEqual([]);
+
+    const orphan = JSON.parse(await readFile(join(dir, "orphan.summary.json"), "utf8")) as Record<string, unknown>;
+    expect(orphan.status).toBe("interrupted");
+    expect(orphan.failureKind).toBe("process_death");
+    expect(orphan.endedAt).toBe("2026-05-15T13:00:00.000Z");
+
+    // A "running" run started after the cutoff belongs to THIS process — must be untouched.
+    const live = JSON.parse(await readFile(join(dir, "live.summary.json"), "utf8")) as Record<string, unknown>;
+    expect(live.status).toBe("running");
+    const done = JSON.parse(await readFile(join(dir, "done.summary.json"), "utf8")) as Record<string, unknown>;
+    expect(done.status).toBe("succeeded");
+  });
+
+  it("returns empty for a missing artifact directory", async () => {
+    const dir = join(await tempDir(), "missing");
+    await expect(reconcileStaleRunArtifacts(dir, { startedBeforeMs: 0 })).resolves.toEqual({ reconciled: [], warnings: [] });
   });
 });

@@ -1,8 +1,9 @@
-import { mkdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import { serializeTraceSpans } from "@mono-agent/observability-otel";
-import { describeMonoRuntimeSupport } from "@mono-agent/runtime-adapter";
+import { describeMonoRuntimeSupport, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { MonoAgentConfig } from "@mono-agent/config";
 
 import {
@@ -68,6 +69,7 @@ export async function validateMonoAgentFolder(
 
   if (coreConfig !== undefined) {
     sections.push(runtimeSection(coreConfig));
+    sections.push(await credentialsSection(coreConfig));
     sections.push(await contextSection(coreConfig));
     sections.push(await memorySection(coreConfig, liveness));
     sections.push(await toolsSection(coreConfig, options));
@@ -109,6 +111,121 @@ function runtimeSection(config: MonoAgentConfig): ValidationSection {
   }
 
   return { id: "runtime", label: "Runtime", status, details };
+}
+
+interface PiAuthEntry {
+  readonly type?: string;
+  readonly expires?: number;
+  readonly refresh?: string;
+}
+
+/** Parses the Pi OAuth auth store (provider -> credentials) at `path`, best-effort. */
+async function readPiAuthProviders(path: string): Promise<Record<string, PiAuthEntry> | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, PiAuthEntry>;
+    }
+  } catch {
+    // Missing/invalid auth file is reported per-provider below, not thrown here.
+  }
+  return undefined;
+}
+
+/** Provider ids configured via the sibling `models.json` (custom/local providers need no OAuth). */
+async function readPiCustomProviders(authPath: string): Promise<Set<string>> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(join(dirname(authPath), "models.json"), "utf8"));
+    const providers = (parsed as { providers?: unknown } | null)?.providers;
+    if (providers !== null && typeof providers === "object" && !Array.isArray(providers)) {
+      return new Set(Object.keys(providers as Record<string, unknown>));
+    }
+  } catch {
+    // No models.json is fine; such providers simply won't be marked custom.
+  }
+  return new Set();
+}
+
+/**
+ * Checks that every referenced model (primary, fallbacks, and the agent-host memory LLM)
+ * has discoverable credentials, so a keyless or expired-OAuth provider is caught at
+ * `validate` time instead of degrading crons/memory silently at runtime (the failure mode
+ * that broke memory capture for ~10 days: the auth store's OAuth token had quietly expired).
+ *
+ * The check is intentionally STATIC and read-only — a validator must not mutate the auth
+ * store or hit the network. For each Pi provider it inspects the auth store (`piAuthPath`)
+ * and the sibling `models.json`: a custom/local provider needs no OAuth; an OAuth provider
+ * absent from the store, or whose access token has expired, is flagged `waiting` with a
+ * re-auth hint. SDK-authenticated models (claude/codex) are validated by their own SDK and
+ * are noted but not key-checked here. `waiting` (never `error`) keeps the verdict non-fatal,
+ * mirroring the Ollama/Phoenix probes — the goal is visibility, not blocking start.
+ */
+async function credentialsSection(config: MonoAgentConfig): Promise<ValidationSection> {
+  const refs: { label: string; ref: RuntimeModelReference }[] = [
+    { label: "Primary", ref: config.runtime.model },
+    ...(config.runtime.fallbackModels ?? []).map((ref) => ({ label: "Fallback", ref })),
+  ];
+  if (config.memory?.llm !== undefined && config.memory.llm.provider !== "ollama") {
+    try {
+      refs.push({ label: "Memory LLM", ref: parseMonoRuntimeModelReference(config.memory.llm.model) });
+    } catch {
+      // A malformed memory model reference is surfaced by the memory/runtime shape checks.
+    }
+  }
+
+  const piRefs = refs.filter((r) => r.ref.sdk === "pi" && typeof r.ref.provider === "string");
+  if (piRefs.length === 0) {
+    return {
+      id: "credentials",
+      label: "Provider credentials",
+      status: "disabled",
+      details: ["No Pi provider-key models referenced (SDK-authenticated models are checked by their SDK)."],
+    };
+  }
+
+  const authPath = config.providers?.piAuthPath;
+  const authProviders = authPath === undefined ? undefined : await readPiAuthProviders(authPath);
+  const customProviders = authPath === undefined ? new Set<string>() : await readPiCustomProviders(authPath);
+  const now = Date.now();
+  const details: string[] = [];
+  let status: ValidationStatus = "ok";
+  if (authPath !== undefined) {
+    details.push(`Pi auth store: ${authPath}`);
+  }
+
+  for (const { label, ref } of piRefs) {
+    const provider = ref.provider as string;
+    const refStr = referenceOf(ref);
+    if (customProviders.has(provider)) {
+      details.push(`${label} ${refStr}: provider \`${provider}\` configured via pi models.json.`);
+      continue;
+    }
+    const entry = authProviders?.[provider];
+    if (entry === undefined) {
+      status = "waiting";
+      details.push(
+        `[WARN] ${label} ${refStr}: no Pi credentials found for provider \`${provider}\` (absent from the auth store and models.json). Authenticate it (\`pi auth login ${provider}\`) or set providers.piAuthPath.`,
+      );
+      continue;
+    }
+    const isOAuth = entry.type === "oauth" || typeof entry.expires === "number";
+    const expired = typeof entry.expires === "number" && entry.expires < now;
+    const whenNote = typeof entry.expires === "number" ? ` ${new Date(entry.expires).toISOString()}` : "";
+    if (isOAuth && expired) {
+      status = "waiting";
+      details.push(
+        `[WARN] ${label} ${refStr}: OAuth token for \`${provider}\` expired${whenNote} — the runtime auto-refreshes, but if runs fail with "No API key for provider: ${provider}" the refresh is dead; re-authenticate: \`pi auth login ${provider}\`.`,
+      );
+      continue;
+    }
+    details.push(
+      isOAuth
+        ? `${label} ${refStr}: OAuth credentials for \`${provider}\` present (token valid${whenNote}).`
+        : `${label} ${refStr}: credentials for \`${provider}\` present.`,
+    );
+  }
+
+  return { id: "credentials", label: "Provider credentials", status, details };
 }
 
 async function contextSection(config: MonoAgentConfig): Promise<ValidationSection> {
@@ -482,7 +599,7 @@ async function channelSection(
   }
 }
 
-function referenceOf(model: MonoAgentConfig["runtime"]["model"]): string {
+function referenceOf(model: RuntimeModelReference): string {
   return model.reference ?? `${model.sdk}:${model.provider === undefined ? "" : `${model.provider}:`}${model.model}`;
 }
 
