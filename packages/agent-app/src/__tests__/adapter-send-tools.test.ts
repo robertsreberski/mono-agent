@@ -6,9 +6,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import { SlackAdapter } from "@mono-agent/slack-adapter";
 import type {
   SlackChatPostMessageParams,
   SlackChatPostMessageResult,
+  SlackChatUpdateParams,
+  SlackEventCallback,
+  SlackWebApi,
 } from "@mono-agent/slack-adapter";
 import type {
   TelegramSendMessageParams,
@@ -28,6 +32,7 @@ import {
   resolveAdapterSendToolsSettings,
 } from "../adapter-send-tools.js";
 import type { AdapterSendToolsSettings } from "../adapter-send-tools.js";
+import { lookupProducingConversation, resolvePostedMessageIndexPath } from "../posted-message-index.js";
 
 let dir: string;
 
@@ -164,6 +169,18 @@ describe("adapter send tools MCP spec/env", () => {
     expect(String((spec.args as string[])[0])).not.toContain("xoxb-slack");
     expect(String((spec.args as string[])[0])).not.toContain("telegram-token");
   });
+
+  it("forwards the producing conversation id and index path when indexing is configured, and parses them back", () => {
+    const allowedTools = ["slack_send_message"];
+    const indexing = { conversationId: "scheduled-scan#2026-06-22", indexPath: "/agent/artifacts/posted-message-index.jsonl" };
+    const env = adapterSendToolsMcpEnv("/agent/mono-agent.config.json", allowedTools, indexing);
+
+    expect(env).toMatchObject({
+      MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID: indexing.conversationId,
+      MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH: indexing.indexPath,
+    });
+    expect(adapterSendToolsChildConfigFromEnv(env, "/agent").indexing).toEqual(indexing);
+  });
 });
 
 describe("adapter send MCP tools", () => {
@@ -234,6 +251,92 @@ describe("adapter send MCP tools", () => {
 
     expect(slack.chatPostMessage).not.toHaveBeenCalled();
     expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("adapter send tool posted-message indexing", () => {
+  it("records a successful slack_send_message as (channel, ts) → producing conversation, de-bucketed", async () => {
+    const indexPath = resolvePostedMessageIndexPath(dir);
+    const server = createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+            return { ok: true, channel: params.channel, ts: "170.000100" };
+          },
+        },
+      },
+      { conversationId: "scheduled-scan#2026-06-22", indexPath },
+    );
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({ name: "slack_send_message", arguments: { channel: "C1", text: "hello" } });
+      expect(result.structuredContent).toMatchObject({ ok: true, channel: "C1", ts: "170.000100" });
+    });
+
+    expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
+  });
+
+  it("end-to-end: a scan's slack_send_message post lets a later in-thread reply resume the scan conversation", async () => {
+    const indexPath = resolvePostedMessageIndexPath(dir);
+
+    // 1) Producer — the scheduled scan posts its summary via slack_send_message,
+    //    running under the synthetic cron conversationId.
+    const producer = createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+            return { ok: true, channel: params.channel, ts: "170.000100" };
+          },
+        },
+      },
+      { conversationId: "scheduled-scan#2026-06-22", indexPath },
+    );
+    await withMcpClient(producer, async (client) => {
+      await client.callTool({ name: "slack_send_message", arguments: { channel: "C1", text: "scheduled scan: suggested next step" } });
+    });
+    // Sanity: the producer wrote the linkage.
+    expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
+
+    // 2) Consumer — the Slack adapter, wired exactly like the channel driver, with a
+    //    reply arriving in that thread.
+    let captured: { conversationId?: string } | undefined;
+    const adapter = new SlackAdapter({
+      api: new MinimalSlackApi() as unknown as SlackWebApi,
+      allowAllChannels: true,
+      responder: {
+        respond: async (request) => {
+          captured = request;
+          return { text: "Added to Todoist." };
+        },
+      },
+      resolvePostIndex: (channelId, ts) => lookupProducingConversation(indexPath, channelId, ts),
+    });
+
+    await adapter.handleEventCallback(
+      threadedDmReply({ channel: "C1", threadTs: "170.000100", ts: "171.000001", text: "follow-up reply in the scan thread" }),
+    );
+
+    // The reply resumes the scan conversation instead of a fresh, history-less thread.
+    expect(captured?.conversationId).toBe("scheduled-scan");
+  });
+
+  it("writes no index entry when indexing is not configured", async () => {
+    const indexPath = resolvePostedMessageIndexPath(dir);
+    const server = createAdapterSendToolsServer(bothAdaptersSettings(), {
+      slack: {
+        async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+          return { ok: true, channel: params.channel, ts: "171.123" };
+        },
+      },
+    });
+
+    await withMcpClient(server, async (client) => {
+      await client.callTool({ name: "slack_send_message", arguments: { channel: "C1", text: "hello" } });
+    });
+
+    expect(await lookupProducingConversation(indexPath, "C1", "171.123")).toBeUndefined();
   });
 });
 
@@ -342,6 +445,45 @@ async function withMcpClient<T>(
     await client.close();
     await server.close();
   }
+}
+
+/** Minimal SlackWebApi for driving the adapter's reply path in a test. */
+class MinimalSlackApi {
+  async authTest() {
+    return { ok: true as const };
+  }
+  async appsConnectionsOpen() {
+    return { ok: true as const, url: "wss://slack.test/socket" };
+  }
+  async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+    return { ok: true, channel: params.channel, ts: "172.000001" };
+  }
+  async chatUpdate(params: SlackChatUpdateParams) {
+    return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+  }
+  async downloadFile(): Promise<Uint8Array> {
+    return new Uint8Array();
+  }
+}
+
+function threadedDmReply(options: { channel: string; threadTs: string; ts: string; text: string }): SlackEventCallback {
+  return {
+    type: "event_callback",
+    team_id: "T1",
+    api_app_id: "A1",
+    event_id: "Ev-reply",
+    event_time: 172,
+    event: {
+      type: "message",
+      channel: options.channel,
+      user: "UUSER1",
+      text: options.text,
+      ts: options.ts,
+      event_ts: options.ts,
+      thread_ts: options.threadTs,
+      channel_type: "im",
+    },
+  };
 }
 
 function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>) {

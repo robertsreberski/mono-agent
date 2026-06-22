@@ -43,6 +43,11 @@ export interface SlackAdapterStartOptions {
   readonly attachments?: SlackAttachmentOptions;
   readonly logger?: SlackAdapterStartLogger;
 
+  /** Resolve an in-thread reply back to the conversation that produced the message it threads off. */
+  readonly resolvePostIndex?: (channelId: string, ts: string) => Promise<string | undefined>;
+  /** Record a posted message `(channel, ts) → conversationId` for later reply resolution. */
+  readonly recordPostedMessage?: (channelId: string, ts: string, conversationId: string) => void;
+
   /** Reconnect backoff bounds forwarded to the Socket Mode runner. */
   readonly reconnect?: SlackSocketModeRunnerBackoffOptions;
   /** Heartbeat watchdog for detecting and recycling a silently dead socket. */
@@ -170,6 +175,12 @@ function buildAdapterOptions(
   }
   if (options.logger !== undefined) {
     adapterOptions.logger = options.logger;
+  }
+  if (options.resolvePostIndex !== undefined) {
+    adapterOptions.resolvePostIndex = options.resolvePostIndex;
+  }
+  if (options.recordPostedMessage !== undefined) {
+    adapterOptions.recordPostedMessage = options.recordPostedMessage;
   }
   return adapterOptions;
 }

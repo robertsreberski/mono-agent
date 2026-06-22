@@ -22,6 +22,7 @@ import type {
 import * as z from "zod/v4";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { appendPostedMessage } from "./posted-message-index.js";
 
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.
@@ -65,6 +66,21 @@ export interface AdapterSendToolsRuntimeExtension {
   readonly cleanup: () => Promise<void>;
 }
 
+/**
+ * Where a posted message should be linked back to its producing conversation.
+ * Forwarded to the stdio child so `slack_send_message` can record
+ * `(channel, ts) → conversationId` — see {@link appendPostedMessage}.
+ */
+export interface AdapterSendToolsIndexing {
+  readonly conversationId: string;
+  readonly indexPath: string;
+}
+
+/** Minimal shape of the per-request runtime-options input we read (the producing conversationId). */
+interface AdapterSendToolsRequestInput {
+  readonly request?: { readonly conversationId?: string };
+}
+
 export interface AdapterSendToolsResolveOptions {
   readonly allowedTools?: readonly string[] | undefined;
   readonly disallowedTools?: readonly string[] | undefined;
@@ -105,16 +121,27 @@ export function adapterSendToolNames(settings: AdapterSendToolsSettings): readon
   return names;
 }
 
-export function adapterSendToolsMcpEnv(configPath: string, allowedTools: readonly string[]): Record<string, string> {
+export function adapterSendToolsMcpEnv(
+  configPath: string,
+  allowedTools: readonly string[],
+  indexing?: AdapterSendToolsIndexing,
+): Record<string, string> {
   return {
     MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH: configPath,
     MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(allowedTools),
+    ...(indexing === undefined
+      ? {}
+      : {
+          MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID: indexing.conversationId,
+          MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH: indexing.indexPath,
+        }),
   };
 }
 
 export interface AdapterSendToolsChildConfig {
   readonly input: MonoAgentAppConfigInput;
   readonly allowedTools: readonly string[];
+  readonly indexing?: AdapterSendToolsIndexing;
 }
 
 export function adapterSendToolsChildConfigFromEnv(env: Record<string, string | undefined>, cwd: string): AdapterSendToolsChildConfig {
@@ -122,9 +149,14 @@ export function adapterSendToolsChildConfigFromEnv(env: Record<string, string | 
   if (configPath === undefined) {
     throw new Error("adapter-send-tools: missing required environment (MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH).");
   }
+  const conversationId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID);
+  const indexPath = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH);
+  // Both must be present to index; either alone is a misconfiguration we simply skip.
+  const indexing = conversationId !== undefined && indexPath !== undefined ? { conversationId, indexPath } : undefined;
   return {
     input: { env, cwd, configPath },
     allowedTools: parseAllowedToolNames(env.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS),
+    ...(indexing === undefined ? {} : { indexing }),
   };
 }
 
@@ -132,29 +164,44 @@ export function adapterSendToolsMcpServerSpec(
   configPath: string,
   cwd: string,
   allowedTools: readonly string[],
+  indexing?: AdapterSendToolsIndexing,
 ): Record<string, unknown> {
   return {
     type: "stdio",
     command: process.execPath,
     args: [fileURLToPath(new URL("./adapter-send-tools-main.js", import.meta.url))],
     cwd,
-    env: adapterSendToolsMcpEnv(configPath, allowedTools),
+    env: adapterSendToolsMcpEnv(configPath, allowedTools, indexing),
   };
 }
 
+/**
+ * Per-request runtime extension that injects the adapter-send stdio MCP server. It
+ * reads the request's producing conversationId and, when an `indexPath` is
+ * configured, forwards both to the child so a `slack_send_message` post is linked
+ * back to this conversation (so a later in-thread reply resumes it).
+ */
 export function createAdapterSendToolsRuntimeExtension(
   configPath: string,
   cwd: string,
   allowedTools: readonly string[],
-): () => Promise<AdapterSendToolsRuntimeExtension> {
-  return async () => ({
-    runtimeOptions: {
-      mcpServers: {
-        [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(configPath, cwd, allowedTools),
+  indexPath?: string,
+): (input: AdapterSendToolsRequestInput) => Promise<AdapterSendToolsRuntimeExtension> {
+  return async (input) => {
+    const conversationId = input?.request?.conversationId;
+    const indexing =
+      indexPath !== undefined && typeof conversationId === "string" && conversationId.trim().length > 0
+        ? { conversationId, indexPath }
+        : undefined;
+    return {
+      runtimeOptions: {
+        mcpServers: {
+          [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(configPath, cwd, allowedTools, indexing),
+        },
       },
-    },
-    cleanup: async () => {},
-  });
+      cleanup: async () => {},
+    };
+  };
 }
 
 export function createAdapterSendToolsClients(settings: AdapterSendToolsSettings): AdapterSendToolsClients {
@@ -177,11 +224,12 @@ export function createAdapterSendToolsClients(settings: AdapterSendToolsSettings
 export function createAdapterSendToolsServer(
   settings: AdapterSendToolsSettings,
   clients: AdapterSendToolsClients,
+  indexing?: AdapterSendToolsIndexing,
 ): McpServer {
   const server = new McpServer({ name: "agent-adapter-send-tools", version: "0.3.0" });
 
   if (settings.slack !== undefined && clients.slack !== undefined) {
-    registerSlackSendTool(server, settings.slack, clients.slack);
+    registerSlackSendTool(server, settings.slack, clients.slack, indexing);
   }
   if (settings.telegram !== undefined && clients.telegram !== undefined) {
     registerTelegramSendTool(server, settings.telegram, clients.telegram);
@@ -194,6 +242,7 @@ function registerSlackSendTool(
   server: McpServer,
   settings: SlackSendToolSettings,
   client: Pick<SlackWebApi, "chatPostMessage">,
+  indexing?: AdapterSendToolsIndexing,
 ): void {
   server.registerTool(
     "slack_send_message",
@@ -219,6 +268,16 @@ function registerSlackSendTool(
         ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
         ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
       });
+      // Link the posted message back to this conversation so an in-thread reply can
+      // resume it. Best-effort: appendPostedMessage never throws, so a failed index
+      // write can never fail the send.
+      if (indexing !== undefined) {
+        await appendPostedMessage(indexing.indexPath, {
+          channelId: result.channel,
+          ts: result.ts,
+          conversationId: indexing.conversationId,
+        });
+      }
       return {
         content: [{ type: "text", text: `Sent Slack message to ${result.channel} at ${result.ts}.` }],
         structuredContent: { ok: true, channel: result.channel, ts: result.ts },

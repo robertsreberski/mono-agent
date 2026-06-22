@@ -1121,6 +1121,113 @@ describe("SerialQueue", () => {
   });
 });
 
+describe("SlackAdapter posted-message linkage", () => {
+  it("aliases an in-thread reply to the producing conversation while still posting to the thread", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "done" };
+      }),
+      resolvePostIndex: async (channelId, ts) =>
+        channelId === "D123" && ts === "171.000001" ? "scheduled-scan" : undefined,
+    });
+
+    await adapter.handleEventCallback(directMessage("that's a good idea", { ts: "171.000099", threadTs: "171.000001" }));
+
+    // The run continues the producing conversation (so it loads that history)…
+    expect(captured?.conversationId).toBe("scheduled-scan");
+    // …but the answer still posts into the user's Slack thread.
+    const post = api.postMessageCalls.at(-1);
+    expect(post?.channel).toBe("D123");
+    expect(post?.thread_ts).toBe("171.000001");
+  });
+
+  it("falls back to the default slack conversation id when the index has no match", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "done" };
+      }),
+      resolvePostIndex: async () => undefined,
+    });
+
+    await adapter.handleEventCallback(directMessage("hello", { ts: "171.000099", threadTs: "171.000001" }));
+
+    expect(captured?.conversationId).toBe("slack:D123:171.000001");
+  });
+
+  it("does not consult the index for a top-level message (no producing post to resume)", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const resolvePostIndex = vi.fn(async () => "should-not-be-used");
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "done" };
+      }),
+      resolvePostIndex,
+    });
+
+    await adapter.handleEventCallback(directMessage("hello"));
+
+    expect(resolvePostIndex).not.toHaveBeenCalled();
+    expect(captured?.conversationId).toBe("slack:D123:171.000001");
+  });
+
+  it("/cancel cancels the resolved producing conversation", async () => {
+    const api = new FakeSlackApi();
+    const cancelCalls: string[] = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async () => ({ text: "ok" }),
+        cancel: (conversationId: string) => {
+          cancelCalls.push(conversationId);
+        },
+      },
+      resolvePostIndex: async (channelId, ts) =>
+        channelId === "D123" && ts === "171.000001" ? "scheduled-scan" : undefined,
+    });
+
+    await adapter.handleEventCallback(directMessage("/cancel", { eventId: "Ev2", ts: "171.000002", threadTs: "171.000001" }));
+
+    expect(cancelCalls).toEqual(["scheduled-scan"]);
+  });
+
+  it("records a top-level proactive post so a later reply can resume it; threaded posts are not recorded", async () => {
+    const api = new FakeSlackApi();
+    const recordCalls: Array<[string, string, string]> = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async () => ({ text: "brief" })),
+      recordPostedMessage: (channelId, ts, conversationId) => {
+        recordCalls.push([channelId, ts, conversationId]);
+      },
+    });
+
+    // Top-level proactive post (no thread): the posted ts is recorded under slack:C1.
+    await adapter.notify("C1", undefined, "ping");
+    expect(recordCalls).toEqual([["C1", "200.000001", "slack:C1"]]);
+
+    // A threaded proactive post already shares the thread's conversationId → not recorded.
+    recordCalls.length = 0;
+    await adapter.notify("C1", "171.5", "ping again");
+    expect(recordCalls).toEqual([]);
+  });
+});
+
 function responderFrom(respond: AgentResponder["respond"]): AgentResponder {
   return { respond };
 }

@@ -132,6 +132,21 @@ export interface SlackAdapterOptions {
   messages?: SlackAdapterMessages;
   attachments?: SlackAttachmentOptions;
   logger?: SlackAdapterLogger;
+  /**
+   * Resolve an in-thread reply back to the conversation that produced the message
+   * it threads off. When set and an inbound threaded reply's `(channel, threadTs)`
+   * matches a recorded post, the run continues that producing conversation instead
+   * of a fresh `slack:<channel>:<threadTs>` (which would have no history). Injected
+   * by the host so this package stays free of the artifact store.
+   */
+  resolvePostIndex?: (channelId: string, ts: string) => Promise<string | undefined>;
+  /**
+   * Record that this adapter posted a message at `(channel, ts)` for conversation
+   * `conversationId`, so a later in-thread reply can be resolved back to it. Used
+   * for top-level proactive posts (a fresh thread root with no prior history).
+   * Fire-and-forget; best-effort.
+   */
+  recordPostedMessage?: (channelId: string, ts: string, conversationId: string) => void;
 }
 
 export type SlackEventIgnoredReason =
@@ -311,6 +326,12 @@ export class SlackAdapter {
   private readonly attachmentMaxBytes: number;
   private readonly allowedMimeTypes: ReadonlySet<string>;
   private readonly logger: SlackAdapterLogger | undefined;
+  private readonly resolvePostIndex:
+    | ((channelId: string, ts: string) => Promise<string | undefined>)
+    | undefined;
+  private readonly recordPostedMessage:
+    | ((channelId: string, ts: string, conversationId: string) => void)
+    | undefined;
   /**
    * In-flight abort controllers per thread. The harness serializes runs for a
    * conversation, so several may be queued/active concurrently; /cancel aborts
@@ -351,6 +372,8 @@ export class SlackAdapter {
       ),
     );
     this.logger = options.logger;
+    this.resolvePostIndex = options.resolvePostIndex;
+    this.recordPostedMessage = options.recordPostedMessage;
 
     if (!this.allowAllChannels && this.allowedChannelIds.size === 0) {
       throw new TypeError(
@@ -430,10 +453,15 @@ export class SlackAdapter {
     }
 
     const runKey = runKeyFor(event);
+    // Resolve once, up front, so /cancel, the admission queue, and the run all use
+    // the SAME conversationId — an in-thread reply to a message we posted resolves
+    // to the producing conversation (so it loads that history), else the default
+    // slack: thread id.
+    const conversationId = await this.resolveConversationId(event);
     if (command?.name === "cancel") {
       // Clear any queued follow-ups for the conversation (the harness owns the
       // queue) and abort every in-flight controller for this thread.
-      this.responder.cancel?.(conversationIdFor(event), new Error("Cancelled by Slack user."));
+      this.responder.cancel?.(conversationId, new Error("Cancelled by Slack user."));
       const controllers = this.activeControllers.get(runKey);
       if (controllers !== undefined) {
         for (const controller of controllers) {
@@ -457,7 +485,7 @@ export class SlackAdapter {
     // session after the current turn. We admit messages through a per-conversation
     // serial queue first so they reach the harness in arrival order even when an
     // earlier message stalls on file download.
-    const conversationId = conversationIdFor(event);
+    //
     // Create and register the controller BEFORE entering the admission queue so a
     // /cancel can abort a message still parked behind an earlier same-thread run.
     // respondToEvent's first abort check then makes the queued-then-cancelled run
@@ -470,7 +498,7 @@ export class SlackAdapter {
       this.admissionQueues.set(conversationId, queue);
     }
     try {
-      return await queue.run(() => this.respondToEvent(event, text, runKey, controller));
+      return await queue.run(() => this.respondToEvent(event, text, runKey, controller, conversationId));
     } catch (error) {
       if (isSerialQueueFullError(error)) {
         // Over-cap: the task was rejected BEFORE entering the queue, so
@@ -555,6 +583,19 @@ export class SlackAdapter {
     };
     if (threadTs !== undefined) {
       streamOptions.threadTs = threadTs;
+    } else if (this.recordPostedMessage !== undefined) {
+      // A top-level proactive post is a fresh thread root with no prior history.
+      // Record its ts → this conversation so a user's in-thread reply resolves
+      // back here (the threaded case already shares the thread's conversationId).
+      const record = this.recordPostedMessage;
+      let recorded = false;
+      streamOptions.onPosted = ({ ts, channel }) => {
+        if (recorded || ts.length === 0) {
+          return;
+        }
+        recorded = true;
+        record(channel, ts, conversationId);
+      };
     }
     if (this.streamOptions.maxMessageChars !== undefined) {
       streamOptions.maxMessageChars = this.streamOptions.maxMessageChars;
@@ -630,11 +671,31 @@ export class SlackAdapter {
     }
   }
 
+  /**
+   * The conversation the run should continue. A genuine in-thread reply
+   * (`threadTs !== messageTs`) whose `(channel, threadTs)` matches a message we
+   * posted resolves to that producing conversation; everything else uses the
+   * default `slack:<channel>:<threadTs>`. Best-effort: a lookup error falls back.
+   */
+  private async resolveConversationId(event: SlackTextEvent): Promise<string> {
+    const fallback = conversationIdFor(event);
+    if (this.resolvePostIndex === undefined || event.threadTs === event.messageTs) {
+      return fallback;
+    }
+    try {
+      const producing = await this.resolvePostIndex(event.channelId, event.threadTs);
+      return producing !== undefined && producing.length > 0 ? producing : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
   private async respondToEvent(
     event: SlackTextEvent,
     text: string,
     runKey: string,
     controller: AbortController,
+    conversationId: string,
   ): Promise<SlackEventHandlingResult> {
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
@@ -694,7 +755,7 @@ export class SlackAdapter {
         return { kind: "ignored", reason: "no_usable_attachments", eventId: event.eventId, channelId: event.channelId };
       }
 
-      const request = buildAgentRequest(event, text, controller.signal, attachments);
+      const request = buildAgentRequest(event, text, controller.signal, attachments, conversationId);
       const response = await this.responder.respond(request, stream);
 
       if (controller.signal.aborted) {
@@ -946,6 +1007,7 @@ function buildAgentRequest(
   text: string,
   abortSignal: AbortSignal,
   attachments: readonly AgentAttachment[],
+  conversationId: string,
 ): AgentRequest {
   const metadata: SlackRequestMetadata = {
     eventId: event.eventId,
@@ -980,7 +1042,7 @@ function buildAgentRequest(
   }
 
   const request: AgentRequest = {
-    conversationId: conversationIdFor(event),
+    conversationId,
     channelId: event.channelId,
     messageTs: event.messageTs,
     threadTs: event.threadTs,

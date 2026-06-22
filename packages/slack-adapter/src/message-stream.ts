@@ -62,7 +62,16 @@ export interface SlackMessageStreamOptions {
   /** Aborts in-flight retry waits (e.g. on /cancel). */
   abortSignal?: AbortSignal;
   logger?: SlackMessageStreamLogger;
+  /**
+   * Notified with each message this stream posts. Used to link a posted message
+   * back to the conversation that produced it, so a later in-thread reply can
+   * resume that conversation (see `posted-message-index` in agent-app).
+   */
+  onPosted?: SlackPostedMessageListener;
 }
+
+/** Notified with the channel + ts of a message a stream posted. */
+export type SlackPostedMessageListener = (ref: { ts: SlackMessageTs; channel: SlackChannelId }) => void;
 
 /**
  * Raised only when a *final* delivery cannot reach Slack after retries and the
@@ -110,6 +119,7 @@ class SlackChannelTransport implements ChannelTransport {
   private readonly threadTs: SlackMessageTs | undefined;
   private readonly reactToTs: SlackMessageTs | undefined;
   private readonly assistantStatusText: string;
+  private readonly onPosted: SlackPostedMessageListener | undefined;
   private reacted = false;
   private assistantStatusUnavailable = false;
 
@@ -120,6 +130,7 @@ class SlackChannelTransport implements ChannelTransport {
     reactToTs?: SlackMessageTs;
     assistantStatusText: string;
     maxMessageChars: number;
+    onPosted?: SlackPostedMessageListener;
   }) {
     this.api = options.api;
     this.channelId = options.channelId;
@@ -127,6 +138,7 @@ class SlackChannelTransport implements ChannelTransport {
     this.reactToTs = options.reactToTs;
     this.assistantStatusText = options.assistantStatusText;
     this.maxMessageChars = options.maxMessageChars;
+    this.onPosted = options.onPosted;
   }
 
   async indicateActivity(): Promise<void> {
@@ -165,6 +177,9 @@ class SlackChannelTransport implements ChannelTransport {
     const sent = await this.api.chatPostMessage(
       this.withThread({ channel: this.channelId, text, mrkdwn: options.markdown }),
     );
+    // Use `sent` (typed SlackChatPostMessageResult) rather than the transport-agnostic
+    // MessageRef, whose `channel` widens to `unknown`.
+    this.onPosted?.({ ts: sent.ts, channel: sent.channel });
     return slackMessageRef(sent);
   }
 
@@ -218,6 +233,7 @@ export class SlackMessageStream implements AgentMessageStream {
       ...(options.reactToTs === undefined ? {} : { reactToTs: options.reactToTs }),
       assistantStatusText: options.assistantStatusText ?? DEFAULT_ASSISTANT_STATUS_TEXT,
       maxMessageChars,
+      ...(options.onPosted === undefined ? {} : { onPosted: options.onPosted }),
     });
 
     this.inner = new ResilientMessageStream({

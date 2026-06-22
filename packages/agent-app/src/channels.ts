@@ -67,6 +67,7 @@ import type {
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
+import { appendPostedMessage, lookupProducingConversation } from "./posted-message-index.js";
 
 export type ChannelId =
   | "telegram"
@@ -122,6 +123,12 @@ export interface ChannelStartInput<TConfig> {
   readonly logger?: MonoAgentAppLogger;
   /** Reports a transport that died after a successful start (e.g. polling loop). */
   readonly onFailure: (reason: string) => void;
+  /**
+   * Path to the posted-message index (the artifact-dir JSONL linking a posted
+   * message back to its producing conversation). The Slack driver uses it to
+   * resolve in-thread replies and to record top-level proactive posts.
+   */
+  readonly postedMessageIndexPath?: string;
 }
 
 /**
@@ -228,6 +235,9 @@ export function createSlackChannelDriver(
     },
     async start(input) {
       const startAdapter = overrides.startAdapter ?? startSlackAdapter;
+      // Link posted messages to their producing conversation so an in-thread reply
+      // resumes that conversation instead of a fresh, history-less slack: thread.
+      const indexPath = input.postedMessageIndexPath;
       const result = await startAdapter({
         botToken: input.config.botToken,
         appToken: input.config.appToken,
@@ -238,6 +248,15 @@ export function createSlackChannelDriver(
         stripMentionText: input.config.stripMentionText,
         responder: input.responder,
         ...(input.logger === undefined ? {} : { logger: input.logger }),
+        ...(indexPath === undefined
+          ? {}
+          : {
+              resolvePostIndex: (channelId: string, ts: string) =>
+                lookupProducingConversation(indexPath, channelId, ts),
+              recordPostedMessage: (channelId: string, ts: string, conversationId: string) => {
+                void appendPostedMessage(indexPath, { channelId, ts, conversationId });
+              },
+            }),
         ...(overrides.createApi === undefined ? {} : { createApi: overrides.createApi }),
         ...(overrides.webSocketFactory === undefined ? {} : { webSocketFactory: overrides.webSocketFactory }),
       });

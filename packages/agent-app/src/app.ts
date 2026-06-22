@@ -42,6 +42,7 @@ import { startNotifyToolsServer } from "./notify-tool.js";
 import type { NotifyToolsServer } from "./notify-tool.js";
 import { createNotifyToolsRuntimeExtension } from "./notify-runtime.js";
 import { resolveNotifyDestinations } from "./notify-destinations.js";
+import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 
 /**
  * Outcome of a live config re-apply (`applyConfigChange`). Consumed by callers
@@ -599,6 +600,10 @@ class MonoAgentAppController implements MonoAgentApp {
       throw error;
     }
 
+    // Resolve the posted-message index path once so the Slack driver can link
+    // posted messages to their producing conversation (in-thread reply continuity).
+    const postedMessageIndexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
+
     try {
       const responder = await this.buildResponder(coreConfig);
       // The AgentResponder contract has no dispose(), but the configured responder
@@ -616,6 +621,7 @@ class MonoAgentAppController implements MonoAgentApp {
         coreConfig,
         responder,
         cwd: this.cwd,
+        postedMessageIndexPath,
         ...(this.logger === undefined ? {} : { logger: this.logger }),
         onFailure: (failureReason) => {
           this.running.delete(driver.id);
@@ -739,7 +745,10 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     const toolNames = adapterSendToolNames(settings);
     this.logger?.info?.("Adapter send tools enabled.", { tools: toolNames });
-    return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames);
+    // Forward the posted-message index path so `slack_send_message` links each post
+    // back to the producing conversation (so a later in-thread reply resumes it).
+    const indexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
+    return createAdapterSendToolsRuntimeExtension(this.configPath, this.cwd, toolNames, indexPath);
   }
 
   /**
