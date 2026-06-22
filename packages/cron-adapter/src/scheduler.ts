@@ -93,6 +93,13 @@ export interface CronAdapterOptions {
   readonly maxQueueDepth?: number;
   /** What to do past maxQueueDepth. Default "preserve" (keep all, warn). */
   readonly overflow?: CronOverflowPolicy;
+  /**
+   * Watchdog: if a run's responder does not settle within this many ms, abort it and reclaim the
+   * slot (`state.active`) so the job is not blocked forever. A hung responder otherwise leaves
+   * `state.active` set, and every future firing is skipped as "a prior run is still active".
+   * Unset (default) disables the watchdog, preserving prior behavior.
+   */
+  readonly maxRunMs?: number;
 }
 
 export interface CronAdapterStartResult {
@@ -316,61 +323,106 @@ function startRun(
     },
   };
 
-  void options.responder.respond(request, stream)
-    .then(async (response) => {
-      await stream.finish(response.text);
-      // Guard against a responder that ignores/races the abort signal and still
-      // resolves with text: if THIS run's controller was aborted (overlap:"replace"
-      // discarding the in-flight run, or stop()), report the run as cancelled
-      // rather than succeeded. `controller` is captured per-run, so this keys the
-      // abort check to this specific firing (not a newer run's controller). This
-      // mirrors the .catch() classification below and LiveSessionManager.drain().
-      if (controller.signal.aborted) {
+  // Finalize the run at most once. A hung responder (a promise that never settles AND ignores the
+  // abort signal) would otherwise leave `state.active` set forever, skipping every future firing.
+  // The watchdog below races the responder so the slot is always reclaimed; whichever path fires
+  // first wins, and the loser becomes a no-op. Clearing `state.active` + draining lives here so it
+  // happens exactly once regardless of which path completes.
+  let settled = false;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const finalize = (handle: () => Promise<void>): void => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    if (watchdog !== undefined) {
+      clearTimeout(watchdog);
+    }
+    void handle()
+      .catch(() => undefined)
+      .finally(() => {
+        state.active = undefined;
+        drainNext(job, options, jobStates, state);
+      });
+  };
+
+  if (options.maxRunMs !== undefined && options.maxRunMs > 0) {
+    const limitMs = options.maxRunMs;
+    watchdog = setTimeout(() => {
+      // Signal the responder to stop, then reclaim the slot even if it never settles.
+      controller.abort(new Error(`Cron job exceeded maxRunMs (${limitMs}ms).`));
+      finalize(async () => {
         const result: CronJobResult = {
-          kind: "cancelled",
+          kind: "failed",
           jobId: job.id,
           scheduledAt,
           startedAt,
           completedAt: (options.now?.() ?? new Date()).toISOString(),
-          error: "Cron job cancelled (responder resolved after abort).",
+          error: `Cron job timed out after ${limitMs}ms (responder did not settle); reclaiming the slot.`,
         };
-        options.logger?.warn?.("Cron job responder resolved after abort; reporting cancelled.", {
+        options.logger?.error?.("Cron job timed out; reclaiming the slot.", { jobId: job.id, maxRunMs: limitMs });
+        await emitResult(options, result);
+      });
+    }, limitMs);
+    // Don't let the watchdog timer keep the process alive on its own.
+    (watchdog as { unref?: () => void }).unref?.();
+  }
+
+  void options.responder.respond(request, stream)
+    .then((response) => {
+      finalize(async () => {
+        await stream.finish(response.text);
+        // Guard against a responder that ignores/races the abort signal and still
+        // resolves with text: if THIS run's controller was aborted (overlap:"replace"
+        // discarding the in-flight run, the watchdog, or stop()), report the run as
+        // cancelled rather than succeeded. `controller` is captured per-run, so this keys
+        // the abort check to this specific firing (not a newer run's controller). This
+        // mirrors the .catch() classification below and LiveSessionManager.drain().
+        if (controller.signal.aborted) {
+          const result: CronJobResult = {
+            kind: "cancelled",
+            jobId: job.id,
+            scheduledAt,
+            startedAt,
+            completedAt: (options.now?.() ?? new Date()).toISOString(),
+            error: "Cron job cancelled (responder resolved after abort).",
+          };
+          options.logger?.warn?.("Cron job responder resolved after abort; reporting cancelled.", {
+            jobId: job.id,
+            error: result.error,
+          });
+          await emitResult(options, result);
+          return;
+        }
+        const result: CronJobResult = {
+          kind: "succeeded",
+          jobId: job.id,
+          scheduledAt,
+          startedAt,
+          completedAt: (options.now?.() ?? new Date()).toISOString(),
+          ...(stream.text.length === 0 ? {} : { text: stream.text }),
+          ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
+        };
+        await emitResult(options, result);
+      });
+    })
+    .catch((error: unknown) => {
+      finalize(async () => {
+        const cancelled = controller.signal.aborted || isAgentResponseCancelledError(error);
+        const result: CronJobResult = {
+          kind: cancelled ? "cancelled" : "failed",
+          jobId: job.id,
+          scheduledAt,
+          startedAt,
+          completedAt: (options.now?.() ?? new Date()).toISOString(),
+          error: errorToMessage(error),
+        };
+        options.logger?.[cancelled ? "warn" : "error"]?.("Cron job responder failed.", {
           jobId: job.id,
           error: result.error,
         });
         await emitResult(options, result);
-        return;
-      }
-      const result: CronJobResult = {
-        kind: "succeeded",
-        jobId: job.id,
-        scheduledAt,
-        startedAt,
-        completedAt: (options.now?.() ?? new Date()).toISOString(),
-        ...(stream.text.length === 0 ? {} : { text: stream.text }),
-        ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
-      };
-      await emitResult(options, result);
-    })
-    .catch(async (error: unknown) => {
-      const cancelled = controller.signal.aborted || isAgentResponseCancelledError(error);
-      const result: CronJobResult = {
-        kind: cancelled ? "cancelled" : "failed",
-        jobId: job.id,
-        scheduledAt,
-        startedAt,
-        completedAt: (options.now?.() ?? new Date()).toISOString(),
-        error: errorToMessage(error),
-      };
-      options.logger?.[cancelled ? "warn" : "error"]?.("Cron job responder failed.", {
-        jobId: job.id,
-        error: result.error,
       });
-      await emitResult(options, result);
-    })
-    .finally(() => {
-      state.active = undefined;
-      drainNext(job, options, jobStates, state);
     });
 }
 

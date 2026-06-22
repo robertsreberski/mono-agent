@@ -205,7 +205,7 @@ describe("AgentHarness", () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const recalls: Array<{ conversationId: string; query?: string }> = [];
+    const recalls: Array<{ conversationId: string; query: string | undefined }> = [];
     const memory = {
       async load(conversationId: string, query?: string) {
         recalls.push({ conversationId, query });

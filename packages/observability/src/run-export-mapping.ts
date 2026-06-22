@@ -402,7 +402,7 @@ export function spanStatusFor(
   status: RunSummaryStatus,
   category: RecordedRunEventCategory,
 ): SpanStatusHint {
-  if (status === "failed" || status === "cancelled" || category === "error") {
+  if (status === "failed" || status === "cancelled" || status === "interrupted" || category === "error") {
     return "ERROR";
   }
   return "UNSET";

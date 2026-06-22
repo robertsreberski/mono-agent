@@ -720,3 +720,105 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
     expect(sectionById(fast, "observability").status).toBe("ok");
   });
 });
+
+describe("validateMonoAgentFolder — provider credentials section", () => {
+  const FUTURE = 4_102_444_800_000; // 2100-01-01, comfortably valid
+  const PAST = 1_000_000_000_000; // 2001-09, comfortably expired
+
+  async function writeAuthStore(providers: Record<string, unknown>): Promise<string> {
+    const authPath = join(dir, "auth.json");
+    await writeFile(authPath, JSON.stringify(providers, null, 2));
+    return authPath;
+  }
+
+  async function writeModelsStore(providerIds: string[]): Promise<void> {
+    const models = { providers: Object.fromEntries(providerIds.map((id) => [id, {}])) };
+    await writeFile(join(dir, "models.json"), JSON.stringify(models, null, 2));
+  }
+
+  async function writeCredConfig(extra: Record<string, unknown>): Promise<string> {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    return writeConfig({
+      context: { identityPath: "./IDENTITY.md" },
+      ...extra,
+    });
+  }
+
+  it("passes when the custom primary is in models.json and the OAuth fallback token is valid", async () => {
+    const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: FUTURE, refresh: "r" } });
+    await writeModelsStore(["opencode-go", "ollama"]);
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6", fallbackModels: ["pi:openai-codex:gpt-5.5"] },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    const text = creds.details.join("\n");
+    expect(text).toMatch(/Primary pi:opencode-go:kimi-k2\.6: provider `opencode-go` configured via pi models\.json/u);
+    expect(text).toMatch(/Fallback pi:openai-codex:gpt-5\.5: OAuth credentials for `openai-codex` present \(token valid/u);
+    expect(text).not.toMatch(/WARN/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("flags an expired OAuth token as waiting with a re-auth hint (the 10-day silent-degradation case)", async () => {
+    const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST, refresh: "r" } });
+    await writeModelsStore(["opencode-go"]);
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6", fallbackModels: ["pi:openai-codex:gpt-5.5"] },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toMatch(/WARN/u);
+    expect(text).toMatch(/expired/u);
+    expect(text).toMatch(/pi auth login openai-codex/u);
+    // waiting is non-fatal — the report still passes, but the degradation is now visible.
+    expect(report.ok).toBe(true);
+  });
+
+  it("flags a referenced OAuth provider that is absent from the auth store and models.json", async () => {
+    const authPath = await writeAuthStore({ anthropic: { type: "oauth", expires: FUTURE } });
+    await writeModelsStore(["opencode-go"]);
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6", fallbackModels: ["pi:openai-codex:gpt-5.5"] },
+      providers: { piAuthPath: authPath },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toMatch(/no Pi credentials found for provider `openai-codex`/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("includes the agent-host memory LLM in the credential check", async () => {
+    const authPath = await writeAuthStore({ "openai-codex": { type: "oauth", expires: PAST } });
+    await writeModelsStore(["opencode-go"]);
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:opencode-go:kimi-k2.6" },
+      providers: { piAuthPath: authPath },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-test" },
+        llm: { provider: "agent-host", model: "pi:openai-codex:gpt-5.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    expect(creds.details.join("\n")).toMatch(/Memory LLM pi:openai-codex:gpt-5\.5: OAuth token for `openai-codex` expired/u);
+  });
+});

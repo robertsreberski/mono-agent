@@ -14,6 +14,7 @@ import {
   safeArtifactName,
   safeJoin as safeJoinGuard,
   stringField,
+  writeJsonAtomic,
 } from "./artifact-fs.js";
 import { buildEventDescriptors, classifyRecordedRunEvent } from "./event-classify.js";
 import { redactJsonValue } from "./recorder.js";
@@ -67,11 +68,95 @@ export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<
   const { summaries, warnings } = await loadSummaryFiles(normalized);
   return {
     runs: [...summaries]
-      .sort((a: ParsedSummaryFile, b: ParsedSummaryFile) => summaryUpdatedAtMs(b) - summaryUpdatedAtMs(a))
+      // Newest first by logical update time, with file mtime then runId as deterministic
+      // tiebreakers — two runs finishing in the same millisecond share an `updatedAt`, and
+      // without a tiebreaker their order (and any top-N slice) is unstable.
+      .sort(
+        (a: ParsedSummaryFile, b: ParsedSummaryFile) =>
+          summaryUpdatedAtMs(b) - summaryUpdatedAtMs(a)
+          || b.mtimeMs - a.mtimeMs
+          || b.summary.runId.localeCompare(a.summary.runId),
+      )
       .slice(0, normalized.maxRuns)
       .map((entry) => summaryToListItem(entry.summary, entry.updatedAt, normalized.maxStringBytes)),
     warnings,
   };
+}
+
+export interface ReconcileStaleRunsResult {
+  /** runIds whose summaries were rewritten from "running" to "interrupted". */
+  readonly reconciled: readonly string[];
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Reclaims orphaned run summaries: a process that dies mid-run (OOM/SIGKILL/crash) leaves its
+ * summary stuck at status "running" forever, so `status`/observability show a ghost run that never
+ * ends. On startup the host calls this to rewrite any "running" summary that began BEFORE this
+ * process started to status "interrupted" (failureKind "process_death"). Runs started at/after
+ * `startedBeforeMs` belong to the live process and are left untouched — so this is safe to call
+ * once at startup, before new runs begin. Read-only-safe and best-effort: a bad file is skipped
+ * with a warning, never thrown.
+ */
+export async function reconcileStaleRunArtifacts(
+  artifactDir: string,
+  options: { readonly startedBeforeMs: number; readonly clock?: () => number },
+): Promise<ReconcileStaleRunsResult> {
+  const warnings: string[] = [];
+  const reconciled: string[] = [];
+  const now = (options.clock ?? (() => Date.now()))();
+  const nowIso = new Date(now).toISOString();
+
+  let entries;
+  try {
+    entries = await readdir(resolve(artifactDir), { withFileTypes: true });
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      return { reconciled, warnings };
+    }
+    return { reconciled, warnings: [`Unable to read artifact directory: ${errorMessage(error)}.`] };
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(SUMMARY_SUFFIX)) {
+      continue;
+    }
+    const filePath = safeJoin(resolve(artifactDir), entry.name);
+    let parsed: Record<string, unknown>;
+    try {
+      const raw: unknown = JSON.parse(await readFile(filePath, "utf8"));
+      if (!isRecord(raw)) {
+        continue;
+      }
+      parsed = raw;
+    } catch {
+      continue; // unreadable/invalid summary — leave it for the reader's own warnings
+    }
+    if (parsed.status !== "running") {
+      continue;
+    }
+    // Only reclaim runs that began before this process started — a live run of THIS process
+    // (started at/after the cutoff) is genuinely in flight and must not be touched.
+    const startedAtMs = typeof parsed.startedAt === "string" ? Date.parse(parsed.startedAt) : Number.NaN;
+    if (Number.isFinite(startedAtMs) && startedAtMs >= options.startedBeforeMs) {
+      continue;
+    }
+    const updated = {
+      ...parsed,
+      status: "interrupted",
+      failureKind: typeof parsed.failureKind === "string" ? parsed.failureKind : "process_death",
+      endedAt: typeof parsed.endedAt === "string" ? parsed.endedAt : nowIso,
+      updatedAt: nowIso,
+    };
+    try {
+      await writeJsonAtomic(filePath, `${JSON.stringify(updated, null, 2)}\n`);
+      reconciled.push(typeof parsed.runId === "string" ? parsed.runId : entry.name.slice(0, -SUMMARY_SUFFIX.length));
+    } catch (error) {
+      warnings.push(`Unable to reconcile ${entry.name}: ${errorMessage(error)}.`);
+    }
+  }
+
+  return { reconciled, warnings };
 }
 
 export async function readRecordedRun(
@@ -331,7 +416,9 @@ function safeJoin(root: string, fileName: string): string {
 }
 
 function runSummaryStatus(value: unknown): RunSummaryStatus | undefined {
-  return value === "running" || value === "succeeded" || value === "failed" || value === "cancelled" ? value : undefined;
+  return value === "running" || value === "succeeded" || value === "failed" || value === "cancelled" || value === "interrupted"
+    ? value
+    : undefined;
 }
 
 function summaryUpdatedAtMs(entry: ParsedSummaryFile): number {

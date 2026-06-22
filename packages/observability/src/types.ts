@@ -17,7 +17,7 @@ export interface RuntimeResultLike {
   readonly [key: string]: unknown;
 }
 
-export type RunSummaryStatus = "running" | "succeeded" | "failed" | "cancelled";
+export type RunSummaryStatus = "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
 
 export interface RunSummary {
   readonly runId: string;
