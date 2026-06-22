@@ -7,9 +7,15 @@ export async function composeRecallBlock(
   db: MemoryDb,
   query: string,
   options: { topK?: number; maxBytes?: number } = {},
-): Promise<MemoryBlock> {
+): Promise<MemoryBlock | undefined> {
   const maxBytes = options.maxBytes ?? 8_000;
   const hits = await db.recall(query, { topK: options.topK ?? 8 });
+  // No hits → no block. A header-only block carries no signal and only adds
+  // noise/tokens to whatever surface injects it; returning undefined lets
+  // callers skip injection via their existing `block === undefined` guard.
+  if (hits.length === 0) {
+    return undefined;
+  }
   const lines = ["## Memory (recalled)", ""];
   for (const hit of hits) {
     const star = hit.record.isInsight ? " *" : "";

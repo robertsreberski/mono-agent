@@ -183,7 +183,7 @@ export class MonoAgentHarness implements AgentHarness {
       let runtimeResult: RuntimeResult | undefined;
       let resumeError: unknown;
       try {
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, runId, resumeSessionId, leavePending);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, resumeSessionId, leavePending);
       } catch (error) {
         if (resumeSessionId === undefined || request.abortSignal.aborted) {
           throw error;
@@ -204,7 +204,7 @@ export class MonoAgentHarness implements AgentHarness {
         resumeSessionId = undefined;
         prepared = await this.prepareContext(activeRequest, { omitHistory: false }, emit);
         context = prepared.context;
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, runId, undefined, leavePending);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, leavePending);
       }
       if (runtimeResult === undefined) {
         throw resumeError ?? new Error("Runtime did not produce a result.");
@@ -386,8 +386,15 @@ export class MonoAgentHarness implements AgentHarness {
     request: AgentHarnessRequest,
     options: { readonly omitHistory: boolean },
     emit?: (event: RuntimeEventLike) => void,
-  ): Promise<{ readonly context: BuiltAgentContext }> {
+  ): Promise<{ readonly context: BuiltAgentContext; readonly memory: ContextBlockInput | undefined }> {
     const history = options.omitHistory ? [] : await this.loadHistory(request.conversationId);
+    // Recalled memory deliberately does NOT go into the system prompt. It rides on
+    // the per-turn USER MESSAGE instead (see runRuntime): the user message is the
+    // one field every runtime re-sends verbatim each turn, so memory survives
+    // session resume even on runtimes that drop the system prompt on a resumed
+    // turn (e.g. codex-app sends developerInstructions only on a fresh thread).
+    // Keeping it out of the system prompt also leaves that prompt stable across a
+    // session, which is better for provider prompt caching.
     const memory = await this.loadMemory(request.conversationId, request.userMessage, emit);
     const selectedSkills = await this.loadSkills();
     const context = await loadContextFromFiles({
@@ -395,7 +402,6 @@ export class MonoAgentHarness implements AgentHarness {
       userMessage: request.userMessage,
       session: sessionContextBlock(request.conversationId),
       ...(this.options.soulPath === undefined ? {} : { soulPath: this.options.soulPath }),
-      ...(memory === undefined ? {} : { memory }),
       ...(history.length === 0 ? {} : { history }),
       ...(this.options.skillsRoot !== undefined
         ? { skillsRoot: this.options.skillsRoot }
@@ -404,7 +410,7 @@ export class MonoAgentHarness implements AgentHarness {
           : {}),
       ...(selectedSkills.instructions.length === 0 ? {} : { skillInstructions: selectedSkills.instructions }),
     });
-    return { context };
+    return { context, memory };
   }
 
   private async loadHistory(conversationId: string): Promise<readonly HistoryMessage[]> {
@@ -497,6 +503,14 @@ export class MonoAgentHarness implements AgentHarness {
     if (block === undefined) {
       return undefined;
     }
+    // Memory leaves the system-prompt trace once it moves onto the user message, so
+    // emit a lightweight diagnostic (source + byte size, not the content) to keep
+    // the fact that recall fired — and how much it surfaced — visible in run traces.
+    emit?.({
+      type: "memory_recalled",
+      ...(block.source === undefined ? {} : { source: block.source }),
+      bytes: Buffer.byteLength(block.content, "utf8"),
+    });
     return {
       kind: "markdown",
       content: block.content,
@@ -522,6 +536,7 @@ export class MonoAgentHarness implements AgentHarness {
     request: AgentHarnessRequest,
     recorder: RunRecorder,
     context: BuiltAgentContext,
+    memory: ContextBlockInput | undefined,
     runId: string,
     resumeSessionId: string | undefined,
     onProviderStart?: () => void,
@@ -540,7 +555,10 @@ export class MonoAgentHarness implements AgentHarness {
         requestExtension?.runtimeOptions,
       ),
       model: this.options.model,
-      messages: [{ role: "user", content: request.userMessage }],
+      // Recalled memory is appended to the user message (NOT the system prompt) so
+      // it reaches the model on every turn, including resumed turns. See
+      // prepareContext for why.
+      messages: [{ role: "user", content: composeUserMessageWithMemory(request.userMessage, memory) }],
       abortSignal: request.abortSignal,
       ...(this.options.executionMode === undefined ? {} : { executionMode: this.options.executionMode }),
       ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
@@ -938,6 +956,41 @@ function errorToDetails(error: unknown): unknown {
 
 function errorMessageText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Extracts the renderable text of a recalled-memory context block, or undefined
+ * when there is nothing to inject. loadMemory always produces a markdown block,
+ * but the ContextBlockInput type is broader, so handle the string and typed-block
+ * shapes defensively (a json block carries no `content`, so it yields undefined).
+ */
+function memoryBlockText(memory: ContextBlockInput | undefined): string | undefined {
+  if (memory === undefined) {
+    return undefined;
+  }
+  const content = typeof memory === "string"
+    ? memory
+    : (typeof memory === "object" && memory !== null && "content" in memory && typeof memory.content === "string"
+      ? memory.content
+      : undefined);
+  if (content === undefined || content.trim().length === 0) {
+    return undefined;
+  }
+  return content;
+}
+
+/**
+ * Appends the recalled-memory block to the user message (after the user's text and
+ * any attachment block applyAttachments already merged in), clearly delimited so
+ * the model reads it as injected background context rather than the user's words.
+ * Returns the message unchanged when there is no memory to inject.
+ */
+function composeUserMessageWithMemory(userMessage: string, memory: ContextBlockInput | undefined): string {
+  const text = memoryBlockText(memory);
+  if (text === undefined) {
+    return userMessage;
+  }
+  return `${userMessage}\n\n[Recalled long-term memory — background context for this turn, not the user's words:]\n${text}`;
 }
 
 const MIME_EXTENSIONS: Record<string, string> = {

@@ -117,11 +117,16 @@ describe("BujoMemoryStore", () => {
     await store.close();
   });
 
-  it("conforms to MemoryStore (load returns undefined-safe markdown block)", async () => {
+  it("conforms to MemoryStore (markdown block on a hit, undefined on no hits)", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-"));
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
-    const block = await store.load("global");
+    // No hits → no block (a header-only block carries no signal).
+    expect(await store.load("global")).toBeUndefined();
+    // With a hit, load returns a markdown block.
+    await store.appendHostSummary("s1", "decided to adopt opt-in memory");
+    const block = await store.load("memory decision");
     expect(block?.kind).toBe("markdown");
+    expect(block?.content).toContain("opt-in memory");
     await store.close();
   });
 

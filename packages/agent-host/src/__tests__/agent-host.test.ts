@@ -157,8 +157,12 @@ describe("agent host composition helpers", () => {
       { conversationId: "channel-b", text: "Logged answer", abortSignal: new AbortController().signal },
       { append: async () => {} },
     );
-    expect(fake.calls[1]?.prompt).toContain("## Memory (recalled)");
-    expect(fake.calls[1]?.prompt).toContain("Logged answer");
+    // Recalled memory rides on the user message (not the system prompt) so it
+    // survives session resume on every runtime.
+    const recalledMessage = String(fake.calls[1]?.options.messages?.[0]?.content);
+    expect(recalledMessage).toContain("## Memory (recalled)");
+    expect(recalledMessage).toContain("Logged answer");
+    expect(fake.calls[1]?.prompt).not.toContain("## Memory (recalled)");
   });
 
   it("uses the injected harness runtime for agent-host memory LLM capture", async () => {
