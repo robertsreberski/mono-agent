@@ -33,6 +33,8 @@ export interface BuildContextInput {
   readonly identity: ContextBlockInput;
   readonly userMessage: string;
   readonly core?: ContextBlockInput;
+  /** Live runtime facts about the current turn (e.g. the conversationId). */
+  readonly session?: ContextBlockInput;
   readonly memory?: ContextBlockInput | readonly ContextBlockInput[];
   readonly history?: readonly HistoryMessage[];
   readonly skills?: readonly SkillIndexEntry[];
@@ -42,6 +44,7 @@ export interface BuildContextInput {
 export type ContextSectionId =
   | 'core'
   | 'identity'
+  | 'session'
   | 'memory'
   | 'history'
   | 'skills'
@@ -70,6 +73,7 @@ export interface FileContextInput {
   readonly identityPath: string;
   readonly userMessage: string;
   readonly soulPath?: string;
+  readonly session?: ContextBlockInput;
   readonly memory?: ContextBlockInput | readonly ContextBlockInput[];
   readonly history?: readonly HistoryMessage[];
   readonly skills?: readonly SkillIndexEntry[];

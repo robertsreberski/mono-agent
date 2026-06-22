@@ -51,6 +51,7 @@ export type {
   SlackAttachmentOptions,
   SlackEventHandlingResult,
   SlackEventIgnoredReason,
+  SlackNotifyResult,
   SlackRequestMetadata,
   SlackTriggerKind,
 } from "./adapter.js";
