@@ -11,6 +11,7 @@ import { SlackWebApiClient } from "./slack-client.js";
 import {
   SlackSocketModeRunner,
   type SlackSocketModeRunnerBackoffOptions,
+  type SlackSocketModeRunnerHeartbeatOptions,
   type SlackSocketModeRunnerLogger,
   type SlackWebSocketFactory,
 } from "./socket-mode-runner.js";
@@ -44,6 +45,8 @@ export interface SlackAdapterStartOptions {
 
   /** Reconnect backoff bounds forwarded to the Socket Mode runner. */
   readonly reconnect?: SlackSocketModeRunnerBackoffOptions;
+  /** Heartbeat watchdog for detecting and recycling a silently dead socket. */
+  readonly heartbeat?: SlackSocketModeRunnerHeartbeatOptions;
   /** Observe every Socket Mode event handling result. */
   readonly onEventResult?: (result: SlackEventHandlingResult) => void | Promise<void>;
 
@@ -182,6 +185,9 @@ function buildRunnerOptions(
   };
   if (options.reconnect !== undefined) {
     runnerOptions.reconnect = options.reconnect;
+  }
+  if (options.heartbeat !== undefined) {
+    runnerOptions.heartbeat = options.heartbeat;
   }
   if (options.webSocketFactory !== undefined) {
     runnerOptions.webSocketFactory = options.webSocketFactory;
