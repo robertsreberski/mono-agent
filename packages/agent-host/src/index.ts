@@ -107,13 +107,21 @@ interface RecorderCompositionDeps {
  */
 function composeRunRecorder(
   deps: RecorderCompositionDeps,
-  args: { readonly runId: string; readonly conversationId: string; readonly userInput?: string },
+  args: {
+    readonly runId: string;
+    readonly conversationId: string;
+    readonly userInput?: string;
+    readonly systemPrompt?: string;
+    readonly runKind?: "memory" | "channel";
+    readonly memoryOperation?: string;
+  },
 ): RunRecorder {
   const jsonl = createJsonlRunRecorder({
     runId: args.runId,
     conversationId: args.conversationId,
     artifactDir: deps.artifactDir,
     ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
+    ...(args.systemPrompt === undefined ? {} : { systemPrompt: args.systemPrompt }),
   });
   const exporterCfg = deps.exporters[0];
   if (exporterCfg === undefined) {
@@ -135,6 +143,8 @@ function composeRunRecorder(
     artifactDir: deps.artifactDir,
     includeSensitiveData: exporterCfg.includeSensitiveData ?? false,
     ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
+    ...(args.runKind === undefined ? {} : { runKind: args.runKind }),
+    ...(args.memoryOperation === undefined ? {} : { memoryOperation: args.memoryOperation }),
   };
   return createCompositeRunRecorder({
     recorder: jsonl,
@@ -258,6 +268,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
       composeRunRecorder(recorderCompositionDeps(config, options), {
         runId,
         conversationId,
+        runKind: "channel",
         ...(userInput === undefined ? {} : { userInput }),
       }),
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
@@ -406,6 +417,9 @@ function configuredMemoryLlm(
       runtimeOptionsForLocalProvider(model, config.providers?.local),
       configRuntimeFlags(config),
     ),
+    // Per-call timeout; default 60s. Configurable so a slow local model can be
+    // given room on the heavier reconcile/entities steps.
+    ...(llmConfig.timeoutMs === undefined ? {} : { timeoutMs: llmConfig.timeoutMs }),
     // `memory.llm.trace` (default on) gates recording; it only takes effect when
     // the app threaded observability deps into createConfiguredMemory.
     ...(recording !== undefined && llmConfig.trace !== false
@@ -451,6 +465,7 @@ function createAgentHostMemoryLlm(options: {
       // "run was cancelled", which is exactly what made a 10-day memory outage hard to diagnose.
       let timedOut = false;
       const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
+      const memoryOperation = memoryOperationFromLabel(opts?.label);
       const recorder =
         options.recording === undefined
           ? undefined
@@ -458,6 +473,9 @@ function createAgentHostMemoryLlm(options: {
               runId: createMemoryRunId(opts?.label),
               conversationId: memoryConversationId(options.recording.baseConversationId, opts?.label),
               userInput: prompt,
+              systemPrompt: MEMORY_LLM_SYSTEM_PROMPT,
+              runKind: "memory",
+              ...(memoryOperation === undefined ? {} : { memoryOperation }),
             });
       try {
         await safeRecorderCall(() => recorder?.start?.());
@@ -527,6 +545,19 @@ function memorySlug(label: string | undefined): string {
     .replace(/[^a-z0-9]+/gu, "-")
     .replace(/^-+|-+$/gu, "");
   return slug.length > 0 ? slug : "bujo";
+}
+
+/**
+ * Memory sub-operation for the `mono.agent.memory.operation` trace attribute.
+ * The ritual labels are `capture:distill` / `capture:reconcile` / `capture:entities`
+ * (take the part after the colon) and the bare `reflect` / `migrate` (verbatim).
+ */
+function memoryOperationFromLabel(label: string | undefined): string | undefined {
+  if (label === undefined || label.length === 0) {
+    return undefined;
+  }
+  const op = label.includes(":") ? label.slice(label.indexOf(":") + 1) : label;
+  return op.length > 0 ? op : undefined;
 }
 
 function textFromMemoryRuntimeResult(

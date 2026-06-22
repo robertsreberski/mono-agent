@@ -11,6 +11,20 @@ describe("redactJsonValue", () => {
     });
   });
 
+  it("keeps numeric values under sensitive-looking keys (token COUNTS, not secrets)", () => {
+    // `*_tokens` match /token/ but are usage counts we need for cost observability;
+    // secrets are always strings, so only the string token is redacted.
+    expect(
+      redactJsonValue({ input_tokens: 100, output_tokens: 20, cache_read_tokens: 8, cost_usd: 0.5, token: "secret-abc" }),
+    ).toEqual({
+      input_tokens: 100,
+      output_tokens: 20,
+      cache_read_tokens: 8,
+      cost_usd: 0.5,
+      token: "[redacted]",
+    });
+  });
+
   it("marks circular references as [circular]", () => {
     const value: Record<string, unknown> = { name: "root" };
     value.self = value;

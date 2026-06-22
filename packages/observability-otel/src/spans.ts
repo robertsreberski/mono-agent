@@ -163,14 +163,35 @@ export function buildRunReadableSpans(input: BuildRunReadableSpansInput): Readab
       : `run ${summary.runId} · ${summary.conversationId}`;
   const rootOutput = context.includeSensitiveData && finalReply.length > 0 ? finalReply : statusText;
 
+  // System instructions are run content, so they ride the same sensitive gate as
+  // the conversation input/output. The string is already redacted+capped at
+  // persist time (the recorder's dedicated system-prompt cap).
+  const systemPrompt =
+    context.includeSensitiveData && typeof summary.systemPrompt === "string" && summary.systemPrompt.length > 0
+      ? summary.systemPrompt
+      : undefined;
+
   const warningsCount = countRuntimeWarnings(events);
   const rootAttributes: SpanAttributes = {
     ...buildRootSpanAttributes(summary, context, warningsCount),
-    "openinference.span.kind": "AGENT",
+    // Memory runs render with a dedicated "memory" kind so Phoenix's Kind column
+    // distinguishes them; channel runs keep the standard OpenInference "AGENT".
+    "openinference.span.kind": context.runKind === "memory" ? "memory" : "AGENT",
     "input.value": rootInput,
     "input.mime_type": MIME_TEXT,
     "output.value": rootOutput,
     "output.mime_type": MIME_TEXT,
+    ...(systemPrompt === undefined
+      ? {}
+      : {
+          // OpenInference models the system instruction as the first input message
+          // (Phoenix renders it in the LLM messages panel); the flat mirrors stay
+          // queryable in our namespace.
+          "llm.input_messages.0.message.role": "system",
+          "llm.input_messages.0.message.content": systemPrompt,
+          "llm.system": systemPrompt,
+          "mono.agent.system_prompt": systemPrompt,
+        }),
   };
   const rootError = spanStatusFor(summary.status, "runtime") === "ERROR";
 

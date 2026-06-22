@@ -117,6 +117,21 @@ function parseEventsJsonl(raw: string, warnings: string[]): RuntimeEventLike[] {
  * `endedAt` is missing for runs that never finished (≈crashed/running) — fall
  * back to `startedAt + durationMs`.
  */
+/**
+ * Recover a run's kind + memory operation from its persisted conversationId.
+ * Memory runs use `memory:<label>` (e.g. `memory:capture:distill`); the operation
+ * is the trailing label segment (`distill`), excluding the bare `memory:bujo` fallback.
+ */
+function memoryRunInfo(conversationId: string): { runKind: "memory" | "channel"; operation?: string } {
+  if (!conversationId.startsWith("memory:")) {
+    return { runKind: "channel" };
+  }
+  const tail = conversationId.split(":").pop();
+  return tail === undefined || tail.length === 0 || tail === "bujo"
+    ? { runKind: "memory" }
+    : { runKind: "memory", operation: tail };
+}
+
 export function runStartEndNanos(summary: RunSummary): { start: bigint; end: bigint } {
   const startMs = summary.startedAt !== undefined ? Date.parse(summary.startedAt) : Number.NaN;
   const safeStartMs = Number.isNaN(startMs) ? 0 : startMs;
@@ -218,6 +233,11 @@ export async function backfillRuns(
         outcomes.push({ runId, status: "skip", reason: "outside --since/--until window" });
         continue;
       }
+      // Live runs thread runKind/memoryOperation through the export context, but
+      // the artifact only persists conversationId — so recover them from it
+      // (`memory:<label>` for memory runs) to keep backfilled traces' kind + memory
+      // operation consistent with live exports.
+      const memInfo = memoryRunInfo(summary.conversationId);
       const context: RunExportContext = {
         runId: summary.runId,
         conversationId: summary.conversationId,
@@ -226,6 +246,8 @@ export async function backfillRuns(
         configPath: input.configPath,
         artifactDir,
         includeSensitiveData,
+        runKind: memInfo.runKind,
+        ...(memInfo.operation === undefined ? {} : { memoryOperation: memInfo.operation }),
         // Recorded since this feature shipped; absent for older runs (input then
         // falls back to the run descriptor on the root span).
         ...(typeof summary.userInput === "string" ? { userInput: summary.userInput } : {}),

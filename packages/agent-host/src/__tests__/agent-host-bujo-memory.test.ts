@@ -219,6 +219,11 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
 
     expect(spy.finished.length).toBeGreaterThanOrEqual(2);
     expect(spy.finished.map((s) => s.conversationId)).toContain("memory:capture:distill");
+    // Every memory run is tagged as a "memory" kind, and the distill run carries
+    // its operation — these drive the Phoenix span kind + memory.operation attribute.
+    expect(spy.contexts.every((c) => c.runKind === "memory")).toBe(true);
+    const distill = spy.contexts.find((c) => c.conversationId === "memory:capture:distill");
+    expect(distill?.memoryOperation).toBe("distill");
   });
 
   it("reports a memory LLM timeout distinctly from a cancellation (provider too slow/unavailable)", async () => {
@@ -321,14 +326,20 @@ async function readSummaries(artifactsDir: string): Promise<RunSummary[]> {
   return summaries;
 }
 
-function createSpyExporter(): { exporter: RunExporter; finished: RunSummary[] } {
+function createSpyExporter(): {
+  exporter: RunExporter;
+  finished: RunSummary[];
+  contexts: RunExportContext[];
+} {
   const finished: RunSummary[] = [];
+  const contexts: RunExportContext[] = [];
   const exporter: RunExporter = {
-    finish(summary: RunSummary, _context: RunExportContext) {
+    finish(summary: RunSummary, context: RunExportContext) {
       finished.push(summary);
+      contexts.push(context);
     },
   };
-  return { exporter, finished };
+  return { exporter, finished, contexts };
 }
 
 function bujoConfig(input: {

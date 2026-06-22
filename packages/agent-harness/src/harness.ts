@@ -220,7 +220,7 @@ export class MonoAgentHarness implements AgentHarness {
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
         await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
-        const summary = await recorder.finish({ ...runtimeResult, cancelled: true, failureKind: "cancelled" });
+        const summary = await recorder.finish({ ...runtimeResult, systemPrompt: context.prompt, cancelled: true, failureKind: "cancelled" });
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
           failure: {
@@ -232,7 +232,14 @@ export class MonoAgentHarness implements AgentHarness {
       }
 
       const failure = failureFromRuntimeResult(runtimeResult);
-      const summary = await recorder.finish(failure === undefined ? runtimeResult : { ...runtimeResult, failureKind: failure.kind, error: failure.message });
+      // Persist the compiled system prompt (identity + skills + recalled memory)
+      // onto the run so the trace shows what the model was instructed with. It is
+      // redacted+capped at the recorder and sensitive-gated at export.
+      const summary = await recorder.finish(
+        failure === undefined
+          ? { ...runtimeResult, systemPrompt: context.prompt }
+          : { ...runtimeResult, systemPrompt: context.prompt, failureKind: failure.kind, error: failure.message },
+      );
       const baseMetadata = responseMetadata(runId, request, context, summary, runtimeResult);
 
       if (failure !== undefined) {

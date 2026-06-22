@@ -51,6 +51,12 @@ export interface MemoryAgentHostLlmConfig {
    * `true`; set `false` to keep memory LLM calls unrecorded.
    */
   readonly trace?: boolean;
+  /**
+   * Per-`complete()` timeout in ms before the memory LLM run is aborted. Defaults
+   * to 60000. Raise it when a slow local model (e.g. opencode-go) trips the cap on
+   * the heavier reconcile/entities steps.
+   */
+  readonly timeoutMs?: number;
 }
 export type MemoryLlmConfig = MemoryOllamaLlmConfig | MemoryAgentHostLlmConfig;
 
