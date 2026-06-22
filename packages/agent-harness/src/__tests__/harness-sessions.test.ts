@@ -124,6 +124,33 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
   });
 
+  it("carries recalled memory on the user message of every turn, including the resumed turn", async () => {
+    const identityPath = await identityFixture();
+    const memory: MemoryStore = {
+      async load(): Promise<MemoryBlock | undefined> {
+        return { kind: "markdown", content: "## Memory (recalled)\n- [ ] launch checklist", source: "spy", truncated: false };
+      },
+      async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
+        return { conversationId, source: "spy", bytesWritten: summary.length };
+      },
+    };
+    const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", memory, session });
+
+    await harness.run(request("conv-mem", "first question"));
+    await harness.run(request("conv-mem", "second question"));
+
+    // Turn 2 resumes the warm session...
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-1");
+    // ...yet recalled memory still reaches the model on BOTH turns because it
+    // rides on the user message, not the system prompt (which a resume may drop).
+    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).toContain("launch checklist");
+    expect(String(fake.calls[1]?.options.messages?.[0]?.content)).toContain("launch checklist");
+    // And it is NOT in the system prompt on either turn.
+    expect(fake.calls[0]?.prompt).not.toContain("launch checklist");
+    expect(fake.calls[1]?.prompt).not.toContain("launch checklist");
+  });
+
   it("a cold/derived-id durable resume still sends history so create-on-miss keeps prior context (F9/Issue-2)", async () => {
     const identityPath = await identityFixture();
     const historyStore = await primedHistoryStore("conv-d");

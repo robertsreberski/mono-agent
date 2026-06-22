@@ -150,17 +150,22 @@ describe("AgentHarness", () => {
     expect(response.failure).toBeUndefined();
     expect(response.metadata.summary).toMatchObject({
       status: "succeeded",
-      // The assistant event plus the provider_bridge_latency observability event.
-      eventCount: 2,
+      // The memory_recalled diagnostic, the assistant event, and the
+      // provider_bridge_latency observability event.
+      eventCount: 3,
       cost: { totalUsd: 0.01 },
       capabilitiesUsed: ["tools:read"],
     });
     expect(recorder.startCount).toBe(1);
     expect(response.metadata.runtime).toMatchObject({ cost: { totalUsd: 0.01 }, capabilitiesUsed: ["tools:read"] });
-    expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "session", "memory", "history", "skills", "skill-instructions", "user-message"]);
-    expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(dir, "memory.md"), join(skillsRoot, "research", "SKILL.md")]);
+    // Recalled memory no longer lives in the system prompt, so it is not a context
+    // section/source — it rides on the user message instead (asserted below).
+    expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "session", "history", "skills", "skill-instructions", "user-message"]);
+    expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(skillsRoot, "research", "SKILL.md")]);
     expect(fake.calls).toHaveLength(1);
-    expect(fake.calls[0]?.prompt).toContain("Remember: terse.");
+    // Recalled memory is appended to the user message, NOT the system prompt.
+    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).toContain("Remember: terse.");
+    expect(fake.calls[0]?.prompt).not.toContain("Remember: terse.");
     expect(fake.calls[0]?.prompt).toContain("Earlier answer");
     // The deliverable (telegram:) conversation gets the webhook-callback routing guidance.
     expect(fake.calls[0]?.prompt).toContain("You are currently handling the conversation `telegram:1`.");
@@ -232,6 +237,78 @@ describe("AgentHarness", () => {
     });
 
     expect(recalls).toEqual([{ conversationId: "telegram:1", query: "What did we decide about pricing?" }]);
+  });
+
+  it("does not append a recalled-memory block when recall returns nothing", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const memory = {
+      async load() {
+        return undefined;
+      },
+      async appendHostSummary() {
+        return { conversationId: "telegram:1", source: "", bytesWritten: 0 };
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      cwd: dir,
+      memory,
+    }).run({
+      conversationId: "telegram:1",
+      userMessage: "What changed?",
+      abortSignal: new AbortController().signal,
+    });
+
+    // No hits → the user message is sent verbatim, with no memory delimiter.
+    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).toBe("What changed?");
+    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).not.toContain("Recalled long-term memory");
+  });
+
+  it("does not persist the recalled-memory block injected into the user message", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const summaries: string[] = [];
+    const memory = {
+      async load() {
+        return { kind: "markdown" as const, content: "## Memory (recalled)\n- [ ] ship the docs", source: "memory.md", truncated: false };
+      },
+      async appendHostSummary(_id: string, summary: string) {
+        summaries.push(summary);
+        return { conversationId: "telegram:1", source: "memory.md", bytesWritten: summary.length };
+      },
+    };
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 4 });
+    const fake = createFakeRuntime(async () => ({ text: "Done." }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      cwd: dir,
+      memory,
+      memoryWriteMode: "append-host-summary",
+      historyStore,
+    }).run({
+      conversationId: "telegram:1",
+      userMessage: "What changed?",
+      abortSignal: new AbortController().signal,
+    });
+
+    // The recalled memory rode on the provider-facing user message...
+    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).toContain("ship the docs");
+    // ...but must NOT leak into the persisted host summary or durable history.
+    expect(summaries.join("\n")).not.toContain("ship the docs");
+    expect(summaries.join("\n")).toContain("User: What changed?");
+    const persisted = await historyStore.load("telegram:1");
+    expect(persisted.map((m) => m.content).join("\n")).not.toContain("ship the docs");
   });
 
   it("propagates runtime failure results without success text", async () => {
