@@ -445,7 +445,12 @@ function createAgentHostMemoryLlm(options: {
     id: `agent-host:${referenceOf(options.model)}`,
     async complete(prompt: string, opts?: { readonly label?: string }): Promise<string> {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => { ctrl.abort(); }, timeoutMs);
+      // Track whether OUR timeout fired vs an external abort. A provider that is slow or
+      // misconfigured (e.g. a dead OAuth token whose refresh hangs) trips this timeout and the
+      // runtime reports `cancelled` — without this flag the failure is mislabeled as a generic
+      // "run was cancelled", which is exactly what made a 10-day memory outage hard to diagnose.
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
       const recorder =
         options.recording === undefined
           ? undefined
@@ -473,14 +478,17 @@ function createAgentHostMemoryLlm(options: {
           } satisfies RuntimeRunOptions);
         } catch (error) {
           // `runtime.run` itself threw (e.g. the abort/timeout above) — record the
-          // failure, then re-throw the original error unchanged.
+          // failure, then surface a timeout distinctly from an external abort.
           await safeRecorderCall(() => recorder?.fail(error));
+          if (timedOut) {
+            throw new Error(`agent-host memory LLM timed out after ${timeoutMs}ms (provider too slow or unavailable).`);
+          }
           throw error;
         }
         // Record with the real outcome BEFORE textFromMemoryRuntimeResult, which throws
         // on failureKind/error; recorder.finish() classifies failed/succeeded/cancelled itself.
         await safeRecorderCall(() => recorder?.finish(result));
-        return textFromMemoryRuntimeResult(result);
+        return textFromMemoryRuntimeResult(result, { timedOut, timeoutMs });
       } finally {
         clearTimeout(timer);
       }
@@ -521,8 +529,14 @@ function memorySlug(label: string | undefined): string {
   return slug.length > 0 ? slug : "bujo";
 }
 
-function textFromMemoryRuntimeResult(result: RuntimeResult): string {
+function textFromMemoryRuntimeResult(
+  result: RuntimeResult,
+  opts?: { readonly timedOut?: boolean; readonly timeoutMs?: number },
+): string {
   if (result.cancelled === true) {
+    if (opts?.timedOut === true) {
+      throw new Error(`agent-host memory LLM timed out after ${opts.timeoutMs ?? "?"}ms (provider too slow or unavailable).`);
+    }
     throw new Error("agent-host memory LLM run was cancelled.");
   }
   if (typeof result.failureKind === "string" && result.failureKind.length > 0) {

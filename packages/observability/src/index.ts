@@ -34,10 +34,12 @@ export {
   listRecordedRuns,
   ObservabilityReadError,
   readRecordedRun,
+  reconcileStaleRunArtifacts,
 } from "./recorded-runs.js";
 export type {
   ObservabilityReadErrorCode,
   ObservabilityReadErrorDetails,
+  ReconcileStaleRunsResult,
 } from "./recorded-runs.js";
 export {
   listTraceRuns,

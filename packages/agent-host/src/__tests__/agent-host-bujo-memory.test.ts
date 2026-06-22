@@ -8,7 +8,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -19,7 +19,7 @@ import type {
   RunExporter,
   RunSummary,
 } from "@mono-agent/observability";
-import type { RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { createConfiguredAgentHarness, createConfiguredMemory } from "../index.js";
 
@@ -221,6 +221,29 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     expect(spy.finished.map((s) => s.conversationId)).toContain("memory:capture:distill");
   });
 
+  it("reports a memory LLM timeout distinctly from a cancellation (provider too slow/unavailable)", async () => {
+    // Regression for the audit's dominant memory symptom: a dead/slow provider tripped the memory
+    // LLM's 60s timeout, which the runtime reports as `cancelled`. The error must now say "timed out"
+    // (with a provider hint) rather than the misleading "run was cancelled".
+    vi.useFakeTimers();
+    try {
+      const dir = await tempDir();
+      const store = createConfiguredMemory(
+        bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
+        { runtime: createAbortAwareRuntime() },
+      ) as unknown as CapturableStore;
+
+      const expectation = expect(store.capture("conv-1", "text")).rejects.toThrow(
+        /timed out after 60000ms \(provider too slow or unavailable\)/u,
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expectation;
+      await store.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("records a failed run AND rethrows when the memory LLM fails", async () => {
     const dir = await tempDir();
     const store = createConfiguredMemory(
@@ -359,6 +382,25 @@ function createFailingRuntime() {
     async run(systemPrompt: string, options: RuntimeRunOptions) {
       calls.push({ systemPrompt, options });
       return { failureKind: "provider_error", error: "boom" };
+    },
+  };
+}
+
+/** Hangs until its run is aborted, then resolves `cancelled` — models a slow/unavailable provider. */
+function createAbortAwareRuntime() {
+  const calls: Array<{ systemPrompt: string; options: RuntimeRunOptions }> = [];
+  return {
+    calls,
+    async run(systemPrompt: string, options: RuntimeRunOptions) {
+      calls.push({ systemPrompt, options });
+      return await new Promise<RuntimeResult>((resolve) => {
+        const signal = options.abortSignal;
+        if (signal?.aborted === true) {
+          resolve({ cancelled: true });
+          return;
+        }
+        signal?.addEventListener("abort", () => { resolve({ cancelled: true }); });
+      });
     },
   };
 }

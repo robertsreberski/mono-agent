@@ -61,6 +61,50 @@ describe("Cron adapter", () => {
     }
   });
 
+  it("reclaims the slot when a responder hangs past maxRunMs (watchdog), so future firings still run", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let respondCount = 0;
+    const responder: AgentResponder = {
+      async respond() {
+        respondCount += 1;
+        // Never settles and ignores the abort signal — models a wedged responder that would
+        // otherwise pin state.active forever and skip every future firing.
+        await new Promise(() => {});
+        return {};
+      },
+    };
+    const results: unknown[] = [];
+
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "wedged", expression: "* * * * *", timezone: "UTC", prompt: "x", conversationId: "cron:wedged" }],
+      now: () => new Date(Date.now()),
+      onResult: (result) => {
+        results.push(result);
+      },
+      maxRunMs: 5_000,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000); // first firing starts, then hangs
+      expect(respondCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(5_000); // watchdog fires -> abort + reclaim the slot
+      const failed = results.find(
+        (r): r is { kind: string; error?: string } => (r as { kind?: string }).kind === "failed",
+      );
+      expect(failed).toBeDefined();
+      expect(failed?.error).toMatch(/timed out after 5000ms/u);
+
+      await vi.advanceTimersByTimeAsync(55_000); // next minute boundary -> a NEW run starts
+      expect(respondCount).toBe(2); // proves the slot was reclaimed, not skipped as "prior run active"
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("queues overlapping ticks for the same job and runs each after the prior finishes (preserve)", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

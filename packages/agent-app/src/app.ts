@@ -7,7 +7,7 @@ import {
   createConfiguredMemory,
 } from "@mono-agent/agent-host";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import { registerTraceSource } from "@mono-agent/observability";
+import { reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 
@@ -150,6 +150,9 @@ class MonoAgentAppController implements MonoAgentApp {
   private readonly statuses = new Map<ChannelId, ChannelStatus>();
   private readonly running = new Map<ChannelId, RunningChannel>();
   private readonly startsInFlight = new Map<ChannelId, Promise<ChannelStatus>>();
+  /** Captured at construction (~process start): the cutoff for reclaiming orphaned "running" runs. */
+  private readonly processStartMs = Date.now();
+  private staleRunsReconciled = false;
   private traceabilityStatusValue: TraceabilityStatus = {
     kind: "disabled",
     reason: "Traceability has not started yet.",
@@ -286,12 +289,44 @@ class MonoAgentAppController implements MonoAgentApp {
       });
       this.traceabilityStatusValue = { kind: "running", sourceId, registryDir, artifactDir };
       this.logger?.info?.("Traceability source registered.", { reason, sourceId, registryDir, artifactDir });
+      // Fire-and-forget: orphan reclamation is best-effort cleanup and must not gate startup
+      // readiness (it scans the whole artifacts dir, which grows unbounded over time).
+      void this.reconcileStaleRunsOnce(artifactDir);
     } catch (error) {
       const failure = reasonOf(error);
       this.traceabilityStatusValue = { kind: "failed", reason: failure };
       this.logger?.error?.("Traceability source registration failed.", { reason: failure });
     }
     return this.traceabilityStatusValue;
+  }
+
+  /**
+   * One-shot at startup: a process that crashed mid-run leaves its summary stuck at "running"
+   * forever (a ghost run in `status`/observability). Reclaim those — any "running" summary that
+   * began before THIS process started — by rewriting them to "interrupted". Gated so a config
+   * reload (which re-runs startTraceability) does not repeat the scan. Best-effort: never fatal.
+   */
+  private async reconcileStaleRunsOnce(artifactDir: string): Promise<void> {
+    if (this.staleRunsReconciled) {
+      return;
+    }
+    this.staleRunsReconciled = true;
+    try {
+      const { reconciled, warnings } = await reconcileStaleRunArtifacts(artifactDir, {
+        startedBeforeMs: this.processStartMs,
+      });
+      for (const warning of warnings) {
+        this.logger?.warn?.(`Stale-run reconciliation: ${warning}`);
+      }
+      if (reconciled.length > 0) {
+        this.logger?.info?.('Reclaimed orphaned runs left as "running" by a prior process.', {
+          count: reconciled.length,
+          runIds: reconciled.slice(0, 20),
+        });
+      }
+    } catch (error) {
+      this.logger?.warn?.("Stale-run reconciliation failed.", { reason: reasonOf(error) });
+    }
   }
 
   /**

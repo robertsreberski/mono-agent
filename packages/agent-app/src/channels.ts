@@ -368,7 +368,20 @@ export function createOpenAIApiChannelDriver(
 
 export interface CronChannelOverrides {
   readonly adapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
+  /**
+   * Watchdog: max wall-clock a single cron run may take before it is aborted and its slot
+   * reclaimed. Defaults to {@link DEFAULT_CRON_MAX_RUN_MS}. Without this, a wedged responder
+   * leaves `state.active` set forever and every later firing is skipped as "a prior run is
+   * still active" — the failure that silently starved hourly scans for days.
+   */
+  readonly maxRunMs?: number;
 }
+
+/**
+ * 20 minutes — comfortably above any real briefing/scan (observed max ~6.5 min) yet bounded, so a
+ * hung run is reclaimed rather than blocking the job indefinitely.
+ */
+const DEFAULT_CRON_MAX_RUN_MS = 20 * 60 * 1000;
 
 export function createCronChannelDriver(
   overrides: CronChannelOverrides = {},
@@ -395,8 +408,12 @@ export function createCronChannelDriver(
         // — the legacy/default app behavior. This avoids the scheduler's
         // unbounded "queue" default retaining stale ticks in memory when a job
         // runs longer than its interval. (Queue/replace remain available to
-        // programmatic callers of startCronAdapter.)
+        // programmatic callers of startCronAdapter.) The watchdog below is what
+        // keeps "skip" safe: a hung run no longer pins the slot forever.
         overlap: "skip",
+        // Reclaim a run whose responder never settles, so a single wedged run can't
+        // permanently skip every future firing of the job.
+        maxRunMs: overrides.maxRunMs ?? DEFAULT_CRON_MAX_RUN_MS,
         jobs: jobs.map((job) => ({
           id: job.id,
           expression: job.expression,
