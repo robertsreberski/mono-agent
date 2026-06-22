@@ -950,6 +950,42 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
+  it("loads agent-host memory.llm timeoutMs when set", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "memory-root",
+        MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_LLM_PROVIDER: "agent-host",
+        MONO_AGENT_MEMORY_LLM_MODEL: "pi:opencode-go:kimi-k2.6",
+        MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: "120000",
+      },
+    });
+
+    expect(config.memory?.llm).toMatchObject({
+      provider: "agent-host",
+      model: "pi:opencode-go:kimi-k2.6",
+      timeoutMs: 120000,
+    });
+  });
+
+  it("rejects memory.llm timeoutMs when the provider is not agent-host", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "memory-root",
+          MONO_AGENT_MEMORY_MODE: "bujo",
+          MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
+          MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+          MONO_AGENT_MEMORY_LLM_TIMEOUT_MS: "120000",
+        },
+      }),
+    ).toThrow(/MONO_AGENT_MEMORY_LLM_TIMEOUT_MS is only valid when/u);
+  });
+
   it("rejects agent-host memory.llm endpoint because runtime models do not use Ollama endpoints", () => {
     expect(() =>
       loadMonoAgentConfig({

@@ -33,6 +33,43 @@ describe("JsonlRunRecorder", () => {
     expect(onDisk.userInput).toBe("What is the capital of France?");
   });
 
+  it("persists the model (from the result) and system prompt (from the recorder option)", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "mem-capture-distill-1",
+      conversationId: "memory:capture:distill",
+      artifactDir: dir,
+      systemPrompt: "You are the private memory maintenance LLM.",
+    });
+    const summary = await recorder.finish({ model: "pi:opencode-go:kimi-k2.6" });
+    expect(summary.model).toBe("pi:opencode-go:kimi-k2.6");
+    expect(summary.systemPrompt).toBe("You are the private memory maintenance LLM.");
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
+      model?: string;
+      systemPrompt?: string;
+    };
+    expect(onDisk.model).toBe("pi:opencode-go:kimi-k2.6");
+    expect(onDisk.systemPrompt).toBe("You are the private memory maintenance LLM.");
+  });
+
+  it("prefers the result's system prompt and caps it beyond the per-event byte limit", async () => {
+    const dir = await tempDir();
+    // maxStringBytes (256) bounds event content, but the system prompt rides its
+    // own larger cap, so a long compiled prompt survives well past 256 bytes.
+    const longPrompt = "S".repeat(5_000);
+    const recorder = createJsonlRunRecorder({
+      runId: "run:sp",
+      conversationId: "telegram:1",
+      artifactDir: dir,
+      maxStringBytes: 256,
+      systemPrompt: "recorder-option-prompt",
+    });
+    const summary = await recorder.finish({ systemPrompt: longPrompt });
+    // The result's prompt wins over the recorder option.
+    expect(String(summary.systemPrompt).startsWith("SSSS")).toBe(true);
+    expect(String(summary.systemPrompt).length).toBeGreaterThan(1_000);
+  });
+
   it("captures events and writes redacted summary artifacts", async () => {
     const dir = await tempDir();
     let now = 1000;

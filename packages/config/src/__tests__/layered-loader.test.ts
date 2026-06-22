@@ -302,6 +302,20 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
   });
 
+  it("translates JSON memory llm timeoutMs to its env key", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          llm: { provider: "agent-host", model: "pi:opencode-go:kimi-k2.6", timeoutMs: 120000 },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS).toBe("120000");
+  });
+
   it("drops a stale JSON Ollama LLM endpoint when env switches memory llm to agent-host", () => {
     const layered = layerJsonOntoEnv(
       {

@@ -153,6 +153,33 @@ describe("buildRunReadableSpans", () => {
     expect(spans[1]!.kind).toBe(2);
   });
 
+  it("renders the root as a 'memory' kind when context.runKind is memory", () => {
+    const spans = build({ ctx: { ...ctx, runKind: "memory" } });
+    expect(spans[0]!.attributes["openinference.span.kind"]).toBe("memory");
+    // Channel runs keep the standard AGENT kind.
+    expect(build({ ctx: { ...ctx, runKind: "channel" } })[0]!.attributes["openinference.span.kind"]).toBe("AGENT");
+  });
+
+  it("attaches the system prompt as input message 0 only when sensitive export is on", () => {
+    const withPrompt = build({
+      summary: { ...summary, systemPrompt: "You are the private memory maintenance LLM." },
+      ctx: { ...ctx, includeSensitiveData: true },
+    })[0]!;
+    expect(withPrompt.attributes["llm.input_messages.0.message.role"]).toBe("system");
+    expect(withPrompt.attributes["llm.input_messages.0.message.content"]).toBe(
+      "You are the private memory maintenance LLM.",
+    );
+    expect(withPrompt.attributes["mono.agent.system_prompt"]).toBe("You are the private memory maintenance LLM.");
+
+    // Same summary, but sensitive export off → no system prompt leaks.
+    const gated = build({
+      summary: { ...summary, systemPrompt: "You are the private memory maintenance LLM." },
+      ctx: { ...ctx, includeSensitiveData: false },
+    })[0]!;
+    expect(gated).not.toHaveProperty("llm.input_messages.0.message.role");
+    expect(gated).not.toHaveProperty("mono.agent.system_prompt");
+  });
+
   it("sets string input/output values and mime types on every span", () => {
     for (const span of build()) {
       expect(typeof span.attributes["input.value"]).toBe("string");

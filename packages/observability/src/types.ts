@@ -14,6 +14,10 @@ export interface RuntimeResultLike {
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
+  /** Model id this run used (e.g. the provider model string). */
+  readonly model?: string;
+  /** System prompt the main run was driven with (the compiled context prompt). */
+  readonly systemPrompt?: string;
   readonly [key: string]: unknown;
 }
 
@@ -38,6 +42,14 @@ export interface RunSummary {
   readonly capabilitiesUsed?: unknown;
   /** The user's prompt for this run, persisted so backfill can show it as input. */
   readonly userInput?: string;
+  /** Model id this run used; surfaced as `llm.model_name` on the exported span. */
+  readonly model?: string;
+  /**
+   * System instructions for this run (the memory maintenance prompt for memory
+   * runs, the compiled identity+skills+memory prompt for channel runs), persisted
+   * redacted+truncated so the trace shows what the model was instructed to do.
+   */
+  readonly systemPrompt?: string;
 }
 
 export interface RunRecorder {
@@ -61,6 +73,15 @@ export interface RunExportContext {
    * request); absent for backfill (not recorded in artifacts).
    */
   readonly userInput?: string;
+  /**
+   * Classifies the run so memory runs are distinguishable from channel runs in
+   * Phoenix: drives the root `openinference.span.kind` ("memory" vs "AGENT") and
+   * the `mono.agent.run.kind` attribute. Threaded explicitly rather than sniffed
+   * from the run-id prefix.
+   */
+  readonly runKind?: "memory" | "channel";
+  /** Memory sub-operation for memory runs: distill|reconcile|entities|reflect|migrate. */
+  readonly memoryOperation?: string;
 }
 
 export interface RunExportEventContext extends RunExportContext {
@@ -99,6 +120,12 @@ export interface JsonlRunRecorderOptions {
   readonly maxStringBytes?: number;
   /** The user's prompt; persisted (redacted) into the summary as `userInput`. */
   readonly userInput?: string;
+  /**
+   * System instructions for this run; persisted (redacted + capped to a dedicated
+   * larger limit than `maxStringBytes`) into the summary as `systemPrompt`. Used by
+   * the memory path, which supplies its constant prompt at recorder-creation time.
+   */
+  readonly systemPrompt?: string;
 }
 
 export type RecordedRunEventCategory = "tool" | "thinking" | "message" | "runtime" | "error";
@@ -115,6 +142,7 @@ export interface RecordedRunListItem {
   readonly updatedAt: string;
   readonly usage?: unknown;
   readonly cost?: unknown;
+  readonly model?: string;
   readonly providerSessionId?: string | null;
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;

@@ -71,7 +71,64 @@ export function buildRootSpanAttributes(
     ...(ctx.includeSensitiveData && ctx.artifactDir !== undefined
       ? { "mono.agent.artifact_dir": ctx.artifactDir }
       : {}),
+    // Run classification (memory vs channel) + memory sub-operation. Threaded via
+    // the export context, so memory runs are filterable (and the root span kind is
+    // adjusted in the OTLP builder) without sniffing the run-id prefix.
+    ...(ctx.runKind === undefined ? {} : { "mono.agent.run.kind": ctx.runKind }),
+    ...(ctx.memoryOperation === undefined ? {} : { "mono.agent.memory.operation": ctx.memoryOperation }),
+    // Model: `llm.model_name` lights up Phoenix's model column; the `mono.agent.*`
+    // mirror stays in our stable namespace for filtering.
+    ...(summary.model === undefined
+      ? {}
+      : { "llm.model_name": summary.model, "mono.agent.model": summary.model }),
+    // Latency, tokens and cost are metadata (never content) so they are always
+    // exported, like `events.count`. Token keys use OpenInference conventions so
+    // Phoenix renders them in its token columns.
+    "mono.agent.duration_ms": summary.durationMs,
+    ...tokenAttributes(summary.usage),
+    ...costAttributes(summary.cost, summary.usage),
   };
+}
+
+/** Read a finite number, else undefined (drops nulls/strings/NaN from loosely-typed payloads). */
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Map the run's token usage record onto OpenInference `llm.token_count.*` keys.
+ * Field names match the provider bridges' enriched usage (input_tokens /
+ * output_tokens / cache_read_tokens / cache_creation_tokens). Only finite numbers
+ * are emitted; `total` is derived when either prompt or completion is present.
+ */
+function tokenAttributes(usage: unknown): SpanAttributes {
+  if (!isRecord(usage)) {
+    return {};
+  }
+  const input = finiteNumber(usage.input_tokens);
+  const output = finiteNumber(usage.output_tokens);
+  const cacheRead = finiteNumber(usage.cache_read_tokens);
+  const cacheWrite = finiteNumber(usage.cache_creation_tokens);
+  return {
+    ...(input === undefined ? {} : { "llm.token_count.prompt": input }),
+    ...(output === undefined ? {} : { "llm.token_count.completion": output }),
+    ...(input === undefined && output === undefined ? {} : { "llm.token_count.total": (input ?? 0) + (output ?? 0) }),
+    ...(cacheRead === undefined ? {} : { "llm.token_count.prompt_details.cache_read": cacheRead }),
+    ...(cacheWrite === undefined ? {} : { "llm.token_count.prompt_details.cache_write": cacheWrite }),
+  };
+}
+
+/**
+ * Resolve run cost (USD). Prefer the observer aggregate `cost.cumulativeUsd`
+ * (correct across multi-turn channel runs) and fall back to `usage.cost_usd`
+ * (populated on single-turn memory runs). Phoenix can't price the local/codex
+ * models from its built-in table, so this is the authoritative surfaced cost.
+ */
+function costAttributes(cost: unknown, usage: unknown): SpanAttributes {
+  const fromCost = isRecord(cost) ? finiteNumber(cost.cumulativeUsd) : undefined;
+  const fromUsage = isRecord(usage) ? finiteNumber(usage.cost_usd) : undefined;
+  const usd = fromCost ?? fromUsage;
+  return usd === undefined ? {} : { "mono.agent.cost_usd": usd };
 }
 
 /**

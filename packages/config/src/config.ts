@@ -394,6 +394,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_LLM_MODEL",
       "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
       "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+      "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
       "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
       "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
       "MONO_AGENT_MEMORY_REFLECTION_CRON",
@@ -572,11 +573,16 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
       normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TRACE) === undefined
         ? undefined
         : readBoolean(env.MONO_AGENT_MEMORY_LLM_TRACE, "MONO_AGENT_MEMORY_LLM_TRACE", true, invalidEnv);
+    const timeoutMs = readOptionalInteger(env.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS, "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS", {
+      min: 1_000,
+      max: 600_000,
+    });
     return {
       provider,
       model: rawModel,
       executionMode,
       ...(trace === undefined ? {} : { trace }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
     };
   }
   if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_EXECUTION_MODE) !== undefined) {
@@ -591,6 +597,13 @@ function readMemoryLlmConfig(env: Record<string, string | undefined>): MemoryLlm
       "invalid_env",
       "MONO_AGENT_MEMORY_LLM_TRACE is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
       { env: "MONO_AGENT_MEMORY_LLM_TRACE" },
+    );
+  }
+  if (normalizeOptionalString(env.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS) !== undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS is only valid when MONO_AGENT_MEMORY_LLM_PROVIDER is agent-host.",
+      { env: "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS" },
     );
   }
   return {

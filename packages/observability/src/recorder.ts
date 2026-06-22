@@ -1,8 +1,13 @@
 import { join, resolve } from "node:path";
 
 import { DEFAULT_MAX_STRING_BYTES, mkdir, safeArtifactName, writeJsonAtomic } from "./artifact-fs.js";
-import { errorFailureKind, errorToJson, redactJsonValue } from "./redaction.js";
+import { errorFailureKind, errorToJson, redactJsonValue, truncateString } from "./redaction.js";
 import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
+
+// System prompts are bounded by their OWN cap, not the per-event `maxStringBytes`
+// (default 4096) that bounds tool/message content — the compiled channel prompt
+// (identity + skills + recalled memory) is large and would otherwise be gutted.
+const SYSTEM_PROMPT_MAX_BYTES = 32_000;
 
 // `redactJsonValue` is re-exported so existing importers (recorder.test.ts
 // imports it via "../recorder.js") keep their import surface unchanged.
@@ -33,6 +38,7 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly startedAtIso: string;
   private readonly events: RuntimeEventLike[] = [];
   private readonly userInput: string | undefined;
+  private readonly systemPrompt: string | undefined;
 
   constructor(options: JsonlRunRecorderOptions) {
     this.runId = normalizeId(options.runId, "runId");
@@ -50,6 +56,8 @@ class JsonlRunRecorder implements RunRecorder {
       typeof options.userInput === "string"
         ? (redactJsonValue(options.userInput, this.maxStringBytes) as string)
         : undefined;
+    this.systemPrompt =
+      typeof options.systemPrompt === "string" ? truncateString(options.systemPrompt, SYSTEM_PROMPT_MAX_BYTES) : undefined;
     this.startedAt = this.clock();
     this.startedAtIso = new Date(this.startedAt).toISOString();
   }
@@ -81,6 +89,13 @@ class JsonlRunRecorder implements RunRecorder {
   private buildSummary(status: RunSummary["status"], failureKind: string | undefined, result: RuntimeResultLike): RunSummary {
     const now = this.clock();
     const nowIso = new Date(now).toISOString();
+    // System prompt may arrive via the recorder option (memory path, a constant)
+    // or via the finished result (channel path, the compiled context prompt). The
+    // result wins when present; both are bounded by the dedicated prompt cap.
+    const systemPrompt =
+      typeof result.systemPrompt === "string"
+        ? truncateString(result.systemPrompt, SYSTEM_PROMPT_MAX_BYTES)
+        : this.systemPrompt;
     const summary: RunSummary = {
       runId: this.runId,
       conversationId: this.conversationId,
@@ -92,10 +107,12 @@ class JsonlRunRecorder implements RunRecorder {
       durationMs: Math.max(0, now - this.startedAt),
       ...(result.usage === undefined ? {} : { usage: redactJsonValue(result.usage, this.maxStringBytes) }),
       ...(result.cost === undefined ? {} : { cost: redactJsonValue(result.cost, this.maxStringBytes) }),
+      ...(typeof result.model === "string" && result.model.length > 0 ? { model: result.model } : {}),
       ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
       eventCount: this.events.length,
       artifactPaths: this.artifactPaths(),
       ...(this.userInput === undefined ? {} : { userInput: this.userInput }),
+      ...(systemPrompt === undefined ? {} : { systemPrompt }),
       ...(result.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(result.runtimeWarnings, this.maxStringBytes) }),
       ...(result.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(result.diagnostics, this.maxStringBytes) }),
       ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(result.capabilitiesUsed, this.maxStringBytes) }),
