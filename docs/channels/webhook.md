@@ -85,6 +85,16 @@ curl -s http://127.0.0.1:<port>/webhook/invoke/status/<requestId>
 
 Async statuses are kept in memory subject to `retentionMs` and `maxStoredRequests`; a status URL polled after expiry returns `not_found`. If a turn is already running and the runtime cannot accept another, a request returns **HTTP 409** (`status: "busy"`) — that transient state is not stored or replayed via the status URL.
 
+## Proactive delivery and the async-callback pattern
+
+A webhook turn automatically gets the proactive `notify_conversation(conversationId, text)` and `list_notify_destinations()` tools — injected only on cron/webhook turns and not gated by `tools.allowedTools`. This makes the webhook the inbound half of an **async callback**:
+
+1. In a live chat (Telegram/Slack), the agent kicks off a long-running external operation and asks the service to call back later. It embeds the current conversation's id — surfaced in the [Session context block](/context/assembly/#session) — in the callback request.
+2. When the service finishes, it `POST`s to this webhook with that id carried in the body (e.g. `"conversationId"` or inside `metadata`).
+3. The webhook turn reads the id from the payload and calls `notify_conversation(conversationId, …)` to deliver the result **back into the original conversation** as a real, remembered turn — not a side-channel post.
+
+Because the destination id comes from the request payload, the security boundary is the **owning channel's allowlist**: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused. See [Proactive notify tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
+
 ## Multiple endpoints
 
 You can serve several named endpoints on the **one** shared host/port, each with its own path, mode, and optional prompt. Define them inline under `webhook.endpoints[]`:

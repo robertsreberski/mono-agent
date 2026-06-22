@@ -160,7 +160,9 @@ memory-bujo index ./memory
 
 `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default
 `http://localhost:11434`) and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` the per-call timeout
-(default `120000`). If `MONO_AGENT_MEMORY_LLM_MODEL` is unset, `reflect`/`migrate` exit
+(CLI default `120000` — the in-app scheduler uses `memory.llm.timeoutMs`, default `60000`;
+see [the two memory-LLM timeouts](/memory/validation-and-cli/#the-two-memory-llm-timeouts)).
+If `MONO_AGENT_MEMORY_LLM_MODEL` is unset, `reflect`/`migrate` exit
 with a clear error. See [Validation & CLI](/memory/validation-and-cli/) for the full subcommand
 reference, and [Embeddings](/memory/embeddings/) for the semantic-recall env vars these
 commands share.
