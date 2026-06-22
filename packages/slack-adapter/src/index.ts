@@ -61,6 +61,7 @@ export {
 export type {
   SlackEventCallbackHandler,
   SlackSocketModeRunnerBackoffOptions,
+  SlackSocketModeRunnerHeartbeatOptions,
   SlackSocketModeRunnerLogger,
   SlackSocketModeRunnerOptions,
   SlackSocketModeRunnerStartOptions,
