@@ -19,7 +19,11 @@ export function redactJsonValue(value: unknown, maxStringBytes = DEFAULT_MAX_STR
 }
 
 function redact(value: unknown, maxStringBytes: number, depth: number, key: string | undefined, seen: WeakSet<object>): unknown {
-  if (key !== undefined && SENSITIVE_KEY_PATTERN.test(key)) {
+  // Secrets (access tokens, API keys, passwords, cookies) are always strings, so a
+  // numeric value under a "sensitive" key is a count/flag — e.g. `input_tokens`,
+  // `output_tokens`, `cache_read_tokens` all match /token/ but carry token COUNTS
+  // we want visible for cost observability. Only redact non-numeric matches.
+  if (key !== undefined && SENSITIVE_KEY_PATTERN.test(key) && typeof value !== "number") {
     return "[redacted]";
   }
   if (value === null || typeof value === "boolean" || typeof value === "number") {

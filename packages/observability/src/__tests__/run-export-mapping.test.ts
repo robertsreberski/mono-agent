@@ -76,6 +76,43 @@ describe("buildRootSpanAttributes", () => {
     );
     expect(withSensitive["mono.agent.artifact_dir"]).toBe("/runs");
   });
+
+  it("emits run kind, memory operation, model, duration, tokens and cost when present", () => {
+    const attrs = buildRootSpanAttributes(
+      makeSummary({
+        model: "pi:opencode-go:kimi-k2.6",
+        durationMs: 1234,
+        usage: { input_tokens: 100, output_tokens: 20, cache_read_tokens: 8, cache_creation_tokens: 4, cost_usd: 0.5 },
+        cost: { cumulativeUsd: 0.75 },
+      }),
+      makeContext({ runKind: "memory", memoryOperation: "distill" }),
+      0,
+    );
+    expect(attrs).toMatchObject({
+      "mono.agent.run.kind": "memory",
+      "mono.agent.memory.operation": "distill",
+      "llm.model_name": "pi:opencode-go:kimi-k2.6",
+      "mono.agent.model": "pi:opencode-go:kimi-k2.6",
+      "mono.agent.duration_ms": 1234,
+      "llm.token_count.prompt": 100,
+      "llm.token_count.completion": 20,
+      "llm.token_count.total": 120,
+      "llm.token_count.prompt_details.cache_read": 8,
+      "llm.token_count.prompt_details.cache_write": 4,
+      // cost.cumulativeUsd is preferred over usage.cost_usd.
+      "mono.agent.cost_usd": 0.75,
+    });
+  });
+
+  it("falls back to usage.cost_usd and omits token/kind/model attrs when their sources are absent", () => {
+    const attrs = buildRootSpanAttributes(makeSummary({ usage: { cost_usd: 0.25 } }), makeContext(), 0);
+    expect(attrs["mono.agent.cost_usd"]).toBe(0.25);
+    expect(attrs["mono.agent.duration_ms"]).toBe(10); // always emitted
+    expect(attrs).not.toHaveProperty("mono.agent.run.kind");
+    expect(attrs).not.toHaveProperty("mono.agent.memory.operation");
+    expect(attrs).not.toHaveProperty("llm.model_name");
+    expect(attrs).not.toHaveProperty("llm.token_count.prompt");
+  });
 });
 
 describe("buildEventSpanAttributes", () => {

@@ -157,6 +157,9 @@ export function layerJsonOntoEnv(
   if (json.memory?.llm?.trace !== undefined) {
     fromJson.MONO_AGENT_MEMORY_LLM_TRACE = String(json.memory.llm.trace);
   }
+  if (json.memory?.llm?.timeoutMs !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_LLM_TIMEOUT_MS = String(json.memory.llm.timeoutMs);
+  }
   if (json.memory?.llm?.endpoint !== undefined && json.memory.llm.provider !== "agent-host") {
     fromJson.MONO_AGENT_MEMORY_LLM_ENDPOINT = json.memory.llm.endpoint;
   }
