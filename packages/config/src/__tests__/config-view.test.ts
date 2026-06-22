@@ -60,7 +60,7 @@ describe("buildMonoAgentConfigView", () => {
   });
 
   it("marks a json-sourced field as json", () => {
-    const sections = buildView(baseEnv, { runtime: { maxTurns: 7 } as MonoAgentConfigJson["runtime"] });
+    const sections = buildView(baseEnv, { runtime: { maxTurns: 7 } });
     // The loader resolved from baseEnv (no env max turns), so json presence wins over default.
     expect(field(sections, "runtime.maxTurns").source).toBe("json");
   });
@@ -74,7 +74,7 @@ describe("buildMonoAgentConfigView", () => {
   it("lets a real env var win over a json-present value", () => {
     const sections = buildView(
       { ...baseEnv, MONO_AGENT_MAX_TURNS: "9" },
-      { runtime: { maxTurns: 7 } as MonoAgentConfigJson["runtime"] },
+      { runtime: { maxTurns: 7 } },
     );
     expect(field(sections, "runtime.maxTurns")).toMatchObject({ value: "9", source: "env" });
   });

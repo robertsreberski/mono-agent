@@ -31,7 +31,6 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.fallback-models` | config | `runtime.fallbackModels` | `MONO_AGENT_FALLBACK_MODELS` | [Fallback](/runtime/fallback/) | [Multi-model fallback](/playbooks/multi-model-fallback-chain/) |
 | `runtime.effort` | config | `runtime.effort` | `MONO_AGENT_EFFORT` | [Execution, effort, permissions](/runtime/execution-effort-permissions/) | — |
 | `runtime.permission-mode` | config | `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | [Execution, effort, permissions](/runtime/execution-effort-permissions/) | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
-| `runtime.reasoning-summary` | config | `runtime.reasoningSummary` | `MONO_AGENT_REASONING_SUMMARY` | [Execution, effort, permissions](/runtime/execution-effort-permissions/) | — |
 | `runtime.max-turns` | config | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | [Backends](/runtime/backends/) | — |
 | `runtime.workspace` | config | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | [Backends](/runtime/backends/) | — |
 | `runtime.provider-sessions` | config | `runtime.session.mode`, `runtime.session.idleTimeoutMs` | `MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |

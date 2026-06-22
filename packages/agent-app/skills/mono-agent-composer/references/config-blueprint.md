@@ -37,7 +37,6 @@ my-agent/
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
     "effort": "medium",                    // none|low|medium|high|xhigh|max
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
-    "reasoningSummary": "auto",            // auto|concise|detailed|off|on
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } // or "per-message"
@@ -244,8 +243,12 @@ my-agent/
 ## Lifecycle
 
 ```bash
+mono-agent recipes list                 # executable blueprints (id, risk, tags)
+mono-agent recipes show <id>            # generated config + .env.example + follow-up checklist
+mono-agent init --recipe <id> [--with slack,cron] [--dry-run]   # scaffold from a blueprint
 mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory lite|journal|bujo]
-mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means ready
+mono-agent config       # resolved config field-by-field, each value tagged env/json/default
+mono-agent validate [--recipe <id>]     # per-section report; --recipe also checks the recipe's capabilities
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
 mono-agent restart --force  # restart AND purge persisted pi sessions (fresh start; durable memory kept)

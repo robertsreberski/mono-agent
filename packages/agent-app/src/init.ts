@@ -1,8 +1,19 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { writeMonoAgentConfigJson } from "@mono-agent/config";
 import type { MonoAgentConfigJson } from "@mono-agent/config";
+
+import { resolveRecipeInputs } from "./recipes/index.js";
+import type { AgentRecipe } from "./recipes/index.js";
+
+/** Channels `--with` can switch on, merged onto a recipe's config. */
+const WITH_CHANNELS = ["telegram", "slack", "a2a", "webhook", "openaiApi", "cron"] as const;
+export type WithChannel = (typeof WITH_CHANNELS)[number];
+
+export function isWithChannel(value: string): value is WithChannel {
+  return (WITH_CHANNELS as readonly string[]).includes(value);
+}
 
 export interface InitMonoAgentFolderOptions {
   /** Folder the agent is constructed in. Defaults to process.cwd(). */
@@ -11,36 +22,46 @@ export interface InitMonoAgentFolderOptions {
   readonly model?: string;
   /** Ordered backup model references written into the config. */
   readonly fallbackModels?: readonly string[];
-  /** Memory strategy: omitted = no memory section. */
+  /** Memory strategy: omitted = no memory section. Ignored when a recipe is given. */
   readonly memory?: "lite" | "journal" | "bujo";
+  /** When set, the config comes from this recipe instead of the default scaffold. */
+  readonly recipe?: AgentRecipe;
+  /** Additional channels to enable on top of the (recipe or default) config. */
+  readonly withChannels?: readonly WithChannel[];
+  /** Plan the scaffold and report it without writing anything. */
+  readonly dryRun?: boolean;
 }
 
 export interface InitMonoAgentFolderResult {
   readonly dir: string;
   readonly configPath: string;
   readonly identityPath: string;
-  /** Files and directories created by this run (absolute paths). */
+  /** Files and directories created (or, with dryRun, that would be created). */
   readonly created: readonly string[];
   /** Files that already existed and were left untouched (absolute paths). */
   readonly skipped: readonly string[];
   /** Existing knowledge files the generated identity references. */
   readonly knowledgeFiles: readonly string[];
+  /** True when nothing was written because dryRun was set. */
+  readonly dryRun: boolean;
 }
 
 const DEFAULT_MODEL = "claude:claude-sonnet-4-6";
 const KNOWLEDGE_FILE_CANDIDATES = ["AGENTS.md", "CLAUDE.md", "README.md", "SOUL.md"];
 
 /**
- * Non-destructively scaffolds a config-first mono-agent folder: a minimal
- * `mono-agent.config.json` (webhook enabled as the zero-credential smoke
- * channel), an `IDENTITY.md` seeded from any knowledge files already in the
- * folder, and the `.mono-agent/` working directories. Existing files are
- * never overwritten.
+ * Non-destructively scaffolds a config-first mono-agent folder: a
+ * `mono-agent.config.json` (from the default smoke scaffold or a recipe), an
+ * `IDENTITY.md` seeded from any knowledge files already in the folder, the
+ * `.mono-agent/` working directories, and — for recipes — a `.env.example` and
+ * any recipe files. Existing files are never overwritten. With `dryRun`, nothing
+ * is written and `created` reports what would have been.
  */
 export async function initMonoAgentFolder(
   options: InitMonoAgentFolderOptions = {},
 ): Promise<InitMonoAgentFolderResult> {
   const dir = resolve(options.dir ?? process.cwd());
+  const dryRun = options.dryRun === true;
   const created: string[] = [];
   const skipped: string[] = [];
 
@@ -51,33 +72,77 @@ export async function initMonoAgentFolder(
     }
   }
 
-  const identityPath = join(dir, "IDENTITY.md");
-  if (await pathExists(identityPath)) {
-    skipped.push(identityPath);
-  } else {
-    await writeFile(identityPath, identityTemplate(dir, knowledgeFiles), { flag: "wx" });
-    created.push(identityPath);
+  async function planFile(path: string, write: () => Promise<unknown>): Promise<void> {
+    if (await pathExists(path)) {
+      skipped.push(path);
+      return;
+    }
+    if (!dryRun) {
+      await write();
+    }
+    created.push(path);
   }
 
+  const identityPath = join(dir, "IDENTITY.md");
+  await planFile(identityPath, () => writeFile(identityPath, identityTemplate(dir, knowledgeFiles), { flag: "wx" }));
+
   for (const subdir of [join(dir, ".mono-agent", "artifacts"), join(dir, ".mono-agent", "workspace")]) {
-    if (await pathExists(subdir)) {
-      skipped.push(subdir);
-    } else {
-      await mkdir(subdir, { recursive: true });
-      created.push(subdir);
+    await planFile(subdir, () => mkdir(subdir, { recursive: true }));
+  }
+
+  const skillsRootExists = await pathExists(join(dir, "skills"));
+  const configJson = await resolveConfigJson(dir, options, skillsRootExists);
+  const configPath = join(dir, "mono-agent.config.json");
+  await planFile(configPath, () => writeMonoAgentConfigJson({ path: configPath, patch: configJson }));
+
+  if (options.recipe !== undefined) {
+    const inputs = resolveRecipeInputs(options.recipe, modelOverride(options));
+    const envExample = options.recipe.envExample?.(inputs);
+    if (envExample !== undefined && envExample.trim().length > 0) {
+      const envExamplePath = join(dir, ".env.example");
+      await planFile(envExamplePath, () => writeFile(envExamplePath, envExample, { flag: "wx" }));
+    }
+    for (const file of options.recipe.files?.(inputs) ?? []) {
+      const filePath = join(dir, file.path);
+      await planFile(filePath, async () => {
+        await mkdir(dirname(filePath), { recursive: true });
+        await writeFile(filePath, file.contents, { flag: "wx" });
+      });
     }
   }
 
-  const configPath = join(dir, "mono-agent.config.json");
-  if (await pathExists(configPath)) {
-    skipped.push(configPath);
-  } else {
-    const skillsRootExists = await pathExists(join(dir, "skills"));
-    await writeMonoAgentConfigJson({ path: configPath, patch: configTemplate(dir, options, skillsRootExists) });
-    created.push(configPath);
-  }
+  return { dir, configPath, identityPath, created, skipped, knowledgeFiles, dryRun };
+}
 
-  return { dir, configPath, identityPath, created, skipped, knowledgeFiles };
+function modelOverride(options: InitMonoAgentFolderOptions): Record<string, string> {
+  return options.model === undefined ? {} : { model: options.model };
+}
+
+async function resolveConfigJson(
+  dir: string,
+  options: InitMonoAgentFolderOptions,
+  skillsRootExists: boolean,
+): Promise<MonoAgentConfigJson> {
+  if (options.recipe !== undefined) {
+    const inputs = resolveRecipeInputs(options.recipe, modelOverride(options));
+    return withChannels(options.recipe.config(inputs), options.withChannels ?? []);
+  }
+  return withChannels(configTemplate(dir, options, skillsRootExists), options.withChannels ?? []);
+}
+
+/** Switch on additional channels by merging `{ <channel>: { enabled: true } }`. */
+function withChannels(
+  config: MonoAgentConfigJson,
+  channels: readonly WithChannel[],
+): MonoAgentConfigJson {
+  if (channels.length === 0) {
+    return config;
+  }
+  const extra: Record<string, unknown> = {};
+  for (const channel of channels) {
+    extra[channel] = channel === "a2a" ? { provider: { enabled: true } } : { enabled: true };
+  }
+  return { ...config, ...extra } as MonoAgentConfigJson;
 }
 
 function configTemplate(

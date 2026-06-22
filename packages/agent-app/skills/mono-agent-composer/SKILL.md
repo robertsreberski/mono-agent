@@ -38,22 +38,23 @@ Everything below runs in the user's agent folder, not the workspace.
 
 ## Composition Flow
 
-1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test. Then scan `references/playbooks.md` for a recipe matching the user's intent — if one fits, use it as the starting shape.
-2. **Scaffold.** In the user's folder run:
+1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test. Then run `mono-agent recipes list` (and `mono-agent recipes show <id>`) for an executable blueprint matching the user's intent; `references/playbooks.md` is the prose companion. If a recipe fits, use it as the starting shape.
+2. **Scaffold.** In the user's folder, prefer the recipe path when one fits:
 
    ```bash
-   mono-agent init --model <ref> [--fallback-models <csv>] [--memory lite|journal|bujo]
+   mono-agent init --recipe <id> [--with slack,cron] [--dry-run]   # blueprint + .env.example + checklist
+   mono-agent init --model <ref> [--fallback-models <csv>] [--memory lite|journal|bujo]   # bare scaffold
    ```
 
-   This writes a minimal `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories. It never overwrites existing files.
-3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models. If a `references/playbooks.md` recipe matches, start from its config block and adapt it rather than assembling from scratch.
+   Either writes a `mono-agent.config.json`, an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories (recipes also emit a `.env.example` and any extra files). `--dry-run` previews without writing. It never overwrites existing files.
+3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models. Run `mono-agent config` to see the resolved configuration field-by-field with each value tagged `env` / `json` / `default` — the fastest way to confirm a value came from where you intended.
 4. **Validate.**
 
    ```bash
-   mono-agent validate
+   mono-agent validate [--recipe <id>]
    ```
 
-   Fix every `[error]` section. `[waiting]` channels are fine — they are simply not configured yet. Re-run until the report says the config is ready.
+   Fix every `[error]` section. `[waiting]` channels are fine — they are simply not configured yet. With `--recipe`, the report also flags any capability the recipe promised that is not yet live. Re-run until the report says the config is ready.
 5. **Start and smoke.**
 
    ```bash
