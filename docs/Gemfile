@@ -1,8 +1,0 @@
-# Optional: for building the docs site locally with `bundle exec jekyll serve`.
-# GitHub Pages builds the site natively (no Gemfile needed) when deploying from
-# the /docs folder on main. This file only helps local previews.
-source "https://rubygems.org"
-
-gem "github-pages", group: :jekyll_plugins
-gem "jekyll-remote-theme"
-gem "webrick"

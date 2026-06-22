@@ -1,7 +1,7 @@
 ---
 title: "Rituals: reflection & migration"
-parent: "Memory"
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
 # Rituals: reflection & migration
@@ -14,7 +14,7 @@ ritual, and the living index files they keep up to date.
 
 Rituals require the `bujo` tier with a chat model (`memory.llm`) configured. The `lite`
 and `journal` tiers do not run rituals. For tier selection and the `memory.llm` block,
-see [Capture & recall](capture-and-recall.md) and the [Memory overview](../memory.md).
+see [Capture & recall](/memory/capture-and-recall/) and the [Memory overview](/memory/).
 Coverage type: **config** (the scheduler is automatic once `memory.mode: "bujo"`).
 
 ## The in-app scheduler
@@ -34,7 +34,8 @@ throws or kills the process.
 **Overlap protection:** a new run is skipped if the previous run of that ritual is still
 in flight. Long passes will not stack up or run concurrently with themselves.
 
-{: .note }
+:::note
+:::
 Cron expressions are interpreted in the agent's configured timezone. The defaults aim at
 quiet hours so the LLM-heavy passes do not compete with live traffic.
 
@@ -129,11 +130,12 @@ Memory section, and confirms the chat model is reachable:
 [ok] migration       0 4 1 * * (next: …)
 ```
 
-See [Validation & CLI](validation-and-cli.md) for the full liveness check. Validation
+See [Validation & CLI](/memory/validation-and-cli/) for the full liveness check. Validation
 reports the cadence only when the tier is `bujo` with an `llm` configured; otherwise the
 rituals will not run.
 
-{: .warning }
+:::caution
+:::
 Rituals need a working chat model. If `memory.llm` is missing or unreachable, the
 scheduler has nothing to run and reflection/migration are effectively disabled. Validate
 before relying on automated maintenance.
@@ -159,6 +161,6 @@ memory-bujo index ./memory
 `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default
 `http://localhost:11434`) and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` the per-call timeout
 (default `120000`). If `MONO_AGENT_MEMORY_LLM_MODEL` is unset, `reflect`/`migrate` exit
-with a clear error. See [Validation & CLI](validation-and-cli.md) for the full subcommand
-reference, and [Embeddings](embeddings.md) for the semantic-recall env vars these
+with a clear error. See [Validation & CLI](/memory/validation-and-cli/) for the full subcommand
+reference, and [Embeddings](/memory/embeddings/) for the semantic-recall env vars these
 commands share.

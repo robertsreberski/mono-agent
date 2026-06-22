@@ -1,7 +1,7 @@
 ---
 title: "Multi-Model Fallback Chain with Transcript Resume"
-parent: "Playbooks"
-nav_order: 13
+sidebar:
+  order: 13
 ---
 
 # Multi-Model Fallback Chain with Transcript Resume
@@ -18,10 +18,10 @@ A primary cloud model with ordered backups that the native failover router tries
 
 ## Features used
 
-- [runtime.multi-backend](../runtime/backends.md) — mix `claude:*`, `codex:*`, and `pi:<provider>:<model>` references in one chain
-- [runtime.fallback-models](../runtime/fallback.md) — ordered backups tried on retryable failures
-- [runtime.pi-native-tuning](../runtime/local-providers.md) — `piNative` retry and durable-sessions knobs
-- [runtime.provider-sessions](../runtime/sessions-concurrency.md) — continuous sessions with transcript-tail resume
+- [runtime.multi-backend](/runtime/backends/) — mix `claude:*`, `codex:*`, and `pi:<provider>:<model>` references in one chain
+- [runtime.fallback-models](/runtime/fallback/) — ordered backups tried on retryable failures
+- [runtime.pi-native-tuning](/runtime/local-providers/) — `piNative` retry and durable-sessions knobs
+- [runtime.provider-sessions](/runtime/sessions-concurrency/) — continuous sessions with transcript-tail resume
 
 ## Configuration
 
@@ -54,8 +54,9 @@ Every key below is from the annotated config blueprint. `runtime.model` is the p
 
 Coverage: config. The primary and chain can also be set via env vars `MONO_AGENT_MODEL` and `MONO_AGENT_FALLBACK_MODELS` (env > JSON > defaults). `piNative.piMaxRetries` accepts `0`–`8` transient provider-transport retries; `maxRetryDelayMs` caps the backoff between them. Setting `piSessionsRoot` writes durable JSONL sessions so resume survives a restart — leave it unset for in-memory sessions only.
 
+:::caution
 The chain only advances on *retryable* provider failures (transport/credential/transient). Non-retryable application errors are not masked by failover.
-{: .warning }
+:::
 
 ## Steps
 
@@ -68,14 +69,15 @@ The chain only advances on *retryable* provider failures (transport/credential/t
 
 ## Smoke test
 
+:::tip
 Trigger a retryable failure on the primary; confirm the run result shows the fallback model served the turn (reported, not silent), and the conversation resumed from the transcript tail.
-{: .tip }
+:::
 
 ## Related
 
-- [Runtime backends](../runtime/backends.md)
-- [Fallback chain](../runtime/fallback.md)
-- [Local providers](../runtime/local-providers.md)
-- [Sessions and concurrency](../runtime/sessions-concurrency.md)
-- [Config blueprint](../config/blueprint.md)
+- [Runtime backends](/runtime/backends/)
+- [Fallback chain](/runtime/fallback/)
+- [Local providers](/runtime/local-providers/)
+- [Sessions and concurrency](/runtime/sessions-concurrency/)
+- [Config blueprint](/config/blueprint/)
 - [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

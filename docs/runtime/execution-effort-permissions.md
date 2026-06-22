@@ -1,12 +1,12 @@
 ---
 title: "Execution mode, effort & permissions"
-parent: "Runtime & Providers"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 # Execution mode, effort & permissions
 
-This page covers the `runtime.*` knobs that shape *how* a run executes once a backend is selected: whether the model runs through an in-process SDK or a CLI subprocess, how much reasoning effort it spends, how tool permissions are posed, and how many turns a run may take. All of these are `config` coverage (set in `mono-agent.config.json`) with a matching `MONO_AGENT_*` environment override. For *which* backend each model string maps to, see [Backends](backends.md).
+This page covers the `runtime.*` knobs that shape *how* a run executes once a backend is selected: whether the model runs through an in-process SDK or a CLI subprocess, how much reasoning effort it spends, how tool permissions are posed, and how many turns a run may take. All of these are `config` coverage (set in `mono-agent.config.json`) with a matching `MONO_AGENT_*` environment override. For *which* backend each model string maps to, see [Backends](/runtime/backends/).
 
 A representative runtime block:
 
@@ -32,7 +32,7 @@ A representative runtime block:
 |-----|--------|---------|---------|
 | `runtime.executionMode` | `sdk` \| `cli` | inferred (codex/opencode → `cli`, else `sdk`) | `MONO_AGENT_EXECUTION_MODE` |
 
-Several other features key off the backend implied by execution mode — most notably `permissionMode` (CLI-only, below). When wiring a model into `memory.llm`, the same `executionMode` field applies there; see [Capture & recall](../memory/capture-and-recall.md).
+Several other features key off the backend implied by execution mode — most notably `permissionMode` (CLI-only, below). When wiring a model into `memory.llm`, the same `executionMode` field applies there; see [Capture & recall](/memory/capture-and-recall/).
 
 ## Effort
 
@@ -61,10 +61,11 @@ Several other features key off the backend implied by execution mode — most no
 |-----|--------|---------|---------|
 | `runtime.permissionMode` | `default` \| `plan` \| `acceptEdits` \| `bypassPermissions` | `default` | `MONO_AGENT_PERMISSION_MODE` |
 
-`permissionMode` is the *config-level* posture. Programmatic human-in-the-loop approval gates (risk tiers, timeout, always-allow lists) are a separate, **code-only** mechanism on `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` that requires a host UI to answer prompts — see [programmatic approval & structured output](../programmatic/approval-and-structured-output.md). For limiting *which* tools exist at all, use the tool policy in [Tools & guards](tools-and-guards.md) and [Tool policy](../tools/policy.md).
+`permissionMode` is the *config-level* posture. Programmatic human-in-the-loop approval gates (risk tiers, timeout, always-allow lists) are a separate, **code-only** mechanism on `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` that requires a host UI to answer prompts — see [programmatic approval & structured output](/programmatic/approval-and-structured-output/). For limiting *which* tools exist at all, use the tool policy in [Tools & guards](/runtime/tools-and-guards/) and [Tool policy](/tools/policy/).
 
-`permissionMode: "bypassPermissions"` removes interactive guardrails. Pair it with the [sandbox](../tools/sandbox.md) filesystem scopes and a constrained [tool policy](../tools/policy.md) so an unattended run cannot reach beyond its workspace.
-{: .warning }
+:::caution
+`permissionMode: "bypassPermissions"` removes interactive guardrails. Pair it with the [sandbox](/tools/sandbox/) filesystem scopes and a constrained [tool policy](/tools/policy/) so an unattended run cannot reach beyond its workspace.
+:::
 
 ## Reasoning summary
 
@@ -74,8 +75,9 @@ Several other features key off the backend implied by execution mode — most no
 |-----|--------|---------|---------|
 | `runtime.reasoningSummary` | `auto` \| `concise` \| `detailed` \| `off` \| `on` | `auto` | `MONO_AGENT_REASONING_SUMMARY` |
 
+:::note
 Setting `reasoningSummary` does nothing at runtime today. Use `runtime.effort` to control reasoning depth.
-{: .note }
+:::
 
 ## Max turns
 
@@ -85,7 +87,7 @@ Setting `reasoningSummary` does nothing at runtime today. Use `runtime.effort` t
 |-----|--------|---------|---------|
 | `runtime.maxTurns` | `0` (unlimited) \| `1`–`100` | `0` | `MONO_AGENT_MAX_TURNS` |
 
-This value also sizes conversation history: history is capped only when turns are capped, and stays unlimited when `maxTurns` is `0` or omitted (`auto` coverage). A custom history store is available via code (`createConfiguredAgentResponder({ historyStore })`). See [Sessions & concurrency](sessions-concurrency.md).
+This value also sizes conversation history: history is capped only when turns are capped, and stays unlimited when `maxTurns` is `0` or omitted (`auto` coverage). A custom history store is available via code (`createConfiguredAgentResponder({ historyStore })`). See [Sessions & concurrency](/runtime/sessions-concurrency/).
 
 ```json
 { "runtime": { "model": "codex:gpt-5.5", "maxTurns": 12 } }
@@ -99,7 +101,7 @@ This value also sizes conversation history: history is capped only when turns ar
 |-----|--------|---------|---------|
 | `runtime.workspace` | path string | `"."` | `MONO_AGENT_WORKSPACE` |
 
-The workspace is also the default root for sandbox filesystem scopes — `sandbox.readableRoots` / `sandbox.writableRoots` relative entries resolve against it, and `.env*`, `.git/config`, and `.git/hooks/**` are denied for writes by default. See [Sandbox](../tools/sandbox.md). For the on-disk layout around the workspace, see [Folder layout](../config/folder-layout.md).
+The workspace is also the default root for sandbox filesystem scopes — `sandbox.readableRoots` / `sandbox.writableRoots` relative entries resolve against it, and `.env*`, `.git/config`, and `.git/hooks/**` are denied for writes by default. See [Sandbox](/tools/sandbox/). For the on-disk layout around the workspace, see [Folder layout](/config/folder-layout/).
 
 ## Quick reference
 
@@ -112,4 +114,4 @@ The workspace is also the default root for sandbox filesystem scopes — `sandbo
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | config |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `"."` | config |
 
-See also: [Backends](backends.md) · [Fallback chain](fallback.md) · [Sessions & concurrency](sessions-concurrency.md) · [Config blueprint](../config/blueprint.md) · [Environment variables](../config/env-vars.md).
+See also: [Backends](/runtime/backends/) · [Fallback chain](/runtime/fallback/) · [Sessions & concurrency](/runtime/sessions-concurrency/) · [Config blueprint](/config/blueprint/) · [Environment variables](/config/env-vars/).

@@ -1,7 +1,7 @@
 ---
 title: "Tool policy"
-parent: "Tools, MCP & Sandbox"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Tool policy
@@ -22,8 +22,9 @@ To give an agent tools, list them explicitly:
 }
 ```
 
+:::caution
 If your agent appears to have no tools available, the most common cause is an empty or missing `allowedTools`.
-{: .warning }
+:::
 
 ## allowedTools / disallowedTools
 
@@ -48,8 +49,9 @@ Each list must contain unique, non-empty strings; duplicate names within a singl
 }
 ```
 
+:::note
 The example above lets the agent read files, grep, and fetch URLs, while keeping `Bash` denied even if a later edit accidentally adds it to the allowlist (deny wins). Listing `Bash` in both lists at once would be an error.
-{: .note }
+:::
 
 ## Built-in tool names
 
@@ -57,7 +59,7 @@ These are the names recognized for built-in runtime tools (coverage: `config`, g
 
 `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`
 
-Commands run by `Bash` are further constrained by the [sandbox](sandbox.md) (filesystem scopes and network policy) when `sandbox.mode` is `native`. The allowlist controls *whether* a tool exists; the sandbox controls *what it can reach*. See [Tools and guards](../runtime/tools-and-guards.md).
+Commands run by `Bash` are further constrained by the [sandbox](/tools/sandbox/) (filesystem scopes and network policy) when `sandbox.mode` is `native`. The allowlist controls *whether* a tool exists; the sandbox controls *what it can reach*. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## Adapter send tools
 
@@ -71,12 +73,13 @@ The app can expose MCP tools that send messages back out through an already-enab
 }
 ```
 
-The adapter's own allowlist (channels/chats it may post to) remains the destination boundary — allowlisting the tool does not widen where messages can go. See [Delivery and send tools](../channels/delivery-and-send-tools.md), [Slack](../channels/slack.md), and [Telegram](../channels/telegram.md).
-{: .note }
+:::note
+The adapter's own allowlist (channels/chats it may post to) remains the destination boundary — allowlisting the tool does not widen where messages can go. See [Delivery and send tools](/channels/delivery-and-send-tools/), [Slack](/channels/slack/), and [Telegram](/channels/telegram/).
+:::
 
 ## MCP tools
 
-MCP servers are configured alongside the policy via `tools.mcpServers` (inline) or `tools.mcpConfigPath` (a path to a JSON file). The tools they expose are subject to the same allow/deny rules. See [MCP servers](mcp.md) for the server configuration shape.
+MCP servers are configured alongside the policy via `tools.mcpServers` (inline) or `tools.mcpConfigPath` (a path to a JSON file). The tools they expose are subject to the same allow/deny rules. See [MCP servers](/tools/mcp/) for the server configuration shape.
 
 ## Environment overrides
 
@@ -87,8 +90,8 @@ The allow/deny lists can be supplied via environment variables (coverage: `confi
 | `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` |
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` |
 
-The same fail-closed, deny-wins, and overlap-rejection rules apply to values provided through the environment. See [Environment variables](../config/env-vars.md).
+The same fail-closed, deny-wins, and overlap-rejection rules apply to values provided through the environment. See [Environment variables](/config/env-vars/).
 
 ## Programmatic use
 
-The policy is also available as a library for code-defined agents: `createToolPolicy()`, `failClosedToolPolicy()`, `loadToolPolicyFromJsonFile()`, and `toolPolicyToRuntimeOptions()` from `@mono-agent/tool-policy`. Errors are thrown as `ToolPolicyError` with codes `invalid_tool_policy` and `tool_policy_read_failed`. See [Programmatic API](../programmatic/index.md).
+The policy is also available as a library for code-defined agents: `createToolPolicy()`, `failClosedToolPolicy()`, `loadToolPolicyFromJsonFile()`, and `toolPolicyToRuntimeOptions()` from `@mono-agent/tool-policy`. Errors are thrown as `ToolPolicyError` with codes `invalid_tool_policy` and `tool_policy_read_failed`. See [Programmatic API](/programmatic/).

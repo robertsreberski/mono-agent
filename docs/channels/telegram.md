@@ -1,14 +1,14 @@
 ---
 title: "Telegram"
-parent: "Channels"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Telegram
 
 The Telegram channel connects your agent to a Telegram bot over long polling. This page covers enabling it, the chat allowlist, final-only delivery behaviour, inbound attachment download, the environment-variable overrides, and a setup + smoke-test walkthrough.
 
-Coverage: **config** (`telegram.long-polling` in [feature-registry](../reference/feature-matrix.md)). The agent talks to a bot you create with BotFather; no inbound port is required.
+Coverage: **config** (`telegram.long-polling` in [feature-registry](/reference/feature-matrix/)). The agent talks to a bot you create with BotFather; no inbound port is required.
 
 ## Configuration
 
@@ -34,12 +34,13 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
 
 Provide **either** an `allowedChatIds` allowlist **or** `allowAllChats: true`. Leaving both unset means no chat is authorized.
 
-{: .warning }
+:::caution
+:::
 `allowAllChats: true` lets anyone who finds your bot send it messages (and consume model budget). Prefer an explicit `allowedChatIds` allowlist in production.
 
 ### Environment variables
 
-Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which keeps the bot token out of the committed config — see [Environment Variables](../config/env-vars.md).
+Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which keeps the bot token out of the committed config — see [Environment Variables](/config/env-vars/).
 
 | Env var | Maps to |
 | --- | --- |
@@ -52,16 +53,17 @@ Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which 
 
 Telegram delivers **only the final answer**. While the run is in flight the bot shows a `typing…` chat action; when the run completes it sends one message with the final text. There are no streamed interim edits on Telegram by default.
 
-This is built-in behaviour, not a JSON field. Restoring live interim streaming requires a custom channel driver with `stream.finalOnly: false` (`createTelegramChannelDriver`) — coverage **code**. See [Delivery and Send Tools](./delivery-and-send-tools.md) for the streaming model across channels and [Custom Channels](../programmatic/custom-channels.md) to build a driver.
+This is built-in behaviour, not a JSON field. Restoring live interim streaming requires a custom channel driver with `stream.finalOnly: false` (`createTelegramChannelDriver`) — coverage **code**. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) for the streaming model across channels and [Custom Channels](/programmatic/custom-channels/) to build a driver.
 
-{: .note }
-The OpenAI-compatible [`/v1/chat/completions` endpoint](./openai-api.md) still streams token-by-token; final-only applies to the chat adapters (Telegram and Slack).
+:::note
+:::
+The OpenAI-compatible [`/v1/chat/completions` endpoint](/channels/openai-api/) still streams token-by-token; final-only applies to the chat adapters (Telegram and Slack).
 
 ## Attachments
 
 Inbound Telegram media (photos, documents, voice, video) is fetched via the Bot API and inlined into `request.attachments`, so the agent receives the bytes alongside the text. A multi-photo/video album arrives as several messages sharing a media group and is aggregated into one request. A download that fails is skipped without failing the run.
 
-Download tuning — byte cap, MIME allowlist, and timeout — is exposed on the adapter's `attachments` option and is **code-only** (`DownloadTelegramAttachmentsOptions`). See [Custom Channels](../programmatic/custom-channels.md).
+Download tuning — byte cap, MIME allowlist, and timeout — is exposed on the adapter's `attachments` option and is **code-only** (`DownloadTelegramAttachmentsOptions`). See [Custom Channels](/programmatic/custom-channels/).
 
 ## Sending without a prompt
 
@@ -75,7 +77,7 @@ When the Telegram adapter is enabled you can let the agent send Telegram message
 }
 ```
 
-The existing `telegram.*` adapter config (token + chat allowlist) remains the destination boundary — the tool can only send where the adapter is already permitted. This powers proactive/async delivery; see [Delivery and Send Tools](./delivery-and-send-tools.md) and [Tool Policy](../tools/policy.md).
+The existing `telegram.*` adapter config (token + chat allowlist) remains the destination boundary — the tool can only send where the adapter is already permitted. This powers proactive/async delivery; see [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Tool Policy](/tools/policy/).
 
 ## Setup
 
@@ -105,8 +107,8 @@ With the agent running, send your bot a direct message (`Hello`) from an allowed
 
 ## Related
 
-- [Channels overview](./index.md)
-- [Delivery and Send Tools](./delivery-and-send-tools.md)
-- [Slack](./slack.md) · [WhatsApp](./whatsapp.md)
-- [Sessions and Concurrency](../runtime/sessions-concurrency.md) — per-conversation admission and download bounds
-- [Telegram personal assistant playbook](../playbooks/telegram-personal-assistant-bujo.md)
+- [Channels overview](/channels/)
+- [Delivery and Send Tools](/channels/delivery-and-send-tools/)
+- [Slack](/channels/slack/) · [WhatsApp](/channels/whatsapp/)
+- [Sessions and Concurrency](/runtime/sessions-concurrency/) — per-conversation admission and download bounds
+- [Telegram personal assistant playbook](/playbooks/telegram-personal-assistant-bujo/)

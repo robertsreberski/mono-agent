@@ -347,7 +347,7 @@ MONO_AGENT_TRACE_SOURCE_LABEL="Final Agent Demo"
 
 ## Persistent memory (tiered bujo memory)
 
-The agent supports three memory tiers, all sharing a single global brain across every channel. The tier is selected by `memory.mode` in `mono-agent.config.json`. See [`docs/memory.md`](../../docs/memory.md) for the full reference.
+The agent supports three memory tiers, all sharing a single global brain across every channel. The tier is selected by `memory.mode` in `mono-agent.config.json`. See [`docs/memory/index.md`](../../docs/memory/index.md) for the full reference.
 
 | Tier (`memory.mode`) | Description | What it needs |
 |---|---|---|

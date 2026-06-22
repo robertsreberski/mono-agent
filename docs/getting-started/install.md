@@ -1,7 +1,7 @@
 ---
 title: "Install & Prerequisites"
-parent: "Getting Started"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Install & Prerequisites
@@ -17,7 +17,8 @@ The shipped command line lives in `@mono-agent/agent-app` (the config-first host
 | Node.js | `>=20` | Runtime for the CLI, host, and TUI. |
 | pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npx`). |
 
-{: .note }
+:::note
+:::
 You do **not** need pnpm to use the published packages — `npm i -g` and `npx` are enough. pnpm is only required for the "run an unreleased build" path below, which builds the workspace from source.
 
 ## Install the CLI
@@ -48,7 +49,7 @@ Point it at the same config the host uses:
 mono-agent-tui --config ./mono-agent.config.json
 ```
 
-See [TUI](../observability/tui.md) for the console walkthrough.
+See [TUI](/observability/tui/) for the console walkthrough.
 
 ## Verify the install
 
@@ -59,7 +60,7 @@ mono-agent --help
 mono-agent-tui --help
 ```
 
-The CLI exposes these commands (more detail in the [CLI Reference](../observability/cli-reference.md)):
+The CLI exposes these commands (more detail in the [CLI Reference](/observability/cli-reference/)):
 
 | Command | Purpose |
 | --- | --- |
@@ -78,7 +79,7 @@ Once the binaries are verified, scaffold a project folder:
 mono-agent init
 ```
 
-Then continue with the [Quickstart](quickstart.md). For the full key reference, see [Config Blueprint](../config/blueprint.md) and [Environment Variables](../config/env-vars.md).
+Then continue with the [Quickstart](/getting-started/quickstart/). For the full key reference, see [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/).
 
 ## Run an unreleased build
 
@@ -104,8 +105,10 @@ For the TUI bin from the same clone, alias `mono-agent-tui` to `packages/tui/dis
 alias mono-agent-tui="node /absolute/path/to/mono-agent/packages/tui/dist/bin/mono-agent-tui.js"
 ```
 
-{: .warning }
+:::caution
+:::
 Rebuild (`pnpm run build`) after pulling new changes — the alias points at compiled output in `dist/`, not the TypeScript sources, so edits are not picked up until you rebuild. Cross-package types and tests resolve against built `dist/`, so a stale build can mask or surface errors that do not match `src`.
 
-{: .tip }
+:::tip
+:::
 Editable global link instead of an alias? After `pnpm run build`, run `npm link` from `packages/agent-app` (and `packages/tui`) to put the local bins on your `PATH`. You still rebuild after each change.

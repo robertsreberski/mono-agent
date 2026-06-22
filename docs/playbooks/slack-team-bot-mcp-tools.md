@@ -1,7 +1,7 @@
 ---
 title: "Slack Team Bot with MCP Tools"
-parent: "Playbooks"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 # Slack Team Bot with MCP Tools
@@ -18,12 +18,12 @@ A Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MC
 
 ## Features used
 
-- `slack.socket-mode` — [Slack channel](../channels/slack.md)
-- `channel.final-only-delivery` — [Delivery and send tools](../channels/delivery-and-send-tools.md)
-- `tool-policy.allowlist` — [Tool policy](../tools/policy.md)
-- `tool-policy.mcp-servers` — [MCP servers](../tools/mcp.md)
-- `agent-app.adapter-send-tools` — [Delivery and send tools](../channels/delivery-and-send-tools.md)
-- `runtime.concurrency` — [Sessions, concurrency & Pi-native tuning](../runtime/sessions-concurrency.md)
+- `slack.socket-mode` — [Slack channel](/channels/slack/)
+- `channel.final-only-delivery` — [Delivery and send tools](/channels/delivery-and-send-tools/)
+- `tool-policy.allowlist` — [Tool policy](/tools/policy/)
+- `tool-policy.mcp-servers` — [MCP servers](/tools/mcp/)
+- `agent-app.adapter-send-tools` — [Delivery and send tools](/channels/delivery-and-send-tools/)
+- `runtime.concurrency` — [Sessions, concurrency & Pi-native tuning](/runtime/sessions-concurrency/)
 
 ## Configuration
 
@@ -55,8 +55,9 @@ The Slack section runs in Socket Mode (both `botToken` and `appToken` are requir
 
 Secrets can also come from the environment: `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN`.
 
+:::caution
 The exact MCP tool name (`deployTool` here) must match the name your server advertises, and it must appear in `tools.allowedTools` or the fail-closed policy will exclude it.
-{: .warning }
+:::
 
 ## Steps
 
@@ -69,14 +70,15 @@ The exact MCP tool name (`deployTool` here) must match the name your server adve
 
 ## Smoke test
 
+:::tip
 Mention `@agent` in the allowed channel; verify the seen reaction, a final answer, the MCP tool firing in the run artifact, and that `slack_send_message` can post to the allowed channel (and is rejected for a non-allowed one).
-{: .tip }
+:::
 
 ## Related
 
-- [Slack channel](../channels/slack.md)
-- [Delivery and send tools](../channels/delivery-and-send-tools.md)
-- [Tool policy](../tools/policy.md)
-- [MCP servers](../tools/mcp.md)
-- [Sessions, concurrency & Pi-native tuning](../runtime/sessions-concurrency.md)
+- [Slack channel](/channels/slack/)
+- [Delivery and send tools](/channels/delivery-and-send-tools/)
+- [Tool policy](/tools/policy/)
+- [MCP servers](/tools/mcp/)
+- [Sessions, concurrency & Pi-native tuning](/runtime/sessions-concurrency/)
 - [Composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

@@ -1240,7 +1240,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       toolCompactionApplied: toolCompactionAppliedFromWarnings(runtimeWarnings),
       // Tristate: true = a compaction fired this run (proactive or reactive),
       // false = the path is enabled but did not need to fire, null = disabled via
-      // agent_compaction_enabled. See docs/feature-registry.md runtime.context-compaction.
+      // agent_compaction_enabled. See docs/reference/feature-registry.md runtime.context-compaction.
       contextCompactionApplied: compactionPolicy?.enabled ? contextCompactionApplied : null,
     });
     onEvent({ type: "capabilities_resolved", sdk: resolved.sdk, model: reference, capabilitiesUsed });

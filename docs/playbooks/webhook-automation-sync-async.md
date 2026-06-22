@@ -1,7 +1,7 @@
 ---
 title: "Webhook Automation with Sync + Async Endpoints"
-parent: "Playbooks"
-nav_order: 5
+sidebar:
+  order: 5
 ---
 
 # Webhook Automation with Sync + Async Endpoints
@@ -18,9 +18,9 @@ Accept fast sync HTTP calls and long-running async jobs (202 + status polling) a
 
 ## Features used
 
-- [`webhook.http-invoke`](../channels/webhook.md) — `POST` a JSON body, the agent runs a turn.
-- [`webhook.sync-async-modes`](../channels/webhook.md) — `sync` returns the body inline; `async` returns `202` + a status URL to poll.
-- [`webhook.endpoints-dir`](../channels/webhook.md) — multiple named endpoints inline (`webhook.endpoints[]`) or as `*.md` files under `webhook.dir`.
+- [`webhook.http-invoke`](/channels/webhook/) — `POST` a JSON body, the agent runs a turn.
+- [`webhook.sync-async-modes`](/channels/webhook/) — `sync` returns the body inline; `async` returns `202` + a status URL to poll.
+- [`webhook.endpoints-dir`](/channels/webhook/) — multiple named endpoints inline (`webhook.endpoints[]`) or as `*.md` files under `webhook.dir`.
 
 All three are **config** coverage (the `webhook` section plus `MONO_AGENT_WEBHOOK_*` env overrides).
 
@@ -59,8 +59,9 @@ All three are **config** coverage (the `webhook` section plus `MONO_AGENT_WEBHOO
 
 The matching env overrides are `MONO_AGENT_WEBHOOK_HOST`, `MONO_AGENT_WEBHOOK_PORT`, `MONO_AGENT_WEBHOOK_DEFAULT_MODE`, `MONO_AGENT_WEBHOOK_RETENTION_MS`, `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS`, and `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` (the `endpoints` array as a JSON string).
 
+:::caution
 The server binds to loopback by default. A non-loopback `host` (e.g. `0.0.0.0`) without `allowNonLoopback: true` is rejected — and a public endpoint bypasses channel allowlists, so put it behind a reverse proxy or auth layer you control.
-{: .warning }
+:::
 
 ### Endpoints as markdown files
 
@@ -75,7 +76,7 @@ mode: async
 You are triaging an inbound support ticket. Classify and summarize.
 ```
 
-`path` is required; `name` defaults to the filename stem, `mode` to `defaultMode`, and `enabled` to `true`. This mirrors how [cron](../channels/cron.md) jobs can be authored as `cron/*.md` files.
+`path` is required; `name` defaults to the filename stem, `mode` to `defaultMode`, and `enabled` to `true`. This mirrors how [cron](/channels/cron/) jobs can be authored as `cron/*.md` files.
 
 ## Steps
 
@@ -88,13 +89,14 @@ You are triaging an inbound support ticket. Classify and summarize.
 
 ## Smoke test
 
+:::tip
 `curl -X POST /webhook/invoke` and inspect the response body; `curl -X POST /webhook/jobs`, get `202` + a status URL, then poll that URL until the result is returned.
-{: .tip }
+:::
 
 ## Related
 
-- [Webhook channel](../channels/webhook.md) — full key reference, endpoint files, prompts, and env overrides.
-- [Cron](../channels/cron.md) — scheduled turns; shares the `*.md` authoring pattern and the `prompt` concept.
-- [Delivery and send tools](../channels/delivery-and-send-tools.md) — how answers are returned across channels.
-- [Config blueprint](../config/blueprint.md) — the annotated `mono-agent.config.json`.
+- [Webhook channel](/channels/webhook/) — full key reference, endpoint files, prompts, and env overrides.
+- [Cron](/channels/cron/) — scheduled turns; shares the `*.md` authoring pattern and the `prompt` concept.
+- [Delivery and send tools](/channels/delivery-and-send-tools/) — how answers are returned across channels.
+- [Config blueprint](/config/blueprint/) — the annotated `mono-agent.config.json`.
 - [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config.

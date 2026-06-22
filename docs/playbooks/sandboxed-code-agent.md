@@ -1,7 +1,7 @@
 ---
 title: "Sandboxed Code Agent (No Internet, Deny .env)"
-parent: "Playbooks"
-nav_order: 9
+sidebar:
+  order: 9
 ---
 
 # Sandboxed Code Agent (No Internet, Deny .env)
@@ -18,12 +18,12 @@ An agent that can read repos and run Bash inside the native `srt` sandbox with n
 
 ## Features used
 
-- [`sandbox.mode`](../tools/sandbox.md) — native (`srt`-wrapped commands) vs off
-- [`sandbox.network-policy`](../tools/sandbox.md) — `none` / `localhost` / `allowlist` / `all`
-- [`sandbox.filesystem-scopes`](../tools/sandbox.md) — readable/writable roots + deny-write globs
-- [`sandbox.fallback`](../tools/sandbox.md) — `fail-closed` vs `unsafe-host-process` when `srt` is unavailable
-- [`tool-policy.allowlist`](../tools/policy.md) — restrict the agent to a minimal built-in tool set
-- [`memory.journal`](../memory/capture-and-recall.md) — local journal recall for prior context
+- [`sandbox.mode`](/tools/sandbox/) — native (`srt`-wrapped commands) vs off
+- [`sandbox.network-policy`](/tools/sandbox/) — `none` / `localhost` / `allowlist` / `all`
+- [`sandbox.filesystem-scopes`](/tools/sandbox/) — readable/writable roots + deny-write globs
+- [`sandbox.fallback`](/tools/sandbox/) — `fail-closed` vs `unsafe-host-process` when `srt` is unavailable
+- [`tool-policy.allowlist`](/tools/policy/) — restrict the agent to a minimal built-in tool set
+- [`memory.journal`](/memory/capture-and-recall/) — local journal recall for prior context
 
 ## Configuration
 
@@ -50,8 +50,9 @@ An agent that can read repos and run Bash inside the native `srt` sandbox with n
 
 The `denyWrite` globs above are the built-in defaults — listed explicitly here to make the secret-protection contract obvious. Relative `readableRoots`/`writableRoots` entries resolve against the workspace. The matching env vars are `MONO_AGENT_SANDBOX_MODE`, `MONO_AGENT_SANDBOX_NETWORK`, `MONO_AGENT_SANDBOX_READABLE_ROOTS`, `MONO_AGENT_SANDBOX_WRITABLE_ROOTS`, `MONO_AGENT_SANDBOX_DENY_WRITE`, and `MONO_AGENT_SANDBOX_FALLBACK`.
 
+:::caution
 Keep `fallback` at `fail-closed`. Setting `unsafeAllowHostProcess: true` (or `fallback: unsafe-host-process`) lets commands run un-sandboxed on the host when `srt` is unavailable — never do this for a security-sensitive deployment.
-{: .warning }
+:::
 
 ## Steps
 
@@ -64,14 +65,15 @@ Keep `fallback` at `fail-closed`. Setting `unsafeAllowHostProcess: true` (or `fa
 
 ## Smoke test
 
+:::tip
 Ask the agent to read a file and run a Bash command; confirm success, then ask it to fetch a URL or write `.env` and confirm both are blocked by the sandbox policy in the run artifact.
-{: .tip }
+:::
 
 ## Related
 
-- [Sandbox](../tools/sandbox.md)
-- [Tool Policy](../tools/policy.md)
-- [Memory: Capture and Recall](../memory/capture-and-recall.md)
-- [Runtime: Tools and Guards](../runtime/tools-and-guards.md)
-- [Observability: Artifacts and Traces](../observability/artifacts-and-traces.md)
-- [Composer skill](../context/skills.md)
+- [Sandbox](/tools/sandbox/)
+- [Tool Policy](/tools/policy/)
+- [Memory: Capture and Recall](/memory/capture-and-recall/)
+- [Runtime: Tools and Guards](/runtime/tools-and-guards/)
+- [Observability: Artifacts and Traces](/observability/artifacts-and-traces/)
+- [Composer skill](/context/skills/)

@@ -1,7 +1,7 @@
 ---
 title: "Phoenix-Observed Agent with TUI"
-parent: "Playbooks"
-nav_order: 10
+sidebar:
+  order: 10
 ---
 
 # Phoenix-Observed Agent with TUI
@@ -18,10 +18,10 @@ Run an agent locally with the TUI and stream every run lifecycle to Phoenix as O
 
 ## Features used
 
-- [`observability.phoenix-exporter`](../observability/phoenix-and-backfill.md) — additive, best-effort OTLP/HTTP protobuf export of each run as a semantic timeline (config).
-- [`observability.jsonl-artifacts`](../observability/artifacts-and-traces.md) — redacted `run-*.summary.json` + `run-*.events.jsonl` written on every run; the local fallback (config).
-- [`observability.trace-registry`](../observability/artifacts-and-traces.md) — heartbeat manifests that `mono-agent status` reads (config).
-- [`tui.chat`](../observability/tui.md) — terminal chat with transcript and a redacted config pane (cli).
+- [`observability.phoenix-exporter`](/observability/phoenix-and-backfill/) — additive, best-effort OTLP/HTTP protobuf export of each run as a semantic timeline (config).
+- [`observability.jsonl-artifacts`](/observability/artifacts-and-traces/) — redacted `run-*.summary.json` + `run-*.events.jsonl` written on every run; the local fallback (config).
+- [`observability.trace-registry`](/observability/artifacts-and-traces/) — heartbeat manifests that `mono-agent status` reads (config).
+- [`tui.chat`](/observability/tui/) — terminal chat with transcript and a redacted config pane (cli).
 
 ## Configuration
 
@@ -54,8 +54,9 @@ Run an agent locally with the TUI and stream every run lifecycle to Phoenix as O
 
 The exporters array can also be supplied via the `MONO_AGENT_OBSERVABILITY_EXPORTERS` env var (a JSON array of exporter objects). JSONL artifacts are always written regardless of whether a Phoenix exporter is present — the Phoenix entry only adds the trace viewer on top.
 
+:::caution
 With `includeSensitiveData: false`, exported spans are metadata-only and prompt/result payloads are redacted; set it to `true` only against a trusted local Phoenix.
-{: .warning }
+:::
 
 ## Steps
 
@@ -68,14 +69,15 @@ With `includeSensitiveData: false`, exported spans are metadata-only and prompt/
 
 ## Smoke test
 
+:::tip
 Complete one prompt in the TUI; confirm a redacted JSONL artifact is written AND the trace appears in Phoenix with merged tool spans and the correct project name.
-{: .tip }
+:::
 
 ## Related
 
-- [Phoenix exporter and backfill](../observability/phoenix-and-backfill.md)
-- [Artifacts and traces](../observability/artifacts-and-traces.md)
-- [Observability CLI reference](../observability/cli-reference.md)
-- [TUI](../observability/tui.md)
-- [Backfill historical runs](backfill-historical-runs.md)
+- [Phoenix exporter and backfill](/observability/phoenix-and-backfill/)
+- [Artifacts and traces](/observability/artifacts-and-traces/)
+- [Observability CLI reference](/observability/cli-reference/)
+- [TUI](/observability/tui/)
+- [Backfill historical runs](/playbooks/backfill-historical-runs/)
 - mono-agent composer skill: `packages/agent-app/skills/mono-agent-composer`

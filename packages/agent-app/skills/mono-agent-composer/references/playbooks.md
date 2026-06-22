@@ -3,7 +3,7 @@
 Condensed, offline copy of the end-to-end recipes. Each maps a persona/goal to a
 concrete `mono-agent.config.json` shape and the `init → configure → validate →
 start → smoke` flow. Mirrors the published Playbooks index
-(<https://robertsreberski.github.io/mono-agent/playbooks/>); this file is the
+(<https://mono-agent-docs.vercel.app/playbooks/>); this file is the
 self-contained in-skill version so the composer can offer a matching recipe
 without fetching anything. Before hand-assembling a config in the Composition
 Flow, check whether one of these fits and adapt it. Verify every key against

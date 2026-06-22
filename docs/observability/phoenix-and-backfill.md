@@ -1,12 +1,12 @@
 ---
 title: "Phoenix export & backfill"
-parent: "Observability & CLI"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 This page covers the Phoenix OTLP exporter — an additive, best-effort export of every run lifecycle to [Arize Phoenix](https://phoenix.arize.com/) as semantic OpenInference spans — and the `mono-agent backfill` command that retroactively exports already-recorded run artifacts. Both reuse the same OTLP mapping, so live traces and backfilled traces are identical in Phoenix.
 
-Phoenix export never changes a run's outcome and never suppresses the local JSONL artifacts. See [Artifacts & traces](artifacts-and-traces.md) for the always-on run record that the exporter and backfill read from.
+Phoenix export never changes a run's outcome and never suppresses the local JSONL artifacts. See [Artifacts & traces](/observability/artifacts-and-traces/) for the always-on run record that the exporter and backfill read from.
 
 ## What the exporter does
 
@@ -19,8 +19,9 @@ When you add a `phoenix` entry to `observability.exporters[]`, the host exports 
 
 Export is **metadata-only by default**: span inputs/outputs are exported, but raw message/tool payloads are withheld unless you opt in (see `includeSensitiveData`). Failures are bounded by `timeoutMs` and are swallowed — a Phoenix outage cannot fail or stall a run.
 
+:::note
 The transport lives in `@mono-agent/observability-otel` (built on `@opentelemetry/otlp-transformer`). Coverage: **config**.
-{: .note }
+:::
 
 ## Configuration
 
@@ -60,14 +61,15 @@ The exporter list can be supplied entirely from the environment as a JSON array,
 export MONO_AGENT_OBSERVABILITY_EXPORTERS='[{"type":"phoenix","endpoint":"http://127.0.0.1:6006/v1/traces","projectName":"my-agent"}]'
 ```
 
-The project name defaults to your traceability source. Set `traceability.sourceLabel` / `traceability.sourceId` (env `MONO_AGENT_TRACE_*`) to control it when you do not pass `projectName`. See [Artifacts & traces](artifacts-and-traces.md) for the trace registry.
-{: .tip }
+:::tip
+The project name defaults to your traceability source. Set `traceability.sourceLabel` / `traceability.sourceId` (env `MONO_AGENT_TRACE_*`) to control it when you do not pass `projectName`. See [Artifacts & traces](/observability/artifacts-and-traces/) for the trace registry.
+:::
 
 ## Verifying export-compatibility
 
 `mono-agent start` and `mono-agent status` print the active traceability source — the Phoenix endpoint when a Phoenix exporter is configured, otherwise the local JSONL artifacts.
 
-`mono-agent validate` goes further: it **POSTs an empty protobuf** to the configured endpoint to confirm export-compatibility, not just network reachability. This catches endpoints that resolve but reject the OTLP protobuf content type before you rely on them. See the [CLI reference](cli-reference.md).
+`mono-agent validate` goes further: it **POSTs an empty protobuf** to the configured endpoint to confirm export-compatibility, not just network reachability. This catches endpoints that resolve but reject the OTLP protobuf content type before you rely on them. See the [CLI reference](/observability/cli-reference/).
 
 ## Backfilling historical runs
 
@@ -89,12 +91,13 @@ mono-agent backfill --all --dry-run                # list what would export, sen
 | `--until <iso>` | Only runs at or before this ISO timestamp. |
 | `--dry-run` | Report what would be exported without sending. |
 
+:::note
 Because per-run span ids are deterministic, re-running `backfill` over the same runs **overwrites rather than duplicates** them in Phoenix. You can safely re-run after fixing an endpoint or widening a date range. Backfill requires a configured Phoenix exporter so it knows where to send.
-{: .note }
+:::
 
 ## Related
 
-- [Phoenix-observed agent](../playbooks/phoenix-observed-agent.md) — end-to-end playbook: stand up Phoenix, configure the exporter, and read the resulting traces.
-- [Backfill historical runs](../playbooks/backfill-historical-runs.md) — playbook for retroactively exporting recorded artifacts.
-- [Artifacts & traces](artifacts-and-traces.md) — the always-on JSONL run record and trace registry the exporter reads from.
-- [CLI reference](cli-reference.md) — `validate`, `start`, `status`, and `backfill`.
+- [Phoenix-observed agent](/playbooks/phoenix-observed-agent/) — end-to-end playbook: stand up Phoenix, configure the exporter, and read the resulting traces.
+- [Backfill historical runs](/playbooks/backfill-historical-runs/) — playbook for retroactively exporting recorded artifacts.
+- [Artifacts & traces](/observability/artifacts-and-traces/) — the always-on JSONL run record and trace registry the exporter reads from.
+- [CLI reference](/observability/cli-reference/) — `validate`, `start`, `status`, and `backfill`.

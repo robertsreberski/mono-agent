@@ -1,14 +1,14 @@
 ---
 title: "Selected skills"
-parent: "Context & Skills"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 # Selected skills
 
 mono-agent loads skills the way it loads identity and soul: explicitly. You name the skills you want, and each is read from `<skillsRoot>/<name>/SKILL.md` and folded into the assembled context. There is **no auto-selection, ranking, or fuzzy matching** — the set you list is the set the agent gets, in order. This page covers `context.skillsRoot`, `context.selectedSkills`, the per-skill byte cap, and how the bundled `mono-agent-composer` skill itself is installed or reused.
 
-For how skills sit alongside identity/soul/memory in the final prompt, see [Context assembly](assembly.md).
+For how skills sit alongside identity/soul/memory in the final prompt, see [Context assembly](/context/assembly/).
 
 ## How selection works
 
@@ -34,7 +34,7 @@ For each entry `name` in `selectedSkills`, mono-agent reads `<skillsRoot>/<name>
 
 `MONO_AGENT_SELECTED_SKILLS` is a comma-separated list, e.g. `MONO_AGENT_SELECTED_SKILLS=research,incident-response`.
 
-The folder convention is part of the standard [agent folder layout](../config/folder-layout.md): an optional `skills/` directory holding `<skill-name>/SKILL.md` per selected skill.
+The folder convention is part of the standard [agent folder layout](/config/folder-layout/): an optional `skills/` directory holding `<skill-name>/SKILL.md` per selected skill.
 
 ## The per-skill byte cap
 
@@ -42,8 +42,9 @@ The folder convention is part of the standard [agent folder layout](../config/fo
 
 Truncation is UTF-8-safe: the body is cut at the cap without splitting a multi-byte character, so you never get a corrupted final glyph. The cap applies per skill, not to the combined total — three selected skills can each contribute up to `skillMaxBytes`.
 
+:::tip
 Keep each `SKILL.md` well under the cap. If a skill is being truncated, that is a sign its body is too long for an always-on instruction — move the detail into reference files the agent reads on demand rather than relying on it being present every turn.
-{: .tip }
+:::
 
 ## Installing the bundled composer skill
 
@@ -82,9 +83,10 @@ That loads `packages/agent-app/skills/mono-agent-composer/SKILL.md`. Use the pat
 
 ## Skills are not tools
 
-A selected skill is *instruction text* added to the prompt — it shapes how the agent reasons and which workflows it follows. It does not, by itself, grant the agent any new capabilities to execute. Tool availability is governed separately by the [tool policy](../tools/policy.md) and [MCP servers](../tools/mcp.md). A skill can tell the agent to use a tool, but the tool must also be allowed.
-{: .note }
+:::note
+A selected skill is *instruction text* added to the prompt — it shapes how the agent reasons and which workflows it follows. It does not, by itself, grant the agent any new capabilities to execute. Tool availability is governed separately by the [tool policy](/tools/policy/) and [MCP servers](/tools/mcp/). A skill can tell the agent to use a tool, but the tool must also be allowed.
+:::
 
 ## Programmatic use
 
-The selection model above is the supported `config` surface. If you are composing the context layer in code rather than via `mono-agent.config.json`, the same `skillsRoot` / `selectedSkills` / `skillMaxBytes` inputs are wired through the host — see [Programmatic composition](../programmatic/composition.md).
+The selection model above is the supported `config` surface. If you are composing the context layer in code rather than via `mono-agent.config.json`, the same `skillsRoot` / `selectedSkills` / `skillMaxBytes` inputs are wired through the host — see [Programmatic composition](/programmatic/composition/).

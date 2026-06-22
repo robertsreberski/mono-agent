@@ -2,7 +2,7 @@
 
 > A prose, per-domain version of this reference (runtime, channels, memory, …)
 > lives on the published docs site:
-> <https://robertsreberski.github.io/mono-agent/config/>. This annotated JSON
+> <https://mono-agent-docs.vercel.app/config/>. This annotated JSON
 > stays the offline canonical shape.
 
 One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; every field also has a `MONO_AGENT_*` env var that overrides it (env > JSON > defaults). Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.

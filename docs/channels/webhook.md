@@ -1,7 +1,7 @@
 ---
 title: "Webhook"
-parent: "Channels"
-nav_order: 4
+sidebar:
+  order: 4
 ---
 
 # Webhook
@@ -48,8 +48,9 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `endpoints` | array | — | Multiple named endpoints — see [Multiple endpoints](#multiple-endpoints). |
 | `dir` | string | `webhook` | Folder of `*.md` endpoint files, resolved against the app working directory. |
 
+:::caution
 The webhook server binds to loopback by default. Setting a non-loopback `host` (e.g. `0.0.0.0`) without `allowNonLoopback: true` is rejected — and exposing the endpoint publicly bypasses channel allowlists, so put it behind a reverse proxy or auth layer you control.
-{: .warning }
+:::
 
 ## Request and response
 
@@ -127,7 +128,7 @@ enabled: true
 You are triaging an inbound support ticket. Classify it and summarize the next action.
 ```
 
-`path` is required in frontmatter; `name` defaults to the filename stem, `mode` to `defaultMode`, and `enabled` to `true`. Unlike [cron](cron.md) jobs, the body may be empty (an endpoint with no prompt). Files are loaded in sorted filename order. This mirrors how cron jobs can be authored as `cron/*.md` files.
+`path` is required in frontmatter; `name` defaults to the filename stem, `mode` to `defaultMode`, and `enabled` to `true`. Unlike [cron](/channels/cron/) jobs, the body may be empty (an endpoint with no prompt). Files are loaded in sorted filename order. This mirrors how cron jobs can be authored as `cron/*.md` files.
 
 ## Endpoint prompts
 
@@ -151,12 +152,12 @@ Every key has a `MONO_AGENT_WEBHOOK_*` override, which takes precedence over the
 | `MONO_AGENT_WEBHOOK_DIR` | `webhook.dir` |
 | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | `webhook.endpoints` (JSON array string) |
 
-See [Environment variables](../config/env-vars.md) for precedence rules.
+See [Environment variables](/config/env-vars/) for precedence rules.
 
 ## Related
 
-- [Webhook automation: sync and async](../playbooks/webhook-automation-sync-async.md) — end-to-end recipe.
-- [Cron](cron.md) — scheduled turns; shares the `*.md` authoring pattern and the `prompt` concept.
-- [Delivery and send tools](delivery-and-send-tools.md) — how answers are returned and proactively delivered.
-- [Channels overview](index.md) — all channels and the allowlist model.
-- [Custom channels](../programmatic/custom-channels.md) — build your own transport (code-only).
+- [Webhook automation: sync and async](/playbooks/webhook-automation-sync-async/) — end-to-end recipe.
+- [Cron](/channels/cron/) — scheduled turns; shares the `*.md` authoring pattern and the `prompt` concept.
+- [Delivery and send tools](/channels/delivery-and-send-tools/) — how answers are returned and proactively delivered.
+- [Channels overview](/channels/) — all channels and the allowlist model.
+- [Custom channels](/programmatic/custom-channels/) — build your own transport (code-only).

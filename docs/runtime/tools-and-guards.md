@@ -1,7 +1,7 @@
 ---
 title: "Built-in tools & auto-guards"
-parent: "Runtime & Providers"
-nav_order: 6
+sidebar:
+  order: 6
 ---
 
 # Built-in tools & auto-guards
@@ -23,7 +23,7 @@ Every agent gets these tools without any extra config (coverage: `config` — th
 | `WebFetch` | Fetch a URL and return its content. |
 | `WebSearch` | Run a web search. |
 
-These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. See [Tool Policy](../tools/policy.md) for the full allow/deny semantics, plus [MCP tools](../tools/mcp.md) and the [sandbox](../tools/sandbox.md) for `Bash` confinement.
+These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for `Bash` confinement.
 
 ```json
 {
@@ -36,7 +36,8 @@ These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always w
 
 Env equivalents: `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` (comma-separated tool names).
 
-{: .note }
+:::note
+:::
 An empty or omitted `allowedTools` means the runtime's default tool set is available subject to `disallowedTools`. Be explicit when you want a tightly scoped agent.
 
 ## Tool-output bloat guard (auto)
@@ -61,7 +62,7 @@ Env: `MONO_AGENT_ARTIFACT_DIR`.
 
 Each run records per-turn usage, cost, and cache metrics as events in the run's append-only JSONL artifacts. This is automatic (coverage: `auto`) — it rides on the same `artifacts.dir` and needs no separate flag. Secrets are redacted and long strings truncated in the recorded events.
 
-Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](../observability/artifacts-and-traces.md) and the [CLI reference](../observability/cli-reference.md) for reading these, and [Phoenix & backfill](../observability/phoenix-and-backfill.md) to export them as spans.
+Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](/observability/artifacts-and-traces/) and the [CLI reference](/observability/cli-reference/) for reading these, and [Phoenix & backfill](/observability/phoenix-and-backfill/) to export them as spans.
 
 ## Context compaction (provider-delegated, auto)
 
@@ -80,14 +81,15 @@ Every run reports `context_compaction_applied`:
 | `false` | Enabled but not needed. |
 | `null` | Compaction disabled (or the bridge does not support it). |
 
-This is automatic on the pi-native bridge (coverage: `provider` + `settings`); tune it via the `agent_compaction_*` settings. Other bridges follow their own compaction behavior. See [Backends](backends.md) for bridge differences, [Sessions & concurrency](sessions-concurrency.md) for how sessions persist, and [Fallback](fallback.md) for window changes across the fallback chain.
+This is automatic on the pi-native bridge (coverage: `provider` + `settings`); tune it via the `agent_compaction_*` settings. Other bridges follow their own compaction behavior. See [Backends](/runtime/backends/) for bridge differences, [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions persist, and [Fallback](/runtime/fallback/) for window changes across the fallback chain.
 
 ## WebFetch retry (auto)
 
 The `WebFetch` tool retries transient network failures (timeout, `ECONNRESET`, 5xx) in-tool with backoff. This keeps the model from burning reasoning rounds re-issuing a fetch that failed for a momentary network reason. It is built into the tool (coverage: `auto`) — there is nothing to configure.
 
-{: .tip }
-This is distinct from provider-transport retries (`providers.piNative.piMaxRetries` / `maxRetryDelayMs`), which retry the model call itself. WebFetch retry is local to the tool's HTTP request. See [Fallback](fallback.md) for provider-level retry and failover.
+:::tip
+:::
+This is distinct from provider-transport retries (`providers.piNative.piMaxRetries` / `maxRetryDelayMs`), which retry the model call itself. WebFetch retry is local to the tool's HTTP request. See [Fallback](/runtime/fallback/) for provider-level retry and failover.
 
 ## Tool parallelism (code-only)
 
@@ -99,7 +101,7 @@ const runtimeOptions = {
 };
 ```
 
-There is no config-file or CLI key for this (coverage: `code`). Enable it only when a step's tools are genuinely independent — concurrent `Write`/`Edit` to the same file, or order-dependent `Bash` commands, will race. See [Programmatic composition](../programmatic/composition.md) for where `runtimeOptions` is supplied.
+There is no config-file or CLI key for this (coverage: `code`). Enable it only when a step's tools are genuinely independent — concurrent `Write`/`Edit` to the same file, or order-dependent `Bash` commands, will race. See [Programmatic composition](/programmatic/composition/) for where `runtimeOptions` is supplied.
 
 ## Coverage at a glance
 

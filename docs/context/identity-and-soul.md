@@ -1,14 +1,14 @@
 ---
 title: "Identity & soul"
-parent: "Context & Skills"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Identity & soul
 
 Two markdown documents shape who your agent is on every turn: a **required identity** that declares role and boundaries, and an **optional soul** that carries voice and guardrails. This page covers how to point at them, how they render into the prompt, and the env vars that override them.
 
-Both are part of the assembled context block. For how they sit alongside memory and skills, see [Context assembly](assembly.md).
+Both are part of the assembled context block. For how they sit alongside memory and skills, see [Context assembly](/context/assembly/).
 
 ## At a glance
 
@@ -56,8 +56,9 @@ Authoritative project guidance (read before acting):
 - ./README.md — what the service does and how to run it
 ```
 
+:::tip
 Duplicating those files into the identity invites drift: when `CLAUDE.md` changes, your identity silently goes stale. A pointer stays correct.
-{: .tip }
+:::
 
 ## Soul (optional)
 
@@ -90,18 +91,19 @@ The assembled prompt places the soul first, then the identity:
 <contents of identityPath>
 ```
 
-Both blocks are passed through verbatim, subject to the per-section size handling described in [Context assembly](assembly.md).
+Both blocks are passed through verbatim, subject to the per-section size handling described in [Context assembly](/context/assembly/).
 
 ## Default soul fallback
 
 When `context.soulPath` is **omitted**, the `## Core Guardrails` section is filled with a built-in default soul — a conservative, source-grounded baseline (follow the instruction hierarchy, read before acting, keep scope small and reversible, preserve secrets, do not fake success, surface failures honestly, ask when unsure, leave handoff notes).
 
+:::note
 The fallback is **the default soul text, not your identity**. Leaving out `soulPath` does not duplicate the identity into the guardrails section — it inserts the framework default instead. Set `context.soulPath` only when you want to replace that baseline.
-{: .note }
+:::
 
 ## Related
 
-- [Skills](skills.md) — selecting per-skill capability docs into context
-- [Context assembly](assembly.md) — full order and sizing of the prompt context
-- [Config blueprint](../config/blueprint.md) — the annotated `mono-agent.config.json`
-- [Environment variables](../config/env-vars.md) — every `MONO_AGENT_*` override
+- [Skills](/context/skills/) — selecting per-skill capability docs into context
+- [Context assembly](/context/assembly/) — full order and sizing of the prompt context
+- [Config blueprint](/config/blueprint/) — the annotated `mono-agent.config.json`
+- [Environment variables](/config/env-vars/) — every `MONO_AGENT_*` override

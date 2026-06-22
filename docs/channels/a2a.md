@@ -1,12 +1,12 @@
 ---
 title: "A2A (Agent-to-Agent)"
-parent: "Channels"
-nav_order: 6
+sidebar:
+  order: 6
 ---
 
 # A2A (Agent-to-Agent)
 
-This page covers the **provider** side of the A2A channel: how mono-agent serves your agent over the [A2A protocol](https://a2a-protocol.org) so other agents can discover and call it. The channel publishes an Agent Card, accepts messages over JSON-RPC and REST, and streams responses. Calling *remote* A2A agents (the consumer side) is programmatic — see [A2A consumer](../programmatic/a2a-consumer.md).
+This page covers the **provider** side of the A2A channel: how mono-agent serves your agent over the [A2A protocol](https://a2a-protocol.org) so other agents can discover and call it. The channel publishes an Agent Card, accepts messages over JSON-RPC and REST, and streams responses. Calling *remote* A2A agents (the consumer side) is programmatic — see [A2A consumer](/programmatic/a2a-consumer/).
 
 Coverage: **config**. The provider is fully described by `a2a.provider` + `a2a.agent` + `a2a.skill` in `mono-agent.config.json`.
 
@@ -32,7 +32,8 @@ The provider is deliberately **text/task only**. It supports plain-text message 
 - No signed Agent Cards
 - No file exchange (text parts only)
 
-{: .note }
+:::note
+:::
 If you need richer transport semantics, treat the provider as a stable text gateway and compose the missing pieces in front of it. The surface is kept small on purpose so it stays predictable for other agents to call.
 
 ## Configuration
@@ -135,7 +136,8 @@ To expose the provider publicly you must opt in on two axes:
 1. Set `allowNonLoopback: true` to bind a non-loopback `host` or advertise a non-loopback `publicBaseUrl`. Without it, start fails with an explicit error rather than silently binding `0.0.0.0`.
 2. Set `requireBearer: true` with a `bearerToken` so callers must present `Authorization: Bearer <token>`. When `requireBearer` is on but no token is configured, start fails.
 
-{: .warning }
+:::caution
+:::
 A2A speaks plaintext HTTP. Terminate **HTTPS** at a reverse proxy in front of the provider, set `publicBaseUrl` to the public `https://` URL, and always pair public exposure with `requireBearer`. Keep `bearerToken` in `.env` (`MONO_AGENT_A2A_BEARER_TOKEN`), never in committed config.
 
 ## Startup status
@@ -151,15 +153,15 @@ Run `mono-agent validate` first for a per-section report. Config is JSON-first �
 
 ## Tools and behavior
 
-Inbound A2A messages run the same turn pipeline as other channels, so [tool policy](../tools/policy.md), [MCP servers](../tools/mcp.md), [sandbox](../tools/sandbox.md), [memory](../memory/capture-and-recall.md), and [sessions/concurrency](../runtime/sessions-concurrency.md) all apply. See the [channels overview](index.md) for cross-channel concepts.
+Inbound A2A messages run the same turn pipeline as other channels, so [tool policy](/tools/policy/), [MCP servers](/tools/mcp/), [sandbox](/tools/sandbox/), [memory](/memory/capture-and-recall/), and [sessions/concurrency](/runtime/sessions-concurrency/) all apply. See the [channels overview](/channels/) for cross-channel concepts.
 
 ## Calling remote agents
 
-The provider only serves *your* agent. To have your agent call *other* A2A agents, configure `a2a.consumer` and invoke them programmatically with `createA2AConsumerResponder`. This is a **code** path — see [A2A consumer](../programmatic/a2a-consumer.md).
+The provider only serves *your* agent. To have your agent call *other* A2A agents, configure `a2a.consumer` and invoke them programmatically with `createA2AConsumerResponder`. This is a **code** path — see [A2A consumer](/programmatic/a2a-consumer/).
 
 ## Related
 
-- [A2A provider and consumer playbook](../playbooks/a2a-provider-and-consumer.md) — end-to-end two-agent setup.
-- [A2A consumer (programmatic)](../programmatic/a2a-consumer.md) — calling remote agents.
-- [Multi-agent orchestration](../programmatic/multi-agent.md) — composing agents that delegate over A2A.
-- [Config blueprint](../config/blueprint.md) and [environment variables](../config/env-vars.md).
+- [A2A provider and consumer playbook](/playbooks/a2a-provider-and-consumer/) — end-to-end two-agent setup.
+- [A2A consumer (programmatic)](/programmatic/a2a-consumer/) — calling remote agents.
+- [Multi-agent orchestration](/programmatic/multi-agent/) — composing agents that delegate over A2A.
+- [Config blueprint](/config/blueprint/) and [environment variables](/config/env-vars/).

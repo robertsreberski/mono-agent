@@ -1,7 +1,7 @@
 ---
 title: "Sandbox"
-parent: "Tools, MCP & Sandbox"
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
 # Sandbox
@@ -84,8 +84,9 @@ MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST=*.githubusercontent.com,registry.npmjs.org
 }
 ```
 
+:::note
 If you set `denyWrite` yourself, you replace the defaults — include the four entries above (or merge them in) if you still want that protection.
-{: .note }
+:::
 
 ## Fallback when the engine is unavailable
 
@@ -104,8 +105,9 @@ If `mode: "native"` but no `srt` engine is available (not installed, or `srt --v
 }
 ```
 
+:::caution
 The `unsafe-host-process` fallback runs tool commands directly on the host with no isolation if the sandbox engine is missing. Use it only in trusted, controlled environments (e.g. CI you own end to end). Prefer `fail-closed` for anything handling untrusted input or running untrusted code.
-{: .warning }
+:::
 
 ## Monotonic merge
 
@@ -117,16 +119,17 @@ When a request supplies its own sandbox policy, it is merged with the configured
 - `fallback` collapses to `fail-closed` if either side is `fail-closed`.
 - `unsafeAllowHostProcess` stays on only if **both** sides have it on.
 
-This merge is **auto** (the harness performs it). Constructing request-scoped policies is a **code** path — see [Programmatic](../programmatic/index.md).
+This merge is **auto** (the harness performs it). Constructing request-scoped policies is a **code** path — see [Programmatic](/programmatic/).
 
 ## Gotcha: provider CLI bridges
 
-Some runtime backends are provider CLI bridges that run their own tool loops (their own shell, file, and exec tools) outside the mono-agent shell-command path. Commands those loops spawn are **not** `srt`-wrapped by this sandbox. To confine them, pair this config with the provider's own sandboxing controls. See [Runtime backends](../runtime/backends.md) and [Tools and guards](../runtime/tools-and-guards.md).
-{: .warning }
+:::caution
+Some runtime backends are provider CLI bridges that run their own tool loops (their own shell, file, and exec tools) outside the mono-agent shell-command path. Commands those loops spawn are **not** `srt`-wrapped by this sandbox. To confine them, pair this config with the provider's own sandboxing controls. See [Runtime backends](/runtime/backends/) and [Tools and guards](/runtime/tools-and-guards/).
+:::
 
 ## Related
 
-- [Tool policy](policy.md) — allow/deny which tools the agent can call at all.
-- [MCP](mcp.md) — external tool servers.
-- [Playbook: sandboxed code agent](../playbooks/sandboxed-code-agent.md) — an end-to-end config for an agent that runs untrusted code.
-- [Environment variables](../config/env-vars.md) — full `MONO_AGENT_*` reference.
+- [Tool policy](/tools/policy/) — allow/deny which tools the agent can call at all.
+- [MCP](/tools/mcp/) — external tool servers.
+- [Playbook: sandboxed code agent](/playbooks/sandboxed-code-agent/) — an end-to-end config for an agent that runs untrusted code.
+- [Environment variables](/config/env-vars/) — full `MONO_AGENT_*` reference.

@@ -1,7 +1,7 @@
 ---
 title: "MCP servers"
-parent: "Tools, MCP & Sandbox"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 # MCP servers
@@ -65,7 +65,8 @@ SSE and streamable HTTP servers use a `url` instead of `command`/`args`:
 
 Keep tokens as placeholders in committed files; prefer `env` references or a non-tracked `mcp.json`. Run `mono-agent validate` to confirm the file is found — it reports the resolved `MCP config:` path or a `MCP config file is missing:` warning.
 
-{: .tip }
+:::tip
+:::
 You can also inline servers directly in config via `tools.mcpServers` (an object keyed by server name) instead of a separate file. The file (`mcpConfigPath`) and the inline form (`mcpServers`) carry the same per-server schema.
 
 ## SDK runtimes vs CLI runtimes
@@ -75,7 +76,7 @@ How the servers reach the underlying runtime depends on the backend:
 - **SDK runtimes** — the servers are **inlined** into the runtime options the agent passes to the provider session. The `mcp.json` is read and its `mcpServers` are merged into the request.
 - **CLI runtimes** — the `mcpConfigPath` is **forwarded** as a path; the CLI process reads the file itself.
 
-Either way you author one `mcp.json` and mono-agent does the right thing for the configured backend. See [Runtime backends](../runtime/backends.md) for which backends are SDK vs CLI.
+Either way you author one `mcp.json` and mono-agent does the right thing for the configured backend. See [Runtime backends](/runtime/backends/) for which backends are SDK vs CLI.
 
 ## MCP tools are NOT gated by `tools.allowedTools`
 
@@ -87,15 +88,16 @@ Consequences:
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
 - This same model covers app-injected MCP tools such as `memory_recall` and the `ask-collaborator` orchestration tool — they are gated by their own enable switches, not by the allowlist.
 
-{: .warning }
-The one exception is the **app-owned adapter send tools** (`slack_send_message`, `telegram_send_message`). Although they are delivered as MCP tools, they are deliberately opt-in: their exact tool names **must** appear in `tools.allowedTools`, in addition to valid `slack.*` / `telegram.*` adapter config. See [Delivery & send tools](../channels/delivery-and-send-tools.md).
+:::caution
+:::
+The one exception is the **app-owned adapter send tools** (`slack_send_message`, `telegram_send_message`). Although they are delivered as MCP tools, they are deliberately opt-in: their exact tool names **must** appear in `tools.allowedTools`, in addition to valid `slack.*` / `telegram.*` adapter config. See [Delivery & send tools](/channels/delivery-and-send-tools/).
 
-For the full allow/deny semantics of built-in tools, see [Tool policy](policy.md). For how `Bash` is confined, see [Sandbox](sandbox.md).
+For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/policy/). For how `Bash` is confined, see [Sandbox](/tools/sandbox/).
 
 ## Related
 
-- [Tool policy](policy.md) — the built-in allow/deny model that MCP tools sit outside of.
-- [Tools & guards](../runtime/tools-and-guards.md) — built-in tool catalog and runtime guards.
-- [Capture & recall](../memory/capture-and-recall.md) — `memory_recall`, an app-injected MCP tool.
-- [Slack team bot with MCP tools](../playbooks/slack-team-bot-mcp-tools.md) — end-to-end playbook wiring MCP servers into a channel agent.
-- Need to register MCP servers from code instead of config? See [Programmatic composition](../programmatic/composition.md).
+- [Tool policy](/tools/policy/) — the built-in allow/deny model that MCP tools sit outside of.
+- [Tools & guards](/runtime/tools-and-guards/) — built-in tool catalog and runtime guards.
+- [Capture & recall](/memory/capture-and-recall/) — `memory_recall`, an app-injected MCP tool.
+- [Slack team bot with MCP tools](/playbooks/slack-team-bot-mcp-tools/) — end-to-end playbook wiring MCP servers into a channel agent.
+- Need to register MCP servers from code instead of config? See [Programmatic composition](/programmatic/composition/).

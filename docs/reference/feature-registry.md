@@ -1,7 +1,7 @@
 ---
 title: "Feature registry (source of truth)"
-parent: "Reference"
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
 # Mono-Agent Feature Registry
@@ -72,7 +72,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `skills.byte-capping` | Per-skill instruction byte cap (default 48000) | `config` | `context.skillMaxBytes` (`MONO_AGENT_SKILL_MAX_BYTES`) |
 | `memory.lite` | FTS keyword recall + rapid-log daily capture. No external deps (SQLite bundled). No Ollama required | `config` | `memory.mode: "lite"`, `memory.path`, `memory.maxBytes`, `memory.writeMode` |
 | `memory.journal` | Hybrid recall (BM25+vector RRF) + salience decay on top of the lite tier. Needs a configured embeddings provider (`ollama` or `openai`). No LLM required | `config` | `memory.mode: "journal"`, `memory.path`, `memory.maxBytes`, `memory.embeddings.{provider,model,dim}` (`MONO_AGENT_MEMORY_EMBEDDINGS_*`) |
-| `memory.bujo` | Full BuJo tier: everything in journal + LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP), entity graph, reflection (decay + insight synthesis), monthly migration (promote/reschedule/cluster/forget), living `index.md` + `future-log.md`. Needs embeddings + a chat model. Rituals are **auto-scheduled in-app** (no external cron needed) | `config` | `memory.mode: "bujo"`, `memory.path`, `memory.embeddings.{provider,model,dim}`, `memory.llm.{provider,model,executionMode,endpoint}` — see `docs/memory.md` |
+| `memory.bujo` | Full BuJo tier: everything in journal + LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP), entity graph, reflection (decay + insight synthesis), monthly migration (promote/reschedule/cluster/forget), living `index.md` + `future-log.md`. Needs embeddings + a chat model. Rituals are **auto-scheduled in-app** (no external cron needed) | `config` | `memory.mode: "bujo"`, `memory.path`, `memory.embeddings.{provider,model,dim}`, `memory.llm.{provider,model,executionMode,endpoint}` — see `docs/memory/index.md` |
 | `memory.bujo-reflection` | Auto-scheduled nightly reflection pass (decay + insight synthesis). In-app scheduler; no external cron needed. Override cadence or disable per-ritual | `config` | `memory.reflection.{enabled,cron}` (default `0 3 * * *`); env `MONO_AGENT_MEMORY_REFLECTION_CRON`, `MONO_AGENT_MEMORY_REFLECTION_ENABLED` |
 | `memory.bujo-migration` | Auto-scheduled monthly migration pass (promote/reschedule/cluster/forget). In-app scheduler; no external cron needed | `config` | `memory.migration.{enabled,cron}` (default `0 4 1 * *`); env `MONO_AGENT_MEMORY_MIGRATION_CRON`, `MONO_AGENT_MEMORY_MIGRATION_ENABLED` |
 | `memory.bujo-cli` | CLI for out-of-band / manual maintenance: rebuild SQLite index from markdown, hybrid recall, write living `index.md`, reflection pass, monthly migration | `cli` | `memory-bujo rebuild\|recall\|index\|reflect\|migrate <root>` (opt-in `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER`/`_MODEL`/`_DIM` enable semantic recall; `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT` required for reflect/migrate) |
@@ -151,9 +151,9 @@ rest. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
   `references/config-blueprint.md`, `references/feature-coverage.md`,
   `references/discovery-questions.md`, `references/package-map.md`,
   `references/validation.md`, and `references/playbooks.md` (when a recipe changes).
-- The published documentation site under `docs/` (served on GitHub Pages from
-  `/docs` on `main`) is the reader-friendly projection of this registry. When a
+- The published documentation site under `docs/` (built with Astro Starlight in
+  `website/` and deployed on Vercel) is the reader-friendly projection of this registry. When a
   feature row changes, also update its prose page under `docs/<area>/`, the
   scannable `docs/reference/feature-matrix.md`, and — if a recipe is affected —
   the matching `docs/playbooks/<slug>.md` and the composer's `references/playbooks.md`.
-  This file (`docs/feature-registry.md`) remains the canonical source of truth.
+  This file (`docs/reference/feature-registry.md`) remains the canonical source of truth.

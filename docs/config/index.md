@@ -1,12 +1,12 @@
 ---
 title: "Configuration"
-nav_order: 3
-has_children: true
+sidebar:
+  order: 0
 ---
 
 # Configuration
 
-A mono-agent is declared by a single `mono-agent.config.json` in the agent folder. This page covers how that file is structured, what is required versus optional, and how environment variables override it. The full annotated config lives in [Blueprint](blueprint.md); the canonical key map is the [Feature Matrix](../reference/feature-matrix.md).
+A mono-agent is declared by a single `mono-agent.config.json` in the agent folder. This page covers how that file is structured, what is required versus optional, and how environment variables override it. The full annotated config lives in [Blueprint](/config/blueprint/); the canonical key map is the [Feature Matrix](/reference/feature-matrix/).
 
 ## The one config file
 
@@ -25,7 +25,7 @@ A minimal valid config has exactly two fields:
 }
 ```
 
-`runtime.model` selects the backend (`claude:*`, `codex:*`, `pi:<provider>:<model>`, `opencode:*`) and `context.identityPath` points at the agent's identity markdown. **Every other section is optional and opt-in** — omit a section and that capability is simply off. See [Runtime](../runtime/index.md) and [Identity & Soul](../context/identity-and-soul.md) for these two.
+`runtime.model` selects the backend (`claude:*`, `codex:*`, `pi:<provider>:<model>`, `opencode:*`) and `context.identityPath` points at the agent's identity markdown. **Every other section is optional and opt-in** — omit a section and that capability is simply off. See [Runtime](/runtime/) and [Identity & Soul](/context/identity-and-soul/) for these two.
 
 ## Precedence: env > JSON > defaults
 
@@ -47,10 +47,11 @@ export MONO_AGENT_MODEL="pi:openai:gpt-5.5"
 export MONO_AGENT_EFFORT="high"
 ```
 
-A `.env` file in the agent folder is loaded automatically on `start` (exported shell variables still win); use `--env-file <path>` for an alternate file. The full variable list is on [Environment Variables](env-vars.md).
+A `.env` file in the agent folder is loaded automatically on `start` (exported shell variables still win); use `--env-file <path>` for an alternate file. The full variable list is on [Environment Variables](/config/env-vars/).
 
+:::note
 Config is JSON-first: there is no live browser re-apply. Edit the file (agents can edit it themselves) and run `mono-agent restart` to apply changes.
-{: .note }
+:::
 
 ## Sections at a glance
 
@@ -58,21 +59,21 @@ Each top-level key maps to one capability area. All are optional except the two 
 
 | Section | Purpose | Page |
 | --- | --- | --- |
-| `runtime` | Model, execution mode, effort, sessions, concurrency | [Runtime](../runtime/index.md) |
-| `providers` | Local/self-hosted providers, Pi OAuth, pi-native tuning | [Local Providers](../runtime/local-providers.md) |
-| `context` | Identity, soul, selected skills | [Context Assembly](../context/assembly.md) |
-| `memory` | Tiered memory (lite/journal/bujo), embeddings, rituals | [Capture & Recall](../memory/capture-and-recall.md) |
-| `tools` | Fail-closed allow/deny policy, MCP servers | [Tool Policy](../tools/policy.md), [MCP](../tools/mcp.md) |
-| `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](../tools/sandbox.md) |
-| `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](../observability/index.md) |
-| `telegram`, `slack`, `whatsapp` | Chat channels (opt-in via `enabled`) | [Channels](../channels/index.md) |
-| `webhook`, `openaiApi`, `a2a`, `cron` | HTTP, OpenAI-compatible, agent-to-agent, scheduled | [Channels](../channels/index.md) |
+| `runtime` | Model, execution mode, effort, sessions, concurrency | [Runtime](/runtime/) |
+| `providers` | Local/self-hosted providers, Pi OAuth, pi-native tuning | [Local Providers](/runtime/local-providers/) |
+| `context` | Identity, soul, selected skills | [Context Assembly](/context/assembly/) |
+| `memory` | Tiered memory (lite/journal/bujo), embeddings, rituals | [Capture & Recall](/memory/capture-and-recall/) |
+| `tools` | Fail-closed allow/deny policy, MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
+| `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](/tools/sandbox/) |
+| `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](/observability/) |
+| `telegram`, `slack`, `whatsapp` | Chat channels (opt-in via `enabled`) | [Channels](/channels/) |
+| `webhook`, `openaiApi`, `a2a`, `cron` | HTTP, OpenAI-compatible, agent-to-agent, scheduled | [Channels](/channels/) |
 
 Every channel section is independent. An unconfigured channel reports `waiting_for_config` (or `disabled` when `enabled` is false) and never blocks the others.
 
 ## Coverage types
 
-The [Feature Registry](../reference/feature-matrix.md) tags each capability so you know how to reach it:
+The [Feature Registry](/reference/feature-matrix/) tags each capability so you know how to reach it:
 
 | Type | Meaning |
 | --- | --- |
@@ -82,8 +83,9 @@ The [Feature Registry](../reference/feature-matrix.md) tags each capability so y
 | `code` | Programmatic escape hatch only — intentional |
 | `dev` | Development/test tooling, not part of a running agent |
 
-A handful of capabilities are `code`-only — for example structured output schemas, tool approval gates, live input steering, and custom runtimes/channels. These are not expressible in JSON; reach them through `startMonoAgentApp` / `createConfiguredAgentResponder`. See [Programmatic Composition](../programmatic/index.md).
-{: .tip }
+:::tip
+A handful of capabilities are `code`-only — for example structured output schemas, tool approval gates, live input steering, and custom runtimes/channels. These are not expressible in JSON; reach them through `startMonoAgentApp` / `createConfiguredAgentResponder`. See [Programmatic Composition](/programmatic/).
+:::
 
 ## Validate before you run
 
@@ -98,7 +100,7 @@ On `start`, each channel prints one status line: `running` with its endpoint fac
 
 ## Related pages
 
-- [Blueprint](blueprint.md) — the full annotated `mono-agent.config.json`.
-- [Environment Variables](env-vars.md) — the complete `MONO_AGENT_*` map.
-- [Folder Layout](folder-layout.md) — files and directories around the config.
-- [Feature Matrix](../reference/feature-matrix.md) — canonical capability → config key reference.
+- [Blueprint](/config/blueprint/) — the full annotated `mono-agent.config.json`.
+- [Environment Variables](/config/env-vars/) — the complete `MONO_AGENT_*` map.
+- [Folder Layout](/config/folder-layout/) — files and directories around the config.
+- [Feature Matrix](/reference/feature-matrix/) — canonical capability → config key reference.

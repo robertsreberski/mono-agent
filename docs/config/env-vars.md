@@ -1,12 +1,12 @@
 ---
 title: "Environment variables"
-parent: "Configuration"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 # Environment variables
 
-Every field in `mono-agent.config.json` also has a `MONO_AGENT_*` environment variable that overrides it. This page is the exhaustive reference, grouped by domain, with the JSON key each variable overrides. For the full annotated config see [blueprint.md](blueprint.md).
+Every field in `mono-agent.config.json` also has a `MONO_AGENT_*` environment variable that overrides it. This page is the exhaustive reference, grouped by domain, with the JSON key each variable overrides. For the full annotated config see [blueprint.md](/config/blueprint/).
 
 ## Precedence and `.env` loading
 
@@ -14,11 +14,13 @@ The resolution order is **env > JSON > built-in defaults**. An environment varia
 
 A `.env` file in the agent folder is loaded automatically by the CLI. Variables already exported in your shell take precedence over values in `.env` (exported shell vars win). Pass `--env-file <path>` to load an alternate file instead of `./.env`.
 
+:::caution
 Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked.
-{: .warning }
+:::
 
-Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-native** variables, not `MONO_AGENT_*` ones. Reference them from config via `apiKeyEnv` (for local providers) rather than inlining a key. See [../runtime/local-providers.md](../runtime/local-providers.md) and [../runtime/backends.md](../runtime/backends.md).
-{: .note }
+:::note
+Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-native** variables, not `MONO_AGENT_*` ones. Reference them from config via `apiKeyEnv` (for local providers) rather than inlining a key. See [../runtime/local-providers.md](/runtime/local-providers/) and [../runtime/backends.md](/runtime/backends/).
+:::
 
 ## Runtime
 
@@ -26,14 +28,14 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 | --- | --- | --- |
 | `MONO_AGENT_MODEL` | `runtime.model` | Backend-prefixed model, e.g. `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, `pi:openai:gpt-5.5`. Required. |
 | `MONO_AGENT_EXECUTION_MODE` | `runtime.executionMode` | `sdk` vs `cli`; default inferred from model. |
-| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Ordered backup models on retryable failure. See [../runtime/fallback.md](../runtime/fallback.md). |
-| `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `low` / `medium` / `high` / `xhigh` / `max`. See [../runtime/execution-effort-permissions.md](../runtime/execution-effort-permissions.md). |
+| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Ordered backup models on retryable failure. See [../runtime/fallback.md](/runtime/fallback/). |
+| `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `low` / `medium` / `high` / `xhigh` / `max`. See [../runtime/execution-effort-permissions.md](/runtime/execution-effort-permissions/). |
 | `MONO_AGENT_PERMISSION_MODE` | `runtime.permissionMode` | `default` / `plan` / `acceptEdits` / `bypassPermissions` (CLI backends). |
 | `MONO_AGENT_REASONING_SUMMARY` | `runtime.reasoningSummary` | `auto` / `concise` / `detailed` / `off` / `on`. Retained for back-compat; currently no runtime effect. |
 | `MONO_AGENT_MAX_TURNS` | `runtime.maxTurns` | Turn cap per run; omitted or `0` means unlimited. |
 | `MONO_AGENT_WORKSPACE` | `runtime.workspace` | Working directory for runtime tools. |
 | `MONO_AGENT_SESSION_MODE` | `runtime.session.mode` | Continuous provider session mode per conversation. |
-| `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | `runtime.session.idleTimeoutMs` | Idle eviction window for sessions. See [../runtime/sessions-concurrency.md](../runtime/sessions-concurrency.md). |
+| `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | `runtime.session.idleTimeoutMs` | Idle eviction window for sessions. See [../runtime/sessions-concurrency.md](/runtime/sessions-concurrency/). |
 | `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS` | `concurrency.maxConcurrentRuns` | Runs executing against the provider at once (**per-channel**). |
 | `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS` | `concurrency.maxPendingRuns` | Runs admitted before the provider step (**per-channel**). |
 
@@ -67,15 +69,15 @@ MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 | `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
 | `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |
 
-See [../runtime/local-providers.md](../runtime/local-providers.md) for the local provider shape and [../runtime/backends.md](../runtime/backends.md) for Pi auth.
+See [../runtime/local-providers.md](/runtime/local-providers/) for the local provider shape and [../runtime/backends.md](/runtime/backends/) for Pi auth.
 
 ## Context
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_IDENTITY_PATH` | `context.identityPath` | Identity markdown loaded into every prompt. Required. See [../context/identity-and-soul.md](../context/identity-and-soul.md). |
+| `MONO_AGENT_IDENTITY_PATH` | `context.identityPath` | Identity markdown loaded into every prompt. Required. See [../context/identity-and-soul.md](/context/identity-and-soul/). |
 | `MONO_AGENT_SOUL_PATH` | `context.soulPath` | Optional secondary voice/guardrail doc. |
-| `MONO_AGENT_SKILLS_ROOT` | `context.skillsRoot` | Root folder for `<name>/SKILL.md` skills. See [../context/skills.md](../context/skills.md). |
+| `MONO_AGENT_SKILLS_ROOT` | `context.skillsRoot` | Root folder for `<name>/SKILL.md` skills. See [../context/skills.md](/context/skills/). |
 | `MONO_AGENT_SELECTED_SKILLS` | `context.selectedSkills` | Explicitly selected skill names. |
 | `MONO_AGENT_SKILL_MAX_BYTES` | `context.skillMaxBytes` | Per-skill instruction byte cap; default 48000. |
 
@@ -84,13 +86,13 @@ See [../runtime/local-providers.md](../runtime/local-providers.md) for the local
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo`. |
-| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo`). See [../memory/capture-and-recall.md](../memory/capture-and-recall.md). |
-| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` or `openai`. See [../memory/embeddings.md](../memory/embeddings.md). |
+| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo`). See [../memory/capture-and-recall.md](/memory/capture-and-recall/). |
+| `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` or `openai`. See [../memory/embeddings.md](/memory/embeddings/). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Embedding model string. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Embedding dimension. |
 | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `memory_recall` tool; default on for journal/bujo with embeddings. |
 | `MONO_AGENT_MEMORY_REFLECTION_ENABLED` | `memory.reflection.enabled` | Nightly BuJo reflection pass. |
-| `MONO_AGENT_MEMORY_REFLECTION_CRON` | `memory.reflection.cron` | Default `0 3 * * *`. See [../memory/rituals.md](../memory/rituals.md). |
+| `MONO_AGENT_MEMORY_REFLECTION_CRON` | `memory.reflection.cron` | Default `0 3 * * *`. See [../memory/rituals.md](/memory/rituals/). |
 | `MONO_AGENT_MEMORY_MIGRATION_ENABLED` | `memory.migration.enabled` | Monthly BuJo migration pass. |
 | `MONO_AGENT_MEMORY_MIGRATION_CRON` | `memory.migration.cron` | Default `0 4 1 * *`. |
 | `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Required for BuJo capture/rituals. |
@@ -98,22 +100,23 @@ See [../runtime/local-providers.md](../runtime/local-providers.md) for the local
 | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | `memory.llm.executionMode` | `sdk` for `agent-host` refs. |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama-only endpoint override. |
 
-The standalone `memory-bujo` maintenance CLI reads `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` / `_MODEL` / `_DIM` to enable semantic recall, and `MONO_AGENT_MEMORY_LLM_MODEL` / `MONO_AGENT_MEMORY_LLM_ENDPOINT` for `reflect`/`migrate`. See [../memory/validation-and-cli.md](../memory/validation-and-cli.md).
-{: .note }
+:::note
+The standalone `memory-bujo` maintenance CLI reads `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` / `_MODEL` / `_DIM` to enable semantic recall, and `MONO_AGENT_MEMORY_LLM_MODEL` / `MONO_AGENT_MEMORY_LLM_ENDPOINT` for `reflect`/`migrate`. See [../memory/validation-and-cli.md](/memory/validation-and-cli/).
+:::
 
 ## Tools
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` | Allowlist. See [../tools/policy.md](../tools/policy.md). |
+| `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` | Allowlist. See [../tools/policy.md](/tools/policy/). |
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` | Denylist (deny wins; overlap rejected). |
-| `MONO_AGENT_MCP_CONFIG_PATH` | `tools.mcpConfigPath` | Path to `mcp.json`. See [../tools/mcp.md](../tools/mcp.md). |
+| `MONO_AGENT_MCP_CONFIG_PATH` | `tools.mcpConfigPath` | Path to `mcp.json`. See [../tools/mcp.md](/tools/mcp/). |
 
 ## Sandbox
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_SANDBOX_MODE` | `sandbox.mode` | `native` (srt-wrapped) vs `off`. See [../tools/sandbox.md](../tools/sandbox.md). |
+| `MONO_AGENT_SANDBOX_MODE` | `sandbox.mode` | `native` (srt-wrapped) vs `off`. See [../tools/sandbox.md](/tools/sandbox/). |
 | `MONO_AGENT_SANDBOX_NETWORK` | `sandbox.network.mode` | `none` / `localhost` / `allowlist` / `all`. |
 | `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` | `sandbox.network.allowlist` | Domain allowlist. |
 | `MONO_AGENT_SANDBOX_READABLE_ROOTS` | `sandbox.readableRoots` | Readable filesystem roots. |
@@ -126,13 +129,13 @@ The standalone `memory-bujo` maintenance CLI reads `MONO_AGENT_MEMORY_EMBEDDINGS
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_ARTIFACT_DIR` | `artifacts.dir` | Append-only run JSONL + summaries. See [../observability/artifacts-and-traces.md](../observability/artifacts-and-traces.md). |
+| `MONO_AGENT_ARTIFACT_DIR` | `artifacts.dir` | Append-only run JSONL + summaries. See [../observability/artifacts-and-traces.md](/observability/artifacts-and-traces/). |
 | `MONO_AGENT_TRACE_*` | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` | Heartbeat manifest for dashboard discovery. |
-| `MONO_AGENT_OBSERVABILITY_EXPORTERS` | `observability.exporters[]` | JSON array; Phoenix OTLP exporter entries. See [../observability/phoenix-and-backfill.md](../observability/phoenix-and-backfill.md). |
+| `MONO_AGENT_OBSERVABILITY_EXPORTERS` | `observability.exporters[]` | JSON array; Phoenix OTLP exporter entries. See [../observability/phoenix-and-backfill.md](/observability/phoenix-and-backfill/). |
 
 ## Channels
 
-Every channel is opt-in via its `enabled` flag (default off) and every field has a `MONO_AGENT_<CHANNEL>_*` env var. The tables below cover the commonly overridden keys; consult [blueprint.md](blueprint.md) for the complete per-channel shape.
+Every channel is opt-in via its `enabled` flag (default off) and every field has a `MONO_AGENT_<CHANNEL>_*` env var. The tables below cover the commonly overridden keys; consult [blueprint.md](/config/blueprint/) for the complete per-channel shape.
 
 ### Telegram
 
@@ -140,7 +143,7 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | --- | --- | --- |
 | `MONO_AGENT_TELEGRAM_ENABLED` | `telegram.enabled` | |
 | `MONO_AGENT_TELEGRAM_BOT_TOKEN` | `telegram.botToken` | Bot token. |
-| `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` | Or `allowAllChats`. See [../channels/telegram.md](../channels/telegram.md). |
+| `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` | Or `allowAllChats`. See [../channels/telegram.md](/channels/telegram/). |
 
 ### Slack
 
@@ -149,7 +152,7 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | `MONO_AGENT_SLACK_ENABLED` | `slack.enabled` | |
 | `MONO_AGENT_SLACK_BOT_TOKEN` | `slack.botToken` | `xoxb-...` |
 | `MONO_AGENT_SLACK_APP_TOKEN` | `slack.appToken` | `xapp-...` (Socket Mode). |
-| `MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS` | `slack.allowedChannelIds` | Or `allowAllChannels`. See [../channels/slack.md](../channels/slack.md). |
+| `MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS` | `slack.allowedChannelIds` | Or `allowAllChannels`. See [../channels/slack.md](/channels/slack/). |
 
 ### WhatsApp
 
@@ -157,7 +160,7 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | --- | --- | --- |
 | `MONO_AGENT_WHATSAPP_ENABLED` | `whatsapp.enabled` | QR login; auth state in `.mono-agent/whatsapp-auth`. |
 | `MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS` | `whatsapp.allowedChatJids` | Or `allowAllChats`. |
-| `MONO_AGENT_WHATSAPP_GROUP_MODE` | `whatsapp.groupMode` | `mention` / `any`. See [../channels/whatsapp.md](../channels/whatsapp.md). |
+| `MONO_AGENT_WHATSAPP_GROUP_MODE` | `whatsapp.groupMode` | `mention` / `any`. See [../channels/whatsapp.md](/channels/whatsapp/). |
 
 ### Webhook
 
@@ -165,7 +168,7 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | --- | --- | --- |
 | `MONO_AGENT_WEBHOOK_ENABLED` | `webhook.enabled` | |
 | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | `webhook.endpoints[]` | JSON array of named endpoints. |
-| `MONO_AGENT_WEBHOOK_DIR` | `webhook.dir` | Folder of `*.md` endpoint files. See [../channels/webhook.md](../channels/webhook.md). |
+| `MONO_AGENT_WEBHOOK_DIR` | `webhook.dir` | Folder of `*.md` endpoint files. See [../channels/webhook.md](/channels/webhook/). |
 
 ### OpenAI-compatible API
 
@@ -173,14 +176,14 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | --- | --- | --- |
 | `MONO_AGENT_OPENAI_API_ENABLED` | `openaiApi.enabled` | |
 | `MONO_AGENT_OPENAI_API_API_KEY` | `openaiApi.apiKey` | Optional bearer required from clients (`sk-...`). |
-| `MONO_AGENT_OPENAI_API_MODEL_ID` | `openaiApi.modelId` | Advertised model id. See [../channels/openai-api.md](../channels/openai-api.md). |
+| `MONO_AGENT_OPENAI_API_MODEL_ID` | `openaiApi.modelId` | Advertised model id. See [../channels/openai-api.md](/channels/openai-api/). |
 
 ### A2A
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_A2A_PROVIDER_ENABLED` | `a2a.provider.enabled` | A2A provider with Agent Card discovery. |
-| `MONO_AGENT_A2A_PROVIDER_BEARER_TOKEN` | `a2a.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](../channels/a2a.md). |
+| `MONO_AGENT_A2A_PROVIDER_BEARER_TOKEN` | `a2a.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](/channels/a2a/). |
 
 ### Cron
 
@@ -188,7 +191,7 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | --- | --- | --- |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
 | `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (id, expression, timezone, prompt, conversationId). |
-| `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [../channels/cron.md](../channels/cron.md). |
+| `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [../channels/cron.md](/channels/cron/). |
 
 ## Evals
 
@@ -196,4 +199,4 @@ The eval harness is dev/code coverage, not a runtime channel. Live eval runs are
 
 | Env var | Notes |
 | --- | --- |
-| `MONO_AGENT_EVAL_LIVE` | Set to `1` to run live eval scenarios via `@mono-agent/agent-evals`. See [../evals/index.md](../evals/index.md). |
+| `MONO_AGENT_EVAL_LIVE` | Set to `1` to run live eval scenarios via `@mono-agent/agent-evals`. See [../evals/index.md](/evals/). |

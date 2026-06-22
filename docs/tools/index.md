@@ -1,7 +1,7 @@
 ---
 title: "Tools, MCP & Sandbox"
-nav_order: 8
-has_children: true
+sidebar:
+  order: 0
 ---
 
 # Tools, MCP & Sandbox
@@ -14,9 +14,9 @@ All three are configured in `mono-agent.config.json` and are enforced by the har
 
 | Concern | Package | Config block | Page |
 | --- | --- | --- | --- |
-| Which tools the model may call | `@mono-agent/tool-policy` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](policy.md) |
-| Attaching external MCP servers | `@mono-agent/tool-policy` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](mcp.md) |
-| Confining what tools touch | `@mono-agent/sandbox` | `sandbox.*` | [Sandbox](sandbox.md) |
+| Which tools the model may call | `@mono-agent/tool-policy` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](/tools/policy/) |
+| Attaching external MCP servers | `@mono-agent/tool-policy` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
+| Confining what tools touch | `@mono-agent/sandbox` | `sandbox.*` | [Sandbox](/tools/sandbox/) |
 
 ## At a glance
 
@@ -58,8 +58,9 @@ Equivalent environment overrides exist for headless deploys:
 
 When `tools.allowedTools` is empty the policy denies **every** tool — an empty allowlist means no tools, not all tools (coverage: `auto`). Deny always wins over allow, and listing the same tool in both `allowedTools` and `disallowedTools` is rejected as a configuration error.
 
+:::caution
 If you only set `disallowedTools` and leave `allowedTools` empty, the agent still has no tools — `disallowedTools` subtracts from an allowlist, it does not implicitly allow the rest.
-{: .warning }
+:::
 
 ## Request-scoped policies only tighten
 
@@ -67,8 +68,8 @@ Channels and programmatic callers can supply per-request tool and sandbox polici
 
 ## Where to go next
 
-- **[Tool Policy](policy.md)** — allowlist/denylist semantics, built-in tools, naming MCP tools, and how approval gates relate (the latter is `code`-only — see [programmatic/](../programmatic/approval-and-structured-output.md)).
-- **[MCP Servers](mcp.md)** — authoring `mcp.json`, stdio/sse/http transports, how servers are inlined for SDK runtimes versus path-forwarded for CLI runtimes.
-- **[Sandbox](sandbox.md)** — native srt confinement, filesystem scopes, network modes, and the fail-closed vs unsafe-host-process fallback.
+- **[Tool Policy](/tools/policy/)** — allowlist/denylist semantics, built-in tools, naming MCP tools, and how approval gates relate (the latter is `code`-only — see [programmatic/](/programmatic/approval-and-structured-output/)).
+- **[MCP Servers](/tools/mcp/)** — authoring `mcp.json`, stdio/sse/http transports, how servers are inlined for SDK runtimes versus path-forwarded for CLI runtimes.
+- **[Sandbox](/tools/sandbox/)** — native srt confinement, filesystem scopes, network modes, and the fail-closed vs unsafe-host-process fallback.
 
-For app-owned send tools (`slack_send_message`, `telegram_send_message`) that route through enabled channel adapters, see [Delivery & Send Tools](../channels/delivery-and-send-tools.md).
+For app-owned send tools (`slack_send_message`, `telegram_send_message`) that route through enabled channel adapters, see [Delivery & Send Tools](/channels/delivery-and-send-tools/).

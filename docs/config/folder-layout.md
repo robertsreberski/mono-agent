@@ -1,12 +1,12 @@
 ---
 title: "Agent folder layout"
-parent: "Configuration"
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
 # Agent folder layout
 
-A mono-agent lives in a single folder. One [`mono-agent.config.json`](blueprint.md) declares the whole agent; the rest of the tree is author-edited markdown (identity, skills, scheduled prompts) plus a `.mono-agent/` runtime directory the framework writes and manages for you. All paths in the config are relative to this folder, and every field also has a `MONO_AGENT_*` env var that overrides it (env > JSON > defaults).
+A mono-agent lives in a single folder. One [`mono-agent.config.json`](/config/blueprint/) declares the whole agent; the rest of the tree is author-edited markdown (identity, skills, scheduled prompts) plus a `.mono-agent/` runtime directory the framework writes and manages for you. All paths in the config are relative to this folder, and every field also has a `MONO_AGENT_*` env var that overrides it (env > JSON > defaults).
 
 ## The tree
 
@@ -29,7 +29,7 @@ my-agent/
     trace-sources/         # traceability registry (when kept folder-local)
 ```
 
-Only `runtime.model` and `context.identityPath` are required; omit any other section to leave that capability off. Scaffold a new folder with `mono-agent init` (coverage: cli) and validate it with `mono-agent validate` (coverage: cli) — see [CLI reference](../observability/cli-reference.md).
+Only `runtime.model` and `context.identityPath` are required; omit any other section to leave that capability off. Scaffold a new folder with `mono-agent init` (coverage: cli) and validate it with `mono-agent validate` (coverage: cli) — see [CLI reference](/observability/cli-reference/).
 
 ## Author-edited files
 
@@ -46,10 +46,11 @@ These are the inputs you write by hand (or let an agent edit). They are the sour
 | `mcp.json` | External MCP server definitions, referenced from the config. | `tools.mcpServers` / `mcpConfigPath` | config |
 | `.env` | Secrets (tokens, API keys) auto-loaded by the CLI on `start`. | (env override layer) | config |
 
-For what goes inside each, see [Identity & soul](../context/identity-and-soul.md), [Skills](../context/skills.md), [Cron](../channels/cron.md), [Webhook](../channels/webhook.md), and [MCP](../tools/mcp.md).
+For what goes inside each, see [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Cron](/channels/cron/), [Webhook](/channels/webhook/), and [MCP](/tools/mcp/).
 
+:::caution
 The `.env` file in the folder is loaded automatically on `start`; exported shell variables win over it, and `--env-file <path>` selects an alternate file. Keep tokens as placeholders here (`xoxb-...`, `sk-...`) and never commit real secrets.
-{: .warning }
+:::
 
 ## The `.mono-agent/` runtime directory
 
@@ -64,9 +65,10 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 | `.mono-agent/sessions/` | Durable pi sessions (JSONL) so conversations resume across restarts; unset = in-memory only. | `providers.piNative.piSessionsRoot` |
 | `.mono-agent/trace-sources/` | The traceability registry, when kept folder-local. | `traceability.registryDir` |
 
-`mono-agent restart --force` purges the persisted pi `sessions/` for a fresh start while keeping durable memory. See [Sessions & concurrency](../runtime/sessions-concurrency.md), [Artifacts & traces](../observability/artifacts-and-traces.md), and [Capture & recall](../memory/capture-and-recall.md).
-{: .note }
+:::note
+`mono-agent restart --force` purges the persisted pi `sessions/` for a fresh start while keeping durable memory. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
+:::
 
 ## Applying changes
 
-Config is JSON-first: edit `mono-agent.config.json` (or the markdown files) directly and run `mono-agent restart` to apply. There is no live re-apply — `start` prints the active traceability source and one status line per channel (`running`, `waiting_for_config` with the exact missing setting, `disabled`, or `failed`). For the full annotated config, see [Config blueprint](blueprint.md); for the override layer, see [Environment variables](env-vars.md). Behavior not expressible in config needs the [programmatic escape hatch](../programmatic/index.md).
+Config is JSON-first: edit `mono-agent.config.json` (or the markdown files) directly and run `mono-agent restart` to apply. There is no live re-apply — `start` prints the active traceability source and one status line per channel (`running`, `waiting_for_config` with the exact missing setting, `disabled`, or `failed`). For the full annotated config, see [Config blueprint](/config/blueprint/); for the override layer, see [Environment variables](/config/env-vars/). Behavior not expressible in config needs the [programmatic escape hatch](/programmatic/).

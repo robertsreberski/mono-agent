@@ -1,7 +1,7 @@
 ---
 title: "Slack"
-parent: "Channels"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 # Slack
@@ -12,7 +12,7 @@ The Slack channel connects your agent to a Slack workspace over **Socket Mode** 
 
 - **Socket Mode transport.** The adapter opens a WebSocket to Slack using an app-level token, so you do not host a public endpoint. The app-level token must carry the `connections:write` scope.
 - **Mention-triggered.** The agent responds when it is mentioned (a real `@bot` mention matching `botUserIds`, or a text alias from `mentionTextAliases`). Channels must be allowed via `allowedChannelIds` or `allowAllChannels`.
-- **Final-only delivery.** Like Telegram, Slack delivers only the final answer rather than streaming interim edits. While the run is in flight the adapter adds a 👀 reaction to the triggering message as a working indicator. This is the default (`stream.finalOnly: true`); see [Delivery and send tools](delivery-and-send-tools.md).
+- **Final-only delivery.** Like Telegram, Slack delivers only the final answer rather than streaming interim edits. While the run is in flight the adapter adds a 👀 reaction to the triggering message as a working indicator. This is the default (`stream.finalOnly: true`); see [Delivery and send tools](/channels/delivery-and-send-tools/).
 
 ## Configuration
 
@@ -42,8 +42,9 @@ The Slack channel connects your agent to a Slack workspace over **Socket Mode** 
 | `mentionTextAliases` | string[] | — | Plain-text aliases (e.g. `@agent`) that also trigger a response. |
 | `stripMentionText` | boolean | `true` | Strip the mention/alias text from the prompt before the agent sees it. |
 
+:::caution
 Both `botToken` and `appToken` are required when `enabled: true`. If either is missing, or if neither `allowedChannelIds` nor `allowAllChannels` is set, the channel reports `waiting_for_config` instead of starting.
-{: .warning }
+:::
 
 ### Environment variables
 
@@ -60,8 +61,9 @@ Every key has an env override (env precedence: process env > `mono-agent.config.
 | `slack.mentionTextAliases` | `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` (CSV) |
 | `slack.stripMentionText` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` |
 
+:::tip
 Keep tokens out of `mono-agent.config.json` in shared repos — set `MONO_AGENT_SLACK_BOT_TOKEN` / `MONO_AGENT_SLACK_APP_TOKEN` from your secret store or `.env` instead.
-{: .tip }
+:::
 
 ## Slack app setup
 
@@ -93,14 +95,14 @@ When the Slack adapter is enabled, the app can expose an MCP send tool, `slack_s
 }
 ```
 
-The existing Slack adapter config (tokens + channel allowlist) provides the credentials and remains the destination boundary — the tool cannot post outside your allowed channels. See [Delivery and send tools](delivery-and-send-tools.md) and [Tool policy](../tools/policy.md).
+The existing Slack adapter config (tokens + channel allowlist) provides the credentials and remains the destination boundary — the tool cannot post outside your allowed channels. See [Delivery and send tools](/channels/delivery-and-send-tools/) and [Tool policy](/tools/policy/).
 
 ## Related
 
-- [Channels overview](index.md)
-- [Telegram](telegram.md) — the other mention-triggered, final-only chat channel
-- [Delivery and send tools](delivery-and-send-tools.md) — final-only delivery, working indicators, send tools
-- [Cron](cron.md) and [Webhook](webhook.md) — proactive turns that can call `slack_send_message`
-- [Tool policy](../tools/policy.md) — gating `allowedTools`
-- [Environment variables](../config/env-vars.md)
-- Playbook: [Slack team bot with MCP tools](../playbooks/slack-team-bot-mcp-tools.md)
+- [Channels overview](/channels/)
+- [Telegram](/channels/telegram/) — the other mention-triggered, final-only chat channel
+- [Delivery and send tools](/channels/delivery-and-send-tools/) — final-only delivery, working indicators, send tools
+- [Cron](/channels/cron/) and [Webhook](/channels/webhook/) — proactive turns that can call `slack_send_message`
+- [Tool policy](/tools/policy/) — gating `allowedTools`
+- [Environment variables](/config/env-vars/)
+- Playbook: [Slack team bot with MCP tools](/playbooks/slack-team-bot-mcp-tools/)

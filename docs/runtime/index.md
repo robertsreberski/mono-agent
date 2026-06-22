@@ -1,7 +1,7 @@
 ---
 title: "Runtime & Providers"
-nav_order: 4
-has_children: true
+sidebar:
+  order: 0
 ---
 
 # Runtime & Providers
@@ -37,17 +37,18 @@ The `runtime.model` string is always `<backend>:<...>` — `claude:*`, `codex:*`
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | `1`–`100` caps turns |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `.` | working dir for runtime tools |
 
-{: .note }
+:::note
+:::
 `runtime.reasoningSummary` (`MONO_AGENT_REASONING_SUMMARY`) is retained for back-compat but currently has no runtime effect — the codex/claude CLIs emit summaries on their own and pi-native derives reasoning from `effort`.
 
 ## Child pages
 
-- [Model backends](backends.md) — the four backends (claude sdk/cli, codex cli, pi sdk with 15+ providers, opencode cli), the `<backend>:<model>` syntax, and `sdk` vs `cli` execution modes.
-- [Execution effort & permissions](execution-effort-permissions.md) — tune reasoning depth with `runtime.effort` and the tool-permission posture for CLI backends with `runtime.permissionMode`.
-- [Fallback chains](fallback.md) — `runtime.fallbackModels`: an ordered list of backup models the fallback router tries on retryable provider failures, with transcript-tail resume; failover is reported in run results, never silent.
-- [Local providers](local-providers.md) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint via `providers.local[]` for `pi:<provider>:<model>` references, plus pi-native transport tuning and OAuth credential resolution.
-- [Sessions & concurrency](sessions-concurrency.md) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
-- [Built-in tools & auto-guards](tools-and-guards.md) — the bundled Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch tools and the automatic guards (tool-output bloat truncation, WebFetch retry, cost tracking, context compaction).
+- [Model backends](/runtime/backends/) — the four backends (claude sdk/cli, codex cli, pi sdk with 15+ providers, opencode cli), the `<backend>:<model>` syntax, and `sdk` vs `cli` execution modes.
+- [Execution effort & permissions](/runtime/execution-effort-permissions/) — tune reasoning depth with `runtime.effort` and the tool-permission posture for CLI backends with `runtime.permissionMode`.
+- [Fallback chains](/runtime/fallback/) — `runtime.fallbackModels`: an ordered list of backup models the fallback router tries on retryable provider failures, with transcript-tail resume; failover is reported in run results, never silent.
+- [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint via `providers.local[]` for `pi:<provider>:<model>` references, plus pi-native transport tuning and OAuth credential resolution.
+- [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
+- [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the bundled Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch tools and the automatic guards (tool-output bloat truncation, WebFetch retry, cost tracking, context compaction).
 
 ## Local providers in one block
 
@@ -71,7 +72,7 @@ Point `pi:<provider>:<model>` at a self-hosted endpoint. The `id` becomes the `<
 }
 ```
 
-`type` is `ollama`, `lmstudio`, or `openai_compat`. Supply the key via `apiKeyEnv` (or inline `apiKey` in an untracked file only). See [Local providers](local-providers.md) for the full provider/env reference and [Embeddings](../memory/embeddings.md) for using the same providers in the memory tier.
+`type` is `ollama`, `lmstudio`, or `openai_compat`. Supply the key via `apiKeyEnv` (or inline `apiKey` in an untracked file only). See [Local providers](/runtime/local-providers/) for the full provider/env reference and [Embeddings](/memory/embeddings/) for using the same providers in the memory tier.
 
 ## Sessions & concurrency
 
@@ -86,11 +87,12 @@ By default a conversation keeps a continuous provider session that is evicted af
 }
 ```
 
-`maxConcurrentRuns` (`MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`) caps how many runs hit the provider at once; `maxPendingRuns` (`MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS`) caps how many runs may be admitted before the provider step. Details and the session-store semantics are on [Sessions & concurrency](sessions-concurrency.md).
+`maxConcurrentRuns` (`MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`) caps how many runs hit the provider at once; `maxPendingRuns` (`MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS`) caps how many runs may be admitted before the provider step. Details and the session-store semantics are on [Sessions & concurrency](/runtime/sessions-concurrency/).
 
 ## Built-in tools & auto-guards
 
-Every backend exposes Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch, gated by [tool policy](../tools/policy.md) (`tools.allowedTools` / `tools.disallowedTools`). Auto-guards run with no configuration: 256 KB tool-output truncation with artifact persistence to `artifacts.dir`, WebFetch in-tool retry on transient network errors, per-run cost/usage tracking, and bridge-driven context compaction. See [Built-in tools & auto-guards](tools-and-guards.md).
+Every backend exposes Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch, gated by [tool policy](/tools/policy/) (`tools.allowedTools` / `tools.disallowedTools`). Auto-guards run with no configuration: 256 KB tool-output truncation with artifact persistence to `artifacts.dir`, WebFetch in-tool retry on transient network errors, per-run cost/usage tracking, and bridge-driven context compaction. See [Built-in tools & auto-guards](/runtime/tools-and-guards/).
 
-{: .tip }
-Capabilities such as structured output (`runtimeOptions.outputSchema`), live in-flight input, human-in-the-loop approval gates, and tool parallelism are **code-only** — they are set through harness/runtime options, not config. See [Programmatic API](../programmatic/index.md) and [Approval & structured output](../programmatic/approval-and-structured-output.md).
+:::tip
+:::
+Capabilities such as structured output (`runtimeOptions.outputSchema`), live in-flight input, human-in-the-loop approval gates, and tool parallelism are **code-only** — they are set through harness/runtime options, not config. See [Programmatic API](/programmatic/) and [Approval & structured output](/programmatic/approval-and-structured-output/).

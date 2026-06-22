@@ -1,14 +1,14 @@
 ---
 title: "A2A consumer"
-parent: "Programmatic"
-nav_order: 4
+sidebar:
+  order: 4
 ---
 
 # A2A consumer
 
-This page covers calling a remote [A2A](https://a2a-protocol.org/) agent from your own mono-agent: discovering its Agent Card, sending messages, and wiring a remote agent in as a responder. The settings live under `a2a.consumer` in config, but **invocation is code-only** — there is no channel that auto-dials remote agents for you. For the inbound (provider) side that exposes *your* agent over A2A, see [A2A channel](../channels/a2a.md).
+This page covers calling a remote [A2A](https://a2a-protocol.org/) agent from your own mono-agent: discovering its Agent Card, sending messages, and wiring a remote agent in as a responder. The settings live under `a2a.consumer` in config, but **invocation is code-only** — there is no channel that auto-dials remote agents for you. For the inbound (provider) side that exposes *your* agent over A2A, see [A2A channel](/channels/a2a/).
 
-Coverage: **config + code**. Config holds the connection settings; you call `createA2AConsumerResponder` (or the lower-level helpers) yourself, typically from a multi-agent host. See [Multi-agent](multi-agent.md) and [Composition](composition.md).
+Coverage: **config + code**. Config holds the connection settings; you call `createA2AConsumerResponder` (or the lower-level helpers) yourself, typically from a multi-agent host. See [Multi-agent](/programmatic/multi-agent/) and [Composition](/programmatic/composition/).
 
 ## When to use this
 
@@ -38,9 +38,10 @@ The `a2a.consumer` block stores the remote endpoint(s), auth, and timeout. It do
 | `bearerToken` | `string` | Bearer token sent on discovery and `sendMessage` calls when the remote requires auth. Keep this as a placeholder in committed config (`sk-...`) and inject the real value via env. |
 | `timeoutMs` | `number` | Per-request timeout in milliseconds. |
 
-Keep tokens out of committed config — reference them through environment variables and your config loader. See [Environment variables](../config/env-vars.md) for the `MONO_AGENT_*` conventions.
+Keep tokens out of committed config — reference them through environment variables and your config loader. See [Environment variables](/config/env-vars/) for the `MONO_AGENT_*` conventions.
 
-{: .warning }
+:::caution
+:::
 There is no auto-wired A2A consumer channel. If you set `a2a.consumer` but never call `createA2AConsumerResponder` (or `sendA2AMessage`), nothing connects to the remote agent.
 
 ## `createA2AConsumerResponder`
@@ -100,7 +101,8 @@ const response = await responderFor(target).respond(request, stream);
 
 Validate any caller-supplied URL against `remoteAgentUrls` before dialing it, so a request cannot redirect your agent to an arbitrary endpoint.
 
-{: .tip }
+:::tip
+:::
 Because each responder discovers the Agent Card lazily and caches the client, keeping responders in a map (rather than creating one per turn) avoids re-fetching the card on every request.
 
 ## Discovery and one-shot send
@@ -112,7 +114,7 @@ For lower-level use, the adapter also exposes discovery and a fire-and-forget se
 
 ## Related
 
-- [A2A channel](../channels/a2a.md) — the provider side: exposing your agent over A2A (`a2a.provider`, `a2a.agent`, `a2a.skill`).
-- [A2A provider and consumer playbook](../playbooks/a2a-provider-and-consumer.md) — end-to-end walkthrough wiring both halves together.
-- [Multi-agent](multi-agent.md) — composing remote responders into a routing host.
-- [Composition](composition.md) — how responders are assembled programmatically.
+- [A2A channel](/channels/a2a/) — the provider side: exposing your agent over A2A (`a2a.provider`, `a2a.agent`, `a2a.skill`).
+- [A2A provider and consumer playbook](/playbooks/a2a-provider-and-consumer/) — end-to-end walkthrough wiring both halves together.
+- [Multi-agent](/programmatic/multi-agent/) — composing remote responders into a routing host.
+- [Composition](/programmatic/composition/) — how responders are assembled programmatically.

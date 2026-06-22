@@ -76,9 +76,9 @@ Config-first covers one responder served over any combination of the seven chann
 - `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
 
 Human-facing companion: the published documentation site at
-<https://robertsreberski.github.io/mono-agent/> (notably its Playbooks index and
+<https://mono-agent-docs.vercel.app/> (notably its Playbooks index and
 Feature Matrix). The LLM-facing source of truth stays the in-repo markdown
-(`docs/feature-registry.md` plus these `references/*` files) — these work offline
+(`docs/reference/feature-registry.md` plus these `references/*` files) — these work offline
 when the skill is bundled with `@mono-agent/agent-app`, so do not depend on the
 live site being reachable.
 
