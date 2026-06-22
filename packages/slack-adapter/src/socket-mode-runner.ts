@@ -12,6 +12,17 @@ export interface SlackSocketModeRunnerBackoffOptions {
   maxMs?: number;
 }
 
+export interface SlackSocketModeRunnerHeartbeatOptions {
+  /** How often to probe the socket with a ping when it is otherwise idle. */
+  intervalMs?: number;
+  /**
+   * If no inbound frame (message, ping, or pong) arrives within this window,
+   * the socket is treated as silently dead and force-recycled so the reconnect
+   * loop can re-establish it. Set to 0 to disable the heartbeat watchdog.
+   */
+  timeoutMs?: number;
+}
+
 export interface SlackSocketModeRunnerLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
   info?(message: string, metadata?: Record<string, unknown>): void;
@@ -23,6 +34,7 @@ export interface SlackSocketModeRunnerOptions {
   api: SlackWebApi;
   handler: SlackEventCallbackHandler;
   reconnect?: SlackSocketModeRunnerBackoffOptions;
+  heartbeat?: SlackSocketModeRunnerHeartbeatOptions;
   webSocketFactory?: SlackWebSocketFactory;
   onEventResult?: (result: SlackEventHandlingResult) => void | Promise<void>;
   logger?: SlackSocketModeRunnerLogger;
@@ -37,20 +49,35 @@ export type SlackWebSocketFactory = (url: string) => SlackWebSocketLike;
 export interface SlackWebSocketLike {
   send(data: string): void;
   close(code?: number, reason?: string): void;
+  /** Send a WebSocket ping frame (keepalive). Optional: not every transport exposes it. */
+  ping?(): void;
+  /** Forcibly destroy the socket without a closing handshake. Optional. */
+  terminate?(): void;
   on(event: "open", listener: () => void): this;
   on(event: "message", listener: (data: unknown) => void): this;
   on(event: "close", listener: (code?: number, reason?: unknown) => void): this;
   on(event: "error", listener: (error: unknown) => void): this;
+  on(event: "ping", listener: () => void): this;
+  on(event: "pong", listener: () => void): this;
 }
 
 const DEFAULT_INITIAL_BACKOFF_MS = 500;
 const DEFAULT_MAX_BACKOFF_MS = 10_000;
+// Slack's Socket Mode server pings clients periodically; a healthy idle socket
+// therefore sees inbound frames well within this window. These defaults probe
+// every 30s and declare a socket dead after 90s of total silence — long enough
+// to avoid false positives on a quiet connection, short enough to self-heal a
+// half-open socket (e.g. after the host sleeps) within ~1.5 min.
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+const DEFAULT_HEARTBEAT_TIMEOUT_MS = 90_000;
 
 export class SlackSocketModeRunner {
   private readonly api: SlackWebApi;
   private readonly handler: SlackEventCallbackHandler;
   private readonly initialBackoffMs: number;
   private readonly maxBackoffMs: number;
+  private readonly heartbeatIntervalMs: number;
+  private readonly heartbeatTimeoutMs: number;
   private readonly webSocketFactory: SlackWebSocketFactory;
   private readonly onEventResult:
     | ((result: SlackEventHandlingResult) => void | Promise<void>)
@@ -63,6 +90,8 @@ export class SlackSocketModeRunner {
     this.handler = options.handler;
     this.initialBackoffMs = options.reconnect?.initialMs ?? DEFAULT_INITIAL_BACKOFF_MS;
     this.maxBackoffMs = options.reconnect?.maxMs ?? DEFAULT_MAX_BACKOFF_MS;
+    this.heartbeatIntervalMs = options.heartbeat?.intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.heartbeatTimeoutMs = options.heartbeat?.timeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.webSocketFactory = options.webSocketFactory ?? ((url) => new WebSocket(url) as SlackWebSocketLike);
     this.onEventResult = options.onEventResult;
     this.logger = options.logger;
@@ -72,6 +101,12 @@ export class SlackSocketModeRunner {
     }
     if (!Number.isFinite(this.maxBackoffMs) || this.maxBackoffMs < this.initialBackoffMs) {
       throw new RangeError("SlackSocketModeRunner max backoff must be at least the initial backoff.");
+    }
+    if (!Number.isFinite(this.heartbeatIntervalMs) || this.heartbeatIntervalMs < 0) {
+      throw new RangeError("SlackSocketModeRunner heartbeat interval must be non-negative.");
+    }
+    if (!Number.isFinite(this.heartbeatTimeoutMs) || this.heartbeatTimeoutMs < 0) {
+      throw new RangeError("SlackSocketModeRunner heartbeat timeout must be non-negative.");
     }
   }
 
@@ -109,12 +144,69 @@ export class SlackSocketModeRunner {
       const socket = this.webSocketFactory(connection.url);
       this.activeSocket = socket;
       let settled = false;
+      let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+      let lastActivityAt = Date.now();
+
+      const markActivity = (): void => {
+        lastActivityAt = Date.now();
+      };
+
+      const stopHeartbeat = (): void => {
+        if (heartbeatTimer !== undefined) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = undefined;
+        }
+      };
+
+      // Watchdog for a silently dead ("half-open") socket: if no inbound frame
+      // arrives within heartbeatTimeoutMs, force-recycle so the reconnect loop
+      // re-establishes the connection. Without this, a connection broken by host
+      // sleep or a network blip never fires `close`, so the runner waits forever
+      // and the channel goes silent until a manual restart.
+      const startHeartbeat = (): void => {
+        if (this.heartbeatTimeoutMs <= 0 || this.heartbeatIntervalMs <= 0) {
+          return;
+        }
+        markActivity();
+        heartbeatTimer = setInterval(() => {
+          if (settled) {
+            return;
+          }
+          if (Date.now() - lastActivityAt >= this.heartbeatTimeoutMs) {
+            this.logger?.warn?.("Slack Socket Mode heartbeat timed out; recycling connection.", {
+              silentForMs: Date.now() - lastActivityAt,
+            });
+            try {
+              if (typeof socket.terminate === "function") {
+                socket.terminate();
+              } else {
+                socket.close();
+              }
+            } catch {
+              // The close/terminate failure still leads to settle via the
+              // close/error handlers, or the next tick; nothing more to do.
+            }
+            return;
+          }
+          // Otherwise probe the peer so a healthy-but-idle socket stays marked
+          // active via the resulting pong/ping frames.
+          try {
+            socket.ping?.();
+          } catch {
+            // A throwing ping means the socket is already gone; the close/error
+            // handler will settle and trigger reconnect.
+          }
+        }, this.heartbeatIntervalMs);
+        // Never let the watchdog keep the process alive on its own.
+        (heartbeatTimer as { unref?: () => void }).unref?.();
+      };
 
       const settle = (action: () => void): void => {
         if (settled) {
           return;
         }
         settled = true;
+        stopHeartbeat();
         signal?.removeEventListener("abort", onAbort);
         if (this.activeSocket === socket) {
           this.activeSocket = undefined;
@@ -148,8 +240,12 @@ export class SlackSocketModeRunner {
 
       socket.on("open", () => {
         this.logger?.info?.("Slack Socket Mode connected.");
+        startHeartbeat();
       });
+      socket.on("ping", markActivity);
+      socket.on("pong", markActivity);
       socket.on("message", (data: unknown) => {
+        markActivity();
         const envelope = parseSocketEnvelope(data);
         if (envelope === undefined) {
           this.logger?.warn?.("Slack Socket Mode envelope was malformed.");

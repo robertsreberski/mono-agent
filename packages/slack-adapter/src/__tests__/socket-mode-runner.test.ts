@@ -44,14 +44,33 @@ class FakeSlackApi implements SlackWebApi {
 class FakeWebSocket extends EventEmitter {
   readonly sent: string[] = [];
   closed = false;
+  pings = 0;
+  terminated = false;
+  /** When true, each ping() synchronously echoes a pong (a responsive peer). */
+  respondToPing = false;
 
   send(data: string): void {
     this.sent.push(data);
   }
 
   close(): void {
+    if (this.closed) {
+      return;
+    }
     this.closed = true;
     this.emit("close", 1000, Buffer.from("closed"));
+  }
+
+  ping(): void {
+    this.pings += 1;
+    if (this.respondToPing) {
+      this.emit("pong");
+    }
+  }
+
+  terminate(): void {
+    this.terminated = true;
+    this.close();
   }
 
   emitOpen(): void {
@@ -187,6 +206,89 @@ describe("SlackSocketModeRunner", () => {
       await started;
 
       expect(api.opened).toEqual(["wss://slack.test/1", "wss://slack.test/2"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recycles a silently dead socket via the heartbeat watchdog", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = new FakeSlackApi(["wss://slack.test/1", "wss://slack.test/2"]);
+      const sockets: FakeWebSocket[] = [];
+      const runner = new SlackSocketModeRunner({
+        api,
+        handler: { async handleEventCallback() {
+          return { kind: "ignored", reason: "unsupported_event" };
+        } },
+        webSocketFactory: () => {
+          const socket = new FakeWebSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        reconnect: { initialMs: 0, maxMs: 0 },
+        heartbeat: { intervalMs: 1000, timeoutMs: 3000 },
+      });
+      const controller = new AbortController();
+
+      const started = runner.start({ signal: controller.signal });
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      sockets[0]?.emitOpen();
+
+      // The peer goes silent (no message/ping/pong). The watchdog probes...
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(sockets[0]?.pings).toBeGreaterThan(0);
+      expect(sockets).toHaveLength(1);
+
+      // ...and after the timeout window with no activity, force-recycles it,
+      // which triggers a reconnect.
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => expect(sockets).toHaveLength(2));
+      expect(sockets[0]?.terminated).toBe(true);
+
+      controller.abort();
+      await started;
+      expect(api.opened).toEqual(["wss://slack.test/1", "wss://slack.test/2"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not recycle a responsive socket that answers heartbeats", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = new FakeSlackApi(["wss://slack.test/1", "wss://slack.test/2"]);
+      const sockets: FakeWebSocket[] = [];
+      const runner = new SlackSocketModeRunner({
+        api,
+        handler: { async handleEventCallback() {
+          return { kind: "ignored", reason: "unsupported_event" };
+        } },
+        webSocketFactory: () => {
+          const socket = new FakeWebSocket();
+          socket.respondToPing = true; // healthy peer pongs every probe
+          sockets.push(socket);
+          return socket;
+        },
+        reconnect: { initialMs: 0, maxMs: 0 },
+        heartbeat: { intervalMs: 1000, timeoutMs: 3000 },
+      });
+      const controller = new AbortController();
+
+      const started = runner.start({ signal: controller.signal });
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      sockets[0]?.emitOpen();
+
+      // Far past the timeout window, but pongs keep refreshing activity.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(sockets[0]?.pings).toBeGreaterThan(0);
+      expect(sockets[0]?.terminated).toBe(false);
+      expect(sockets).toHaveLength(1);
+
+      controller.abort();
+      await started;
+      expect(api.opened).toEqual(["wss://slack.test/1"]);
     } finally {
       vi.useRealTimers();
     }
