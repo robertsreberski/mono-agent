@@ -103,6 +103,25 @@ describe("SlackMessageStream", () => {
     ]);
   });
 
+  it("notifies onPosted with the channel and ts of each posted message", async () => {
+    const api = new FakeSlackApi(); // nextTs = 100 → first post "100.000001"
+    const posted: Array<{ ts: string; channel: string }> = [];
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C9",
+      editDebounceMs: 0,
+      onPosted: (ref) => {
+        posted.push(ref);
+      },
+    });
+
+    await stream.finish("the answer");
+
+    expect(posted.length).toBeGreaterThan(0);
+    expect(posted.every((ref) => ref.channel === "C9")).toBe(true);
+    expect(posted[0]?.ts).toBe("100.000001");
+  });
+
   it("flushes final output and sends overflow chunks as thread replies (no labels)", async () => {
     const api = new FakeSlackApi();
     const stream = new SlackMessageStream({

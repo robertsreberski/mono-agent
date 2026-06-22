@@ -17,7 +17,7 @@ async function main(): Promise<void> {
     throw new Error("no adapter send tools configured.");
   }
   const clients = createAdapterSendToolsClients(settings);
-  const server = createAdapterSendToolsServer(settings, clients);
+  const server = createAdapterSendToolsServer(settings, clients, childConfig.indexing);
   await server.connect(new StdioServerTransport());
 }
 
