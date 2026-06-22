@@ -1,7 +1,7 @@
 ---
 title: "Your First Agent in 5 Minutes"
-parent: "Getting Started"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 # Your First Agent in 5 Minutes
@@ -10,7 +10,7 @@ This page walks the happy path: scaffold a config-first agent with `mono-agent i
 
 ## Prerequisites
 
-You need Node.js installed, the `mono-agent` CLI available (`npx mono-agent ...` works too), and credentials for whatever model you point at. The default model is `claude:claude-sonnet-4-6`, which reads `ANTHROPIC_API_KEY` from the environment. See [Install](install.md) for the full setup and [Environment Variables](../config/env-vars.md) for the keys each backend expects.
+You need Node.js installed, the `mono-agent` CLI available (`npx mono-agent ...` works too), and credentials for whatever model you point at. The default model is `claude:claude-sonnet-4-6`, which reads `ANTHROPIC_API_KEY` from the environment. See [Install](/getting-started/install/) for the full setup and [Environment Variables](/config/env-vars/) for the keys each backend expects.
 
 ## 1. Scaffold the folder (`cli`)
 
@@ -25,8 +25,8 @@ Optional flags:
 | Flag | Purpose |
 | --- | --- |
 | `--model <ref>` | Primary runtime model. Format: `claude:*`, `codex:*`, or `pi:<provider>:<model>`. Defaults to `claude:claude-sonnet-4-6`. |
-| `--fallback-models <csv>` | Ordered backup models tried on retryable provider failure. Written to `runtime.fallbackModels`. See [Fallback Chain](../runtime/fallback.md). |
-| `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](../memory/capture-and-recall.md). |
+| `--fallback-models <csv>` | Ordered backup models tried on retryable provider failure. Written to `runtime.fallbackModels`. See [Fallback Chain](/runtime/fallback/). |
+| `--memory lite\|journal\|bujo` | Adds a `memory` section with the chosen tier. Omit it and no memory is configured. See [Capture and Recall](/memory/capture-and-recall/). |
 
 A fuller example:
 
@@ -42,7 +42,7 @@ mono-agent init \
 `init` is a non-destructive scaffold (`app.cli-init`). Files that already exist are reported as skipped and left untouched. It creates:
 
 - **`mono-agent.config.json`** — the single config file that declares the whole agent. It enables the **webhook channel** (`webhook.enabled: true`) as the zero-credential smoke channel so you can get a response immediately, and wires `artifacts`, `traceability`, and `context.identityPath` to the scaffolded paths.
-- **`IDENTITY.md`** — role, boundaries, and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. Edit this to describe what your agent is for. See [Identity and Soul](../context/identity-and-soul.md).
+- **`IDENTITY.md`** — role, boundaries, and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. Edit this to describe what your agent is for. See [Identity and Soul](/context/identity-and-soul/).
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.
 
 The generated config (with `--fallback-models` and `--memory bujo`) looks like this:
@@ -80,7 +80,7 @@ The generated config (with `--fallback-models` and `--memory bujo`) looks like t
 }
 ```
 
-Every field has a `MONO_AGENT_*` env override (env > JSON > defaults) — for example `MONO_AGENT_MODEL`, `MONO_AGENT_FALLBACK_MODELS`. See [Configuration](../config/index.md) for the annotated blueprint.
+Every field has a `MONO_AGENT_*` env override (env > JSON > defaults) — for example `MONO_AGENT_MODEL`, `MONO_AGENT_FALLBACK_MODELS`. See [Configuration](/config/) for the annotated blueprint.
 
 ## 2. Validate (`cli`)
 
@@ -107,7 +107,8 @@ If your model needs a key, export it before validating so the runtime section re
 export ANTHROPIC_API_KEY=sk-...
 ```
 
-{: .tip }
+:::tip
+:::
 Point validate at a non-default config or env file with `mono-agent validate --config ./other.config.json --env-file ./.env`.
 
 ## 3. Start (`cli`)
@@ -130,13 +131,14 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 
 Replace `<PORT>` with the port from the `start` output. A response means the runtime, model, identity, and webhook channel are all wired correctly — you have a working agent.
 
-{: .note }
-The webhook channel binds to loopback only. To accept non-loopback requests you must set `webhook.allowNonLoopback: true` (and ideally a non-zero `port`). For async invocation, status polling, multiple named endpoints, and per-endpoint prompts, see [Webhook](../channels/webhook.md).
+:::note
+:::
+The webhook channel binds to loopback only. To accept non-loopback requests you must set `webhook.allowNonLoopback: true` (and ideally a non-zero `port`). For async invocation, status polling, multiple named endpoints, and per-endpoint prompts, see [Webhook](/channels/webhook/).
 
 ## Where to next
 
-- Turn this into a real assistant: add a credentialed channel like [Telegram](../channels/telegram.md) or [Slack](../channels/slack.md).
-- Understand the moving parts: [Core Concepts](concepts.md).
-- See the full config surface: [Configuration](../config/index.md) and the [Config Blueprint](../config/blueprint.md).
-- Build something end to end: the [Playbooks](../playbooks/index.md) — e.g. [Local-only Ollama agent](../playbooks/local-only-ollama-agent.md) or [Telegram personal assistant](../playbooks/telegram-personal-assistant-bujo.md).
-- Embed the agent in your own code instead of the CLI: [Programmatic](../programmatic/index.md).
+- Turn this into a real assistant: add a credentialed channel like [Telegram](/channels/telegram/) or [Slack](/channels/slack/).
+- Understand the moving parts: [Core Concepts](/getting-started/concepts/).
+- See the full config surface: [Configuration](/config/) and the [Config Blueprint](/config/blueprint/).
+- Build something end to end: the [Playbooks](/playbooks/) — e.g. [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) or [Telegram personal assistant](/playbooks/telegram-personal-assistant-bujo/).
+- Embed the agent in your own code instead of the CLI: [Programmatic](/programmatic/).

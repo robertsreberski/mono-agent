@@ -1,7 +1,7 @@
 ---
 title: "OpenAI-Compatible Endpoint for Open WebUI"
-parent: "Playbooks"
-nav_order: 4
+sidebar:
+  order: 4
 ---
 
 # OpenAI-Compatible Endpoint for Open WebUI
@@ -18,9 +18,9 @@ Expose the agent as an OpenAI-compatible `/v1` endpoint so Open WebUI can stream
 
 ## Features used
 
-- [`openai-api.chat-completions`](../channels/openai-api.md) — `/v1/models` + `/v1/chat/completions` with SSE streaming and an optional bearer key.
-- [`openai-api.session-headers`](../channels/openai-api.md) — session continuity via the `X-OpenWebUI-Chat-Id` / `X-Conversation-Id` request headers (only the latest user turn is forwarded per conversation).
-- [`runtime.provider-sessions`](../runtime/sessions-concurrency.md) — continuous provider sessions that retain context across requests.
+- [`openai-api.chat-completions`](/channels/openai-api/) — `/v1/models` + `/v1/chat/completions` with SSE streaming and an optional bearer key.
+- [`openai-api.session-headers`](/channels/openai-api/) — session continuity via the `X-OpenWebUI-Chat-Id` / `X-Conversation-Id` request headers (only the latest user turn is forwarded per conversation).
+- [`runtime.provider-sessions`](/runtime/sessions-concurrency/) — continuous provider sessions that retain context across requests.
 
 All three are `config` coverage — no code required.
 
@@ -47,10 +47,11 @@ All three are `config` coverage — no code required.
 }
 ```
 
+:::caution
 Binding to a non-loopback host (`0.0.0.0`) requires `allowNonLoopback: true` — the server refuses public binds otherwise. Always set `apiKey` when the endpoint is reachable off-host; clients must then send `Authorization: Bearer sk-...`.
-{: .warning }
+:::
 
-The same settings can be supplied via environment variables (`MONO_AGENT_*`); see [Environment variables](../config/env-vars.md) for the full mapping.
+The same settings can be supplied via environment variables (`MONO_AGENT_*`); see [Environment variables](/config/env-vars/) for the full mapping.
 
 ## Steps
 
@@ -63,13 +64,14 @@ The same settings can be supplied via environment variables (`MONO_AGENT_*`); se
 
 ## Smoke test
 
+:::tip
 `curl /v1/models` returns `my-agent`; `curl /v1/chat/completions` with the `x-openwebui-chat-id` header twice and confirm the second call resumes the session (continuity) and streams via SSE.
-{: .tip }
+:::
 
 ## Related
 
-- [OpenAI-compatible API channel](../channels/openai-api.md)
-- [Sessions & concurrency](../runtime/sessions-concurrency.md)
-- [Runtime backends](../runtime/backends.md)
-- [Environment variables](../config/env-vars.md)
+- [OpenAI-compatible API channel](/channels/openai-api/)
+- [Sessions & concurrency](/runtime/sessions-concurrency/)
+- [Runtime backends](/runtime/backends/)
+- [Environment variables](/config/env-vars/)
 - [mono-agent composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

@@ -1,7 +1,7 @@
 ---
 title: "Backfill Historical Runs to Phoenix"
-parent: "Playbooks"
-nav_order: 11
+sidebar:
+  order: 11
 ---
 
 # Backfill Historical Runs to Phoenix
@@ -18,9 +18,9 @@ Retroactively export already-recorded JSONL run artifacts to Phoenix with their 
 
 ## Features used
 
-- [`observability.backfill`](../observability/phoenix-and-backfill.md) — `cli` (`mono-agent backfill`)
-- [`observability.phoenix-exporter`](../observability/phoenix-and-backfill.md) — `config`
-- [`observability.jsonl-artifacts`](../observability/artifacts-and-traces.md) — `config`
+- [`observability.backfill`](/observability/phoenix-and-backfill/) — `cli` (`mono-agent backfill`)
+- [`observability.phoenix-exporter`](/observability/phoenix-and-backfill/) — `config`
+- [`observability.jsonl-artifacts`](/observability/artifacts-and-traces/) — `config`
 
 ## Configuration
 
@@ -43,8 +43,9 @@ The backfill command reuses the same two settings the live runtime uses: `artifa
 
 The matching env vars are `MONO_AGENT_ARTIFACT_DIR` (overrides `artifacts.dir`) and `MONO_AGENT_OBSERVABILITY_EXPORTERS` (a JSON array overriding `observability.exporters`).
 
+:::note
 Deterministic per-run span ids make re-export idempotent: exporting the same run twice overwrites the same spans instead of creating duplicates.
-{: .note }
+:::
 
 ## Steps
 
@@ -56,12 +57,13 @@ Deterministic per-run span ids make re-export idempotent: exporting the same run
 
 ## Smoke test
 
+:::tip
 Run `backfill --dry-run` first, then the real export; confirm in Phoenix that historical runs appear with their original timestamps, and that a second run does not create duplicate spans.
-{: .tip }
+:::
 
 ## Related
 
-- [Phoenix and backfill](../observability/phoenix-and-backfill.md)
-- [Artifacts and traces](../observability/artifacts-and-traces.md)
-- [Observability CLI reference](../observability/cli-reference.md)
+- [Phoenix and backfill](/observability/phoenix-and-backfill/)
+- [Artifacts and traces](/observability/artifacts-and-traces/)
+- [Observability CLI reference](/observability/cli-reference/)
 - [mono-agent composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

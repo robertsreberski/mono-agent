@@ -1,7 +1,7 @@
 ---
 title: "Cron Digest with Proactive Slack Notify"
-parent: "Playbooks"
-nav_order: 6
+sidebar:
+  order: 6
 ---
 
 # Cron Digest with Proactive Slack Notify
@@ -18,11 +18,11 @@ A timezone-aware cron job that builds a daily digest with shared conversation hi
 
 ## Features used
 
-- **`cron.scheduled-prompts`** — in-app scheduled prompts; see [Cron](../channels/cron.md). *(config)*
-- **`cron.jobs-dir`** — author jobs as `cron/<id>.md` frontmatter files; see [Cron](../channels/cron.md). *(config)*
-- **`agent-app.adapter-send-tools`** — channel adapters expose send tools (e.g. `slack_send_message`) for proactive delivery; see [Delivery and Send Tools](../channels/delivery-and-send-tools.md). *(auto)*
-- **`slack.socket-mode`** — Slack Socket Mode connection; see [Slack](../channels/slack.md). *(config)*
-- **`memory.journal`** — shared run history via `conversationId`; see [Capture and Recall](../memory/capture-and-recall.md). *(config)*
+- **`cron.scheduled-prompts`** — in-app scheduled prompts; see [Cron](/channels/cron/). *(config)*
+- **`cron.jobs-dir`** — author jobs as `cron/<id>.md` frontmatter files; see [Cron](/channels/cron/). *(config)*
+- **`agent-app.adapter-send-tools`** — channel adapters expose send tools (e.g. `slack_send_message`) for proactive delivery; see [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(auto)*
+- **`slack.socket-mode`** — Slack Socket Mode connection; see [Slack](/channels/slack/). *(config)*
+- **`memory.journal`** — shared run history via `conversationId`; see [Capture and Recall](/memory/capture-and-recall/). *(config)*
 
 ## Configuration
 
@@ -67,8 +67,9 @@ export MONO_AGENT_SLACK_APP_TOKEN="xapp-..."
 
 The same job can instead live in `cron/morning-digest.md` as frontmatter (`expression`, `timezone`, `conversationId`) plus the prompt as the body. File jobs merge with `cron.jobs`; duplicate ids error.
 
+:::caution
 `allowedChannelIds` is an allowlist: the agent can only post to listed channels. Use `"allowAllChannels": true` to lift the restriction.
-{: .warning }
+:::
 
 ## Steps
 
@@ -80,14 +81,15 @@ The same job can instead live in `cron/morning-digest.md` as frontmatter (`expre
 
 ## Smoke test
 
+:::tip
 Run a one-off cron tick; verify the agent calls `slack_send_message` and the digest appears in the allowed `#team` channel, with the `conversationId` sharing context across ticks.
-{: .tip }
+:::
 
 ## Related
 
-- [Cron](../channels/cron.md)
-- [Slack](../channels/slack.md)
-- [Delivery and Send Tools](../channels/delivery-and-send-tools.md)
-- [Capture and Recall](../memory/capture-and-recall.md)
-- [Tool Policy](../tools/policy.md)
+- [Cron](/channels/cron/)
+- [Slack](/channels/slack/)
+- [Delivery and Send Tools](/channels/delivery-and-send-tools/)
+- [Capture and Recall](/memory/capture-and-recall/)
+- [Tool Policy](/tools/policy/)
 - [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

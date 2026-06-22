@@ -1,12 +1,12 @@
 ---
 title: "WhatsApp"
-parent: "Channels"
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
 # WhatsApp
 
-The WhatsApp channel connects your agent to a personal WhatsApp account over a [Baileys](https://github.com/WhiskeySockets/Baileys) socket, authenticated by scanning a QR code at first start. It is opt-in (`whatsapp.enabled`), gates which chats can trigger the agent, and lets you choose whether group messages require an @mention. Coverage: **config** (`whatsapp` section) — see [feature-registry](../reference/feature-matrix.md) row `whatsapp.baileys`.
+The WhatsApp channel connects your agent to a personal WhatsApp account over a [Baileys](https://github.com/WhiskeySockets/Baileys) socket, authenticated by scanning a QR code at first start. It is opt-in (`whatsapp.enabled`), gates which chats can trigger the agent, and lets you choose whether group messages require an @mention. Coverage: **config** (`whatsapp` section) — see [feature-registry](/reference/feature-matrix/) row `whatsapp.baileys`.
 
 ## Quick start
 
@@ -23,8 +23,9 @@ Enable the channel and allow one or more chats:
 
 On first `mono-agent start`, a QR code is printed to the start log. Open WhatsApp on your phone → **Linked devices** → **Link a device** → scan it. Baileys then writes its auth state to `.mono-agent/whatsapp-auth/` so subsequent starts reconnect without re-scanning.
 
-There is no bot token: WhatsApp links your own account as a paired device. Keep `.mono-agent/whatsapp-auth/` out of version control — it is your session, not a config value. See [folder layout](../config/folder-layout.md).
-{: .warning }
+:::caution
+There is no bot token: WhatsApp links your own account as a paired device. Keep `.mono-agent/whatsapp-auth/` out of version control — it is your session, not a config value. See [folder layout](/config/folder-layout/).
+:::
 
 ## Configuration
 
@@ -71,8 +72,9 @@ To allow every chat instead of an explicit allowlist, set `allowAllChats` and dr
 
 In both cases the chat must pass the allowlist: it must appear in `allowedChatJids`, or `allowAllChats` must be `true`. A chat that is not allowed is silently ignored.
 
-`groupMode: "any"` in a busy group will run the agent on every message. Pair it with a tight `allowedChatJids` and consider [concurrency limits](../runtime/sessions-concurrency.md) before enabling it.
-{: .tip }
+:::tip
+`groupMode: "any"` in a busy group will run the agent on every message. Pair it with a tight `allowedChatJids` and consider [concurrency limits](/runtime/sessions-concurrency/) before enabling it.
+:::
 
 ## Finding JIDs
 
@@ -80,7 +82,7 @@ A WhatsApp JID identifies a chat. DMs use the `<number>@s.whatsapp.net` form (di
 
 ## Environment variables
 
-Every key has a `MONO_AGENT_*` override (precedence: env > JSON > defaults). See the full [environment variables](../config/env-vars.md) reference.
+Every key has a `MONO_AGENT_*` override (precedence: env > JSON > defaults). See the full [environment variables](/config/env-vars/) reference.
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
@@ -96,8 +98,8 @@ MONO_AGENT_WHATSAPP_GROUP_MODE=mention
 
 ## Delivery behavior
 
-Like the other chat channels, WhatsApp delivers the **final answer** of a run (interim streaming is not surfaced). The agent can also push unprompted messages back to an allowed chat via the proactive notify tool — see [delivery and send tools](delivery-and-send-tools.md). What the agent is permitted to do inside a run is governed by [tool policy](../tools/policy.md).
+Like the other chat channels, WhatsApp delivers the **final answer** of a run (interim streaming is not surfaced). The agent can also push unprompted messages back to an allowed chat via the proactive notify tool — see [delivery and send tools](/channels/delivery-and-send-tools/). What the agent is permitted to do inside a run is governed by [tool policy](/tools/policy/).
 
 ## Related
 
-There is no WhatsApp-specific playbook yet. The closest end-to-end recipes are the [Telegram personal-assistant playbook](../playbooks/telegram-personal-assistant-bujo.md) and the [Slack team-bot playbook](../playbooks/slack-team-bot-mcp-tools.md); both translate directly — swap the channel section for `whatsapp`. See also the [Telegram](telegram.md) and [Slack](slack.md) channel pages for the shared mention/allowlist model, and the [Channels overview](index.md).
+There is no WhatsApp-specific playbook yet. The closest end-to-end recipes are the [Telegram personal-assistant playbook](/playbooks/telegram-personal-assistant-bujo/) and the [Slack team-bot playbook](/playbooks/slack-team-bot-mcp-tools/); both translate directly — swap the channel section for `whatsapp`. See also the [Telegram](/channels/telegram/) and [Slack](/channels/slack/) channel pages for the shared mention/allowlist model, and the [Channels overview](/channels/).

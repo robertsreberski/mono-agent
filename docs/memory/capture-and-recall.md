@@ -1,12 +1,12 @@
 ---
 title: "Write modes, capture & recall"
-parent: "Memory"
-nav_order: 2
+sidebar:
+  order: 2
 ---
 
 This page covers the two halves of the memory loop: how the host **writes** each completed turn (`memory.writeMode`) and how the agent **reads** what it stored back through the auto-provisioned `memory_recall` tool. Both are driven by the single `config.memory` block — there is no separate `.mcp.json` entry to hand-wire.
 
-For tier selection (lite / journal / bujo) and embeddings setup, start at the [Memory overview](../memory.md) and [Embeddings](./embeddings.md). Recall is the read path; rituals (reflect/migrate) are the maintenance path covered in [Rituals](./rituals.md).
+For tier selection (lite / journal / bujo) and embeddings setup, start at the [Memory overview](/memory/) and [Embeddings](/memory/embeddings/). Recall is the read path; rituals (reflect/migrate) are the maintenance path covered in [Rituals](/memory/rituals/).
 
 ## Write modes (`memory.writeMode`)
 
@@ -62,10 +62,11 @@ MONO_AGENT_MEMORY_MODE=bujo
 MONO_AGENT_MEMORY_WRITE_MODE=capture
 ```
 
+:::caution
 The capture pipeline swallows LLM errors (never-throw), so a too-short timeout makes a capture **silently store nothing** rather than fail loudly. Raise `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` (default `120000`) for slow local chat models.
-{: .warning }
+:::
 
-The bujo chat model used by capture is the same `memory.llm` referenced for the [rituals](./rituals.md). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.5`); the standalone CLI remains Ollama-only.
+The bujo chat model used by capture is the same `memory.llm` referenced for the [rituals](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.5`); the standalone CLI remains Ollama-only.
 
 ## The `memory_recall` tool
 
@@ -97,7 +98,7 @@ MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED=true
 | **on** | `journal` or `bujo` tier with embeddings configured |
 | off | `lite` tier (no vector recall) — or set explicitly to `false` |
 
-This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture` / `memory_note` write tools — both dropped, since in-app capture now covers durable writes). To build a recall server directly in your own code, compose `@mono-agent/memory-bujo` (`createBujoMemoryStore`) with `@mono-agent/memory-search` (`createEmbeddingProvider`) — exactly what the bundled server does. See [Programmatic composition](../programmatic/composition.md).
+This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture` / `memory_note` write tools — both dropped, since in-app capture now covers durable writes). To build a recall server directly in your own code, compose `@mono-agent/memory-bujo` (`createBujoMemoryStore`) with `@mono-agent/memory-search` (`createEmbeddingProvider`) — exactly what the bundled server does. See [Programmatic composition](/programmatic/composition/).
 
 ### Recall scoring
 
@@ -105,7 +106,7 @@ Recall fuses two retrievers and re-ranks the result:
 
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
-- Results are combined with **Reciprocal Rank Fusion (RRF)**, then weighted by **recency** and **salience** so fresh, important memories surface above stale or low-signal ones (salience decays over time via the nightly [reflect ritual](./rituals.md)).
+- Results are combined with **Reciprocal Rank Fusion (RRF)**, then weighted by **recency** and **salience** so fresh, important memories surface above stale or low-signal ones (salience decays over time via the nightly [reflect ritual](/memory/rituals/)).
 
 You can exercise the exact same scoring offline against a memory root:
 
@@ -117,10 +118,11 @@ memory-bujo recall ./.mono-agent/memory "what did we decide about the rollout?"
 
 `memory_recall` is an MCP tool. Like every MCP server tool, it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…); it does **not** suppress app-injected MCP tools. So `tools.allowedTools: []` ("no built-in tools") still leaves `memory_recall` available when it is enabled.
 
+:::caution
 To fully withhold memory reads from the agent, set `config.memory.recallTool.enabled: false` (or run a `lite` tier with no vector recall) — that is the switch that controls this tool, not the allowlist.
-{: .warning }
+:::
 
-See [Tool policy](../tools/policy.md) and [MCP tools](../tools/mcp.md) for how MCP-provided tools differ from the built-in allowlist.
+See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provided tools differ from the built-in allowlist.
 
 ## Environment variables
 
@@ -136,12 +138,12 @@ See [Tool policy](../tools/policy.md) and [MCP tools](../tools/mcp.md) for how M
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Required in the app; the standalone CLI defaults to `nomic-embed-text:v1.5` |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Required in the app; the standalone CLI defaults to `768` |
 
-See [Environment variables](../config/env-vars.md) for the full table and precedence rules.
+See [Environment variables](/config/env-vars/) for the full table and precedence rules.
 
 ## Related pages
 
-- [Memory overview](../memory.md) — tier matrix and the single `memory` config block
-- [Embeddings](./embeddings.md) — the provider/model behind vector recall
-- [Rituals](./rituals.md) — reflect (decay + salience) and migrate, which keep recall scoring fresh
-- [Entity graph](./entity-graph.md) — what the capture pipeline's entity-extraction step builds
-- [Validation & CLI](./validation-and-cli.md) — `mono-agent validate` checks and the `memory-bujo` binary
+- [Memory overview](/memory/) — tier matrix and the single `memory` config block
+- [Embeddings](/memory/embeddings/) — the provider/model behind vector recall
+- [Rituals](/memory/rituals/) — reflect (decay + salience) and migrate, which keep recall scoring fresh
+- [Entity graph](/memory/entity-graph/) — what the capture pipeline's entity-extraction step builds
+- [Validation & CLI](/memory/validation-and-cli/) — `mono-agent validate` checks and the `memory-bujo` binary

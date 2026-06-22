@@ -1,25 +1,26 @@
 ---
 title: "Multi-agent orchestration"
-parent: "Programmatic"
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
 # Multi-agent orchestration
 
 This page covers wiring one agent (the *orchestrator*) so its model can delegate to other agents (*collaborators*) at its own discretion, using `createCollaboratorToolRuntimeExtension` from `@mono-agent/agent-orchestrator`. Delegation is model-directed: the extension publishes a single loopback MCP tool, `ask_collaborator`, and the orchestrator model decides whether, when, and how often to call it before producing the final answer.
 
-This is a **code**-only capability — there is no config key for it. See the feature row `orchestrator.ask-collaborator` in [../reference/feature-matrix.md](../reference/feature-matrix.md). For the end-to-end recipe see [../playbooks/multi-agent-orchestration.md](../playbooks/multi-agent-orchestration.md), and for the runnable source see `demos/multi-agent` in the repo.
+This is a **code**-only capability — there is no config key for it. See the feature row `orchestrator.ask-collaborator` in [../reference/feature-matrix.md](/reference/feature-matrix/). For the end-to-end recipe see [../playbooks/multi-agent-orchestration.md](/playbooks/multi-agent-orchestration/), and for the runnable source see `demos/multi-agent` in the repo.
 
 ## How it works
 
 `createCollaboratorToolRuntimeExtension` starts an ephemeral, loopback-only MCP HTTP server for the duration of one orchestrator request. The server exposes one tool (`ask_collaborator` by default). When the orchestrator model calls it, the extension routes the request to the named collaborator's `AgentResponder.respond(...)` and returns the collaborator's text back to the model as the tool result.
 
 - The tool description lists every collaborator by `id`, `label`, and optional `description`, so the model knows who it can ask.
-- Each collaborator is just an `AgentResponder`. It can be an in-process responder, or a remote agent reached over A2A via `createA2AConsumerResponder` (see [a2a-consumer.md](./a2a-consumer.md)). The orchestrator does not care which.
+- Each collaborator is just an `AgentResponder`. It can be an in-process responder, or a remote agent reached over A2A via `createA2AConsumerResponder` (see [a2a-consumer.md](/programmatic/a2a-consumer/)). The orchestrator does not care which.
 - Collaborator failures surface as **visible tool errors** to the model (status `failed`), not hidden fallbacks — the orchestrator can decide how to recover.
 - The server binds loopback (`127.0.0.1`) and fails closed: a non-loopback host throws unless you pass `allowNonLoopback: true`.
 
-{: .note }
+:::note
+:::
 The extension is request-scoped. You create it inside `runtimeOptionsForRequest` (one server per request) and return its `cleanup` so the host tears the MCP server down when the turn ends.
 
 ## API
@@ -54,7 +55,7 @@ The returned `CollaboratorToolRuntimeExtension` has:
 
 ## Wiring into the orchestrator
 
-Build the orchestrator responder with `createConfiguredAgentResponder` (from `@mono-agent/agent-host`, see [composition.md](./composition.md)) and supply `runtimeOptionsForRequest`. This per-request hook — feature row `harness.request-runtime-options` — is where you create the extension and hand back its `runtimeOptions` and `cleanup`:
+Build the orchestrator responder with `createConfiguredAgentResponder` (from `@mono-agent/agent-host`, see [composition.md](/programmatic/composition/)) and supply `runtimeOptionsForRequest`. This per-request hook — feature row `harness.request-runtime-options` — is where you create the extension and hand back its `runtimeOptions` and `cleanup`:
 
 ```ts
 import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
@@ -96,7 +97,8 @@ const orchestrator = createConfiguredAgentResponder({
 });
 ```
 
-{: .warning }
+:::caution
+:::
 Do not reuse one extension across requests. A new server is created per turn and `cleanup` closes it; returning `cleanup` from `runtimeOptionsForRequest` lets the host close it deterministically even if the turn errors or is aborted.
 
 ## Demo topology
@@ -109,14 +111,14 @@ Do not reuse one extension across requests. A new server is created per turn and
 | Researcher | loopback A2A provider | `WebSearch`, `WebFetch` allowed | `multi-agent-researcher` |
 | Worker | loopback A2A provider | `Read`, `Grep`, `Bash` allowed; `Write`/`Edit` disallowed | `multi-agent-worker` |
 
-The orchestrator's `ask_collaborator` tool fronts two `createA2AConsumerResponder` collaborators (`researcher`, `worker`). The model may ask one, both, or either repeatedly before answering; a successful turn that uses both records three JSONL runs (and Phoenix spans when an OTLP exporter is configured — see [../observability/phoenix-and-backfill.md](../observability/phoenix-and-backfill.md)). Distinct per-role tool policies ([../tools/policy.md](../tools/policy.md)) keep the researcher and worker scoped to their jobs.
+The orchestrator's `ask_collaborator` tool fronts two `createA2AConsumerResponder` collaborators (`researcher`, `worker`). The model may ask one, both, or either repeatedly before answering; a successful turn that uses both records three JSONL runs (and Phoenix spans when an OTLP exporter is configured — see [../observability/phoenix-and-backfill.md](/observability/phoenix-and-backfill/)). Distinct per-role tool policies ([../tools/policy.md](/tools/policy/)) keep the researcher and worker scoped to their jobs.
 
 The demo's generated orchestrator config uses a 300s collaborator timeout because local Ollama collaborators (default model `gemma4:31b`) can take longer than the 60s A2A consumer default when running web or workspace tools before synthesis.
 
 ## Related
 
-- [composition.md](./composition.md) — building responders from config with `@mono-agent/agent-host`.
-- [a2a-consumer.md](./a2a-consumer.md) — consuming remote agents as responders/collaborators.
-- [../channels/a2a.md](../channels/a2a.md) — exposing an agent as an A2A provider.
-- [../tools/mcp.md](../tools/mcp.md) — how MCP servers (like the loopback collaborator server) are wired.
-- [../playbooks/multi-agent-orchestration.md](../playbooks/multi-agent-orchestration.md) — full walkthrough.
+- [composition.md](/programmatic/composition/) — building responders from config with `@mono-agent/agent-host`.
+- [a2a-consumer.md](/programmatic/a2a-consumer/) — consuming remote agents as responders/collaborators.
+- [../channels/a2a.md](/channels/a2a/) — exposing an agent as an A2A provider.
+- [../tools/mcp.md](/tools/mcp/) — how MCP servers (like the loopback collaborator server) are wired.
+- [../playbooks/multi-agent-orchestration.md](/playbooks/multi-agent-orchestration/) — full walkthrough.
