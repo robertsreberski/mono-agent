@@ -17,6 +17,7 @@ import type {
   SlackReactionsAddParams,
   SlackRequestOptions,
   SlackEventCallback,
+  SlackViewsPublishParams,
   SlackWebApi,
 } from "../types.js";
 
@@ -24,6 +25,7 @@ class FakeSlackApi implements SlackWebApi {
   readonly postMessageCalls: SlackChatPostMessageParams[] = [];
   readonly updateCalls: SlackChatUpdateParams[] = [];
   readonly reactionsAddCalls: SlackReactionsAddParams[] = [];
+  readonly viewsPublishCalls: SlackViewsPublishParams[] = [];
   readonly setAssistantStatusCalls: Array<{ channelId: string; threadTs: string; status: string }> = [];
   /**
    * When true, setAssistantStatus rejects (simulating a regular channel/DM that is
@@ -61,6 +63,10 @@ class FakeSlackApi implements SlackWebApi {
 
   async reactionsAdd(params: SlackReactionsAddParams): Promise<void> {
     this.reactionsAddCalls.push(params);
+  }
+
+  async viewsPublish(params: SlackViewsPublishParams): Promise<void> {
+    this.viewsPublishCalls.push(params);
   }
 
   async downloadFile(
@@ -1076,6 +1082,206 @@ describe("SlackAdapter", () => {
   });
 });
 
+describe("SlackAdapter.handleShortcut", () => {
+  it("runs the bound prompt as a proactive turn in the shortcut's destination channel", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync.", channelId: "D1" }],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "synced 3 items" };
+      }),
+    });
+
+    const result = await adapter.handleShortcut({
+      type: "shortcut",
+      callback_id: "sync_now",
+      trigger_id: "T1",
+      user: { id: "U1" },
+    });
+
+    expect(result).toMatchObject({
+      kind: "triggered",
+      id: "sync_now",
+      channelId: "D1",
+      delivered: true,
+    });
+    expect(captured?.text).toBe("Run the sync.");
+    // A global shortcut has no thread → the run posts top-level in the destination.
+    expect(captured?.conversationId).toBe("slack:D1");
+    expect(api.postMessageCalls.at(-1)?.channel).toBe("D1");
+    expect(api.postMessageCalls.at(-1)?.thread_ts).toBeUndefined();
+    expect(api.postMessageCalls.at(-1)?.text).toContain("synced 3 items");
+  });
+
+  it("posts an instant ack before the run when ackText is set", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      shortcuts: [
+        { callbackId: "sync_now", prompt: "Run the sync.", channelId: "D1", ackText: "🔄 Syncing…" },
+      ],
+      responder: responderFrom(async () => ({ text: "No changes" })),
+    });
+
+    const result = await adapter.handleShortcut({ type: "shortcut", callback_id: "sync_now" });
+
+    expect(result).toMatchObject({ kind: "triggered", delivered: true });
+    // First post is the instant ack; the run's result follows as its own message.
+    const ack = api.postMessageCalls[0];
+    const summary = api.postMessageCalls[1];
+    expect(ack?.text).toBe("🔄 Syncing…");
+    expect(ack?.thread_ts).toBeUndefined();
+    expect(summary?.text).toContain("No changes");
+  });
+
+  it("falls back to the first allowlisted channel when the binding omits channelId", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync." }],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    const result = await adapter.handleShortcut({ type: "shortcut", callback_id: "sync_now" });
+
+    expect(result).toMatchObject({ kind: "triggered", channelId: "D1", delivered: true });
+    expect(captured?.channelId).toBe("D1");
+  });
+
+  it("ignores an unbound shortcut without running anything", async () => {
+    const api = new FakeSlackApi();
+    const respond = vi.fn(async () => ({ text: "should not run" }));
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync.", channelId: "D1" }],
+      responder: { respond },
+    });
+
+    const result = await adapter.handleShortcut({ type: "shortcut", callback_id: "some_other" });
+
+    expect(result).toEqual({ kind: "ignored", reason: "unbound", id: "some_other" });
+    expect(respond).not.toHaveBeenCalled();
+    expect(api.postMessageCalls).toEqual([]);
+  });
+
+  it("rejects a shortcut whose destination is outside the allowlist", async () => {
+    const api = new FakeSlackApi();
+    const respond = vi.fn(async () => ({ text: "should not run" }));
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync.", channelId: "D-evil" }],
+      responder: { respond },
+    });
+
+    const result = await adapter.handleShortcut({ type: "shortcut", callback_id: "sync_now" });
+
+    expect(result).toEqual({ kind: "unauthorized", id: "sync_now", channelId: "D-evil" });
+    expect(respond).not.toHaveBeenCalled();
+  });
+});
+
+describe("SlackAdapter App Home tab", () => {
+  it("publishes a Home view with a button per configured Home button on app_home_opened", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      homeTab: {
+        enabled: true,
+        headerText: "Controls",
+        buttons: [{ actionId: "sync_now", label: "🔄 Sync", prompt: "Run the sync.", channelId: "D1" }],
+      },
+      responder: responderFrom(async () => ({ text: "ok" })),
+    });
+
+    const result = await adapter.handleEventCallback(appHomeOpened("U1"));
+
+    expect(result).toEqual({ kind: "home_published", eventId: "EvHome", userId: "U1" });
+    const view = api.viewsPublishCalls.at(-1)?.view;
+    expect(api.viewsPublishCalls.at(-1)?.userId).toBe("U1");
+    expect(view?.type).toBe("home");
+    // The view carries the header plus an actions block whose button matches the config.
+    const json = JSON.stringify(view);
+    expect(json).toContain("Controls");
+    expect(json).toContain("🔄 Sync");
+    expect(json).toContain("sync_now");
+  });
+
+  it("runs a Home button's prompt and replies in its channel on block_actions", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      homeTab: {
+        enabled: true,
+        buttons: [{ actionId: "sync_now", label: "Sync", prompt: "Run the sync.", channelId: "D1", ackText: "🔄 Syncing…" }],
+      },
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "No changes" };
+      }),
+    });
+
+    // A Home-tab button click carries no channel — routing falls to the binding's channelId.
+    const result = await adapter.handleBlockActions({
+      type: "block_actions",
+      user: { id: "U1" },
+      actions: [{ action_id: "sync_now", value: "sync_now" }],
+    });
+
+    expect(result).toMatchObject({ kind: "triggered", id: "sync_now", channelId: "D1", delivered: true });
+    expect(captured?.text).toBe("Run the sync.");
+    expect(api.postMessageCalls[0]?.text).toBe("🔄 Syncing…"); // instant ack first
+    expect(api.postMessageCalls.at(-1)?.text).toContain("No changes");
+  });
+
+  it("ignores a block_actions click on an unbound action", async () => {
+    const api = new FakeSlackApi();
+    const respond = vi.fn(async () => ({ text: "should not run" }));
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      homeTab: { enabled: true, buttons: [{ actionId: "sync_now", label: "Sync", prompt: "Run.", channelId: "D1" }] },
+      responder: { respond },
+    });
+
+    const result = await adapter.handleBlockActions({
+      type: "block_actions",
+      actions: [{ action_id: "not_bound" }],
+    });
+
+    expect(result).toEqual({ kind: "ignored", reason: "unbound" });
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a Home view when the Home tab is disabled", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowedChannelIds: ["D1"],
+      responder: responderFrom(async () => ({ text: "ok" })),
+    });
+
+    const result = await adapter.handleEventCallback(appHomeOpened("U1"));
+
+    expect(result).toMatchObject({ kind: "ignored" });
+    expect(api.viewsPublishCalls).toEqual([]);
+  });
+});
+
 describe("SerialQueue", () => {
   it("rejects synchronously with SerialQueueFullError once depth >= maxDepth, then admits later tasks after decrements", async () => {
     const queue = new SerialQueue(2);
@@ -1290,6 +1496,22 @@ function appMention(text: string): SlackEventCallback {
       text,
       ts: "172.000001",
       event_ts: "172.000001",
+    },
+  };
+}
+
+function appHomeOpened(userId: string): SlackEventCallback {
+  return {
+    type: "event_callback",
+    team_id: "T1",
+    api_app_id: "A1",
+    event_id: "EvHome",
+    event_time: 173,
+    event: {
+      type: "app_home_opened",
+      user: userId,
+      tab: "home",
+      event_ts: "173.000001",
     },
   };
 }
