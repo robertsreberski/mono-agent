@@ -6,6 +6,8 @@ import {
   type SlackAdapterStreamOptions,
   type SlackAttachmentOptions,
   type SlackEventHandlingResult,
+  type SlackHomeTabOptions,
+  type SlackShortcutBinding,
 } from "./adapter.js";
 import { SlackWebApiClient } from "./slack-client.js";
 import {
@@ -41,6 +43,17 @@ export interface SlackAdapterStartOptions {
   readonly stream?: SlackAdapterStreamOptions;
   readonly messages?: SlackAdapterMessages;
   readonly attachments?: SlackAttachmentOptions;
+  /**
+   * Shortcut bindings (callback_id → prompt). When set, the Socket Mode runner
+   * routes shortcut payloads to the adapter, which runs the bound prompt as a
+   * proactive turn. Omitted/empty leaves interactivity ignored.
+   */
+  readonly shortcuts?: readonly SlackShortcutBinding[];
+  /**
+   * App Home tab configuration (persistent action buttons). When enabled, the
+   * adapter publishes the tab on open and routes button clicks to their prompts.
+   */
+  readonly homeTab?: SlackHomeTabOptions;
   readonly logger?: SlackAdapterStartLogger;
 
   /** Resolve an in-thread reply back to the conversation that produced the message it threads off. */
@@ -173,6 +186,12 @@ function buildAdapterOptions(
   if (options.attachments !== undefined) {
     adapterOptions.attachments = options.attachments;
   }
+  if (options.shortcuts !== undefined) {
+    adapterOptions.shortcuts = options.shortcuts;
+  }
+  if (options.homeTab !== undefined) {
+    adapterOptions.homeTab = options.homeTab;
+  }
   if (options.logger !== undefined) {
     adapterOptions.logger = options.logger;
   }
@@ -205,6 +224,26 @@ function buildRunnerOptions(
   }
   if (options.onEventResult !== undefined) {
     runnerOptions.onEventResult = options.onEventResult;
+  }
+  // Only subscribe to interactivity when shortcuts or Home-tab buttons are bound,
+  // so the runner's behavior is unchanged for agents that wire none.
+  const hasShortcuts = options.shortcuts !== undefined && options.shortcuts.length > 0;
+  const hasHomeButtons = options.homeTab?.buttons !== undefined && options.homeTab.buttons.length > 0;
+  if (hasShortcuts || hasHomeButtons) {
+    runnerOptions.onInteraction = async (payload) => {
+      try {
+        const result = await adapter.handleInteraction(payload);
+        if (result.kind === "triggered") {
+          options.logger?.info?.("Slack interaction triggered.", { result });
+        } else {
+          options.logger?.debug?.("Slack interaction ignored.", { result });
+        }
+      } catch (error) {
+        options.logger?.error?.("Slack interaction handling failed.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
   }
   if (options.logger !== undefined) {
     runnerOptions.logger = options.logger;

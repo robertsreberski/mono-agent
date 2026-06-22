@@ -86,6 +86,16 @@ export interface SlackSetAssistantStatusParams {
   status: string;
 }
 
+/**
+ * Params for `views.publish` — sets a user's App Home tab to the given view.
+ * `view` is a Block Kit view object (`{ type: "home", blocks: [...] }`); blocks
+ * pass through untyped so the adapter can compose any layout.
+ */
+export interface SlackViewsPublishParams {
+  userId: SlackUserId;
+  view: { type: "home"; blocks: readonly unknown[]; [key: string]: unknown };
+}
+
 export interface SlackWebApi {
   authTest(options?: SlackRequestOptions): Promise<SlackAuthTestResult>;
   appsConnectionsOpen(options?: SlackRequestOptions): Promise<SlackAppsConnectionsOpenResult>;
@@ -126,6 +136,16 @@ export interface SlackWebApi {
     params: SlackDownloadFileParams,
     options?: SlackRequestOptions,
   ): Promise<Uint8Array>;
+  /**
+   * Optional: publish a user's App Home tab via `views.publish`. Used to render a
+   * persistent panel of action buttons. A text-only custom client may omit it
+   * (the adapter guards before calling it and logs if home-tab publishing is
+   * requested without support).
+   */
+  viewsPublish?(
+    params: SlackViewsPublishParams,
+    options?: SlackRequestOptions,
+  ): Promise<void>;
 }
 
 /**
@@ -144,7 +164,7 @@ export interface SlackFile {
   [key: string]: unknown;
 }
 
-export type SlackEventType = "app_mention" | "message" | string;
+export type SlackEventType = "app_mention" | "message" | "app_home_opened" | string;
 
 export interface SlackEventBase {
   type?: SlackEventType;
@@ -158,6 +178,8 @@ export interface SlackEventBase {
   channel_type?: string;
   bot_id?: string;
   files?: readonly SlackFile[];
+  /** Which App Home tab was opened (`"home"` / `"messages"`), on `app_home_opened`. */
+  tab?: string;
   [key: string]: unknown;
 }
 
@@ -181,3 +203,62 @@ export interface SlackSocketModeEnvelope {
   reason?: string;
   [key: string]: unknown;
 }
+
+/**
+ * A Slack shortcut interactivity payload, delivered over Socket Mode inside a
+ * `type: "interactive"` envelope when a user invokes a registered shortcut. A
+ * GLOBAL shortcut (the ⚡ menu) is `type: "shortcut"` and carries no channel; a
+ * MESSAGE shortcut is `type: "message_action"` and includes the source
+ * `channel`/`message`. The adapter routes on `callback_id`. Only the fields it
+ * needs are typed; the rest pass through.
+ */
+export interface SlackShortcutPayload {
+  type: "shortcut" | "message_action";
+  callback_id?: string;
+  trigger_id?: string;
+  user?: { id?: SlackUserId; [key: string]: unknown };
+  team?: { id?: string; [key: string]: unknown };
+  /** Present for message shortcuts (`message_action`); absent for global shortcuts. */
+  channel?: { id?: SlackChannelId; [key: string]: unknown };
+  message?: {
+    ts?: SlackMessageTs;
+    thread_ts?: SlackMessageTs;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+/**
+ * One interactive element activation inside a `block_actions` payload (e.g. a
+ * clicked button). Only the fields the adapter routes on are typed.
+ */
+export interface SlackBlockAction {
+  action_id?: string;
+  block_id?: string;
+  value?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * A Block Kit `block_actions` interactivity payload — delivered when a user
+ * clicks a button the app rendered. From the **App Home** tab it carries no
+ * `channel` (the adapter routes the reply to a configured channel); from a
+ * message it includes the source `channel`/`message`. The adapter routes on each
+ * action's `action_id`.
+ */
+export interface SlackBlockActionsPayload {
+  type: "block_actions";
+  user?: { id?: SlackUserId; [key: string]: unknown };
+  channel?: { id?: SlackChannelId; [key: string]: unknown };
+  message?: {
+    ts?: SlackMessageTs;
+    thread_ts?: SlackMessageTs;
+    [key: string]: unknown;
+  };
+  actions?: readonly SlackBlockAction[];
+  trigger_id?: string;
+  [key: string]: unknown;
+}
+
+/** Any interactivity payload the adapter routes (shortcut, message action, or button click). */
+export type SlackInteractivityPayload = SlackShortcutPayload | SlackBlockActionsPayload;
