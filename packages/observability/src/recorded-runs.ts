@@ -68,7 +68,15 @@ export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<
   const { summaries, warnings } = await loadSummaryFiles(normalized);
   return {
     runs: [...summaries]
-      .sort((a: ParsedSummaryFile, b: ParsedSummaryFile) => summaryUpdatedAtMs(b) - summaryUpdatedAtMs(a))
+      // Newest first by logical update time, with file mtime then runId as deterministic
+      // tiebreakers — two runs finishing in the same millisecond share an `updatedAt`, and
+      // without a tiebreaker their order (and any top-N slice) is unstable.
+      .sort(
+        (a: ParsedSummaryFile, b: ParsedSummaryFile) =>
+          summaryUpdatedAtMs(b) - summaryUpdatedAtMs(a)
+          || b.mtimeMs - a.mtimeMs
+          || b.summary.runId.localeCompare(a.summary.runId),
+      )
       .slice(0, normalized.maxRuns)
       .map((entry) => summaryToListItem(entry.summary, entry.updatedAt, normalized.maxStringBytes)),
     warnings,
