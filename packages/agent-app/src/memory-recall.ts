@@ -285,7 +285,7 @@ export function createMemoryRecallServer(store: BujoMemoryStore): McpServer {
     "memory_recall",
     {
       title: "Recall from memory",
-      description: "Read-only hybrid (keyword + semantic) search over long-term memory. Use to recall facts, decisions, and context.",
+      description: "Read-only hybrid (keyword + semantic) search over the agent's long-term memory. Call this proactively whenever you are missing context, unsure about a prior decision, or about to assume or ask the user for something that may already be recorded — recall first, then act.",
       inputSchema: {
         query: z.string().min(1).describe("Natural-language description of what to recall."),
         limit: z.number().int().min(1).max(50).optional().describe("Max results (default 8)."),
