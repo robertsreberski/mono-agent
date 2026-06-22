@@ -1,5 +1,4 @@
 import {
-  defineFieldGroup,
   layerJsonOntoEnv,
   readBoolean,
   readCsv,
@@ -9,7 +8,6 @@ import {
   redactedSecret,
 } from "@mono-agent/settings";
 import type {
-  FieldGroup,
   RedactedSecretValue,
   SettingsJson,
 } from "@mono-agent/settings";
@@ -72,43 +70,6 @@ const invalidConfig = (
   details?: Record<string, unknown>,
 ): TelegramAdapterConfigError =>
   new TelegramAdapterConfigError("invalid_config", message, details);
-
-export const telegramFieldGroup: FieldGroup = defineFieldGroup({
-  id: "telegram",
-  label: "Telegram",
-  description: "Optional Telegram adapter configuration. The token is write-only.",
-  fields: [
-    {
-      id: "telegram.enabled",
-      label: "Enable Telegram",
-      description: "Start the Telegram adapter with the app. Off by default.",
-      kind: "switch",
-      path: ["telegram", "enabled"],
-    },
-    {
-      id: "telegram.botToken",
-      label: "Bot token",
-      description: "Bot API token. Stored on disk only; never returned to the UI after save.",
-      kind: "secret",
-      path: ["telegram", "botToken"],
-    },
-    {
-      id: "telegram.allowedChatIds",
-      label: "Allowed chat ids",
-      description: "Comma-separated list of chat ids the bot will respond to.",
-      kind: "csv",
-      placeholder: "111111111, 222222222",
-      path: ["telegram", "allowedChatIds"],
-    },
-    {
-      id: "telegram.allowAllChats",
-      label: "Allow all chats",
-      description: "Explicitly permit every chat. Leave off when using an allowlist.",
-      kind: "switch",
-      path: ["telegram", "allowAllChats"],
-    },
-  ],
-});
 
 export async function loadTelegramAdapterConfig(
   input: LoadTelegramAdapterConfigInput,

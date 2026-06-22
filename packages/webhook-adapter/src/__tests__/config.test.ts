@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadWebhookAdapterConfig,
   redactWebhookAdapterConfig,
-  webhookFieldGroup,
 } from "../index.js";
 
 let dir: string;
@@ -176,13 +175,5 @@ describe("redactWebhookAdapterConfig", () => {
     expect(redacted).toEqual(config);
     // Endpoints are deep-cloned so callers cannot mutate the source array.
     expect(redacted.endpoints).not.toBe(config.endpoints);
-  });
-});
-
-describe("webhookFieldGroup", () => {
-  it("declares webhook settings for operator surfaces", () => {
-    expect(webhookFieldGroup.id).toBe("webhook");
-    expect(webhookFieldGroup.fields.find((field) => field.id === "webhook.enabled")?.kind).toBe("switch");
-    expect(webhookFieldGroup.fields.find((field) => field.id === "webhook.defaultMode")?.kind).toBe("select");
   });
 });

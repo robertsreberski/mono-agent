@@ -20,7 +20,6 @@ export type {
 
 export {
   loadOpenAIApiAdapterConfig,
-  openAIApiFieldGroup,
   redactOpenAIApiAdapterConfig,
 } from "./config.js";
 export type {

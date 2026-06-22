@@ -650,11 +650,11 @@ function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
 
 function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
   const { permissionMode } = config.runtime;
-  // NOTE: config.runtime.reasoningSummary is intentionally NOT forwarded. The
-  // sole pi runtime (pi-native) derives reasoning from `effort` and does not
-  // consume an explicit summary level, and the codex/claude CLIs emit summaries
+  // NOTE: there is intentionally no reasoning-summary runtime option. The sole pi
+  // runtime (pi-native) derives reasoning from `effort` and does not consume an
+  // explicit summary level, and the codex/claude CLIs emit summaries
   // unconditionally — so the former `piReasoningSummary` runtime option was dead
-  // plumbing. The config field is retained for back-compat but has no effect here.
+  // plumbing and the `runtime.reasoningSummary` config field was removed.
   const piNative = config.providers?.piNative;
   if (
     permissionMode === undefined

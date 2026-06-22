@@ -65,18 +65,16 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
-  it("loads permission mode and reasoning summary from env", () => {
+  it("loads permission mode from env", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
         MONO_AGENT_PERMISSION_MODE: "bypassPermissions",
-        MONO_AGENT_REASONING_SUMMARY: "detailed",
       },
     });
 
     expect(config.runtime.permissionMode).toBe("bypassPermissions");
-    expect(config.runtime.reasoningSummary).toBe("detailed");
   });
 
   it("treats an omitted runtime max turns value as unlimited", () => {
@@ -97,10 +95,9 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.maxTurns).toBeUndefined();
   });
 
-  it("omits permission mode and reasoning summary when the env is unset", () => {
+  it("omits permission mode when the env is unset", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.runtime.permissionMode).toBeUndefined();
-    expect(config.runtime.reasoningSummary).toBeUndefined();
   });
 
   it("loads pi-native provider knobs from env", () => {
@@ -134,17 +131,11 @@ describe("loadMonoAgentConfig", () => {
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
-  it("rejects invalid permission mode and reasoning summary values", () => {
+  it("rejects an invalid permission mode value", () => {
     expect(() =>
       loadMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_PERMISSION_MODE: "yolo" },
-      }),
-    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
-    expect(() =>
-      loadMonoAgentConfig({
-        cwd: "/repo",
-        env: { ...baseEnv, MONO_AGENT_REASONING_SUMMARY: "verbose" },
       }),
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });

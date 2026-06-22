@@ -1,12 +1,10 @@
 import {
-  CORE_AGENT_FIELD_GROUPS,
   redactMonoAgentConfig,
 } from "@mono-agent/config";
 import type {
   MonoAgentConfig,
   RedactedMonoAgentConfig,
 } from "@mono-agent/config";
-import type { FieldGroup } from "@mono-agent/settings";
 import {
   resolveAppArtifactDir,
   resolveAppTraceHeartbeatMs,
@@ -16,25 +14,16 @@ import {
   resolveAppTraceStaleAfterMs,
 } from "@mono-agent/agent-app";
 import type { AppTraceDefaults, MonoAgentAppConfigInput } from "@mono-agent/agent-app";
-import { a2aFieldGroup, redactA2AAdapterConfig } from "@mono-agent/a2a-adapter";
+import { redactA2AAdapterConfig } from "@mono-agent/a2a-adapter";
 import type { A2AAdapterConfig, RedactedA2AAdapterConfig } from "@mono-agent/a2a-adapter";
-import { redactTelegramAdapterConfig, telegramFieldGroup } from "@mono-agent/telegram-adapter";
+import { redactTelegramAdapterConfig } from "@mono-agent/telegram-adapter";
 import type { RedactedTelegramAdapterConfig, TelegramAdapterConfig } from "@mono-agent/telegram-adapter";
-import { redactWebhookAdapterConfig, webhookFieldGroup } from "@mono-agent/webhook-adapter";
+import { redactWebhookAdapterConfig } from "@mono-agent/webhook-adapter";
 import type { RedactedWebhookAdapterConfig, WebhookAdapterConfig } from "@mono-agent/webhook-adapter";
-import { openAIApiFieldGroup, redactOpenAIApiAdapterConfig } from "@mono-agent/openai-api-adapter";
+import { redactOpenAIApiAdapterConfig } from "@mono-agent/openai-api-adapter";
 import type { OpenAIApiAdapterConfig, RedactedOpenAIApiAdapterConfig } from "@mono-agent/openai-api-adapter";
-import { cronFieldGroup, redactCronAdapterConfig } from "@mono-agent/cron-adapter";
+import { redactCronAdapterConfig } from "@mono-agent/cron-adapter";
 import type { CronAdapterConfig, RedactedCronAdapterConfig } from "@mono-agent/cron-adapter";
-
-export const FINAL_DEMO_FIELD_GROUPS: readonly FieldGroup[] = [
-  ...CORE_AGENT_FIELD_GROUPS,
-  telegramFieldGroup,
-  a2aFieldGroup,
-  webhookFieldGroup,
-  openAIApiFieldGroup,
-  cronFieldGroup,
-];
 
 export const FINAL_DEMO_TRACE_DEFAULTS: AppTraceDefaults = {
   sourceIdPrefix: "final-agent",

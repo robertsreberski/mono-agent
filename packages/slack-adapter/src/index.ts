@@ -81,7 +81,6 @@ export {
   loadSlackAdapterConfig,
   redactSlackAdapterConfig,
   SlackAdapterConfigError,
-  slackFieldGroup,
 } from "./config.js";
 export type {
   LoadSlackAdapterConfigInput,

@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadWhatsAppAdapterConfig,
   redactWhatsAppAdapterConfig,
-  whatsappFieldGroup,
   WhatsAppAdapterConfigError,
 } from "../config.js";
 
@@ -151,15 +150,5 @@ describe("redactWhatsAppAdapterConfig", () => {
         stripMentionText: true,
       },
     });
-  });
-});
-
-describe("whatsappFieldGroup", () => {
-  it("declares WhatsApp adapter allowlist and trigger settings", () => {
-    expect(whatsappFieldGroup.id).toBe("whatsapp");
-    expect(whatsappFieldGroup.fields.find((field) => field.id === "whatsapp.enabled")?.kind).toBe("switch");
-    expect(whatsappFieldGroup.fields.find((field) => field.id === "whatsapp.allowedChatJids")?.kind).toBe("csv");
-    expect(whatsappFieldGroup.fields.find((field) => field.id === "whatsapp.groupMode")?.kind).toBe("select");
-    expect(whatsappFieldGroup.fields.find((field) => field.id === "whatsapp.stripMentionText")?.kind).toBe("switch");
   });
 });

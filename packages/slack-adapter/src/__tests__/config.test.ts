@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadSlackAdapterConfig,
   redactSlackAdapterConfig,
-  slackFieldGroup,
   SlackAdapterConfigError,
 } from "../config.js";
 
@@ -163,17 +162,5 @@ describe("redactSlackAdapterConfig", () => {
       mentionTextAliases: { count: 1 },
       stripMentionText: true,
     });
-  });
-});
-
-describe("slackFieldGroup", () => {
-  it("declares Slack adapter token, allowlist, and mention settings", () => {
-    expect(slackFieldGroup.id).toBe("slack");
-    expect(slackFieldGroup.fields.find((field) => field.id === "slack.enabled")?.kind).toBe("switch");
-    expect(slackFieldGroup.fields.find((field) => field.id === "slack.botToken")?.kind).toBe("secret");
-    expect(slackFieldGroup.fields.find((field) => field.id === "slack.appToken")?.kind).toBe("secret");
-    expect(slackFieldGroup.fields.find((field) => field.id === "slack.allowedChannelIds")?.kind).toBe("csv");
-    expect(slackFieldGroup.fields.find((field) => field.id === "slack.allowAllChannels")?.kind).toBe("switch");
-    expect(slackFieldGroup.fields.find((field) => field.id === "slack.stripMentionText")?.kind).toBe("switch");
   });
 });

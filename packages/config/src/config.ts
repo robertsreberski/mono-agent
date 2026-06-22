@@ -28,8 +28,8 @@ import {
 } from "@mono-agent/settings";
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
-import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, ReasoningSummary, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover } from "./types.js";
+import { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
+import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -111,7 +111,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
 
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
-  const reasoningSummary = readReasoningSummary(input.env.MONO_AGENT_REASONING_SUMMARY);
   const concurrency = readConcurrencyConfig(input.env);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
@@ -122,7 +121,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     session,
     ...(effort === undefined ? {} : { effort }),
     ...(permissionMode === undefined ? {} : { permissionMode }),
-    ...(reasoningSummary === undefined ? {} : { reasoningSummary }),
   };
 
   const context: MonoAgentConfig["context"] = {
@@ -1077,14 +1075,6 @@ function readPermissionMode(raw: string | undefined): PermissionMode | undefined
     return undefined;
   }
   return readChoice<PermissionMode>(normalized, "MONO_AGENT_PERMISSION_MODE", PERMISSION_MODES, PERMISSION_MODES[0], invalidEnv);
-}
-
-function readReasoningSummary(raw: string | undefined): ReasoningSummary | undefined {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return undefined;
-  }
-  return readChoice<ReasoningSummary>(normalized, "MONO_AGENT_REASONING_SUMMARY", REASONING_SUMMARIES, REASONING_SUMMARIES[0], invalidEnv);
 }
 
 function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAgentConfig["concurrency"] | undefined {

@@ -3,35 +3,11 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import {
-  CORE_AGENT_FIELD_GROUPS,
   loadMonoAgentConfigWithSources,
   MonoAgentConfigError,
   readMonoAgentConfigJson,
 } from "@mono-agent/config";
 import type { MonoAgentConfig, ObservabilityExporterConfig } from "@mono-agent/config";
-import type { FieldGroup } from "@mono-agent/settings";
-import { a2aFieldGroup } from "@mono-agent/a2a-adapter";
-import { cronFieldGroup } from "@mono-agent/cron-adapter";
-import { openAIApiFieldGroup } from "@mono-agent/openai-api-adapter";
-import { slackFieldGroup } from "@mono-agent/slack-adapter";
-import { telegramFieldGroup } from "@mono-agent/telegram-adapter";
-import { webhookFieldGroup } from "@mono-agent/webhook-adapter";
-import { whatsappFieldGroup } from "@mono-agent/whatsapp-adapter";
-
-/**
- * Every settings group a config-first host exposes: the adapter-neutral core
- * config plus one group per communication channel.
- */
-export const MONO_AGENT_APP_FIELD_GROUPS: readonly FieldGroup[] = [
-  ...CORE_AGENT_FIELD_GROUPS,
-  telegramFieldGroup,
-  slackFieldGroup,
-  a2aFieldGroup,
-  webhookFieldGroup,
-  openAIApiFieldGroup,
-  cronFieldGroup,
-  whatsappFieldGroup,
-];
 
 export interface MonoAgentAppConfigInput {
   readonly env: Record<string, string | undefined>;

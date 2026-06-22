@@ -1,5 +1,4 @@
 import {
-  defineFieldGroup,
   layerJsonOntoEnv,
   readBoolean,
   readInteger,
@@ -9,7 +8,7 @@ import {
   normalizeOptionalString,
   redactedSecret,
 } from "@mono-agent/settings";
-import type { FieldGroup, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
+import type { RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
 
 import {
   DEFAULT_BASE_PATH,
@@ -43,69 +42,6 @@ const DEFAULT_ENABLED = false;
 
 const invalidConfig = (message: string, details?: Record<string, unknown>): OpenAIApiAdapterError =>
   new OpenAIApiAdapterError("invalid_config", message, details);
-
-export const openAIApiFieldGroup: FieldGroup = defineFieldGroup({
-  id: "openaiApi",
-  label: "OpenAI API",
-  description: "Optional OpenAI-compatible Chat Completions endpoint for OpenWebUI and similar clients.",
-  fields: [
-    {
-      id: "openaiApi.enabled",
-      label: "Enable OpenAI API",
-      description: "Expose this responder as an OpenAI-compatible chat provider.",
-      kind: "switch",
-      path: ["openaiApi", "enabled"],
-    },
-    {
-      id: "openaiApi.host",
-      label: "Host",
-      description: "Bind host. Defaults to 127.0.0.1.",
-      kind: "string",
-      placeholder: "127.0.0.1",
-      path: ["openaiApi", "host"],
-    },
-    {
-      id: "openaiApi.port",
-      label: "Port",
-      description: "Bind port. Use 0 to choose a free loopback port.",
-      kind: "integer",
-      min: 0,
-      max: 65535,
-      placeholder: "0",
-      path: ["openaiApi", "port"],
-    },
-    {
-      id: "openaiApi.basePath",
-      label: "Base path",
-      description: "OpenAI-compatible API base path. OpenWebUI should point to this URL.",
-      kind: "string",
-      placeholder: "/v1",
-      path: ["openaiApi", "basePath"],
-    },
-    {
-      id: "openaiApi.allowNonLoopback",
-      label: "Allow non-loopback",
-      description: "Explicitly allow public/non-loopback binding.",
-      kind: "switch",
-      path: ["openaiApi", "allowNonLoopback"],
-    },
-    {
-      id: "openaiApi.apiKey",
-      label: "API key",
-      description: "Optional bearer token required from OpenWebUI. Never returned to the UI after save.",
-      kind: "secret",
-      path: ["openaiApi", "apiKey"],
-    },
-    {
-      id: "openaiApi.modelId",
-      label: "Model id",
-      description: "Model id advertised through /models and selected in OpenWebUI.",
-      kind: "string",
-      placeholder: "agent",
-      path: ["openaiApi", "modelId"],
-    },
-  ],
-});
 
 export async function loadOpenAIApiAdapterConfig(
   input: LoadOpenAIApiAdapterConfigInput,
