@@ -34,7 +34,11 @@ import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
 import { createSessionRegistry } from "../runtime/sessions.js";
 import { formatLiveInputGuidance } from "../live-input-prompt.js";
-import { isLikelyContextTermination, resolveAgentCompactionPolicy } from "../../agent/compaction.js";
+import {
+  estimateFixedOverheadTokens,
+  isLikelyContextTermination,
+  resolveAgentCompactionPolicy,
+} from "../../agent/compaction.js";
 import {
   closePiMcpClients,
   createStructuredOutputTool,
@@ -192,7 +196,15 @@ function recordDiscoveredContextWindow(harness, runtime, resolved, limit) {
 // including cache reads), but it can be stale/zero (e.g. seeded history), so we
 // take the MAX of the usage-based count and a raw per-message estimate. Either
 // being large is a reason to compact; overcounting only compacts slightly early.
-async function estimateCurrentContextTokens(session) {
+//
+// `fixedOverheadTokens` is the system-prompt + tool-schema + per-turn user
+// message overhead the provider meters but the raw per-message estimate (which
+// sums only the transcript via session.buildContext().messages) excludes. It is
+// added to the RAW branch ONLY: the usage-based count already includes that
+// overhead (it is what the provider actually counted), so adding it there would
+// double-count. With a stale/0 usage and a seeded session the raw branch wins,
+// and without this the trigger under-counts and the real request overflows.
+async function estimateCurrentContextTokens(session, fixedOverheadTokens = 0) {
   let usageTokens = 0;
   let rawTokens = 0;
   try {
@@ -203,6 +215,9 @@ async function estimateCurrentContextTokens(session) {
     const context = await session.buildContext();
     for (const message of context?.messages || []) rawTokens += Number(estimateTokens(message)) || 0;
   } catch { /* ignore — usage-based estimate stands */ }
+  // Apply the fixed overhead to the raw estimate only (see note above). Done
+  // after the loop so it lands once, not per message.
+  rawTokens += Number(fixedOverheadTokens) || 0;
   if (usageTokens === 0 && rawTokens === 0) return { tokens: 0, source: "unavailable" };
   return usageTokens >= rawTokens
     ? { tokens: usageTokens, source: "usage" }
@@ -704,6 +719,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       ? []
       : getPiBuiltinTools(options.allowedTools, {
         skillNames: (options.skills || []).map((skill) => skill.name),
+        // Progressive skill disclosure: when the harness threads the skills root
+        // (the directory holding `<name>/SKILL.md`) the read_skill tool resolves
+        // bodies directly from there. `dataDir` (skills under `<dataDir>/skills`)
+        // remains the back-compat fallback.
+        skillsRoot: options.skillsRoot,
         dataDir: options.dataDir,
         cwd: options.cwd,
         onEvent,
@@ -960,7 +980,34 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Proactive compaction: if the session is already near the window, compact
     // BEFORE issuing the request so a long-lived session never overflows.
     if (compactionPolicy.enabled && compactionPolicy.contextWindow > 0 && !options.abortSignal?.aborted) {
-      const est = await estimateCurrentContextTokens(session);
+      // Fixed per-request overhead the provider meters but the raw transcript
+      // estimate excludes (system prompt + tool/MCP schemas + per-turn user
+      // message + memory). Computed ONCE here from the same inputs the harness
+      // sends to the provider, then folded into the raw estimate so the trigger
+      // reflects the real request size. ON by default (this corrects a real
+      // undercount that lets seeded sessions overflow); set
+      // agent_compaction_fixed_overhead_enabled:false to restore the prior
+      // transcript-only trigger (overhead = 0). See estimateFixedOverheadTokens.
+      //
+      // Only the TRAILING per-turn user message is passed here, NOT
+      // options.messages. The prior transcript is already summed by the raw
+      // branch via session.buildContext().messages (priorMessages were seeded
+      // into the session above), so passing the whole history would double-count
+      // it. promptText/promptImages (from splitPromptMessages at the run head)
+      // ARE the per-turn turn, so reconstruct that single message for the
+      // estimate — matching estimateFixedOverheadTokens' "per-turn user
+      // message(s)" contract.
+      const perTurnContent = Array.isArray(promptImages) && promptImages.length > 0
+        ? [{ type: "text", text: promptText }, ...promptImages]
+        : promptText;
+      const fixedOverhead = options.settings?.agent_compaction_fixed_overhead_enabled !== false
+        ? estimateFixedOverheadTokens({
+          systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema),
+          tools,
+          messages: [{ role: "user", content: perTurnContent }],
+        })
+        : { systemPromptTokens: 0, toolSchemaTokens: 0, userMessageTokens: 0, fixedOverheadTokens: 0 };
+      const est = await estimateCurrentContextTokens(session, fixedOverhead.fixedOverheadTokens);
       if (est.tokens >= compactionPolicy.triggerTokens) {
         await harness.waitForIdle();
         if (!options.abortSignal?.aborted) {
@@ -980,6 +1027,15 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
               context_compaction_tokens_before: res.tokensBefore,
               context_compaction_estimate_source: est.source,
               context_window: compactionPolicy.contextWindow,
+              // Additive observability (A4): the overhead components folded into
+              // the trigger comparison, the trigger itself (read back by
+              // isLikelyContextTermination but otherwise never set), and the
+              // transcript-plus-overhead estimate that fired this compaction.
+              context_fixed_overhead_tokens: fixedOverhead.fixedOverheadTokens,
+              context_system_prompt_tokens: fixedOverhead.systemPromptTokens,
+              context_tool_schema_tokens: fixedOverhead.toolSchemaTokens,
+              context_compaction_trigger_tokens: compactionPolicy.triggerTokens,
+              context_transcript_estimate: est.tokens,
             });
             // Compaction collapses the transcript prefix, so the pre-run baseline
             // no longer aligns. Re-anchor it to the compacted length so the run's

@@ -78,6 +78,14 @@ export interface AgentHarnessSessionOptions {
    * — primarily for tests and custom runtimes.
    */
   readonly supportsResume?: boolean;
+  /**
+   * When true, a cron/proactive request (one carrying `metadata.cron`) is run as
+   * a one-shot ephemeral turn: it does NOT acquire/resume the shared continuous
+   * session and does NOT persist a warm session back into it, so its large tool
+   * dumps stay out of the interactive transcript. Interactive (non-cron) turns
+   * are unaffected. Default false (no behavior change).
+   */
+  readonly isolateProactive?: boolean;
 }
 
 export interface AgentHarnessRecorderFactoryInput {
@@ -93,6 +101,13 @@ export interface AgentHarnessOptions {
   readonly skillsRoot?: string;
   readonly selectedSkills?: readonly string[];
   readonly skillMaxBytes?: number;
+  /**
+   * How skill bodies reach the agent. "full" (default) preserves the legacy
+   * up-front inlining of `selectedSkills` bodies (via skillInstructions); "index"
+   * injects the skill INDEX only and wires the runtime's `read_skill` tool so the
+   * agent pulls a full body on demand. Unset = "full".
+   */
+  readonly skillDisclosure?: "index" | "full";
   /**
    * Optional shared skills cache. Skills are re-read from disk every turn
    * otherwise; pass one cache instance across turns (and across harnesses for a

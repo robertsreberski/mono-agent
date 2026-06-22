@@ -226,6 +226,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
     ...(config.context.skillMaxBytes === undefined ? {} : { skillMaxBytes: config.context.skillMaxBytes }),
+    ...(config.context.skillDisclosure === undefined ? {} : { skillDisclosure: config.context.skillDisclosure }),
     selectedSkills: config.context.selectedSkills,
     runtime,
     model,
@@ -239,6 +240,9 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     session: {
       mode: config.runtime.session.mode,
       idleTimeoutMs: config.runtime.session.idleTimeoutMs,
+      ...(config.runtime.session.isolateProactive === undefined
+        ? {}
+        : { isolateProactive: config.runtime.session.isolateProactive }),
     },
     ...(config.concurrency?.maxConcurrentRuns === undefined && config.concurrency?.maxPendingRuns === undefined
       ? {}

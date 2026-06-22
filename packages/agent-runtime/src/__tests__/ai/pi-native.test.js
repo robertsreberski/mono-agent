@@ -630,4 +630,97 @@ describe("pi-native auto-compaction", () => {
     expect(run2.diagnostics.context_compaction_proactive).toBe(true);
     expect(run2.diagnostics.context_window).toBe(120000);
   });
+
+  // Budget-aware compaction (Layer A): the raw transcript estimate excludes the
+  // system prompt + tool schemas the provider meters. On a seeded session whose
+  // last-assistant usage is absent (cron-after-restart / daily rollover) the raw
+  // branch wins, so without the fixed-overhead correction the trigger under-fires
+  // and the request overflows. These two runs use the SAME transcript (sized just
+  // UNDER the trigger) so the ONLY thing that flips proactive compaction on is the
+  // overhead from a large system prompt + several tools.
+  //
+  // contextWindow 100000 -> trigger 75000, keepRecent 24000. The seeded transcript
+  // (~56k tokens) sits below the trigger but above keepRecent (so compact() has a
+  // prefix to summarize). The overhead counts the system prompt (~30k tokens) +
+  // tool schemas + the trailing per-turn user message ("continue", ~3 tokens) —
+  // NOT the prior transcript (already summed by the raw branch). That ~30k of
+  // overhead pushes the corrected estimate (~56k + ~30k = ~86k) over 75000.
+  function overheadFixture(reference) {
+    const base = setup();
+    const windowed = { ...base, contextWindow: 100000 };
+    // ~120k chars -> ~30k tokens of system-prompt overhead.
+    const bigSystemPrompt = "S".repeat(120000);
+    // Several distinct tools so toolSchemaTokens is non-trivial too (the bridge's
+    // built-in tools are also counted, but allowing a couple makes the intent
+    // explicit and keeps the schemas in the overhead estimate).
+    const messages = bigHistory(28, 4000); // ~56k-token transcript, under 75000.
+    return { base, windowed, reference, bigSystemPrompt, messages };
+  }
+
+  it("proactively compacts on a seeded session once fixed overhead is counted (default on)", async () => {
+    const { base, windowed, bigSystemPrompt, messages } = overheadFixture("pi:faux:overhead-on");
+    // When the corrected trigger fires: call 1 = compaction summary, call 2 = turn.
+    let providerCalls = 0;
+    faux.setResponses([
+      () => { providerCalls += 1; return fauxAssistantMessage([fauxText("SUMMARY")]); },
+      () => { providerCalls += 1; return fauxAssistantMessage([fauxText("done")]); },
+    ]);
+    const result = await generatePiNativeResponse(bigSystemPrompt, runOptions(base, {
+      piResolvedModel: windowed,
+      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:overhead-on" },
+      messages,
+      allowedTools: ["Read", "Grep", "Bash"],
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+      // On by default — no flag set; the correction fires unless explicitly disabled.
+    }));
+    expect(result.error).toBeNull();
+    expect(result.text).toBe("done");
+    expect(providerCalls).toBe(2); // summary + turn — proactive compaction fired
+    expect(result.capabilitiesUsed.context_compaction_applied).toBe(true);
+    expect(result.diagnostics.context_compaction_proactive).toBe(true);
+    // A4 observability: the new budget-aware diagnostics are present and consistent.
+    expect(result.diagnostics.context_fixed_overhead_tokens).toBeGreaterThan(0);
+    expect(result.diagnostics.context_system_prompt_tokens).toBeGreaterThan(0);
+    expect(typeof result.diagnostics.context_tool_schema_tokens).toBe("number");
+    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(75000);
+    expect(result.diagnostics.context_transcript_estimate)
+      .toBeGreaterThanOrEqual(result.diagnostics.context_compaction_trigger_tokens);
+    // Regression guard for the transcript double-count: only the TRAILING per-turn
+    // user message ("continue", ~3 tokens) plus the system prompt (~30k) + tool
+    // schemas may be counted — NOT the ~56k-token prior transcript (already summed
+    // by the raw branch). A double-count would inflate this past the system prompt
+    // by tens of thousands of tokens, so bound it just above the system-prompt size.
+    expect(result.diagnostics.context_fixed_overhead_tokens)
+      .toBeLessThan(result.diagnostics.context_system_prompt_tokens + 1000);
+  });
+
+  it("does NOT proactively compact on the same seeded session when fixed overhead is explicitly disabled", async () => {
+    const { base, windowed, bigSystemPrompt, messages } = overheadFixture("pi:faux:overhead-off");
+    // With overhead explicitly disabled the transcript alone is under the trigger,
+    // so no compaction fires: call 1 IS the turn (text "turn-output"), never a summary.
+    let providerCalls = 0;
+    faux.setResponses([
+      () => { providerCalls += 1; return fauxAssistantMessage([fauxText("turn-output")]); },
+      () => { providerCalls += 1; return fauxAssistantMessage([fauxText("should-not-happen")]); },
+    ]);
+    const result = await generatePiNativeResponse(bigSystemPrompt, runOptions(base, {
+      piResolvedModel: windowed,
+      model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:overhead-off" },
+      messages,
+      allowedTools: ["Read", "Grep", "Bash"],
+      resolvePiApiKey: async () => "faux-key",
+      piSessionsRoot: sessionsRoot,
+      // Escape hatch: explicitly disable the correction to restore the prior
+      // transcript-only trigger (under-counts overhead).
+      settings: { agent_compaction_fixed_overhead_enabled: false },
+    }));
+    expect(result.error).toBeNull();
+    // Disabling overhead reproduces the prior under-counting behavior: the proactive
+    // path does NOT fire, so the very first provider call is the turn itself.
+    expect(providerCalls).toBe(1);
+    expect(result.text).toBe("turn-output");
+    expect(result.diagnostics.context_compaction_proactive).toBeUndefined();
+    expect(result.diagnostics.context_fixed_overhead_tokens).toBeUndefined();
+  });
 });

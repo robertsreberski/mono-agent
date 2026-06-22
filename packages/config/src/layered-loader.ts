@@ -81,6 +81,9 @@ export function layerJsonOntoEnv(
   if (json.runtime?.session?.rolloverTimezone !== undefined) {
     fromJson.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE = json.runtime.session.rolloverTimezone;
   }
+  if (json.runtime?.session?.isolateProactive !== undefined) {
+    fromJson.MONO_AGENT_SESSION_ISOLATE_PROACTIVE = String(json.runtime.session.isolateProactive);
+  }
   if (json.concurrency?.maxConcurrentRuns !== undefined) {
     fromJson.MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS = String(json.concurrency.maxConcurrentRuns);
   }
@@ -101,6 +104,9 @@ export function layerJsonOntoEnv(
   }
   if (json.context?.skillMaxBytes !== undefined) {
     fromJson.MONO_AGENT_SKILL_MAX_BYTES = String(json.context.skillMaxBytes);
+  }
+  if (json.context?.skillDisclosure !== undefined) {
+    fromJson.MONO_AGENT_SKILL_DISCLOSURE = json.context.skillDisclosure;
   }
   if (json.memory?.mode !== undefined) {
     fromJson.MONO_AGENT_MEMORY_MODE = json.memory.mode;

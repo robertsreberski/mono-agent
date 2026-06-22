@@ -281,17 +281,29 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
   };
 }
 
-function readSkillTool(skillNames = [], dataDir) {
+/**
+ * Progressive skill disclosure: exposes a `read_skill` tool so the agent can pull
+ * a named skill's FULL body on demand (skills are otherwise injected index-only).
+ *
+ * `skillsRoot` is the directory that directly contains `<name>/SKILL.md` (what the
+ * harness/context loader calls `skillsRoot`). The legacy `dataDir` form is still
+ * accepted for back-compat — there the skills live under `<dataDir>/skills` — and
+ * is resolved to the same root. The path-traversal guard (resolved file must stay
+ * under the skills root) is preserved on both paths.
+ */
+function readSkillTool(skillNames = [], { skillsRoot, dataDir } = {}) {
+  const root = skillsRoot
+    ? resolve(skillsRoot)
+    : (dataDir ? resolve(dataDir, "skills") : null);
   const safe = skillNames.filter((name) => /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name));
-  if (!safe.length || !dataDir) return null;
+  if (!safe.length || !root) return null;
   return {
     name: "read_skill",
     label: "Read Skill",
     description: "Load the full instructions for a named skill.",
     parameters: objectSchema({ name: { type: "string", enum: safe } }, ["name"]),
     async execute(_toolCallId, { name }) {
-      const path = resolve(dataDir, "skills", name, "SKILL.md");
-      const root = resolve(dataDir, "skills");
+      const path = resolve(root, name, "SKILL.md");
       if (!path.startsWith(root + "/")) throw new Error(`invalid skill path: ${name}`);
       if (!existsSync(path)) throw new Error(`SKILL.md not found for ${name}`);
       return textResult(formatSkillBodyWithPathNote({
@@ -324,6 +336,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 export function getPiBuiltinTools(allowedTools, {
   skillNames = [],
+  skillsRoot,
   dataDir,
   cwd,
   onEvent,
@@ -404,7 +417,7 @@ export function getPiBuiltinTools(allowedTools, {
   };
   const names = Array.isArray(allowedTools) ? allowedTools : Object.keys(all);
   const tools = names.map((name) => all[name]).filter(Boolean);
-  const skillTool = readSkillTool(skillNames, dataDir);
+  const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir });
   if (skillTool) tools.push(skillTool);
   const gated = approvalManager
     ? wrapToolsWithApprovalGate(tools, approvalManager, { model: approvalModel })

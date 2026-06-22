@@ -410,6 +410,38 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_SKILL_MAX_BYTES).toBe("24000");
   });
 
+  it("translates JSON context.skillDisclosure to an env key", () => {
+    const layered = layerJsonOntoEnv(
+      { context: { identityPath: "IDENTITY.md", skillDisclosure: "index" } },
+      {},
+    );
+    expect(layered.MONO_AGENT_SKILL_DISCLOSURE).toBe("index");
+  });
+
+  it("omits MONO_AGENT_SKILL_DISCLOSURE when context.skillDisclosure is absent", () => {
+    const layered = layerJsonOntoEnv(
+      { context: { identityPath: "IDENTITY.md" } },
+      {},
+    );
+    expect(layered.MONO_AGENT_SKILL_DISCLOSURE).toBeUndefined();
+  });
+
+  it("translates JSON runtime.session.isolateProactive to an env key", () => {
+    const layered = layerJsonOntoEnv(
+      { runtime: { session: { isolateProactive: true } } },
+      {},
+    );
+    expect(layered.MONO_AGENT_SESSION_ISOLATE_PROACTIVE).toBe("true");
+  });
+
+  it("omits MONO_AGENT_SESSION_ISOLATE_PROACTIVE when session.isolateProactive is absent", () => {
+    const layered = layerJsonOntoEnv(
+      { runtime: { session: { mode: "continuous" } } },
+      {},
+    );
+    expect(layered.MONO_AGENT_SESSION_ISOLATE_PROACTIVE).toBeUndefined();
+  });
+
   it("treats empty env values as absent so JSON wins", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { maxTurns: 4 } },
@@ -615,6 +647,49 @@ describe("loadMonoAgentConfigWithSources", () => {
     // Env overrides json (higher precedence).
     expect(withEnv.runtime.session.rollover).toBe("none");
     expect(withEnv.runtime.session.rolloverTimezone).toBe("UTC");
+  });
+
+  it("round-trips context.skillDisclosure + session.isolateProactive from JSON through to the config", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-disclosure-isolate-"));
+    const path = join(dir, "config.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        runtime: {
+          model: "pi:openai-codex:gpt-5.5",
+          session: { isolateProactive: true },
+        },
+        context: { identityPath: "IDENTITY.md", skillDisclosure: "index" },
+      }),
+      "utf8",
+    );
+
+    const fromJson = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
+    expect(fromJson.context.skillDisclosure).toBe("index");
+    expect(fromJson.runtime.session.isolateProactive).toBe(true);
+
+    // Both keys default to UNSET so legacy behavior is byte-for-byte preserved.
+    const path2 = join(dir, "config2.json");
+    await writeFile(
+      path2,
+      JSON.stringify({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "IDENTITY.md" },
+      }),
+      "utf8",
+    );
+    const defaults = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path2 });
+    expect(defaults.context.skillDisclosure).toBeUndefined();
+    expect(defaults.runtime.session.isolateProactive).toBeUndefined();
+
+    // Env overrides JSON (higher precedence).
+    const withEnv = await loadMonoAgentConfigWithSources({
+      env: { MONO_AGENT_SKILL_DISCLOSURE: "full", MONO_AGENT_SESSION_ISOLATE_PROACTIVE: "false" },
+      cwd: dir,
+      jsonPath: path,
+    });
+    expect(withEnv.context.skillDisclosure).toBe("full");
+    expect(withEnv.runtime.session.isolateProactive).toBe(false);
   });
 
   it("loads a sandbox policy from the JSON config file", async () => {
