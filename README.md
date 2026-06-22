@@ -4,7 +4,7 @@ This repository is a config-first pnpm workspace of reusable npm packages under 
 
 ## Documentation
 
-Full documentation and end-to-end playbooks: **<https://robertsreberski.github.io/mono-agent/>** (source under [`docs/`](./docs/), served via GitHub Pages). [`docs/feature-registry.md`](./docs/feature-registry.md) remains the canonical feature reference, and [`docs/playbooks/`](./docs/playbooks/) holds copy-paste recipes for every channel and memory tier.
+Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.app/>** (authored as markdown under [`docs/`](./docs/), built with Astro Starlight in [`website/`](./website/) and deployed on Vercel). [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) remains the canonical feature reference, and [`docs/playbooks/`](./docs/playbooks/) holds copy-paste recipes for every channel and memory tier.
 
 ## Quickstart: An Agent Folder From One Config File
 
@@ -33,7 +33,7 @@ The repo includes a composer skill that walks an agent (in mono-agent itself, Cl
 - Skill: [`packages/agent-app/skills/mono-agent-composer/SKILL.md`](./packages/agent-app/skills/mono-agent-composer/SKILL.md)
 - References: [`packages/agent-app/skills/mono-agent-composer/references/`](./packages/agent-app/skills/mono-agent-composer/references/)
 
-The skill asks discovery questions (runtime + backup models, channels incl. crons and webhooks, skills, MCP, memory strategy incl. semantic search, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. [`docs/feature-registry.md`](./docs/feature-registry.md) is the source of truth mapping every framework feature to its config/CLI/programmatic surface; the skill ships a condensed copy as `references/feature-coverage.md`. The skill ships with `@mono-agent/agent-app`; install it into Claude Code and Codex with:
+The skill asks discovery questions (runtime + backup models, channels incl. crons and webhooks, skills, MCP, memory strategy incl. semantic search, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) is the source of truth mapping every framework feature to its config/CLI/programmatic surface; the skill ships a condensed copy as `references/feature-coverage.md`. The skill ships with `@mono-agent/agent-app`; install it into Claude Code and Codex with:
 
 ```bash
 mono-agent install-skill   # copies into ~/.claude/skills and ~/.codex/skills

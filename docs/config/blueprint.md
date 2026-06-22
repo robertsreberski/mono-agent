@@ -1,7 +1,7 @@
 ---
 title: "Annotated config file"
-parent: "Configuration"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Annotated config file
@@ -10,7 +10,7 @@ A single `mono-agent.config.json` declares the whole agent: runtime, providers, 
 
 Paths are relative to the agent folder. Every field also has a `MONO_AGENT_*` env var that overrides it — precedence is **env > JSON > defaults**. Omit a section to leave that capability off: every section except `runtime.model` and `context.identityPath` is optional.
 
-This is a **config**-coverage reference. Capabilities that config cannot express need the [programmatic escape hatch](../programmatic/index.md) — see the note at the end.
+This is a **config**-coverage reference. Capabilities that config cannot express need the [programmatic escape hatch](/programmatic/) — see the note at the end.
 
 ## Folder layout
 
@@ -30,7 +30,7 @@ my-agent/
     trace-sources/         # traceability registry (if kept folder-local)
 ```
 
-See [Folder layout](folder-layout.md) for the full directory contract.
+See [Folder layout](/config/folder-layout/) for the full directory contract.
 
 ## The full annotated config
 
@@ -262,8 +262,9 @@ Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it
 
 A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. Keep all secrets there or in `MONO_AGENT_*` env vars — never commit real tokens.
 
-{: .warning }
-For `memory.llm`, CLI-backed refs such as `codex:gpt-5.5` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](../memory/capture-and-recall.md).
+:::caution
+:::
+For `memory.llm`, CLI-backed refs such as `codex:gpt-5.5` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
 
 ## Section reference
 
@@ -271,20 +272,20 @@ Every top-level section maps to a deep-dive page:
 
 | Section | What it controls | Deep dive |
 | --- | --- | --- |
-| `runtime` | Model, fallback chain, execution mode, effort, sessions | [Backends](../runtime/backends.md), [Effort & permissions](../runtime/execution-effort-permissions.md), [Fallback](../runtime/fallback.md), [Sessions & concurrency](../runtime/sessions-concurrency.md) |
-| `providers` | Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Local providers](../runtime/local-providers.md) |
-| `context` | Identity, soul, skills selection | [Identity & soul](../context/identity-and-soul.md), [Skills](../context/skills.md), [Assembly](../context/assembly.md) |
-| `memory` | Tier, embeddings, capture LLM, reflection/migration rituals | [Embeddings](../memory/embeddings.md), [Capture & recall](../memory/capture-and-recall.md), [Rituals](../memory/rituals.md), [Entity graph](../memory/entity-graph.md) |
-| `tools` | Allow/deny tool policy, MCP servers | [Tool policy](../tools/policy.md), [MCP](../tools/mcp.md) |
-| `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](../tools/sandbox.md) |
-| `artifacts`, `traceability` | JSONL run summaries + the trace-source registry | [Artifacts & traces](../observability/artifacts-and-traces.md) |
-| `observability` | Optional Phoenix (OTLP) exporter | [Phoenix & backfill](../observability/phoenix-and-backfill.md) |
-| `webhook` | HTTP invoke endpoint (sync/async) | [Webhook](../channels/webhook.md) |
-| `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](../channels/openai-api.md) |
-| `telegram` | Telegram bot channel | [Telegram](../channels/telegram.md) |
-| `slack` | Slack Socket Mode channel | [Slack](../channels/slack.md) |
-| `whatsapp` | WhatsApp (Baileys) channel | [WhatsApp](../channels/whatsapp.md) |
-| `a2a` | Agent-to-Agent provider + consumer settings | [A2A](../channels/a2a.md), [A2A consumer](../programmatic/a2a-consumer.md) |
-| `cron` | Scheduled prompt jobs (inline + `cron/*.md`) | [Cron](../channels/cron.md) |
+| `runtime` | Model, fallback chain, execution mode, effort, sessions | [Backends](/runtime/backends/), [Effort & permissions](/runtime/execution-effort-permissions/), [Fallback](/runtime/fallback/), [Sessions & concurrency](/runtime/sessions-concurrency/) |
+| `providers` | Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Local providers](/runtime/local-providers/) |
+| `context` | Identity, soul, skills selection | [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Assembly](/context/assembly/) |
+| `memory` | Tier, embeddings, capture LLM, reflection/migration rituals | [Embeddings](/memory/embeddings/), [Capture & recall](/memory/capture-and-recall/), [Rituals](/memory/rituals/), [Entity graph](/memory/entity-graph/) |
+| `tools` | Allow/deny tool policy, MCP servers | [Tool policy](/tools/policy/), [MCP](/tools/mcp/) |
+| `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](/tools/sandbox/) |
+| `artifacts`, `traceability` | JSONL run summaries + the trace-source registry | [Artifacts & traces](/observability/artifacts-and-traces/) |
+| `observability` | Optional Phoenix (OTLP) exporter | [Phoenix & backfill](/observability/phoenix-and-backfill/) |
+| `webhook` | HTTP invoke endpoint (sync/async) | [Webhook](/channels/webhook/) |
+| `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](/channels/openai-api/) |
+| `telegram` | Telegram bot channel | [Telegram](/channels/telegram/) |
+| `slack` | Slack Socket Mode channel | [Slack](/channels/slack/) |
+| `whatsapp` | WhatsApp (Baileys) channel | [WhatsApp](/channels/whatsapp/) |
+| `a2a` | Agent-to-Agent provider + consumer settings | [A2A](/channels/a2a/), [A2A consumer](/programmatic/a2a-consumer/) |
+| `cron` | Scheduled prompt jobs (inline + `cron/*.md`) | [Cron](/channels/cron/) |
 
-For per-section env vars see [Environment variables](env-vars.md). When config cannot express what you need (custom runtime, request-scoped extensions, custom channels, tool-approval gates, structured-output schemas), use the [programmatic escape hatch](../programmatic/index.md).
+For per-section env vars see [Environment variables](/config/env-vars/). When config cannot express what you need (custom runtime, request-scoped extensions, custom channels, tool-approval gates, structured-output schemas), use the [programmatic escape hatch](/programmatic/).

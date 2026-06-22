@@ -1,13 +1,14 @@
 ---
 title: "Evals"
-nav_order: 11
+sidebar:
+  order: 0
 ---
 
 # Evals
 
 `@mono-agent/agent-evals` runs deterministic, local-first end-to-end checks against an agent. You define scenarios (a prompt plus assertions), point them at a responder or harness, and the runner captures runtime-style events, scores them, and writes inspectable artifacts. This page covers the scenario/suite API, the assertion catalog, trajectory matching, artifact layout, and how to gate live runs in CI.
 
-This is **dev-only / code** tooling — there are no `mono-agent.config.json` keys and no CLI subcommand. You author scenarios in TypeScript and run them from your test runner or a script. See [Programmatic Usage](../programmatic/index.md) for the responder/harness seams these scenarios target.
+This is **dev-only / code** tooling — there are no `mono-agent.config.json` keys and no CLI subcommand. You author scenarios in TypeScript and run them from your test runner or a script. See [Programmatic Usage](/programmatic/) for the responder/harness seams these scenarios target.
 
 Feature-registry coverage row: `evals.scenarios` -> `dev` -> `@mono-agent/agent-evals`.
 
@@ -75,8 +76,9 @@ All assertions live under `assertions` and are optional; each present assertion 
 | `trajectory` | object | tool-call sequence matches per the chosen mode (see below) |
 | `judge` | function | your custom async/sync function returns a passing check |
 
+:::caution
 `maxCostUsd`, `maxTurns`, and `maxDurationMs` read from run metadata (`runtime.cost.totalUsd`, `runtime.numTurns`, `runtime.durationMs`, with `summary.*` and top-level fallbacks). If the target does not report a metric, that check passes by default rather than failing — wire your responder/harness to surface metadata if you want hard cost/turn gates to bite.
-{: .warning }
+:::
 
 ### Custom judge
 
@@ -134,7 +136,7 @@ When you pass `artifactRoot`, the runner writes per-scenario artifacts under `ar
 | `eval-result.json` | the full `AgentEvalResult` (checks, final text, tool calls, trajectory) |
 | `report.md` | human-readable run report: status, checks, final text, tool calls |
 
-Artifacts share the JSONL recorder used elsewhere in mono-agent, so they open in the same tooling. See [Artifacts and Traces](../observability/artifacts-and-traces.md) and the [Observability CLI](../observability/cli-reference.md).
+Artifacts share the JSONL recorder used elsewhere in mono-agent, so they open in the same tooling. See [Artifacts and Traces](/observability/artifacts-and-traces/) and the [Observability CLI](/observability/cli-reference/).
 
 ## Live vs offline runs
 
@@ -147,8 +149,9 @@ By default a scenario actually invokes its target. Scenarios marked `requiresLiv
 MONO_AGENT_EVAL_LIVE=1 pnpm vitest run evals/
 ```
 
+:::tip
 A skipped scenario reports `status: "skipped"` with a single check explaining how to enable it. This lets you keep expensive, model-hitting scenarios in the same suite as cheap fixture-driven ones.
-{: .tip }
+:::
 
 You can also drive a scenario entirely from pre-recorded events: pass `events` on the scenario (and rely on those plus the target). This is useful for deterministic, fully offline trajectory assertions.
 
@@ -163,7 +166,7 @@ if (r.status === "failed") process.exit(1);
 
 Keep model-hitting scenarios behind `requiresLive: true` and only set `MONO_AGENT_EVAL_LIVE=1` on the jobs (e.g. nightly) where real calls are acceptable; pull-request CI then runs the offline subset for free. Upload the `artifactRoot` directory as a build artifact to inspect `report.md` and the event stream for any failure.
 
-For an end-to-end walkthrough covering trajectory and cost assertions, see the [eval suite playbook](../playbooks/eval-suite-trajectory-cost.md).
+For an end-to-end walkthrough covering trajectory and cost assertions, see the [eval suite playbook](/playbooks/eval-suite-trajectory-cost/).
 
 ## Public API reference
 

@@ -1,7 +1,7 @@
 ---
 title: "CLI command reference"
-parent: "Observability & CLI"
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
 # CLI command reference
@@ -44,7 +44,7 @@ mono-agent validate --env-file ./secrets/.env.prod
 TELEGRAM_BOT_TOKEN=xoxb-override mono-agent start
 ```
 
-Background commands (`start`, `restart`, `stop`, `status`, `logs`) require macOS (launchd). On other platforms use `mono-agent start --foreground`. See [Sessions & concurrency](../runtime/sessions-concurrency.md) for how the background worker keeps conversations alive.
+Background commands (`start`, `restart`, `stop`, `status`, `logs`) require macOS (launchd). On other platforms use `mono-agent start --foreground`. See [Sessions & concurrency](/runtime/sessions-concurrency/) for how the background worker keeps conversations alive.
 
 ## `init`
 
@@ -64,7 +64,7 @@ mono-agent init --model claude:claude-sonnet-4-6 \
   --memory bujo
 ```
 
-The generated config matches [the config blueprint](../config/blueprint.md). See [Backends](../runtime/backends.md) for the model reference grammar, [Fallback](../runtime/fallback.md) for the chain, and [Capture & recall](../memory/capture-and-recall.md) for the memory tiers.
+The generated config matches [the config blueprint](/config/blueprint/). See [Backends](/runtime/backends/) for the model reference grammar, [Fallback](/runtime/fallback/) for the chain, and [Capture & recall](/memory/capture-and-recall/) for the memory tiers.
 
 ## `validate`
 
@@ -84,7 +84,7 @@ Each section prints a status badge, a label, and its details. The statuses are:
 | `warn` | A non-fatal advisory (details lines prefixed `[WARN]`). |
 | `error` | A structural problem that must be fixed; any `error` section fails the run. |
 
-`validate` runs liveness probes, so it can show `waiting` for unreachable network dependencies. The Phoenix exporter check additionally POSTs an empty protobuf to confirm export compatibility, not just reachability — see [Phoenix & backfill](phoenix-and-backfill.md).
+`validate` runs liveness probes, so it can show `waiting` for unreachable network dependencies. The Phoenix exporter check additionally POSTs an empty protobuf to confirm export compatibility, not just reachability — see [Phoenix & backfill](/observability/phoenix-and-backfill/).
 
 ## `start`
 
@@ -112,7 +112,7 @@ On start the CLI prints per-section status blocks:
 - **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, `includeSensitiveData=true` when enabled, any last warning/error, and where JSONL artifacts remain local.
 - **channels** — one line per configured channel with a status badge: `running` (plus a `key=value` summary of its facts) or `<kind>: <reason>` (e.g. `disabled`, `waiting`).
 
-A channel shown as `disabled` is opted out via its `enabled` flag rather than misconfigured. See [Channels overview](../channels/index.md) and [Artifacts & traces](artifacts-and-traces.md).
+A channel shown as `disabled` is opted out via its `enabled` flag rather than misconfigured. See [Channels overview](/channels/) and [Artifacts & traces](/observability/artifacts-and-traces/).
 
 ## `restart`
 
@@ -132,8 +132,9 @@ mono-agent restart --force   # also purges piSessionsRoot
 
 `piSessionsRoot` is set via `providers.piNative.piSessionsRoot` (env `MONO_AGENT_PI_SESSIONS_ROOT`), e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
 
+:::caution
 `--force` permanently deletes saved transcripts for this instance. The agent's durable memory is preserved, but in-flight resumable conversations are dropped.
-{: .warning }
+:::
 
 ## `stop`, `status`, `logs`
 
@@ -170,7 +171,7 @@ mono-agent install-skill                       # both targets
 mono-agent install-skill --target claude --force
 ```
 
-See [Skills](../context/skills.md) for how skills are surfaced to the agent.
+See [Skills](/context/skills/) for how skills are surfaced to the agent.
 
 ## `backfill`
 
@@ -214,11 +215,11 @@ The exporter is configured under `observability.exporters[]` (env `MONO_AGENT_OB
 }
 ```
 
-Full backfill semantics and the JSONL artifact format live in [Phoenix & backfill](phoenix-and-backfill.md) and [Artifacts & traces](artifacts-and-traces.md).
+Full backfill semantics and the JSONL artifact format live in [Phoenix & backfill](/observability/phoenix-and-backfill/) and [Artifacts & traces](/observability/artifacts-and-traces/).
 
 ## See also
 
-- [Observability overview](index.md)
-- [Live TUI](tui.md)
-- [Config blueprint](../config/blueprint.md) and [Environment variables](../config/env-vars.md)
-- [Programmatic composition](../programmatic/index.md) for embedding the host without the CLI
+- [Observability overview](/observability/)
+- [Live TUI](/observability/tui/)
+- [Config blueprint](/config/blueprint/) and [Environment variables](/config/env-vars/)
+- [Programmatic composition](/programmatic/) for embedding the host without the CLI

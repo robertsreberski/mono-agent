@@ -416,7 +416,7 @@ recovery). The context window auto-tracks the model actually serving the request
 (`harness.getModel()`), self-correcting from any real ceiling stated in an overflow error.
 Runs report `context_compaction_applied: true` (fired), `false` (enabled but not needed),
 or `null` (disabled). The other backends manage their windows per their own behavior.
-(`docs/feature-registry.md` is the source of truth for this row.)
+(`docs/reference/feature-registry.md` is the source of truth for this row.)
 
 `resolveAgentCompactionPolicy(...)` (the `agent_compaction_*` settings: trigger ratio,
 keep-recent, enable/disable) and the `onCompactionRecorded(record)` host callback (fired

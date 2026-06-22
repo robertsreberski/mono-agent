@@ -1,7 +1,7 @@
 ---
 title: "Personal Telegram Assistant with BuJo Memory"
-parent: "Playbooks"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Personal Telegram Assistant with BuJo Memory
@@ -18,14 +18,14 @@ A Telegram bot that answers via long-polling, captures every turn into BuJo memo
 
 ## Features used
 
-- [`telegram.long-polling`](../channels/telegram.md) — Telegram channel via getUpdates long-polling (config)
-- [`channel.final-only-delivery`](../channels/delivery-and-send-tools.md) — Telegram delivers the final answer only, not intermediate tokens (auto)
-- [`memory.bujo`](../memory/rituals.md) — BuJo tier: capture + nightly reflection + monthly migration (config)
-- [`memory.per-turn-capture`](../memory/capture-and-recall.md) — `writeMode: "capture"` records each turn asynchronously (config)
-- [`memory.bujo-reflection`](../memory/rituals.md) — in-app nightly reflection ritual (config / auto)
-- [`memory.bujo-migration`](../memory/rituals.md) — in-app monthly migration ritual (config / auto)
-- [`memory.recall-tool`](../memory/capture-and-recall.md) — `memory_recall` tool auto-provisioned for journal/bujo with embeddings (auto)
-- [`memory.embeddings-config`](../memory/embeddings.md) — embeddings provider for semantic recall (config)
+- [`telegram.long-polling`](/channels/telegram/) — Telegram channel via getUpdates long-polling (config)
+- [`channel.final-only-delivery`](/channels/delivery-and-send-tools/) — Telegram delivers the final answer only, not intermediate tokens (auto)
+- [`memory.bujo`](/memory/rituals/) — BuJo tier: capture + nightly reflection + monthly migration (config)
+- [`memory.per-turn-capture`](/memory/capture-and-recall/) — `writeMode: "capture"` records each turn asynchronously (config)
+- [`memory.bujo-reflection`](/memory/rituals/) — in-app nightly reflection ritual (config / auto)
+- [`memory.bujo-migration`](/memory/rituals/) — in-app monthly migration ritual (config / auto)
+- [`memory.recall-tool`](/memory/capture-and-recall/) — `memory_recall` tool auto-provisioned for journal/bujo with embeddings (auto)
+- [`memory.embeddings-config`](/memory/embeddings/) — embeddings provider for semantic recall (config)
 
 ## Configuration
 
@@ -64,11 +64,13 @@ The bujo tier requires both an embeddings provider (for semantic recall) and an 
 
 Keep `botToken` out of the file in production by setting `MONO_AGENT_TELEGRAM_BOT_TOKEN` instead. The memory LLM provider/model/endpoint can also come from `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`.
 
+:::note
 The reflection and migration rituals run in-app on the schedules above — no external cron or launchd is needed.
-{: .note }
+:::
 
+:::caution
 Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resolves to a different model and breaks recall.
-{: .warning }
+:::
 
 ## Steps
 
@@ -81,15 +83,16 @@ Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resol
 
 ## Smoke test
 
+:::tip
 From the allowed Telegram chat, send a message; verify the typing indicator then a final answer. Then ask about a previously stated fact and confirm `memory_recall` appears in the run JSONL artifact and the answer uses it.
-{: .tip }
+:::
 
 ## Related
 
-- [Telegram channel](../channels/telegram.md)
-- [Delivery and send tools](../channels/delivery-and-send-tools.md)
-- [Memory rituals (reflection & migration)](../memory/rituals.md)
-- [Capture and recall](../memory/capture-and-recall.md)
-- [Embeddings](../memory/embeddings.md)
-- [Artifacts and traces](../observability/artifacts-and-traces.md) — where the run JSONL lands
+- [Telegram channel](/channels/telegram/)
+- [Delivery and send tools](/channels/delivery-and-send-tools/)
+- [Memory rituals (reflection & migration)](/memory/rituals/)
+- [Capture and recall](/memory/capture-and-recall/)
+- [Embeddings](/memory/embeddings/)
+- [Artifacts and traces](/observability/artifacts-and-traces/) — where the run JSONL lands
 - [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config

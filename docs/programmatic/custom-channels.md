@@ -1,10 +1,10 @@
 ---
 title: "Custom channel drivers"
-parent: "Programmatic"
-nav_order: 5
+sidebar:
+  order: 5
 ---
 
-This page covers writing your own channel driver and registering it with `startMonoAgentApp`, plus overriding the stream and message-text behaviour of the built-in channels (welcome/help/error text, edit debounce, max chars, interim streaming). Custom drivers are a **code-only** capability — there is no `mono-agent.config.json` key that adds a transport, so this lives in your host program. For config-driven channels see [Channels overview](../channels/index.md).
+This page covers writing your own channel driver and registering it with `startMonoAgentApp`, plus overriding the stream and message-text behaviour of the built-in channels (welcome/help/error text, edit debounce, max chars, interim streaming). Custom drivers are a **code-only** capability — there is no `mono-agent.config.json` key that adds a transport, so this lives in your host program. For config-driven channels see [Channels overview](/channels/).
 
 ## When you need a driver
 
@@ -76,8 +76,9 @@ interface RunningChannel {
 
 `onFailure` is for transports that die **after** a successful `start` — a polling loop that throws, a socket that closes. Calling it flips the channel from `running` to `failed`; otherwise a dead poller would still report as running. The built-in Telegram driver wires its `onPollingError` straight into `onFailure`.
 
+:::note
 Do not set `dispose` yourself — the app attaches responder/harness teardown so warm provider sessions are retired on stop/reload. Your job is to stop the transport in `stop()`.
-{: .note }
+:::
 
 ### Minimal example
 
@@ -135,7 +136,7 @@ await startMonoAgentApp({
 });
 ```
 
-`defaultChannelDrivers()` returns every built-in driver in startup/status order. Spread it and append yours; pass an empty-spread-plus-yours array to run **only** your driver. See [Composition](composition.md) for assembling the responder/runtime that backs every channel.
+`defaultChannelDrivers()` returns every built-in driver in startup/status order. Spread it and append yours; pass an empty-spread-plus-yours array to run **only** your driver. See [Composition](/programmatic/composition/) for assembling the responder/runtime that backs every channel.
 
 ## Overriding built-in stream and message text
 
@@ -212,16 +213,17 @@ await startMonoAgentApp({ drivers: [...builtins, liveTelegram] });
 
 Slack and WhatsApp expose their own message-stream modules with the same shape (`editDebounceMs`, `maxMessageChars`, `finalOnly`); build them the same way against `startSlackAdapter` / `startWhatsAppAdapter`.
 
+:::caution
 `finalOnly: false` produces many edit calls per response. Keep `editDebounceMs` at a few hundred ms or higher to stay under the transport's rate limits — the app default of 350 ms is a safe floor for Telegram.
-{: .warning }
+:::
 
 ## Sending and delivery from inside a driver
 
-Your driver talks to the agent through `input.responder`. For replying back into the channel, follow the same delivery contract the built-in channels use — including proactive/out-of-turn sends via the adapter send tools (`slack_send_message` / `telegram_send_message`). See [Delivery and send tools](../channels/delivery-and-send-tools.md). For the underlying responder/runtime wiring, see [Composition](composition.md); for structured-output and approval gating around runs, see [Approval and structured output](approval-and-structured-output.md).
+Your driver talks to the agent through `input.responder`. For replying back into the channel, follow the same delivery contract the built-in channels use — including proactive/out-of-turn sends via the adapter send tools (`slack_send_message` / `telegram_send_message`). See [Delivery and send tools](/channels/delivery-and-send-tools/). For the underlying responder/runtime wiring, see [Composition](/programmatic/composition/); for structured-output and approval gating around runs, see [Approval and structured output](/programmatic/approval-and-structured-output/).
 
 ## Related pages
 
-- [Channels overview](../channels/index.md) — the config-driven built-in transports.
-- [Delivery and send tools](../channels/delivery-and-send-tools.md) — replying, proactive notify, allowlists.
-- [Composition](composition.md) — building the responder/runtime each driver receives.
-- [Sessions and concurrency](../runtime/sessions-concurrency.md) — how warm sessions and queued turns are managed behind a channel.
+- [Channels overview](/channels/) — the config-driven built-in transports.
+- [Delivery and send tools](/channels/delivery-and-send-tools/) — replying, proactive notify, allowlists.
+- [Composition](/programmatic/composition/) — building the responder/runtime each driver receives.
+- [Sessions and concurrency](/runtime/sessions-concurrency/) — how warm sessions and queued turns are managed behind a channel.

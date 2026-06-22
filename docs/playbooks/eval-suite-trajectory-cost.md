@@ -1,7 +1,7 @@
 ---
 title: "Eval Suite with Trajectory + Cost Budgets"
-parent: "Playbooks"
-nav_order: 12
+sidebar:
+  order: 12
 ---
 
 # Eval Suite with Trajectory + Cost Budgets
@@ -18,13 +18,13 @@ Run a suite of scenarios against the composed responder asserting required tool 
 
 ## Features used
 
-- [`evals.scenarios`](../evals/index.md) — end-to-end scenarios/suites with trajectory + judge assertions, written via `@mono-agent/agent-evals`. Coverage: **dev** (code-only).
-- [`runtime.cost-tracking`](../runtime/sessions-concurrency.md) — per-run usage/cost/cache metrics, recorded into the JSONL artifacts. Coverage: **auto**.
-- [`observability.jsonl-artifacts`](../observability/artifacts-and-traces.md) — append-only run event JSONL + summaries (secrets redacted, strings truncated). Coverage: **config**.
+- [`evals.scenarios`](/evals/) — end-to-end scenarios/suites with trajectory + judge assertions, written via `@mono-agent/agent-evals`. Coverage: **dev** (code-only).
+- [`runtime.cost-tracking`](/runtime/sessions-concurrency/) — per-run usage/cost/cache metrics, recorded into the JSONL artifacts. Coverage: **auto**.
+- [`observability.jsonl-artifacts`](/observability/artifacts-and-traces/) — append-only run event JSONL + summaries (secrets redacted, strings truncated). Coverage: **config**.
 
 ## Configuration
 
-The eval suite itself is **code-only** — it lives in `@mono-agent/agent-evals` (`defineAgentEvalScenario`, `runAgentEvalSuite`), not in `mono-agent.config.json`. Scenarios run against a responder built from the same config so what you assert in CI matches what ships. See [programmatic composition](../programmatic/composition.md).
+The eval suite itself is **code-only** — it lives in `@mono-agent/agent-evals` (`defineAgentEvalScenario`, `runAgentEvalSuite`), not in `mono-agent.config.json`. Scenarios run against a responder built from the same config so what you assert in CI matches what ships. See [programmatic composition](/programmatic/composition/).
 
 ```ts
 import {
@@ -68,8 +68,9 @@ The run artifacts the suite inspects are the same JSONL files the runtime always
 | `artifacts.dir` | `MONO_AGENT_ARTIFACT_DIR` | `./.mono-agent/artifacts` | Where `run-*.events.jsonl` + summaries land; cost is recorded here automatically |
 | _(none — code)_ | `MONO_AGENT_EVAL_LIVE` | unset | Set to `1` to enable `requiresLive` scenarios; equivalent to `runAgentEvalSuite(..., { live: true })` |
 
+:::caution
 Live scenarios make real provider calls. Run them deliberately (a dedicated CI job or local gate), not on every unit-test invocation.
-{: .warning }
+:::
 
 ## Steps
 
@@ -81,14 +82,15 @@ Live scenarios make real provider calls. Run them deliberately (a dedicated CI j
 
 ## Smoke test
 
+:::tip
 Run `runAgentEvalSuite` with `MONO_AGENT_EVAL_LIVE=1`; confirm `eval-result.json` shows pass/fail per assertion and `report.md` is written, with cost recorded under `maxCostUsd`.
-{: .tip }
+:::
 
 ## Related
 
-- [Evals](../evals/index.md)
-- [Cost tracking and sessions](../runtime/sessions-concurrency.md)
-- [Artifacts and traces](../observability/artifacts-and-traces.md)
-- [Programmatic composition](../programmatic/composition.md)
-- [Tool policy](../tools/policy.md)
+- [Evals](/evals/)
+- [Cost tracking and sessions](/runtime/sessions-concurrency/)
+- [Artifacts and traces](/observability/artifacts-and-traces/)
+- [Programmatic composition](/programmatic/composition/)
+- [Tool policy](/tools/policy/)
 - [mono-agent composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

@@ -1,7 +1,7 @@
 ---
 title: "Terminal UI (mono-agent-tui)"
-parent: "Observability & CLI"
-nav_order: 4
+sidebar:
+  order: 4
 ---
 
 # Terminal UI (mono-agent-tui)
@@ -12,10 +12,11 @@ nav_order: 4
 
 The TUI is an Ink-based React console *adapter*. It renders chat and config, but it does not start a harness on its own — it drives an `AgentResponderLike` that you (or a host's demo bin) supply. Use it to talk to an agent, watch streamed output, and confirm the configuration the agent actually resolved (env overrides vs. JSON vs. defaults), all without leaving the terminal.
 
+:::note
 It requires an interactive TTY. Piped or non-interactive stdin exits with an error.
-{: .note }
+:::
 
-For an always-on, observable agent (channels, cron, Phoenix traces) you run the host via the `mono-agent` CLI instead — see [CLI Reference](cli-reference.md) and the [Phoenix-observed agent playbook](../playbooks/phoenix-observed-agent.md). The TUI is the quick, local, eyes-on companion to those.
+For an always-on, observable agent (channels, cron, Phoenix traces) you run the host via the `mono-agent` CLI instead — see [CLI Reference](/observability/cli-reference/) and the [Phoenix-observed agent playbook](/playbooks/phoenix-observed-agent/). The TUI is the quick, local, eyes-on companion to those.
 
 ## Basic usage
 
@@ -27,10 +28,11 @@ mono-agent-tui \
   --config ./mono-agent.config.json
 ```
 
+:::caution
 `--config` alone does not boot an agent: the TUI never constructs a harness, so a `--responder` module is always required.
-{: .warning }
+:::
 
-The responder module must either default-export an `AgentResponderLike` (an object with a `respond` method) or export a `createResponder(env, cwd, configPath)` factory that returns one. Wiring a responder backed by your harness is code-only — see [Programmatic Composition](../programmatic/composition.md) for `createAgentResponder({ harness })`, which is the intended backing for `createResponder`.
+The responder module must either default-export an `AgentResponderLike` (an object with a `respond` method) or export a `createResponder(env, cwd, configPath)` factory that returns one. Wiring a responder backed by your harness is code-only — see [Programmatic Composition](/programmatic/composition/) for `createAgentResponder({ harness })`, which is the intended backing for `createResponder`.
 
 ### CLI flags
 
@@ -79,7 +81,7 @@ The source tags map to these environment overrides (a non-empty value of the env
 | tools · mcpConfigPath | `MONO_AGENT_MCP_CONFIG_PATH` |
 | artifacts · dir | `MONO_AGENT_ARTIFACT_DIR` |
 
-The same config keys are documented in [Config Blueprint](../config/blueprint.md) and the full env-var list in [Environment Variables](../config/env-vars.md). The redaction model is shared with [Artifacts & Traces](artifacts-and-traces.md).
+The same config keys are documented in [Config Blueprint](/config/blueprint/) and the full env-var list in [Environment Variables](/config/env-vars/). The redaction model is shared with [Artifacts & Traces](/observability/artifacts-and-traces/).
 
 A matching `mono-agent.config.json` that the pane would summarize:
 
@@ -121,12 +123,13 @@ A matching `mono-agent.config.json` that the pane would summarize:
 | `?` | Toggle the help overlay. |
 | `ctrl+c` | Stop and exit. |
 
+:::tip
 The numeric `1`/`2`/`3` shortcuts are intercepted by the chat pane's text input, so press `tab` to leave the chat pane before using them. `tab` always cycles. Press `?` at any time for the in-app help overlay.
-{: .tip }
+:::
 
 ## Related
 
-- [CLI Reference](cli-reference.md) — the `mono-agent` host CLI (`init`, `validate`, `start`, `restart`).
-- [Phoenix-observed agent playbook](../playbooks/phoenix-observed-agent.md) — run an agent with tracing once you have moved past local TUI iteration.
-- [Programmatic Composition](../programmatic/composition.md) — build the `AgentResponderLike` the TUI drives via `createAgentResponder`.
-- [Config Blueprint](../config/blueprint.md) and [Environment Variables](../config/env-vars.md) — the keys and overrides the Config pane reflects.
+- [CLI Reference](/observability/cli-reference/) — the `mono-agent` host CLI (`init`, `validate`, `start`, `restart`).
+- [Phoenix-observed agent playbook](/playbooks/phoenix-observed-agent/) — run an agent with tracing once you have moved past local TUI iteration.
+- [Programmatic Composition](/programmatic/composition/) — build the `AgentResponderLike` the TUI drives via `createAgentResponder`.
+- [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/) — the keys and overrides the Config pane reflects.

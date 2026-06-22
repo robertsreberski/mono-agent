@@ -1,7 +1,7 @@
 ---
 title: "Embeddings"
-parent: "Memory"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Embeddings
@@ -13,11 +13,11 @@ keys, the two providers (Ollama and OpenAI), the matching `MONO_AGENT_MEMORY_EMB
 env vars, and the timeout / circuit-breaker behavior.
 
 For the tier model (lite / journal / bujo) and where this block fits, see
-[../memory.md](../memory.md). For how recall actually uses these embeddings at runtime, see
-[capture-and-recall.md](capture-and-recall.md).
+[../memory.md](/memory/). For how recall actually uses these embeddings at runtime, see
+[capture-and-recall.md](/memory/capture-and-recall/).
 
 Coverage: **config**. The standalone maintenance CLI can also enable embeddings via env vars
-(see [validation-and-cli.md](validation-and-cli.md)).
+(see [validation-and-cli.md](/memory/validation-and-cli/)).
 
 ## When you need it
 
@@ -42,10 +42,11 @@ silent fallback.
 | `apiKey` | string | openai | Inline key (use `apiKeyEnv` instead; keep secrets out of config). |
 | `dim` | number | yes | Output dimension; must match the model (768 for `nomic-embed-text:v1.5`, 1536 for `text-embedding-3-small`). |
 
+:::caution
 The `model` and `dim` must agree with the actual model. A mismatched `dim` corrupts the
 vector index. For OpenAI, supply the key via `apiKeyEnv` (preferred) or inline `apiKey`;
 one of the two is required.
-{: .warning }
+:::
 
 ## Ollama (local, no API key)
 
@@ -102,7 +103,7 @@ OpenAI-compatible gateway.
 ## Environment variables
 
 Every key has a `MONO_AGENT_MEMORY_EMBEDDINGS_*` override. See
-[../config/env-vars.md](../config/env-vars.md).
+[../config/env-vars.md](/config/env-vars/).
 
 | Env var | Config key |
 | --- | --- |
@@ -125,15 +126,16 @@ wrapped in a circuit breaker so a slow or failing embedding service cannot stall
 - It stays OPEN for a **30 s cooldown**, then allows a single **HALF-OPEN** trial request.
 - A successful trial closes the breaker; a failed trial re-opens it for a fresh cooldown.
 
+:::note
 These timeout and breaker thresholds are not exposed as config keys — they are code-level
 defaults in `@mono-agent/memory-search`. If you embed the provider programmatically you can
 tune them via `createEmbeddingProvider` / `createCircuitBreakerEmbeddingProvider`; see
-[../programmatic/index.md](../programmatic/index.md).
-{: .note }
+[../programmatic/index.md](/programmatic/).
+:::
 
 ## Validation
 
 `mono-agent validate` probes embeddings health when `provider` is `ollama`: it checks the
 embedding endpoint's `GET /api/tags` is reachable and that the configured `model` (e.g.
 `nomic-embed-text:v1.5`) is actually pulled, warning with the exact `ollama pull` command if
-not. See [validation-and-cli.md](validation-and-cli.md).
+not. See [validation-and-cli.md](/memory/validation-and-cli/).

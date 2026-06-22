@@ -1,12 +1,12 @@
 ---
 title: "Composition & custom runtimes"
-parent: "Programmatic"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Composition & custom runtimes
 
-This page covers the three programmatic entry points that the `mono-agent` CLI itself is built on — `startMonoAgentApp` (full host with channels), `createConfiguredAgentResponder` (bare responder, no transports), and the lower-level `@mono-agent/agent-harness` — plus how to inject a custom runtime, add a channel driver, and scope runtime options per request. Reach for these only when `mono-agent.config.json` cannot express your host; the config covers nearly everything (see [feature coverage](../reference/feature-matrix.md)). This whole surface is **code**-coverage: it is not reachable from config or the CLI.
+This page covers the three programmatic entry points that the `mono-agent` CLI itself is built on — `startMonoAgentApp` (full host with channels), `createConfiguredAgentResponder` (bare responder, no transports), and the lower-level `@mono-agent/agent-harness` — plus how to inject a custom runtime, add a channel driver, and scope runtime options per request. Reach for these only when `mono-agent.config.json` cannot express your host; the config covers nearly everything (see [feature coverage](/reference/feature-matrix/)). This whole surface is **code**-coverage: it is not reachable from config or the CLI.
 
 ## Choosing an entry point
 
@@ -16,7 +16,7 @@ This page covers the three programmatic entry points that the `mono-agent` CLI i
 | `createConfiguredAgentResponder` | `@mono-agent/agent-host` | A bare `AgentResponder` built from `MonoAgentConfig` (no transports) | You embed the responder in your own server, test harness, or custom transport |
 | `createAgentHarness` / `createAgentResponder` | `@mono-agent/agent-harness` | Full manual control of identity, skills, memory, history, recorder, runtime | Config-driven composition is not enough and you assemble every dependency yourself |
 
-The layering is strict: `agent-app` composes `agent-host`, which composes `agent-harness`. Drop down only one level at a time. See [package map](index.md) and the [programmatic index](index.md) for the broader package set.
+The layering is strict: `agent-app` composes `agent-host`, which composes `agent-harness`. Drop down only one level at a time. See [package map](/programmatic/) and the [programmatic index](/programmatic/) for the broader package set.
 
 ## The full host: `startMonoAgentApp`
 
@@ -57,7 +57,7 @@ const app = await startMonoAgentApp({
 });
 ```
 
-For building the driver itself, see [custom channels](custom-channels.md).
+For building the driver itself, see [custom channels](/programmatic/custom-channels/).
 
 ## The bare responder: `createConfiguredAgentResponder`
 
@@ -103,8 +103,9 @@ const myRuntime: MonoRuntimeLike = createMyRuntime();
 const app = await startMonoAgentApp({ cwd: process.cwd(), runtime: myRuntime });
 ```
 
-A custom runtime fully replaces model selection, so config keys like `runtime.model`, `runtime.executionMode`, and `runtime.fallbackModels` no longer drive provider behavior — your runtime owns that. For the built-in runtime's model refs, execution modes, and fallback chain, see [backends](../runtime/backends.md) and [fallback](../runtime/fallback.md).
-{: .warning }
+:::caution
+A custom runtime fully replaces model selection, so config keys like `runtime.model`, `runtime.executionMode`, and `runtime.fallbackModels` no longer drive provider behavior — your runtime owns that. For the built-in runtime's model refs, execution modes, and fallback chain, see [backends](/runtime/backends/) and [fallback](/runtime/fallback/).
+:::
 
 ## Per-request runtime options (`runtimeOptionsForRequest`)
 
@@ -133,13 +134,14 @@ const responder = createConfiguredAgentResponder({
 
 The callback receives `{ request, runId, context }` (the inbound request, the run id, and the already-built `BuiltAgentContext`). It returns a `runtimeOptions` object — the same shape as static `runtimeOptions`, so it cannot set `model`, `messages`, `abortSignal`, `executionMode`, or `onEvent` — plus an optional `cleanup` hook.
 
+:::note
 Request-scoped options apply at the harness **run boundary**: they are resolved after context assembly and merged just before the provider call, then `cleanup` runs when the turn finishes. They cannot change model or execution mode (those are fixed per harness); use a custom runtime or separate harnesses for that.
-{: .note }
+:::
 
 ## Dropping to the harness
 
 `createConfiguredAgentResponder` will not cover hosts that need a custom recorder, a non-config identity/skill loading scheme, or hand-assembled memory and history. In those cases call `@mono-agent/agent-harness` directly. The harness owns loading identity/SOUL and selected skill bodies, reading memory blocks, invoking the runtime, recording run events, appending conversation history, and returning explicit failure objects instead of fake success.
 
-Selected skills are never auto-selected by description — the host passes `selectedSkills` (or `config.context.selectedSkills`) and the harness loads exactly those bodies. For tool/MCP policy, build a fail-closed policy with `@mono-agent/tool-policy` (`createToolPolicy`) rather than granting broad access; see [tool policy](../tools/policy.md) and [MCP](../tools/mcp.md).
+Selected skills are never auto-selected by description — the host passes `selectedSkills` (or `config.context.selectedSkills`) and the harness loads exactly those bodies. For tool/MCP policy, build a fail-closed policy with `@mono-agent/tool-policy` (`createToolPolicy`) rather than granting broad access; see [tool policy](/tools/policy/) and [MCP](/tools/mcp/).
 
-For multi-agent orchestration on top of these primitives, see [multi-agent](multi-agent.md); for consuming a remote agent over A2A, see [A2A consumer](a2a-consumer.md).
+For multi-agent orchestration on top of these primitives, see [multi-agent](/programmatic/multi-agent/); for consuming a remote agent over A2A, see [A2A consumer](/programmatic/a2a-consumer/).

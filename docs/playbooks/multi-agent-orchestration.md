@@ -1,7 +1,7 @@
 ---
 title: "Multi-Agent Orchestration (ask_collaborator)"
-parent: "Playbooks"
-nav_order: 8
+sidebar:
+  order: 8
 ---
 
 # Multi-Agent Orchestration (ask_collaborator)
@@ -18,13 +18,13 @@ One orchestrator agent delegates subtasks to named collaborator responders (rese
 
 ## Features used
 
-- [`orchestrator.ask-collaborator`](../programmatic/multi-agent.md) — loopback MCP tool delegating to named collaborator responders, with call caps and per-collaborator timeout (coverage: code).
-- [`harness.request-runtime-options`](../programmatic/composition.md) — per-request runtime option extensions via `createConfiguredAgentResponder({ runtimeOptionsForRequest })` (coverage: code).
-- [`runtime.custom`](../runtime/backends.md) — custom runtime composition that drives the orchestrator (coverage: code).
+- [`orchestrator.ask-collaborator`](/programmatic/multi-agent/) — loopback MCP tool delegating to named collaborator responders, with call caps and per-collaborator timeout (coverage: code).
+- [`harness.request-runtime-options`](/programmatic/composition/) — per-request runtime option extensions via `createConfiguredAgentResponder({ runtimeOptionsForRequest })` (coverage: code).
+- [`runtime.custom`](/runtime/backends/) — custom runtime composition that drives the orchestrator (coverage: code).
 
 ## Configuration
 
-This capability is **code-only** — there is no `mono-agent.config.json` key for it. You construct the collaborator extension programmatically and pass its run options to the orchestrator's responder. See [programmatic composition](../programmatic/composition.md) and [multi-agent](../programmatic/multi-agent.md).
+This capability is **code-only** — there is no `mono-agent.config.json` key for it. You construct the collaborator extension programmatically and pass its run options to the orchestrator's responder. See [programmatic composition](/programmatic/composition/) and [multi-agent](/programmatic/multi-agent/).
 
 ```ts
 // The extension is request-scoped: create it inside runtimeOptionsForRequest
@@ -56,14 +56,15 @@ const orchestrator = createConfiguredAgentResponder({
 
 ## Smoke test
 
+:::tip
 Give the orchestrator a compound task ("research X then write a summary"); confirm the run artifact shows `ask_collaborator` delegating to both researcher and writer, and that the returned `cleanup` closes the MCP port at turn end.
-{: .tip }
+:::
 
 ## Related
 
-- [Programmatic: multi-agent](../programmatic/multi-agent.md)
-- [Programmatic: composition](../programmatic/composition.md)
-- [Programmatic: A2A consumer](../programmatic/a2a-consumer.md)
-- [Runtime backends](../runtime/backends.md)
-- [Observability: artifacts and traces](../observability/artifacts-and-traces.md)
+- [Programmatic: multi-agent](/programmatic/multi-agent/)
+- [Programmatic: composition](/programmatic/composition/)
+- [Programmatic: A2A consumer](/programmatic/a2a-consumer/)
+- [Runtime backends](/runtime/backends/)
+- [Observability: artifacts and traces](/observability/artifacts-and-traces/)
 - Composer skill: `mono-agent-composer` (run `/mono-agent-composer` to scaffold and validate an agent from one config).

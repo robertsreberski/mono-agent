@@ -1,7 +1,7 @@
 ---
 title: "Backends & model references"
-parent: "Runtime & Providers"
-nav_order: 1
+sidebar:
+  order: 1
 ---
 
 # Backends & model references
@@ -65,7 +65,7 @@ The default execution mode for a `codex:` model is already `cli`, so `executionM
 
 ### Pi SDK
 
-`pi:<provider>:<model>` is SDK-only and is the broadest backend — the Pi SDK fronts 15+ providers, including `openai`, `openai-codex`, `github-copilot`, `openrouter`, and `ollama`. Copilot-class providers are reachable here (e.g. `pi:github-copilot:gpt-4.1`). Self-hosted and local providers used via `pi:<provider>:<model>` are declared under `providers.local[]` — see [Local providers](local-providers.md).
+`pi:<provider>:<model>` is SDK-only and is the broadest backend — the Pi SDK fronts 15+ providers, including `openai`, `openai-codex`, `github-copilot`, `openrouter`, and `ollama`. Copilot-class providers are reachable here (e.g. `pi:github-copilot:gpt-4.1`). Self-hosted and local providers used via `pi:<provider>:<model>` are declared under `providers.local[]` — see [Local providers](/runtime/local-providers/).
 
 ```json
 {
@@ -96,12 +96,13 @@ A `pi:` provider that only runs under SDK mode (which is all of them) is rejecte
 
 Copilot-class models are therefore reachable two ways: through `pi:github-copilot:<model>` (SDK) and through `opencode:github-copilot:<model>` (CLI). Pick the backend whose execution mode and auth source you want.
 
-{: .note }
+:::note
+:::
 OpenCode is registered as the `opencode-app` bridge in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js); it self-registers and matches `sdk === "opencode" && executionMode === "cli"`.
 
 ## Execution modes
 
-`runtime.executionMode` is `sdk` or `cli`. When omitted, mono-agent infers a default from the model reference (e.g. `claude:` → `sdk`, `codex:` → `cli`). Each backend constrains which modes are valid; incompatible combinations are rejected with a specific reason rather than silently coerced. See [Execution, effort & permissions](execution-effort-permissions.md) for `effort`, `permissionMode`, and `reasoningSummary`.
+`runtime.executionMode` is `sdk` or `cli`. When omitted, mono-agent infers a default from the model reference (e.g. `claude:` → `sdk`, `codex:` → `cli`). Each backend constrains which modes are valid; incompatible combinations are rejected with a specific reason rather than silently coerced. See [Execution, effort & permissions](/runtime/execution-effort-permissions/) for `effort`, `permissionMode`, and `reasoningSummary`.
 
 | SDK id | Allowed execution mode(s) |
 | --- | --- |
@@ -117,7 +118,8 @@ There are two backend tables in the codebase, and only one of them performs rout
 - **Routing (real):** the agent-runtime bridge registry in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js). `listRuntimeBridges()` / `resolveRuntimeBridge()` pick the first bridge whose `supports(ref, options)` matches. This registry includes `opencode-app`, so OpenCode is fully routable.
 - **Vocabulary metadata (descriptive only):** `RUNTIME_BACKEND_DEFINITIONS` in [`packages/runtime-adapter/src/runtime-adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/runtime-adapter/src/runtime-adapter.ts) lists four entries (claude-sdk, claude-code-cli, codex-app-cli, pi-sdk). Its own docstring states it is **"NOT wired into agent-host routing; consumers read it to align vocabularies."** It is a declarative descriptor table, not the router — the absence of an OpenCode entry there does not mean OpenCode is unrouted.
 
-{: .warning }
+:::caution
+:::
 When auditing backends, read the bridge registry (`registry.js`), not the runtime-adapter descriptor table. The descriptor table is intentionally a vocabulary surface and is not authoritative for which backends can actually run.
 
 ## Fallback chains
@@ -133,12 +135,12 @@ When auditing backends, read the bridge registry (`registry.js`), not the runtim
 }
 ```
 
-Env: `MONO_AGENT_FALLBACK_MODELS`. CLI: `mono-agent init --fallback-models ...`. See [Fallback & failover](fallback.md) for router behavior and the failover report.
+Env: `MONO_AGENT_FALLBACK_MODELS`. CLI: `mono-agent init --fallback-models ...`. See [Fallback & failover](/runtime/fallback/) for router behavior and the failover report.
 
 ## Related
 
-- [Local providers](local-providers.md) — declaring Ollama / LM Studio / OpenAI-compatible providers for `pi:<provider>:<model>`.
-- [Execution, effort & permissions](execution-effort-permissions.md) — `executionMode`, `effort`, `permissionMode`, `reasoningSummary`.
-- [Fallback & failover](fallback.md) — ordered backup models.
-- [Sessions & concurrency](sessions-concurrency.md) — continuous vs per-message sessions and resume.
-- [Environment variables](../config/env-vars.md) — `MONO_AGENT_MODEL`, `MONO_AGENT_EXECUTION_MODE`, and friends.
+- [Local providers](/runtime/local-providers/) — declaring Ollama / LM Studio / OpenAI-compatible providers for `pi:<provider>:<model>`.
+- [Execution, effort & permissions](/runtime/execution-effort-permissions/) — `executionMode`, `effort`, `permissionMode`, `reasoningSummary`.
+- [Fallback & failover](/runtime/fallback/) — ordered backup models.
+- [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous vs per-message sessions and resume.
+- [Environment variables](/config/env-vars/) — `MONO_AGENT_MODEL`, `MONO_AGENT_EXECUTION_MODE`, and friends.

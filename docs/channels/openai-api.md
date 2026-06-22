@@ -1,7 +1,7 @@
 ---
 title: "OpenAI-compatible API"
-parent: "Channels"
-nav_order: 5
+sidebar:
+  order: 5
 ---
 
 # OpenAI-compatible API
@@ -36,7 +36,8 @@ Coverage: `config` (the entire surface is enabled and tuned from the `openaiApi`
 | `modelId` | string | `agent` | The model id advertised in `/v1/models` and accepted in the request `model` field. |
 | `apiKey` | string | _unset_ | Optional bearer token clients must present as `Authorization: Bearer <apiKey>`. When unset, no auth is enforced. |
 
-{: .warning }
+:::caution
+:::
 Binding to a non-loopback `host` (anything other than `127.0.0.1`/`localhost`) requires `allowNonLoopback: true`. Exposing the endpoint off-host without also setting an `apiKey` leaves the agent open to anyone who can reach the port — set both together, and prefer a reverse proxy with TLS.
 
 ## Environment variables
@@ -53,7 +54,7 @@ Every key has a matching `MONO_AGENT_*` override, applied on top of the JSON con
 | `MONO_AGENT_OPENAI_API_MODEL_ID` | `openaiApi.modelId` |
 | `MONO_AGENT_OPENAI_API_KEY` | `openaiApi.apiKey` |
 
-See [Environment variables](../config/env-vars.md) for precedence rules across config layers.
+See [Environment variables](/config/env-vars/) for precedence rules across config layers.
 
 ## Endpoints
 
@@ -96,10 +97,11 @@ The conversation id is resolved from the first present of these, in order:
 
 Open WebUI strips metadata from the bodies it forwards but, when `ENABLE_FORWARD_USER_INFO_HEADERS` is enabled, sends the chat id as `X-OpenWebUI-Chat-Id` — which is why the header fallbacks exist. `X-Conversation-Id` is the generic equivalent for other proxies.
 
-{: .note }
+:::note
+:::
 If no id can be resolved, each request is treated as a fresh conversation. For multi-turn continuity, make sure your client forwards a stable id via body metadata or one of the headers above.
 
-Because only the latest turn is forwarded, the agent's [memory](../memory/capture-and-recall.md) and [sessions](../runtime/sessions-concurrency.md) handle history. The same [Tool Policy](../tools/policy.md) and runtime guards apply to API turns as to any other channel.
+Because only the latest turn is forwarded, the agent's [memory](/memory/capture-and-recall/) and [sessions](/runtime/sessions-concurrency/) handle history. The same [Tool Policy](/tools/policy/) and runtime guards apply to API turns as to any other channel.
 
 ## Open WebUI integration
 
@@ -112,11 +114,11 @@ Because only the latest turn is forwarded, the agent's [memory](../memory/captur
 
 If Open WebUI and the agent run on different hosts, set `allowNonLoopback: true`, bind a reachable `host`, and protect the port with an `apiKey` (and ideally a TLS-terminating proxy).
 
-For an end-to-end walkthrough, see the playbook [OpenAI endpoint with Open WebUI](../playbooks/openai-endpoint-open-webui.md).
+For an end-to-end walkthrough, see the playbook [OpenAI endpoint with Open WebUI](/playbooks/openai-endpoint-open-webui/).
 
 ## Related
 
-- [Channels overview](index.md)
-- [Delivery and send tools](delivery-and-send-tools.md)
-- [Sessions and concurrency](../runtime/sessions-concurrency.md)
-- [Capture and recall](../memory/capture-and-recall.md)
+- [Channels overview](/channels/)
+- [Delivery and send tools](/channels/delivery-and-send-tools/)
+- [Sessions and concurrency](/runtime/sessions-concurrency/)
+- [Capture and recall](/memory/capture-and-recall/)

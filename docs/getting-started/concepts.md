@@ -1,7 +1,7 @@
 ---
 title: "Core Concepts"
-parent: "Getting Started"
-nav_order: 3
+sidebar:
+  order: 3
 ---
 
 # Core Concepts
@@ -25,9 +25,9 @@ mono-agent restart          # apply config edits
 mono-agent restart --force  # apply AND purge persisted pi sessions (fresh start; durable memory kept)
 ```
 
-Because the config is plain JSON, agents can edit their own config and restart themselves. Most capabilities are coverage type **config** — set a key, restart, done. A few are **cli** (run a command), **auto** (default behavior), **code** (only available programmatically — see [Programmatic](../programmatic/index.md)), or **dev** (test-time tooling).
+Because the config is plain JSON, agents can edit their own config and restart themselves. Most capabilities are coverage type **config** — set a key, restart, done. A few are **cli** (run a command), **auto** (default behavior), **code** (only available programmatically — see [Programmatic](/programmatic/)), or **dev** (test-time tooling).
 
-The full annotated config lives in [Configuration → Blueprint](../config/blueprint.md), and folder conventions in [Folder Layout](../config/folder-layout.md).
+The full annotated config lives in [Configuration → Blueprint](/config/blueprint/), and folder conventions in [Folder Layout](/config/folder-layout/).
 
 ## One responder, many channels
 
@@ -43,7 +43,7 @@ There is exactly one agent responder — the thing that turns an incoming prompt
 | A2A | `a2a` | Agent-to-Agent provider |
 | Cron | `cron` | scheduled prompts |
 
-Each channel is its own JSON section and runs independently — one failing or waiting on config never blocks the others. See [Channels](../channels/index.md) for per-channel setup.
+Each channel is its own JSON section and runs independently — one failing or waiting on config never blocks the others. See [Channels](/channels/) for per-channel setup.
 
 ## Opt-in `enabled` and the four channel statuses
 
@@ -70,7 +70,8 @@ When you run `mono-agent start`, each channel prints exactly one status line:
 
 An enabled-but-incomplete channel reports `waiting_for_config` rather than crashing the process — the rest of the agent keeps serving.
 
-{: .note }
+:::note
+:::
 There is no "off but configured" trap: a channel with `enabled: false` reports `disabled` even if every other field is filled in.
 
 ## Fail-closed defaults
@@ -88,13 +89,14 @@ mono-agent ships locked down. You opt into capability; nothing dangerous is on b
   }
   ```
 
-  See [Tools → Policy](../tools/policy.md).
+  See [Tools → Policy](/tools/policy/).
 
-- **No memory writes.** `memory.writeMode` defaults to `disabled` — the agent records nothing until you choose `append-host-summary` or (bujo only) `capture`. See [Memory → Capture and Recall](../memory/capture-and-recall.md).
+- **No memory writes.** `memory.writeMode` defaults to `disabled` — the agent records nothing until you choose `append-host-summary` or (bujo only) `capture`. See [Memory → Capture and Recall](/memory/capture-and-recall/).
 
-- **Loopback-only network.** HTTP channels (`webhook`, `openaiApi`, `a2a`) bind to localhost and refuse non-loopback callers until you set `allowNonLoopback: true`. The native sandbox likewise starts with network `mode: "none"` and a deny-by-default filesystem (`.env*`, `.git/config`, `.git/hooks/**` are denied even when you widen the roots). See [Tools → Sandbox](../tools/sandbox.md).
+- **Loopback-only network.** HTTP channels (`webhook`, `openaiApi`, `a2a`) bind to localhost and refuse non-loopback callers until you set `allowNonLoopback: true`. The native sandbox likewise starts with network `mode: "none"` and a deny-by-default filesystem (`.env*`, `.git/config`, `.git/hooks/**` are denied even when you widen the roots). See [Tools → Sandbox](/tools/sandbox/).
 
-{: .warning }
+:::caution
+:::
 Channels and tools also enforce their own destination allowlists (e.g. `telegram.allowedChatIds`, `slack.allowedChannelIds`). An empty allowlist with `allowAll*` left off means the agent will not act on anyone — that is the intended fail-closed behavior, not a bug.
 
 ## Configuration precedence: env > JSON > defaults
@@ -114,10 +116,10 @@ So `MONO_AGENT_MODEL=pi:openai:gpt-5.5` overrides `runtime.model` in the JSON fo
 | `memory.writeMode` | `MONO_AGENT_MEMORY_WRITE_MODE` |
 | `telegram.enabled` | `MONO_AGENT_TELEGRAM_*` |
 
-The complete key → env mapping is in [Configuration → Env Vars](../config/env-vars.md).
+The complete key → env mapping is in [Configuration → Env Vars](/config/env-vars/).
 
 ## Where to go next
 
-- [Configuration](../config/index.md) — the keys and their defaults.
-- [Channels](../channels/index.md) — turn on a transport.
-- [Reference → Glossary](../reference/glossary.md) — terms used across these docs.
+- [Configuration](/config/) — the keys and their defaults.
+- [Channels](/channels/) — turn on a transport.
+- [Reference → Glossary](/reference/glossary/) — terms used across these docs.

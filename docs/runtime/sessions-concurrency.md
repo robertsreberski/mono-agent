@@ -1,7 +1,7 @@
 ---
 title: "Sessions, concurrency & Pi-native tuning"
-parent: "Runtime & Providers"
-nav_order: 5
+sidebar:
+  order: 5
 ---
 
 This page covers how the runtime keeps provider sessions warm per conversation, how it bounds in-flight work with admission and execution limits, and the Pi-native transport knobs for retries and durable on-disk sessions. Every option here is `config` coverage with a matching `MONO_AGENT_*` env var unless noted.
@@ -58,10 +58,11 @@ These bounds cover the harness run path (which begins at `responder.respond`). C
 
 These values are **not a single global cap.** The app builds one harness — and therefore one limiter — per enabled channel. Each channel's limiter bounds *that channel independently*. With N enabled channels, the effective ceiling is **N × the configured value**.
 
+:::caution
 For example, `maxConcurrentRuns: 4` with three enabled channels (Telegram, Slack, webhook) allows up to **12** simultaneous provider runs across the app, not 4.
-{: .warning }
+:::
 
-Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, divide your target by the number of enabled channels. See [Channels](../channels/index.md) for which channels are active.
+Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, divide your target by the number of enabled channels. See [Channels](/channels/) for which channels are active.
 
 ## Pi-native tuning
 
@@ -91,14 +92,15 @@ Env vars: `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AG
 
 When `piSessionsRoot` is set, provider sessions are persisted to JSONL on disk. Resume then recovers from disk after a restart instead of re-sending the full history to the provider. When unset, sessions are in-memory only and are lost on restart.
 
+:::caution
 `mono-agent restart --force` purges `piSessionsRoot` so the agent resumes nothing — a fresh start. Durable memory under `memory.path` is untouched, and the purge is a no-op when sessions are in-memory.
-{: .warning }
+:::
 
-For retry behavior across *different* models (provider failover, not transport retries), see [Fallback models](fallback.md). Transport retries here are within a single model; fallback moves to the next model in the chain.
+For retry behavior across *different* models (provider failover, not transport retries), see [Fallback models](/runtime/fallback/). Transport retries here are within a single model; fallback moves to the next model in the chain.
 
 ## Related
 
-- [Backends & models](backends.md) — choosing `runtime.model` and execution mode
-- [Local providers](local-providers.md) — `pi:<provider>:<model>` for Ollama / LM Studio / OpenAI-compatible
-- [Fallback models](fallback.md) — ordered backups on retryable provider failure
-- [Tool parallelism](tools-and-guards.md) — concurrent tool calls within a model step (code-only)
+- [Backends & models](/runtime/backends/) — choosing `runtime.model` and execution mode
+- [Local providers](/runtime/local-providers/) — `pi:<provider>:<model>` for Ollama / LM Studio / OpenAI-compatible
+- [Fallback models](/runtime/fallback/) — ordered backups on retryable provider failure
+- [Tool parallelism](/runtime/tools-and-guards/) — concurrent tool calls within a model step (code-only)

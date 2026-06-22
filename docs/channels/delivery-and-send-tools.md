@@ -1,7 +1,7 @@
 ---
 title: "Delivery, streaming & send tools"
-parent: "Channels"
-nav_order: 8
+sidebar:
+  order: 8
 ---
 
 # Delivery, streaming & send tools
@@ -20,16 +20,17 @@ Each channel decides how a turn's output reaches the user. The two chat adapters
 
 Telegram and Slack default to delivering **only the final answer** — no streamed interim message edits — while showing a lightweight working indicator so the user knows a turn is in flight. This is built-in adapter behavior, not a JSON field you set in `mono-agent.config.json`.
 
-The OpenAI-compatible endpoint always streams token-by-token (SSE), which is what clients like Open WebUI expect. See [OpenAI-compatible endpoint](openai-api.md).
+The OpenAI-compatible endpoint always streams token-by-token (SSE), which is what clients like Open WebUI expect. See [OpenAI-compatible endpoint](/channels/openai-api/).
 
 ## Switching Telegram/Slack to live interim streaming
 
 Restoring live, interim-edit streaming on Telegram or Slack requires a **custom channel driver** that sets `stream.finalOnly: false` on the adapter. There is no `mono-agent.config.json` key for this — it is a code-only override.
 
-Concretely, build the driver yourself (e.g. `createTelegramChannelDriver` / `createSlackChannelDriver`) and pass `finalOnly: false` so the substrate's `ResilientMessageStream({ finalOnly })` edits an in-progress message as deltas arrive. See [Custom channels](../programmatic/custom-channels.md) for the programmatic composition path.
+Concretely, build the driver yourself (e.g. `createTelegramChannelDriver` / `createSlackChannelDriver`) and pass `finalOnly: false` so the substrate's `ResilientMessageStream({ finalOnly })` edits an in-progress message as deltas arrive. See [Custom channels](/programmatic/custom-channels/) for the programmatic composition path.
 
+:::caution
 Live interim streaming on Telegram/Slack means frequent message edits, which can hit the platform's rate limits on busy chats. Tune the edit debounce (below) before enabling it broadly.
-{: .warning }
+:::
 
 ## Stream & message-text tuning (code-only)
 
@@ -43,7 +44,7 @@ Status text, edit debounce, max message characters, and the welcome/help/error t
 | Max message chars | Where long replies are split into multiple messages |
 | Welcome / help / error texts | Per-channel canned message bodies |
 
-Because these are code-only, they live in your driver wiring rather than `mono-agent.config.json`. See [Custom channels](../programmatic/custom-channels.md).
+Because these are code-only, they live in your driver wiring rather than `mono-agent.config.json`. See [Custom channels](/programmatic/custom-channels/).
 
 ## App-owned send tools
 
@@ -78,14 +79,15 @@ The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels
 }
 ```
 
-The allowlist also accepts `MONO_AGENT_ALLOWED_TOOLS` (and `MONO_AGENT_DISALLOWED_TOOLS` for denials, where deny wins). See [Tool policy](../tools/policy.md) for allow/deny precedence and how MCP tool names are matched.
+The allowlist also accepts `MONO_AGENT_ALLOWED_TOOLS` (and `MONO_AGENT_DISALLOWED_TOOLS` for denials, where deny wins). See [Tool policy](/tools/policy/) for allow/deny precedence and how MCP tool names are matched.
 
+:::note
 Allowing a send tool but leaving the adapter disabled or unconfigured means the tool is present in name but has no working destination — the send fails. Enable and configure the adapter (Slack / Telegram) as well.
-{: .note }
+:::
 
 ## Related pages
 
-- [Telegram](telegram.md) and [Slack](slack.md) — adapter config and allowlists.
-- [OpenAI-compatible endpoint](openai-api.md) — token streaming over SSE.
-- [Tool policy](../tools/policy.md) — `allowedTools` / `disallowedTools` precedence.
-- [Custom channels](../programmatic/custom-channels.md) — building a driver to override `stream.finalOnly`, debounce, and message texts.
+- [Telegram](/channels/telegram/) and [Slack](/channels/slack/) — adapter config and allowlists.
+- [OpenAI-compatible endpoint](/channels/openai-api/) — token streaming over SSE.
+- [Tool policy](/tools/policy/) — `allowedTools` / `disallowedTools` precedence.
+- [Custom channels](/programmatic/custom-channels/) — building a driver to override `stream.finalOnly`, debounce, and message texts.

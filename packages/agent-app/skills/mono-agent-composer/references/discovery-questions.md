@@ -200,7 +200,7 @@ Before running mono-agent validate, pull the required models:
 
 Then run `mono-agent validate` — the Memory section confirms the root is writable,
 provider-specific liveness, and the ritual cadence (with next-run times).
-See `docs/memory.md` for the full tier table, config shapes, and CLI subcommands
+See `docs/memory/index.md` for the full tier table, config shapes, and CLI subcommands
 (`memory-bujo rebuild|recall|index|reflect|migrate`).
 
 ## 7. Sandbox
