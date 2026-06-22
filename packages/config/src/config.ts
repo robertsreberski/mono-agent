@@ -368,13 +368,37 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
   };
 }
 
+/**
+ * Pre-v2 memory keys the loader still tolerates (never throws) but no longer
+ * honors. Surfaced as a one-line deprecation warning instead of being silently
+ * dropped, so a stale config doesn't look like it is taking effect.
+ */
+const RETIRED_MEMORY_ENV_KEYS = [
+  "MONO_AGENT_MEMORY_GRAPH_PATH",
+  "MONO_AGENT_MEMORY_SCOPE",
+  "MONO_AGENT_MEMORY_TOOLS_ENABLED",
+] as const;
+
+function warnRetiredMemoryKeys(env: Record<string, string | undefined>): void {
+  const retired = RETIRED_MEMORY_ENV_KEYS.filter(
+    (name) => normalizeOptionalString(env[name]) !== undefined,
+  );
+  if (retired.length > 0) {
+    console.warn(
+      `[mono-agent] Ignoring retired memory env var(s): ${retired.join(", ")}. `
+        + "These were removed in Memory v2 and have no effect.",
+    );
+  }
+}
+
 function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {
+  warnRetiredMemoryKeys(env);
   const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
   if (rawPath === undefined) {
     // Any memory env var set without a path is a misconfiguration — fail closed rather than
     // silently ignoring it. Covers every behavior-configuring var (not just embeddings). The
-    // retired _GRAPH_PATH/_SCOPE/_TOOLS_ENABLED keys are deliberately omitted: the loader tolerates
-    // them for backward-compat with pre-v2 configs.
+    // retired _GRAPH_PATH/_SCOPE/_TOOLS_ENABLED keys are deliberately omitted here: they are
+    // tolerated (warned, not thrown) for backward-compat with pre-v2 configs.
     const orphaned = [
       "MONO_AGENT_MEMORY_MODE",
       "MONO_AGENT_MEMORY_WRITE_MODE",

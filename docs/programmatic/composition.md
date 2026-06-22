@@ -67,7 +67,7 @@ When you do not want any built-in transport — you are embedding the agent in y
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
 
-const { config } = await loadMonoAgentConfigWithSources({
+const config = await loadMonoAgentConfigWithSources({
   env: process.env,
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",

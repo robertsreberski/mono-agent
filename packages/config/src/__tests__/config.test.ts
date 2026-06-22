@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig } from "../index.js";
 
@@ -190,17 +190,27 @@ describe("loadMonoAgentConfig", () => {
     expect(config.providers?.piAuthPath).toBe("/tmp/pi-auth.json");
   });
 
-  it("ignores the retired MONO_AGENT_MEMORY_SCOPE / _TOOLS_* / _GRAPH_PATH env vars", () => {
-    const config = loadMonoAgentConfig({
-      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem",
-        MONO_AGENT_MEMORY_SCOPE: "per-conversation",
-        MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
-        MONO_AGENT_MEMORY_GRAPH_PATH: "g.jsonl" },
-      cwd: "/repo",
-    });
-    expect(config.memory).not.toHaveProperty("scope");
-    expect(config.memory).not.toHaveProperty("tools");
-    expect(config.memory).not.toHaveProperty("graphPath");
+  it("tolerates the retired MONO_AGENT_MEMORY_SCOPE / _TOOLS_* / _GRAPH_PATH env vars but warns", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = loadMonoAgentConfig({
+        env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem",
+          MONO_AGENT_MEMORY_SCOPE: "per-conversation",
+          MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
+          MONO_AGENT_MEMORY_GRAPH_PATH: "g.jsonl" },
+        cwd: "/repo",
+      });
+      expect(config.memory).not.toHaveProperty("scope");
+      expect(config.memory).not.toHaveProperty("tools");
+      expect(config.memory).not.toHaveProperty("graphPath");
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain("MONO_AGENT_MEMORY_GRAPH_PATH");
+      expect(message).toContain("MONO_AGENT_MEMORY_SCOPE");
+      expect(message).toContain("MONO_AGENT_MEMORY_TOOLS_ENABLED");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {

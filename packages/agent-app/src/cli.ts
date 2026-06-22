@@ -4,9 +4,16 @@ import { basename, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import {
+  buildMonoAgentConfigView,
+  readMonoAgentConfigJson,
+  redactMonoAgentConfig,
+} from "@mono-agent/config";
+import type { ConfigViewSection } from "@mono-agent/config";
+
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp } from "./app.js";
-import { phoenixAppBaseUrl } from "./app-config.js";
+import { isAppCoreConfigError, loadAppCoreConfig, phoenixAppBaseUrl } from "./app-config.js";
 import { runBackfill } from "./backfill.js";
 import {
   defaultBackgroundDeps,
@@ -33,7 +40,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
+const KNOWN_COMMANDS = ["init", "validate", "config", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -231,6 +238,13 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     lines: ["Load every config section and report what would run, wait, or fail."],
   },
   {
+    signature: "mono-agent config [--config <path>] [--env-file <path>]",
+    lines: [
+      "Print the resolved config field-by-field, tagging each value with where",
+      "it came from (env / json / default), plus the channel summary. Read-only.",
+    ],
+  },
+  {
     signature: "mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]",
     lines: [
       "Start the agent as a background macOS service (launchd), print its",
@@ -330,6 +344,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runInit(args);
     case "validate":
       return await runValidate(args);
+    case "config":
+      return await runConfig(args);
     case "start":
       return await runStart(args);
     case "restart":
@@ -408,10 +424,88 @@ async function runValidate(args: ParsedCliArgs): Promise<number> {
   }
   process.stdout.write(
     report.ok
-      ? `\n${ui.style.green("✓ Config is ready to start.")}\n`
+      ? `\n${ui.style.green("✓ Config is ready to start.")}\n${ui.style.dim("Run `mono-agent config` for the full field-by-field view.")}\n`
       : `\n${ui.hint("Fix the errors above, then re-run mono-agent validate.")}`,
   );
   return report.ok ? 0 : 1;
+}
+
+const SOURCE_TAG: Record<ConfigViewSection["fields"][number]["source"], string> = {
+  env: ui.style.green("[env]"),
+  json: ui.style.cyan("[json]"),
+  default: ui.style.dim("[default]"),
+};
+
+/**
+ * Render the complete, source-annotated config view: every core section and
+ * field with its resolved value and whether it came from an env var, the JSON
+ * file, or the built-in default. This is the single discovery surface that
+ * replaced the old partial config panes.
+ */
+export function renderConfigView(sections: readonly ConfigViewSection[]): string {
+  let out = "";
+  for (const section of sections) {
+    const badgeStatus = section.status === "active" ? "ok" : "disabled";
+    out += `${ui.badge(badgeStatus)}${ui.style.bold(section.label)}\n`;
+    const width = section.fields.reduce((max, field) => Math.max(max, field.label.length), 0);
+    for (const field of section.fields) {
+      const tag = SOURCE_TAG[field.source];
+      const lock = field.redacted === true ? ` ${ui.style.dim("(secret)")}` : "";
+      out += `    ${ui.style.gray(field.label.padEnd(width))}  ${field.value}${lock}  ${tag}\n`;
+    }
+  }
+  return out;
+}
+
+/**
+ * `mono-agent config`: print the resolved configuration field-by-field with the
+ * source (env / json / default) of every value, then the channel summary. Read
+ * only — edits go in mono-agent.config.json and take effect on the next restart.
+ */
+async function runConfig(args: ParsedCliArgs): Promise<number> {
+  const cwd = process.cwd();
+  const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
+  const env = process.env;
+
+  const jsonResult = await readMonoAgentConfigJson(configPath);
+  let config;
+  try {
+    config = await loadAppCoreConfig({ env, cwd, configPath });
+  } catch (error) {
+    if (isAppCoreConfigError(error)) {
+      process.stderr.write(ui.errorLine(error.message));
+      if (jsonResult.missing) {
+        process.stderr.write(ui.hint(`No mono-agent config found at ${configPath}. Run \`mono-agent init\` to scaffold one.`));
+      } else {
+        process.stderr.write(ui.hint("Fix the config above, then re-run `mono-agent config`."));
+      }
+      return 1;
+    }
+    throw error;
+  }
+
+  const sections = buildMonoAgentConfigView({
+    redacted: redactMonoAgentConfig(config),
+    json: jsonResult.json,
+    env,
+  });
+
+  process.stdout.write(ui.banner("mono-agent", "resolved config") + "\n");
+  process.stdout.write(renderConfigView(sections));
+
+  const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false });
+  const channels = report.sections.filter((section) => section.id.startsWith("channel:"));
+  if (channels.length > 0) {
+    process.stdout.write("\n" + ui.heading("Channels"));
+    for (const section of channels) {
+      process.stdout.write(formatSection(section));
+    }
+  }
+
+  process.stdout.write(
+    "\n" + ui.style.dim("Source precedence: [env] > [json] > [default]. Edit mono-agent.config.json and run `mono-agent restart` to apply.") + "\n",
+  );
+  return 0;
 }
 
 /** Render one validation section: a status badge, a bold label, and its details. */

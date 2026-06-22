@@ -31,7 +31,6 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 | `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Ordered backup models on retryable failure. See [../runtime/fallback.md](/runtime/fallback/). |
 | `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `low` / `medium` / `high` / `xhigh` / `max`. See [../runtime/execution-effort-permissions.md](/runtime/execution-effort-permissions/). |
 | `MONO_AGENT_PERMISSION_MODE` | `runtime.permissionMode` | `default` / `plan` / `acceptEdits` / `bypassPermissions` (CLI backends). |
-| `MONO_AGENT_REASONING_SUMMARY` | `runtime.reasoningSummary` | `auto` / `concise` / `detailed` / `off` / `on`. Retained for back-compat; currently no runtime effect. |
 | `MONO_AGENT_MAX_TURNS` | `runtime.maxTurns` | Turn cap per run; omitted or `0` means unlimited. |
 | `MONO_AGENT_WORKSPACE` | `runtime.workspace` | Working directory for runtime tools. |
 | `MONO_AGENT_SESSION_MODE` | `runtime.session.mode` | Continuous provider session mode per conversation. |
@@ -176,7 +175,7 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_OPENAI_API_ENABLED` | `openaiApi.enabled` | |
-| `MONO_AGENT_OPENAI_API_API_KEY` | `openaiApi.apiKey` | Optional bearer required from clients (`sk-...`). |
+| `MONO_AGENT_OPENAI_API_KEY` | `openaiApi.apiKey` | Optional bearer required from clients (`sk-...`). |
 | `MONO_AGENT_OPENAI_API_MODEL_ID` | `openaiApi.modelId` | Advertised model id. See [../channels/openai-api.md](/channels/openai-api/). |
 
 ### A2A
@@ -184,7 +183,7 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_A2A_PROVIDER_ENABLED` | `a2a.provider.enabled` | A2A provider with Agent Card discovery. |
-| `MONO_AGENT_A2A_PROVIDER_BEARER_TOKEN` | `a2a.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](/channels/a2a/). |
+| `MONO_AGENT_A2A_BEARER_TOKEN` | `a2a.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](/channels/a2a/). |
 
 ### Cron
 
