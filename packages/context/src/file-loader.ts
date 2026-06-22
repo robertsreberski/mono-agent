@@ -20,6 +20,7 @@ export async function loadContextFromFiles(input: FileContextInput): Promise<Bui
     identity,
     userMessage: input.userMessage,
     ...(core === undefined ? {} : { core }),
+    ...(input.session === undefined ? {} : { session: input.session }),
     ...(input.memory === undefined ? {} : { memory: input.memory }),
     ...(input.history === undefined ? {} : { history: input.history }),
     ...(skills.length === 0 ? {} : { skills }),

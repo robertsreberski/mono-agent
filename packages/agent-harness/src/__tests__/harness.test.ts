@@ -157,11 +157,14 @@ describe("AgentHarness", () => {
     });
     expect(recorder.startCount).toBe(1);
     expect(response.metadata.runtime).toMatchObject({ cost: { totalUsd: 0.01 }, capabilitiesUsed: ["tools:read"] });
-    expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "memory", "history", "skills", "skill-instructions", "user-message"]);
+    expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "session", "memory", "history", "skills", "skill-instructions", "user-message"]);
     expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(dir, "memory.md"), join(skillsRoot, "research", "SKILL.md")]);
     expect(fake.calls).toHaveLength(1);
     expect(fake.calls[0]?.prompt).toContain("Remember: terse.");
     expect(fake.calls[0]?.prompt).toContain("Earlier answer");
+    // The deliverable (telegram:) conversation gets the webhook-callback routing guidance.
+    expect(fake.calls[0]?.prompt).toContain("You are currently handling the conversation `telegram:1`.");
+    expect(fake.calls[0]?.prompt).toContain(`include \`"conversationId": "telegram:1"\` in the JSON body of its callback`);
     expect(fake.calls[0]?.prompt).toContain("# Skill: research");
     expect(fake.calls[0]?.options).toMatchObject({ allowedTools: ["Read"], disallowedTools: ["Bash"], maxTurns: 3 });
     await expect(historyStore.load("telegram:1")).resolves.toHaveLength(3);
@@ -294,6 +297,10 @@ describe("AgentHarness", () => {
 
     expect(response.text).toBe("Final answer");
     expect(fake.calls).toHaveLength(1);
+    // A non-push conversation id is told it cannot itself receive a proactive follow-up.
+    expect(fake.calls[0]?.prompt).toContain("You are currently handling the conversation `conversation-extension`.");
+    expect(fake.calls[0]?.prompt).toContain("This conversation cannot itself receive a proactive follow-up");
+    expect(fake.calls[0]?.prompt).toContain("`list_notify_destinations`");
     expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "ask_collaborator"]);
     expect(fake.calls[0]?.options.disallowedTools).toEqual(["Write"]);
     expect(fake.calls[0]?.options.mcpServers).toEqual({

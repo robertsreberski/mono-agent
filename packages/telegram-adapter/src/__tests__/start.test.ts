@@ -105,6 +105,29 @@ function documentUpdate(mimeType: string, updateId = 1): Parameters<Bot["handleU
 }
 
 describe("startTelegramAdapter", () => {
+  it("exposes notify() that runs a proactive turn and delivers to the chat", async () => {
+    const { bot, calls } = recordingBot();
+    const responder: AgentResponder = {
+      async respond() {
+        return { text: "ping delivered" };
+      },
+    };
+    const result = await startTelegramAdapter({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder,
+      botFactory: () => bot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    const outcome = await result.notify(99, "say hi");
+
+    expect(outcome).toEqual({ delivered: true });
+    const sent = calls.filter((call) => call.method === "sendMessage");
+    expect(sent.at(-1)?.payload).toMatchObject({ chat_id: 99, text: "ping delivered" });
+    await result.stop();
+  });
+
   it("wires the grammY bot + runner and starts polling", async () => {
     const { bot, calls } = recordingBot();
     let capturedToken: string | undefined;

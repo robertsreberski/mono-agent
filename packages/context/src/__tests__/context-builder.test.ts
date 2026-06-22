@@ -58,6 +58,20 @@ describe('buildAgentContext', () => {
     expect(context.metadata.sources).toEqual(['SOUL.md']);
   });
 
+  it('includes a session block source in the metadata sources', () => {
+    const context = buildAgentContext({
+      identity: 'Identity text',
+      session: { kind: 'markdown', content: 'Session state.', source: 'session.md' },
+      userMessage: 'Do the work.',
+    });
+
+    expect(context.sections.find((section) => section.id === 'session')).toMatchObject({
+      content: 'Session state.',
+      source: 'session.md',
+    });
+    expect(context.metadata.sources).toEqual(['session.md']);
+  });
+
   it('omits memory when absent and renders markdown and JSON memory when provided', () => {
     const withoutMemory = buildAgentContext({
       identity: 'Identity text',
