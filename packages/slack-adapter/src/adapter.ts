@@ -13,11 +13,14 @@ import {
   type SlackMessageStreamOptions,
 } from "./message-stream.js";
 import type {
+  SlackBlockActionsPayload,
   SlackChannelId,
   SlackEventBase,
   SlackEventCallback,
   SlackFile,
+  SlackInteractivityPayload,
   SlackMessageTs,
+  SlackShortcutPayload,
   SlackUserId,
   SlackWebApi,
 } from "./types.js";
@@ -120,6 +123,78 @@ export interface SlackAdapterLogger extends SlackMessageStreamLogger {
   info?(message: string, metadata?: Record<string, unknown>): void;
 }
 
+/**
+ * Binds a Slack shortcut `callback_id` to a prompt. When a user invokes that
+ * shortcut, the adapter runs the prompt as a proactive turn — the same machinery
+ * as a cron/webhook nudge — making the shortcut a persistent one-click trigger
+ * for an agent routine. A GLOBAL shortcut carries no channel, so `channelId`
+ * must say where the reply goes; a MESSAGE shortcut falls back to its source
+ * channel when `channelId` is omitted.
+ */
+export interface SlackShortcutBinding {
+  readonly callbackId: string;
+  readonly prompt: string;
+  /**
+   * Destination channel for the run's reply. Required for global shortcuts.
+   * For a MESSAGE shortcut this falls back to the invoking channel — so under
+   * `allowAllChannels` the invoker chooses where operator-authored output lands;
+   * pin `channelId` to bound the destination.
+   */
+  readonly channelId?: SlackChannelId;
+  /**
+   * Optional message posted immediately when the shortcut is invoked, before the
+   * run starts — instant feedback for an action whose result lands seconds later
+   * (e.g. "🔄 Syncing…"). Best-effort: a failed ack post does not block the run.
+   */
+  readonly ackText?: string;
+}
+
+/**
+ * Outcome of routing an interaction (a shortcut or a Home-tab button). `id` is
+ * the shortcut's `callback_id` or the button's `action_id`. `triggered` means a
+ * bound interaction ran (`delivered` mirrors the proactive turn's outcome); the
+ * other kinds explain why nothing ran, for logging.
+ */
+export type SlackInteractionHandlingResult =
+  | {
+      kind: "triggered";
+      id: string;
+      channelId: SlackChannelId;
+      delivered: boolean;
+      reason?: string;
+    }
+  | {
+      kind: "ignored";
+      reason: "no_action" | "unbound" | "missing_channel";
+      id?: string;
+    }
+  | {
+      kind: "unauthorized";
+      id: string;
+      channelId: SlackChannelId;
+    };
+
+/**
+ * A button rendered on the App Home tab. Clicking it runs `prompt` as a proactive
+ * turn (same machinery as a shortcut), replying in `channelId` (the Home tab
+ * carries no channel of its own, so this — or the first allowlisted channel — is
+ * where the result lands). `label` is the button text; `ackText` posts instantly.
+ */
+export interface SlackHomeButton {
+  readonly actionId: string;
+  readonly label: string;
+  readonly prompt: string;
+  readonly channelId?: SlackChannelId;
+  readonly ackText?: string;
+}
+
+/** App Home tab options: whether to publish it, an optional header, and its buttons. */
+export interface SlackHomeTabOptions {
+  readonly enabled: boolean;
+  readonly headerText?: string;
+  readonly buttons: readonly SlackHomeButton[];
+}
+
 export interface SlackAdapterOptions {
   api: SlackWebApi;
   responder: AgentResponder;
@@ -131,6 +206,18 @@ export interface SlackAdapterOptions {
   stream?: SlackAdapterStreamOptions;
   messages?: SlackAdapterMessages;
   attachments?: SlackAttachmentOptions;
+  /**
+   * Shortcut bindings (callback_id → prompt). Invoking a bound shortcut in/for an
+   * authorized channel runs its prompt as a proactive turn. Omitted/empty means
+   * no shortcuts are wired (interactions are ignored).
+   */
+  shortcuts?: readonly SlackShortcutBinding[];
+  /**
+   * App Home tab configuration. When `enabled`, the adapter publishes a persistent
+   * panel of action buttons whenever a user opens the Home tab, and a button click
+   * runs its bound prompt as a proactive turn. Omitted/disabled means no Home tab.
+   */
+  homeTab?: SlackHomeTabOptions;
   logger?: SlackAdapterLogger;
   /**
    * Resolve an in-thread reply back to the conversation that produced the message
@@ -193,6 +280,11 @@ export type SlackEventHandlingResult =
       eventId: string;
       channelId?: SlackChannelId;
       error: unknown;
+    }
+  | {
+      kind: "home_published";
+      eventId: string;
+      userId: SlackUserId;
     };
 
 interface NormalizedCommand {
@@ -325,6 +417,16 @@ export class SlackAdapter {
   private readonly messages: Required<SlackAdapterMessages>;
   private readonly attachmentMaxBytes: number;
   private readonly allowedMimeTypes: ReadonlySet<string>;
+  /** callback_id → shortcut binding for registered Slack shortcuts. */
+  private readonly shortcuts: ReadonlyMap<string, SlackShortcutBinding>;
+  /** action_id → button binding for App Home tab buttons. */
+  private readonly homeButtons: ReadonlyMap<string, SlackHomeButton>;
+  /** Ordered Home tab buttons (for rendering the view in config order). */
+  private readonly homeButtonOrder: readonly SlackHomeButton[];
+  private readonly homeTabEnabled: boolean;
+  private readonly homeTabHeaderText: string | undefined;
+  /** First allowlisted channel (original case), used as a global interaction's default reply destination. */
+  private readonly defaultShortcutChannelId: string | undefined;
   private readonly logger: SlackAdapterLogger | undefined;
   private readonly resolvePostIndex:
     | ((channelId: string, ts: string) => Promise<string | undefined>)
@@ -371,6 +473,18 @@ export class SlackAdapter {
         mime.trim().toLowerCase(),
       ),
     );
+    this.shortcuts = new Map(
+      (options.shortcuts ?? [])
+        .filter((binding) => binding.callbackId.trim().length > 0)
+        .map((binding) => [binding.callbackId, binding]),
+    );
+    this.homeButtonOrder = (options.homeTab?.buttons ?? []).filter(
+      (button) => button.actionId.trim().length > 0,
+    );
+    this.homeButtons = new Map(this.homeButtonOrder.map((button) => [button.actionId, button]));
+    this.homeTabEnabled = options.homeTab?.enabled === true;
+    this.homeTabHeaderText = options.homeTab?.headerText;
+    this.defaultShortcutChannelId = options.allowedChannelIds?.[0];
     this.logger = options.logger;
     this.resolvePostIndex = options.resolvePostIndex;
     this.recordPostedMessage = options.recordPostedMessage;
@@ -385,6 +499,12 @@ export class SlackAdapter {
   async handleEventCallback(
     callback: SlackEventCallback,
   ): Promise<SlackEventHandlingResult> {
+    // App Home tab opened → (re)publish the button panel. This is an events_api
+    // event with no channel/trigger, so it is handled before the message path.
+    if (callback.event.type === "app_home_opened" && callback.event.tab === "home") {
+      return this.handleAppHomeOpened(callback);
+    }
+
     const normalized = this.normalizeEventCallback(callback);
     if (normalized.kind === "ignored") {
       return normalized;
@@ -564,6 +684,181 @@ export class SlackAdapter {
         this.admissionQueues.delete(conversationId);
       }
     }
+  }
+
+  /**
+   * Route any interactivity payload to the right handler: a shortcut/message
+   * action by `callback_id`, or a Block Kit button click by `action_id`.
+   */
+  async handleInteraction(
+    payload: SlackInteractivityPayload,
+  ): Promise<SlackInteractionHandlingResult> {
+    if (payload.type === "block_actions") {
+      return this.handleBlockActions(payload);
+    }
+    return this.handleShortcut(payload);
+  }
+
+  /**
+   * Route a Slack shortcut payload. When its `callback_id` is bound to a prompt
+   * and the resolved destination channel is authorized, run that prompt as a
+   * proactive turn. The destination is the binding's `channelId`, else the
+   * payload's own channel (message shortcuts), else the first allowlisted channel.
+   */
+  async handleShortcut(
+    payload: SlackShortcutPayload,
+  ): Promise<SlackInteractionHandlingResult> {
+    const callbackId = typeof payload.callback_id === "string" ? payload.callback_id : undefined;
+    if (callbackId === undefined || callbackId.length === 0) {
+      return { kind: "ignored", reason: "no_action" };
+    }
+    const binding = this.shortcuts.get(callbackId);
+    if (binding === undefined) {
+      return { kind: "ignored", reason: "unbound", id: callbackId };
+    }
+    // A message shortcut can reply in the source thread; a global shortcut has no
+    // thread, so the run posts top-level in the destination channel.
+    const threadTs = firstNonEmpty(payload.message?.thread_ts, payload.message?.ts);
+    return this.runBoundInteraction(callbackId, binding, payload.channel?.id, threadTs);
+  }
+
+  /**
+   * Route a Block Kit `block_actions` payload (a clicked button — typically on the
+   * App Home tab). Acts on the first action whose `action_id` is a bound Home
+   * button. A Home-tab click carries no channel, so the reply goes to the button's
+   * `channelId` (or the first allowlisted channel).
+   */
+  async handleBlockActions(
+    payload: SlackBlockActionsPayload,
+  ): Promise<SlackInteractionHandlingResult> {
+    const actions = Array.isArray(payload.actions) ? payload.actions : [];
+    if (actions.length === 0) {
+      return { kind: "ignored", reason: "no_action" };
+    }
+    const action = actions.find(
+      (candidate) => typeof candidate.action_id === "string" && this.homeButtons.has(candidate.action_id),
+    );
+    if (action === undefined || typeof action.action_id !== "string") {
+      return { kind: "ignored", reason: "unbound" };
+    }
+    const actionId = action.action_id;
+    const binding = this.homeButtons.get(actionId);
+    if (binding === undefined) {
+      return { kind: "ignored", reason: "unbound", id: actionId };
+    }
+    const threadTs = firstNonEmpty(payload.message?.thread_ts, payload.message?.ts);
+    return this.runBoundInteraction(actionId, binding, payload.channel?.id, threadTs);
+  }
+
+  /**
+   * Shared interaction run path: resolve the destination channel, enforce the
+   * allowlist, post the optional instant ack, then run the bound prompt as a
+   * proactive turn. The returned result is for logging.
+   */
+  private async runBoundInteraction(
+    id: string,
+    binding: { readonly prompt: string; readonly channelId?: SlackChannelId; readonly ackText?: string },
+    payloadChannelId: SlackChannelId | undefined,
+    payloadThreadTs: SlackMessageTs | undefined,
+  ): Promise<SlackInteractionHandlingResult> {
+    const channelId = firstNonEmpty(binding.channelId, payloadChannelId, this.defaultShortcutChannelId);
+    if (channelId === undefined) {
+      this.logger?.warn?.("Slack interaction has no destination channel; set channelId on the binding.", { id });
+      return { kind: "ignored", reason: "missing_channel", id };
+    }
+    if (!this.isAuthorized(channelId)) {
+      this.logger?.warn?.("Slack interaction targets an unauthorized channel; ignored.", { id, channelId });
+      return { kind: "unauthorized", id, channelId };
+    }
+
+    // A Slack `thread_ts` is channel-scoped, so only thread the reply when the
+    // destination IS the channel the interaction came from. A binding that pins a
+    // different channelId (or a global shortcut / Home-tab click with no source
+    // channel) posts top-level — otherwise a foreign thread_ts 404s the post.
+    const threadTs = channelId === payloadChannelId ? payloadThreadTs : undefined;
+
+    // Instant feedback: the result lands seconds later (and a global shortcut or a
+    // Home-tab click shows no on-click UI), so post the ack now (best-effort)
+    // before the run. The result follows as its own message in the same channel.
+    if (binding.ackText !== undefined) {
+      try {
+        await this.api.chatPostMessage({
+          channel: channelId,
+          text: binding.ackText,
+          ...(threadTs === undefined ? {} : { thread_ts: threadTs }),
+        });
+      } catch (error) {
+        this.logger?.warn?.("Slack interaction ack message failed (continuing with the run).", {
+          id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const delivery = await this.notify(channelId, threadTs, binding.prompt);
+    const result: SlackInteractionHandlingResult = {
+      kind: "triggered",
+      id,
+      channelId,
+      delivered: delivery.delivered,
+    };
+    if (delivery.reason !== undefined) {
+      result.reason = delivery.reason;
+    }
+    return result;
+  }
+
+  /**
+   * Publish the App Home tab for a user when they open it. Best-effort: a publish
+   * failure is logged, not thrown, so opening Home never surfaces an error.
+   */
+  private async handleAppHomeOpened(
+    callback: SlackEventCallback,
+  ): Promise<SlackEventHandlingResult> {
+    const userId = callback.event.user;
+    if (!this.homeTabEnabled || typeof userId !== "string" || userId.length === 0) {
+      return { kind: "ignored", reason: "unsupported_event", eventId: callback.event_id };
+    }
+    if (typeof this.api.viewsPublish !== "function") {
+      this.logger?.warn?.("Home tab is enabled but the Slack client cannot publish views.");
+      return { kind: "ignored", reason: "unsupported_event", eventId: callback.event_id };
+    }
+    const blocks = this.buildHomeTabBlocks();
+    if (blocks.length === 0) {
+      // views.publish requires 1–100 blocks; an enabled-but-empty Home tab would
+      // error on every open. Skip the publish instead (config load also rejects
+      // this combination, so it should not happen in practice).
+      this.logger?.warn?.("Skipping App Home publish: the Home view has no blocks.");
+      return { kind: "ignored", reason: "unsupported_event", eventId: callback.event_id };
+    }
+    try {
+      await this.api.viewsPublish({ userId, view: { type: "home", blocks } });
+      return { kind: "home_published", eventId: callback.event_id, userId };
+    } catch (error) {
+      this.logger?.error?.("Failed to publish the Slack App Home tab.", {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { kind: "error", eventId: callback.event_id, error };
+    }
+  }
+
+  /** Build the App Home tab Block Kit: an optional header plus one button per configured Home button. */
+  private buildHomeTabBlocks(): readonly unknown[] {
+    const blocks: unknown[] = [];
+    if (this.homeTabHeaderText !== undefined && this.homeTabHeaderText.trim().length > 0) {
+      blocks.push({ type: "section", text: { type: "mrkdwn", text: this.homeTabHeaderText } });
+    }
+    const elements = this.homeButtonOrder.map((button) => ({
+      type: "button",
+      text: { type: "plain_text", text: button.label, emoji: true },
+      action_id: button.actionId,
+      value: button.actionId,
+    }));
+    if (elements.length > 0) {
+      blocks.push({ type: "actions", block_id: "home_actions", elements });
+    }
+    return blocks;
   }
 
   private async runProactiveTurn(
@@ -1142,4 +1437,14 @@ function conversationIdFor(event: SlackTextEvent): string {
 
 function normalizeIdForMatch(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/** First argument that is a non-blank string, else undefined. */
+function firstNonEmpty(...values: readonly (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
 }

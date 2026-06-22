@@ -246,6 +246,8 @@ export function createSlackChannelDriver(
         botUserIds: input.config.botUserIds,
         mentionTextAliases: input.config.mentionTextAliases,
         stripMentionText: input.config.stripMentionText,
+        shortcuts: input.config.shortcuts,
+        homeTab: input.config.homeTab,
         responder: input.responder,
         ...(input.logger === undefined ? {} : { logger: input.logger }),
         ...(indexPath === undefined

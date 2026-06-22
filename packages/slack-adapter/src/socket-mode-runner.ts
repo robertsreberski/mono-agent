@@ -1,11 +1,25 @@
 import WebSocket from "ws";
 
-import type { SlackEventCallback, SlackSocketModeEnvelope, SlackWebApi } from "./types.js";
+import type {
+  SlackEventCallback,
+  SlackInteractivityPayload,
+  SlackSocketModeEnvelope,
+  SlackWebApi,
+} from "./types.js";
 import type { SlackEventHandlingResult } from "./adapter.js";
 
 export interface SlackEventCallbackHandler {
   handleEventCallback(callback: SlackEventCallback): Promise<SlackEventHandlingResult>;
 }
+
+/**
+ * Handles a Slack interactivity payload — a shortcut, message action, or a
+ * Block Kit button click (`block_actions`). Invoked AFTER the envelope is
+ * acknowledged, so a slow handler never risks Slack's 3-second ack deadline.
+ */
+export type SlackInteractionHandler = (
+  payload: SlackInteractivityPayload,
+) => void | Promise<void>;
 
 export interface SlackSocketModeRunnerBackoffOptions {
   initialMs?: number;
@@ -44,6 +58,12 @@ export interface SlackSocketModeRunnerOptions {
   heartbeat?: SlackSocketModeRunnerHeartbeatOptions;
   webSocketFactory?: SlackWebSocketFactory;
   onEventResult?: (result: SlackEventHandlingResult) => void | Promise<void>;
+  /**
+   * Optional handler for shortcut interactivity payloads. When absent, interactive
+   * envelopes are acknowledged and ignored (the historical behavior); when set,
+   * shortcut payloads are routed to it after the envelope is acknowledged.
+   */
+  onInteraction?: SlackInteractionHandler;
   logger?: SlackSocketModeRunnerLogger;
 }
 
@@ -111,6 +131,7 @@ export class SlackSocketModeRunner {
   private readonly onEventResult:
     | ((result: SlackEventHandlingResult) => void | Promise<void>)
     | undefined;
+  private readonly onInteraction: SlackInteractionHandler | undefined;
   private readonly logger: SlackSocketModeRunnerLogger | undefined;
   private activeSocket: SlackWebSocketLike | undefined;
 
@@ -123,6 +144,7 @@ export class SlackSocketModeRunner {
     this.heartbeatTimeoutMs = options.heartbeat?.timeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.webSocketFactory = options.webSocketFactory ?? ((url) => new WebSocket(url) as SlackWebSocketLike);
     this.onEventResult = options.onEventResult;
+    this.onInteraction = options.onInteraction;
     this.logger = options.logger;
 
     if (!Number.isFinite(this.initialBackoffMs) || this.initialBackoffMs < 0) {
@@ -318,6 +340,22 @@ export class SlackSocketModeRunner {
     if (envelope.envelope_id !== undefined) {
       socket.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
     }
+
+    // Interactivity: a clicked ⚡ shortcut, message action, or Block Kit button.
+    // The ack above already went out, so a slow handler never risks Slack's 3s
+    // ack deadline.
+    if (envelope.type === "interactive") {
+      if (this.onInteraction === undefined) {
+        return;
+      }
+      const payload = asInteractivityPayload(envelope.payload);
+      if (payload === undefined) {
+        return;
+      }
+      await this.onInteraction(payload);
+      return;
+    }
+
     if (envelope.type !== "events_api" || !isSlackEventCallback(envelope.payload)) {
       return;
     }
@@ -380,6 +418,16 @@ function isSlackEventCallback(value: unknown): value is SlackEventCallback {
     return false;
   }
   return typeof value.event_id === "string" && isRecord(value.event);
+}
+
+function asInteractivityPayload(value: unknown): SlackInteractivityPayload | undefined {
+  if (
+    !isRecord(value) ||
+    (value.type !== "shortcut" && value.type !== "message_action" && value.type !== "block_actions")
+  ) {
+    return undefined;
+  }
+  return value as unknown as SlackInteractivityPayload;
 }
 
 function isSignalAborted(signal: AbortSignal | undefined): boolean {

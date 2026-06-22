@@ -12,8 +12,13 @@ export type {
   SlackFile,
   SlackMessageTs,
   SlackRequestOptions,
+  SlackShortcutPayload,
+  SlackBlockAction,
+  SlackBlockActionsPayload,
+  SlackInteractivityPayload,
   SlackSocketModeEnvelope,
   SlackUserId,
+  SlackViewsPublishParams,
   SlackWebApi,
 } from "./types.js";
 
@@ -51,8 +56,12 @@ export type {
   SlackAttachmentOptions,
   SlackEventHandlingResult,
   SlackEventIgnoredReason,
+  SlackHomeButton,
+  SlackHomeTabOptions,
+  SlackInteractionHandlingResult,
   SlackNotifyResult,
   SlackRequestMetadata,
+  SlackShortcutBinding,
   SlackTriggerKind,
 } from "./adapter.js";
 export {
@@ -60,6 +69,7 @@ export {
 } from "./socket-mode-runner.js";
 export type {
   SlackEventCallbackHandler,
+  SlackInteractionHandler,
   SlackSocketModeRunnerBackoffOptions,
   SlackSocketModeRunnerHeartbeatOptions,
   SlackSocketModeRunnerLogger,
@@ -89,4 +99,7 @@ export type {
   SlackAdapterConfig,
   SlackAdapterConfigErrorCode,
   SlackAdapterConfigErrorDetails,
+  SlackHomeButtonConfig,
+  SlackHomeTabConfig,
+  SlackShortcutConfig,
 } from "./config.js";
