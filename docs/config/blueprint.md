@@ -100,10 +100,11 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "dim": 768                           // nomic-embed-text:v1.5 output dimension
     },
     "llm": {                               // enables bujo capture/rituals; omit for lite/journal
-      // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT.
+      // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
       "provider": "ollama",                // ollama | agent-host
       "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.5
-      "endpoint": "http://localhost:11434" // ollama only; invalid for agent-host
+      "endpoint": "http://localhost:11434", // ollama only; invalid for agent-host
+      "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
       // For agent-host, use: "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk"; omit endpoint.
     },
     // Bujo auto-scheduler — override defaults or disable per-ritual.

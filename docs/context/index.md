@@ -16,11 +16,15 @@ Each turn the agent builds a prompt from these layers:
 |-------|--------|----------|-----|
 | Identity | `IDENTITY.md` (or path) | config | `context.identityPath` |
 | Soul (optional) | `SOUL.md` (or path) | config | `context.soulPath` |
+| Session | the turn's `conversationId` + callback guidance | auto | none (auto-generated) |
 | Conversation history | in-memory store | auto / code | sized from `runtime.maxTurns` |
 | Selected skills | `<skillsRoot>/<name>/SKILL.md` | config | `context.skillsRoot`, `context.selectedSkills` |
-| Recalled memory (optional) | memory subsystem | config | see [Memory](/memory/capture-and-recall/) |
 
 Identity is the only required piece of `context` — `context.identityPath` is the one field in this section you cannot omit. Everything else is opt-in.
+
+:::note
+**Recalled memory is not a prompt layer.** When memory is enabled, recalled entries are appended to the **user message** each turn (not assembled into the system prompt), so they survive session resume on runtimes that drop the system prompt. See [Context assembly → Memory recall](/context/assembly/#memory-recall).
+:::
 
 ## Configuring the context block
 
@@ -70,5 +74,5 @@ History is capped only when turns are capped. If you leave `runtime.maxTurns` un
 
 ## Related
 
-- [Memory](/memory/capture-and-recall/) — recalled memory is injected alongside context.
+- [Memory](/memory/capture-and-recall/) — recalled memory is appended to the user message each turn (not the system prompt).
 - [Tools](/tools/) — tool definitions and policy live next to context in each turn.

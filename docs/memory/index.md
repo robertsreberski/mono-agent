@@ -270,11 +270,14 @@ built-in Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Oll
 for the chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL` is
 unset when running `reflect` or `migrate`, the command prints a clear error and exits 2.
 
-`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout (default `120000`). A
-single capture runs several sequential LLM calls (distil → reconcile → entity extraction), and
-slow local models can take tens of seconds each; because those steps swallow LLM errors
-(never-throw), a too-short timeout makes a capture *silently store nothing* rather than fail
-loudly. Raise it for slow models (the `memory-bujo` `reflect`/`migrate` CLI honors it).
+`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout, but the **default differs
+by binary**: the standalone `memory-bujo` `reflect`/`migrate` CLI defaults to `120000`, while the
+**in-app** memory LLM (per-turn capture and the in-app scheduler) reads `memory.llm.timeoutMs` —
+the same env var maps to it — and defaults to `60000`. A single capture runs several sequential
+LLM calls (distil → reconcile → entity extraction), and slow local models can take tens of
+seconds each; because those steps swallow LLM errors (never-throw), a too-short timeout makes a
+capture *silently store nothing* rather than fail loudly. Raise it for slow models. See
+[Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
 
 ## Liveness Check — `mono-agent validate`
 
@@ -315,6 +318,8 @@ the full question flow and config blocks the composer writes.
 ## Recall Tool (`memory_recall`)
 
 The agent gets a single read-only `memory_recall` tool — hybrid (keyword + semantic) search over the same memory it writes to. It is **auto-provisioned by `agent-app`** from the single `config.memory` block when `config.memory.recallTool.enabled` is true (default **on** for the journal/bujo tiers with embeddings configured; set it to `false` to disable). There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
+
+Recalled entries do **not** sit in the system prompt. The harness appends them to the **user message** each turn (when recall returns hits), so memory survives a session resume; a `memory_recalled` diagnostic keeps recall visible in run traces. The `memory_recall` tool described here is the *on-demand* path the agent can additionally call mid-turn to pull more. See [Context assembly → Memory recall](/context/assembly/#memory-recall).
 
 Under the hood `agent-app` spawns a bundled stdio MCP child named `mono-agent-memory` (bundled in `@mono-agent/agent-app`) that exposes only `memory_recall`. It is configured automatically from `config.memory` — it uses the **same memory root + embeddings** as the in-app memory, so there is no separate config to keep in sync. Recall needs no chat LLM; durable writes stay in-app on the agent-host LLM via per-turn capture (`writeMode: "capture"`). This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture`/`memory_note` — both dropped, since in-app capture already covers durable writes).
 

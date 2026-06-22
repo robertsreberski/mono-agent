@@ -21,8 +21,9 @@ Accept fast sync HTTP calls and long-running async jobs (202 + status polling) a
 - [`webhook.http-invoke`](/channels/webhook/) — `POST` a JSON body, the agent runs a turn.
 - [`webhook.sync-async-modes`](/channels/webhook/) — `sync` returns the body inline; `async` returns `202` + a status URL to poll.
 - [`webhook.endpoints-dir`](/channels/webhook/) — multiple named endpoints inline (`webhook.endpoints[]`) or as `*.md` files under `webhook.dir`.
+- [`channel.proactive-notify`](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns) — a webhook turn can call `notify_conversation` to deliver a result back into a chat (the async-callback pattern below).
 
-All three are **config** coverage (the `webhook` section plus `MONO_AGENT_WEBHOOK_*` env overrides).
+The first three are **config** coverage (the `webhook` section plus `MONO_AGENT_WEBHOOK_*` env overrides); the notify tools are auto-injected on webhook turns.
 
 ## Configuration
 
@@ -77,6 +78,16 @@ You are triaging an inbound support ticket. Classify and summarize.
 ```
 
 `path` is required; `name` defaults to the filename stem, `mode` to `defaultMode`, and `enabled` to `true`. This mirrors how [cron](/channels/cron/) jobs can be authored as `cron/*.md` files.
+
+## Async callback: deliver a result back into a chat
+
+Polling is fine for a script, but when the original request came from a **chat** the agent can instead push the result back into that conversation when the work finishes. A webhook turn automatically gets the `notify_conversation` / `list_notify_destinations` tools (not gated by `tools.allowedTools`), which makes the webhook the inbound half of an async callback:
+
+1. In a Telegram/Slack chat, the agent starts a long-running external job and asks the service to call back, embedding the current conversation id (from the [Session context block](/context/assembly/#session)) in the callback request.
+2. The service finishes and `POST`s to a webhook endpoint here, carrying that id in the body (e.g. as `conversationId` or inside `metadata`).
+3. The endpoint's prompt instructs the agent to read the id from the payload and call `notify_conversation(conversationId, "<result>")`, delivering a real, remembered turn back into the original chat — no polling required.
+
+The destination is bounded by the owning channel's allowlist, so a payload-supplied id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused. See [Proactive notify tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
 
 ## Steps
 
