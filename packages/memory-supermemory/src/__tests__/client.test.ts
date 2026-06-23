@@ -108,11 +108,12 @@ describe("createSupermemoryHttpClient.search", () => {
     expect(calls.map((c) => c.url)).toEqual([`${BASE}/v4/search`, `${BASE}/v3/search`, `${BASE}/v3/search`]);
   });
 
-  it("falls back to /v3/search on a 404 and maps content + score", async () => {
+  it("falls back to /v3/search on a 404 and maps documentId + content + score", async () => {
     const { calls, fetchImpl } = recordingFetch((call) =>
       call.url.endsWith("/v4/search")
         ? { status: 404 }
-        : { status: 200, json: { results: [{ id: "a", content: "legacy text", score: 0.7 }] } },
+        : // Legacy v3 identifies hits as documentId (not id).
+          { status: 200, json: { results: [{ documentId: "doc-1", content: "legacy text", score: 0.7 }] } },
     );
     const client = createSupermemoryHttpClient({ baseUrl: BASE, containerTag: "agent-x", fetch: fetchImpl });
 
@@ -120,7 +121,7 @@ describe("createSupermemoryHttpClient.search", () => {
 
     expect(calls.map((c) => c.url)).toEqual([`${BASE}/v4/search`, `${BASE}/v3/search`]);
     expect(calls[1]?.body).toMatchObject({ q: "q", containerTags: ["agent-x"] });
-    expect(hits).toEqual([{ id: "a", text: "legacy text", score: 0.7 }]);
+    expect(hits).toEqual([{ id: "doc-1", text: "legacy text", score: 0.7 }]);
   });
 
   it("reads v3 text from chunks[].content when top-level content is absent", async () => {

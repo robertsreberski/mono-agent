@@ -103,7 +103,8 @@ describe("SupermemoryMemoryStore.appendHostSummary", () => {
     expect(result).toEqual({ conversationId: "conv-1", source: "supermemory", bytesWritten: 17 });
     const added = client.added[0];
     expect(added?.content).toBe("remembered a fact");
-    expect(added?.customId).toMatch(/^host-summary:/u);
+    // Supermemory customIds allow only [A-Za-z0-9._-] — no colon.
+    expect(added?.customId).toMatch(/^host-summary-[a-f0-9]+$/u);
     expect(added?.metadata).toMatchObject({ kind: "host-summary", conversationId: "conv-1" });
   });
 

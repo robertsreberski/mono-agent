@@ -1418,6 +1418,26 @@ describe("loadMonoAgentConfig", () => {
     expect(config.memory?.writeMode).toBe("capture");
   });
 
+  it("ignores stale bujo-only env (embeddings/llm) when backend is supermemory", () => {
+    // Switching an existing bujo config to supermemory must not be blocked by leftover bujo env —
+    // e.g. an openai embeddings provider with no API key would throw under the bujo backend.
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_BACKEND: "supermemory",
+        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
+        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+        MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
+      },
+    });
+    expect(config.memory?.backend).toBe("supermemory");
+    expect(config.memory?.embeddings).toBeUndefined();
+    expect(config.memory?.llm).toBeUndefined();
+    expect(config.memory?.reflection).toBeUndefined();
+  });
+
   it("allows the supermemory backend without a memory path (path is bujo-only)", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

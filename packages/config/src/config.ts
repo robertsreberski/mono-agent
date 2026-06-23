@@ -497,11 +497,17 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       { env: "MONO_AGENT_MEMORY_WRITE_MODE" },
     );
   }
-  const embeddings = readMemoryEmbeddingsConfig(env);
-  const llm = readMemoryLlmConfig(env);
-  const dim = readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 });
-  const reflection = readMemoryRitualConfig(env, "REFLECTION");
-  const migration = readMemoryRitualConfig(env, "MIGRATION");
+  // embeddings / llm / dim / rituals are BuJo-only and ignored by external backends. Skip parsing
+  // them for supermemory so a stale BuJo env (e.g. an openai embeddings provider with no key) does
+  // not throw and block switching an existing BuJo config over to Supermemory.
+  const isBujo = backend === "bujo";
+  const embeddings = isBujo ? readMemoryEmbeddingsConfig(env) : undefined;
+  const llm = isBujo ? readMemoryLlmConfig(env) : undefined;
+  const dim = isBujo
+    ? readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 })
+    : undefined;
+  const reflection = isBujo ? readMemoryRitualConfig(env, "REFLECTION") : undefined;
+  const migration = isBujo ? readMemoryRitualConfig(env, "MIGRATION") : undefined;
 
   const embeddingsWithDim =
     embeddings === undefined

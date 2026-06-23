@@ -203,7 +203,9 @@ function normalizeHits(json: unknown, shape: "v4" | "v3"): SupermemoryHit[] {
     if (!isRecord(row)) {
       continue;
     }
-    const id = typeof row.id === "string" ? row.id : "";
+    // v4 identifies hits as `id`; the legacy v3 route uses `documentId` (fall back to `id`).
+    const idField = shape === "v4" ? row.id : row.documentId ?? row.id;
+    const id = typeof idField === "string" ? idField : "";
     const text = shape === "v4" ? textV4(row) : textV3(row);
     if (text.trim().length === 0) {
       continue;

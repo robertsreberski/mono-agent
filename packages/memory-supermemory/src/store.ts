@@ -70,8 +70,10 @@ export class SupermemoryMemoryStore implements MemoryStore {
     try {
       await this.client.add({
         content: summary,
-        // Idempotent: re-emitting the same one-liner upserts instead of duplicating.
-        customId: `host-summary:${stableId(`${conversationId}\n${summary}`)}`,
+        // Idempotent: re-emitting the same one-liner upserts instead of duplicating. Supermemory
+        // customIds allow only [A-Za-z0-9._-], so use a hyphen separator (NOT a colon — that is
+        // rejected, which would silently drop the write).
+        customId: `host-summary-${stableId(`${conversationId}\n${summary}`)}`,
         metadata: { kind: "host-summary", conversationId },
       });
       return { conversationId, source: SUPERMEMORY_SOURCE, bytesWritten: bytes };
