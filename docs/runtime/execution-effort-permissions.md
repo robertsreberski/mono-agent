@@ -17,7 +17,6 @@ A representative runtime block:
     "executionMode": "sdk",
     "effort": "medium",
     "permissionMode": "default",
-    "reasoningSummary": "auto",
     "maxTurns": 0,
     "workspace": "."
   }
@@ -67,18 +66,6 @@ Several other features key off the backend implied by execution mode — most no
 `permissionMode: "bypassPermissions"` removes interactive guardrails. Pair it with the [sandbox](/tools/sandbox/) filesystem scopes and a constrained [tool policy](/tools/policy/) so an unattended run cannot reach beyond its workspace.
 :::
 
-## Reasoning summary
-
-`runtime.reasoningSummary` is **retained for back-compat and currently has no runtime effect**. The Claude/Codex CLIs emit their own reasoning summaries, and pi-native derives reasoning from `runtime.effort` — so this field is read but not wired to behavior today. Tune reasoning via `effort` instead.
-
-| Key | Values | Default | Env var |
-|-----|--------|---------|---------|
-| `runtime.reasoningSummary` | `auto` \| `concise` \| `detailed` \| `off` \| `on` | `auto` | `MONO_AGENT_REASONING_SUMMARY` |
-
-:::note
-Setting `reasoningSummary` does nothing at runtime today. Use `runtime.effort` to control reasoning depth.
-:::
-
 ## Max turns
 
 `runtime.maxTurns` caps the number of turns a single run may take. `0` (or omitting the key) means **unlimited**; values `1`–`100` cap the run.
@@ -110,7 +97,6 @@ The workspace is also the default root for sandbox filesystem scopes — `sandbo
 | `runtime.executionMode` | `MONO_AGENT_EXECUTION_MODE` | inferred from model | config |
 | `runtime.effort` | `MONO_AGENT_EFFORT` | `medium` | config |
 | `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` (CLI only) | config |
-| `runtime.reasoningSummary` | `MONO_AGENT_REASONING_SUMMARY` | `auto` (no effect today) | config |
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | config |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `"."` | config |
 

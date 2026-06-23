@@ -16,7 +16,7 @@ pnpm --filter @mono-agent/config run build
 
 ```ts
 import {
-  CORE_AGENT_FIELD_GROUPS,
+  buildMonoAgentConfigView,
   loadMonoAgentConfigWithSources,
 } from "@mono-agent/config";
 
@@ -119,8 +119,8 @@ Supported network modes are `none`, `localhost`, `allowlist`, and `all`. `allowl
 - `loadMonoAgentConfig`, `loadMonoAgentConfigWithSources`
 - `redactMonoAgentConfig`
 - `readMonoAgentConfigJson`, `writeMonoAgentConfigJson`
-- `layerJsonOntoEnv`
-- `CORE_AGENT_FIELD_GROUPS`, plus individual identity/runtime/memory/tools/providers/artifacts field groups
+- `buildMonoAgentConfigView`, `CONFIG_ENV_KEYS` — the single source-annotated view of a resolved config (env/json/default per field), used by the TUI config pane and `mono-agent config`
+- `EFFORT_LEVELS`, `PERMISSION_MODES`
 - `MonoAgentConfig`, `MonoAgentConfigJson`, `RedactedMonoAgentConfig`, `MonoAgentConfigError`
 
 ## Dependency Boundary

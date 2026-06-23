@@ -37,10 +37,6 @@ The `runtime.model` string is always `<backend>:<...>` — `claude:*`, `codex:*`
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | `1`–`100` caps turns |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `.` | working dir for runtime tools |
 
-:::note
-:::
-`runtime.reasoningSummary` (`MONO_AGENT_REASONING_SUMMARY`) is retained for back-compat but currently has no runtime effect — the codex/claude CLIs emit summaries on their own and pi-native derives reasoning from `effort`.
-
 ## Child pages
 
 - [Model backends](/runtime/backends/) — the four backends (claude sdk/cli, codex cli, pi sdk with 15+ providers, opencode cli), the `<backend>:<model>` syntax, and `sdk` vs `cli` execution modes.

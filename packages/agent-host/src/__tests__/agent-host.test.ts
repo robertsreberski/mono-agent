@@ -272,7 +272,7 @@ describe("agent host composition helpers", () => {
     ).toThrowError(expect.objectContaining({ code: "tool_policy_read_failed" }));
   });
 
-  it("forwards runtime.permissionMode to the runtime and does NOT forward the deprecated reasoningSummary", async () => {
+  it("forwards runtime.permissionMode to the runtime and never sets a reasoning-summary option", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -285,7 +285,6 @@ describe("agent host composition helpers", () => {
         identityPath,
         artifactDir,
         permissionMode: "bypassPermissions",
-        reasoningSummary: "detailed",
       }),
       runtime: fake.runtime,
     });
@@ -295,8 +294,8 @@ describe("agent host composition helpers", () => {
     );
 
     expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
-    // reasoningSummary is no longer wired to a runtime option: pi-native derives
-    // reasoning from effort and the codex/claude CLIs emit summaries themselves.
+    // The retired reasoning-summary knob is gone: pi-native derives reasoning from
+    // effort and the codex/claude CLIs emit summaries themselves.
     expect(fake.calls[0]?.options.piReasoningSummary).toBeUndefined();
   });
 
@@ -1020,7 +1019,6 @@ function monoConfig(input: {
   readonly artifactDir: string;
   readonly mcpConfigPath?: string;
   readonly permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
-  readonly reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on";
   readonly observability?: NonNullable<MonoAgentConfig["observability"]>;
 }): MonoAgentConfig {
   return {
@@ -1031,7 +1029,6 @@ function monoConfig(input: {
       workspace: input.dir,
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },
       ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
-      ...(input.reasoningSummary === undefined ? {} : { reasoningSummary: input.reasoningSummary }),
     },
     providers: {
       local: [

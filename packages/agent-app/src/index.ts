@@ -1,7 +1,6 @@
 export {
   isAppCoreConfigError,
   loadAppCoreConfig,
-  MONO_AGENT_APP_FIELD_GROUPS,
   phoenixAppBaseUrl,
   resolveAppArtifactDir,
   resolveAppObservabilityExporters,

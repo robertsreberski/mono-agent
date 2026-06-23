@@ -10,7 +10,6 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Backup models on retryable provider failure | config | `runtime.fallbackModels` |
 | Execution mode (sdk/cli), effort, max turns, workspace | config | `runtime.executionMode`, `runtime.effort`, `runtime.maxTurns`, `runtime.workspace` |
 | Tool-permission posture for CLI backends | config | `runtime.permissionMode` |
-| Reasoning summary verbosity | config | `runtime.reasoningSummary` |
 | Continuous provider sessions with idle eviction | config | `runtime.session.{mode,idleTimeoutMs}` |
 | Local providers (Ollama / LM Studio / OpenAI-compatible) | config | `providers.local[]` |
 | Pi OAuth credentials | config | `providers.piAuthPath` |
@@ -75,7 +74,10 @@ Every framework capability and how a composed agent reaches it. Use this to answ
 | Trace-source registry (heartbeat manifests `mono-agent status` reads) | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` |
 | Phoenix trace viewer (OTLP exporter; local JSONL artifacts are the fallback) | config | `observability.exporters` (phoenix entry) |
 | Terminal chat (TUI with transcript + redacted config pane) | cli | `mono-agent-tui --config ./mono-agent.config.json` |
-| Scaffold / validate / start / install-skill | cli | `mono-agent init|validate|start|install-skill` |
+| Executable config blueprints (generate config + `.env.example` + checklist) | cli | `mono-agent recipes list\|show <id>`, `mono-agent init --recipe <id>` |
+| Resolved config view (every field tagged env/json/default) | cli | `mono-agent config` |
+| Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate\|config\|recipes\|start\|install-skill` |
+| Recipe capability check (selected recipe live?) | cli | `mono-agent validate --recipe <id>` |
 | `.env` auto-loading | cli | automatic; `--env-file <path>` |
 | Explicit failure objects (no fake success) | auto | harness |
 | Per-request runtime options, custom memory/history stores | code | `createConfiguredAgentResponder` options |

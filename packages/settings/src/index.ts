@@ -1,11 +1,4 @@
 export {
-  defineFieldGroup,
-  readFieldValue,
-  readRawFieldValue,
-  writeFieldValue,
-} from "./field-group.js";
-export type { FieldValue } from "./field-group.js";
-export {
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
@@ -47,20 +40,7 @@ export type {
   SettingsJsonErrorCode,
   SettingsJsonErrorDetails,
 } from "./json-source.js";
-export { validateSettingsPatch } from "./patch-validator.js";
 export type {
-  PatchValidationError,
-  PatchValidationOk,
-  PatchValidationResult,
-} from "./patch-validator.js";
-export { isSecretMarker, redactSettingsForFieldGroups } from "./redact.js";
-export type { RedactedSecret, SecretMarker } from "./redact.js";
-export type {
-  FieldDefinition,
-  FieldGroup,
-  FieldGroupRegistry,
-  FieldKind,
-  FieldOption,
   SettingsJson,
   SettingsJsonValue,
   SettingsPrimitive,

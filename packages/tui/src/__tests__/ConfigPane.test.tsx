@@ -125,9 +125,9 @@ describe("buildTuiConfigSummary", () => {
     expect(runtime).toBeDefined();
     const fieldByLabel = (label: string) =>
       runtime?.fields.find((field) => field.label === label);
-    expect(fieldByLabel("model")?.source).toBe("json");
-    expect(fieldByLabel("executionMode")?.source).toBe("env");
-    expect(fieldByLabel("workspace")?.source).toBe("default");
+    expect(fieldByLabel("Model")?.source).toBe("json");
+    expect(fieldByLabel("Execution mode")?.source).toBe("env");
+    expect(fieldByLabel("Workspace")?.source).toBe("default");
   });
 
   it("renders an unlimited maxTurns when the runtime leaves it uncapped", () => {
@@ -155,7 +155,7 @@ describe("buildTuiConfigSummary", () => {
     });
 
     const runtime = sections.find((section) => section.heading === "runtime");
-    const maxTurns = runtime?.fields.find((field) => field.label === "maxTurns");
+    const maxTurns = runtime?.fields.find((field) => field.label === "Max turns");
     expect(maxTurns?.value).toBe("unlimited");
   });
 });

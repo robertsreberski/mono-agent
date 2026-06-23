@@ -102,7 +102,7 @@ OpenCode is registered as the `opencode-app` bridge in [`packages/agent-runtime/
 
 ## Execution modes
 
-`runtime.executionMode` is `sdk` or `cli`. When omitted, mono-agent infers a default from the model reference (e.g. `claude:` → `sdk`, `codex:` → `cli`). Each backend constrains which modes are valid; incompatible combinations are rejected with a specific reason rather than silently coerced. See [Execution, effort & permissions](/runtime/execution-effort-permissions/) for `effort`, `permissionMode`, and `reasoningSummary`.
+`runtime.executionMode` is `sdk` or `cli`. When omitted, mono-agent infers a default from the model reference (e.g. `claude:` → `sdk`, `codex:` → `cli`). Each backend constrains which modes are valid; incompatible combinations are rejected with a specific reason rather than silently coerced. See [Execution, effort & permissions](/runtime/execution-effort-permissions/) for `effort` and `permissionMode`.
 
 | SDK id | Allowed execution mode(s) |
 | --- | --- |
@@ -140,7 +140,7 @@ Env: `MONO_AGENT_FALLBACK_MODELS`. CLI: `mono-agent init --fallback-models ...`.
 ## Related
 
 - [Local providers](/runtime/local-providers/) — declaring Ollama / LM Studio / OpenAI-compatible providers for `pi:<provider>:<model>`.
-- [Execution, effort & permissions](/runtime/execution-effort-permissions/) — `executionMode`, `effort`, `permissionMode`, `reasoningSummary`.
+- [Execution, effort & permissions](/runtime/execution-effort-permissions/) — `executionMode`, `effort`, `permissionMode`.
 - [Fallback & failover](/runtime/fallback/) — ordered backup models.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous vs per-message sessions and resume.
 - [Environment variables](/config/env-vars/) — `MONO_AGENT_MODEL`, `MONO_AGENT_EXECUTION_MODE`, and friends.

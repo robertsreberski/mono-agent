@@ -24,7 +24,6 @@ export type {
   ObservabilityExporterConfig,
   PermissionMode,
   PhoenixExporterConfig,
-  ReasoningSummary,
   RedactedMemoryConfig,
   RedactedMemoryEmbeddingsConfig,
   RedactedMonoAgentConfig,
@@ -53,18 +52,13 @@ export type {
   MonoAgentConfigJson,
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
-export {
-  artifactsFieldGroup,
-  concurrencyFieldGroup,
-  CORE_AGENT_FIELD_GROUPS,
-  EFFORT_LEVELS,
-  PERMISSION_MODES,
-  REASONING_SUMMARIES,
-  identityFieldGroup,
-  memoryFieldGroup,
-  providersFieldGroup,
-  runtimeFieldGroup,
-  sandboxFieldGroup,
-  traceabilityFieldGroup,
-  toolsFieldGroup,
-} from "./field-groups.js";
+export { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
+export { buildMonoAgentConfigView, CONFIG_ENV_KEYS } from "./config-view.js";
+export type {
+  BuildMonoAgentConfigViewInput,
+  ConfigViewField,
+  ConfigViewFieldId,
+  ConfigViewFieldSource,
+  ConfigViewSection,
+  ConfigViewSectionStatus,
+} from "./config-view.js";

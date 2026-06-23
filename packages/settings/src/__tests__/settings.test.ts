@@ -1,22 +1,14 @@
-import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
-  defineFieldGroup,
-  isSecretMarker,
-  readFieldValue,
-  readRawFieldValue,
   readSettingsJson,
-  redactSettingsForFieldGroups,
   SettingsJsonError,
-  validateSettingsPatch,
-  writeFieldValue,
   writeSettingsJson,
 } from "../index.js";
-import type { FieldDefinition, FieldGroup, SettingsJson } from "../index.js";
 
 let dir: string;
 
@@ -26,105 +18,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
-});
-
-const groups: readonly FieldGroup[] = [
-  defineFieldGroup({
-    id: "runtime",
-    label: "Runtime",
-    fields: [
-      { id: "runtime.model", label: "Model", kind: "string", path: ["runtime", "model"] },
-      { id: "runtime.maxTurns", label: "Max turns", kind: "integer", min: 1, max: 100, path: ["runtime", "maxTurns"] },
-      { id: "runtime.enabled", label: "Enabled", kind: "switch", path: ["runtime", "enabled"] },
-    ],
-  }),
-  defineFieldGroup({
-    id: "telegram",
-    label: "Telegram",
-    fields: [
-      { id: "telegram.botToken", label: "Bot token", kind: "secret", path: ["telegram", "botToken"] },
-      { id: "telegram.allowedChatIds", label: "Allowed chats", kind: "csv", path: ["telegram", "allowedChatIds"] },
-    ],
-  }),
-];
-
-describe("field groups", () => {
-  it("reads and writes field values without knowing package-specific config shapes", () => {
-    const modelField = groups[0]?.fields[0];
-    const turnsField = groups[0]?.fields[1];
-    const enabledField = groups[0]?.fields[2];
-    const chatsField = groups[1]?.fields[1];
-    if (!modelField || !turnsField || !enabledField || !chatsField) {
-      throw new Error("missing fixture field");
-    }
-
-    let patch: SettingsJson = {};
-    patch = writeFieldValue(patch, modelField, " pi:openai-codex:gpt-5.5 ");
-    patch = writeFieldValue(patch, turnsField, "12");
-    patch = writeFieldValue(patch, enabledField, "true");
-    patch = writeFieldValue(patch, chatsField, "111, 222");
-
-    expect(patch).toEqual({
-      runtime: { model: "pi:openai-codex:gpt-5.5", maxTurns: 12, enabled: true },
-      telegram: { allowedChatIds: ["111", "222"] },
-    });
-    expect(readFieldValue(patch, turnsField)).toBe(12);
-    expect(readFieldValue(patch, enabledField)).toBe(true);
-    expect(readFieldValue(patch, chatsField)).toBe("111, 222");
-  });
-});
-
-describe("validateSettingsPatch", () => {
-  it("rejects unregistered leaves and invalid values before persistence", () => {
-    const result = validateSettingsPatch(
-      {
-        runtime: { maxTurns: 0, model: "pi:openai-codex:gpt-5.5" },
-        unknown: { value: "nope" },
-      },
-      groups,
-    );
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.unregistered).toEqual(["unknown.value"]);
-      expect(result.invalid).toEqual([{ path: "runtime.maxTurns", reason: "runtime.maxTurns must be >= 1." }]);
-    }
-  });
-
-  it("returns a clean sparse patch containing only registered field paths", () => {
-    const result = validateSettingsPatch(
-      {
-        runtime: { maxTurns: "14", enabled: "false" },
-        telegram: { allowedChatIds: "111, 222" },
-      },
-      groups,
-    );
-
-    expect(result).toEqual({
-      ok: true,
-      patch: {
-        runtime: { maxTurns: 14, enabled: false },
-        telegram: { allowedChatIds: ["111", "222"] },
-      },
-    });
-  });
-});
-
-describe("redactSettingsForFieldGroups", () => {
-  it("replaces registered secret fields without leaking stored values", () => {
-    const redacted = redactSettingsForFieldGroups(
-      { telegram: { botToken: "123456:test-token", allowedChatIds: ["111"] } },
-      groups,
-    );
-
-    expect(JSON.stringify(redacted)).not.toContain("secret-token");
-    expect(redacted).toEqual({
-      telegram: {
-        botToken: { __secret: true, set: true },
-        allowedChatIds: ["111"],
-      },
-    });
-  });
 });
 
 describe("settings JSON store", () => {
@@ -236,70 +129,5 @@ describe("writeSettingsJson atomic write", () => {
 
     const entries = await readdir(dir);
     expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
-  });
-});
-
-describe("field read/write edge cases", () => {
-  const stringField: FieldDefinition = { id: "runtime.model", label: "Model", kind: "string", path: ["runtime", "model"] };
-  const intField: FieldDefinition = { id: "runtime.maxTurns", label: "Max turns", kind: "integer", min: 1, max: 100, path: ["runtime", "maxTurns"] };
-  const selectField: FieldDefinition = {
-    id: "runtime.mode",
-    label: "Mode",
-    kind: "select",
-    options: [
-      { value: "fast", label: "Fast" },
-      { value: "slow", label: "Slow" },
-    ],
-    path: ["runtime", "mode"],
-  };
-
-  it("clears a path when an empty string is written", () => {
-    let patch: SettingsJson = { runtime: { model: "keep" } };
-    patch = writeFieldValue(patch, stringField, "");
-    expect(patch).toEqual({ runtime: {} });
-  });
-
-  it("throws when a non-integer string is written to an integer field", () => {
-    expect(() => writeFieldValue({}, intField, "abc")).toThrow("runtime.maxTurns must be an integer.");
-  });
-
-  it("enforces min/max bounds on integer writes (aligned with validateSettingsPatch)", () => {
-    expect(() => writeFieldValue({}, intField, "0")).toThrow("runtime.maxTurns must be >= 1.");
-    expect(() => writeFieldValue({}, intField, "1000")).toThrow("runtime.maxTurns must be <= 100.");
-  });
-
-  it("accepts negative integers consistently in write and validate paths", () => {
-    const signedField: FieldDefinition = { id: "runtime.offset", label: "Offset", kind: "integer", path: ["runtime", "offset"] };
-    expect(writeFieldValue({}, signedField, "-5")).toEqual({ runtime: { offset: -5 } });
-    const validated = validateSettingsPatch({ runtime: { offset: "-5" } }, [
-      defineFieldGroup({ id: "runtime", label: "Runtime", fields: [signedField] }),
-    ]);
-    expect(validated).toEqual({ ok: true, patch: { runtime: { offset: -5 } } });
-  });
-
-  it("rejects a select value that is not in the declared options", () => {
-    const result = validateSettingsPatch({ runtime: { mode: "turbo" } }, [
-      defineFieldGroup({ id: "runtime", label: "Runtime", fields: [selectField] }),
-    ]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.invalid).toEqual([
-        { path: "runtime.mode", reason: "runtime.mode must be one of: fast, slow." },
-      ]);
-    }
-  });
-
-  it("reads raw stored values and secret markers without re-traversing paths", () => {
-    const secretField: FieldDefinition = { id: "telegram.botToken", label: "Bot token", kind: "secret", path: ["telegram", "botToken"] };
-    const redacted = redactSettingsForFieldGroups(
-      { telegram: { botToken: "real-secret" } },
-      [defineFieldGroup({ id: "telegram", label: "Telegram", fields: [secretField] })],
-    );
-    const raw = readRawFieldValue(redacted, secretField);
-    expect(isSecretMarker(raw)).toBe(true);
-    expect(isSecretMarker({ __secret: true })).toBe(false);
-    expect(isSecretMarker("real-secret")).toBe(false);
-    expect(readRawFieldValue({ runtime: { model: "m" } }, stringField)).toBe("m");
-    expect(readRawFieldValue({}, stringField)).toBeUndefined();
   });
 });

@@ -1,5 +1,4 @@
 import {
-  defineFieldGroup,
   isLoopbackHost,
   layerJsonOntoEnv,
   normalizeOptionalString,
@@ -13,7 +12,7 @@ import {
   readString,
   redactedSecret,
 } from "@mono-agent/settings";
-import type { FieldGroup, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
+import type { RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
 
 import type { A2AAgentSkillOptions } from "./card.js";
 import { A2AProviderError } from "./errors.js";
@@ -75,163 +74,6 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 const invalidConfig = (message: string, details?: Record<string, unknown>): A2AProviderError =>
   new A2AProviderError("invalid_config", message, details);
-
-export const a2aFieldGroup: FieldGroup = defineFieldGroup({
-  id: "a2a",
-  label: "A2A",
-  description: "Optional A2A provider and consumer configuration.",
-  fields: [
-    {
-      id: "a2a.provider.enabled",
-      label: "Enable provider",
-      description: "Expose this responder as an A2A provider.",
-      kind: "switch",
-      path: ["a2a", "provider", "enabled"],
-    },
-    {
-      id: "a2a.provider.host",
-      label: "Provider host",
-      description: "Bind host. Defaults to 127.0.0.1.",
-      kind: "string",
-      placeholder: "127.0.0.1",
-      path: ["a2a", "provider", "host"],
-    },
-    {
-      id: "a2a.provider.port",
-      label: "Provider port",
-      description: "Bind port. Use 0 to choose a free loopback port.",
-      kind: "integer",
-      min: 0,
-      max: 65535,
-      placeholder: "0",
-      path: ["a2a", "provider", "port"],
-    },
-    {
-      id: "a2a.provider.publicBaseUrl",
-      label: "Public base URL",
-      description: "Advertised base URL for Agent Card interfaces.",
-      kind: "string",
-      placeholder: "http://127.0.0.1:4300",
-      path: ["a2a", "provider", "publicBaseUrl"],
-    },
-    {
-      id: "a2a.provider.allowNonLoopback",
-      label: "Allow non-loopback",
-      description: "Explicitly allow public/non-loopback binding or advertised URLs.",
-      kind: "switch",
-      path: ["a2a", "provider", "allowNonLoopback"],
-    },
-    {
-      id: "a2a.provider.requireBearer",
-      label: "Require bearer",
-      description: "Require Authorization: Bearer for A2A message and task endpoints.",
-      kind: "switch",
-      path: ["a2a", "provider", "requireBearer"],
-    },
-    {
-      id: "a2a.provider.bearerToken",
-      label: "Provider bearer token",
-      description: "Token required when bearer auth is enabled. Never returned to the UI after save.",
-      kind: "secret",
-      path: ["a2a", "provider", "bearerToken"],
-    },
-    {
-      id: "a2a.agent.name",
-      label: "Agent name",
-      description: "Human-readable Agent Card name.",
-      kind: "string",
-      path: ["a2a", "agent", "name"],
-    },
-    {
-      id: "a2a.agent.description",
-      label: "Agent description",
-      description: "Human-readable Agent Card description.",
-      kind: "string",
-      path: ["a2a", "agent", "description"],
-    },
-    {
-      id: "a2a.agent.version",
-      label: "Agent version",
-      description: "Agent version advertised in the Agent Card.",
-      kind: "string",
-      placeholder: "0.1.0",
-      path: ["a2a", "agent", "version"],
-    },
-    {
-      id: "a2a.agent.providerOrganization",
-      label: "Provider organization",
-      description: "Optional provider organization for the Agent Card.",
-      kind: "string",
-      path: ["a2a", "agent", "providerOrganization"],
-    },
-    {
-      id: "a2a.agent.providerUrl",
-      label: "Provider URL",
-      description: "Optional provider URL for the Agent Card.",
-      kind: "string",
-      path: ["a2a", "agent", "providerUrl"],
-    },
-    {
-      id: "a2a.skill.id",
-      label: "Skill id",
-      description: "A2A skill identifier.",
-      kind: "string",
-      path: ["a2a", "skill", "id"],
-    },
-    {
-      id: "a2a.skill.name",
-      label: "Skill name",
-      description: "A2A skill name.",
-      kind: "string",
-      path: ["a2a", "skill", "name"],
-    },
-    {
-      id: "a2a.skill.description",
-      label: "Skill description",
-      description: "A2A skill description.",
-      kind: "string",
-      path: ["a2a", "skill", "description"],
-    },
-    {
-      id: "a2a.skill.tags",
-      label: "Skill tags",
-      description: "Comma-separated A2A skill tags.",
-      kind: "csv",
-      path: ["a2a", "skill", "tags"],
-    },
-    {
-      id: "a2a.consumer.remoteAgentUrls",
-      label: "Remote agent URLs",
-      description: "Comma-separated base or Agent Card URLs for remote A2A agents.",
-      kind: "csv",
-      path: ["a2a", "consumer", "remoteAgentUrls"],
-    },
-    {
-      id: "a2a.consumer.defaultRemoteAgentUrl",
-      label: "Default remote URL",
-      description: "Default remote A2A agent URL for hosts that need one.",
-      kind: "string",
-      path: ["a2a", "consumer", "defaultRemoteAgentUrl"],
-    },
-    {
-      id: "a2a.consumer.bearerToken",
-      label: "Consumer bearer token",
-      description: "Bearer token used when calling remote A2A agents.",
-      kind: "secret",
-      path: ["a2a", "consumer", "bearerToken"],
-    },
-    {
-      id: "a2a.consumer.timeoutMs",
-      label: "Consumer timeout",
-      description: "Per-call timeout in milliseconds.",
-      kind: "integer",
-      min: 1,
-      max: 600_000,
-      placeholder: "30000",
-      path: ["a2a", "consumer", "timeoutMs"],
-    },
-  ],
-});
 
 export async function loadA2AAdapterConfig(
   input: LoadA2AAdapterConfigInput,

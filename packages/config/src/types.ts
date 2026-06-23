@@ -2,7 +2,7 @@ import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReferen
 import type { SandboxPolicy } from "@mono-agent/sandbox";
 import type { RedactedSecretValue } from "@mono-agent/settings";
 
-import type { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
+import type { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";
 export type MemoryMode = "lite" | "journal" | "bujo";
@@ -106,7 +106,6 @@ export type SessionRollover = "none" | "daily";
 export type SkillDisclosureMode = "index" | "full";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
-export type ReasoningSummary = (typeof REASONING_SUMMARIES)[number];
 
 export interface MonoAgentConfig {
   readonly runtime: {
@@ -121,8 +120,6 @@ export interface MonoAgentConfig {
     readonly effort?: EffortLevel;
     /** Tool-permission posture forwarded to the runtime (CLI execution modes). */
     readonly permissionMode?: PermissionMode;
-    /** Verbosity of provider reasoning summaries surfaced by the runtime. */
-    readonly reasoningSummary?: ReasoningSummary;
     /** Optional hard cap per run; omitted means unlimited. */
     readonly maxTurns?: number;
     readonly workspace: string;

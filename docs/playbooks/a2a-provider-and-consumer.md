@@ -57,7 +57,7 @@ The block below is a single `mono-agent.config.json` carrying **both** sides for
 }
 ```
 
-Keep the bearer token out of the file in production by supplying it via env var: `MONO_AGENT_A2A_PROVIDER_BEARER_TOKEN=...` maps to `a2a.provider.bearerToken`, and `MONO_AGENT_A2A_PROVIDER_ENABLED=true` maps to `a2a.provider.enabled`. See [../config/env-vars.md](/config/env-vars/).
+Keep the bearer token out of the file in production by supplying it via env var: `MONO_AGENT_A2A_BEARER_TOKEN=...` maps to `a2a.provider.bearerToken`, and `MONO_AGENT_A2A_PROVIDER_ENABLED=true` maps to `a2a.provider.enabled`. See [../config/env-vars.md](/config/env-vars/).
 
 :::caution
 When the provider sits behind a proxy or is reached from another host, set `a2a.provider.publicBaseUrl` so the Agent Card advertises the right URL, and `a2a.provider.allowNonLoopback: true` to bind beyond `127.0.0.1`. Always pair non-loopback exposure with `requireBearer: true`.

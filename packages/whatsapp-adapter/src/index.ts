@@ -32,7 +32,6 @@ export {
   loadWhatsAppAdapterConfig,
   redactWhatsAppAdapterConfig,
   WhatsAppAdapterConfigError,
-  whatsappFieldGroup,
 } from "./config.js";
 export type {
   LoadWhatsAppAdapterConfigInput,

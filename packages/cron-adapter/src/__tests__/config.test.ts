@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
-  cronFieldGroup,
   loadCronAdapterConfig,
   redactCronAdapterConfig,
   toCronJobs,
@@ -154,13 +153,5 @@ describe("toCronJobs", () => {
       { id: "on", expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1" },
     ]);
     expect(jobs.some((job) => job.id === "off")).toBe(false);
-  });
-});
-
-describe("cronFieldGroup", () => {
-  it("declares single-job cron settings for operator surfaces", () => {
-    expect(cronFieldGroup.id).toBe("cron");
-    expect(cronFieldGroup.fields.find((field) => field.id === "cron.enabled")?.kind).toBe("switch");
-    expect(cronFieldGroup.fields.find((field) => field.id === "cron.expression")?.kind).toBe("string");
   });
 });

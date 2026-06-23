@@ -59,7 +59,7 @@ When you own the transport but still want config-driven runtime, harness, and me
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
 
-const { config } = await loadMonoAgentConfigWithSources({
+const config = await loadMonoAgentConfigWithSources({
   env: process.env,
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",
@@ -94,7 +94,7 @@ The minimal local host is just two packages: load a config, build a responder. N
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
 import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
 
-const { config } = await loadMonoAgentConfigWithSources({
+const config = await loadMonoAgentConfigWithSources({
   env: process.env,
   cwd: process.cwd(),
   jsonPath: "./mono-agent.config.json",

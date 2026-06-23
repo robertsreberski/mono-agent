@@ -86,7 +86,6 @@ export {
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,
   TelegramAdapterConfigError,
-  telegramFieldGroup,
 } from "./config.js";
 export type {
   LoadTelegramAdapterConfigInput,

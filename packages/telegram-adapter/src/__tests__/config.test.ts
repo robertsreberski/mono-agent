@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,
-  telegramFieldGroup,
   TelegramAdapterConfigError,
 } from "../config.js";
 
@@ -112,14 +111,5 @@ describe("redactTelegramAdapterConfig", () => {
       allowedChatIds: { count: 2 },
       allowAllChats: false,
     });
-  });
-});
-
-describe("telegramFieldGroup", () => {
-  it("declares Telegram adapter settings including the write-only token", () => {
-    expect(telegramFieldGroup.id).toBe("telegram");
-    expect(telegramFieldGroup.fields.find((field) => field.id === "telegram.enabled")?.kind).toBe("switch");
-    expect(telegramFieldGroup.fields.find((field) => field.id === "telegram.botToken")?.kind).toBe("secret");
-    expect(telegramFieldGroup.fields.find((field) => field.id === "telegram.allowAllChats")?.kind).toBe("switch");
   });
 });

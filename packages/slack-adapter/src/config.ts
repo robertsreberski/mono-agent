@@ -1,5 +1,4 @@
 import {
-  defineFieldGroup,
   layerJsonOntoEnv,
   readBoolean,
   readCsv,
@@ -9,7 +8,6 @@ import {
   redactedSecret,
 } from "@mono-agent/settings";
 import type {
-  FieldGroup,
   RedactedSecretValue,
   SettingsJson,
 } from "@mono-agent/settings";
@@ -102,73 +100,6 @@ export interface LoadSlackAdapterConfigInput {
   readonly json?: SettingsJson;
   readonly jsonPath?: string;
 }
-
-export const slackFieldGroup: FieldGroup = defineFieldGroup({
-  id: "slack",
-  label: "Slack",
-  description: "Optional Slack Socket Mode adapter configuration. Tokens are write-only.",
-  fields: [
-    {
-      id: "slack.enabled",
-      label: "Enable Slack",
-      description: "Start the Slack adapter with the app. Off by default.",
-      kind: "switch",
-      path: ["slack", "enabled"],
-    },
-    {
-      id: "slack.botToken",
-      label: "Bot token",
-      description: "Slack bot token used for chat.postMessage and chat.update.",
-      kind: "secret",
-      path: ["slack", "botToken"],
-    },
-    {
-      id: "slack.appToken",
-      label: "App token",
-      description: "Slack app-level token with connections:write for Socket Mode.",
-      kind: "secret",
-      path: ["slack", "appToken"],
-    },
-    {
-      id: "slack.allowedChannelIds",
-      label: "Allowed channel IDs",
-      description: "Comma-separated Slack channel or DM IDs the adapter may respond to.",
-      kind: "csv",
-      placeholder: "D123456, C123456",
-      path: ["slack", "allowedChannelIds"],
-    },
-    {
-      id: "slack.allowAllChannels",
-      label: "Allow all channels",
-      description: "Explicitly permit every channel delivered to the app.",
-      kind: "switch",
-      path: ["slack", "allowAllChannels"],
-    },
-    {
-      id: "slack.botUserIds",
-      label: "Bot user IDs",
-      description: "Comma-separated Slack user IDs that should count as this bot.",
-      kind: "csv",
-      placeholder: "U123456",
-      path: ["slack", "botUserIds"],
-    },
-    {
-      id: "slack.mentionTextAliases",
-      label: "Mention aliases",
-      description: "Comma-separated mention text aliases to strip before runtime calls.",
-      kind: "csv",
-      placeholder: "@agent, Assistant",
-      path: ["slack", "mentionTextAliases"],
-    },
-    {
-      id: "slack.stripMentionText",
-      label: "Strip mention text",
-      description: "Remove configured bot mentions and aliases before sending text to the responder.",
-      kind: "switch",
-      path: ["slack", "stripMentionText"],
-    },
-  ],
-});
 
 const missingConfig = (
   message: string,

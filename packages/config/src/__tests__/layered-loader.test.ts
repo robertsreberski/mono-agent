@@ -88,25 +88,22 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_PI_SESSIONS_ROOT).toBe(".mono-agent/sessions");
   });
 
-  it("translates JSON runtime permission mode and reasoning summary to env keys", () => {
+  it("translates JSON runtime permission mode to env keys", () => {
     const layered = layerJsonOntoEnv(
-      { runtime: { permissionMode: "bypassPermissions", reasoningSummary: "detailed" } },
+      { runtime: { permissionMode: "bypassPermissions" } },
       {},
     );
     expect(layered.MONO_AGENT_PERMISSION_MODE).toBe("bypassPermissions");
-    expect(layered.MONO_AGENT_REASONING_SUMMARY).toBe("detailed");
   });
 
-  it("lets env override JSON permission mode and reasoning summary", () => {
+  it("lets env override JSON permission mode", () => {
     const layered = layerJsonOntoEnv(
-      { runtime: { permissionMode: "bypassPermissions", reasoningSummary: "detailed" } },
+      { runtime: { permissionMode: "bypassPermissions" } },
       {
         MONO_AGENT_PERMISSION_MODE: "default",
-        MONO_AGENT_REASONING_SUMMARY: "concise",
       },
     );
     expect(layered.MONO_AGENT_PERMISSION_MODE).toBe("default");
-    expect(layered.MONO_AGENT_REASONING_SUMMARY).toBe("concise");
   });
 
   it("translates JSON concurrency to env keys", () => {

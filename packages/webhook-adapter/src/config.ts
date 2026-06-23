@@ -1,7 +1,6 @@
 import { resolve } from "node:path";
 
 import {
-  defineFieldGroup,
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
@@ -11,7 +10,7 @@ import {
   readSettingsJson,
   readString,
 } from "@mono-agent/settings";
-import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
+import type { SettingsJson } from "@mono-agent/settings";
 
 import { loadWebhookEndpointsFromDirectory } from "./endpoints-dir.js";
 import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "./server.js";
@@ -65,103 +64,6 @@ const WEBHOOK_MODES: readonly WebhookInvocationMode[] = ["sync", "async"];
 
 const invalidConfig = (message: string, details?: Record<string, unknown>): WebhookAdapterError =>
   new WebhookAdapterError("invalid_config", message, details);
-
-export const webhookFieldGroup: FieldGroup = defineFieldGroup({
-  id: "webhook",
-  label: "Webhook",
-  description:
-    "Optional HTTP webhook invocation adapter. Configures the default endpoint; use `webhook.endpoints` JSON or `webhook/*.md` files for multiple endpoints.",
-  fields: [
-    {
-      id: "webhook.enabled",
-      label: "Enable webhook",
-      description: "Expose an HTTP endpoint that can invoke the configured agent.",
-      kind: "switch",
-      path: ["webhook", "enabled"],
-    },
-    {
-      id: "webhook.host",
-      label: "Host",
-      description: "Bind host. Defaults to 127.0.0.1.",
-      kind: "string",
-      placeholder: "127.0.0.1",
-      path: ["webhook", "host"],
-    },
-    {
-      id: "webhook.port",
-      label: "Port",
-      description:
-        "Bind port for this webhook server (independent of the parent process). Use 0 for a random free port, or set an explicit port for a stable URL.",
-      kind: "integer",
-      min: 0,
-      max: 65535,
-      placeholder: "0",
-      path: ["webhook", "port"],
-    },
-    {
-      id: "webhook.path",
-      label: "Path",
-      description: "POST path for the default endpoint.",
-      kind: "string",
-      placeholder: "/webhook/invoke",
-      path: ["webhook", "path"],
-    },
-    {
-      id: "webhook.prompt",
-      label: "Prompt",
-      description: "Pre-instructions prepended to the incoming request text for the default endpoint.",
-      kind: "string",
-      path: ["webhook", "prompt"],
-    },
-    {
-      id: "webhook.dir",
-      label: "Endpoints folder",
-      description:
-        "Folder of `*.md` webhook endpoints (frontmatter routing + prompt body), resolved against the app working directory.",
-      kind: "string",
-      placeholder: "webhook",
-      path: ["webhook", "dir"],
-    },
-    {
-      id: "webhook.allowNonLoopback",
-      label: "Allow non-loopback",
-      description: "Explicitly allow public/non-loopback binding.",
-      kind: "switch",
-      path: ["webhook", "allowNonLoopback"],
-    },
-    {
-      id: "webhook.defaultMode",
-      label: "Default mode",
-      description: "Invocation mode used when an endpoint or request body omits mode.",
-      kind: "select",
-      options: [
-        { value: "sync", label: "sync" },
-        { value: "async", label: "async" },
-      ],
-      path: ["webhook", "defaultMode"],
-    },
-    {
-      id: "webhook.retentionMs",
-      label: "Status retention",
-      description: "How long async request status remains in memory.",
-      kind: "integer",
-      min: 1,
-      max: 86_400_000,
-      placeholder: "300000",
-      path: ["webhook", "retentionMs"],
-    },
-    {
-      id: "webhook.maxStoredRequests",
-      label: "Max stored requests",
-      description: "Maximum number of in-memory async statuses to retain.",
-      kind: "integer",
-      min: 1,
-      max: 10_000,
-      placeholder: "100",
-      path: ["webhook", "maxStoredRequests"],
-    },
-  ],
-});
 
 export async function loadWebhookAdapterConfig(
   input: LoadWebhookAdapterConfigInput,

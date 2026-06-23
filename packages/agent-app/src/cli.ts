@@ -4,9 +4,16 @@ import { basename, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
+import {
+  buildMonoAgentConfigView,
+  readMonoAgentConfigJson,
+  redactMonoAgentConfig,
+} from "@mono-agent/config";
+import type { ConfigViewSection } from "@mono-agent/config";
+
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp } from "./app.js";
-import { phoenixAppBaseUrl } from "./app-config.js";
+import { isAppCoreConfigError, loadAppCoreConfig, phoenixAppBaseUrl } from "./app-config.js";
 import { runBackfill } from "./backfill.js";
 import {
   defaultBackgroundDeps,
@@ -21,9 +28,12 @@ import type { BackgroundDeps, InstanceTarget } from "./background.js";
 import type { ChannelStatus } from "./channels.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
-import { initMonoAgentFolder } from "./init.js";
+import { initMonoAgentFolder, isWithChannel } from "./init.js";
+import type { WithChannel } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
+import { findRecipe, RECIPE_CATALOG, recipeIds, resolveRecipeInputs } from "./recipes/index.js";
+import type { AgentRecipe } from "./recipes/index.js";
 import { purgeSessions } from "./sessions.js";
 import * as ui from "./ui.js";
 
@@ -33,7 +43,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "validate", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
+const KNOWN_COMMANDS = ["init", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -43,6 +53,12 @@ interface ParsedCliArgs {
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
   readonly memory?: "lite" | "journal" | "bujo";
+  /** init/validate: build/check against this recipe id. */
+  readonly recipe?: string;
+  /** init: additional channels to enable on top of the recipe/default config. */
+  readonly withChannels?: readonly string[];
+  /** Non-flag arguments (e.g. `recipes show <id>`). */
+  readonly positionals: readonly string[];
   readonly envFile?: string;
   readonly target?: InstallSkillTarget;
   readonly force: boolean;
@@ -67,7 +83,7 @@ interface ParsedCliArgs {
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    return { command: "help", force: false, foreground: false, follow: false, all: false, dryRun: false };
+    return { command: "help", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false };
   }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
@@ -79,6 +95,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let model: string | undefined;
   let fallbackModels: readonly string[] | undefined;
   let memory: "lite" | "journal" | "bujo" | undefined;
+  let recipe: string | undefined;
+  let withChannels: readonly string[] | undefined;
+  const positionals: string[] = [];
   let envFile: string | undefined;
   let target: InstallSkillTarget | undefined;
   let force = false;
@@ -129,6 +148,15 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         memory = raw;
         break;
       }
+      case "--recipe":
+        recipe = requireValue(rest, ++i, flag);
+        break;
+      case "--with":
+        withChannels = requireValue(rest, ++i, flag)
+          .split(",")
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0);
+        break;
       case "--env-file":
         envFile = requireValue(rest, ++i, flag);
         break;
@@ -167,7 +195,15 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       }
       default:
-        throw new Error(`Unknown flag \`${flag}\` for \`mono-agent ${command}\`.`);
+        if (flag === undefined) {
+          break;
+        }
+        if (flag.startsWith("--")) {
+          throw new Error(`Unknown flag \`${flag}\` for \`mono-agent ${command}\`.`);
+        }
+        // Non-flag tokens are positional arguments (e.g. `recipes show <id>`).
+        positionals.push(flag);
+        break;
     }
   }
 
@@ -177,6 +213,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(model === undefined ? {} : { model }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(memory === undefined ? {} : { memory }),
+    ...(recipe === undefined ? {} : { recipe }),
+    ...(withChannels === undefined ? {} : { withChannels }),
+    positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(target === undefined ? {} : { target }),
     force,
@@ -220,15 +259,34 @@ interface HelpEntry {
 
 const HELP_COMMANDS: readonly HelpEntry[] = [
   {
-    signature: "mono-agent init [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]",
+    signature: "mono-agent init [--recipe <id>] [--with <csv>] [--dry-run]\n" +
+      "                [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]",
     lines: [
       "Scaffold mono-agent.config.json, IDENTITY.md, and .mono-agent/ in the",
-      "current folder. Existing files are never overwritten.",
+      "current folder. With --recipe, build from a blueprint (+ .env.example);",
+      "--with adds channels, --dry-run previews. Existing files are never overwritten.",
     ],
   },
   {
-    signature: "mono-agent validate [--config <path>] [--env-file <path>]",
-    lines: ["Load every config section and report what would run, wait, or fail."],
+    signature: "mono-agent recipes list | show <id>",
+    lines: [
+      "List the executable config blueprints, or show one's generated config,",
+      ".env.example, and follow-up checklist.",
+    ],
+  },
+  {
+    signature: "mono-agent validate [--recipe <id>] [--config <path>] [--env-file <path>]",
+    lines: [
+      "Load every config section and report what would run, wait, or fail.",
+      "With --recipe, also report whether the recipe's capabilities are live.",
+    ],
+  },
+  {
+    signature: "mono-agent config [--config <path>] [--env-file <path>]",
+    lines: [
+      "Print the resolved config field-by-field, tagging each value with where",
+      "it came from (env / json / default), plus the channel summary. Read-only.",
+    ],
   },
   {
     signature: "mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]",
@@ -330,6 +388,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return await runInit(args);
     case "validate":
       return await runValidate(args);
+    case "config":
+      return await runConfig(args);
+    case "recipes":
+      return runRecipes(args);
     case "start":
       return await runStart(args);
     case "restart":
@@ -352,27 +414,63 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 }
 
 async function runInit(args: ParsedCliArgs): Promise<number> {
+  let recipe: AgentRecipe | undefined;
+  if (args.recipe !== undefined) {
+    recipe = findRecipe(args.recipe);
+    if (recipe === undefined) {
+      process.stderr.write(ui.errorLine(`Unknown recipe \`${args.recipe}\`.`));
+      process.stderr.write(ui.hint("Run `mono-agent recipes list` to see available recipes."));
+      return 1;
+    }
+  }
+
+  let withChannels: readonly WithChannel[] | undefined;
+  if (args.withChannels !== undefined) {
+    const invalid = args.withChannels.filter((channel) => !isWithChannel(channel));
+    if (invalid.length > 0) {
+      process.stderr.write(ui.errorLine(`Unknown --with channel(s): ${invalid.join(", ")}.`));
+      process.stderr.write(ui.hint("Valid channels: telegram, slack, a2a, webhook, openaiApi, cron."));
+      return 1;
+    }
+    withChannels = args.withChannels.filter(isWithChannel);
+  }
+
   const result = await initMonoAgentFolder({
     dir: process.cwd(),
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
     ...(args.memory === undefined ? {} : { memory: args.memory }),
+    ...(recipe === undefined ? {} : { recipe }),
+    ...(withChannels === undefined ? {} : { withChannels }),
+    dryRun: args.dryRun,
   });
 
+  if (result.dryRun) {
+    process.stdout.write(ui.style.dim("Dry run — nothing was written.\n"));
+  }
+  const verb = result.dryRun ? "would create" : "created";
   for (const path of result.created) {
-    process.stdout.write(`${ui.badge("ok")}${ui.style.green("created")}  ${path}\n`);
+    process.stdout.write(`${ui.badge("ok")}${ui.style.green(verb.padEnd(12))}  ${path}\n`);
   }
   for (const path of result.skipped) {
-    process.stdout.write(ui.style.dim(`  kept     ${path}`) + "\n");
+    process.stdout.write(ui.style.dim(`  kept          ${path}`) + "\n");
   }
   if (result.knowledgeFiles.length > 0) {
     process.stdout.write(`\nIdentity references existing knowledge: ${ui.style.cyan(result.knowledgeFiles.join(", "))}\n`);
   }
+  if (recipe !== undefined) {
+    process.stdout.write(`\n${ui.style.bold("Recipe:")} ${ui.style.cyan(recipe.id)} ${ui.style.dim(`(risk: ${recipe.riskLevel})`)}\n`);
+    if (recipe.envExample !== undefined) {
+      process.stdout.write(ui.style.dim("Fill the secret placeholders in .env.example, then copy it to .env.\n"));
+    }
+  }
+
+  const validateCmd = recipe === undefined ? "mono-agent validate" : `mono-agent validate --recipe ${recipe.id}`;
   process.stdout.write(
     "\n" +
       ui.heading("Next steps") +
       `  ${ui.style.bold("1.")} Edit ${result.configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
-      `  ${ui.style.bold("2.")} mono-agent validate\n` +
+      `  ${ui.style.bold("2.")} ${validateCmd}\n` +
       `  ${ui.style.bold("3.")} mono-agent start\n`,
   );
   return 0;
@@ -406,12 +504,213 @@ async function runValidate(args: ParsedCliArgs): Promise<number> {
   for (const section of report.sections) {
     process.stdout.write(formatSection(section));
   }
+
+  if (args.recipe !== undefined) {
+    const recipe = findRecipe(args.recipe);
+    if (recipe === undefined) {
+      process.stderr.write(ui.errorLine(`Unknown recipe \`${args.recipe}\`.`));
+      process.stderr.write(ui.hint("Run `mono-agent recipes list` to see available recipes."));
+      return 1;
+    }
+    process.stdout.write(renderRecipeCompleteness(recipe, report));
+  }
+
   process.stdout.write(
     report.ok
-      ? `\n${ui.style.green("✓ Config is ready to start.")}\n`
+      ? `\n${ui.style.green("✓ Config is ready to start.")}\n${ui.style.dim("Run `mono-agent config` for the full field-by-field view.")}\n`
       : `\n${ui.hint("Fix the errors above, then re-run mono-agent validate.")}`,
   );
   return report.ok ? 0 : 1;
+}
+
+/**
+ * Capability-aware recipe check: for each capability the recipe promises, report
+ * whether the matching doctor section has reached the expected status. `waiting`
+ * stays non-fatal (it never changes the validate exit code) but is surfaced as
+ * "selected recipe incomplete" so the operator knows what is left to wire up.
+ */
+function renderRecipeCompleteness(recipe: AgentRecipe, report: ValidationReport): string {
+  let out = "\n" + ui.heading(`Recipe: ${recipe.id}`);
+  let incomplete = 0;
+  for (const expectation of recipe.validateExpectations) {
+    const section = report.sections.find((entry) => entry.id === expectation.sectionId);
+    const status: ValidationStatus | "missing" = section?.status ?? "missing";
+    const met = status === expectation.mustBe;
+    if (!met) {
+      incomplete += 1;
+    }
+    const badge = met ? ui.badge("ok") : ui.badge(status === "error" ? "error" : "waiting");
+    out += `${badge}${ui.style.bold(expectation.sectionId)} ${ui.style.dim(`(${status}, expected ${expectation.mustBe})`)}\n`;
+    if (!met && expectation.note !== undefined) {
+      out += `    ${ui.style.dim(expectation.note)}\n`;
+    }
+  }
+  out += incomplete === 0
+    ? `${ui.style.green(`✓ Recipe ${recipe.id} is fully configured.`)}\n`
+    : ui.style.yellow(`⚠ Selected recipe incomplete: ${incomplete} capability(ies) not yet live.\n`);
+  return out;
+}
+
+function riskColor(risk: AgentRecipe["riskLevel"]): string {
+  if (risk === "high") {
+    return ui.style.red(risk);
+  }
+  if (risk === "medium") {
+    return ui.style.yellow(risk);
+  }
+  return ui.style.green(risk);
+}
+
+/** `mono-agent recipes list` — one line per recipe. */
+export function renderRecipeList(): string {
+  let out = ui.banner("mono-agent", "recipes") + "\n";
+  for (const recipe of RECIPE_CATALOG) {
+    out += `${ui.style.bold(ui.style.cyan(recipe.id))} ${ui.style.dim(`[${riskColor(recipe.riskLevel)}]`)}\n`;
+    out += `    ${recipe.title}\n`;
+    out += `    ${ui.style.dim(recipe.tags.join(", "))}\n`;
+  }
+  out += "\n" + ui.style.dim("Scaffold one with: mono-agent init --recipe <id> [--dry-run] [--with slack,cron]\n");
+  return out;
+}
+
+/** `mono-agent recipes show <id>` — description, generated JSON, env example, checklist. */
+export function renderRecipeShow(recipe: AgentRecipe): string {
+  const inputs = resolveRecipeInputs(recipe);
+  let out = ui.banner("mono-agent", `recipe: ${recipe.id}`) + "\n";
+  out += `${ui.style.bold(recipe.title)} ${ui.style.dim(`(risk: ${riskColor(recipe.riskLevel)})`)}\n`;
+  out += `${recipe.description}\n`;
+  if (recipe.playbook !== undefined) {
+    out += ui.style.dim(`Playbook: docs/playbooks/${recipe.playbook}\n`);
+  }
+  out += "\n" + ui.heading("Generated mono-agent.config.json");
+  out += JSON.stringify(recipe.config(inputs), null, 2) + "\n";
+
+  const envExample = recipe.envExample?.(inputs);
+  if (envExample !== undefined && envExample.trim().length > 0) {
+    out += "\n" + ui.heading(".env.example");
+    out += envExample.endsWith("\n") ? envExample : envExample + "\n";
+  }
+
+  const files = recipe.files?.(inputs) ?? [];
+  if (files.length > 0) {
+    out += "\n" + ui.heading("Scaffolded files");
+    for (const file of files) {
+      out += `  ${ui.style.cyan(file.path)}\n`;
+    }
+  }
+
+  if (recipe.validateExpectations.length > 0) {
+    out += "\n" + ui.heading("Follow-up checklist");
+    for (const expectation of recipe.validateExpectations) {
+      const note = expectation.note === undefined ? "" : ` — ${expectation.note}`;
+      out += `  ${ui.style.gray("•")} ${expectation.sectionId} ${ui.style.dim(`must be ${expectation.mustBe}`)}${ui.style.dim(note)}\n`;
+    }
+  }
+  return out;
+}
+
+/** Dispatch `mono-agent recipes list|show <id>`. */
+function runRecipes(args: ParsedCliArgs): number {
+  const [sub, id] = args.positionals;
+  if (sub === undefined || sub === "list") {
+    process.stdout.write(renderRecipeList());
+    return 0;
+  }
+  if (sub === "show") {
+    if (id === undefined) {
+      process.stderr.write(ui.errorLine("Usage: mono-agent recipes show <id>."));
+      process.stderr.write(ui.hint(`Available: ${recipeIds().join(", ")}.`));
+      return 2;
+    }
+    const recipe = findRecipe(id);
+    if (recipe === undefined) {
+      process.stderr.write(ui.errorLine(`Unknown recipe \`${id}\`.`));
+      process.stderr.write(ui.hint("Run `mono-agent recipes list` to see available recipes."));
+      return 1;
+    }
+    process.stdout.write(renderRecipeShow(recipe));
+    return 0;
+  }
+  process.stderr.write(ui.errorLine(`Unknown recipes subcommand \`${sub}\`. Expected list or show.`));
+  return 2;
+}
+
+const SOURCE_TAG: Record<ConfigViewSection["fields"][number]["source"], string> = {
+  env: ui.style.green("[env]"),
+  json: ui.style.cyan("[json]"),
+  default: ui.style.dim("[default]"),
+};
+
+/**
+ * Render the complete, source-annotated config view: every core section and
+ * field with its resolved value and whether it came from an env var, the JSON
+ * file, or the built-in default. This is the single discovery surface that
+ * replaced the old partial config panes.
+ */
+export function renderConfigView(sections: readonly ConfigViewSection[]): string {
+  let out = "";
+  for (const section of sections) {
+    const badgeStatus = section.status === "active" ? "ok" : "disabled";
+    out += `${ui.badge(badgeStatus)}${ui.style.bold(section.label)}\n`;
+    const width = section.fields.reduce((max, field) => Math.max(max, field.label.length), 0);
+    for (const field of section.fields) {
+      const tag = SOURCE_TAG[field.source];
+      const lock = field.redacted === true ? ` ${ui.style.dim("(secret)")}` : "";
+      out += `    ${ui.style.gray(field.label.padEnd(width))}  ${field.value}${lock}  ${tag}\n`;
+    }
+  }
+  return out;
+}
+
+/**
+ * `mono-agent config`: print the resolved configuration field-by-field with the
+ * source (env / json / default) of every value, then the channel summary. Read
+ * only — edits go in mono-agent.config.json and take effect on the next restart.
+ */
+async function runConfig(args: ParsedCliArgs): Promise<number> {
+  const cwd = process.cwd();
+  const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
+  const env = process.env;
+
+  const jsonResult = await readMonoAgentConfigJson(configPath);
+  let config;
+  try {
+    config = await loadAppCoreConfig({ env, cwd, configPath });
+  } catch (error) {
+    if (isAppCoreConfigError(error)) {
+      process.stderr.write(ui.errorLine(error.message));
+      if (jsonResult.missing) {
+        process.stderr.write(ui.hint(`No mono-agent config found at ${configPath}. Run \`mono-agent init\` to scaffold one.`));
+      } else {
+        process.stderr.write(ui.hint("Fix the config above, then re-run `mono-agent config`."));
+      }
+      return 1;
+    }
+    throw error;
+  }
+
+  const sections = buildMonoAgentConfigView({
+    redacted: redactMonoAgentConfig(config),
+    json: jsonResult.json,
+    env,
+  });
+
+  process.stdout.write(ui.banner("mono-agent", "resolved config") + "\n");
+  process.stdout.write(renderConfigView(sections));
+
+  const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false });
+  const channels = report.sections.filter((section) => section.id.startsWith("channel:"));
+  if (channels.length > 0) {
+    process.stdout.write("\n" + ui.heading("Channels"));
+    for (const section of channels) {
+      process.stdout.write(formatSection(section));
+    }
+  }
+
+  process.stdout.write(
+    "\n" + ui.style.dim("Source precedence: [env] > [json] > [default]. Edit mono-agent.config.json and run `mono-agent restart` to apply.") + "\n",
+  );
+  return 0;
 }
 
 /** Render one validation section: a status badge, a bold label, and its details. */

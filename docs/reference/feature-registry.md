@@ -32,7 +32,6 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.fallback-models` | Ordered backup models on retryable provider failure (fallback router, transcript-tail resume) | `config` | `runtime.fallbackModels` (`MONO_AGENT_FALLBACK_MODELS`), `mono-agent init --fallback-models` |
 | `runtime.effort` | Reasoning effort hint | `config` | `runtime.effort` (`MONO_AGENT_EFFORT`): none/low/medium/high/xhigh/max |
 | `runtime.permission-mode` | Tool-permission posture for CLI backends | `config` | `runtime.permissionMode` (`MONO_AGENT_PERMISSION_MODE`): default/plan/acceptEdits/bypassPermissions |
-| `runtime.reasoning-summary` | Provider reasoning-summary verbosity. NOTE: not actively wired — the codex/claude CLIs emit summaries on their own and pi-native derives reasoning from `effort`; the field is retained for back-compat but currently has no runtime effect | `config` | `runtime.reasoningSummary` (`MONO_AGENT_REASONING_SUMMARY`): auto/concise/detailed/off/on |
 | `runtime.max-turns` | Optional turn cap per run; omitted or `0` means unlimited | `config` | `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) |
 | `runtime.workspace` | Working directory for runtime tools | `config` | `runtime.workspace` (`MONO_AGENT_WORKSPACE`) |
 | `runtime.provider-sessions` | Continuous provider session per conversation with idle eviction | `config` | `runtime.session.mode` + `runtime.session.idleTimeoutMs` (`MONO_AGENT_SESSION_MODE`, `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS`) |

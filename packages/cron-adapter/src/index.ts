@@ -16,7 +16,6 @@ export type {
 } from "./scheduler.js";
 
 export {
-  cronFieldGroup,
   loadCronAdapterConfig,
   redactCronAdapterConfig,
   toCronJobs,
