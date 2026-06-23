@@ -685,9 +685,10 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     const memory = await this.memoryStore(coreConfig, runtime);
     const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
+    const supermemoryMcp = this.supermemoryMcpRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     const notifyTools = await this.notifyToolsRuntimeOptions();
-    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([memoryRecall, adapterSendTools, notifyTools]);
+    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([memoryRecall, supermemoryMcp, adapterSendTools, notifyTools]);
     const observabilityContext = await this.observabilityContext();
     const responder = createConfiguredAgentResponder({
       config: coreConfig,
@@ -728,9 +729,39 @@ class MonoAgentAppController implements MonoAgentApp {
       return undefined;
     }
     this.logger?.info?.("Read-only memory_recall tool enabled.", {
-      provider: settings.embeddings?.provider ?? "fts-only",
+      provider: "supermemory" in settings ? "supermemory" : settings.embeddings?.provider ?? "fts-only",
     });
     return createMemoryRecallRuntimeExtension(settings, this.cwd);
+  }
+
+  /**
+   * Optional CLOUD-ONLY escape hatch: when `memory.supermemory.exposeMcpServer` is on, ALSO inject
+   * Supermemory's hosted MCP server alongside the in-app `memory_recall` tool. The hosted MCP cannot
+   * point at a self-hosted instance, so self-hosters rely on the in-app recall tool; this just adds
+   * the cloud server's richer tools for cloud deployments. Requires an apiKey (skipped + warned if
+   * absent).
+   */
+  private supermemoryMcpRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
+    const memory = coreConfig.memory;
+    if (memory?.backend !== "supermemory" || memory.supermemory?.exposeMcpServer !== true) {
+      return undefined;
+    }
+    const apiKey = memory.supermemory.apiKey;
+    if (apiKey === undefined) {
+      this.logger?.warn?.(
+        "memory.supermemory.exposeMcpServer is on but no apiKey is set; the hosted Supermemory MCP server (cloud-only) was not injected.",
+      );
+      return undefined;
+    }
+    this.logger?.info?.("Supermemory hosted MCP server injected (cloud-only).");
+    const entry = {
+      supermemory: {
+        type: "http",
+        url: "https://mcp.supermemory.ai/mcp",
+        headers: { Authorization: `Bearer ${apiKey}` },
+      },
+    };
+    return async () => ({ runtimeOptions: { mcpServers: entry }, cleanup: async () => {} });
   }
 
   private async adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<RuntimeOptionsExtension | undefined> {

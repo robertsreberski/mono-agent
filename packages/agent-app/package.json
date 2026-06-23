@@ -36,6 +36,7 @@
     "@mono-agent/cron-adapter": "workspace:0.4.0",
     "@mono-agent/memory-bujo": "workspace:0.4.0",
     "@mono-agent/memory-search": "workspace:0.4.0",
+    "@mono-agent/memory-supermemory": "workspace:0.4.0",
     "@mono-agent/observability": "workspace:0.4.0",
     "@mono-agent/observability-otel": "workspace:0.4.0",
     "@mono-agent/openai-api-adapter": "workspace:0.4.0",

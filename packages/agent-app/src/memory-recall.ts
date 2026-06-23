@@ -2,11 +2,12 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { resolveSupermemoryContainer } from "@mono-agent/config";
+import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
-import type { BujoMemoryStore } from "@mono-agent/memory-bujo";
 import { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } from "@mono-agent/memory-search";
 import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory-search";
-import type { MonoAgentConfig } from "@mono-agent/config";
+import { createSupermemoryStore } from "@mono-agent/memory-supermemory";
 import * as z from "zod/v4";
 
 /**
@@ -56,11 +57,50 @@ export interface MemoryRecallEmbeddings {
   readonly circuitBreaker?: MemoryRecallEmbeddingsCircuitBreaker;
 }
 
-export interface MemoryRecallSettings {
+/**
+ * Supermemory params the recall child needs to build its REST client (external backend). The key is
+ * the RESOLVED value (the loader already turned any `apiKeyEnv` into a literal): unlike the embeddings
+ * path, recall forwards the value — not an env-var name — into the child's spec env, because the
+ * stdio child does NOT inherit the parent's full environment under every runtime (claude-sdk/codex-app
+ * pass only a POSIX safe-list), so a name-only handoff would silently fail to authenticate.
+ */
+export interface MemoryRecallSupermemory {
+  readonly baseUrl: string;
+  readonly container: string;
+  readonly apiKey?: string;
+  readonly timeoutMs?: number;
+}
+
+/** bujo recall: a memory root (+ optional embeddings for semantic ranking). */
+export interface MemoryRecallBujoSettings {
   /** Memory root directory (config.memory.path). */
   readonly root: string;
   /** Embeddings for semantic recall. Omitted for an FTS-only (lite) recall store. */
   readonly embeddings?: MemoryRecallEmbeddings;
+}
+
+/** supermemory recall: search the external instance over REST. */
+export interface MemoryRecallSupermemorySettings {
+  readonly supermemory: MemoryRecallSupermemory;
+}
+
+/**
+ * Recall settings — discriminated structurally by the presence of `supermemory`. The bujo shape is
+ * unchanged (root + optional embeddings) so existing configs and env round-trips stay byte-identical.
+ */
+export type MemoryRecallSettings = MemoryRecallBujoSettings | MemoryRecallSupermemorySettings;
+
+/** Read-only recall surface the MCP server formats. Both backend stores satisfy it structurally. */
+export interface RecallCapableStore {
+  recall(
+    query: string,
+    options?: { readonly topK?: number },
+  ): Promise<readonly { readonly score: number; readonly record: { readonly id: string; readonly text: string } }[]>;
+  close(): Promise<void>;
+}
+
+function isSupermemorySettings(settings: MemoryRecallSettings): settings is MemoryRecallSupermemorySettings {
+  return "supermemory" in settings;
 }
 
 export interface MemoryRecallRuntimeExtension {
@@ -89,6 +129,22 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
   }
   if (memory.recallTool?.enabled !== true) {
     return undefined;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    const sm = memory.supermemory;
+    if (sm === undefined) {
+      // Defensive: the loader already rejects backend "supermemory" without a block.
+      return undefined;
+    }
+    return {
+      supermemory: {
+        baseUrl: sm.baseUrl,
+        container: resolveSupermemoryContainer(config),
+        // The loader already resolved apiKeyEnv → apiKey, so forward the value (see type doc).
+        ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
+        ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
+      },
+    };
   }
   const embeddings = memory.embeddings;
   if (embeddings === undefined) {
@@ -123,6 +179,32 @@ export function resolveMemoryRecallSettings(config: MonoAgentConfig): MemoryReca
  * literal `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` (the inline-key case).
  */
 export function memoryRecallSettingsFromEnv(env: Record<string, string | undefined>): MemoryRecallSettings {
+  if (optionalString(env.MONO_AGENT_MEMORY_BACKEND) === "supermemory") {
+    const baseUrl = optionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL);
+    if (baseUrl === undefined) {
+      throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL).");
+    }
+    // Container is forwarded by the parent's resolveSupermemoryContainer (always non-empty). A missing
+    // value in the child is a wiring bug, not a default — fail loud rather than search a wrong/empty
+    // namespace, mirroring the baseUrl check above.
+    const container = optionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER);
+    if (container === undefined) {
+      throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER).");
+    }
+    const apiKey = optionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY);
+    const timeoutMs = parsePositiveInt(
+      optionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS),
+      "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS",
+    );
+    return {
+      supermemory: {
+        baseUrl,
+        container,
+        ...(apiKey === undefined ? {} : { apiKey }),
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      },
+    };
+  }
   const root = optionalString(env.MONO_AGENT_MEMORY_PATH);
   if (root === undefined) {
     throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_PATH).");
@@ -190,6 +272,19 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
  * `apiKey` with no `apiKeyEnv`), where there is no name to forward.
  */
 export function memoryRecallMcpEnv(settings: MemoryRecallSettings): Record<string, string> {
+  if (isSupermemorySettings(settings)) {
+    const sm = settings.supermemory;
+    // Forward the RESOLVED key value (not an env-var name): the recall stdio child does not inherit
+    // the parent's full env under claude-sdk/codex-app, so a name handoff would fail to authenticate.
+    // Same exposure class as the embeddings inline-key residual — the child is our own subprocess.
+    return {
+      MONO_AGENT_MEMORY_BACKEND: "supermemory",
+      MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: sm.baseUrl,
+      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: sm.container,
+      ...(sm.apiKey === undefined ? {} : { MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: sm.apiKey }),
+      ...(sm.timeoutMs === undefined ? {} : { MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: String(sm.timeoutMs) }),
+    };
+  }
   const { embeddings } = settings;
   if (embeddings === undefined) {
     return { MONO_AGENT_MEMORY_PATH: settings.root };
@@ -252,7 +347,16 @@ export function createMemoryRecallRuntimeExtension(
  * {@link DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS}) keeps a slow backend from stalling recall, and a
  * circuit breaker fast-fails after repeated failures so a sustained outage stops blocking it.
  */
-export function createRecallStore(settings: MemoryRecallSettings): BujoMemoryStore {
+export function createRecallStore(settings: MemoryRecallSettings): RecallCapableStore {
+  if (isSupermemorySettings(settings)) {
+    const sm = settings.supermemory;
+    return createSupermemoryStore({
+      baseUrl: sm.baseUrl,
+      container: sm.container,
+      ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
+      ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
+    });
+  }
   const { embeddings } = settings;
   if (embeddings === undefined) {
     // FTS-only recall: no embedding provider, no dim (mirrors the lite-tier store shape).
@@ -278,8 +382,8 @@ export function createRecallStore(settings: MemoryRecallSettings): BujoMemorySto
   });
 }
 
-/** Register the single read-only `memory_recall` tool against a store. */
-export function createMemoryRecallServer(store: BujoMemoryStore): McpServer {
+/** Register the single read-only `memory_recall` tool against a store (bujo or external backend). */
+export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
   const server = new McpServer({ name: "agent-memory", version: "0.3.0" });
   server.registerTool(
     "memory_recall",
