@@ -35,6 +35,7 @@ describe("parseCliArgs", () => {
       model: "claude:claude-sonnet-4-6",
       fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.5"],
       memory: "journal",
+      positionals: [],
       force: false,
       foreground: false,
       follow: false,
@@ -50,6 +51,7 @@ describe("parseCliArgs", () => {
       command: "start",
       configPath: "agent.json",
       envFile: ".env.local",
+      positionals: [],
       force: false,
       foreground: false,
       follow: false,
@@ -84,6 +86,7 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["install-skill", "--target", "codex", "--force"])).toEqual({
       command: "install-skill",
       target: "codex",
+      positionals: [],
       force: true,
       foreground: false,
       follow: false,

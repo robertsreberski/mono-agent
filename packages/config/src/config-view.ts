@@ -1,0 +1,808 @@
+import type { MonoAgentConfigJson } from "./json-source.js";
+import type {
+  RedactedLocalProviderDefinition,
+  RedactedMemoryConfig,
+  RedactedMonoAgentConfig,
+  RedactedObservabilityExporterConfig,
+} from "./types.js";
+
+/**
+ * Where a resolved config value came from. Mirrors the loader's precedence:
+ * a real `MONO_AGENT_*` env var wins, then the JSON config file, else the
+ * built-in default.
+ */
+export type ConfigViewFieldSource = "env" | "json" | "default";
+
+/**
+ * Section-level lifecycle, aligned with the doctor's vocabulary. Optional
+ * blocks (memory, sandbox, observability, local providers) report `disabled`
+ * when absent and `active` when configured. The core view never emits
+ * `waiting` — that is reserved for channel sections the app composes on top.
+ */
+export type ConfigViewSectionStatus = "active" | "disabled";
+
+export interface ConfigViewField {
+  /** Stable id, e.g. `runtime.model`. Matches the key in {@link CONFIG_ENV_KEYS}. */
+  readonly id: string;
+  readonly label: string;
+  /** Already-redacted, display-ready value (never a raw secret). */
+  readonly value: string;
+  readonly source: ConfigViewFieldSource;
+  /** True when the underlying value is a secret that has been redacted. */
+  readonly redacted?: boolean;
+}
+
+export interface ConfigViewSection {
+  readonly id: string;
+  readonly label: string;
+  readonly status: ConfigViewSectionStatus;
+  readonly fields: readonly ConfigViewField[];
+}
+
+export interface BuildMonoAgentConfigViewInput {
+  readonly redacted: RedactedMonoAgentConfig;
+  readonly json: MonoAgentConfigJson;
+  readonly env: Record<string, string | undefined>;
+}
+
+/**
+ * The single env-key registry for every core config field, keyed by the stable
+ * field id used in {@link ConfigViewField}. This is the authoritative map the
+ * view resolves `source` against, and the surface the parity test checks
+ * against the loader so the view can never silently drift from what the loader
+ * actually reads. Complex sections (local providers) expose only their
+ * registry env var here; their single-provider `MONO_AGENT_LOCAL_PROVIDER_*`
+ * input form is an alternate encoding the parity test allowlists.
+ */
+export const CONFIG_ENV_KEYS = {
+  "runtime.model": "MONO_AGENT_MODEL",
+  "runtime.fallbackModels": "MONO_AGENT_FALLBACK_MODELS",
+  "runtime.executionMode": "MONO_AGENT_EXECUTION_MODE",
+  "runtime.effort": "MONO_AGENT_EFFORT",
+  "runtime.permissionMode": "MONO_AGENT_PERMISSION_MODE",
+  "runtime.maxTurns": "MONO_AGENT_MAX_TURNS",
+  "runtime.workspace": "MONO_AGENT_WORKSPACE",
+  "runtime.session.mode": "MONO_AGENT_SESSION_MODE",
+  "runtime.session.idleTimeoutMs": "MONO_AGENT_SESSION_IDLE_TIMEOUT_MS",
+  "runtime.session.rollover": "MONO_AGENT_SESSION_ROLLOVER",
+  "runtime.session.rolloverTimezone": "MONO_AGENT_SESSION_ROLLOVER_TIMEZONE",
+  "runtime.session.isolateProactive": "MONO_AGENT_SESSION_ISOLATE_PROACTIVE",
+  "concurrency.maxConcurrentRuns": "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS",
+  "concurrency.maxPendingRuns": "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS",
+  "context.identityPath": "MONO_AGENT_IDENTITY_PATH",
+  "context.soulPath": "MONO_AGENT_SOUL_PATH",
+  "context.skillsRoot": "MONO_AGENT_SKILLS_ROOT",
+  "context.selectedSkills": "MONO_AGENT_SELECTED_SKILLS",
+  "context.skillMaxBytes": "MONO_AGENT_SKILL_MAX_BYTES",
+  "context.skillDisclosure": "MONO_AGENT_SKILL_DISCLOSURE",
+  "memory.mode": "MONO_AGENT_MEMORY_MODE",
+  "memory.path": "MONO_AGENT_MEMORY_PATH",
+  "memory.maxBytes": "MONO_AGENT_MEMORY_MAX_BYTES",
+  "memory.writeMode": "MONO_AGENT_MEMORY_WRITE_MODE",
+  "memory.embeddings.provider": "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
+  "memory.embeddings.model": "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
+  "memory.embeddings.endpoint": "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
+  "memory.embeddings.apiKey": "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
+  "memory.embeddings.apiKeyEnv": "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV",
+  "memory.embeddings.dim": "MONO_AGENT_MEMORY_EMBEDDINGS_DIM",
+  "memory.embeddings.timeoutMs": "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS",
+  "memory.embeddings.circuitBreaker.failureThreshold": "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
+  "memory.embeddings.circuitBreaker.cooldownMs": "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
+  "memory.llm.provider": "MONO_AGENT_MEMORY_LLM_PROVIDER",
+  "memory.llm.model": "MONO_AGENT_MEMORY_LLM_MODEL",
+  "memory.llm.executionMode": "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+  "memory.llm.trace": "MONO_AGENT_MEMORY_LLM_TRACE",
+  "memory.llm.timeoutMs": "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
+  "memory.llm.endpoint": "MONO_AGENT_MEMORY_LLM_ENDPOINT",
+  "memory.recallTool.enabled": "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
+  "memory.reflection.enabled": "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
+  "memory.reflection.cron": "MONO_AGENT_MEMORY_REFLECTION_CRON",
+  "memory.migration.enabled": "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
+  "memory.migration.cron": "MONO_AGENT_MEMORY_MIGRATION_CRON",
+  "tools.allowedTools": "MONO_AGENT_ALLOWED_TOOLS",
+  "tools.disallowedTools": "MONO_AGENT_DISALLOWED_TOOLS",
+  "tools.mcpConfigPath": "MONO_AGENT_MCP_CONFIG_PATH",
+  "sandbox.mode": "MONO_AGENT_SANDBOX_MODE",
+  "sandbox.network.mode": "MONO_AGENT_SANDBOX_NETWORK",
+  "sandbox.network.allowlist": "MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST",
+  "sandbox.readableRoots": "MONO_AGENT_SANDBOX_READABLE_ROOTS",
+  "sandbox.writableRoots": "MONO_AGENT_SANDBOX_WRITABLE_ROOTS",
+  "sandbox.denyWrite": "MONO_AGENT_SANDBOX_DENY_WRITE",
+  "sandbox.fallback": "MONO_AGENT_SANDBOX_FALLBACK",
+  "sandbox.unsafeAllowHostProcess": "MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS",
+  "artifacts.dir": "MONO_AGENT_ARTIFACT_DIR",
+  "traceability.registryDir": "MONO_AGENT_TRACE_REGISTRY_DIR",
+  "traceability.sourceId": "MONO_AGENT_TRACE_SOURCE_ID",
+  "traceability.sourceLabel": "MONO_AGENT_TRACE_SOURCE_LABEL",
+  "traceability.heartbeatMs": "MONO_AGENT_TRACE_HEARTBEAT_MS",
+  "traceability.staleAfterMs": "MONO_AGENT_TRACE_STALE_AFTER_MS",
+  "observability.exporters": "MONO_AGENT_OBSERVABILITY_EXPORTERS",
+  "providers.piAuthPath": "MONO_AGENT_PI_AUTH_PATH",
+  "providers.piNative.piMaxRetries": "MONO_AGENT_PI_MAX_RETRIES",
+  "providers.piNative.maxRetryDelayMs": "MONO_AGENT_MAX_RETRY_DELAY_MS",
+  "providers.piNative.piSessionsRoot": "MONO_AGENT_PI_SESSIONS_ROOT",
+  "providers.local": "MONO_AGENT_LOCAL_PROVIDERS_JSON",
+} as const satisfies Record<string, string>;
+
+export type ConfigViewFieldId = keyof typeof CONFIG_ENV_KEYS;
+
+const PLACEHOLDER = "—";
+
+function envHas(env: Record<string, string | undefined>, key: string): boolean {
+  const value = env[key];
+  return value !== undefined && value.trim().length > 0;
+}
+
+function resolveSource(
+  env: Record<string, string | undefined>,
+  id: ConfigViewFieldId,
+  jsonPresent: boolean,
+): ConfigViewFieldSource {
+  if (envHas(env, CONFIG_ENV_KEYS[id])) {
+    return "env";
+  }
+  return jsonPresent ? "json" : "default";
+}
+
+interface FieldSpec {
+  readonly id: ConfigViewFieldId;
+  readonly label: string;
+  readonly value: string;
+  readonly jsonPresent: boolean;
+  readonly redacted?: boolean;
+}
+
+function toField(
+  env: Record<string, string | undefined>,
+  spec: FieldSpec,
+): ConfigViewField {
+  return {
+    id: spec.id,
+    label: spec.label,
+    value: spec.value,
+    source: resolveSource(env, spec.id, spec.jsonPresent),
+    ...(spec.redacted === true ? { redacted: true } : {}),
+  };
+}
+
+function formatModelReference(
+  reference: RedactedMonoAgentConfig["runtime"]["model"],
+): string {
+  if (typeof reference === "string") {
+    return reference;
+  }
+  if (reference.reference !== undefined && reference.reference.length > 0) {
+    return reference.reference;
+  }
+  const provider = reference.provider !== undefined ? `${reference.provider}:` : "";
+  return `${reference.sdk}:${provider}${reference.model}`;
+}
+
+function formatFallbackModels(
+  models: RedactedMonoAgentConfig["runtime"]["fallbackModels"],
+): string {
+  if (models === undefined || models.length === 0) {
+    return PLACEHOLDER;
+  }
+  return models.map(formatModelReference).join(", ");
+}
+
+function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const runtime = redacted.runtime;
+  const session = runtime.session;
+  return {
+    id: "runtime",
+    label: "Runtime",
+    status: "active",
+    fields: [
+      toField(env, {
+        id: "runtime.model",
+        label: "Model",
+        value: formatModelReference(runtime.model),
+        jsonPresent: json.runtime?.model !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.fallbackModels",
+        label: "Fallback models",
+        value: formatFallbackModels(runtime.fallbackModels),
+        jsonPresent: json.runtime?.fallbackModels !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.executionMode",
+        label: "Execution mode",
+        value: runtime.executionMode,
+        jsonPresent: json.runtime?.executionMode !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.effort",
+        label: "Effort",
+        value: runtime.effort ?? PLACEHOLDER,
+        jsonPresent: json.runtime?.effort !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.permissionMode",
+        label: "Permission mode",
+        value: runtime.permissionMode ?? PLACEHOLDER,
+        jsonPresent: json.runtime?.permissionMode !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.maxTurns",
+        label: "Max turns",
+        value: runtime.maxTurns === undefined ? "unlimited" : String(runtime.maxTurns),
+        jsonPresent: json.runtime?.maxTurns !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.workspace",
+        label: "Workspace",
+        value: runtime.workspace,
+        jsonPresent: json.runtime?.workspace !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.session.mode",
+        label: "Session mode",
+        value: session.mode,
+        jsonPresent: json.runtime?.session?.mode !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.session.idleTimeoutMs",
+        label: "Session idle timeout (ms)",
+        value: String(session.idleTimeoutMs),
+        jsonPresent: json.runtime?.session?.idleTimeoutMs !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.session.rollover",
+        label: "Session rollover",
+        value: session.rollover ?? "none",
+        jsonPresent: json.runtime?.session?.rollover !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.session.rolloverTimezone",
+        label: "Session rollover timezone",
+        value: session.rolloverTimezone ?? PLACEHOLDER,
+        jsonPresent: json.runtime?.session?.rolloverTimezone !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.session.isolateProactive",
+        label: "Isolate proactive runs",
+        value: session.isolateProactive === true ? "yes" : "no",
+        jsonPresent: json.runtime?.session?.isolateProactive !== undefined,
+      }),
+    ],
+  };
+}
+
+function buildConcurrencySection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const concurrency = redacted.concurrency;
+  const present = concurrency !== undefined;
+  return {
+    id: "concurrency",
+    label: "Concurrency",
+    status: present ? "active" : "disabled",
+    fields: [
+      toField(env, {
+        id: "concurrency.maxConcurrentRuns",
+        label: "Max concurrent runs",
+        value: concurrency?.maxConcurrentRuns === undefined ? "unbounded" : String(concurrency.maxConcurrentRuns),
+        jsonPresent: json.concurrency?.maxConcurrentRuns !== undefined,
+      }),
+      toField(env, {
+        id: "concurrency.maxPendingRuns",
+        label: "Max pending runs",
+        value: concurrency?.maxPendingRuns === undefined ? "unbounded" : String(concurrency.maxPendingRuns),
+        jsonPresent: json.concurrency?.maxPendingRuns !== undefined,
+      }),
+    ],
+  };
+}
+
+function buildContextSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const context = redacted.context;
+  return {
+    id: "context",
+    label: "Context",
+    status: "active",
+    fields: [
+      toField(env, {
+        id: "context.identityPath",
+        label: "Identity document",
+        value: context.identityPath,
+        jsonPresent: json.context?.identityPath !== undefined,
+      }),
+      toField(env, {
+        id: "context.soulPath",
+        label: "Soul document",
+        value: context.soulPath ?? PLACEHOLDER,
+        jsonPresent: json.context?.soulPath !== undefined,
+      }),
+      toField(env, {
+        id: "context.skillsRoot",
+        label: "Skills root",
+        value: context.skillsRoot ?? PLACEHOLDER,
+        jsonPresent: json.context?.skillsRoot !== undefined,
+      }),
+      toField(env, {
+        id: "context.selectedSkills",
+        label: "Selected skills",
+        value: context.selectedSkills.length === 0 ? "none" : context.selectedSkills.join(", "),
+        jsonPresent: json.context?.selectedSkills !== undefined,
+      }),
+      toField(env, {
+        id: "context.skillMaxBytes",
+        label: "Skill byte cap",
+        value: context.skillMaxBytes === undefined ? "default" : String(context.skillMaxBytes),
+        jsonPresent: json.context?.skillMaxBytes !== undefined,
+      }),
+      toField(env, {
+        id: "context.skillDisclosure",
+        label: "Skill disclosure",
+        value: context.skillDisclosure ?? "full",
+        jsonPresent: json.context?.skillDisclosure !== undefined,
+      }),
+    ],
+  };
+}
+
+function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const memory: RedactedMemoryConfig | undefined = redacted.memory;
+  if (memory === undefined) {
+    return {
+      id: "memory",
+      label: "Memory",
+      status: "disabled",
+      fields: [{ id: "memory.mode", label: "Status", value: "not configured", source: "default" }],
+    };
+  }
+
+  const fields: ConfigViewField[] = [
+    toField(env, {
+      id: "memory.mode",
+      label: "Mode",
+      value: memory.mode,
+      jsonPresent: json.memory?.mode !== undefined,
+    }),
+    toField(env, {
+      id: "memory.path",
+      label: "Path",
+      value: memory.path,
+      jsonPresent: json.memory?.path !== undefined,
+    }),
+    toField(env, {
+      id: "memory.maxBytes",
+      label: "Max bytes",
+      value: String(memory.maxBytes),
+      jsonPresent: json.memory?.maxBytes !== undefined,
+    }),
+    toField(env, {
+      id: "memory.writeMode",
+      label: "Write mode",
+      value: memory.writeMode,
+      jsonPresent: json.memory?.writeMode !== undefined,
+    }),
+    toField(env, {
+      id: "memory.recallTool.enabled",
+      label: "Recall tool",
+      value: memory.recallTool === undefined ? "default" : memory.recallTool.enabled ? "on" : "off",
+      jsonPresent: json.memory?.recallTool?.enabled !== undefined,
+    }),
+  ];
+
+  const embeddings = memory.embeddings;
+  if (embeddings !== undefined) {
+    fields.push(
+      toField(env, {
+        id: "memory.embeddings.provider",
+        label: "Embeddings provider",
+        value: embeddings.provider,
+        jsonPresent: json.memory?.embeddings?.provider !== undefined,
+      }),
+      toField(env, {
+        id: "memory.embeddings.model",
+        label: "Embeddings model",
+        value: embeddings.model,
+        jsonPresent: json.memory?.embeddings?.model !== undefined,
+      }),
+      toField(env, {
+        id: "memory.embeddings.endpoint",
+        label: "Embeddings endpoint",
+        value: embeddings.endpoint ?? PLACEHOLDER,
+        jsonPresent: json.memory?.embeddings?.endpoint !== undefined,
+      }),
+      toField(env, {
+        id: "memory.embeddings.apiKey",
+        label: "Embeddings API key",
+        value: embeddings.apiKey?.present === true ? "set" : "unset",
+        jsonPresent: json.memory?.embeddings?.apiKey !== undefined,
+        redacted: true,
+      }),
+      toField(env, {
+        id: "memory.embeddings.apiKeyEnv",
+        label: "Embeddings API key env",
+        value: embeddings.apiKeyEnv ?? PLACEHOLDER,
+        jsonPresent: json.memory?.embeddings?.apiKeyEnv !== undefined,
+      }),
+      toField(env, {
+        id: "memory.embeddings.dim",
+        label: "Embeddings dimension",
+        value: embeddings.dim === undefined ? "default" : String(embeddings.dim),
+        jsonPresent: json.memory?.embeddings?.dim !== undefined,
+      }),
+      toField(env, {
+        id: "memory.embeddings.timeoutMs",
+        label: "Embeddings timeout (ms)",
+        value: embeddings.timeoutMs === undefined ? "default" : String(embeddings.timeoutMs),
+        jsonPresent: json.memory?.embeddings?.timeoutMs !== undefined,
+      }),
+      toField(env, {
+        id: "memory.embeddings.circuitBreaker.failureThreshold",
+        label: "Embeddings breaker threshold",
+        value: embeddings.circuitBreaker?.failureThreshold === undefined ? "default" : String(embeddings.circuitBreaker.failureThreshold),
+        jsonPresent: json.memory?.embeddings?.circuitBreaker?.failureThreshold !== undefined,
+      }),
+      toField(env, {
+        id: "memory.embeddings.circuitBreaker.cooldownMs",
+        label: "Embeddings breaker cooldown (ms)",
+        value: embeddings.circuitBreaker?.cooldownMs === undefined ? "default" : String(embeddings.circuitBreaker.cooldownMs),
+        jsonPresent: json.memory?.embeddings?.circuitBreaker?.cooldownMs !== undefined,
+      }),
+    );
+  }
+
+  const llm = memory.llm;
+  if (llm !== undefined) {
+    fields.push(
+      toField(env, {
+        id: "memory.llm.provider",
+        label: "LLM provider",
+        value: llm.provider,
+        jsonPresent: json.memory?.llm?.provider !== undefined,
+      }),
+      toField(env, {
+        id: "memory.llm.model",
+        label: "LLM model",
+        value: llm.model,
+        jsonPresent: json.memory?.llm?.model !== undefined,
+      }),
+    );
+    if (llm.provider === "ollama") {
+      fields.push(
+        toField(env, {
+          id: "memory.llm.endpoint",
+          label: "LLM endpoint",
+          value: llm.endpoint ?? PLACEHOLDER,
+          jsonPresent: json.memory?.llm?.endpoint !== undefined,
+        }),
+      );
+    } else {
+      fields.push(
+        toField(env, {
+          id: "memory.llm.executionMode",
+          label: "LLM execution mode",
+          value: llm.executionMode ?? "default",
+          jsonPresent: json.memory?.llm?.executionMode !== undefined,
+        }),
+        toField(env, {
+          id: "memory.llm.trace",
+          label: "LLM trace",
+          value: llm.trace === false ? "off" : "on",
+          jsonPresent: json.memory?.llm?.trace !== undefined,
+        }),
+        toField(env, {
+          id: "memory.llm.timeoutMs",
+          label: "LLM timeout (ms)",
+          value: llm.timeoutMs === undefined ? "default" : String(llm.timeoutMs),
+          jsonPresent: json.memory?.llm?.timeoutMs !== undefined,
+        }),
+      );
+    }
+  }
+
+  if (memory.reflection !== undefined) {
+    fields.push(
+      toField(env, {
+        id: "memory.reflection.enabled",
+        label: "Reflection ritual",
+        value: memory.reflection.enabled === true ? "on" : "off",
+        jsonPresent: json.memory?.reflection?.enabled !== undefined,
+      }),
+      toField(env, {
+        id: "memory.reflection.cron",
+        label: "Reflection cron",
+        value: memory.reflection.cron ?? "default",
+        jsonPresent: json.memory?.reflection?.cron !== undefined,
+      }),
+    );
+  }
+
+  if (memory.migration !== undefined) {
+    fields.push(
+      toField(env, {
+        id: "memory.migration.enabled",
+        label: "Migration ritual",
+        value: memory.migration.enabled === true ? "on" : "off",
+        jsonPresent: json.memory?.migration?.enabled !== undefined,
+      }),
+      toField(env, {
+        id: "memory.migration.cron",
+        label: "Migration cron",
+        value: memory.migration.cron ?? "default",
+        jsonPresent: json.memory?.migration?.cron !== undefined,
+      }),
+    );
+  }
+
+  return { id: "memory", label: "Memory", status: "active", fields };
+}
+
+function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const tools = redacted.tools;
+  return {
+    id: "tools",
+    label: "Tools",
+    status: "active",
+    fields: [
+      toField(env, {
+        id: "tools.allowedTools",
+        label: "Allowed tools",
+        value: tools.allowedTools.length === 0 ? "default policy" : tools.allowedTools.join(", "),
+        jsonPresent: json.tools?.allowedTools !== undefined,
+      }),
+      toField(env, {
+        id: "tools.disallowedTools",
+        label: "Disallowed tools",
+        value: tools.disallowedTools.length === 0 ? "none" : tools.disallowedTools.join(", "),
+        jsonPresent: json.tools?.disallowedTools !== undefined,
+      }),
+      toField(env, {
+        id: "tools.mcpConfigPath",
+        label: "MCP config",
+        value: tools.mcpConfigPath ?? PLACEHOLDER,
+        jsonPresent: json.tools?.mcpConfigPath !== undefined,
+      }),
+    ],
+  };
+}
+
+function buildSandboxSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const sandbox = redacted.sandbox;
+  if (sandbox === undefined) {
+    return {
+      id: "sandbox",
+      label: "Sandbox",
+      status: "disabled",
+      fields: [{ id: "sandbox.mode", label: "Status", value: "not configured", source: "default" }],
+    };
+  }
+  return {
+    id: "sandbox",
+    label: "Sandbox",
+    status: "active",
+    fields: [
+      toField(env, {
+        id: "sandbox.mode",
+        label: "Mode",
+        value: sandbox.mode,
+        jsonPresent: json.sandbox?.mode !== undefined,
+      }),
+      toField(env, {
+        id: "sandbox.network.mode",
+        label: "Network",
+        value: sandbox.network.mode,
+        jsonPresent: json.sandbox?.network?.mode !== undefined,
+      }),
+      toField(env, {
+        id: "sandbox.network.allowlist",
+        label: "Network allowlist",
+        value: sandbox.network.allowlist.length === 0 ? "none" : sandbox.network.allowlist.join(", "),
+        jsonPresent: json.sandbox?.network?.allowlist !== undefined,
+      }),
+      toField(env, {
+        id: "sandbox.readableRoots",
+        label: "Readable roots",
+        value: sandbox.readableRoots.join(", "),
+        jsonPresent: json.sandbox?.readableRoots !== undefined,
+      }),
+      toField(env, {
+        id: "sandbox.writableRoots",
+        label: "Writable roots",
+        value: sandbox.writableRoots.join(", "),
+        jsonPresent: json.sandbox?.writableRoots !== undefined,
+      }),
+      toField(env, {
+        id: "sandbox.denyWrite",
+        label: "Deny-write patterns",
+        value: sandbox.denyWrite.join(", "),
+        jsonPresent: json.sandbox?.denyWrite !== undefined,
+      }),
+      toField(env, {
+        id: "sandbox.fallback",
+        label: "Fallback",
+        value: sandbox.fallback,
+        jsonPresent: json.sandbox?.fallback !== undefined,
+      }),
+      toField(env, {
+        id: "sandbox.unsafeAllowHostProcess",
+        label: "Allow host process",
+        value: sandbox.unsafeAllowHostProcess ? "yes" : "no",
+        jsonPresent: json.sandbox?.unsafeAllowHostProcess !== undefined,
+      }),
+    ],
+  };
+}
+
+function buildArtifactsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  return {
+    id: "artifacts",
+    label: "Artifacts",
+    status: "active",
+    fields: [
+      toField(env, {
+        id: "artifacts.dir",
+        label: "Artifact directory",
+        value: redacted.artifacts.dir,
+        jsonPresent: json.artifacts?.dir !== undefined,
+      }),
+    ],
+  };
+}
+
+function buildTraceabilitySection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const trace = redacted.traceability;
+  return {
+    id: "traceability",
+    label: "Traceability",
+    status: "active",
+    fields: [
+      toField(env, {
+        id: "traceability.registryDir",
+        label: "Trace registry",
+        value: trace.registryDir,
+        jsonPresent: json.traceability?.registryDir !== undefined,
+      }),
+      toField(env, {
+        id: "traceability.sourceId",
+        label: "Source ID",
+        value: trace.sourceId ?? PLACEHOLDER,
+        jsonPresent: json.traceability?.sourceId !== undefined,
+      }),
+      toField(env, {
+        id: "traceability.sourceLabel",
+        label: "Source label",
+        value: trace.sourceLabel ?? PLACEHOLDER,
+        jsonPresent: json.traceability?.sourceLabel !== undefined,
+      }),
+      toField(env, {
+        id: "traceability.heartbeatMs",
+        label: "Heartbeat (ms)",
+        value: trace.heartbeatMs === undefined ? "default" : String(trace.heartbeatMs),
+        jsonPresent: json.traceability?.heartbeatMs !== undefined,
+      }),
+      toField(env, {
+        id: "traceability.staleAfterMs",
+        label: "Stale after (ms)",
+        value: trace.staleAfterMs === undefined ? "default" : String(trace.staleAfterMs),
+        jsonPresent: json.traceability?.staleAfterMs !== undefined,
+      }),
+    ],
+  };
+}
+
+function formatExporters(
+  exporters: readonly RedactedObservabilityExporterConfig[],
+): string {
+  if (exporters.length === 0) {
+    return "none";
+  }
+  return exporters.map((exporter) => exporter.type).join(", ");
+}
+
+function buildObservabilitySection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const observability = redacted.observability;
+  if (observability === undefined) {
+    return {
+      id: "observability",
+      label: "Observability",
+      status: "disabled",
+      fields: [{ id: "observability.exporters", label: "Exporters", value: "none (local JSONL only)", source: "default" }],
+    };
+  }
+  return {
+    id: "observability",
+    label: "Observability",
+    status: "active",
+    fields: [
+      toField(env, {
+        id: "observability.exporters",
+        label: "Exporters",
+        value: formatExporters(observability.exporters),
+        jsonPresent: json.observability?.exporters !== undefined,
+      }),
+    ],
+  };
+}
+
+function formatLocalProviders(
+  providers: readonly RedactedLocalProviderDefinition[],
+): string {
+  if (providers.length === 0) {
+    return "none";
+  }
+  return providers.map((provider) => `${provider.id} (${provider.type})`).join(", ");
+}
+
+function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
+  const { redacted, json, env } = input;
+  const providers = redacted.providers;
+  const present = providers !== undefined;
+  const localPresent = json.providers?.local !== undefined;
+  return {
+    id: "providers",
+    label: "Providers",
+    status: present ? "active" : "disabled",
+    fields: [
+      toField(env, {
+        id: "providers.piAuthPath",
+        label: "Pi auth path",
+        value: providers?.piAuthPath ?? PLACEHOLDER,
+        jsonPresent: json.providers?.piAuthPath !== undefined,
+      }),
+      toField(env, {
+        id: "providers.piNative.piMaxRetries",
+        label: "Pi max retries",
+        value: providers?.piNative?.piMaxRetries === undefined ? "default" : String(providers.piNative.piMaxRetries),
+        jsonPresent: json.providers?.piNative?.piMaxRetries !== undefined,
+      }),
+      toField(env, {
+        id: "providers.piNative.maxRetryDelayMs",
+        label: "Pi max retry delay (ms)",
+        value: providers?.piNative?.maxRetryDelayMs === undefined ? "default" : String(providers.piNative.maxRetryDelayMs),
+        jsonPresent: json.providers?.piNative?.maxRetryDelayMs !== undefined,
+      }),
+      toField(env, {
+        id: "providers.piNative.piSessionsRoot",
+        label: "Pi sessions root",
+        value: providers?.piNative?.piSessionsRoot ?? "in-memory",
+        jsonPresent: json.providers?.piNative?.piSessionsRoot !== undefined,
+      }),
+      toField(env, {
+        id: "providers.local",
+        label: "Local providers",
+        value: providers?.local === undefined ? "none" : formatLocalProviders(providers.local),
+        jsonPresent: localPresent,
+      }),
+    ],
+  };
+}
+
+/**
+ * Build the single, complete, source-annotated view of a resolved
+ * `MonoAgentConfig`. Every core section and field is represented exactly once,
+ * including the `observability.exporters` and `providers.local` blocks that the
+ * retired field-group registry omitted. Drives both the read-only TUI config
+ * pane and the `mono-agent config` CLI command, so the two surfaces can never
+ * disagree about what the loader produced.
+ */
+export function buildMonoAgentConfigView(
+  input: BuildMonoAgentConfigViewInput,
+): readonly ConfigViewSection[] {
+  return [
+    buildRuntimeSection(input),
+    buildConcurrencySection(input),
+    buildContextSection(input),
+    buildMemorySection(input),
+    buildToolsSection(input),
+    buildSandboxSection(input),
+    buildArtifactsSection(input),
+    buildTraceabilitySection(input),
+    buildObservabilitySection(input),
+    buildProvidersSection(input),
+  ];
+}

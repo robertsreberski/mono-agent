@@ -1,14 +1,13 @@
 import { resolve } from "node:path";
 
 import {
-  defineFieldGroup,
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
   readJsonSection,
   readSettingsJson,
 } from "@mono-agent/settings";
-import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
+import type { SettingsJson } from "@mono-agent/settings";
 
 import { loadCronJobsFromDirectory } from "./jobs-dir.js";
 import { CronAdapterError, type CronJob } from "./scheduler.js";
@@ -44,59 +43,6 @@ const DEFAULT_CRON_DIR = "cron";
 
 const invalidConfig = (message: string, details?: Record<string, unknown>): CronAdapterError =>
   new CronAdapterError("invalid_config", message, details);
-
-export const cronFieldGroup: FieldGroup = defineFieldGroup({
-  id: "cron",
-  label: "Cron",
-  description: "Optional single-job cron invocation configuration. Use JSON for multiple jobs, or `*.md` files in the cron folder.",
-  fields: [
-    {
-      id: "cron.dir",
-      label: "Cron folder",
-      description: "Folder of `*.md` cron jobs (frontmatter + prompt body), resolved against the app working directory.",
-      kind: "string",
-      placeholder: "cron",
-      path: ["cron", "dir"],
-    },
-    {
-      id: "cron.enabled",
-      label: "Enable cron",
-      description: "Enable the default scheduled agent job.",
-      kind: "switch",
-      path: ["cron", "enabled"],
-    },
-    {
-      id: "cron.expression",
-      label: "Cron expression",
-      description: "Five-field cron expression for the default job.",
-      kind: "string",
-      placeholder: "0 * * * *",
-      path: ["cron", "expression"],
-    },
-    {
-      id: "cron.timezone",
-      label: "Timezone",
-      description: "IANA timezone used to calculate scheduled runs.",
-      kind: "string",
-      placeholder: "UTC",
-      path: ["cron", "timezone"],
-    },
-    {
-      id: "cron.prompt",
-      label: "Prompt",
-      description: "Prompt sent to the agent for the default scheduled job.",
-      kind: "string",
-      path: ["cron", "prompt"],
-    },
-    {
-      id: "cron.conversationId",
-      label: "Conversation id",
-      description: "Optional conversation id for memory/history continuity.",
-      kind: "string",
-      path: ["cron", "conversationId"],
-    },
-  ],
-});
 
 export async function loadCronAdapterConfig(input: LoadCronAdapterConfigInput): Promise<CronAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);

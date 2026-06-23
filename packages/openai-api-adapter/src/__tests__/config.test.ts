@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   loadOpenAIApiAdapterConfig,
-  openAIApiFieldGroup,
   redactOpenAIApiAdapterConfig,
 } from "../index.js";
 
@@ -78,14 +77,5 @@ describe("redactOpenAIApiAdapterConfig", () => {
       apiKey: { present: true, redacted: true },
       modelId: "agent",
     });
-  });
-});
-
-describe("openAIApiFieldGroup", () => {
-  it("declares OpenAI API settings for operator surfaces", () => {
-    expect(openAIApiFieldGroup.id).toBe("openaiApi");
-    expect(openAIApiFieldGroup.fields.find((field) => field.id === "openaiApi.enabled")?.kind).toBe("switch");
-    expect(openAIApiFieldGroup.fields.find((field) => field.id === "openaiApi.apiKey")?.kind).toBe("secret");
-    expect(openAIApiFieldGroup.fields.find((field) => field.id === "openaiApi.modelId")?.kind).toBe("string");
   });
 });

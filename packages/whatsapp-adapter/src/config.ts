@@ -1,5 +1,4 @@
 import {
-  defineFieldGroup,
   layerJsonOntoEnv,
   readBoolean,
   readChoice,
@@ -7,7 +6,7 @@ import {
   readJsonSection,
   readSettingsJson,
 } from "@mono-agent/settings";
-import type { FieldGroup, SettingsJson } from "@mono-agent/settings";
+import type { SettingsJson } from "@mono-agent/settings";
 
 import type { WhatsAppGroupTriggerMode } from "./adapter.js";
 import type { WhatsAppJid } from "./types.js";
@@ -84,70 +83,6 @@ const missingRequiredConfig = (
   details?: Record<string, unknown>,
 ): WhatsAppAdapterConfigError =>
   new WhatsAppAdapterConfigError("missing_required_config", message, details);
-
-export const whatsappFieldGroup: FieldGroup = defineFieldGroup({
-  id: "whatsapp",
-  label: "WhatsApp",
-  description: "Optional WhatsApp adapter allowlist and group trigger configuration.",
-  fields: [
-    {
-      id: "whatsapp.enabled",
-      label: "Enable WhatsApp",
-      description: "Start the WhatsApp adapter with the app. Off by default.",
-      kind: "switch",
-      path: ["whatsapp", "enabled"],
-    },
-    {
-      id: "whatsapp.allowedChatJids",
-      label: "Allowed chat JIDs",
-      description: "Comma-separated list of chat JIDs the adapter will respond to.",
-      kind: "csv",
-      placeholder: "123@s.whatsapp.net, 456@g.us",
-      path: ["whatsapp", "allowedChatJids"],
-    },
-    {
-      id: "whatsapp.allowAllChats",
-      label: "Allow all chats",
-      description: "Explicitly permit every chat. Leave off when using an allowlist.",
-      kind: "switch",
-      path: ["whatsapp", "allowAllChats"],
-    },
-    {
-      id: "whatsapp.groupMode",
-      label: "Group mode",
-      description: "Whether group messages require a configured bot mention or any group text may trigger.",
-      kind: "select",
-      options: [
-        { value: "mention", label: "mention" },
-        { value: "any", label: "any" },
-      ],
-      path: ["whatsapp", "groupMode"],
-    },
-    {
-      id: "whatsapp.botJids",
-      label: "Bot JIDs",
-      description: "Comma-separated JIDs that count as bot mentions in groups.",
-      kind: "csv",
-      placeholder: "123@s.whatsapp.net",
-      path: ["whatsapp", "botJids"],
-    },
-    {
-      id: "whatsapp.mentionTextAliases",
-      label: "Mention aliases",
-      description: "Comma-separated mention text aliases to strip from triggered messages.",
-      kind: "csv",
-      placeholder: "@agent, Assistant",
-      path: ["whatsapp", "mentionTextAliases"],
-    },
-    {
-      id: "whatsapp.stripMentionText",
-      label: "Strip mention text",
-      description: "Remove configured mention aliases before sending text to the responder.",
-      kind: "switch",
-      path: ["whatsapp", "stripMentionText"],
-    },
-  ],
-});
 
 export async function loadWhatsAppAdapterConfig(
   input: LoadWhatsAppAdapterConfigInput,

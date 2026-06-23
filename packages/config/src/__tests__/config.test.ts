@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { loadMonoAgentConfig, MonoAgentConfigError, redactMonoAgentConfig } from "../index.js";
 
@@ -65,18 +65,16 @@ describe("loadMonoAgentConfig", () => {
     });
   });
 
-  it("loads permission mode and reasoning summary from env", () => {
+  it("loads permission mode from env", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
         MONO_AGENT_PERMISSION_MODE: "bypassPermissions",
-        MONO_AGENT_REASONING_SUMMARY: "detailed",
       },
     });
 
     expect(config.runtime.permissionMode).toBe("bypassPermissions");
-    expect(config.runtime.reasoningSummary).toBe("detailed");
   });
 
   it("treats an omitted runtime max turns value as unlimited", () => {
@@ -97,10 +95,9 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.maxTurns).toBeUndefined();
   });
 
-  it("omits permission mode and reasoning summary when the env is unset", () => {
+  it("omits permission mode when the env is unset", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
     expect(config.runtime.permissionMode).toBeUndefined();
-    expect(config.runtime.reasoningSummary).toBeUndefined();
   });
 
   it("loads pi-native provider knobs from env", () => {
@@ -134,17 +131,11 @@ describe("loadMonoAgentConfig", () => {
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
-  it("rejects invalid permission mode and reasoning summary values", () => {
+  it("rejects an invalid permission mode value", () => {
     expect(() =>
       loadMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_PERMISSION_MODE: "yolo" },
-      }),
-    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
-    expect(() =>
-      loadMonoAgentConfig({
-        cwd: "/repo",
-        env: { ...baseEnv, MONO_AGENT_REASONING_SUMMARY: "verbose" },
       }),
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
@@ -199,17 +190,27 @@ describe("loadMonoAgentConfig", () => {
     expect(config.providers?.piAuthPath).toBe("/tmp/pi-auth.json");
   });
 
-  it("ignores the retired MONO_AGENT_MEMORY_SCOPE / _TOOLS_* / _GRAPH_PATH env vars", () => {
-    const config = loadMonoAgentConfig({
-      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem",
-        MONO_AGENT_MEMORY_SCOPE: "per-conversation",
-        MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
-        MONO_AGENT_MEMORY_GRAPH_PATH: "g.jsonl" },
-      cwd: "/repo",
-    });
-    expect(config.memory).not.toHaveProperty("scope");
-    expect(config.memory).not.toHaveProperty("tools");
-    expect(config.memory).not.toHaveProperty("graphPath");
+  it("tolerates the retired MONO_AGENT_MEMORY_SCOPE / _TOOLS_* / _GRAPH_PATH env vars but warns", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = loadMonoAgentConfig({
+        env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem",
+          MONO_AGENT_MEMORY_SCOPE: "per-conversation",
+          MONO_AGENT_MEMORY_TOOLS_ENABLED: "true",
+          MONO_AGENT_MEMORY_GRAPH_PATH: "g.jsonl" },
+        cwd: "/repo",
+      });
+      expect(config.memory).not.toHaveProperty("scope");
+      expect(config.memory).not.toHaveProperty("tools");
+      expect(config.memory).not.toHaveProperty("graphPath");
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain("MONO_AGENT_MEMORY_GRAPH_PATH");
+      expect(message).toContain("MONO_AGENT_MEMORY_SCOPE");
+      expect(message).toContain("MONO_AGENT_MEMORY_TOOLS_ENABLED");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("defaults the runtime session to continuous with a 30-minute idle timeout", () => {

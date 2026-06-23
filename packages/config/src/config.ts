@@ -28,8 +28,8 @@ import {
 } from "@mono-agent/settings";
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
-import { EFFORT_LEVELS, PERMISSION_MODES, REASONING_SUMMARIES } from "./field-groups.js";
-import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, ReasoningSummary, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
+import { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
+import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -116,7 +116,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
 
   const effort = readEffort(input.env.MONO_AGENT_EFFORT);
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
-  const reasoningSummary = readReasoningSummary(input.env.MONO_AGENT_REASONING_SUMMARY);
   const concurrency = readConcurrencyConfig(input.env);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
@@ -127,7 +126,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     session,
     ...(effort === undefined ? {} : { effort }),
     ...(permissionMode === undefined ? {} : { permissionMode }),
-    ...(reasoningSummary === undefined ? {} : { reasoningSummary }),
   };
 
   const context: MonoAgentConfig["context"] = {
@@ -382,13 +380,37 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
   };
 }
 
+/**
+ * Pre-v2 memory keys the loader still tolerates (never throws) but no longer
+ * honors. Surfaced as a one-line deprecation warning instead of being silently
+ * dropped, so a stale config doesn't look like it is taking effect.
+ */
+const RETIRED_MEMORY_ENV_KEYS = [
+  "MONO_AGENT_MEMORY_GRAPH_PATH",
+  "MONO_AGENT_MEMORY_SCOPE",
+  "MONO_AGENT_MEMORY_TOOLS_ENABLED",
+] as const;
+
+function warnRetiredMemoryKeys(env: Record<string, string | undefined>): void {
+  const retired = RETIRED_MEMORY_ENV_KEYS.filter(
+    (name) => normalizeOptionalString(env[name]) !== undefined,
+  );
+  if (retired.length > 0) {
+    console.warn(
+      `[mono-agent] Ignoring retired memory env var(s): ${retired.join(", ")}. `
+        + "These were removed in Memory v2 and have no effect.",
+    );
+  }
+}
+
 function readMemoryConfig(env: Record<string, string | undefined>, cwd: string): MonoAgentConfig["memory"] | undefined {
+  warnRetiredMemoryKeys(env);
   const rawPath = normalizeOptionalString(env.MONO_AGENT_MEMORY_PATH);
   if (rawPath === undefined) {
     // Any memory env var set without a path is a misconfiguration — fail closed rather than
     // silently ignoring it. Covers every behavior-configuring var (not just embeddings). The
-    // retired _GRAPH_PATH/_SCOPE/_TOOLS_ENABLED keys are deliberately omitted: the loader tolerates
-    // them for backward-compat with pre-v2 configs.
+    // retired _GRAPH_PATH/_SCOPE/_TOOLS_ENABLED keys are deliberately omitted here: they are
+    // tolerated (warned, not thrown) for backward-compat with pre-v2 configs.
     const orphaned = [
       "MONO_AGENT_MEMORY_MODE",
       "MONO_AGENT_MEMORY_WRITE_MODE",
@@ -1089,14 +1111,6 @@ function readPermissionMode(raw: string | undefined): PermissionMode | undefined
     return undefined;
   }
   return readChoice<PermissionMode>(normalized, "MONO_AGENT_PERMISSION_MODE", PERMISSION_MODES, PERMISSION_MODES[0], invalidEnv);
-}
-
-function readReasoningSummary(raw: string | undefined): ReasoningSummary | undefined {
-  const normalized = normalizeOptionalString(raw);
-  if (normalized === undefined) {
-    return undefined;
-  }
-  return readChoice<ReasoningSummary>(normalized, "MONO_AGENT_REASONING_SUMMARY", REASONING_SUMMARIES, REASONING_SUMMARIES[0], invalidEnv);
 }
 
 function readConcurrencyConfig(env: Record<string, string | undefined>): MonoAgentConfig["concurrency"] | undefined {
