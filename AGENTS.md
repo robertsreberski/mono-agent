@@ -35,3 +35,13 @@ This repository is intended to become a small, single-purpose agent framework bu
 - Communication adapters, skills/MCP integration, harness/runtime orchestration, and memory should remain modular.
 - Memory should be optional; a simple `memory.md`-style implementation is acceptable until a stronger persistence adapter is required.
 - Prefer real execution paths in verification. Fixtures are acceptable for tests, not as product-runtime substitutes.
+
+## Capability ladder
+
+Choose the lowest rung that satisfies the capability; see [docs/reference/capability-ladder.md](./docs/reference/capability-ladder.md) for the canonical reader page.
+
+1. Existing package / existing public surface. Cost: lowest; no new ownership surface. Gate: use the current package responsibility and API without adding a new config or runtime concept.
+2. Config field or selected skill. Cost: new user-facing option or loaded instruction surface. Gate: typed config/validation/docs for config; selected skills stay under `context.selectedSkills` without host glue.
+3. New adapter/package in the correct package category. Cost: new package ownership, README, tests, and catalog metadata. Gate: add `category`, `responsibility`, and `allowedDependencyCategories` to `scripts/package-catalog.mjs`; `scripts/check-package-architecture.mjs` must pass.
+4. MCP server / auto-provisioned MCP tool. Cost: runtime-visible tool lifecycle, policy/security/docs, and tool-result behavior. Gate: use when the model needs an explicit callable tool boundary; canonical app-owned examples are `memory_recall` and `notify_conversation`.
+5. Shared core contract change in `@mono-agent/agent-contracts`. Cost: highest blast radius and likely semver/release coordination. Gate: last resort for adapter-neutral shared structure; `scripts/check-package-architecture.mjs` enforces adapter-neutrality.
