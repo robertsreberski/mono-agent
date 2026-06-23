@@ -144,6 +144,9 @@ importers:
       '@mono-agent/memory-search':
         specifier: workspace:0.4.0
         version: link:../memory-search
+      '@mono-agent/memory-supermemory':
+        specifier: workspace:0.4.0
+        version: link:../memory-supermemory
       '@mono-agent/observability':
         specifier: workspace:0.4.0
         version: link:../observability
@@ -239,6 +242,9 @@ importers:
       '@mono-agent/memory-store':
         specifier: workspace:0.4.0
         version: link:../memory-store
+      '@mono-agent/memory-supermemory':
+        specifier: workspace:0.4.0
+        version: link:../memory-supermemory
       '@mono-agent/observability':
         specifier: workspace:0.4.0
         version: link:../observability
@@ -346,6 +352,12 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.12
         version: 7.6.13
+
+  packages/memory-supermemory:
+    dependencies:
+      '@mono-agent/memory-store':
+        specifier: workspace:0.4.0
+        version: link:../memory-store
 
   packages/observability: {}
 

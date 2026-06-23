@@ -13,11 +13,13 @@ import type {
 import { resolve as resolvePath } from "node:path";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
 import type { LlmComplete } from "@mono-agent/memory-bujo";
 import { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } from "@mono-agent/memory-search";
 import type { MemoryStore } from "@mono-agent/memory-store";
+import { createSupermemoryStore } from "@mono-agent/memory-supermemory";
 import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
 import type {
   PhoenixExporterConfig,
@@ -316,6 +318,24 @@ export function createConfiguredMemory(
 ): MemoryStore | undefined {
   if (config.memory === undefined) {
     return undefined;
+  }
+  const backend = config.memory.backend ?? "bujo";
+  if (backend === "supermemory") {
+    const sm = config.memory.supermemory;
+    if (sm === undefined) {
+      // Defensive: the loader already rejects this combination.
+      throw new Error("memory.backend 'supermemory' requires a memory.supermemory block.");
+    }
+    // External backend: `mode`/`embeddings`/`llm` are bujo-only and intentionally ignored. Recall +
+    // capture both go over the REST client; Supermemory extracts/consolidates server-side.
+    return createSupermemoryStore({
+      baseUrl: sm.baseUrl,
+      container: resolveSupermemoryContainer(config),
+      ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
+      ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
+      ...(config.memory.maxBytes === undefined ? {} : { maxBytes: config.memory.maxBytes }),
+      ...(deps.logger === undefined ? {} : { logger: deps.logger }),
+    });
   }
   const { mode, path: root, maxBytes, embeddings: embeddingsConfig, llm: llmConfig } = config.memory;
 

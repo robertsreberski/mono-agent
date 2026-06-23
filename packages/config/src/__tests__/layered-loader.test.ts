@@ -172,6 +172,31 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED).toBe("true");
   });
 
+  it("translates the JSON memory.backend + supermemory block to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          backend: "supermemory",
+          path: ".mono-agent/memory",
+          supermemory: {
+            baseUrl: "http://127.0.0.1:8080",
+            apiKeyEnv: "SM_KEY",
+            container: "agent-alpha",
+            timeoutMs: 5000,
+            exposeMcpServer: true,
+          },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_BACKEND).toBe("supermemory");
+    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL).toBe("http://127.0.0.1:8080");
+    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV).toBe("SM_KEY");
+    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER).toBe("agent-alpha");
+    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS).toBe("5000");
+    expect(layered.MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER).toBe("true");
+  });
+
   it("translates JSON runtime.session to env keys", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000 } } },

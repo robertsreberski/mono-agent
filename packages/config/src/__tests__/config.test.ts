@@ -1329,6 +1329,127 @@ describe("loadMonoAgentConfig", () => {
     ).toThrow(/capture.*requires.*bujo/i);
   });
 
+  it("defaults memory.backend to 'bujo' when a memory block is configured", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem", MONO_AGENT_MEMORY_MODE: "journal" },
+    });
+    expect(config.memory?.backend).toBe("bujo");
+    expect(config.memory?.supermemory).toBeUndefined();
+  });
+
+  it("loads the supermemory backend block from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "./mem",
+        MONO_AGENT_MEMORY_BACKEND: "supermemory",
+        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:8080",
+        MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "agent-alpha",
+        MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: "5000",
+        MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER: "true",
+      },
+    });
+    expect(config.memory?.backend).toBe("supermemory");
+    expect(config.memory?.supermemory).toEqual({
+      baseUrl: "http://127.0.0.1:8080",
+      container: "agent-alpha",
+      timeoutMs: 5000,
+      exposeMcpServer: true,
+    });
+    // External backend: recall defaults on (it always has search).
+    expect(config.memory?.recallTool).toEqual({ enabled: true });
+  });
+
+  it("resolves the supermemory api key from apiKeyEnv (name persisted, value resolved)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "./mem",
+        MONO_AGENT_MEMORY_BACKEND: "supermemory",
+        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "https://api.supermemory.ai",
+        MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV: "MY_SM_KEY",
+        MY_SM_KEY: "sm-secret",
+      },
+    });
+    expect(config.memory?.supermemory).toMatchObject({
+      baseUrl: "https://api.supermemory.ai",
+      apiKey: "sm-secret",
+      apiKeyEnv: "MY_SM_KEY",
+    });
+  });
+
+  it("rejects backend 'supermemory' without a base URL", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_MEMORY_PATH: "./mem", MONO_AGENT_MEMORY_BACKEND: "supermemory" },
+      }),
+    ).toThrow(/SUPERMEMORY_BASE_URL/);
+  });
+
+  it("rejects partial supermemory config without a base URL", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_PATH: "./mem",
+          MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "agent-alpha",
+        },
+      }),
+    ).toThrow(/SUPERMEMORY_BASE_URL/);
+  });
+
+  it("accepts memory.writeMode 'capture' for the supermemory backend regardless of mode", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "./mem",
+        MONO_AGENT_MEMORY_BACKEND: "supermemory",
+        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:8080",
+        MONO_AGENT_MEMORY_MODE: "lite",
+        MONO_AGENT_MEMORY_WRITE_MODE: "capture",
+      },
+    });
+    expect(config.memory?.writeMode).toBe("capture");
+  });
+
+  it("allows the supermemory backend without a memory path (path is bujo-only)", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_BACKEND: "supermemory",
+        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
+      },
+    });
+    expect(config.memory?.backend).toBe("supermemory");
+    expect(config.memory?.supermemory?.baseUrl).toBe("http://127.0.0.1:6767");
+  });
+
+  it("redacts the supermemory api key", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_MEMORY_PATH: "./mem",
+        MONO_AGENT_MEMORY_BACKEND: "supermemory",
+        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "https://api.supermemory.ai",
+        MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: "sm-plaintext-secret",
+      },
+    });
+    const redacted = redactMonoAgentConfig(config);
+    expect(redacted.memory?.supermemory).toMatchObject({
+      baseUrl: "https://api.supermemory.ai",
+      apiKey: { present: true, redacted: true },
+    });
+    expect(JSON.stringify(redacted)).not.toContain("sm-plaintext-secret");
+  });
+
   it("loads a valid phoenix observability exporter from env JSON", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
