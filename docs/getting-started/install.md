@@ -18,8 +18,8 @@ The shipped command line lives in `@mono-agent/agent-app` (the config-first host
 | pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npx`). |
 
 :::note
-:::
 You do **not** need pnpm to use the published packages — `npm i -g` and `npx` are enough. pnpm is only required for the "run an unreleased build" path below, which builds the workspace from source.
+:::
 
 ## Install the CLI
 
@@ -34,6 +34,17 @@ This also installs the `mono-agent-memory-recall` helper bin used by the memory 
 ```bash
 npx @mono-agent/agent-app --help
 ```
+
+## Scaffold without installing
+
+If you only want to create an agent folder, run `init` through a package runner instead of installing the CLI globally:
+
+```bash
+npx @mono-agent/agent-app init
+pnpm dlx @mono-agent/agent-app init
+```
+
+Both commands download and run the published CLI for that one scaffold command. They do not require a global install, and `pnpm dlx` does not require the source-build workspace setup.
 
 ## Install the TUI console
 
@@ -81,12 +92,32 @@ mono-agent init
 
 Then continue with the [Quickstart](/getting-started/quickstart/). For the full key reference, see [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/).
 
+## Updating
+
+Update global installs with npm:
+
+```bash
+npm update -g @mono-agent/agent-app
+npm update -g @mono-agent/tui
+```
+
+Published `@mono-agent/*` packages release in lockstep at one version. Keep `@mono-agent/agent-app`, `@mono-agent/tui`, and any other pinned `@mono-agent/*` package references on the same version; the current package metadata in this repo is `0.4.0`.
+
+For reproducible installs or one-shot scaffolds, pin the version explicitly:
+
+```bash
+npm i -g @mono-agent/agent-app@0.4.0 @mono-agent/tui@0.4.0
+npx @mono-agent/agent-app@0.4.0 init
+```
+
+Review published version notes in [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases).
+
 ## Run an unreleased build
 
 To run against unreleased changes (e.g. a feature branch), build the workspace from source and point `mono-agent` at the built CLI entry. This is the only path that needs pnpm `>=10`.
 
 ```bash
-git clone https://github.com/<owner>/mono-agent.git
+git clone https://github.com/robertsreberski/mono-agent.git
 cd mono-agent
 pnpm install --frozen-lockfile
 pnpm run build
@@ -106,9 +137,9 @@ alias mono-agent-tui="node /absolute/path/to/mono-agent/packages/tui/dist/bin/mo
 ```
 
 :::caution
-:::
 Rebuild (`pnpm run build`) after pulling new changes — the alias points at compiled output in `dist/`, not the TypeScript sources, so edits are not picked up until you rebuild. Cross-package types and tests resolve against built `dist/`, so a stale build can mask or surface errors that do not match `src`.
+:::
 
 :::tip
-:::
 Editable global link instead of an alias? After `pnpm run build`, run `npm link` from `packages/agent-app` (and `packages/tui`) to put the local bins on your `PATH`. You still rebuild after each change.
+:::

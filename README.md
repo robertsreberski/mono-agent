@@ -10,19 +10,16 @@ Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.a
 
 Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a working agent with the `mono-agent` CLI from `@mono-agent/agent-app`:
 
-Use Node.js 20 or newer and pnpm 10 or newer.
+Use Node.js 20 or newer.
 
 ```bash
-# once, in this workspace
-pnpm install --frozen-lockfile
-pnpm run build
-alias mono-agent="node $(pwd)/packages/agent-app/dist/cli.js"
-
 # in the agent folder
-mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
-mono-agent validate
-mono-agent start
+npx @mono-agent/agent-app init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
+npx @mono-agent/agent-app validate
+npx @mono-agent/agent-app start
 ```
+
+For repeated local use, install the CLI globally with `npm i -g @mono-agent/agent-app` and run the same commands as `mono-agent init`, `mono-agent validate`, and `mono-agent start`. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.
 
 `init` scaffolds `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status.
 
