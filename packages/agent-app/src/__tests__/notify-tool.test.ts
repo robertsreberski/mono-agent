@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { startNotifyToolsServer, type NotifyToolsServer } from "../notify-tool.js";
 
@@ -24,7 +25,7 @@ async function connect(server: NotifyToolsServer, token = server.token): Promise
   const transport = new StreamableHTTPClientTransport(new URL(server.url), {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
   });
-  await client.connect(transport);
+  await client.connect(transport as Transport);
   return client;
 }
 
@@ -85,6 +86,6 @@ describe("notify tools server", () => {
     const server = await start({ deliver: async () => ({ delivered: false }), listDestinations: async () => [] });
     const client = new McpClient({ name: "test-client", version: "0.0.0" });
     const transport = new StreamableHTTPClientTransport(new URL(server.url));
-    await expect(client.connect(transport)).rejects.toThrow();
+    await expect(client.connect(transport as Transport)).rejects.toThrow();
   });
 });

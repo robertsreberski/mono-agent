@@ -862,3 +862,34 @@ export function buildMonoAgentConfigView(
     buildProvidersSection(input),
   ];
 }
+
+function envKeyForFieldId(id: string): string | undefined {
+  if (Object.prototype.hasOwnProperty.call(CONFIG_ENV_KEYS, id)) {
+    return CONFIG_ENV_KEYS[id as ConfigViewFieldId];
+  }
+  return undefined;
+}
+
+/**
+ * Find advisory warnings for secret-marked fields whose resolved source is the
+ * committed JSON config. The warning uses only stable field ids and env-var
+ * names, never the secret value itself.
+ */
+export function findJsonSecretConfigWarnings(
+  sections: readonly ConfigViewSection[],
+): readonly string[] {
+  const warnings: string[] = [];
+  for (const section of sections) {
+    for (const field of section.fields) {
+      if (field.redacted !== true || field.source !== "json") {
+        continue;
+      }
+      const envVar = envKeyForFieldId(field.id);
+      if (envVar === undefined) {
+        continue;
+      }
+      warnings.push(`[WARN] ${field.id} is a secret read from mono-agent.config.json — move it to .env (${envVar}).`);
+    }
+  }
+  return warnings;
+}
