@@ -89,7 +89,7 @@ Allowing a send tool but leaving the adapter disabled or unconfigured means the 
 
 On a **cron or webhook turn** — and only there — the agent is given two extra tools so it can proactively message a conversation it is **not currently handling**:
 
-- **`notify_conversation(conversationId, text)`** — delivers `text` to `conversationId` by running it as a **real turn on that conversation's own live session**. The destination's agent composes the user-facing reply with its own context and history, the user sees it as a native message, and **the conversation remembers it** — this is not a side-channel post. Returns `{ delivered, reason }`.
+- **`notify_conversation(conversationId, text)`** — delivers `text` to `conversationId` by running it as a **real turn on that conversation's own live session**. The destination's agent reads `text` and composes the user-facing reply with its own context and history, **that reply** is what the user sees (so `text` is *not* posted verbatim), and **the conversation remembers it** — this is not a side-channel post. Returns `{ delivered, reason }`. See [Delivering exact content](#delivering-exact-content) when the message must arrive word-for-word.
 - **`list_notify_destinations()`** — discovery: lists conversations the agent has handled (from the run artifacts) plus single-entry channel allowlists it could reach. Each entry carries the `conversationId` to pass to `notify_conversation`, an optional `lastSeen`, and a `fromAllowlist` flag for not-yet-used allowlisted destinations. WhatsApp is excluded.
 
 `conversationId` is a channel-scoped id such as `telegram:42`, `slack:C123`, or `slack:C123:1718.99` (a Slack thread).
@@ -114,6 +114,22 @@ On a **cron or webhook turn** — and only there — the agent is given two extr
 
 1. **Async webhook callback (the key one).** A live chat asks the agent to kick off a long-running external operation; the agent embeds the current `conversationId` (surfaced in the [Session context block](/context/assembly/#session)) in the callback it asks the service to make. When the service later calls the inbound [webhook](/channels/webhook/), the webhook turn reads that id from the payload and calls `notify_conversation` to deliver the result back into the original conversation — which still remembers the request.
 2. **Proactive cron.** A scheduled job pings the user without the operator hardcoding a chat id: the job calls `list_notify_destinations()` to find where to reach the user, then `notify_conversation`.
+
+### Delivering exact content
+
+Because `notify_conversation` runs `text` as a turn and delivers the destination's **reply**, a pre-composed message (e.g. a digest) is not posted verbatim by default — the destination agent may reword it. To deliver content word-for-word, make `text` a **reply instruction that forbids tools**, so the destination replies once with the exact block and nothing else:
+
+```text
+Reply with the text below exactly as written, adding nothing, and do not call any tools —
+your reply is delivered automatically:
+
+<your exact content>
+```
+
+Two failure modes to avoid in the cron/webhook prompt that composes `text`:
+
+- **Don't tell the destination to "post" or "send" it.** Its reply is *already* delivered; if it also calls `slack_send_message` (or curls the API), the message is posted **twice**. Frame the work as "reply with…", not "send…".
+- **Keep the delivery turn to a single reply.** A `notify_conversation` call blocks until the destination turn finishes; a turn that re-scans, recalls memory, or hunts for a send tool is slow and can hit the MCP request timeout. Instructing "reply only, call no tools" keeps it fast and within the timeout.
 
 :::note
 This replaces the older static `notify:<id>` cron/webhook config: the destination is now chosen by the agent at turn time, so there is nothing per-job to configure beyond making sure the relevant Telegram/Slack allowlist includes the intended destination.

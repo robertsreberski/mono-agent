@@ -759,7 +759,13 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         sandboxEngine: options.sandboxEngine,
       });
     mcpClients = mcpInit.clients;
-    for (const warning of mcpInit.warnings || []) onEvent(warning);
+    // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
+    // failed server (e.g. an stdio adapter-send child that closed on startup) lands in the run
+    // summary's runtimeWarnings instead of being buried as a transient event the summary drops.
+    for (const warning of mcpInit.warnings || []) {
+      onEvent(warning);
+      runtimeWarnings.push(warning);
+    }
 
     const tools = [
       ...builtIns,

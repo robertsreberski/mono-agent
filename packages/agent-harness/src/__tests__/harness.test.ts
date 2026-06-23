@@ -378,6 +378,8 @@ describe("AgentHarness", () => {
     expect(fake.calls[0]?.prompt).toContain("You are currently handling the conversation `conversation-extension`.");
     expect(fake.calls[0]?.prompt).toContain("This conversation cannot itself receive a proactive follow-up");
     expect(fake.calls[0]?.prompt).toContain("`list_notify_destinations`");
+    // ...and how notify_conversation delivers: the destination's reply is sent, not text verbatim.
+    expect(fake.calls[0]?.prompt).toContain("ITS reply is what the user sees");
     expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "ask_collaborator"]);
     expect(fake.calls[0]?.options.disallowedTools).toEqual(["Write"]);
     expect(fake.calls[0]?.options.mcpServers).toEqual({
