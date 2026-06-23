@@ -51,4 +51,41 @@ describe("cron channel driver — run watchdog", () => {
 
     expect(captured?.maxRunMs).toBe(5_000);
   });
+
+  it("passes job-specific maxRunMs values through to the cron adapter", async () => {
+    let captured: CronAdapterOptions | undefined;
+    const driver = createCronChannelDriver({
+      adapterFactory: (options): CronAdapterStartResult => {
+        captured = options;
+        return { jobs: options.jobs, activeJobCount: 0, stop: () => {} };
+      },
+    });
+    const input = {
+      ...baseInput,
+      config: {
+        jobs: [
+          {
+            id: "bills",
+            expression: "0 9 * * *",
+            timezone: "Europe/Rome",
+            prompt: "p",
+            enabled: true,
+            maxRunMs: 2_700_000,
+          },
+        ],
+      },
+    } as never;
+
+    await driver.start(input);
+
+    expect(captured?.jobs).toEqual([
+      {
+        id: "bills",
+        expression: "0 9 * * *",
+        timezone: "Europe/Rome",
+        prompt: "p",
+        maxRunMs: 2_700_000,
+      },
+    ]);
+  });
 });

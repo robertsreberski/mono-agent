@@ -64,7 +64,7 @@ describe("loadCronAdapterConfig", () => {
       `${JSON.stringify({
         cron: {
           jobs: [
-            { id: "daily", enabled: true, expression: "0 9 * * *", timezone: "UTC", prompt: "Morning summary." },
+            { id: "daily", enabled: true, expression: "0 9 * * *", timezone: "UTC", prompt: "Morning summary.", maxRunMs: 2_700_000 },
             { id: "weekly", enabled: false, expression: "0 9 * * 1", prompt: "Weekly recap.", conversationId: "cron-weekly" },
           ],
         },
@@ -75,7 +75,7 @@ describe("loadCronAdapterConfig", () => {
     const config = await loadCronAdapterConfig({ env: {}, jsonPath: path });
 
     expect(config.jobs).toEqual([
-      { id: "daily", enabled: true, expression: "0 9 * * *", timezone: "UTC", prompt: "Morning summary." },
+      { id: "daily", enabled: true, expression: "0 9 * * *", timezone: "UTC", prompt: "Morning summary.", maxRunMs: 2_700_000 },
       { id: "weekly", enabled: false, expression: "0 9 * * 1", timezone: "UTC", prompt: "Weekly recap.", conversationId: "cron-weekly" },
     ]);
   });
@@ -105,6 +105,19 @@ describe("loadCronAdapterConfig", () => {
     await writeFile(
       path,
       `${JSON.stringify({ cron: { jobs: [{ id: "broken" }] } })}\n`,
+      "utf8",
+    );
+
+    await expect(loadCronAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("rejects a cron.jobs maxRunMs that is not a positive integer", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({ cron: { jobs: [{ id: "broken", expression: "0 9 * * *", prompt: "run", maxRunMs: -1 }] } })}\n`,
       "utf8",
     );
 
@@ -144,13 +157,13 @@ describe("toCronJobs", () => {
   it("drops disabled jobs and maps to the runtime CronJob shape", () => {
     const jobs = toCronJobs({
       jobs: [
-        { id: "on", enabled: true, expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1" },
+        { id: "on", enabled: true, expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1", maxRunMs: 45_000 },
         { id: "off", enabled: false, expression: "0 0 * * *", timezone: "UTC", prompt: "skip" },
       ],
     });
 
     expect(jobs).toEqual([
-      { id: "on", expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1" },
+      { id: "on", expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1", maxRunMs: 45_000 },
     ]);
     expect(jobs.some((job) => job.id === "off")).toBe(false);
   });
