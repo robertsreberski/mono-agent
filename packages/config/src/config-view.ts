@@ -66,6 +66,7 @@ export const CONFIG_ENV_KEYS = {
   "runtime.session.idleTimeoutMs": "MONO_AGENT_SESSION_IDLE_TIMEOUT_MS",
   "runtime.session.rollover": "MONO_AGENT_SESSION_ROLLOVER",
   "runtime.session.rolloverTimezone": "MONO_AGENT_SESSION_ROLLOVER_TIMEZONE",
+  "runtime.session.isolateProactive": "MONO_AGENT_SESSION_ISOLATE_PROACTIVE",
   "concurrency.maxConcurrentRuns": "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS",
   "concurrency.maxPendingRuns": "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS",
   "context.identityPath": "MONO_AGENT_IDENTITY_PATH",
@@ -73,6 +74,7 @@ export const CONFIG_ENV_KEYS = {
   "context.skillsRoot": "MONO_AGENT_SKILLS_ROOT",
   "context.selectedSkills": "MONO_AGENT_SELECTED_SKILLS",
   "context.skillMaxBytes": "MONO_AGENT_SKILL_MAX_BYTES",
+  "context.skillDisclosure": "MONO_AGENT_SKILL_DISCLOSURE",
   "memory.mode": "MONO_AGENT_MEMORY_MODE",
   "memory.path": "MONO_AGENT_MEMORY_PATH",
   "memory.maxBytes": "MONO_AGENT_MEMORY_MAX_BYTES",
@@ -260,6 +262,12 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         value: session.rolloverTimezone ?? PLACEHOLDER,
         jsonPresent: json.runtime?.session?.rolloverTimezone !== undefined,
       }),
+      toField(env, {
+        id: "runtime.session.isolateProactive",
+        label: "Isolate proactive runs",
+        value: session.isolateProactive === true ? "yes" : "no",
+        jsonPresent: json.runtime?.session?.isolateProactive !== undefined,
+      }),
     ],
   };
 }
@@ -326,6 +334,12 @@ function buildContextSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         label: "Skill byte cap",
         value: context.skillMaxBytes === undefined ? "default" : String(context.skillMaxBytes),
         jsonPresent: json.context?.skillMaxBytes !== undefined,
+      }),
+      toField(env, {
+        id: "context.skillDisclosure",
+        label: "Skill disclosure",
+        value: context.skillDisclosure ?? "full",
+        jsonPresent: json.context?.skillDisclosure !== undefined,
       }),
     ],
   };

@@ -49,6 +49,8 @@ describe("loadSlackAdapterConfig", () => {
       botUserIds: ["Ubot"],
       mentionTextAliases: ["@mono"],
       stripMentionText: true,
+      shortcuts: [],
+      homeTab: { enabled: false, buttons: [] },
     });
   });
 
@@ -90,6 +92,8 @@ describe("loadSlackAdapterConfig", () => {
       botUserIds: ["U1", "U2"],
       mentionTextAliases: ["@agent", "Assistant"],
       stripMentionText: false,
+      shortcuts: [],
+      homeTab: { enabled: false, buttons: [] },
     });
   });
 
@@ -120,7 +124,189 @@ describe("loadSlackAdapterConfig", () => {
       botUserIds: [],
       mentionTextAliases: [],
       stripMentionText: false,
+      shortcuts: [],
+      homeTab: { enabled: false, buttons: [] },
     });
+  });
+
+  it("loads slack.shortcuts bindings from JSON", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync.", channelId: "D111" }],
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
+
+    expect(config.shortcuts).toEqual([
+      { callbackId: "sync_now", prompt: "Run the sync.", channelId: "D111" },
+    ]);
+  });
+
+  it("rejects a malformed slack.shortcuts entry", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          shortcuts: [{ callbackId: "", prompt: "missing id" }],
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("loads slack.homeTab config from JSON", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          homeTab: {
+            enabled: true,
+            headerText: "Controls",
+            buttons: [{ actionId: "sync_now", label: "🔄 Sync", prompt: "Run the sync.", channelId: "D111" }],
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
+
+    expect(config.homeTab).toEqual({
+      enabled: true,
+      headerText: "Controls",
+      buttons: [{ actionId: "sync_now", label: "🔄 Sync", prompt: "Run the sync.", channelId: "D111" }],
+    });
+  });
+
+  it("rejects a malformed slack.homeTab button", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "json-bot-token",
+          appToken: "json-app-token",
+          allowedChannelIds: ["D111"],
+          homeTab: { enabled: true, buttons: [{ actionId: "sync_now", prompt: "no label" }] },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("rejects duplicate slack.shortcuts callbackId", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "b",
+          appToken: "a",
+          allowedChannelIds: ["D111"],
+          shortcuts: [
+            { callbackId: "dup", prompt: "one", channelId: "D111" },
+            { callbackId: "dup", prompt: "two", channelId: "D111" },
+          ],
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("rejects duplicate slack.homeTab actionId", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "b",
+          appToken: "a",
+          allowedChannelIds: ["D111"],
+          homeTab: {
+            enabled: true,
+            buttons: [
+              { actionId: "dup", label: "A", prompt: "one", channelId: "D111" },
+              { actionId: "dup", label: "B", prompt: "two", channelId: "D111" },
+            ],
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("rejects an enabled homeTab with no buttons and no headerText", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: { enabled: true, botToken: "b", appToken: "a", allowedChannelIds: ["D111"], homeTab: { enabled: true } },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
+  it("accepts an enabled header-only homeTab (no buttons)", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "b",
+          appToken: "a",
+          allowedChannelIds: ["D111"],
+          homeTab: { enabled: true, headerText: "Welcome" },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
+    expect(config.homeTab).toEqual({ enabled: true, headerText: "Welcome", buttons: [] });
   });
 
   it("rejects invalid booleans", async () => {
@@ -147,6 +333,8 @@ describe("redactSlackAdapterConfig", () => {
       botUserIds: ["Ubot"],
       mentionTextAliases: ["@mono"],
       stripMentionText: true,
+      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync." }],
+      homeTab: { enabled: true, buttons: [{ actionId: "sync_now", label: "Sync", prompt: "Run." }] },
     });
 
     expect(JSON.stringify(redacted)).not.toContain("secret");
@@ -161,6 +349,8 @@ describe("redactSlackAdapterConfig", () => {
       botUserIds: { count: 1 },
       mentionTextAliases: { count: 1 },
       stripMentionText: true,
+      shortcuts: { count: 1 },
+      homeTab: { enabled: true, buttonCount: 1 },
     });
   });
 });

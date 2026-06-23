@@ -12,6 +12,34 @@ import type {
   SettingsJson,
 } from "@mono-agent/settings";
 
+/** A Slack shortcut binding: invoking `callbackId` runs `prompt` as a turn. */
+export interface SlackShortcutConfig {
+  readonly callbackId: string;
+  readonly prompt: string;
+  /** Destination channel for the reply. Required for global shortcuts (no source channel). */
+  readonly channelId?: string;
+  /** Optional message posted instantly on invocation, before the run (e.g. "🔄 Syncing…"). */
+  readonly ackText?: string;
+}
+
+/** An App Home tab button: clicking it runs `prompt`; `label` is the button text. */
+export interface SlackHomeButtonConfig {
+  readonly actionId: string;
+  readonly label: string;
+  readonly prompt: string;
+  /** Destination channel for the reply (the Home tab has none of its own). */
+  readonly channelId?: string;
+  /** Optional message posted instantly on click, before the run. */
+  readonly ackText?: string;
+}
+
+/** App Home tab config: whether to publish it, an optional header, and its buttons. */
+export interface SlackHomeTabConfig {
+  readonly enabled: boolean;
+  readonly headerText?: string;
+  readonly buttons: readonly SlackHomeButtonConfig[];
+}
+
 export interface SlackAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
@@ -21,6 +49,10 @@ export interface SlackAdapterConfig {
   readonly botUserIds: readonly string[];
   readonly mentionTextAliases: readonly string[];
   readonly stripMentionText: boolean;
+  /** Shortcut bindings, read from the `slack.shortcuts` JSON array. */
+  readonly shortcuts: readonly SlackShortcutConfig[];
+  /** App Home tab config, read from the `slack.homeTab` JSON object. */
+  readonly homeTab: SlackHomeTabConfig;
 }
 
 export interface RedactedSlackAdapterConfig {
@@ -32,6 +64,8 @@ export interface RedactedSlackAdapterConfig {
   readonly botUserIds: { readonly count: number };
   readonly mentionTextAliases: { readonly count: number };
   readonly stripMentionText: boolean;
+  readonly shortcuts: { readonly count: number };
+  readonly homeTab: { readonly enabled: boolean; readonly buttonCount: number };
 }
 
 export type SlackAdapterConfigErrorCode =
@@ -84,6 +118,10 @@ export async function loadSlackAdapterConfig(
 ): Promise<SlackAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerSlackJsonOntoEnv(json, input.env);
+  // Shortcut bindings and the Home tab are structured config, so they are read
+  // straight from the JSON section rather than via env layering.
+  const shortcuts = readSlackShortcuts(json);
+  const homeTab = readSlackHomeTab(json);
   const enabled = readBoolean(env.MONO_AGENT_SLACK_ENABLED, "MONO_AGENT_SLACK_ENABLED", false, invalidConfig);
   const allowedChannelIds = readCsv(env.MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS);
   const allowAllChannels = readBoolean(
@@ -114,6 +152,8 @@ export async function loadSlackAdapterConfig(
       botUserIds,
       mentionTextAliases,
       stripMentionText,
+      shortcuts,
+      homeTab,
     };
   }
 
@@ -136,7 +176,153 @@ export async function loadSlackAdapterConfig(
     botUserIds,
     mentionTextAliases,
     stripMentionText,
+    shortcuts,
+    homeTab,
   };
+}
+
+/**
+ * Read `slack.shortcuts` (shortcut bindings) straight from the JSON config
+ * section. Absent → none; a non-array or a malformed entry is a hard config
+ * error so a typo surfaces loudly instead of silently dropping a shortcut.
+ */
+function readSlackShortcuts(json: SettingsJson): readonly SlackShortcutConfig[] {
+  const section = readJsonSection(json, "slack");
+  const raw = section.shortcuts;
+  if (raw === undefined) {
+    return [];
+  }
+  if (!Array.isArray(raw)) {
+    throw invalidConfig("slack.shortcuts must be an array of { callbackId, prompt } objects.");
+  }
+  const shortcuts = raw.map((entry, index) => normalizeShortcutConfig(entry, index));
+  assertUniqueIds(shortcuts.map((shortcut) => shortcut.callbackId), "slack.shortcuts callbackId");
+  return shortcuts;
+}
+
+function normalizeShortcutConfig(entry: unknown, index: number): SlackShortcutConfig {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    throw invalidConfig("slack.shortcuts entries must be objects.", { index });
+  }
+  const record = entry as Record<string, unknown>;
+  const callbackId = record.callbackId;
+  const prompt = record.prompt;
+  const channelId = record.channelId;
+  const ackText = record.ackText;
+  if (typeof callbackId !== "string" || callbackId.trim().length === 0) {
+    throw invalidConfig("slack.shortcuts entries require a non-empty callbackId.", { index });
+  }
+  if (typeof prompt !== "string" || prompt.trim().length === 0) {
+    throw invalidConfig("slack.shortcuts entries require a non-empty prompt.", { index });
+  }
+  if (channelId !== undefined && (typeof channelId !== "string" || channelId.trim().length === 0)) {
+    throw invalidConfig("slack.shortcuts channelId must be a non-empty string when set.", { index });
+  }
+  if (ackText !== undefined && (typeof ackText !== "string" || ackText.trim().length === 0)) {
+    throw invalidConfig("slack.shortcuts ackText must be a non-empty string when set.", { index });
+  }
+  const config: { callbackId: string; prompt: string; channelId?: string; ackText?: string } = {
+    callbackId,
+    prompt,
+  };
+  if (channelId !== undefined) {
+    config.channelId = channelId;
+  }
+  if (ackText !== undefined) {
+    config.ackText = ackText;
+  }
+  return config;
+}
+
+/**
+ * Read `slack.homeTab` (App Home tab config) from the JSON section. Absent →
+ * disabled with no buttons; a malformed shape or button is a hard config error.
+ */
+function readSlackHomeTab(json: SettingsJson): SlackHomeTabConfig {
+  const section = readJsonSection(json, "slack");
+  const raw = section.homeTab;
+  if (raw === undefined) {
+    return { enabled: false, buttons: [] };
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw invalidConfig("slack.homeTab must be an object.");
+  }
+  const record = raw as Record<string, unknown>;
+  const enabled = record.enabled === true;
+  const headerText = record.headerText;
+  if (headerText !== undefined && (typeof headerText !== "string" || headerText.trim().length === 0)) {
+    throw invalidConfig("slack.homeTab.headerText must be a non-empty string when set.");
+  }
+  const rawButtons = record.buttons;
+  if (rawButtons !== undefined && !Array.isArray(rawButtons)) {
+    throw invalidConfig("slack.homeTab.buttons must be an array of button objects.");
+  }
+  const buttons = (rawButtons ?? []).map((entry, index) => normalizeHomeButtonConfig(entry, index));
+  assertUniqueIds(buttons.map((button) => button.actionId), "slack.homeTab.buttons actionId");
+  // An enabled Home tab with neither buttons nor a header would publish an empty
+  // view, which Slack's views.publish rejects (1–100 blocks) on every open.
+  if (enabled && buttons.length === 0 && headerText === undefined) {
+    throw invalidConfig("slack.homeTab is enabled but has no buttons and no headerText to render.");
+  }
+  const config: { enabled: boolean; headerText?: string; buttons: readonly SlackHomeButtonConfig[] } = {
+    enabled,
+    buttons,
+  };
+  if (headerText !== undefined) {
+    config.headerText = headerText;
+  }
+  return config;
+}
+
+/** Reject duplicate ids (case-insensitive) so a copy-paste typo surfaces loudly at load. */
+function assertUniqueIds(ids: readonly string[], label: string): void {
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const key = id.trim().toLowerCase();
+    if (seen.has(key)) {
+      throw invalidConfig(`${label} must be unique; "${id}" is declared more than once.`);
+    }
+    seen.add(key);
+  }
+}
+
+function normalizeHomeButtonConfig(entry: unknown, index: number): SlackHomeButtonConfig {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    throw invalidConfig("slack.homeTab.buttons entries must be objects.", { index });
+  }
+  const record = entry as Record<string, unknown>;
+  const actionId = record.actionId;
+  const label = record.label;
+  const prompt = record.prompt;
+  const channelId = record.channelId;
+  const ackText = record.ackText;
+  if (typeof actionId !== "string" || actionId.trim().length === 0) {
+    throw invalidConfig("slack.homeTab.buttons entries require a non-empty actionId.", { index });
+  }
+  if (typeof label !== "string" || label.trim().length === 0) {
+    throw invalidConfig("slack.homeTab.buttons entries require a non-empty label.", { index });
+  }
+  if (typeof prompt !== "string" || prompt.trim().length === 0) {
+    throw invalidConfig("slack.homeTab.buttons entries require a non-empty prompt.", { index });
+  }
+  if (channelId !== undefined && (typeof channelId !== "string" || channelId.trim().length === 0)) {
+    throw invalidConfig("slack.homeTab.buttons channelId must be a non-empty string when set.", { index });
+  }
+  if (ackText !== undefined && (typeof ackText !== "string" || ackText.trim().length === 0)) {
+    throw invalidConfig("slack.homeTab.buttons ackText must be a non-empty string when set.", { index });
+  }
+  const config: { actionId: string; label: string; prompt: string; channelId?: string; ackText?: string } = {
+    actionId,
+    label,
+    prompt,
+  };
+  if (channelId !== undefined) {
+    config.channelId = channelId;
+  }
+  if (ackText !== undefined) {
+    config.ackText = ackText;
+  }
+  return config;
 }
 
 export function redactSlackAdapterConfig(
@@ -151,6 +337,8 @@ export function redactSlackAdapterConfig(
     botUserIds: { count: config.botUserIds.length },
     mentionTextAliases: { count: config.mentionTextAliases.length },
     stripMentionText: config.stripMentionText,
+    shortcuts: { count: config.shortcuts.length },
+    homeTab: { enabled: config.homeTab.enabled, buttonCount: config.homeTab.buttons.length },
   };
 }
 

@@ -103,6 +103,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly idleTimeoutMs?: number;
       readonly rollover?: string;
       readonly rolloverTimezone?: string;
+      readonly isolateProactive?: boolean;
     };
   };
   readonly concurrency?: {
@@ -115,6 +116,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly skillsRoot?: string;
     readonly selectedSkills?: readonly string[];
     readonly skillMaxBytes?: number;
+    readonly skillDisclosure?: string;
   };
   readonly memory?: {
     readonly mode?: MemoryMode;

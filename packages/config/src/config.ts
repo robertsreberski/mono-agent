@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/settings";
 
 import { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
-import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover } from "./types.js";
+import type { EffortLevel, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -97,6 +97,11 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const selectedSkills = readCsv(input.env.MONO_AGENT_SELECTED_SKILLS);
   // The skills loader rejects caps below 256 bytes; validate at the same floor.
   const skillMaxBytes = readOptionalInteger(input.env.MONO_AGENT_SKILL_MAX_BYTES, "MONO_AGENT_SKILL_MAX_BYTES", { min: 256, max: 1_000_000 });
+  // Unset stays undefined so the harness default ("full" legacy) is preserved
+  // byte-for-byte; only validate the choice when an operator opts in explicitly.
+  const skillDisclosure = normalizeOptionalString(input.env.MONO_AGENT_SKILL_DISCLOSURE) === undefined
+    ? undefined
+    : readChoice<SkillDisclosureMode>(input.env.MONO_AGENT_SKILL_DISCLOSURE, "MONO_AGENT_SKILL_DISCLOSURE", ["index", "full"], "full", invalidEnv);
   const memory = readMemoryConfig(input.env, cwd);
   const mcpConfigPath = readOptionalPath(input.env.MONO_AGENT_MCP_CONFIG_PATH, cwd);
   const sandbox = readSandboxConfig(input.env, workspace);
@@ -129,6 +134,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     ...(soulPath === undefined ? {} : { soulPath }),
     ...(skillsRoot === undefined ? {} : { skillsRoot }),
     ...(skillMaxBytes === undefined ? {} : { skillMaxBytes }),
+    ...(skillDisclosure === undefined ? {} : { skillDisclosure }),
   };
 
   const tools: MonoAgentConfig["tools"] = {
@@ -360,11 +366,17 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
     && env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE.trim()
     ? env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE.trim()
     : undefined;
+  // Unset stays undefined so the harness default (false, no behavior change) is
+  // preserved byte-for-byte; only parse the boolean when an operator opts in.
+  const isolateProactive = normalizeOptionalString(env.MONO_AGENT_SESSION_ISOLATE_PROACTIVE) === undefined
+    ? undefined
+    : readBoolean(env.MONO_AGENT_SESSION_ISOLATE_PROACTIVE, "MONO_AGENT_SESSION_ISOLATE_PROACTIVE", false, invalidEnv);
   return {
     mode,
     idleTimeoutMs,
     rollover,
     ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
+    ...(isolateProactive === undefined ? {} : { isolateProactive }),
   };
 }
 

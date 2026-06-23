@@ -7,6 +7,7 @@ import type {
   SlackChatPostMessageParams,
   SlackChatUpdateParams,
   SlackEventCallback,
+  SlackInteractivityPayload,
   SlackSocketModeEnvelope,
   SlackWebApi,
 } from "../types.js";
@@ -145,6 +146,82 @@ describe("SlackSocketModeRunner", () => {
 
     expect(handler.handleEventCallback).not.toHaveBeenCalled();
     expect(JSON.parse(sockets[0]?.sent[0] ?? "{}")).toEqual({ envelope_id: "E-ignore" });
+  });
+
+  it("acknowledges interactive envelopes and routes shortcut payloads to onInteraction", async () => {
+    const api = new FakeSlackApi(["wss://slack.test/1"]);
+    const sockets: FakeWebSocket[] = [];
+    const interactions: SlackInteractivityPayload[] = [];
+    const runner = new SlackSocketModeRunner({
+      api,
+      handler: {
+        async handleEventCallback() {
+          return { kind: "ignored", reason: "unsupported_event" };
+        },
+      },
+      onInteraction: (payload) => {
+        interactions.push(payload);
+      },
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      reconnect: { initialMs: 0, maxMs: 0 },
+    });
+    const controller = new AbortController();
+
+    const started = runner.start({ signal: controller.signal });
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0]?.emitMessage({
+      envelope_id: "E-sc",
+      type: "interactive",
+      payload: { type: "shortcut", callback_id: "sync_now", trigger_id: "T1", user: { id: "U1" } },
+    });
+    await vi.waitFor(() => expect(interactions).toHaveLength(1));
+    controller.abort();
+    await started;
+
+    // The interactive envelope is acked, and the shortcut payload is routed.
+    expect(JSON.parse(sockets[0]?.sent[0] ?? "{}")).toEqual({ envelope_id: "E-sc" });
+    expect(interactions[0]?.callback_id).toBe("sync_now");
+  });
+
+  it("routes block_actions (button) payloads to onInteraction too", async () => {
+    const api = new FakeSlackApi(["wss://slack.test/1"]);
+    const sockets: FakeWebSocket[] = [];
+    const interactions: SlackInteractivityPayload[] = [];
+    const runner = new SlackSocketModeRunner({
+      api,
+      handler: {
+        async handleEventCallback() {
+          return { kind: "ignored", reason: "unsupported_event" };
+        },
+      },
+      onInteraction: (payload) => {
+        interactions.push(payload);
+      },
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      reconnect: { initialMs: 0, maxMs: 0 },
+    });
+    const controller = new AbortController();
+
+    const started = runner.start({ signal: controller.signal });
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0]?.emitMessage({
+      envelope_id: "E-ba",
+      type: "interactive",
+      payload: { type: "block_actions", actions: [{ action_id: "sync_now" }], user: { id: "U1" } },
+    });
+    await vi.waitFor(() => expect(interactions).toHaveLength(1));
+    controller.abort();
+    await started;
+
+    expect(interactions[0]?.type).toBe("block_actions");
   });
 
   it("reconnects after Slack refresh disconnects", async () => {
