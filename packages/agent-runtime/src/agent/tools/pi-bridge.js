@@ -631,9 +631,21 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           // Measure the MCP round-trip so observability can separate slow MCP
           // servers (e.g. context-a8c over a SOCKS proxy) from model latency.
           const mcpCallStartMs = Date.now();
+          // The MCP SDK's per-request timeout defaults to 60s (DEFAULT_REQUEST_TIMEOUT_MSEC),
+          // which would fire -32001 well before the outer withTimeout wall-clock cap — fatal for
+          // in-process tools that run a whole agent turn (e.g. notify_conversation delivery).
+          // Pass it explicitly so the SDK request timeout matches our cap instead of pre-empting it.
+          const mcpCallTimeoutMs = limits.mcpCallTimeoutMs || 120000;
           const out = await withTimeout(
-            connected.client.callTool({ name: sourceTool.name, arguments: normalizedParams || {} }),
-            limits.mcpCallTimeoutMs || 120000,
+            connected.client.callTool(
+              { name: sourceTool.name, arguments: normalizedParams || {} },
+              undefined,
+              // Forward the abort signal too, so a cancelled/timed-out call also cancels the
+              // in-flight MCP request on the wire (otherwise the SDK keeps awaiting until its own
+              // timeout, and an in-process loopback turn could post late after the bridge rejected).
+              { timeout: mcpCallTimeoutMs, resetTimeoutOnProgress: true, maxTotalTimeout: mcpCallTimeoutMs, signal },
+            ),
+            mcpCallTimeoutMs,
             signal,
             `${serverName}:${sourceTool.name}`,
           );
