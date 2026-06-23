@@ -348,10 +348,13 @@ describe("final agent demo", () => {
       expect(fakeRuntime.calls).toHaveLength(1);
       const call = fakeRuntime.calls[0];
       expect(call?.prompt).toContain("You are Mono and you love small LEGO blocks.");
-      // Memory v2 (lite tier) composes a recalled-memory block into the prompt. A fresh store
-      // recalls nothing yet (lite recall is keyword-only, keyed on the conversation id), so assert
-      // the block is wired into context rather than expecting seeded content.
-      expect(call?.prompt).toContain("Memory (recalled)");
+      // Empty recall injects no delimiter/header/block. Non-empty recall is appended to
+      // the provider-facing user message, not the system prompt.
+      const userMessage = String(call?.options.messages[0]?.content ?? "");
+      expect(call?.prompt).not.toContain("Memory (recalled)");
+      expect(call?.prompt).not.toContain("Recalled long-term memory");
+      expect(userMessage).not.toContain("Memory (recalled)");
+      expect(userMessage).not.toContain("Recalled long-term memory");
       expect(call?.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
       expect(call?.options.executionMode).toBe("sdk");
       expect(call?.options.cwd).toBe(resolve(dir, "workspace"));
