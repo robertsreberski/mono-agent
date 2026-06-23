@@ -958,6 +958,7 @@ function sessionContextBlock(conversationId: string): string {
   return [
     `You are currently handling the conversation \`${baseId}\`.`,
     `This conversation cannot itself receive a proactive follow-up — only \`telegram:\`/\`slack:\` conversations are valid \`notify_conversation\` destinations (use \`list_notify_destinations\` to find one).`,
+    `When you deliver via \`notify_conversation\`, the destination runs your \`text\` as a turn and ITS reply is what the user sees — \`text\` is not posted verbatim. To deliver exact or pre-composed content, make \`text\` a reply instruction (e.g. \`Reply with the text below exactly as written, calling no tools: …\`); do not also have the destination send it with its own tools, or it posts twice.`,
   ].join("\n\n");
 }
 

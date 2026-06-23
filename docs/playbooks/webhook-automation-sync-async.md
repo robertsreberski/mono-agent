@@ -87,6 +87,8 @@ Polling is fine for a script, but when the original request came from a **chat**
 2. The service finishes and `POST`s to a webhook endpoint here, carrying that id in the body (e.g. as `conversationId` or inside `metadata`).
 3. The endpoint's prompt instructs the agent to read the id from the payload and call `notify_conversation(conversationId, "<result>")`, delivering a real, remembered turn back into the original chat — no polling required.
 
+`notify_conversation` runs `<result>` as a turn and delivers the destination's **reply** (it is not posted verbatim), which is ideal here — the destination agent phrases the callback in the chat's own context. If a callback must instead be delivered word-for-word, frame the text as a reply-only, no-tools instruction (see [Delivering exact content](/channels/delivery-and-send-tools/#delivering-exact-content)).
+
 The destination is bounded by the owning channel's allowlist, so a payload-supplied id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused. See [Proactive notify tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
 
 ## Steps

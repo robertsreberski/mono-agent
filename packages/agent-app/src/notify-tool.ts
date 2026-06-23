@@ -170,7 +170,8 @@ function buildMcpServer(deps: NotifyToolsDeps): McpServer {
       description:
         "List the conversations you can proactively deliver a message to with notify_conversation. " +
         "Use this when you have no triggering conversationId in hand (e.g. a scheduled/cron run) to " +
-        "discover where to reach the user. Each entry's `conversationId` is what notify_conversation expects.",
+        "discover where to reach the user. Each entry's `conversationId` is what notify_conversation " +
+        "expects — read its description for how delivery works (the destination turn's reply is what is sent).",
       inputSchema: {},
     },
     async () => {
@@ -190,21 +191,38 @@ function buildMcpServer(deps: NotifyToolsDeps): McpServer {
     {
       title: "Notify a conversation",
       description:
-        "Proactively deliver a message into a conversation you are not currently handling, by running " +
-        "it as a real turn on that conversation's own session (so the user sees it natively and the " +
-        "conversation remembers it). Use this to follow up from a cron job or an inbound webhook callback.\n\n" +
+        "Proactively deliver a message into a conversation you are not currently handling. The message " +
+        "runs as a real turn on that conversation's own session and THAT TURN'S REPLY is what the user " +
+        "receives (so the user sees it natively and the conversation remembers it). Use this to follow up " +
+        "from a cron job or an inbound webhook callback.\n\n" +
+        "How `text` is delivered (read carefully — this is the #1 mistake):\n" +
+        "- `text` is the stimulus the destination conversation acts on; it is NOT posted verbatim. The " +
+        "destination agent reads `text` and composes the user-facing reply with its own context, and that " +
+        "reply is delivered automatically.\n" +
+        "- To deliver pre-composed or exact content (e.g. a digest), phrase `text` as an explicit reply " +
+        "instruction, e.g.: \"Reply with the text below exactly as written, adding nothing, and do not call " +
+        "any tools — your reply is delivered automatically:\\n\\n<your content>\".\n" +
+        "- The destination must NOT call its own send tools (e.g. slack_send_message) — its reply is already " +
+        "delivered, so sending again posts the message twice.\n\n" +
         "How to choose `conversationId`:\n" +
         "- Webhook/async callback: pass the `conversationId` carried in the triggering request payload.\n" +
         "- Otherwise (e.g. a scheduled run): call list_notify_destinations first and pick from it.\n\n" +
-        "`text` is the stimulus the destination conversation will act on — it is not delivered verbatim; " +
-        "that conversation's agent composes the user-facing reply with its own context. Delivery is bounded " +
-        "by the channel allowlist and may return delivered:false (e.g. unknown/disallowed id, channel offline).",
+        "Delivery is bounded by the channel allowlist and may return delivered:false (e.g. unknown/disallowed " +
+        "id, channel offline). The call blocks until the destination turn replies, so keep that turn to a single " +
+        "reply — a turn that re-scans, recalls, or hunts for a send tool is slow and can hit the request timeout. " +
+        "If you receive delivered:false, do not assume it was also delivered some other way.",
       inputSchema: {
         conversationId: z
           .string()
           .min(1)
           .describe("Destination conversationId, e.g. telegram:42 or slack:C123 (or slack:C123:1718.99 for a thread)."),
-        text: z.string().min(1).describe("The stimulus/result to hand to the destination conversation."),
+        text: z
+          .string()
+          .min(1)
+          .describe(
+            "What to deliver. The destination conversation runs this as a turn and its reply is delivered; " +
+              "to deliver exact content, phrase this as a reply-verbatim, no-tools instruction (see the tool description).",
+          ),
       },
     },
     async (args) => {

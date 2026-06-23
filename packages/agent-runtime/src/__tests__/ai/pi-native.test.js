@@ -237,6 +237,28 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
+  it("surfaces MCP server init failures in runtimeWarnings, not just as transient events", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    const onEvent = vi.fn();
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "hi" }],
+      // A stdio child that exits immediately fails the MCP handshake ("Connection closed"),
+      // mirroring the adapter-send -32000 flake that was previously invisible in the run summary.
+      mcpServers: { broken: { command: process.execPath, args: ["-e", "process.exit(1)"] } },
+      onEvent,
+    }));
+
+    expect(result.error).toBeNull();
+    const initWarnings = (result.runtimeWarnings || []).filter((warning) => warning?.warning_kind === "mcp_init_failed");
+    expect(initWarnings.length).toBeGreaterThanOrEqual(1);
+    expect(initWarnings[0]).toMatchObject({ warning_kind: "mcp_init_failed", server: "broken" });
+    // ...and it is STILL emitted to the live event stream (existing behavior preserved).
+    const events = onEvent.mock.calls.map(([event]) => event);
+    expect(events.some((event) => event?.warning_kind === "mcp_init_failed")).toBe(true);
+  });
+
   it("captures structured output through the StructuredOutput tool", async () => {
     const model = setup();
     faux.setResponses([

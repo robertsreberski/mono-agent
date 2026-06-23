@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
 import {
   coerceMcpContent,
@@ -329,6 +330,43 @@ describe("pi MCP tool helpers", () => {
     expect(result.clients).toEqual([]);
     expect(result.warnings).toMatchObject([{ warning_kind: "mcp_init_failed", server: "broken" }]);
     expect(cleanupCalls).toBe(1);
+  });
+
+  it("passes an explicit request timeout to MCP callTool so the SDK's 60s default cannot pre-empt a long in-process tool", async () => {
+    // The MCP SDK request timeout defaults to 60s (DEFAULT_REQUEST_TIMEOUT_MSEC) and would fire
+    // -32001 before the outer wall-clock cap — fatal for tools that run a whole agent turn (e.g.
+    // notify_conversation delivery). The bridge must pass the configured cap as the SDK timeout.
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "do_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
+    });
+    const callSpy = vi
+      .spyOn(McpClient.prototype, "callTool")
+      .mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
+    try {
+      const { tools } = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        { limits: { mcpCallTimeoutMs: 90000 } },
+      );
+      const tool = tools.find((entry) => entry.name === "do_thing");
+      expect(tool).toBeTruthy();
+      const ac = new AbortController();
+      await tool.execute("call-1", {}, ac.signal);
+
+      expect(callSpy).toHaveBeenCalledTimes(1);
+      const [params, resultSchema, requestOptions] = callSpy.mock.calls[0];
+      expect(params).toMatchObject({ name: "do_thing" });
+      // resultSchema is left at the SDK default so the third arg carries our timeout.
+      expect(resultSchema).toBeUndefined();
+      expect(requestOptions).toMatchObject({ timeout: 90000, maxTotalTimeout: 90000 });
+      // The abort signal is forwarded so a cancelled/timed-out call also cancels the SDK request.
+      expect(requestOptions.signal).toBe(ac.signal);
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+    }
   });
 
   it("blocks non-read-only Bash commands when planning shell policy is enforced", async () => {
