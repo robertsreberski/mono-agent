@@ -2,6 +2,7 @@ export {
   loadMonoAgentConfig,
   MonoAgentConfigError,
   redactMonoAgentConfig,
+  resolveSupermemoryContainer,
 } from "./config.js";
 export type {
   LoadMonoAgentConfigInput,
@@ -10,6 +11,7 @@ export type {
 } from "./config.js";
 export type {
   EffortLevel,
+  MemoryBackend,
   MemoryEmbeddingsCircuitBreakerConfig,
   MemoryEmbeddingsConfig,
   MemoryEmbeddingsProvider,
@@ -19,6 +21,7 @@ export type {
   MemoryMode,
   MemoryOllamaLlmConfig,
   MemoryRitualConfig,
+  MemorySupermemoryConfig,
   MemoryWriteMode,
   MonoAgentConfig,
   ObservabilityExporterConfig,
@@ -26,6 +29,7 @@ export type {
   PhoenixExporterConfig,
   RedactedMemoryConfig,
   RedactedMemoryEmbeddingsConfig,
+  RedactedMemorySupermemoryConfig,
   RedactedMonoAgentConfig,
   RedactedObservabilityConfig,
   RedactedObservabilityExporterConfig,

@@ -6,7 +6,7 @@ import {
 import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 
 import { MonoAgentConfigError } from "./config.js";
-import type { MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
+import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
 
 /** JSON-serialisable shape for the embeddings circuit-breaker block. */
 export type MonoAgentMemoryEmbeddingsCircuitBreakerJson = {
@@ -24,6 +24,16 @@ export type MonoAgentMemoryEmbeddingsJson = {
   readonly dim?: number;
   readonly timeoutMs?: number;
   readonly circuitBreaker?: MonoAgentMemoryEmbeddingsCircuitBreakerJson;
+};
+
+/** JSON-serialisable shape for the Supermemory external-backend block. */
+export type MonoAgentMemorySupermemoryJson = {
+  readonly baseUrl?: string;
+  readonly apiKey?: string;
+  readonly apiKeyEnv?: string;
+  readonly container?: string;
+  readonly timeoutMs?: number;
+  readonly exposeMcpServer?: boolean;
 };
 
 /** JSON-serialisable shape for a ritual config block (reflection or migration). */
@@ -119,10 +129,12 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly skillDisclosure?: string;
   };
   readonly memory?: {
+    readonly backend?: MemoryBackend;
     readonly mode?: MemoryMode;
     readonly path?: string;
     readonly maxBytes?: number;
     readonly writeMode?: MemoryWriteMode;
+    readonly supermemory?: MonoAgentMemorySupermemoryJson;
     readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;
     readonly recallTool?: { readonly enabled?: boolean };

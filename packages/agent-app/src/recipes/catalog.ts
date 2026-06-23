@@ -70,6 +70,66 @@ const personalTelegramBujo: AgentRecipe = {
   ],
 };
 
+/** `personal-telegram-supermemory` — Telegram assistant backed by a local Supermemory instance. */
+const personalTelegramSupermemory: AgentRecipe = {
+  id: "personal-telegram-supermemory",
+  title: "Personal Telegram assistant (Supermemory)",
+  description: "Telegram bot backed by an external Supermemory instance (local OSS binary by default): server-side extraction + recall, no bujo chat LLM needed.",
+  tags: ["telegram", "memory", "supermemory", "external", "personal"],
+  riskLevel: "medium",
+  playbook: "telegram-supermemory-memory.md",
+  inputs: [
+    MODEL_INPUT,
+    {
+      id: "supermemoryBaseUrl",
+      label: "Supermemory base URL",
+      description: "REST URL of your supermemory-server (local default http://127.0.0.1:6767) or the hosted cloud.",
+      default: "http://127.0.0.1:6767",
+    },
+    {
+      id: "allowedChatIds",
+      label: "Allowed chat IDs",
+      description: "Comma-separated Telegram chat IDs the bot may answer (leave blank to set later).",
+    },
+    {
+      id: "telegramToken",
+      label: "Telegram bot token",
+      description: "BotFather token. Externalized to .env.example; never written into JSON.",
+      secret: true,
+      envVar: "MONO_AGENT_TELEGRAM_TOKEN",
+    },
+    {
+      id: "supermemoryApiKey",
+      label: "Supermemory API key",
+      description: "Bearer key printed by supermemory-server on first boot. Externalized to .env.example.",
+      secret: true,
+      envVar: "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
+    },
+  ],
+  config: (input) => withSections(input, {
+    memory: {
+      backend: "supermemory",
+      // No `mode`/`path`: those are bujo-only and the loader defaults them for external backends.
+      // `capture` posts full turns for Supermemory's server-side extraction.
+      writeMode: "capture",
+      supermemory: { baseUrl: input.supermemoryBaseUrl ?? "http://127.0.0.1:6767" },
+      recallTool: { enabled: true },
+    },
+    telegram: {
+      enabled: true,
+      ...(input.allowedChatIds === undefined || input.allowedChatIds.length === 0
+        ? {}
+        : { allowedChatIds: input.allowedChatIds.split(",").map((id) => id.trim()).filter(Boolean) }),
+    },
+  }),
+  envExample: () =>
+    "# Telegram bot token from @BotFather\nMONO_AGENT_TELEGRAM_TOKEN=\n# Supermemory bearer key (printed by supermemory-server on first boot)\nMONO_AGENT_MEMORY_SUPERMEMORY_API_KEY=\n",
+  validateExpectations: [
+    { sectionId: "memory", mustBe: "ok", note: "Run `supermemory-server` (or point baseUrl at your instance) before sending turns." },
+    { sectionId: "channel:telegram", mustBe: "ok", note: "Set MONO_AGENT_TELEGRAM_TOKEN in .env." },
+  ],
+};
+
 /** `slack-team-bot` — Slack Socket Mode with an allowlist and the send tool. */
 const slackTeamBot: AgentRecipe = {
   id: "slack-team-bot",
@@ -385,6 +445,7 @@ const fullLocalPower: AgentRecipe = {
 export const RECIPE_CATALOG: readonly AgentRecipe[] = [
   minimalWebhook,
   personalTelegramBujo,
+  personalTelegramSupermemory,
   slackTeamBot,
   openaiApiGateway,
   cronDigest,

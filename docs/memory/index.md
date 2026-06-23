@@ -11,6 +11,9 @@ same `@mono-agent/memory-store` + `@mono-agent/memory-bujo` substrate. Pick the 
 that matches your external-dependency budget; all tiers share the same config shape —
 only `memory.mode` and the optional embeddings/LLM blocks differ.
 
+Weighing the built-in engine against an external memory service? See
+[Backends: BuJo vs Supermemory](/memory/backends-comparison/).
+
 ## Memory Tiers
 
 | Capability | `lite` | `journal` | `bujo` |

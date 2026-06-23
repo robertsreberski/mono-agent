@@ -276,6 +276,29 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(memory.details.join("\n")).toContain("bujo");
   });
 
+  it("reports the supermemory backend (status=ok, no Ollama needed, container surfaced)", async () => {
+    const configPath = await writeMinimalConfig({
+      memory: {
+        backend: "supermemory",
+        mode: "lite",
+        path: dir,
+        writeMode: "capture",
+        supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("ok");
+    const text = memory.details.join("\n");
+    expect(text).toContain("Backend: supermemory");
+    expect(text).toContain("http://127.0.0.1:6767");
+    expect(text).toContain("agent-alpha");
+    // bujo-only "Mode:" line is not used for external backends.
+    expect(text).not.toMatch(/^Mode:/mu);
+  });
+
   it("warns (status=waiting, no throw) when Ollama is unreachable", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ECONNREFUSED")));
 

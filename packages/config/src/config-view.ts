@@ -75,10 +75,17 @@ export const CONFIG_ENV_KEYS = {
   "context.selectedSkills": "MONO_AGENT_SELECTED_SKILLS",
   "context.skillMaxBytes": "MONO_AGENT_SKILL_MAX_BYTES",
   "context.skillDisclosure": "MONO_AGENT_SKILL_DISCLOSURE",
+  "memory.backend": "MONO_AGENT_MEMORY_BACKEND",
   "memory.mode": "MONO_AGENT_MEMORY_MODE",
   "memory.path": "MONO_AGENT_MEMORY_PATH",
   "memory.maxBytes": "MONO_AGENT_MEMORY_MAX_BYTES",
   "memory.writeMode": "MONO_AGENT_MEMORY_WRITE_MODE",
+  "memory.supermemory.baseUrl": "MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL",
+  "memory.supermemory.apiKey": "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY",
+  "memory.supermemory.apiKeyEnv": "MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV",
+  "memory.supermemory.container": "MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER",
+  "memory.supermemory.timeoutMs": "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS",
+  "memory.supermemory.exposeMcpServer": "MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER",
   "memory.embeddings.provider": "MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER",
   "memory.embeddings.model": "MONO_AGENT_MEMORY_EMBEDDINGS_MODEL",
   "memory.embeddings.endpoint": "MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT",
@@ -359,6 +366,12 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
 
   const fields: ConfigViewField[] = [
     toField(env, {
+      id: "memory.backend",
+      label: "Backend",
+      value: memory.backend ?? "bujo",
+      jsonPresent: json.memory?.backend !== undefined,
+    }),
+    toField(env, {
       id: "memory.mode",
       label: "Mode",
       value: memory.mode,
@@ -447,6 +460,49 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
         label: "Embeddings breaker cooldown (ms)",
         value: embeddings.circuitBreaker?.cooldownMs === undefined ? "default" : String(embeddings.circuitBreaker.cooldownMs),
         jsonPresent: json.memory?.embeddings?.circuitBreaker?.cooldownMs !== undefined,
+      }),
+    );
+  }
+
+  const supermemory = memory.supermemory;
+  if (supermemory !== undefined) {
+    fields.push(
+      toField(env, {
+        id: "memory.supermemory.baseUrl",
+        label: "Supermemory base URL",
+        value: supermemory.baseUrl,
+        jsonPresent: json.memory?.supermemory?.baseUrl !== undefined,
+      }),
+      toField(env, {
+        id: "memory.supermemory.apiKey",
+        label: "Supermemory API key",
+        value: supermemory.apiKey?.present === true ? "set" : "unset",
+        jsonPresent: json.memory?.supermemory?.apiKey !== undefined,
+        redacted: true,
+      }),
+      toField(env, {
+        id: "memory.supermemory.apiKeyEnv",
+        label: "Supermemory API key env",
+        value: supermemory.apiKeyEnv ?? PLACEHOLDER,
+        jsonPresent: json.memory?.supermemory?.apiKeyEnv !== undefined,
+      }),
+      toField(env, {
+        id: "memory.supermemory.container",
+        label: "Supermemory container",
+        value: supermemory.container ?? "default",
+        jsonPresent: json.memory?.supermemory?.container !== undefined,
+      }),
+      toField(env, {
+        id: "memory.supermemory.timeoutMs",
+        label: "Supermemory timeout (ms)",
+        value: supermemory.timeoutMs === undefined ? "default" : String(supermemory.timeoutMs),
+        jsonPresent: json.memory?.supermemory?.timeoutMs !== undefined,
+      }),
+      toField(env, {
+        id: "memory.supermemory.exposeMcpServer",
+        label: "Supermemory MCP server",
+        value: supermemory.exposeMcpServer === true ? "on" : "off",
+        jsonPresent: json.memory?.supermemory?.exposeMcpServer !== undefined,
       }),
     );
   }

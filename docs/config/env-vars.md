@@ -86,12 +86,19 @@ See [../runtime/local-providers.md](/runtime/local-providers/) for the local pro
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo`. |
-| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo`). See [../memory/capture-and-recall.md](/memory/capture-and-recall/). |
+| `MONO_AGENT_MEMORY_BACKEND` | `memory.backend` | Memory engine: `bujo` (default, homegrown SQLite) or `supermemory` (external). External backends ignore `mode`/`embeddings`/`llm`. |
+| `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` (bujo backend only). |
+| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo` for the bujo backend, or an external backend that extracts server-side). See [../memory/capture-and-recall.md](/memory/capture-and-recall/). |
+| `MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL` | `memory.supermemory.baseUrl` | Required when `backend: supermemory`. REST base URL of the local OSS binary or hosted cloud. |
+| `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY` | `memory.supermemory.apiKey` | Inline API key (optional for no-auth local). Prefer `_API_KEY_ENV`. |
+| `MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV` | `memory.supermemory.apiKeyEnv` | Name of the env var holding the key; only the name is persisted in resolved config. |
+| `MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER` | `memory.supermemory.container` | Container/namespace tag scoping this agent's memories. Defaults to the trace `sourceId`. |
+| `MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS` | `memory.supermemory.timeoutMs` | Per-call HTTP timeout (`1`–`600000`, default `10000`). |
+| `MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER` | `memory.supermemory.exposeMcpServer` | Also inject Supermemory's official MCP server alongside the in-app `memory_recall` tool. Default `false`. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` or `openai`. See [../memory/embeddings.md](/memory/embeddings/). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Embedding model string. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Embedding dimension. |
-| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `memory_recall` tool; default on for journal/bujo with embeddings. |
+| `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `memory_recall` tool; default on for journal/bujo with embeddings, and for the supermemory backend. |
 | `MONO_AGENT_MEMORY_REFLECTION_ENABLED` | `memory.reflection.enabled` | Nightly BuJo reflection pass. |
 | `MONO_AGENT_MEMORY_REFLECTION_CRON` | `memory.reflection.cron` | Default `0 3 * * *`. See [../memory/rituals.md](/memory/rituals/). |
 | `MONO_AGENT_MEMORY_MIGRATION_ENABLED` | `memory.migration.enabled` | Monthly BuJo migration pass. |

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { serializeTraceSpans } from "@mono-agent/observability-otel";
 import { describeMonoRuntimeSupport, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 
 import {
@@ -274,6 +275,33 @@ const DEFAULT_MIGRATION_CRON = "0 4 1 * *";
 async function memorySection(config: MonoAgentConfig, liveness: boolean): Promise<ValidationSection> {
   if (config.memory === undefined) {
     return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
+  }
+  // External backend (e.g. supermemory): mode/embeddings/llm are bujo-only and ignored, so report the
+  // backend's own shape. We do not ping the instance here (config-shape check); the playbook covers
+  // starting the server.
+  if ((config.memory.backend ?? "bujo") === "supermemory") {
+    const sm = config.memory.supermemory;
+    if (sm === undefined) {
+      return {
+        id: "memory",
+        label: "Memory",
+        status: "error",
+        details: ["[ERROR] backend 'supermemory' requires a memory.supermemory block."],
+      };
+    }
+    return {
+      id: "memory",
+      label: "Memory",
+      status: "ok",
+      details: [
+        `Backend: supermemory, writeMode: ${config.memory.writeMode}.`,
+        `Endpoint: ${sm.baseUrl} (container "${resolveSupermemoryContainer(config)}").`,
+        sm.apiKey === undefined
+          ? "Auth: no API key configured (keyless — works only if the instance allows it)."
+          : "Auth: API key configured.",
+        "Start the Supermemory instance (e.g. `supermemory-server`) before sending turns; ingestion is async.",
+      ],
+    };
   }
   const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,

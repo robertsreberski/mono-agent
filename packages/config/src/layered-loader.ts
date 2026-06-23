@@ -105,6 +105,9 @@ export function layerJsonOntoEnv(
   if (json.context?.skillDisclosure !== undefined) {
     fromJson.MONO_AGENT_SKILL_DISCLOSURE = json.context.skillDisclosure;
   }
+  if (json.memory?.backend !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_BACKEND = json.memory.backend;
+  }
   if (json.memory?.mode !== undefined) {
     fromJson.MONO_AGENT_MEMORY_MODE = json.memory.mode;
   }
@@ -116,6 +119,24 @@ export function layerJsonOntoEnv(
   }
   if (json.memory?.writeMode !== undefined) {
     fromJson.MONO_AGENT_MEMORY_WRITE_MODE = json.memory.writeMode;
+  }
+  if (json.memory?.supermemory?.baseUrl !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL = json.memory.supermemory.baseUrl;
+  }
+  if (json.memory?.supermemory?.apiKey !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY = json.memory.supermemory.apiKey;
+  }
+  if (json.memory?.supermemory?.apiKeyEnv !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY_ENV = json.memory.supermemory.apiKeyEnv;
+  }
+  if (json.memory?.supermemory?.container !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER = json.memory.supermemory.container;
+  }
+  if (json.memory?.supermemory?.timeoutMs !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS = String(json.memory.supermemory.timeoutMs);
+  }
+  if (json.memory?.supermemory?.exposeMcpServer !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_SUPERMEMORY_EXPOSE_MCP_SERVER = String(json.memory.supermemory.exposeMcpServer);
   }
   if (json.memory?.embeddings?.provider !== undefined) {
     fromJson.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER = json.memory.embeddings.provider;
