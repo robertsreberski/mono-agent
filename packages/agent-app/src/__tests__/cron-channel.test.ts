@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import type { CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
+import type { CronAdapterConfig, CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
 
+import type { ChannelStartInput } from "../channels.js";
 import { createCronChannelDriver } from "../channels.js";
 
 const noopResponder: AgentResponder = {
@@ -19,7 +20,7 @@ const baseInput = {
   config: {
     jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true }],
   },
-} as never;
+} satisfies ChannelStartInput<CronAdapterConfig>;
 
 describe("cron channel driver — run watchdog", () => {
   it("passes a default maxRunMs so a hung run is reclaimed instead of blocking the job forever", async () => {
