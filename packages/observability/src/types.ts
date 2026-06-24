@@ -255,6 +255,7 @@ export interface RecordedRunDetail {
 }
 
 export interface RecordedRunListResult {
+  readonly totalRuns: number;
   readonly runs: readonly RecordedRunListItem[];
   readonly warnings: readonly string[];
 }

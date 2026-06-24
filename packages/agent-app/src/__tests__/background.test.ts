@@ -140,7 +140,7 @@ function makeHarness(opts: {
     sleep: async (ms) => {
       clock += ms;
     },
-    listRecordedRuns: opts.listRecordedRuns ?? (async () => ({ runs: [], warnings: [] })),
+    listRecordedRuns: opts.listRecordedRuns ?? (async () => ({ totalRuns: 0, runs: [], warnings: [] })),
     listTraceSources: opts.list,
     writeFile: async (path, data) => {
       written.push({ path, data });
@@ -368,9 +368,17 @@ describe("statusBackground", () => {
   it("prints runs-health explanations from recent local summaries", async () => {
     const { runner } = makeRunner({ loaded: true });
     const target = makeTarget();
-    const current = makeSource(target);
+    const current = makeSource(target, {
+      metadata: {
+        reason: "startup-complete",
+        context: {
+          selectedSkills: ["context-a8c", "todoist-cli"],
+        },
+      },
+    });
     const startedAt = new Date(CLOCK_START - 5 * 60_000).toISOString();
     const runs: RecordedRunListItem[] = [
+      makeRun({ runId: "run-live", status: "running", startedAt, updatedAt: startedAt }),
       makeRun({ runId: "run-usage", status: "failed", failureKind: "usage_limit", startedAt }),
       makeRun({ runId: "run-process", status: "interrupted", failureKind: "process_death", startedAt }),
       makeRun({ runId: "run-cancelled", status: "cancelled", startedAt }),
@@ -382,15 +390,20 @@ describe("statusBackground", () => {
       listRecordedRuns: async (options) => {
         expect(options.artifactDir).toBe(current.artifactDir);
         expect(options.maxRuns).toBe(50);
-        return { runs, warnings: [] };
+        return { totalRuns: 12, runs, warnings: [] };
       },
+      isAlive: () => false,
     });
 
     await statusBackground(target, harness.deps);
 
     const stdout = harness.out.join("");
     expect(stdout).toContain("runs health");
-    expect(stdout).toContain("Recent status counts: running=0, succeeded=0, failed=2, cancelled=1, interrupted=1.");
+    expect(stdout).toContain("Active skills: context-a8c, todoist-cli.");
+    expect(stdout).toContain("Recorded runs: 12 total; showing 5 recent (max 50).");
+    expect(stdout).toContain("Last runs: run-live running 5m ago");
+    expect(stdout).toContain("Recent status counts: running=1, succeeded=0, failed=2, cancelled=1, interrupted=1.");
+    expect(stdout).toContain("[WARN] Running summaries while process is gone: run-live running 5m ago.");
     expect(stdout).toContain("Usage limit [usage_limit, 1 recent]");
     expect(stdout).toContain("Process death [process_death, 1 recent]");
     expect(stdout).toContain("Cancelled [cancelled, 1 recent]");

@@ -5,6 +5,7 @@ import {
 } from "@mono-agent/observability";
 
 export const RUNS_HEALTH_MAX_RUNS = 50;
+export const RUNS_HEALTH_RECENT_RUNS = 5;
 export const RUNS_HEALTH_STALE_RUNNING_MS = 30 * 60_000;
 
 export type RunsHealthStatus = "ok" | "waiting" | "disabled";
@@ -16,8 +17,12 @@ export interface RunsHealthDisplay {
 
 export interface BuildRunsHealthDisplayInput {
   readonly artifactDir: string;
+  readonly totalRuns?: number;
   readonly runs: readonly RecordedRunListItem[];
   readonly warnings: readonly string[];
+  readonly selectedSkills?: readonly string[];
+  readonly includeSelectedSkills?: boolean;
+  readonly runOwnerAlive?: boolean;
   readonly nowMs?: number;
   readonly maxRuns?: number;
 }
@@ -27,9 +32,12 @@ const FAILED_LIKE_RUN_STATUSES = new Set<RunSummaryStatus>(["failed", "cancelled
 
 export function buildRunsHealthDisplay(input: BuildRunsHealthDisplayInput): RunsHealthDisplay {
   const maxRuns = input.maxRuns ?? RUNS_HEALTH_MAX_RUNS;
+  const now = input.nowMs ?? Date.now();
+  const totalRuns = input.totalRuns ?? input.runs.length;
   const details = [
+    ...(input.includeSelectedSkills ? [formatSelectedSkillsLine(input.selectedSkills)] : []),
     `Artifact dir: ${input.artifactDir}`,
-    `Inspected recent runs: ${input.runs.length} (max ${maxRuns}).`,
+    `Recorded runs: ${totalRuns} total; showing ${input.runs.length} recent (max ${maxRuns}).`,
   ];
   let hasWarnings = false;
 
@@ -39,26 +47,35 @@ export function buildRunsHealthDisplay(input: BuildRunsHealthDisplayInput): Runs
   }
 
   if (input.runs.length === 0) {
-    details.push("No recent run summaries found.");
+    details.push("No runs recorded yet.");
     return { status: hasWarnings ? "waiting" : "disabled", details };
   }
+
+  details.push(`Last runs: ${formatRunExamples(input.runs, now)}.`);
 
   const statusCounts = statusHistogram(input.runs);
   details.push(`Recent status counts: ${RUN_SUMMARY_STATUSES.map((status) => `${status}=${statusCounts[status]}`).join(", ")}.`);
 
-  const now = input.nowMs ?? Date.now();
   const staleRunning = input.runs.filter((run) => isStaleRunningRun(run, now));
   if (staleRunning.length > 0) {
     hasWarnings = true;
     details.push(
-      `[WARN] Stale running runs older than ${RUNS_HEALTH_STALE_RUNNING_MS / 60_000}m: ${formatRunExamples(staleRunning)}.`,
+      `[WARN] Stale running runs older than ${RUNS_HEALTH_STALE_RUNNING_MS / 60_000}m: ${formatRunExamples(staleRunning, now)}.`,
     );
+  }
+
+  const runningWhileOwnerGone = input.runOwnerAlive === false
+    ? input.runs.filter((run) => run.status === "running")
+    : [];
+  if (runningWhileOwnerGone.length > 0) {
+    hasWarnings = true;
+    details.push(`[WARN] Running summaries while process is gone: ${formatRunExamples(runningWhileOwnerGone, now)}.`);
   }
 
   const unsuccessful = input.runs.filter((run) => FAILED_LIKE_RUN_STATUSES.has(run.status));
   if (unsuccessful.length > 0) {
     hasWarnings = true;
-    details.push(`[WARN] Recent non-successful runs: ${formatRunExamples(unsuccessful)}.`);
+    details.push(`[WARN] Recent non-successful runs: ${formatRunExamples(unsuccessful, now)}.`);
   }
 
   if (statusCounts.cancelled > 0) {
@@ -84,6 +101,14 @@ export function buildRunsHealthDisplay(input: BuildRunsHealthDisplayInput): Runs
   }
 
   return { status: hasWarnings ? "waiting" : "ok", details };
+}
+
+export function formatSelectedSkillsLine(selectedSkills: readonly string[] | undefined): string {
+  if (selectedSkills === undefined) {
+    return "Active skills: unavailable.";
+  }
+  const names = selectedSkills.map((skill) => skill.trim()).filter(Boolean);
+  return names.length === 0 ? "Active skills: none." : `Active skills: ${names.join(", ")}.`;
 }
 
 function statusHistogram(runs: readonly RecordedRunListItem[]): Record<RunSummaryStatus, number> {
@@ -132,10 +157,37 @@ function displayFailureKind(run: RecordedRunListItem): string | undefined {
   return describeRunFailureKind({ status: run.status }).kind;
 }
 
-function formatRunExamples(runs: readonly RecordedRunListItem[]): string {
-  const shown = runs.slice(0, 5).map((run) =>
-    run.startedAt === undefined ? run.runId : `${run.runId} (started ${run.startedAt})`,
+function formatRunExamples(runs: readonly RecordedRunListItem[], nowMs: number): string {
+  const shown = runs.slice(0, RUNS_HEALTH_RECENT_RUNS).map((run) =>
+    `${run.runId} ${run.status} ${formatRelativeAge(runTimestamp(run), nowMs)}`,
   );
   const remaining = runs.length - shown.length;
   return remaining > 0 ? `${shown.join(", ")} and ${remaining} more` : shown.join(", ");
+}
+
+function runTimestamp(run: RecordedRunListItem): string | undefined {
+  return run.endedAt ?? run.updatedAt ?? run.startedAt;
+}
+
+function formatRelativeAge(timestamp: string | undefined, nowMs: number): string {
+  if (timestamp === undefined) {
+    return "age unknown";
+  }
+  const parsed = Date.parse(timestamp);
+  if (!Number.isFinite(parsed)) {
+    return "age unknown";
+  }
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - parsed) / 1000));
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s ago`;
+  }
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m ago`;
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 48) {
+    return `${elapsedHours}h ago`;
+  }
+  return `${Math.floor(elapsedHours / 24)}d ago`;
 }

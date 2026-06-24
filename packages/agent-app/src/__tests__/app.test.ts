@@ -112,6 +112,25 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("persists active selected skills in the trace-source manifest", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      context: { identityPath: "./IDENTITY.md", selectedSkills: ["context-a8c", "todoist-cli"] },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+    });
+
+    expect(app.selectedSkills).toEqual(["context-a8c", "todoist-cli"]);
+    const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+    const context = sources[0]?.metadata?.context as { selectedSkills?: readonly string[] } | undefined;
+    expect(context?.selectedSkills).toEqual(["context-a8c", "todoist-cli"]);
+
+    await app.stop();
+  });
+
   it("routes export warnings to lastWarning/lastError and persists them to the trace-source manifest", async () => {
     await writeConfig({
       ...baseConfig(),
