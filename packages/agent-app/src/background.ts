@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";
 
-import { listTraceSources } from "@mono-agent/observability";
+import { listRecordedRuns, listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
 import {
@@ -24,6 +24,7 @@ import {
   makeLaunchctlRunner,
 } from "./launchd.js";
 import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "./launchd.js";
+import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import * as ui from "./ui.js";
 
 /**
@@ -95,6 +96,7 @@ export interface BackgroundDeps {
   readonly getuid: () => number;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
+  readonly listRecordedRuns: typeof listRecordedRuns;
   readonly listTraceSources: typeof listTraceSources;
   readonly writeFile: (path: string, data: string) => Promise<void>;
   readonly mkdir: (path: string) => Promise<void>;
@@ -113,6 +115,7 @@ export function defaultBackgroundDeps(): BackgroundDeps {
     getuid: () => process.getuid?.() ?? 0,
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
+    listRecordedRuns,
     listTraceSources,
     writeFile: (path, data) => writeFile(path, data, "utf8"),
     mkdir: (path) => mkdir(path, { recursive: true }).then(() => undefined),
@@ -276,6 +279,7 @@ export async function statusBackground(target: InstanceTarget, deps: BackgroundD
     deps.stdout(ui.hint(`Start it with: mono-agent start${configFlag(target)}`));
   } else {
     writeInstanceDetail(current, target, deps);
+    await writeRunsHealthDetail(current, deps);
   }
 
   // Only surface other instances that are live or crashed — cleanly stopped
@@ -414,6 +418,27 @@ function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget
     for (const line of channelLines) {
       deps.stdout(`${line}\n`);
     }
+  }
+}
+
+async function writeRunsHealthDetail(source: TraceSourceListItem, deps: BackgroundDeps): Promise<void> {
+  if (source.artifactDir === undefined || source.artifactDir.trim().length === 0) {
+    return;
+  }
+  const { runs, warnings } = await deps.listRecordedRuns({
+    artifactDir: source.artifactDir,
+    maxRuns: RUNS_HEALTH_MAX_RUNS,
+  });
+  const display = buildRunsHealthDisplay({
+    artifactDir: source.artifactDir,
+    runs,
+    warnings,
+    nowMs: deps.now(),
+    maxRuns: RUNS_HEALTH_MAX_RUNS,
+  });
+  deps.stdout(ui.rule("runs health"));
+  for (const detail of display.details) {
+    deps.stdout(`  ${detail}\n`);
   }
 }
 

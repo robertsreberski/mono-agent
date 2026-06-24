@@ -1,7 +1,7 @@
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { listRecordedRuns, type RecordedRunListItem, type RunSummaryStatus } from "@mono-agent/observability";
+import { listRecordedRuns } from "@mono-agent/observability";
 import { serializeTraceSpans } from "@mono-agent/observability-otel";
 import { describeMonoRuntimeSupport, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
@@ -26,6 +26,7 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
+import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 
 export type ValidationStatus = "ok" | "waiting" | "disabled" | "error";
 
@@ -529,105 +530,11 @@ function sandboxSection(config: MonoAgentConfig): ValidationSection {
 }
 
 
-const RUNS_HEALTH_MAX_RUNS = 50;
-const RUNS_HEALTH_STALE_RUNNING_MS = 30 * 60_000;
-const RUN_SUMMARY_STATUSES = ["running", "succeeded", "failed", "cancelled", "interrupted"] as const satisfies readonly RunSummaryStatus[];
-const FAILED_LIKE_RUN_STATUSES = new Set<RunSummaryStatus>(["failed", "cancelled", "interrupted"]);
-
 async function runsSection(input: MonoAgentAppConfigInput): Promise<ValidationSection> {
   const artifactDir = await resolveAppArtifactDir(input);
   const { runs, warnings } = await listRecordedRuns({ artifactDir, maxRuns: RUNS_HEALTH_MAX_RUNS });
-  const details = [
-    `Artifact dir: ${artifactDir}`,
-    `Inspected recent runs: ${runs.length} (max ${RUNS_HEALTH_MAX_RUNS}).`,
-  ];
-  let hasWarnings = false;
-
-  for (const warning of warnings) {
-    hasWarnings = true;
-    details.push(`[WARN] Run artifact reader: ${warning}`);
-  }
-
-  if (runs.length === 0) {
-    details.push("No recent run summaries found.");
-    return { id: "runs", label: "Runs health", status: hasWarnings ? "waiting" : "disabled", details };
-  }
-
-  const statusCounts = statusHistogram(runs);
-  details.push(`Recent status counts: ${RUN_SUMMARY_STATUSES.map((status) => `${status}=${statusCounts[status]}`).join(", ")}.`);
-
-  const now = Date.now();
-  const staleRunning = runs.filter((run) => isStaleRunningRun(run, now));
-  if (staleRunning.length > 0) {
-    hasWarnings = true;
-    details.push(
-      `[WARN] Stale running runs older than ${RUNS_HEALTH_STALE_RUNNING_MS / 60_000}m: ${formatRunExamples(staleRunning)}.`,
-    );
-  }
-
-  if (statusCounts.cancelled > 0) {
-    hasWarnings = true;
-    details.push(`[WARN] Cancelled recent runs: ${statusCounts.cancelled}.`);
-  }
-  if (statusCounts.interrupted > 0) {
-    hasWarnings = true;
-    details.push(`[WARN] Interrupted recent runs: ${statusCounts.interrupted}.`);
-  }
-
-  const failureKindCounts = failureKindHistogram(runs);
-  if (failureKindCounts.length > 0) {
-    hasWarnings = true;
-    details.push(`[WARN] Failure kinds: ${failureKindCounts.map(([kind, count]) => `${kind}=${count}`).join(", ")}.`);
-  } else {
-    details.push("Failure kinds: none in recent window.");
-  }
-
-  return { id: "runs", label: "Runs health", status: hasWarnings ? "waiting" : "ok", details };
-}
-
-function statusHistogram(runs: readonly RecordedRunListItem[]): Record<RunSummaryStatus, number> {
-  const counts: Record<RunSummaryStatus, number> = {
-    running: 0,
-    succeeded: 0,
-    failed: 0,
-    cancelled: 0,
-    interrupted: 0,
-  };
-  for (const run of runs) {
-    counts[run.status] += 1;
-  }
-  return counts;
-}
-
-function isStaleRunningRun(run: RecordedRunListItem, now: number): boolean {
-  if (run.status !== "running" || run.startedAt === undefined) {
-    return false;
-  }
-  const startedAtMs = Date.parse(run.startedAt);
-  return Number.isFinite(startedAtMs) && now - startedAtMs > RUNS_HEALTH_STALE_RUNNING_MS;
-}
-
-function failureKindHistogram(runs: readonly RecordedRunListItem[]): readonly (readonly [string, number])[] {
-  const counts = new Map<string, number>();
-  for (const run of runs) {
-    const failureKind = run.failureKind?.trim();
-    if (failureKind !== undefined && failureKind.length > 0) {
-      counts.set(failureKind, (counts.get(failureKind) ?? 0) + 1);
-    } else if (FAILED_LIKE_RUN_STATUSES.has(run.status)) {
-      counts.set("unknown", (counts.get("unknown") ?? 0) + 1);
-    }
-  }
-  return [...counts.entries()].sort(([leftKind, leftCount], [rightKind, rightCount]) =>
-    rightCount - leftCount || leftKind.localeCompare(rightKind),
-  );
-}
-
-function formatRunExamples(runs: readonly RecordedRunListItem[]): string {
-  const shown = runs.slice(0, 5).map((run) =>
-    run.startedAt === undefined ? run.runId : `${run.runId} (started ${run.startedAt})`,
-  );
-  const remaining = runs.length - shown.length;
-  return remaining > 0 ? `${shown.join(", ")} and ${remaining} more` : shown.join(", ");
+  const display = buildRunsHealthDisplay({ artifactDir, runs, warnings });
+  return { id: "runs", label: "Runs health", status: display.status, details: display.details };
 }
 
 const LOCAL_ARTIFACTS_NOTE = "JSONL artifacts remain local (the exporter is additive; export failures never affect them).";

@@ -11,6 +11,7 @@ import type { A2AAdapterConfig, A2AProviderOptions, A2AProviderStartResult } fro
 import { loadA2AAdapterConfig } from "@mono-agent/a2a-adapter";
 import { CronAdapterError, loadCronAdapterConfig, startCronAdapter } from "@mono-agent/cron-adapter";
 import type { CronAdapterConfig, CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
+import { describeRunFailureKind } from "@mono-agent/observability";
 import {
   loadOpenAIApiAdapterConfig,
   OpenAIApiAdapterError,
@@ -660,20 +661,24 @@ function telegramStartOptions(
 
 function telegramErrorText(input: TelegramAdapterErrorTextInput): string {
   const failure = failureFromUnknown(input.error);
-  if (failure?.kind === "usage_limit") {
-    const maxTurns = nestedNumber(failure.details, ["diagnostics", "max_turns"]);
-    return [
-      `I hit the runtime turn limit${maxTurns === undefined ? "" : ` (${maxTurns} turns)`} before I could finish.`,
-      "Send a narrower follow-up, or check the local artifact summary for the incomplete run.",
-    ].join(" ");
-  }
-  if (failure?.kind === "cancelled") {
-    return "Cancelled.";
+  if (failure?.kind !== undefined) {
+    const description = describeRunFailureKind({ failureKind: failure.kind });
+    if (description.known || failure.message === undefined || failure.message.trim().length === 0) {
+      const explanation = failure.kind === "usage_limit"
+        ? usageLimitExplanation(description.explanation, failure.details)
+        : description.explanation;
+      return `${explanation} ${description.nextStep}`;
+    }
   }
   if (failure?.message !== undefined && failure.message.trim().length > 0) {
     return `I could not complete that message: ${failure.message}`;
   }
   return "I could not complete that message. Check the local artifact summary for details.";
+}
+
+function usageLimitExplanation(explanation: string, details: unknown): string {
+  const maxTurns = nestedNumber(details, ["diagnostics", "max_turns"]);
+  return maxTurns === undefined ? explanation : `${explanation} Configured turn cap: ${maxTurns} turns.`;
 }
 
 function failureFromUnknown(error: unknown): {
