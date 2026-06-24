@@ -165,56 +165,70 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[1]?.prompt).not.toContain("## Memory (recalled)");
   });
 
-  it("uses the injected harness runtime for agent-host memory LLM capture", async () => {
+  it("runs agent-host memory LLM capture on its own runtime, never the channel runtime", async () => {
+    // The memory LLM must NOT ride the channel runtime: that runtime carries the
+    // channel fallback chain (primary = config.runtime.model) and the fallback
+    // router overrides each run's per-call model, which would silently execute
+    // memory capture on config.runtime.model instead of config.memory.llm.model.
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const memoryRoot = join(dir, "memory");
     const artifactDir = join(dir, "artifacts");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const embeddingsEndpoint = await startEmbeddingServer();
-    const fake = createFakeRuntime(async (_prompt, options) => {
-      if (options.model.provider === "openai-codex") {
-        return { text: "[]" };
-      }
-      return { text: "Harness answer" };
+    // Channel runtime — should only ever see the channel turn (ollama), never the
+    // memory model (openai-codex).
+    const channel = createFakeRuntime(async () => ({ text: "Harness answer" }));
+    // Dedicated memory runtime (the injection seam the production path builds for
+    // itself). Captures the memory LLM calls so we can assert their shape.
+    const memoryRuntime = createFakeRuntime(async () => ({ text: "[]" }));
+
+    const config = monoConfig({
+      dir,
+      identityPath,
+      memoryPath: memoryRoot,
+      memoryMode: "bujo",
+      memoryWriteMode: "capture",
+      memoryEmbeddings: {
+        provider: "openai",
+        model: "text-embedding-3-small",
+        apiKey: "sk-test",
+        endpoint: await startEmbeddingServer(),
+      },
+      memoryLlm: {
+        provider: "agent-host",
+        model: "pi:openai-codex:gpt-5.5",
+        executionMode: "sdk",
+      },
+      artifactDir,
     });
+    const memory = createConfiguredMemory(config, { memoryRuntime: memoryRuntime.runtime });
 
     const responder = createConfiguredAgentResponder({
-      config: monoConfig({
-        dir,
-        identityPath,
-        memoryPath: memoryRoot,
-        memoryMode: "bujo",
-        memoryWriteMode: "capture",
-        memoryEmbeddings: {
-          provider: "openai",
-          model: "text-embedding-3-small",
-          apiKey: "sk-test",
-          endpoint: embeddingsEndpoint,
-        },
-        memoryLlm: {
-          provider: "agent-host",
-          model: "pi:openai-codex:gpt-5.5",
-          executionMode: "sdk",
-        },
-        artifactDir,
-      }),
-      runtime: fake.runtime,
+      config,
+      runtime: channel.runtime,
+      ...(memory === undefined ? {} : { memory }),
     });
 
     const response = await responder.respond({
       conversationId: "channel-a",
-      text: "Remember that memory capture should reuse the injected runtime.",
+      text: "Remember that memory capture must use its own runtime.",
       abortSignal: new AbortController().signal,
     }, { append: async () => {} });
 
     expect(response.text).toBe("Harness answer");
-    for (let i = 0; i < 20 && fake.calls.length < 3; i += 1) {
+    for (let i = 0; i < 20 && memoryRuntime.calls.length < 2; i += 1) {
       await delay(5);
     }
-    const memoryCalls = fake.calls.filter((call) => call.options.model.provider === "openai-codex");
-    expect(memoryCalls.length).toBeGreaterThanOrEqual(2);
-    for (const call of memoryCalls) {
+
+    // The channel runtime served the channel turn only — the memory model never
+    // leaked onto it.
+    expect(channel.calls.every((call) => call.options.model.provider !== "openai-codex")).toBe(true);
+
+    // The memory LLM ran on its own runtime, with the configured memory model and
+    // the locked-down per-call shape.
+    expect(memoryRuntime.calls.length).toBeGreaterThanOrEqual(2);
+    for (const call of memoryRuntime.calls) {
+      expect(call.options.model).toMatchObject({ sdk: "pi", provider: "openai-codex", model: "gpt-5.5" });
       expect(call.options.allowedTools).toEqual([]);
       expect(call.options.disallowedTools).toEqual([]);
       expect(call.options.mcpServers).toEqual({});

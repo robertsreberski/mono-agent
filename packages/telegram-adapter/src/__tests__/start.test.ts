@@ -241,3 +241,191 @@ describe("startTelegramAdapter", () => {
     ).rejects.toThrow(/allowedChatIds/);
   });
 });
+
+/**
+ * A runner whose long-poll task REJECTS — models grammY's getUpdates dying after
+ * a network blip / host sleep (the runner task rejects, `isRunning()` flips
+ * false). Used to exercise the auto-restart monitor.
+ */
+class CrashingRunner implements RunnerHandle {
+  running = false;
+  stopCalls = 0;
+  constructor(private readonly error: Error) {}
+  start(): void {
+    this.running = true;
+  }
+  stop(): Promise<void> {
+    this.stopCalls += 1;
+    this.running = false;
+    return Promise.resolve();
+  }
+  size(): number {
+    return 0;
+  }
+  task(): Promise<void> | undefined {
+    // Already settled (rejected): the long-poll crashed.
+    this.running = false;
+    return Promise.reject(this.error);
+  }
+  isRunning(): boolean {
+    return this.running;
+  }
+}
+
+describe("startTelegramAdapter polling auto-restart", () => {
+  const INITIAL_BACKOFF_MS = 500;
+
+  it("recreates the runner after a polling crash, growing the backoff each time", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const errors: unknown[] = [];
+      // Every spawned runner crashes, so each restart triggers the next backoff.
+      const spawned: CrashingRunner[] = [];
+      const runnerFactory = vi.fn(() => {
+        const runner = new CrashingRunner(new Error("getUpdates ETIMEDOUT"));
+        spawned.push(runner);
+        return runner;
+      });
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        onPollingError: (error) => { errors.push(error); },
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      // The initial spawn happened during start(); flush its task rejection.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+      expect(errors).toHaveLength(1);
+
+      // First restart fires after the INITIAL backoff (500ms). Just-before does not.
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS - 1);
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runnerFactory).toHaveBeenCalledTimes(2);
+
+      // The second restart's crash grew the backoff to 2 × initial (1000ms): the
+      // first restart did NOT stay up for the stability window, so the backoff
+      // doubled rather than resetting. Just-before the grown delay, no new spawn.
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS * 2 - 1);
+      expect(runnerFactory).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runnerFactory).toHaveBeenCalledTimes(3);
+
+      // Third restart's backoff grew again to 4 × initial (2000ms).
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS * 4 - 1);
+      expect(runnerFactory).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runnerFactory).toHaveBeenCalledTimes(4);
+
+      // Every crash was surfaced to the host's onPollingError.
+      expect(errors).toHaveLength(4);
+
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stop() cancels a pending restart so the runner is not resurrected", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const runnerFactory = vi.fn(() => new CrashingRunner(new Error("getUpdates EADDRNOTAVAIL")));
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      // Initial spawn + its crash; a restart is now pending behind the backoff.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+
+      // Stop BEFORE the backoff elapses: the pending restart must be cancelled.
+      await result.stop();
+
+      // Advancing well past the backoff must NOT spawn another runner.
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS * 10);
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resets the backoff after a runner stays up past the stability window", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      // A runner whose long-poll task can be crashed on demand: it stays pending
+      // (healthy) until `crash()` rejects it, modeling a runner that lives a while
+      // and then dies on a later getUpdates error.
+      class ControllableRunner implements RunnerHandle {
+        running = true;
+        private reject: ((error: Error) => void) | undefined;
+        private readonly promise = new Promise<void>((_resolve, rej) => { this.reject = rej; });
+        start(): void { this.running = true; }
+        stop(): Promise<void> { this.running = false; return Promise.resolve(); }
+        size(): number { return 0; }
+        task(): Promise<void> | undefined { return this.promise; }
+        isRunning(): boolean { return this.running; }
+        crash(): void {
+          this.running = false;
+          this.reject?.(new Error("getUpdates ETIMEDOUT"));
+        }
+      }
+
+      const runners: ControllableRunner[] = [];
+      const runnerFactory = vi.fn(() => {
+        const runner = new ControllableRunner();
+        runners.push(runner);
+        return runner;
+      });
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+
+      // First crash → restart fires at the INITIAL backoff (500ms).
+      runners[0]?.crash();
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS);
+      expect(runnerFactory).toHaveBeenCalledTimes(2);
+
+      // Crash runner #2 immediately (before the stability window) → backoff grew
+      // to 2 × initial, so the next restart fires only after 1000ms.
+      runners[1]?.crash();
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS); // 500ms: not enough
+      expect(runnerFactory).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS); // +500ms = 1000ms total
+      expect(runnerFactory).toHaveBeenCalledTimes(3);
+
+      // Runner #3 STAYS UP past the 30s stability window → the backoff resets to
+      // the initial delay. Then crash it: the next restart fires at INITIAL again
+      // (500ms), proving the reset (a non-reset path would wait 2000ms).
+      await vi.advanceTimersByTimeAsync(30_000);
+      runners[2]?.crash();
+      await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS);
+      expect(runnerFactory).toHaveBeenCalledTimes(4);
+
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

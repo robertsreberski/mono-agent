@@ -35,6 +35,29 @@ const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
 // request. Telegram sends album parts back-to-back (sub-second), so ~1s is safe.
 const DEFAULT_ALBUM_AGGREGATION_DELAY_MS = 1000;
 
+// grammY's Api client default `timeoutSeconds` is 500 (8m20s overall HTTP
+// timeout). A half-open socket (after a network blip or host sleep) therefore
+// hangs ~8 minutes before getUpdates errors. Cap the overall HTTP timeout at 50s
+// so a dead long-poll is detected quickly and the auto-restart monitor can act.
+const DEFAULT_API_TIMEOUT_SECONDS = 50;
+// Long-poll timeout passed to the runner's getUpdates fetch (seconds). Shorter
+// than the 50s client cap so a normal long-poll completes within the HTTP
+// timeout; a stalled socket then fails fast instead of hanging.
+const DEFAULT_LONG_POLL_TIMEOUT_SECONDS = 30;
+// The runner self-retries transient getUpdates errors with exponential backoff
+// for up to this window before its task rejects and the monitor takes over.
+const DEFAULT_RUNNER_MAX_RETRY_TIME_MS = 15_000;
+
+// Auto-restart backoff bounds for the polling monitor (mirrors slack-adapter's
+// socket-mode reconnect loop): start at 500ms, double on each consecutive
+// failed restart, cap at 30s, reset to the initial delay after a clean restart.
+const DEFAULT_RESTART_INITIAL_BACKOFF_MS = 500;
+const DEFAULT_RESTART_MAX_BACKOFF_MS = 30_000;
+// A restarted runner that stays up this long is treated as a clean restart, so
+// the backoff resets to the initial delay. A runner that crashes again before
+// this window keeps growing the backoff (avoids hammering a flapping connection).
+const DEFAULT_RESTART_STABILITY_MS = 30_000;
+
 // Mirrors the harness LiveSessionManager's DEFAULT_MAX_PENDING_PER_CONVERSATION:
 // the per-chat admission queue rejects past this depth so a flood of same-chat
 // messages cannot grow the queue unbounded.
@@ -302,7 +325,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
   };
 
-  const bot = options.botFactory?.(options.botToken) ?? new Bot(options.botToken);
+  // Cap the Api client's overall HTTP timeout so a half-open getUpdates socket
+  // fails in ~50s instead of grammY's 500s default — see DEFAULT_API_TIMEOUT_SECONDS.
+  // The botFactory test seam owns full Bot construction, so the cap is applied
+  // only on the default path.
+  const bot =
+    options.botFactory?.(options.botToken) ??
+    new Bot(options.botToken, { client: { timeoutSeconds: DEFAULT_API_TIMEOUT_SECONDS } });
   const sender = createGrammyTelegramApi(bot.api);
   const fileDownloader =
     options.fileDownloaderFactory?.(bot, options.botToken) ??
@@ -862,6 +891,102 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   let runnerHandle: RunnerHandle | undefined;
+  // Pending auto-restart timer (set while backing off after a polling crash).
+  // Cleared by stop() and before each restart so at most one restart is queued.
+  let restartTimer: ReturnType<typeof setTimeout> | undefined;
+  // Fires once a restarted runner has stayed up for the stability window, at
+  // which point the backoff resets to the initial delay. Cleared on the next
+  // crash/restart and on stop().
+  let stabilityTimer: ReturnType<typeof setTimeout> | undefined;
+  // Current restart backoff (ms). Doubles on each consecutive crash that recurs
+  // before the stability window; resets to the initial delay on a clean restart.
+  let restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
+
+  /**
+   * Spawn a runner and attach the crash monitor. The runner's task rejects when
+   * long polling dies (e.g. getUpdates ETIMEDOUT/EADDRNOTAVAIL after a network
+   * blip or host sleep). Without auto-restart the runner just stops and the bot
+   * goes silent until a full process restart — so on a crash (while not stopped)
+   * we recreate the runner via the factory and re-attach the monitor, with
+   * exponential backoff. Mirrors slack-adapter's socket-mode reconnect loop.
+   */
+  function spawnRunnerWithMonitor(): void {
+    if (stabilityTimer !== undefined) {
+      clearTimeout(stabilityTimer);
+      stabilityTimer = undefined;
+    }
+    runnerHandle = (options.runnerFactory ?? defaultRunnerFactory)(bot);
+    const spawned = runnerHandle;
+    // A runner that stays up for the stability window counts as a clean restart:
+    // reset the backoff so a LATER, unrelated crash starts from the initial delay
+    // again. A runner that crashes before this window keeps the grown backoff so
+    // a flapping connection is not hammered.
+    stabilityTimer = setTimeout(() => {
+      stabilityTimer = undefined;
+      if (!stopped && runnerHandle === spawned) {
+        restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
+      }
+    }, DEFAULT_RESTART_STABILITY_MS);
+    stabilityTimer.unref?.();
+    // Only a REJECTION is a crash: grammY's runner task rejects when long polling
+    // dies (getUpdates ETIMEDOUT/EADDRNOTAVAIL). A clean resolution means the
+    // runner was stopped deliberately (stop() / a host-driven stop), so it is NOT
+    // auto-restarted — matching the original .catch-only handling.
+    runnerHandle.task?.()?.catch((error: unknown) => { onPollingCrashed(error); });
+  }
+
+  /**
+   * Handle a runner task REJECTION: long polling crashed. If the adapter is
+   * stopped this is the expected teardown path (no-op). Otherwise surface it
+   * (logger + onPollingError) and schedule a backoff restart so the bot recovers
+   * instead of going silent until a full process restart.
+   */
+  function onPollingCrashed(error: unknown): void {
+    // The runner is no longer up, so cancel the pending stability reset: the
+    // backoff must keep growing if this crash recurs before a runner stays up.
+    if (stabilityTimer !== undefined) {
+      clearTimeout(stabilityTimer);
+      stabilityTimer = undefined;
+    }
+    if (stopped) {
+      return;
+    }
+    logger?.error?.("Telegram polling stopped with an error; scheduling restart.", {
+      error: errorMessage(error),
+      restartInMs: restartBackoffMs,
+    });
+    options.onPollingError?.(error);
+    scheduleRestart();
+  }
+
+  /** Schedule a single backoff restart, growing the backoff for the next attempt. */
+  function scheduleRestart(): void {
+    if (restartTimer !== undefined) {
+      return;
+    }
+    const delay = restartBackoffMs;
+    // Grow the backoff now so a restart that itself crashes before resetting (via
+    // a healthy spawn) backs off further next time.
+    restartBackoffMs = Math.min(DEFAULT_RESTART_MAX_BACKOFF_MS, restartBackoffMs * 2);
+    restartTimer = setTimeout(() => {
+      restartTimer = undefined;
+      if (stopped) {
+        return;
+      }
+      try {
+        spawnRunnerWithMonitor();
+      } catch (error) {
+        // The factory threw synchronously (e.g. transient construction failure):
+        // back off and try again rather than giving up.
+        logger?.error?.("Telegram polling restart failed; backing off.", {
+          error: errorMessage(error),
+        });
+        scheduleRestart();
+      }
+    }, delay);
+    // Never let the restart timer keep the process alive on its own.
+    restartTimer.unref?.();
+  }
 
   return {
     bot,
@@ -883,25 +1008,32 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // update can be dispatched by the new runner) means a restart actually
       // handles messages again instead of silently dropping every one.
       stopped = false;
+      restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
       if ((options.deleteWebhookOnStart ?? true) === true) {
         await bot.api.deleteWebhook({ drop_pending_updates: options.dropPendingUpdates ?? false });
       }
-      runnerHandle = (options.runnerFactory ?? defaultRunnerFactory)(bot);
-      // Surface a late polling crash to the shared logger and the host's
-      // onPollingError callback without leaving an unhandled rejection; stop()
-      // still settles the runner independently.
-      runnerHandle.task?.()?.catch((error: unknown) => {
-        logger?.error?.("Telegram polling stopped with an error.", {
-          error: errorMessage(error),
-        });
-        options.onPollingError?.(error);
-      });
+      // Spawn the runner with the auto-restart monitor attached: a late polling
+      // crash is surfaced (logger + onPollingError) AND triggers a backoff
+      // restart instead of leaving the bot silent. stop() settles the runner and
+      // cancels any pending restart independently.
+      spawnRunnerWithMonitor();
     },
     async stop(): Promise<void> {
       // Guard the timer/late-update paths first: a pending album timer must not
       // flush a turn after teardown. Clear every outstanding album timer and drop
       // the buffers (mirrors cancelChat's per-chat cleanup, but for all chats).
       stopped = true;
+      // Cancel any pending auto-restart so a backoff timer cannot resurrect the
+      // runner after shutdown. The `stopped` flag also short-circuits the monitor
+      // and the timer callback, so a restart in flight when stop() runs is a no-op.
+      if (restartTimer !== undefined) {
+        clearTimeout(restartTimer);
+        restartTimer = undefined;
+      }
+      if (stabilityTimer !== undefined) {
+        clearTimeout(stabilityTimer);
+        stabilityTimer = undefined;
+      }
       for (const buffer of albumBuffers.values()) {
         clearTimeout(buffer.timer);
         // Settle the reserved admission slot so the parked admit() task does not
@@ -919,7 +1051,20 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   function defaultRunnerFactory(target: Bot): RunnerHandle {
     const allowed = [...(options.allowedUpdates ?? ["message"])] as unknown as AllowedUpdates;
-    return run(target, { runner: { fetch: { allowed_updates: allowed } } });
+    return run(target, {
+      runner: {
+        // Self-retry transient getUpdates errors (network blips) with exponential
+        // backoff before the task rejects and the monitor restarts the runner.
+        retryInterval: "exponential",
+        maxRetryTime: DEFAULT_RUNNER_MAX_RETRY_TIME_MS,
+        fetch: {
+          allowed_updates: allowed,
+          // Bound the long-poll below the Api client HTTP timeout so a stalled
+          // socket fails fast instead of hanging on grammY's 500s default.
+          timeout: DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
+        },
+      },
+    });
   }
 }
 
