@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   A2AConsumerError,
@@ -76,7 +77,7 @@ import type {
 } from "@mono-agent/whatsapp-adapter";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import type { NotifyToolDestination } from "./notify-tool.js";
+import type { NotifyDestination } from "./notify-destinations.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import { appendPostedMessage, lookupProducingConversation } from "./posted-message-index.js";
 
@@ -123,7 +124,16 @@ export interface RunningChannel {
    * cannot reach a non-allowlisted chat) and reports the outcome so the caller can
    * surface it to the model and the run summary.
    */
-  notify?(input: { readonly conversationId: string; readonly text: string }): Promise<NotifyDeliveryResult>;
+  notify?(input: {
+    readonly conversationId: string;
+    readonly text: string;
+    /**
+     * Deliver `text` VERBATIM — post it unchanged with no model call, then record
+     * it to the destination's history (native cron/webhook notification). Without
+     * it, `text` is run as a turn on the destination's harness.
+     */
+    readonly verbatim?: boolean;
+  }): Promise<NotifyDeliveryResult>;
 }
 
 export interface ChannelStartInput<TConfig> {
@@ -135,9 +145,13 @@ export interface ChannelStartInput<TConfig> {
   /** Reports a transport that died after a successful start (e.g. polling loop). */
   readonly onFailure: (reason: string) => void;
   /** Native scheduled/webhook delivery hook owned by the app, used by proactive trigger channels. */
-  readonly notifyDestination?: (conversationId: string, text: string) => Promise<NotifyDeliveryResult>;
+  readonly notifyDestination?: (
+    conversationId: string,
+    text: string,
+    options?: { readonly verbatim?: boolean },
+  ) => Promise<NotifyDeliveryResult>;
   /** Candidate destinations for native delivery inference. */
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
   /**
    * Path to the posted-message index (the artifact-dir JSONL linking a posted
    * message back to its producing conversation). The Slack driver uses it to
@@ -197,7 +211,7 @@ export function createTelegramChannelDriver(
         // this chat's own harness and is delivered through the normal stream.
         // Enforces the adapter allowlist so a payload-supplied destination cannot
         // reach a chat the operator never allowlisted.
-        notify: async ({ conversationId, text }) => {
+        notify: async ({ conversationId, text, verbatim }) => {
           const chatId = telegramChatIdFromConversation(conversationId);
           if (chatId === undefined) {
             input.logger?.warn?.("Telegram proactive notify skipped: unparseable destination.", { conversationId });
@@ -207,7 +221,7 @@ export function createTelegramChannelDriver(
             input.logger?.warn?.("Telegram proactive notify skipped: destination not in allowlist.", { conversationId });
             return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
           }
-          return await result.notify(chatId, text);
+          return await result.notify(chatId, text, verbatim === undefined ? undefined : { verbatim });
         },
       };
     },
@@ -284,7 +298,7 @@ export function createSlackChannelDriver(
         // on that conversation's own harness and is delivered through the stream.
         // Enforces the adapter allowlist so a payload-supplied destination cannot
         // reach a channel the operator never allowlisted.
-        notify: async ({ conversationId, text }) => {
+        notify: async ({ conversationId, text, verbatim }) => {
           const target = slackTargetFromConversation(conversationId);
           if (target === undefined) {
             input.logger?.warn?.("Slack proactive notify skipped: unparseable destination.", { conversationId });
@@ -298,7 +312,12 @@ export function createSlackChannelDriver(
             input.logger?.warn?.("Slack proactive notify skipped: destination not in allowlist.", { conversationId });
             return { delivered: false, reason: "slack channel is not in the adapter allowlist" };
           }
-          return await result.adapter.notify(target.channelId, target.threadTs, text);
+          return await result.adapter.notify(
+            target.channelId,
+            target.threadTs,
+            text,
+            verbatim === undefined ? undefined : { verbatim },
+          );
         },
       };
     },
@@ -530,9 +549,23 @@ export interface CronChannelOverrides {
  * hung run is reclaimed rather than blocking the job indefinitely.
  */
 const DEFAULT_CRON_MAX_RUN_MS = 20 * 60 * 1000;
-const NATIVE_NOTIFY_PROMPT_PREFIX =
-  "Reply once with the exact notification body below and nothing else. " +
-  "Do not call tools. Do not add a preface, summary, or closing.";
+
+/**
+ * Whether a notify-enabled turn's final text should suppress delivery: empty /
+ * whitespace-only (the agent chose to stay silent) or exactly the
+ * {@link NOTHING_TO_REPORT_SENTINEL} token. Matched trimmed and
+ * case-insensitively; never substring-matched, so a digest that merely mentions
+ * the phrase is still delivered.
+ */
+function suppressesNotification(text: string | undefined): boolean {
+  const trimmed = text?.trim() ?? "";
+  return trimmed.length === 0 || trimmed.toUpperCase() === NOTHING_TO_REPORT_SENTINEL;
+}
+
+/** A conversationId a verbatim notification can be delivered to (a push channel with a notify hook). */
+function isDeliverableConversation(conversationId: string): boolean {
+  return conversationId.startsWith("telegram:") || conversationId.startsWith("slack:");
+}
 
 export function createCronChannelDriver(
   overrides: CronChannelOverrides = {},
@@ -602,8 +635,12 @@ export function createCronChannelDriver(
 async function deliverNativeCronNotification(input: {
   readonly job: CronJobConfig | undefined;
   readonly result: CronJobResult;
-  readonly notifyDestination?: (conversationId: string, text: string) => Promise<NotifyDeliveryResult>;
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  readonly notifyDestination?: (
+    conversationId: string,
+    text: string,
+    options?: { readonly verbatim?: boolean },
+  ) => Promise<NotifyDeliveryResult>;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
   const job = input.job;
@@ -611,7 +648,8 @@ async function deliverNativeCronNotification(input: {
     return;
   }
   const text = input.result.text;
-  if (text === undefined || text.trim().length === 0) {
+  // The agent stays silent by producing no final answer or the explicit sentinel.
+  if (text === undefined || suppressesNotification(text)) {
     return;
   }
   try {
@@ -629,7 +667,7 @@ async function deliverNativeCronNotification(input: {
       return;
     }
 
-    const delivery = await input.notifyDestination(destination, nativeNotifyPrompt(text));
+    const delivery = await input.notifyDestination(destination, text, { verbatim: true });
     if (!delivery.delivered) {
       input.logger?.warn?.("Native cron notification was not delivered.", {
         jobId: job.id,
@@ -647,7 +685,7 @@ async function deliverNativeCronNotification(input: {
 
 async function resolveNativeCronNotifyDestination(input: {
   readonly job: CronJobConfig;
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<string | undefined> {
   if (input.job.notifyConversationId !== undefined) {
@@ -674,8 +712,12 @@ async function deliverNativeWebhookNotification(input: {
   readonly endpoint: WebhookEndpointConfig | undefined;
   readonly status: WebhookInvocationStatus;
   readonly request: WebhookInvocationRequest;
-  readonly notifyDestination?: (conversationId: string, text: string) => Promise<NotifyDeliveryResult>;
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  readonly notifyDestination?: (
+    conversationId: string,
+    text: string,
+    options?: { readonly verbatim?: boolean },
+  ) => Promise<NotifyDeliveryResult>;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
   const endpoint = input.endpoint;
@@ -683,7 +725,8 @@ async function deliverNativeWebhookNotification(input: {
     return;
   }
   const text = input.status.text;
-  if (text === undefined || text.trim().length === 0) {
+  // The agent stays silent by producing no final answer or the explicit sentinel.
+  if (text === undefined || suppressesNotification(text)) {
     return;
   }
   const source = { endpointName: input.request.metadata.webhook.endpointName };
@@ -696,6 +739,7 @@ async function deliverNativeWebhookNotification(input: {
     const destination = await resolveNativeWebhookNotifyDestination({
       endpoint,
       source,
+      requestConversationId: input.request.conversationId,
       ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
       ...(input.logger === undefined ? {} : { logger: input.logger }),
     });
@@ -703,7 +747,7 @@ async function deliverNativeWebhookNotification(input: {
       return;
     }
 
-    const delivery = await input.notifyDestination(destination, nativeNotifyPrompt(text));
+    const delivery = await input.notifyDestination(destination, text, { verbatim: true });
     if (!delivery.delivered) {
       input.logger?.warn?.("Native webhook notification was not delivered.", {
         ...source,
@@ -722,11 +766,19 @@ async function deliverNativeWebhookNotification(input: {
 async function resolveNativeWebhookNotifyDestination(input: {
   readonly endpoint: WebhookEndpointConfig;
   readonly source: Record<string, unknown>;
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  /** The webhook request's own conversationId — the async-callback destination when the payload names a chat. */
+  readonly requestConversationId?: string;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<string | undefined> {
   if (input.endpoint.notifyConversationId !== undefined) {
     return input.endpoint.notifyConversationId;
+  }
+  // Async-callback pattern: when the inbound payload names a deliverable chat
+  // (e.g. the service posts back the originating `telegram:`/`slack:` id), deliver
+  // the answer there. The owning channel's allowlist still bounds it.
+  if (input.requestConversationId !== undefined && isDeliverableConversation(input.requestConversationId)) {
+    return input.requestConversationId;
   }
   if (input.listNotifyDestinations === undefined) {
     input.logger?.warn?.("Native webhook notification skipped: no destination is configured and no destination resolver is available.", input.source);
@@ -741,10 +793,6 @@ async function resolveNativeWebhookNotifyDestination(input: {
     return undefined;
   }
   return destinations[0]?.conversationId;
-}
-
-function nativeNotifyPrompt(text: string): string {
-  return `${NATIVE_NOTIFY_PROMPT_PREFIX}\n\n---BEGIN NOTIFICATION---\n${text}\n---END NOTIFICATION---`;
 }
 
 export interface WhatsAppChannelOverrides {

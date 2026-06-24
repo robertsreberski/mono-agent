@@ -14,9 +14,13 @@ Each tick invokes the responder with the job's `prompt` text, exactly as if a me
 
 ### Proactive delivery from a cron turn
 
-Set `notify: true` on a job to deliver its non-empty final answer through the app's proactive notification router. If `notifyConversationId` is set, it is used as the destination (`telegram:42`, `slack:C123`, or `slack:C123:1718.99` for a Slack thread). If it is omitted, the app auto-selects the destination only when exactly one Telegram/Slack notify destination is available; otherwise it skips delivery and logs why. Delivery is best-effort: a failed notification does not change the cron job result.
+Set `notify: true` on a job to deliver its successful, non-empty final answer to a Telegram or Slack conversation. The agent's **final answer is posted verbatim** — no second LLM turn — and recorded into the destination's history, so a user's reply resumes with it in context. The operator just writes the prompt; on a notify turn the harness auto-injects guidance telling the agent that its final reply is delivered as-is and how to stay silent.
 
-For native-notify jobs, the agent does **not** see `notify_conversation` or `list_notify_destinations`; it just writes the message as its final answer. Cron/webhook turns without native notification still get those advanced tools for dynamic callbacks and multi-destination workflows. See [Proactive notify tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
+**Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, or `slack:C123:1718.99` for a Slack thread). If it is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist). With 0 or 2+ candidates, delivery is skipped with a warning — it never guesses. Delivery is best-effort: a failed notification does not change the cron job result.
+
+**Staying silent.** To send nothing for this tick, have the agent produce an **empty final answer** or reply with exactly the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed, case-insensitive). In either case no notification is sent.
+
+Notifying **multiple** or **other** conversations from one trigger is not a built-in: compose it from several cron jobs, each with its own `notifyConversationId`, or from a skill.
 
 ## Configuration
 
@@ -78,7 +82,7 @@ conversationId: cron-digest
 notify: true
 notifyConversationId: telegram:42
 ---
-Summarize yesterday's unread items. Your final answer is the digest to notify.
+Summarize yesterday's unread items. Your final answer is delivered verbatim; reply NOTHING_TO_REPORT if there is nothing new.
 ```
 
 :::caution

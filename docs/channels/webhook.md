@@ -87,19 +87,15 @@ curl -s http://127.0.0.1:<port>/webhook/invoke/status/<requestId>
 
 Async statuses are kept in memory subject to `retentionMs` and `maxStoredRequests`; a status URL polled after expiry returns `not_found`. If a turn is already running and the runtime cannot accept another, a request returns **HTTP 409** (`status: "busy"`) — that transient state is not stored or replayed via the status URL.
 
-## Proactive delivery and the async-callback pattern
+## Proactive delivery
 
-For a webhook endpoint that always produces one user-facing result, prefer native notification: set `notify: true` on the endpoint, optionally set `notifyConversationId`, and make the agent's final answer the notification body. Native-notify webhook turns do not expose `notify_conversation` or `list_notify_destinations`, which prevents double delivery. Delivery is best-effort and does not change the sync HTTP response or async stored status if it is skipped or fails.
+For a webhook endpoint that produces a user-facing result, set `notify: true` and optionally `notifyConversationId`. The agent's successful, non-empty **final answer is delivered verbatim** to the resolved Telegram/Slack conversation — no second LLM turn — and recorded into that conversation's history, so a user's reply resumes with it in context. This works for both **sync** and **async** endpoints: sync mode still returns the answer in the HTTP response, and `notify: true` *additionally* delivers it to the channel destination (async, via the post-run hook). Delivery is best-effort and does not change the sync HTTP response or the async stored status if it is skipped or fails.
 
-If `notifyConversationId` is omitted, the app auto-selects a destination only when exactly one Telegram/Slack notify destination is available; otherwise it skips delivery and logs why. The destination id uses the same shape as the notify tools: `telegram:42`, `slack:C123`, or `slack:C123:1718.99` for a Slack thread.
+The operator just writes the endpoint prompt; on a notify turn the harness auto-injects guidance telling the agent its final reply is delivered as-is. To send nothing, the agent produces an **empty final answer** or replies with exactly the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed, case-insensitive).
 
-Webhook turns without native notification automatically get the proactive `notify_conversation(conversationId, text)` and `list_notify_destinations()` tools — injected only on webhook turns and ordinary cron turns without native notification, and not gated by `tools.allowedTools`. This makes the webhook the inbound half of an **async callback**:
+**Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, or `slack:C123:1718.99` for a Slack thread). If it is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist); with 0 or 2+ candidates it skips delivery with a warning rather than guessing. The allowlist is the destination boundary: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused.
 
-1. In a live chat (Telegram/Slack), the agent kicks off a long-running external operation and asks the service to call back later. It embeds the current conversation's id — surfaced in the [Session context block](/context/assembly/#session) — in the callback request.
-2. When the service finishes, it `POST`s to this webhook with that id carried in the body (e.g. `"conversationId"` or inside `metadata`).
-3. The webhook turn reads the id from the payload and calls `notify_conversation(conversationId, …)` to deliver the result **back into the original conversation** as a real, remembered turn — not a side-channel post.
-
-Because the destination id comes from the request payload, the security boundary is the **owning channel's allowlist**: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused. See [Proactive notify tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
+Notifying multiple or other conversations from one endpoint is not a built-in: compose it from a skill or from multiple endpoints, each with its own `notifyConversationId`.
 
 ## Multiple endpoints
 

@@ -153,12 +153,11 @@ describe("webhook channel driver — native notification delivery", () => {
     captured.onResult?.(succeededStatus("Webhook digest"), webhookRequest());
 
     await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
-    expect(notifyDestination).toHaveBeenCalledWith(
-      "telegram:42",
-      expect.stringContaining("Webhook digest"),
-    );
-    const prompt = (notifyDestination.mock.calls[0] as [string, string] | undefined)?.[1];
-    expect(prompt).toContain("Do not call tools");
+    // Verbatim delivery: the final answer is posted as-is (no echo-turn wrapper).
+    expect(notifyDestination).toHaveBeenCalledWith("telegram:42", "Webhook digest", { verbatim: true });
+    const deliveredText = (notifyDestination.mock.calls[0] as [string, string, unknown] | undefined)?.[1];
+    expect(deliveredText).toBe("Webhook digest");
+    expect(deliveredText).not.toContain("Do not call tools");
   });
 
   it("infers a single notify destination when no endpoint destination is configured", async () => {
@@ -178,7 +177,29 @@ describe("webhook channel driver — native notification delivery", () => {
 
     captured.onResult?.(succeededStatus("Webhook digest"), webhookRequest());
 
-    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledWith("slack:C1", expect.any(String)));
+    await vi.waitFor(() =>
+      expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "Webhook digest", { verbatim: true }),
+    );
+  });
+
+  it("delivers to the request's conversation when the payload names a deliverable chat (async-callback)", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingWebhook({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        ...baseInput.config,
+        endpoints: [{ name: "callback", path: "/callback", mode: "async", enabled: true, notify: true }],
+      },
+    });
+
+    // No notifyConversationId and no single inferred candidate — the destination is
+    // taken from the inbound payload's conversationId (the originating chat).
+    captured.onResult?.(succeededStatus("Job done"), { ...webhookRequest("callback"), conversationId: "telegram:99" });
+
+    await vi.waitFor(() =>
+      expect(notifyDestination).toHaveBeenCalledWith("telegram:99", "Job done", { verbatim: true }),
+    );
   });
 
   it("skips native delivery for blank final text", async () => {

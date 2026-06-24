@@ -55,8 +55,8 @@ Skills are loaded from `<skillsRoot>/<name>/SKILL.md`, one per entry in `selecte
 
 The **Session** block (section 3) is auto-generated each turn (coverage `auto`, no config) and tells the agent which conversation it is currently handling — the turn's `conversationId`, with any daily-rollover date suffix stripped so the id is the stable, deliverable one.
 
-- For a deliverable push destination (`telegram:` / `slack:`), it also tells the agent how to wire an **async callback**: if the agent starts a long-running external operation, it can ask the service to include `"conversationId": "<id>"` in the JSON body of its callback to an inbound webhook, and the follow-up is routed back to this same conversation. See [Webhook](/channels/webhook/) and the [`notify_conversation` tool](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
-- For non-push conversations (cron / webhook / openai-api / a2a), it instead clarifies that this conversation cannot itself receive a proactive follow-up — only `telegram:`/`slack:` ids are valid `notify_conversation` destinations (the agent uses `list_notify_destinations` to find one). Cron jobs and webhook endpoints with `notify: true` normally do not need this tool path; their successful final answer is delivered by the runtime.
+- For a deliverable push destination (`telegram:` / `slack:`), it also tells the agent how to wire an **async callback**: if the agent starts a long-running external operation, it can ask the service to include `"conversationId": "<id>"` in the JSON body of its callback to an inbound webhook, and the follow-up is routed back to this same conversation. See [Webhook](/channels/webhook/).
+- For non-push conversations (cron / webhook / openai-api / a2a), it instead clarifies that this conversation cannot itself receive a proactive follow-up. Cron jobs and webhook endpoints with `notify: true` deliver their successful final answer to the resolved Telegram/Slack destination — the harness injects guidance on those turns that the final reply is delivered verbatim and how to stay silent. See [Delivery and send tools](/channels/delivery-and-send-tools/).
 
 ## Memory recall
 
@@ -118,6 +118,6 @@ Assembly produces the prompt; **compaction** keeps it within the model's context
 - [Identity and soul](/context/identity-and-soul/) — sections 1–2
 - [Skills](/context/skills/) — sections 5–6 and the skill index
 - [Capture and recall](/memory/capture-and-recall/) — the user-message memory injection and `memory_recall`
-- [Delivery and send tools](/channels/delivery-and-send-tools/) — the `notify_conversation` tool the Session block references
+- [Delivery and send tools](/channels/delivery-and-send-tools/) — native cron/webhook notify the Session block references
 - [Tools and guards](/runtime/tools-and-guards/) — the bloat guard in context
 - [Composition](/programmatic/composition/) — custom history store and per-request runtime options

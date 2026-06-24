@@ -6,10 +6,10 @@ sidebar:
 
 # Cron Digest with Native Notify
 
-This playbook wires a timezone-aware cron job to a Telegram or Slack destination. On a schedule, the agent builds a daily digest using shared conversation history, returns the digest as its final answer, and `mono-agent` delivers that final answer through native notification.
+This playbook wires a timezone-aware cron job to a Telegram or Slack destination. On a schedule, the agent builds a daily digest using shared conversation history, returns the digest as its final answer, and `mono-agent` delivers that final answer **verbatim** through native notification.
 
 :::note
-Use `notify: true` for scheduled one-message digests. The same native notification model is available to webhook endpoints. The lower-level `notify_conversation` tool remains available on ordinary cron/webhook turns for dynamic callbacks and multi-destination workflows, but native notification keeps the simple path simpler: the agent writes the message once, and the runtime handles delivery.
+Opt in with `notify: true` per cron job (the same model is available to webhook endpoints). On a notify turn the harness injects guidance: the agent's final reply is delivered to the destination as-is (no second LLM turn) and recorded to that conversation's history, so a user's reply resumes with it in context. To say nothing, the agent produces empty final text or replies with exactly `NOTHING_TO_REPORT` — then no notification is sent. Defaults stay off: a job without `notify` delivers nothing.
 :::
 
 ## Who this is for
@@ -24,8 +24,7 @@ A timezone-aware cron job that builds a daily digest with shared run history and
 
 - **`cron.scheduled-prompts`** — in-app scheduled prompts; see [Cron](/channels/cron/). *(config)*
 - **`cron.jobs-dir`** — author jobs as `cron/<id>.md` frontmatter files; see [Cron](/channels/cron/). *(config)*
-- **`cron.native-notify`** — `notify: true` delivers the cron final answer to Telegram or Slack after a successful run. *(config)*
-- **`channel.proactive-notify`** — the same allowlisted Telegram/Slack routing used by the low-level notify tools; see [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
+- **`channel.native-notify`** — `notify: true` delivers the cron final answer verbatim to Telegram or Slack after a successful run; `NOTHING_TO_REPORT` (or empty final text) stays silent. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
 - **`slack.socket-mode`** or **`telegram.bot`** — the destination adapter that owns the allowlist. *(config)*
 - **`memory.journal`** — shared run history via `conversationId`; see [Capture and Recall](/memory/capture-and-recall/). *(config)*
 
@@ -102,7 +101,7 @@ Channel allowlists still apply. A Slack destination must be in `allowedChannelId
 ## Smoke test
 
 :::tip
-Run a one-off cron tick; verify the agent's final answer is the digest and no notify tool call is needed. Delivery is best-effort: skipped or failed notification attempts are logged without changing the cron job result.
+Run a one-off cron tick; verify the agent's final answer is the digest and it lands verbatim in the destination — no tool call involved. To check the silent path, have the prompt reply `NOTHING_TO_REPORT` and confirm nothing is posted. Delivery is best-effort: skipped or failed notification attempts are logged without changing the cron job result.
 :::
 
 ## Related

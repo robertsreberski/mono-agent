@@ -172,12 +172,11 @@ describe("cron channel driver — native notification delivery", () => {
     await captured.onResult?.(succeededResult("Morning brief"));
 
     await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
-    expect(notifyDestination).toHaveBeenCalledWith(
-      "telegram:42",
-      expect.stringContaining("Morning brief"),
-    );
-    const prompt = (notifyDestination.mock.calls[0] as [string, string] | undefined)?.[1];
-    expect(prompt).toContain("Do not call tools");
+    // Verbatim delivery: the final answer is posted as-is (no echo-turn wrapper).
+    expect(notifyDestination).toHaveBeenCalledWith("telegram:42", "Morning brief", { verbatim: true });
+    const deliveredText = (notifyDestination.mock.calls[0] as [string, string, unknown] | undefined)?.[1];
+    expect(deliveredText).toBe("Morning brief");
+    expect(deliveredText).not.toContain("Do not call tools");
   });
 
   it("infers a single notify destination when no destination is configured", async () => {
@@ -205,7 +204,9 @@ describe("cron channel driver — native notification delivery", () => {
 
     await captured.onResult?.(succeededResult("Digest"));
 
-    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledWith("slack:C1", expect.any(String)));
+    await vi.waitFor(() =>
+      expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "Digest", { verbatim: true }),
+    );
   });
 
   it("skips native delivery for blank final text", async () => {
@@ -229,6 +230,32 @@ describe("cron channel driver — native notification delivery", () => {
     });
 
     await captured.onResult?.(succeededResult("   "));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(notifyDestination).not.toHaveBeenCalled();
+  });
+
+  it("skips native delivery when the final text is the NOTHING_TO_REPORT sentinel", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+          },
+        ],
+      },
+    });
+
+    await captured.onResult?.(succeededResult("  nothing_to_report  "));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(notifyDestination).not.toHaveBeenCalled();

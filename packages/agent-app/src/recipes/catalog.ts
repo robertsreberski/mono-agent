@@ -233,7 +233,7 @@ const cronDigest: AgentRecipe = {
         "---",
         "",
         "Produce a concise digest of anything noteworthy since the last run.",
-        "Your final answer is the message to notify.",
+        "Your final reply is delivered to the user verbatim as the notification — write it as the finished message, with no preface. If nothing is noteworthy, reply with exactly NOTHING_TO_REPORT.",
         "",
       ].join("\n"),
     },

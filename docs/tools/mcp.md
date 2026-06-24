@@ -86,12 +86,12 @@ Consequences:
 
 - Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
-- This same model covers app-injected MCP tools such as `memory_recall`, the proactive `notify_conversation` / `list_notify_destinations` tools (injected **only on cron/webhook turns without native notification**, gated by request metadata — see [Delivery & send tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns)), and the `ask-collaborator` orchestration tool — they are gated by their own enable switches (or by which turn they appear on), not by the allowlist.
+- This same model covers app-injected MCP tools such as `memory_recall` and the `ask-collaborator` orchestration tool — they are gated by their own enable switches, not by the allowlist.
 
 The `memory_recall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `memory_recall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
 
 :::caution
-The one exception is the **app-owned adapter send tools** (`slack_send_message`, `telegram_send_message`). Although they are delivered as MCP tools, they are deliberately opt-in: their exact tool names **must** appear in `tools.allowedTools`, in addition to valid `slack.*` / `telegram.*` adapter config. (The proactive `notify_conversation` tool is *not* one of these — it needs no allowlist entry, but each delivery is still bounded by the destination channel's allowlist.) See [Delivery & send tools](/channels/delivery-and-send-tools/).
+The one exception is the **app-owned adapter send tools** (`slack_send_message`, `telegram_send_message`). Although they are delivered as MCP tools, they are deliberately opt-in: their exact tool names **must** appear in `tools.allowedTools`, in addition to valid `slack.*` / `telegram.*` adapter config. See [Delivery & send tools](/channels/delivery-and-send-tools/).
 :::
 
 For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/policy/). For how `Bash` is confined, see [Sandbox](/tools/sandbox/).
