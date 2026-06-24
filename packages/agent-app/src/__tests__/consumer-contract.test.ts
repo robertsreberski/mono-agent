@@ -22,8 +22,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const consumersRoot = join(here, "fixtures", "consumers");
 
 describe("golden consumer config contracts", () => {
-  it("validates the personal-agent fixture without network access", async () => {
-    const result = await validateFixture("personal-agent");
+  it("validates the local-agent-alpha fixture without network access", async () => {
+    const result = await validateFixture("local-agent-alpha");
 
     expect(result.ok).toBe(true);
     expect(result.issues).toEqual([]);
@@ -98,8 +98,8 @@ describe("golden consumer config contracts", () => {
     `);
   });
 
-  it("validates the a8c-agent fixture without network access", async () => {
-    const result = await validateFixture("a8c-agent");
+  it("validates the local-agent-beta fixture without network access", async () => {
+    const result = await validateFixture("local-agent-beta");
 
     expect(result.ok).toBe(true);
     expect(result.issues).toEqual([]);

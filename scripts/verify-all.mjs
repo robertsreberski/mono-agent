@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runVerifyConsumers } from "./verify-consumers.mjs";
 
 const repoGate = [
+  { label: "check:sanitized-content", command: "pnpm", args: ["run", "check:sanitized-content"] },
   { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
   { label: "build", command: "pnpm", args: ["run", "build"] },
   { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },
@@ -67,8 +68,8 @@ export async function runVerifyAll(options = {}) {
       runCommand,
       writeOutput: true,
     });
-    personalOk = consumerResult.statusByLabel.get("personal-agent contract") === true;
-    a8cOk = consumerResult.statusByLabel.get("a8c-agent contract") === true;
+    personalOk = consumerResult.statusByLabel.get("local-agent-alpha contract") === true;
+    a8cOk = consumerResult.statusByLabel.get("local-agent-beta contract") === true;
   } else {
     stderr.write("Consumer verification skipped because the repo gate is not green.\n");
   }
@@ -83,11 +84,11 @@ export function renderFinalSummary(input) {
   return [
     "final summary",
     `repo ${input.repoOk ? "ok" : "fail"}`,
-    `personal-agent contract ${input.personalOk ? "ok" : "fail"}`,
-    `a8c-agent contract ${input.a8cOk ? "ok" : "fail"}`,
+    `local-agent-alpha contract ${input.personalOk ? "ok" : "fail"}`,
+    `local-agent-beta contract ${input.a8cOk ? "ok" : "fail"}`,
     `repo ${input.repoOk ? "green" : "failed"}`,
-    `personal-agent contract ${input.personalOk ? "green" : "failed"}`,
-    `a8c-agent contract ${input.a8cOk ? "green" : "failed"}`,
+    `local-agent-alpha contract ${input.personalOk ? "green" : "failed"}`,
+    `local-agent-beta contract ${input.a8cOk ? "green" : "failed"}`,
   ].join("\n") + "\n";
 }
 

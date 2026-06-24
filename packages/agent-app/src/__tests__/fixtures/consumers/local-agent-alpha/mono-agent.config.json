@@ -75,22 +75,22 @@
     "readableRoots": [
       ".",
       "./fixture-home/.config/todoist-cli",
-      "./fixture-home/.config/gws-personal",
-      "./fixture-home/.config/gws-paola",
-      "./fixture-home/.config/gws-a8c",
+      "./fixture-home/.config/gws-alpha",
+      "./fixture-home/.config/gws-beta",
+      "./fixture-home/.config/gws-work",
       "./fixture-home/.wacli",
-      "./fixture-home/.config/a8c-cli",
-      "./fixture-home/Automattic_Repositories/a8c-cli",
+      "./fixture-home/.config/work-cli",
+      "./fixture-home/ExampleCorp_Repositories/work-cli",
       "./fixture-home/.claude"
     ],
     "writableRoots": [
       ".",
       "./fixture-home/.config/todoist-cli",
-      "./fixture-home/.config/gws-personal",
-      "./fixture-home/.config/gws-paola",
-      "./fixture-home/.config/gws-a8c",
+      "./fixture-home/.config/gws-alpha",
+      "./fixture-home/.config/gws-beta",
+      "./fixture-home/.config/gws-work",
       "./fixture-home/.wacli",
-      "./fixture-home/.config/a8c-cli",
+      "./fixture-home/.config/work-cli",
       "./fixture-home/.claude"
     ],
     "denyWrite": [
@@ -107,8 +107,8 @@
   },
   "traceability": {
     "registryDir": "./.mono-agent/trace-sources",
-    "sourceId": "personal-agent",
-    "sourceLabel": "Personal Agent",
+    "sourceId": "local-agent-alpha",
+    "sourceLabel": "Local Agent Alpha",
     "heartbeatMs": 10000,
     "staleAfterMs": 30000
   },
@@ -117,7 +117,7 @@
       {
         "type": "phoenix",
         "endpoint": "http://127.0.0.1:6006/v1/traces",
-        "projectName": "personal-agent",
+        "projectName": "local-agent-alpha",
         "includeSensitiveData": true
       }
     ]
@@ -142,12 +142,12 @@
     "port": 4312,
     "basePath": "/v1",
     "allowNonLoopback": false,
-    "modelId": "personal-agent"
+    "modelId": "local-agent-alpha"
   },
   "telegram": {
     "enabled": true,
     "allowedChatIds": [
-      "183676192"
+      "100100100"
     ],
     "allowAllChats": false
   },

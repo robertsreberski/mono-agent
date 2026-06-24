@@ -14,11 +14,11 @@ describe("verify-consumers", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(stdout.text).toContain("PASS personal-agent contract");
-    expect(stdout.text).toContain("PASS a8c-agent contract");
+    expect(stdout.text).toContain("PASS local-agent-alpha contract");
+    expect(stdout.text).toContain("PASS local-agent-beta contract");
     expect(stdout.text).toContain("PASS consumers");
-    expect(stdout.text).toContain("personal-agent contract ok");
-    expect(stdout.text).toContain("a8c-agent contract ok");
+    expect(stdout.text).toContain("local-agent-alpha contract ok");
+    expect(stdout.text).toContain("local-agent-beta contract ok");
     expect(stdout.text).toContain("consumers ok");
   });
 
@@ -27,15 +27,15 @@ describe("verify-consumers", () => {
     const result = await runVerifyConsumers({
       argv: ["--skip-build"],
       cwd: "/repo",
-      dependencies: fakeDependencies({ failingContract: "a8c-agent" }),
+      dependencies: fakeDependencies({ failingContract: "local-agent-beta" }),
       stdout,
       stderr: sink(),
     });
 
     expect(result.exitCode).toBe(1);
-    expect(stdout.text).toContain("PASS personal-agent contract");
-    expect(stdout.text).toContain("FAIL a8c-agent contract: validation: fixture drift");
-    expect(stdout.text).toContain("a8c-agent contract fail");
+    expect(stdout.text).toContain("PASS local-agent-alpha contract");
+    expect(stdout.text).toContain("FAIL local-agent-beta contract: validation: fixture drift");
+    expect(stdout.text).toContain("local-agent-beta contract fail");
     expect(stdout.text).toContain("consumers fail");
   });
 
@@ -60,7 +60,7 @@ describe("verify-consumers", () => {
 
 function fakeDependencies(options = {}) {
   return {
-    consumerContractNames: ["personal-agent", "a8c-agent"],
+    consumerContractNames: ["local-agent-alpha", "local-agent-beta"],
     validateConsumerContractFixture: async ({ name }) => ({
       name,
       ok: name !== options.failingContract,

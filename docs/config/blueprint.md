@@ -253,7 +253,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 ```bash
 mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory lite|journal|bujo]
 mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means ready
-mono-agent validate --consumer ../personal-agent  # read-only report for a downstream folder
+mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
 mono-agent restart --force  # restart AND purge persisted pi sessions (fresh start; durable memory kept)

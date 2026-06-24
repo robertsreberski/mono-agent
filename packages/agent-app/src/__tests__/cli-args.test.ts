@@ -134,10 +134,10 @@ describe("parseCliArgs", () => {
       json: true,
     });
     expect(
-      parseCliArgs(["audit-runs", "--consumer", "../personal-agent", "--config", "agent.config.json"]),
+      parseCliArgs(["audit-runs", "--consumer", "../local-agent-alpha", "--config", "agent.config.json"]),
     ).toMatchObject({
       command: "audit-runs",
-      consumerPath: "../personal-agent",
+      consumerPath: "../local-agent-alpha",
       configPath: "agent.config.json",
     });
     expect(() => parseCliArgs(["audit-runs", "--stale-after-ms", "0"])).toThrow(/--stale-after-ms/u);
@@ -171,12 +171,12 @@ describe("parseCliArgs", () => {
   });
 
   it("parses validate --consumer and keeps it validate/audit-runs scoped", () => {
-    expect(parseCliArgs(["validate", "--consumer", "../personal-agent"])).toMatchObject({
+    expect(parseCliArgs(["validate", "--consumer", "../local-agent-alpha"])).toMatchObject({
       command: "validate",
-      consumerPath: "../personal-agent",
+      consumerPath: "../local-agent-alpha",
     });
     expect(() => parseCliArgs(["validate", "--consumer"])).toThrow(/--consumer requires a value/u);
-    expect(() => parseCliArgs(["start", "--consumer", "../personal-agent"])).toThrow(/--consumer/u);
+    expect(() => parseCliArgs(["start", "--consumer", "../local-agent-alpha"])).toThrow(/--consumer/u);
   });
 
   it("defaults to help and rejects unknown commands and flags", () => {

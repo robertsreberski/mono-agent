@@ -33,7 +33,7 @@ function build(overrides: Partial<{ summary: RunSummary; events: RuntimeEventLik
     summary: overrides.summary ?? summary,
     events: overrides.events ?? events,
     context: overrides.ctx ?? ctx,
-    projectName: "personal-agent",
+    projectName: "local-agent-alpha",
     startTimeUnixNanos: 1_000_000_000n,
     endTimeUnixNanos: 2_000_000_000n,
     idFactory: createDeterministicIdFactory((overrides.summary ?? summary).runId),
@@ -57,7 +57,7 @@ describe("buildRunReadableSpans", () => {
       summary: { ...summary, eventCount: streamed.length },
       events: streamed,
       context: ctxSensitive,
-      projectName: "personal-agent",
+      projectName: "local-agent-alpha",
       startTimeUnixNanos: 1_000_000_000n,
       endTimeUnixNanos: 2_000_000_000n,
       idFactory: createDeterministicIdFactory(summary.runId),
@@ -82,7 +82,7 @@ describe("buildRunReadableSpans", () => {
       summary: { ...summary, eventCount: agentic.length },
       events: agentic,
       context: { ...ctx, includeSensitiveData: true },
-      projectName: "personal-agent",
+      projectName: "local-agent-alpha",
       startTimeUnixNanos: 1_000_000_000n,
       endTimeUnixNanos: 2_000_000_000n,
       idFactory: createDeterministicIdFactory(summary.runId),
@@ -116,7 +116,7 @@ describe("buildRunReadableSpans", () => {
       summary: { ...summary, eventCount: convo.length },
       events: convo,
       context: { ...ctx, includeSensitiveData: true, userInput: "What is the capital of France?" },
-      projectName: "personal-agent",
+      projectName: "local-agent-alpha",
       startTimeUnixNanos: 1_000_000_000n,
       endTimeUnixNanos: 2_000_000_000n,
       idFactory: createDeterministicIdFactory(summary.runId),
@@ -137,7 +137,7 @@ describe("buildRunReadableSpans", () => {
   it("routes to a named project via the openinference.project.name resource attr", () => {
     const spans = build();
     const resourceAttrs = spans[0]!.resource.attributes as Record<string, unknown>;
-    expect(resourceAttrs["openinference.project.name"]).toBe("personal-agent");
+    expect(resourceAttrs["openinference.project.name"]).toBe("local-agent-alpha");
     expect(resourceAttrs["service.name"]).toBe("mono-agent");
     // The resource object must be shared by identity across spans.
     expect(spans[1]!.resource).toBe(spans[0]!.resource);

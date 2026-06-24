@@ -47,7 +47,7 @@ The successful end state is:
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 1 | Delete the whole package, not just the trace view | Both the trace view and the settings form are redundant; keeping the HTTP server only to host a redundant form is not worth the dependency surface (vite/react/radix/tailwind). |
-| 2 | Drop live-apply; restart to apply | Manual JSON edits already required a restart today — the console `PUT` was the only live trigger. Removing it changes nothing for hand edits. Confirmed acceptable: the live `~/personal-agent` will need `mono-agent restart` (brief downtime) to pick up config changes. |
+| 2 | Drop live-apply; restart to apply | Manual JSON edits already required a restart today — the console `PUT` was the only live trigger. Removing it changes nothing for hand edits. Confirmed acceptable: the live `~/local-agent-alpha` will need `mono-agent restart` (brief downtime) to pick up config changes. |
 | 3 | Keep `applyConfigChange` | It is shared infrastructure: self-capabilities depends on it. Removing it would regress an unrelated feature. |
 | 4 | Keep the observability trace-run readers | Published library API; `status` host discovery uses `listTraceSources`. Removing it is out of scope and would be a separate breaking change. |
 | 5 | One combined PR with the Phoenix exporter | Operator preference. The deletion is gated behind the Phoenix smoke test, which the operator runs before merge. |

@@ -203,7 +203,7 @@ pnpm run verify:all
 ```
 
 `pnpm run verify:all` runs the repository gate, then validates the committed
-golden consumer fixtures for `personal-agent` and `a8c-agent`. The consumer
+golden consumer fixtures for `local-agent-alpha` and `local-agent-beta`. The consumer
 checks use redacted fixtures, `liveness:false`, no network probes, and no
 secrets by default.
 

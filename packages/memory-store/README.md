@@ -28,7 +28,7 @@ const db = openMemoryDb({
   embeddings: createEmbeddingProvider({ provider: "ollama", model: "nomic-embed-text:v1.5" }),
   dim: 768,
 });
-await db.upsert({ id: "01J...", type: "note", status: "open", text: "Robert prefers opt-in memory.", salience: 0.9, isInsight: true, createdAt: new Date().toISOString(), accessCount: 0, tags: [], source: {} });
+await db.upsert({ id: "01J...", type: "note", status: "open", text: "Morgan prefers opt-in memory.", salience: 0.9, isInsight: true, createdAt: new Date().toISOString(), accessCount: 0, tags: [], source: {} });
 const hits = await db.recall("memory preferences", { topK: 5 });
 ```
 

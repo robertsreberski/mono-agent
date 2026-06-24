@@ -18,14 +18,15 @@ describe("verify-all", () => {
       verifyConsumers: async () => ({
         exitCode: 0,
         statusByLabel: new Map([
-          ["personal-agent contract", true],
-          ["a8c-agent contract", true],
+          ["local-agent-alpha contract", true],
+          ["local-agent-beta contract", true],
         ]),
       }),
     });
 
     expect(result.exitCode).toBe(0);
     expect(labels).toEqual([
+      "check:sanitized-content",
       "check:architecture",
       "build",
       "typecheck",
@@ -35,8 +36,8 @@ describe("verify-all", () => {
     ]);
     expect(stdout.text.endsWith([
       "repo green",
-      "personal-agent contract green",
-      "a8c-agent contract green",
+      "local-agent-alpha contract green",
+      "local-agent-beta contract green",
       "",
     ].join("\n"))).toBe(true);
   });
@@ -65,8 +66,8 @@ describe("verify-all", () => {
     expect(stderr.text).toContain("Repo gate failed at typecheck.");
     expect(stderr.text).toContain("Consumer verification skipped");
     expect(stdout.text).toContain("repo fail");
-    expect(stdout.text).toContain("personal-agent contract fail");
-    expect(stdout.text).toContain("a8c-agent contract fail");
+    expect(stdout.text).toContain("local-agent-alpha contract fail");
+    expect(stdout.text).toContain("local-agent-beta contract fail");
   });
 
   it("exits non-zero when a consumer verdict is not green", async () => {
@@ -80,20 +81,20 @@ describe("verify-all", () => {
       verifyConsumers: async () => ({
         exitCode: 1,
         statusByLabel: new Map([
-          ["personal-agent contract", true],
-          ["a8c-agent contract", false],
+          ["local-agent-alpha contract", true],
+          ["local-agent-beta contract", false],
         ]),
       }),
     });
 
     expect(result.exitCode).toBe(1);
     expect(stdout.text).toContain("repo ok");
-    expect(stdout.text).toContain("personal-agent contract ok");
-    expect(stdout.text).toContain("a8c-agent contract fail");
+    expect(stdout.text).toContain("local-agent-alpha contract ok");
+    expect(stdout.text).toContain("local-agent-beta contract fail");
     expect(stdout.text.endsWith([
       "repo green",
-      "personal-agent contract green",
-      "a8c-agent contract failed",
+      "local-agent-alpha contract green",
+      "local-agent-beta contract failed",
       "",
     ].join("\n"))).toBe(true);
   });

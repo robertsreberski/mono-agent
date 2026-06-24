@@ -44,6 +44,9 @@ jobs:
       - name: Validate release package graph
         run: pnpm run release:validate -- --tag "${{ steps.release-smoke.outputs.tag }}"
 
+      - name: Check sanitized content
+        run: pnpm run check:sanitized-content
+
       - name: Check package architecture
         run: pnpm run check:architecture
 

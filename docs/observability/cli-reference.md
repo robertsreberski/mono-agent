@@ -112,7 +112,7 @@ Loads every config section and prints a status report, then exits `0` when the c
 ```bash
 mono-agent validate
 mono-agent validate --config ./agents/support.config.json --env-file ./.env.staging
-mono-agent validate --consumer ../personal-agent
+mono-agent validate --consumer ../local-agent-alpha
 ```
 
 | Flag | Effect |
@@ -255,7 +255,7 @@ Audits recorded run summary artifacts without exporting, reconciling, or rewriti
 | `--json` | Print the full machine-readable audit report. |
 
 ```bash
-mono-agent audit-runs --consumer ~/personal-agent --json
+mono-agent audit-runs --consumer ~/local-agent-alpha --json
 mono-agent audit-runs --artifact-dir ./.mono-agent/artifacts --stale-after-ms 30000
 ```
 
