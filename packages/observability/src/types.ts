@@ -7,6 +7,12 @@ export interface RuntimeResultLike {
   readonly cancelled?: boolean;
   readonly error?: string | null;
   readonly failureKind?: string | null;
+  /**
+   * Per-attempt provider failover detail emitted by the fallback router. Loosely
+   * typed here because the router stores ModelRef objects and a `retryableSubkind`
+   * field; {@link normalizeFailoverHistory} canonicalizes it into {@link FailoverAttempt}.
+   */
+  readonly failoverHistory?: unknown;
   readonly usage?: unknown;
   readonly cost?: unknown;
   readonly durationMs?: number;
@@ -23,11 +29,40 @@ export interface RuntimeResultLike {
 
 export type RunSummaryStatus = "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
 
+/**
+ * One provider attempt recorded by the fallback router when a run fails over.
+ * Canonicalized (model reference flattened to a string, `retryableSubkind` →
+ * `subkind`) so the persisted shape is stable across router/runtime versions.
+ */
+export interface FailoverAttempt {
+  /** Model reference tried, e.g. "pi:openai-codex:gpt-5.5". */
+  readonly model?: string;
+  /** Failure kind for this attempt, e.g. "provider_unavailable" or "skipped_capability_mismatch". */
+  readonly failureKind?: string;
+  /** Retryable sub-classification, e.g. "timeout", "server_error", "overloaded", "rate_limited". */
+  readonly subkind?: string;
+  /** Provider request id, when the underlying error text carried one. */
+  readonly requestId?: string;
+}
+
 export interface RunSummary {
   readonly runId: string;
   readonly conversationId: string;
   readonly status: RunSummaryStatus;
   readonly failureKind?: string;
+  /**
+   * Underlying provider/runtime error message for a failed run (redacted + capped).
+   * `failureKind` is the taxonomy label ("provider_unavailable_exhausted"); this is
+   * the human-readable "why" (the actual provider message), persisted so the trace
+   * shows it instead of only the collapsed kind.
+   */
+  readonly error?: string;
+  /**
+   * Per-attempt provider failover detail when the fallback router exhausted its
+   * chain. Lets a trace show which models were tried and how each failed, instead
+   * of only the collapsed `provider_unavailable_exhausted` kind.
+   */
+  readonly failoverHistory?: readonly FailoverAttempt[];
   readonly startedAt?: string;
   readonly endedAt?: string;
   readonly updatedAt?: string;
@@ -135,6 +170,10 @@ export interface RecordedRunListItem {
   readonly conversationId: string;
   readonly status: RunSummaryStatus;
   readonly failureKind?: string;
+  /** Underlying provider/runtime error message for a failed run (redacted + capped). */
+  readonly error?: string;
+  /** Per-attempt provider failover detail when the fallback router exhausted its chain. */
+  readonly failoverHistory?: readonly FailoverAttempt[];
   readonly startedAt?: string;
   readonly endedAt?: string;
   readonly durationMs: number;

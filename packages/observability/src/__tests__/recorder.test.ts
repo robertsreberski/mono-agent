@@ -151,6 +151,31 @@ describe("JsonlRunRecorder", () => {
     await expect(cancelled.finish({ cancelled: true })).resolves.toMatchObject({ status: "cancelled" });
   });
 
+  it("persists the underlying error message and normalized failover history for a failed run", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({ runId: "exhausted", conversationId: "c", artifactDir: dir });
+    const summary = await recorder.finish({
+      error: "503 Service Unavailable",
+      failureKind: "provider_unavailable_exhausted",
+      failoverHistory: [
+        { model: { reference: "pi:openai-codex:gpt-5.5" }, failureKind: "provider_unavailable", retryableSubkind: "timeout", requestId: null },
+        { model: { reference: "pi:opencode-go:kimi-k2.6" }, failureKind: "provider_unavailable", retryableSubkind: "server_error", requestId: "abc123" },
+      ],
+    });
+    expect(summary.status).toBe("failed");
+    expect(summary.error).toBe("503 Service Unavailable");
+    expect(summary.failoverHistory).toEqual([
+      { model: "pi:openai-codex:gpt-5.5", failureKind: "provider_unavailable", subkind: "timeout" },
+      { model: "pi:opencode-go:kimi-k2.6", failureKind: "provider_unavailable", subkind: "server_error", requestId: "abc123" },
+    ]);
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
+      error?: string;
+      failoverHistory?: unknown;
+    };
+    expect(onDisk.error).toBe("503 Service Unavailable");
+    expect(onDisk.failoverHistory).toHaveLength(2);
+  });
+
   it("creates failure summaries from thrown errors", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({ runId: "throw", conversationId: "c", artifactDir: dir });

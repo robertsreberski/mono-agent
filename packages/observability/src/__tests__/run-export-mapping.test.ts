@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildEventSpanAttributes,
   buildRootSpanAttributes,
+  composeFailureDetail,
   countRuntimeWarnings,
+  normalizeFailoverHistory,
+  renderFailoverHistory,
   spanKindHint,
   spanStatusFor,
 } from "../run-export-mapping.js";
@@ -244,5 +247,132 @@ describe("spanStatusFor", () => {
 
   it("maps succeeded run with non-error category to UNSET", () => {
     expect(spanStatusFor("succeeded", "runtime")).toBe("UNSET");
+  });
+});
+
+describe("normalizeFailoverHistory", () => {
+  it("canonicalizes raw router entries (ModelRef + retryableSubkind) into FailoverAttempt[]", () => {
+    const raw = [
+      {
+        model: { sdk: "pi", model: "gpt-5.5", provider: "openai-codex", reference: "pi:openai-codex:gpt-5.5" },
+        failureKind: "provider_unavailable",
+        requestId: null,
+        retryableSubkind: "timeout",
+      },
+      {
+        model: { reference: "pi:opencode-go:kimi-k2.6" },
+        failureKind: "provider_unavailable",
+        requestId: "abc123",
+        retryableSubkind: "server_error",
+      },
+      { model: { reference: "pi:foo:bar" }, failureKind: "skipped_capability_mismatch" },
+    ];
+    expect(normalizeFailoverHistory(raw)).toEqual([
+      { model: "pi:openai-codex:gpt-5.5", failureKind: "provider_unavailable", subkind: "timeout" },
+      { model: "pi:opencode-go:kimi-k2.6", failureKind: "provider_unavailable", subkind: "server_error", requestId: "abc123" },
+      { model: "pi:foo:bar", failureKind: "skipped_capability_mismatch" },
+    ]);
+  });
+
+  it("is idempotent on already-normalized data and falls back to model.model", () => {
+    expect(normalizeFailoverHistory([{ model: "pi:x:y", subkind: "overloaded" }])).toEqual([
+      { model: "pi:x:y", subkind: "overloaded" },
+    ]);
+    expect(normalizeFailoverHistory([{ model: { model: "bare-model" }, failureKind: "spawn" }])).toEqual([
+      { model: "bare-model", failureKind: "spawn" },
+    ]);
+  });
+
+  it("returns undefined for non-arrays, empty arrays, and entries with no usable fields", () => {
+    expect(normalizeFailoverHistory(undefined)).toBeUndefined();
+    expect(normalizeFailoverHistory([])).toBeUndefined();
+    expect(normalizeFailoverHistory("nope")).toBeUndefined();
+    expect(normalizeFailoverHistory([{}, { model: null }])).toBeUndefined();
+  });
+});
+
+describe("renderFailoverHistory", () => {
+  it("renders a compact `model → reason (req id)` list", () => {
+    const rendered = renderFailoverHistory([
+      { model: "pi:openai-codex:gpt-5.5", failureKind: "provider_unavailable", subkind: "timeout" },
+      { model: "pi:opencode-go:kimi-k2.6", failureKind: "provider_unavailable", subkind: "server_error", requestId: "abc123" },
+    ]);
+    expect(rendered).toBe("pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 → server_error (req abc123)");
+  });
+
+  it("falls back to failureKind when no subkind, and to a placeholder model", () => {
+    expect(renderFailoverHistory([{ failureKind: "skipped_capability_mismatch" }])).toBe(
+      "(unknown model) → skipped_capability_mismatch",
+    );
+  });
+
+  it("returns undefined for undefined/empty history", () => {
+    expect(renderFailoverHistory(undefined)).toBeUndefined();
+    expect(renderFailoverHistory([])).toBeUndefined();
+  });
+});
+
+describe("composeFailureDetail", () => {
+  it("combines failure kind, failover history, and the capped underlying error", () => {
+    const detail = composeFailureDetail(
+      makeSummary({
+        status: "failed",
+        failureKind: "provider_unavailable_exhausted",
+        error: "503 Service Unavailable",
+        failoverHistory: [
+          { model: "pi:openai-codex:gpt-5.5", subkind: "timeout" },
+          { model: "pi:opencode-go:kimi-k2.6", subkind: "server_error", requestId: "abc123" },
+        ],
+      }),
+    );
+    expect(detail).toBe(
+      "provider_unavailable_exhausted: pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 → server_error (req abc123); last error: 503 Service Unavailable",
+    );
+  });
+
+  it("caps and single-lines a long error message", () => {
+    const detail = composeFailureDetail(
+      makeSummary({ status: "failed", failureKind: "runtime_error", error: `line one\nline two ${"x".repeat(500)}` }),
+      { maxErrorChars: 20 },
+    );
+    expect(detail).toBe("runtime_error; last error: line one line two xx…");
+  });
+
+  it("returns just the kind when there is no error or failover", () => {
+    expect(composeFailureDetail(makeSummary({ status: "failed", failureKind: "boom" }))).toBe("boom");
+  });
+
+  it("returns undefined for a clean (non-failed) run", () => {
+    expect(composeFailureDetail(makeSummary())).toBeUndefined();
+  });
+});
+
+describe("buildRootSpanAttributes failure detail", () => {
+  it("emits the error message and failover attributes when present", () => {
+    const attrs = buildRootSpanAttributes(
+      makeSummary({
+        status: "failed",
+        failureKind: "provider_unavailable_exhausted",
+        error: "503 Service Unavailable",
+        failoverHistory: [
+          { model: "pi:openai-codex:gpt-5.5", subkind: "timeout" },
+          { model: "pi:opencode-go:kimi-k2.6", subkind: "server_error", requestId: "abc123" },
+        ],
+      }),
+      makeContext(),
+      0,
+    );
+    expect(attrs["mono.agent.error.message"]).toBe("503 Service Unavailable");
+    expect(attrs["mono.agent.failover.count"]).toBe(2);
+    expect(attrs["mono.agent.failover.detail"]).toBe(
+      "pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 → server_error (req abc123)",
+    );
+  });
+
+  it("omits failure-detail attributes for a clean run", () => {
+    const attrs = buildRootSpanAttributes(makeSummary(), makeContext(), 0);
+    expect(attrs).not.toHaveProperty("mono.agent.error.message");
+    expect(attrs).not.toHaveProperty("mono.agent.failover.count");
+    expect(attrs).not.toHaveProperty("mono.agent.failover.detail");
   });
 });
