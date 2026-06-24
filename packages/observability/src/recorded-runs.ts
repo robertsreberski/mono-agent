@@ -18,6 +18,7 @@ import {
 } from "./artifact-fs.js";
 import { buildEventDescriptors, classifyRecordedRunEvent } from "./event-classify.js";
 import { redactJsonValue } from "./recorder.js";
+import { normalizeFailoverHistory } from "./run-export-mapping.js";
 import type {
   JsonlRunReaderOptions,
   RecordedRunDetail,
@@ -321,6 +322,8 @@ function coerceRunSummary(
   }
 
   const failureKind = stringField(value, "failureKind");
+  const error = stringField(value, "error");
+  const failoverHistory = normalizeFailoverHistory(value.failoverHistory);
   const startedAt = stringField(value, "startedAt");
   const endedAt = stringField(value, "endedAt");
   const updatedAt = stringField(value, "updatedAt");
@@ -331,6 +334,8 @@ function coerceRunSummary(
     conversationId,
     status,
     ...(failureKind === undefined ? {} : { failureKind }),
+    ...(error === undefined ? {} : { error: redactJsonValue(error, maxStringBytes) as string }),
+    ...(failoverHistory === undefined ? {} : { failoverHistory }),
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(endedAt === undefined ? {} : { endedAt }),
     ...(updatedAt === undefined ? {} : { updatedAt }),
@@ -353,6 +358,8 @@ function summaryToListItem(summary: RunSummary, updatedAt: string, maxStringByte
     conversationId: summary.conversationId,
     status: summary.status,
     ...(summary.failureKind === undefined ? {} : { failureKind: summary.failureKind }),
+    ...(summary.error === undefined ? {} : { error: summary.error }),
+    ...(summary.failoverHistory === undefined ? {} : { failoverHistory: summary.failoverHistory }),
     ...(summary.startedAt === undefined ? {} : { startedAt: summary.startedAt }),
     ...(summary.endedAt === undefined ? {} : { endedAt: summary.endedAt }),
     durationMs: summary.durationMs,
