@@ -64,6 +64,13 @@ export interface AgentHarness {
   submit?(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
   /** Abort the in-flight turn for a conversation and clear its queued follow-ups. */
   cancel?(conversationId: string, reason?: unknown): void;
+  /**
+   * Record a message posted VERBATIM into `conversationId` by a channel (native
+   * cron/webhook notification) without running a turn: append it to durable
+   * history and retire any warm provider session so a later reply cold-loads the
+   * delivered message into context. No model call.
+   */
+  appendVerbatimTurn?(conversationId: string, text: string): Promise<void>;
   /** Retire all live provider sessions (graceful shutdown). */
   dispose?(): Promise<void>;
 }

@@ -20,6 +20,8 @@ export interface CronJobConfig {
   readonly prompt: string;
   readonly conversationId?: string;
   readonly maxRunMs?: number;
+  readonly notify?: boolean;
+  readonly notifyConversationId?: string;
 }
 
 export interface CronAdapterConfig {
@@ -86,6 +88,8 @@ function loadConfigJobs(
     throw invalidConfig("Cron prompt is required when cron is configured.");
   }
   const conversationId = normalizeOptionalString(layered.MONO_AGENT_CRON_CONVERSATION_ID);
+  const notify = readBoolean(layered.MONO_AGENT_CRON_NOTIFY, "MONO_AGENT_CRON_NOTIFY", false, invalidConfig);
+  const notifyConversationId = normalizeOptionalString(layered.MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID);
   return [{
     id: DEFAULT_JOB_ID,
     enabled,
@@ -93,6 +97,8 @@ function loadConfigJobs(
     timezone: normalizeOptionalString(layered.MONO_AGENT_CRON_TIMEZONE) ?? DEFAULT_TIMEZONE,
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
+    ...(notify ? { notify } : {}),
+    ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
   }];
 }
 
@@ -157,6 +163,8 @@ export function toCronJobs(config: CronAdapterConfig): CronJob[] {
       prompt: job.prompt,
       ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
       ...(job.maxRunMs === undefined ? {} : { maxRunMs: job.maxRunMs }),
+      ...(job.notify === undefined ? {} : { notify: job.notify }),
+      ...(job.notifyConversationId === undefined ? {} : { notifyConversationId: job.notifyConversationId }),
     }));
 }
 
@@ -195,6 +203,8 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
   }
   const conversationId = asOptionalString(entry.conversationId);
   const maxRunMs = asOptionalPositiveInteger(entry.maxRunMs, "cron.jobs[].maxRunMs", { index });
+  const notify = asOptionalBoolean(entry.notify, "cron.jobs[].notify", { index });
+  const notifyConversationId = asOptionalString(entry.notifyConversationId);
   return {
     id,
     enabled: typeof entry.enabled === "boolean" ? entry.enabled : true,
@@ -203,6 +213,8 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
     ...(maxRunMs === undefined ? {} : { maxRunMs }),
+    ...(notify === undefined ? {} : { notify }),
+    ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
   };
 }
 
@@ -217,6 +229,8 @@ function layerCronJsonOntoEnv(
     { env: "MONO_AGENT_CRON_TIMEZONE", value: section.timezone },
     { env: "MONO_AGENT_CRON_PROMPT", value: section.prompt },
     { env: "MONO_AGENT_CRON_CONVERSATION_ID", value: section.conversationId },
+    { env: "MONO_AGENT_CRON_NOTIFY", value: section.notify, kind: "boolean" },
+    { env: "MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID", value: section.notifyConversationId },
   ]);
 }
 
@@ -235,6 +249,20 @@ function asOptionalPositiveInteger(
   }
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw invalidConfig(`${field} must be a positive integer number of milliseconds.`, { ...details, value });
+  }
+  return value;
+}
+
+function asOptionalBoolean(
+  value: unknown,
+  field: string,
+  details: Record<string, unknown>,
+): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw invalidConfig(`${field} must be a boolean.`, { ...details, value });
   }
   return value;
 }

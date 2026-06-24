@@ -33,6 +33,8 @@ describe("parseCronJobMarkdown", () => {
         "enabled: true",
         "conversationId: digest-thread",
         "maxRunMs: 2700000",
+        "notify: true",
+        "notifyConversationId: telegram:42",
         "---",
         "",
         "Summarize yesterday and post the digest.",
@@ -48,6 +50,8 @@ describe("parseCronJobMarkdown", () => {
       prompt: "Summarize yesterday and post the digest.\nKeep it under five bullet points.",
       conversationId: "digest-thread",
       maxRunMs: 2_700_000,
+      notify: true,
+      notifyConversationId: "telegram:42",
     });
   });
 
@@ -94,6 +98,12 @@ describe("parseCronJobMarkdown", () => {
   it("rejects a non-boolean enabled value", () => {
     expect(() => parseCronJobMarkdown("x.md", "---\nexpression: 0 0 * * *\nenabled: maybe\n---\nBody.")).toThrowError(
       /enabled/u,
+    );
+  });
+
+  it("rejects a non-boolean notify value", () => {
+    expect(() => parseCronJobMarkdown("x.md", "---\nexpression: 0 0 * * *\nnotify: maybe\n---\nBody.")).toThrowError(
+      /notify/u,
     );
   });
 

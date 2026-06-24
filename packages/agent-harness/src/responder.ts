@@ -60,6 +60,11 @@ export function createAgentResponder(options: {
       // session key the in-flight turn is using.
       options.harness.cancel?.(bucket(conversationId), reason);
     },
+    async deliverVerbatim(conversationId: string, text: string): Promise<void> {
+      // Bucket identically to respond() so the verbatim post lands under the same
+      // history/session key a later reply on this conversation will resume.
+      await options.harness.appendVerbatimTurn?.(bucket(conversationId), text);
+    },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       const runtimeEventStream = createRuntimeEventStream(stream);
       const response = await invoke({

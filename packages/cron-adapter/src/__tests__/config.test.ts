@@ -64,7 +64,16 @@ describe("loadCronAdapterConfig", () => {
       `${JSON.stringify({
         cron: {
           jobs: [
-            { id: "daily", enabled: true, expression: "0 9 * * *", timezone: "UTC", prompt: "Morning summary.", maxRunMs: 2_700_000 },
+            {
+              id: "daily",
+              enabled: true,
+              expression: "0 9 * * *",
+              timezone: "UTC",
+              prompt: "Morning summary.",
+              maxRunMs: 2_700_000,
+              notify: true,
+              notifyConversationId: "telegram:42",
+            },
             { id: "weekly", enabled: false, expression: "0 9 * * 1", prompt: "Weekly recap.", conversationId: "cron-weekly" },
           ],
         },
@@ -75,7 +84,16 @@ describe("loadCronAdapterConfig", () => {
     const config = await loadCronAdapterConfig({ env: {}, jsonPath: path });
 
     expect(config.jobs).toEqual([
-      { id: "daily", enabled: true, expression: "0 9 * * *", timezone: "UTC", prompt: "Morning summary.", maxRunMs: 2_700_000 },
+      {
+        id: "daily",
+        enabled: true,
+        expression: "0 9 * * *",
+        timezone: "UTC",
+        prompt: "Morning summary.",
+        maxRunMs: 2_700_000,
+        notify: true,
+        notifyConversationId: "telegram:42",
+      },
       { id: "weekly", enabled: false, expression: "0 9 * * 1", timezone: "UTC", prompt: "Weekly recap.", conversationId: "cron-weekly" },
     ]);
   });
@@ -130,15 +148,39 @@ describe("loadCronAdapterConfig", () => {
     const config = await loadCronAdapterConfig({
       env: {
         MONO_AGENT_CRON_JOBS_JSON: JSON.stringify([
-          { id: "one", enabled: true, expression: "*/5 * * * *", prompt: "one" },
+          { id: "one", enabled: true, expression: "*/5 * * * *", prompt: "one", notify: true, notifyConversationId: "slack:C1" },
           { id: "two", enabled: false, expression: "0 0 * * *", prompt: "two" },
         ]),
       },
     });
 
     expect(config.jobs).toEqual([
-      { id: "one", enabled: true, expression: "*/5 * * * *", timezone: "UTC", prompt: "one" },
+      { id: "one", enabled: true, expression: "*/5 * * * *", timezone: "UTC", prompt: "one", notify: true, notifyConversationId: "slack:C1" },
       { id: "two", enabled: false, expression: "0 0 * * *", timezone: "UTC", prompt: "two" },
+    ]);
+  });
+
+  it("loads native notify settings from single-job env fields", async () => {
+    const config = await loadCronAdapterConfig({
+      env: {
+        MONO_AGENT_CRON_ENABLED: "true",
+        MONO_AGENT_CRON_EXPRESSION: "0 8 * * *",
+        MONO_AGENT_CRON_PROMPT: "brief",
+        MONO_AGENT_CRON_NOTIFY: "true",
+        MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID: "telegram:42",
+      },
+    });
+
+    expect(config.jobs).toEqual([
+      {
+        id: "default",
+        enabled: true,
+        expression: "0 8 * * *",
+        timezone: "UTC",
+        prompt: "brief",
+        notify: true,
+        notifyConversationId: "telegram:42",
+      },
     ]);
   });
 });
@@ -157,13 +199,32 @@ describe("toCronJobs", () => {
   it("drops disabled jobs and maps to the runtime CronJob shape", () => {
     const jobs = toCronJobs({
       jobs: [
-        { id: "on", enabled: true, expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1", maxRunMs: 45_000 },
+        {
+          id: "on",
+          enabled: true,
+          expression: "* * * * *",
+          timezone: "UTC",
+          prompt: "run",
+          conversationId: "c1",
+          maxRunMs: 45_000,
+          notify: true,
+          notifyConversationId: "telegram:42",
+        },
         { id: "off", enabled: false, expression: "0 0 * * *", timezone: "UTC", prompt: "skip" },
       ],
     });
 
     expect(jobs).toEqual([
-      { id: "on", expression: "* * * * *", timezone: "UTC", prompt: "run", conversationId: "c1", maxRunMs: 45_000 },
+      {
+        id: "on",
+        expression: "* * * * *",
+        timezone: "UTC",
+        prompt: "run",
+        conversationId: "c1",
+        maxRunMs: 45_000,
+        notify: true,
+        notifyConversationId: "telegram:42",
+      },
     ]);
     expect(jobs.some((job) => job.id === "off")).toBe(false);
   });

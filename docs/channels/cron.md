@@ -10,11 +10,17 @@ The cron channel fires scheduled prompts at the agent's responder on a timezone-
 
 ## What a cron job is
 
-Each tick invokes the responder with the job's `prompt` text, exactly as if a message arrived on a channel. The result is produced inside the agent process. If you want a tick to *deliver* output somewhere, you have two mechanisms (both in [Delivery & send tools](/channels/delivery-and-send-tools/)): a **send tool** (`slack_send_message` / `telegram_send_message`) posts into a channel, while the **notify tools** deliver a remembered turn into a conversation.
+Each tick invokes the responder with the job's `prompt` text, exactly as if a message arrived on a channel. The result is produced inside the agent process. If you want a scheduled message to reach the user, prefer native cron notification with `notify: true`: the agent writes the final answer once, and the app delivers it to a Telegram or Slack conversation after the run succeeds.
 
 ### Proactive delivery from a cron turn
 
-A cron turn automatically gets the `notify_conversation(conversationId, text)` and `list_notify_destinations()` tools — injected only on cron/webhook turns, and not gated by `tools.allowedTools`. `notify_conversation` runs `text` as a real turn on the destination channel's own live session (so the conversation remembers it, unlike a side-channel post); `list_notify_destinations()` discovers where to reach the user when the job has no destination in hand. Delivery is bounded by the destination channel's allowlist; Telegram and Slack are supported. See [Proactive notify tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
+Set `notify: true` on a job to deliver its successful, non-empty final answer to a Telegram or Slack conversation. The agent's **final answer is posted verbatim** — no second LLM turn — and recorded into the destination's history, so a user's reply resumes with it in context. The operator just writes the prompt; on a notify turn the harness auto-injects guidance telling the agent that its final reply is delivered as-is and how to stay silent.
+
+**Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, or `slack:C123:1718.99` for a Slack thread). If it is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist). With 0 or 2+ candidates, delivery is skipped with a warning — it never guesses. Delivery is best-effort: a failed notification does not change the cron job result.
+
+**Staying silent.** To send nothing for this tick, have the agent produce an **empty final answer** or reply with exactly the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed, case-insensitive). In either case no notification is sent.
+
+Notifying **multiple** or **other** conversations from one trigger is not a built-in: compose it from several cron jobs, each with its own `notifyConversationId`, or from a skill.
 
 ## Configuration
 
@@ -29,7 +35,9 @@ A cron turn automatically gets the `notify_conversation(conversationId, text)` a
         "expression": "0 9 * * *",
         "timezone": "UTC",
         "prompt": "Post the morning summary.",
-        "conversationId": "cron-daily"
+        "conversationId": "cron-daily",
+        "notify": true,
+        "notifyConversationId": "telegram:42"
       }
     ]
   }
@@ -46,6 +54,9 @@ A cron turn automatically gets the `notify_conversation(conversationId, text)` a
 | `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in. |
 | `jobs[].prompt` | string | yes | — | Text sent to the responder on each tick. |
 | `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below). |
+| `jobs[].maxRunMs` | number | no | `1200000` | Per-job watchdog in milliseconds. |
+| `jobs[].notify` | boolean | no | `false` | Deliver the successful final answer via native cron notification. |
+| `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. |
 
 ## Environment variables
 
@@ -53,7 +64,7 @@ A cron turn automatically gets the `notify_conversation(conversationId, text)` a
 | --- | --- | --- |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
-| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (`id`, `expression`, `timezone`, `prompt`, `conversationId`). |
+| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (`id`, `expression`, `timezone`, `prompt`, `conversationId`, `notify`, `notifyConversationId`). |
 
 See [Environment variables](/config/env-vars/) for the full precedence rules.
 
@@ -68,8 +79,10 @@ enabled: true
 expression: "0 7 * * *"
 timezone: "Europe/Rome"
 conversationId: cron-digest
+notify: true
+notifyConversationId: telegram:42
 ---
-Summarize yesterday's unread items and post the digest.
+Summarize yesterday's unread items. Your final answer is delivered verbatim; reply NOTHING_TO_REPORT if there is nothing new.
 ```
 
 :::caution
@@ -90,11 +103,11 @@ Pick an `expression` whose interval comfortably exceeds the job's typical runtim
 
 Skip-on-overlap protects against a *still-running* prior tick. A separate watchdog protects against a *wedged* one. If a run never settles (a hung responder, a stuck provider call), it would otherwise hold the job's slot forever and skip **every** future firing as "a prior run is still active." To prevent that, the cron channel runs each job under a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time is aborted and its slot reclaimed, so the next tick can fire.
 
-The watchdog is **per job** — a wedged job does not affect its siblings — and is comfortably above any real briefing/scan. It is set by the cron channel and can only be changed **programmatically** (the `maxRunMs` override on `startCronAdapter`); there is no `mono-agent.config.json` key for it. An aborted run is recorded with an `interrupted` status — see [Run artifacts & traces](/observability/artifacts-and-traces/).
+The watchdog is **per job** — a wedged job does not affect its siblings — and is comfortably above any real briefing/scan. Set `jobs[].maxRunMs` (or `maxRunMs` frontmatter) to override the default for a specific job. Programmatic callers can still set `maxRunMs` on `startCronAdapter` as the adapter-level fallback. An aborted run is recorded with an `interrupted` status — see [Run artifacts & traces](/observability/artifacts-and-traces/).
 
 ## Sharing memory and history with `conversationId`
 
-Each tick defaults to its own ephemeral context. Set a stable `conversationId` to make every tick of a job land in the same conversation thread, so the job accumulates history and shares memory across runs — useful for digests that should not repeat themselves or jobs that build on prior state. Two jobs that set the same `conversationId` will share that thread.
+Each tick defaults to its own ephemeral context. Set a stable `conversationId` to make every tick of a job land in the same run-history thread, so the job accumulates history and shares memory across runs — useful for digests that should not repeat themselves or jobs that build on prior state. This is not the notification destination; use `notifyConversationId` for that. Two jobs that set the same `conversationId` will share that thread.
 
 See [Sessions & concurrency](/runtime/sessions-concurrency/) for how conversations map to provider sessions.
 

@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { AgentAttachment } from "@mono-agent/agent-contracts";
+import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
 import { loadContextFromFiles, loadSkillIndexFromDirectory } from "@mono-agent/context";
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono-agent/context";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
@@ -41,6 +42,14 @@ export class AgentHarnessError extends Error {
     this.details = details;
   }
 }
+
+/**
+ * The synthetic "user" turn recorded alongside a verbatim notification so durable
+ * history keeps role alternation and a resumed session reads the delivery as the
+ * assistant's own prior message. Never shown to the user; it only frames the
+ * delivered text for a later reply.
+ */
+const VERBATIM_DELIVERY_STIMULUS = "[A scheduled or triggered task produced the message below, delivered to you proactively.]";
 
 export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
@@ -98,6 +107,36 @@ export class MonoAgentHarness implements AgentHarness {
 
   cancel(conversationId: string, reason?: unknown): void {
     this.liveSessionManager?.cancel(conversationId, reason);
+  }
+
+  /**
+   * Record a message a channel posted VERBATIM into `conversationId` (native
+   * cron/webhook notification) without running a turn, so a later user reply
+   * resumes with the delivered message in context. Two effects, in this order:
+   *  1. evict any WARM provider session for the conversation — that session
+   *     bypassed the model so it does not know about this post, and a reply
+   *     would otherwise omit history (`omitHistory` is true while warm). Doing it
+   *     FIRST means a reply that cold-loads after this returns reads the history
+   *     appended below. Best-effort: a failed eviction (which only leaves a warm
+   *     session that idles out) must not block the durable record.
+   *  2. append it to durable history (a synthetic trigger turn + the assistant
+   *     text) — the cold-start source `prepareContext` replays.
+   * Same-conversation replies are serialized with this call by the channel's
+   * per-conversation admission queue, so none can acquire the session between the
+   * evict and the append. No model call; memory capture is deliberately skipped
+   * (a delivered notification is conversation history, not a recall-worthy fact).
+   */
+  async appendVerbatimTurn(conversationId: string, text: string): Promise<void> {
+    try {
+      await this.sessionStore?.evict(conversationId, "stale");
+    } catch {
+      // Eviction is best-effort; the durable history append below is what matters.
+    }
+    const timestamp = this.options.now?.().toISOString() ?? new Date().toISOString();
+    await this.options.historyStore?.append(conversationId, [
+      { role: "user", content: VERBATIM_DELIVERY_STIMULUS, timestamp },
+      { role: "assistant", content: text, timestamp },
+    ]);
   }
 
   async run(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
@@ -427,7 +466,7 @@ export class MonoAgentHarness implements AgentHarness {
     const context = await loadContextFromFiles({
       identityPath: this.options.identityPath,
       userMessage: request.userMessage,
-      session: sessionContextBlock(request.conversationId),
+      session: sessionContextBlock(request.conversationId, request.metadata),
       ...(this.options.soulPath === undefined ? {} : { soulPath: this.options.soulPath }),
       ...(history.length === 0 ? {} : { history }),
       ...(this.options.skillsRoot !== undefined
@@ -946,7 +985,7 @@ function responseMetadata(
  * conversation cannot itself receive a proactive follow-up. The daily-rollover
  * bucket suffix is stripped so the id is the stable, deliverable one.
  */
-function sessionContextBlock(conversationId: string): string {
+function sessionContextBlock(conversationId: string, metadata?: Record<string, unknown>): string {
   const baseId = conversationId.replace(/#\d{4}-\d{2}-\d{2}$/u, "");
   const deliverable = baseId.startsWith("telegram:") || baseId.startsWith("slack:");
   if (deliverable) {
@@ -955,11 +994,38 @@ function sessionContextBlock(conversationId: string): string {
       `If you start a long-running external operation and want its result delivered back to THIS conversation later, have the service include \`"conversationId": "${baseId}"\` in the JSON body of its callback to your inbound webhook — the follow-up will be routed here.`,
     ].join("\n\n");
   }
+  const base = `You are currently handling the conversation \`${baseId}\`. This is a request-driven run (scheduled, webhook, or API) with no interactive user attached to this conversation.`;
+  const notifyGuidance = notifyDeliveryGuidance(metadata);
+  return notifyGuidance === undefined ? base : `${base}\n\n${notifyGuidance}`;
+}
+
+/**
+ * Guidance for a notify-enabled cron/webhook turn (its trigger metadata carries
+ * `nativeNotify.enabled`): the agent's final reply is delivered to the user
+ * VERBATIM by the host, so it should read as the finished message and there is no
+ * tool to call. Returns undefined for any non-notify turn.
+ */
+function notifyDeliveryGuidance(metadata: Record<string, unknown> | undefined): string | undefined {
+  if (metadata === undefined || !(nativeNotifyEnabled(metadata.cron) || nativeNotifyEnabled(metadata.webhook))) {
+    return undefined;
+  }
   return [
-    `You are currently handling the conversation \`${baseId}\`.`,
-    `This conversation cannot itself receive a proactive follow-up — only \`telegram:\`/\`slack:\` conversations are valid \`notify_conversation\` destinations (use \`list_notify_destinations\` to find one).`,
-    `When you deliver via \`notify_conversation\`, the destination runs your \`text\` as a turn and ITS reply is what the user sees — \`text\` is not posted verbatim. To deliver exact or pre-composed content, make \`text\` a reply instruction (e.g. \`Reply with the text below exactly as written, calling no tools: …\`); do not also have the destination send it with its own tools, or it posts twice.`,
+    "This run was triggered on a schedule or by a webhook, and your final reply is delivered to the user on their channel exactly as you write it.",
+    "Write your final message as the finished notification: no preface, no meta-commentary, no narration of your steps, and do NOT call any tool to send it — delivery is automatic and posts your reply verbatim.",
+    `If there is nothing worth telling the user, reply with exactly \`${NOTHING_TO_REPORT_SENTINEL}\` and nothing else; no notification is sent.`,
   ].join("\n\n");
+}
+
+function nativeNotifyEnabled(trigger: unknown): boolean {
+  if (typeof trigger !== "object" || trigger === null) {
+    return false;
+  }
+  const nativeNotify = (trigger as { nativeNotify?: unknown }).nativeNotify;
+  return (
+    typeof nativeNotify === "object" &&
+    nativeNotify !== null &&
+    (nativeNotify as { enabled?: unknown }).enabled === true
+  );
 }
 
 function runtimeMetadata(result: RuntimeResult): Record<string, unknown> {

@@ -88,6 +88,8 @@ export function parseWebhookEndpointMarkdown(
   const name = normalizeOptionalString(meta.name) ?? stripMarkdownExtension(fileName);
   const mode = normalizeMode(meta.mode, fileName) ?? defaultMode;
   const enabled = readBoolean(meta.enabled, `${fileName} frontmatter \`enabled\``, true, invalidConfig);
+  const notify = readBoolean(meta.notify, `${fileName} frontmatter \`notify\``, false, invalidConfig);
+  const notifyConversationId = normalizeOptionalString(meta.notifyConversationId);
   const prompt = body.trim().length === 0 ? undefined : body.trim();
 
   return {
@@ -95,6 +97,8 @@ export function parseWebhookEndpointMarkdown(
     path,
     mode,
     enabled,
+    ...(notify ? { notify } : {}),
+    ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
     ...(prompt === undefined ? {} : { prompt }),
   };
 }

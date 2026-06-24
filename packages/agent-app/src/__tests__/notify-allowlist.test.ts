@@ -31,7 +31,14 @@ describe("telegram proactive notify allowlist", () => {
     const running = await telegramDriver(notify).start(startInput(config({})));
     const result = await running.notify!({ conversationId: "telegram:42", text: "hi" });
     expect(result).toEqual({ delivered: true });
-    expect(notify).toHaveBeenCalledWith(42, "hi");
+    expect(notify).toHaveBeenCalledWith(42, "hi", undefined);
+  });
+
+  it("forwards the verbatim flag to the adapter", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const running = await telegramDriver(notify).start(startInput(config({})));
+    await running.notify!({ conversationId: "telegram:42", text: "hi", verbatim: true });
+    expect(notify).toHaveBeenCalledWith(42, "hi", { verbatim: true });
   });
 
   it("surfaces a delivered:false outcome when the adapter cannot deliver (e.g. queue full)", async () => {
@@ -39,7 +46,7 @@ describe("telegram proactive notify allowlist", () => {
     const running = await telegramDriver(notify).start(startInput(config({})));
     const result = await running.notify!({ conversationId: "telegram:42", text: "hi" });
     expect(result).toEqual({ delivered: false, reason: "chat at concurrency cap" });
-    expect(notify).toHaveBeenCalledWith(42, "hi");
+    expect(notify).toHaveBeenCalledWith(42, "hi", undefined);
   });
 
   it("rejects a chat that is not in the allowlist", async () => {
@@ -92,7 +99,14 @@ describe("slack proactive notify allowlist", () => {
     const running = await slackDriver(notify).start(startInput(config({ allowedChannelIds: ["c1"] })));
     const result = await running.notify!({ conversationId: "slack:C1", text: "hi" });
     expect(result).toEqual({ delivered: true });
-    expect(notify).toHaveBeenCalledWith("C1", undefined, "hi");
+    expect(notify).toHaveBeenCalledWith("C1", undefined, "hi", undefined);
+  });
+
+  it("forwards the verbatim flag to the adapter", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const running = await slackDriver(notify).start(startInput(config({})));
+    await running.notify!({ conversationId: "slack:C1", text: "hi", verbatim: true });
+    expect(notify).toHaveBeenCalledWith("C1", undefined, "hi", { verbatim: true });
   });
 
   it("surfaces a delivered:false outcome when the adapter cannot deliver (e.g. queue full)", async () => {
@@ -100,6 +114,6 @@ describe("slack proactive notify allowlist", () => {
     const running = await slackDriver(notify).start(startInput(config({})));
     const result = await running.notify!({ conversationId: "slack:C1", text: "hi" });
     expect(result).toEqual({ delivered: false, reason: "conversation at concurrency cap" });
-    expect(notify).toHaveBeenCalledWith("C1", undefined, "hi");
+    expect(notify).toHaveBeenCalledWith("C1", undefined, "hi", undefined);
   });
 });

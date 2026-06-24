@@ -91,6 +91,33 @@ describe("createTelegramBot notify (proactive)", () => {
     });
   });
 
+  it("verbatim mode posts the text as-is without running a turn and records it to history", async () => {
+    let responded = false;
+    const verbatimCalls: Array<[string, string]> = [];
+    const responder: AgentResponder = {
+      async respond() {
+        responded = true;
+        return { text: "should not run" };
+      },
+      async deliverVerbatim(conversationId, text) {
+        verbatimCalls.push([conversationId, text]);
+      },
+    };
+    const { controller, calls } = buildNotifiableBot(responder);
+
+    const result = await controller.notify(42, "Your morning brief: all clear.", { verbatim: true });
+
+    expect(result).toEqual({ delivered: true });
+    // No model turn ran — the body is posted through the normal stream (markdown
+    // rendering still applies, so punctuation may be MarkdownV2-escaped).
+    expect(responded).toBe(false);
+    const sent = calls.filter((call) => call.method === "sendMessage");
+    expect(sent).toHaveLength(1);
+    expect(String(sent.at(-1)?.payload.text)).toContain("Your morning brief");
+    // The UNrendered body is recorded to history so a later reply resumes with it in context.
+    expect(verbatimCalls).toEqual([["telegram:42", "Your morning brief: all clear."]]);
+  });
+
   it("posts nothing (and reports the reason) when the proactive turn produces no answer", async () => {
     const responder: AgentResponder = {
       async respond() {

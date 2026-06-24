@@ -45,6 +45,8 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `retentionMs` | integer | `300000` | How long async run statuses are retained (min 1, max 86_400_000). |
 | `maxStoredRequests` | integer | `100` | Max async statuses kept before pruning (min 1, max 10_000). Async only. |
 | `prompt` | string | — | Pre-instructions prepended to the request text (see [Prompts](#endpoint-prompts)). |
+| `notify` | boolean | `false` | Deliver the successful final answer via native notification. |
+| `notifyConversationId` | string | inferred if exactly one destination | Destination conversation id for native notification. |
 | `endpoints` | array | — | Multiple named endpoints — see [Multiple endpoints](#multiple-endpoints). |
 | `dir` | string | `webhook` | Folder of `*.md` endpoint files, resolved against the app working directory. |
 
@@ -85,15 +87,15 @@ curl -s http://127.0.0.1:<port>/webhook/invoke/status/<requestId>
 
 Async statuses are kept in memory subject to `retentionMs` and `maxStoredRequests`; a status URL polled after expiry returns `not_found`. If a turn is already running and the runtime cannot accept another, a request returns **HTTP 409** (`status: "busy"`) — that transient state is not stored or replayed via the status URL.
 
-## Proactive delivery and the async-callback pattern
+## Proactive delivery
 
-A webhook turn automatically gets the proactive `notify_conversation(conversationId, text)` and `list_notify_destinations()` tools — injected only on cron/webhook turns and not gated by `tools.allowedTools`. This makes the webhook the inbound half of an **async callback**:
+For a webhook endpoint that produces a user-facing result, set `notify: true` and optionally `notifyConversationId`. The agent's successful, non-empty **final answer is delivered verbatim** to the resolved Telegram/Slack conversation — no second LLM turn — and recorded into that conversation's history, so a user's reply resumes with it in context. This works for both **sync** and **async** endpoints: sync mode still returns the answer in the HTTP response, and `notify: true` *additionally* delivers it to the channel destination (async, via the post-run hook). Delivery is best-effort and does not change the sync HTTP response or the async stored status if it is skipped or fails.
 
-1. In a live chat (Telegram/Slack), the agent kicks off a long-running external operation and asks the service to call back later. It embeds the current conversation's id — surfaced in the [Session context block](/context/assembly/#session) — in the callback request.
-2. When the service finishes, it `POST`s to this webhook with that id carried in the body (e.g. `"conversationId"` or inside `metadata`).
-3. The webhook turn reads the id from the payload and calls `notify_conversation(conversationId, …)` to deliver the result **back into the original conversation** as a real, remembered turn — not a side-channel post.
+The operator just writes the endpoint prompt; on a notify turn the harness auto-injects guidance telling the agent its final reply is delivered as-is. To send nothing, the agent produces an **empty final answer** or replies with exactly the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed, case-insensitive).
 
-Because the destination id comes from the request payload, the security boundary is the **owning channel's allowlist**: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused. See [Proactive notify tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
+**Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, or `slack:C123:1718.99` for a Slack thread). If it is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist); with 0 or 2+ candidates it skips delivery with a warning rather than guessing. The allowlist is the destination boundary: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused.
+
+Notifying multiple or other conversations from one endpoint is not a built-in: compose it from a skill or from multiple endpoints, each with its own `notifyConversationId`.
 
 ## Multiple endpoints
 
@@ -110,7 +112,9 @@ You can serve several named endpoints on the **one** shared host/port, each with
         "name": "triage",
         "path": "/hooks/triage",
         "mode": "async",
-        "prompt": "You are triaging an inbound support ticket. Classify and summarize."
+        "prompt": "You are triaging an inbound support ticket. Classify and summarize.",
+        "notify": true,
+        "notifyConversationId": "slack:C012345"
       },
       {
         "name": "echo",
@@ -134,11 +138,13 @@ name: triage
 path: /hooks/triage
 mode: async
 enabled: true
+notify: true
+notifyConversationId: slack:C012345
 ---
 You are triaging an inbound support ticket. Classify it and summarize the next action.
 ```
 
-`path` is required in frontmatter; `name` defaults to the filename stem, `mode` to `defaultMode`, and `enabled` to `true`. Unlike [cron](/channels/cron/) jobs, the body may be empty (an endpoint with no prompt). Files are loaded in sorted filename order. This mirrors how cron jobs can be authored as `cron/*.md` files.
+`path` is required in frontmatter; `name` defaults to the filename stem, `mode` to `defaultMode`, `enabled` to `true`, and `notify` to `false`. Unlike [cron](/channels/cron/) jobs, the body may be empty (an endpoint with no prompt). Files are loaded in sorted filename order. This mirrors how cron jobs can be authored as `cron/*.md` files.
 
 ## Endpoint prompts
 
@@ -159,6 +165,8 @@ Every key has a `MONO_AGENT_WEBHOOK_*` override, which takes precedence over the
 | `MONO_AGENT_WEBHOOK_RETENTION_MS` | `webhook.retentionMs` |
 | `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS` | `webhook.maxStoredRequests` |
 | `MONO_AGENT_WEBHOOK_PROMPT` | `webhook.prompt` |
+| `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` |
+| `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID` | `webhook.notifyConversationId` |
 | `MONO_AGENT_WEBHOOK_DIR` | `webhook.dir` |
 | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | `webhook.endpoints` (JSON array string) |
 

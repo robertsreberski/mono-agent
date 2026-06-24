@@ -36,8 +36,15 @@ export interface NotifyDeliveryResult {
 export interface ProactiveNotifyInput {
   /** Destination conversationId, e.g. `telegram:42` or `slack:C1:171.5`. */
   readonly conversationId: string;
-  /** The framed nudge text to run as a turn on the destination's harness. */
+  /** The message to deliver. With `verbatim`, posted as-is; otherwise run as a turn. */
   readonly text: string;
+  /**
+   * Deliver `text` VERBATIM — post it to the destination unchanged with no model
+   * call, then record it to the conversation's history (native cron/webhook
+   * notification). Without it, `text` is a prompt run as a turn on the
+   * destination's harness (e.g. a Slack interactive trigger).
+   */
+  readonly verbatim?: boolean;
   /** Currently running channels, keyed by id (the app's live registry). */
   readonly running: ReadonlyMap<ChannelId, Pick<RunningChannel, "notify">>;
   readonly logger?: MonoAgentAppLogger;
@@ -69,7 +76,11 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
     return { delivered: false, reason: `${channelId} channel is not running or does not support proactive delivery` };
   }
   try {
-    return await channel.notify({ conversationId: input.conversationId, text: input.text });
+    return await channel.notify({
+      conversationId: input.conversationId,
+      text: input.text,
+      ...(input.verbatim === undefined ? {} : { verbatim: input.verbatim }),
+    });
   } catch (error) {
     const reason = reasonOf(error);
     input.logger?.warn?.("Proactive notification failed: destination channel notify threw.", {

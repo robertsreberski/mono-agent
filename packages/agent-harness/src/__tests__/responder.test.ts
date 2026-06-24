@@ -55,6 +55,27 @@ describe("createAgentResponder", () => {
     expect(calls).toEqual(["run"]);
   });
 
+  it("deliverVerbatim delegates to harness.appendVerbatimTurn under the same bucketed id as respond()", async () => {
+    const verbatim: Array<[string, string]> = [];
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+      appendVerbatimTurn: async (conversationId: string, text: string) => {
+        verbatim.push([conversationId, text]);
+      },
+    };
+    const responder = createAgentResponder({
+      harness,
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => new Date("2026-06-24T10:00:00Z"),
+    });
+
+    await responder.deliverVerbatim!("telegram:42", "Morning brief.");
+
+    // Bucketed identically to respond(), so a later reply resumes with it in context.
+    expect(verbatim).toEqual([["telegram:42#2026-06-24", "Morning brief."]]);
+  });
+
   it("streams each assistant text delta to stream.append in order (no batching)", async () => {
     const appended: string[] = [];
     const stream: AgentMessageStream = {

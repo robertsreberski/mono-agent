@@ -23,6 +23,8 @@ export interface WebhookEndpointConfig {
   readonly enabled: boolean;
   /** Pre-instructions prepended to the incoming request text. Same role as a cron job's prompt. */
   readonly prompt?: string;
+  readonly notify?: boolean;
+  readonly notifyConversationId?: string;
 }
 
 export interface WebhookAdapterConfig {
@@ -126,7 +128,9 @@ function loadConfigEndpoints(
   }
   const path = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_PATH);
   const prompt = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_PROMPT);
-  if (path === undefined && prompt === undefined) {
+  const notify = readBoolean(env.MONO_AGENT_WEBHOOK_NOTIFY, "MONO_AGENT_WEBHOOK_NOTIFY", false, invalidConfig);
+  const notifyConversationId = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID);
+  if (path === undefined && prompt === undefined && !notify && notifyConversationId === undefined) {
     return [];
   }
   return [{
@@ -135,6 +139,8 @@ function loadConfigEndpoints(
     mode: defaultMode,
     enabled: true,
     ...(prompt === undefined ? {} : { prompt }),
+    ...(notify ? { notify } : {}),
+    ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
   }];
 }
 
@@ -227,6 +233,8 @@ function normalizeEndpointConfig(
   const path = normalizePath(rawPath);
   const mode = readEndpointMode(entry.mode, index, defaultMode);
   const prompt = asOptionalString(entry.prompt);
+  const notify = asOptionalBoolean(entry.notify, "webhook.endpoints[].notify", { index });
+  const notifyConversationId = asOptionalString(entry.notifyConversationId);
   const name = asOptionalString(entry.name) ?? deriveEndpointName(path);
   const enabled = typeof entry.enabled === "boolean" ? entry.enabled : true;
   return {
@@ -235,6 +243,8 @@ function normalizeEndpointConfig(
     mode,
     enabled,
     ...(prompt === undefined ? {} : { prompt }),
+    ...(notify === undefined ? {} : { notify }),
+    ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
   };
 }
 
@@ -266,6 +276,8 @@ function layerWebhookJsonOntoEnv(
     { env: "MONO_AGENT_WEBHOOK_PORT", value: section.port, kind: "integer" },
     { env: "MONO_AGENT_WEBHOOK_PATH", value: section.path },
     { env: "MONO_AGENT_WEBHOOK_PROMPT", value: section.prompt },
+    { env: "MONO_AGENT_WEBHOOK_NOTIFY", value: section.notify, kind: "boolean" },
+    { env: "MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID", value: section.notifyConversationId },
     { env: "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", value: section.allowNonLoopback, kind: "boolean" },
     { env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", value: section.defaultMode },
     { env: "MONO_AGENT_WEBHOOK_RETENTION_MS", value: section.retentionMs, kind: "integer" },
@@ -276,6 +288,20 @@ function layerWebhookJsonOntoEnv(
 /** Trim a JSON value to a non-empty string, treating non-strings as absent. */
 function asOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? normalizeOptionalString(value) : undefined;
+}
+
+function asOptionalBoolean(
+  value: unknown,
+  field: string,
+  details: Record<string, unknown>,
+): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw invalidConfig(`${field} must be a boolean.`, { ...details, value });
+  }
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
