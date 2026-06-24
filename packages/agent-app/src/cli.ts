@@ -40,6 +40,7 @@ import { initMonoAgentFolder, isWithChannel } from "./init.js";
 import type { WithChannel } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
+import { runMetrics } from "./metrics.js";
 import { findRecipe, RECIPE_CATALOG, recipeIds, resolveRecipeInputs } from "./recipes/index.js";
 import type { AgentRecipe } from "./recipes/index.js";
 import { purgeSessions } from "./sessions.js";
@@ -53,7 +54,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs", "metrics"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -90,6 +91,8 @@ interface ParsedCliArgs {
   readonly dryRun: boolean;
   /** audit-runs: read this artifact directory directly. */
   readonly artifactDir?: string;
+  /** metrics: group totals by this summary dimension. */
+  readonly groupBy?: "model" | "channel" | "failureKind";
   /** validate/audit-runs: resolve config, env, artifacts, and checks relative to this consumer folder. */
   readonly consumerPath?: string;
   /** audit-runs: override the stale-running cutoff interval. */
@@ -128,6 +131,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let until: string | undefined;
   let dryRun = false;
   let artifactDir: string | undefined;
+  let groupBy: "model" | "channel" | "failureKind" | undefined;
   let consumerPath: string | undefined;
   let staleAfterMs: number | undefined;
   let json = false;
@@ -156,6 +160,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--artifact-dir":
         artifactDir = requireValue(rest, ++i, flag);
         break;
+      case "--artifacts":
+        artifactDir = requireValue(rest, ++i, flag);
+        break;
+      case "--by": {
+        const raw = requireValue(rest, ++i, flag);
+        if (raw !== "model" && raw !== "channel" && raw !== "failureKind") {
+          throw new Error("--by must be model, channel, or failureKind.");
+        }
+        groupBy = raw;
+        break;
+      }
       case "--consumer":
         consumerPath = requireValue(rest, ++i, flag);
         break;
@@ -272,6 +287,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(until === undefined ? {} : { until }),
     dryRun,
     ...(artifactDir === undefined ? {} : { artifactDir }),
+    ...(groupBy === undefined ? {} : { groupBy }),
     ...(consumerPath === undefined ? {} : { consumerPath }),
     ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
     ...(json ? { json } : {}),
@@ -420,6 +436,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "and per-failure-kind rates.",
     ],
   },
+  {
+    signature:
+      "mono-agent metrics [--artifacts <path>] [--since <iso>] [--until <iso>]\n" +
+      "                   [--by model|channel|failureKind] [--json] [--config <path>] [--env-file <path>]",
+    lines: [
+      "Aggregate local run summaries into status rates, failure-kind rates,",
+      "duration percentiles, and total/per-run cost. Read-only and offline.",
+    ],
+  },
 ];
 
 const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
@@ -508,6 +533,15 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.artifactDir === undefined ? {} : { artifactDir: args.artifactDir }),
         ...(args.consumerPath === undefined ? {} : { consumerPath: args.consumerPath }),
         ...(args.staleAfterMs === undefined ? {} : { staleAfterMs: args.staleAfterMs }),
+        json: args.json === true,
+      });
+    case "metrics":
+      return await runMetrics({
+        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
+        ...(args.artifactDir === undefined ? {} : { artifactDir: args.artifactDir }),
+        ...(args.since === undefined ? {} : { since: args.since }),
+        ...(args.until === undefined ? {} : { until: args.until }),
+        ...(args.groupBy === undefined ? {} : { groupBy: args.groupBy }),
         json: args.json === true,
       });
   }

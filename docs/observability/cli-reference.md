@@ -26,6 +26,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `install-skill` | Copy the bundled `mono-agent-composer` skill into the agent skill folders. | `--target claude\|codex\|both`, `--force` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
+| `metrics` | Aggregate local run summaries into status rates, failure-kind rates, duration percentiles, and cost totals. | `--artifacts <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--json`, `--config <path>`, `--env-file <path>` |
 | `help` | Print the usage screen. | — |
 
 Every command is `cli` coverage. `start`, `restart`, `stop`, `status`, and `logs` are the background service commands; `start --foreground` is the cross-platform fallback. `stop`, `logs`, and `start --foreground` are real commands (they were absent from older feature listings).
@@ -256,6 +257,29 @@ mono-agent audit-runs --artifact-dir ./.mono-agent/artifacts --stale-after-ms 30
 ```
 
 The command only reads `*.summary.json` files. A malformed summary is reported as a parse failure, and a stale `running` summary is reported without being rewritten. Startup reconciliation is still the only path that changes stale `running` summaries to `interrupted`.
+
+## `metrics`
+
+Aggregates recorded run summary artifacts without exporting, reconciling, or rewriting anything. Use it when you need latency, cost, and failure-rate numbers over the whole local corpus or a time window.
+
+| Flag | Effect |
+| --- | --- |
+| `--artifacts <path>` | Read this artifact directory directly. Wins over config-based `artifacts.dir` resolution. |
+| `--config <path>` | Use a non-default config file when resolving `artifacts.dir`. |
+| `--env-file <path>` | Load env overrides before resolving `MONO_AGENT_ARTIFACT_DIR`. |
+| `--since <iso>` | Only summaries whose `startedAt` is at or after this ISO instant. |
+| `--until <iso>` | Only summaries whose `startedAt` is at or before this ISO instant. |
+| `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. |
+| `--json` | Print the full machine-readable metrics report. |
+
+```bash
+mono-agent metrics --artifacts ./.mono-agent/artifacts
+mono-agent metrics --by model --since 2026-06-01T00:00:00Z --json
+```
+
+The command reports total runs, status counts/rates, failure-kind rates, `durationMs` p50/p90/p99/max, and cost totals. Cost prefers `cost.cumulativeUsd`, then `cost.totalUsd`, then `usage.cost_usd`; malformed or redacted non-numeric values are ignored. Channel grouping is derived from the `conversationId` prefix before `:`, so treat it as best-effort until summaries persist a first-class channel field.
+
+See [Artifact metrics](/observability/artifact-metrics/) for the full report contract and window semantics.
 
 ## `backfill`
 

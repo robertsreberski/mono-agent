@@ -143,6 +143,33 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["audit-runs", "--stale-after-ms", "0"])).toThrow(/--stale-after-ms/u);
   });
 
+  it("parses metrics flags and rejects invalid grouping dimensions", () => {
+    expect(
+      parseCliArgs([
+        "metrics",
+        "--artifacts",
+        "./runs",
+        "--since",
+        "2026-06-01T00:00:00.000Z",
+        "--until",
+        "2026-06-30T00:00:00.000Z",
+        "--by",
+        "model",
+        "--json",
+      ]),
+    ).toMatchObject({
+      command: "metrics",
+      artifactDir: "./runs",
+      since: "2026-06-01T00:00:00.000Z",
+      until: "2026-06-30T00:00:00.000Z",
+      groupBy: "model",
+      json: true,
+    });
+    expect(parseCliArgs(["metrics", "--by", "channel"])).toMatchObject({ command: "metrics", groupBy: "channel" });
+    expect(parseCliArgs(["metrics", "--by", "failureKind"])).toMatchObject({ command: "metrics", groupBy: "failureKind" });
+    expect(() => parseCliArgs(["metrics", "--by", "status"])).toThrow(/--by/u);
+  });
+
   it("parses validate --consumer and keeps it validate/audit-runs scoped", () => {
     expect(parseCliArgs(["validate", "--consumer", "../personal-agent"])).toMatchObject({
       command: "validate",
