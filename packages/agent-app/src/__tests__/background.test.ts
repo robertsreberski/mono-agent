@@ -372,7 +372,7 @@ describe("statusBackground", () => {
       metadata: {
         reason: "startup-complete",
         context: {
-          selectedSkills: ["context-a8c", "todoist-cli"],
+          selectedSkills: ["context-example", "todoist-cli"],
         },
       },
     });
@@ -399,7 +399,7 @@ describe("statusBackground", () => {
 
     const stdout = harness.out.join("");
     expect(stdout).toContain("runs health");
-    expect(stdout).toContain("Active skills: context-a8c, todoist-cli.");
+    expect(stdout).toContain("Active skills: context-example, todoist-cli.");
     expect(stdout).toContain("Recorded runs: 12 total; showing 5 recent (max 50).");
     expect(stdout).toContain("Last runs: run-live running 5m ago");
     expect(stdout).toContain("Recent status counts: running=1, succeeded=0, failed=2, cancelled=1, interrupted=1.");

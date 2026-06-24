@@ -90,7 +90,7 @@ describe("printAppStatus exporter line", () => {
       fakeApp(
         { kind: "configured", endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false },
         undefined,
-        ["context-a8c", "todoist-cli"],
+        ["context-example", "todoist-cli"],
       ),
       [
         makeRun({
@@ -109,7 +109,7 @@ describe("printAppStatus exporter line", () => {
     );
 
     expect(out).toContain("runs health");
-    expect(out).toContain("Active skills: context-a8c, todoist-cli.");
+    expect(out).toContain("Active skills: context-example, todoist-cli.");
     expect(out).toContain("Recorded runs: 12 total; showing 2 recent (max 50).");
     expect(out).toContain("Last runs: run-usage failed 5m ago, run-ok succeeded 1m ago.");
     expect(out).toContain("[WARN] Failure kinds: usage_limit=1.");

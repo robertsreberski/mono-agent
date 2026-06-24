@@ -109,14 +109,14 @@ npm i -g @mono-agent/agent-app@0.4.0 @mono-agent/tui@0.4.0
 npm exec --package @mono-agent/agent-app@0.4.0 -- mono-agent init
 ```
 
-Review published version notes in [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases).
+Review published version notes in [GitHub Releases](https://github.com/example/mono-agent/releases).
 
 ## Run an unreleased build
 
 To run against unreleased changes (e.g. a feature branch), build the workspace from source and point `mono-agent` at the built CLI entry. This is the only path that needs pnpm `>=10`.
 
 ```bash
-git clone https://github.com/robertsreberski/mono-agent.git
+git clone https://github.com/example/mono-agent.git
 cd mono-agent
 pnpm install --frozen-lockfile
 pnpm run build

@@ -629,7 +629,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           const imageInlineMaxBytes = limits.imageInlineMaxBytes ?? MCP_IMAGE_INLINE_MAX_BYTES;
           const normalizedParams = normalizeMcpToolParams(serverName, sourceTool.name, params || {}, { qaOutputDir });
           // Measure the MCP round-trip so observability can separate slow MCP
-          // servers (e.g. context-a8c over a SOCKS proxy) from model latency.
+          // servers (e.g. context-example over a SOCKS proxy) from model latency.
           const mcpCallStartMs = Date.now();
           // The MCP SDK's per-request timeout defaults to 60s (DEFAULT_REQUEST_TIMEOUT_MSEC),
           // which would fire -32001 well before the outer withTimeout wall-clock cap — fatal for

@@ -81,8 +81,8 @@ describe("createPhoenixRunExporter", () => {
 
     const fromSource = capturingFetch();
     const b = createPhoenixRunExporter({ type: "phoenix" }, { fetch: fromSource.fetch, now: () => 1 });
-    await b.finish?.(summary, { ...baseCtx, sourceLabel: "Personal Agent" });
-    expect(fromSource.headers()["x-project-name"]).toBe("Personal Agent");
+    await b.finish?.(summary, { ...baseCtx, sourceLabel: "Local Agent Alpha" });
+    expect(fromSource.headers()["x-project-name"]).toBe("Local Agent Alpha");
   });
 
   it("is metadata-only by default: no raw secret in the posted bytes", async () => {

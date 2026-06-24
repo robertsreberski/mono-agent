@@ -153,7 +153,7 @@ describe("writeIndex", () => {
       id: "MEM1",
       type: "note",
       status: "open",
-      text: "Robert works best in the mornings",
+      text: "Morgan works best in the mornings",
       salience: 0.9,
       isInsight: false,
       createdAt: FIXED.toISOString(),
@@ -175,7 +175,7 @@ describe("writeIndex", () => {
       source: {},
     });
 
-    db.upsertEntity({ id: "person:robert", name: "Robert", type: "person", createdAt: FIXED.toISOString() });
+    db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: FIXED.toISOString() });
     db.upsertEntity({ id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: FIXED.toISOString() });
 
     writeIndex(root, db, FIXED);
@@ -189,11 +189,11 @@ describe("writeIndex", () => {
 
     // Must contain Top memories section with at least one memory.
     expect(content).toContain("## Top memories");
-    expect(content).toMatch(/Robert works best|mono-agent is a personal/u);
+    expect(content).toMatch(/Morgan works best|mono-agent is a personal/u);
 
     // Must contain Entities section with at least one entity.
     expect(content).toContain("## Entities");
-    expect(content).toMatch(/Robert \(person\)|mono-agent \(project\)/u);
+    expect(content).toMatch(/Morgan \(person\)|mono-agent \(project\)/u);
   });
 
   it("creates the root directory if it does not exist", () => {

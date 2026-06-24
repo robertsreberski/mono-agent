@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const defaultConsumerNames = ["personal-agent", "a8c-agent"];
+const defaultConsumerNames = ["local-agent-alpha", "local-agent-beta"];
 
 export function parseVerifyConsumersArgs(argv) {
   const consumers = [];
