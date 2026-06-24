@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { renderConfigView } from "../cli.js";
+import { describe, expect, it, vi } from "vitest";
+
+import { renderConfigView, runCli } from "../cli.js";
 import type { ConfigViewSection } from "@mono-agent/config";
 
 const sections: readonly ConfigViewSection[] = [
@@ -52,5 +56,66 @@ describe("renderConfigView", () => {
     ]);
     expect(out).toContain("(secret)");
     expect(out).not.toContain("sk-");
+  });
+});
+
+describe("runCli config", () => {
+  it("prints JSON-sourced secret warnings without leaking the value", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-app-cli-config-"));
+    const previousCwd = process.cwd();
+    const previousMonoAgentEnv = new Map<string, string>();
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("MONO_AGENT_")) {
+        previousMonoAgentEnv.set(key, process.env[key] ?? "");
+        delete process.env[key];
+      }
+    }
+
+    const chunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stdout.write);
+
+    try {
+      process.chdir(dir);
+      await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+      const configPath = join(dir, "mono-agent.config.json");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          runtime: { model: "pi:openai-codex:gpt-5.5" },
+          context: { identityPath: "./IDENTITY.md" },
+          memory: {
+            mode: "journal",
+            path: "./memory",
+            embeddings: {
+              provider: "openai",
+              model: "text-embedding-3-small",
+              apiKey: "sk-json-secret",
+            },
+          },
+        }, null, 2),
+      );
+
+      await expect(runCli(["config", "--config", configPath])).resolves.toBe(0);
+
+      const out = chunks.join("");
+      expect(out).toContain("[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json");
+      expect(out).toContain("MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY");
+      expect(out).not.toContain("sk-json-secret");
+    } finally {
+      stdoutSpy.mockRestore();
+      process.chdir(previousCwd);
+      for (const key of Object.keys(process.env)) {
+        if (key.startsWith("MONO_AGENT_")) {
+          delete process.env[key];
+        }
+      }
+      for (const [key, value] of previousMonoAgentEnv) {
+        process.env[key] = value;
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

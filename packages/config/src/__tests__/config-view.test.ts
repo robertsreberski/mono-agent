@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { loadMonoAgentConfig, redactMonoAgentConfig } from "../config.js";
-import { buildMonoAgentConfigView } from "../config-view.js";
+import { buildMonoAgentConfigView, findJsonSecretConfigWarnings } from "../config-view.js";
 import type { ConfigViewSection } from "../config-view.js";
 import type { MonoAgentConfigJson } from "../json-source.js";
+import { layerJsonOntoEnv } from "../layered-loader.js";
 
 const baseEnv: Record<string, string | undefined> = {
   MONO_AGENT_MODEL: "pi:ollama:qwen3:8b",
@@ -14,7 +15,7 @@ function buildView(
   env: Record<string, string | undefined>,
   json: MonoAgentConfigJson = {},
 ): readonly ConfigViewSection[] {
-  const config = loadMonoAgentConfig({ cwd: "/repo", env });
+  const config = loadMonoAgentConfig({ cwd: "/repo", env: layerJsonOntoEnv(json, env) });
   const redacted = redactMonoAgentConfig(config);
   return buildMonoAgentConfigView({ redacted, json, env });
 }
@@ -116,5 +117,59 @@ describe("buildMonoAgentConfigView", () => {
     const memory = section(sections, "memory");
     expect(memory.status).toBe("active");
     expect(field(sections, "memory.mode")).toMatchObject({ value: "lite", source: "env" });
+  });
+});
+
+describe("findJsonSecretConfigWarnings", () => {
+  it("warns for a JSON-sourced embeddings api key and names its env var", () => {
+    const warnings = findJsonSecretConfigWarnings(buildView(baseEnv, {
+      memory: {
+        mode: "journal",
+        path: "./memory",
+        embeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+          apiKey: "sk-json-secret",
+        },
+      },
+    }));
+
+    expect(warnings).toEqual([
+      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).",
+    ]);
+  });
+
+  it("does not warn when the embeddings api key is env-sourced", () => {
+    const warnings = findJsonSecretConfigWarnings(buildView({
+      ...baseEnv,
+      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "sk-env-secret",
+    }, {
+      memory: {
+        mode: "journal",
+        path: "./memory",
+        embeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+        },
+      },
+    }));
+
+    expect(warnings).toEqual([]);
+  });
+
+  it("warns for a JSON-sourced Supermemory api key and names its env var", () => {
+    const warnings = findJsonSecretConfigWarnings(buildView(baseEnv, {
+      memory: {
+        backend: "supermemory",
+        supermemory: {
+          baseUrl: "http://127.0.0.1:6767",
+          apiKey: "sm-json-secret",
+        },
+      },
+    }));
+
+    expect(warnings).toEqual([
+      "[WARN] memory.supermemory.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY).",
+    ]);
   });
 });

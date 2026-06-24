@@ -16,6 +16,8 @@ A `.env` file in the agent folder is loaded automatically by the CLI. Variables 
 
 :::caution
 Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked.
+
+`mono-agent config` and `mono-agent validate` warn when a secret-marked field is resolved from committed JSON and name the matching `MONO_AGENT_*` variable to move it to. The warning is advisory and non-fatal.
 :::
 
 :::note

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildMonoAgentConfigView,
+  findJsonSecretConfigWarnings,
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
 } from "@mono-agent/config";
@@ -697,6 +698,9 @@ async function runConfig(args: ParsedCliArgs): Promise<number> {
 
   process.stdout.write(ui.banner("mono-agent", "resolved config") + "\n");
   process.stdout.write(renderConfigView(sections));
+  for (const warning of findJsonSecretConfigWarnings(sections)) {
+    process.stdout.write(`${ui.style.yellow(warning)}\n`);
+  }
 
   const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false });
   const channels = report.sections.filter((section) => section.id.startsWith("channel:"));
