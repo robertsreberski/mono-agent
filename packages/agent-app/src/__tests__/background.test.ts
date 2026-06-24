@@ -333,6 +333,34 @@ describe("statusBackground", () => {
     expect(stdout).toContain("observability");
     expect(stdout).toContain("http://127.0.0.1:6006/v1/traces");
     expect(stdout).toContain("JSONL artifacts remain local");
+    expect(stdout).not.toContain("[WARN] includeSensitiveData=true");
+  });
+
+  it("prints a warning from persisted observability metadata when sensitive data export is enabled", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const endpoint = "http://127.0.0.1:6006/v1/traces";
+    const current = makeSource(target, {
+      metadata: {
+        reason: "startup-complete",
+        observability: {
+          endpoint,
+          includeSensitiveData: true,
+          jsonlArtifactsLocal: true,
+        },
+      },
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
+
+    await statusBackground(target, harness.deps);
+
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("[WARN] includeSensitiveData=true");
+    expect(stdout).toContain(endpoint);
+    expect(stdout).toContain("user input");
+    expect(stdout).toContain("assistant replies");
+    expect(stdout).toContain("tool args/results");
+    expect(stdout).toContain("system prompt");
   });
 
   it("returns non-zero when no instance is running for this config", async () => {

@@ -6,7 +6,12 @@ import process from "node:process";
 import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
-import { phoenixAppBaseUrl, resolveAppTraceRegistryDir, resolveAppTraceStaleAfterMs } from "./app-config.js";
+import {
+  describeSensitiveDataExportWarning,
+  phoenixAppBaseUrl,
+  resolveAppTraceRegistryDir,
+  resolveAppTraceStaleAfterMs,
+} from "./app-config.js";
 import {
   bootout,
   bootstrap,
@@ -458,7 +463,7 @@ function describeObservabilityMetadata(source: TraceSourceListItem): string | un
     parts.push(`app ${appUrl}`);
   }
   if (record.includeSensitiveData === true) {
-    parts.push("includeSensitiveData=true");
+    parts.push(ui.style.yellow(describeSensitiveDataExportWarning(endpoint)));
   }
   if (typeof record.lastWarning === "string" && record.lastWarning.length > 0) {
     parts.push(`last warning: ${record.lastWarning}`);

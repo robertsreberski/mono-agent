@@ -211,6 +211,27 @@ describe("validateMonoAgentFolder — observability exporter section", () => {
     const text = section.details.join("\n");
     expect(text).toContain("http://127.0.0.1:6006/v1/traces");
     expect(text).toMatch(/JSONL artifacts remain local/iu);
+    expect(text).not.toContain("[WARN] includeSensitiveData=true");
+    expect(report.ok).toBe(true);
+  });
+
+  it("warns when sensitive data export is enabled but keeps the report ok", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+    const endpoint = "http://127.0.0.1:6006/v1/traces";
+    const configPath = await writeExporterConfig([{ type: "phoenix", endpoint, includeSensitiveData: true }]);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    const section = sectionById(report, "observability");
+    expect(section.status).toBe("ok");
+    const text = section.details.join("\n");
+    expect(text).toContain("[WARN] includeSensitiveData=true");
+    expect(text).toContain(endpoint);
+    expect(text).toContain("user input");
+    expect(text).toContain("assistant replies");
+    expect(text).toContain("tool args/results");
+    expect(text).toContain("system prompt");
+    expect(text).toMatch(/JSONL artifacts remain local/iu);
     expect(report.ok).toBe(true);
   });
 

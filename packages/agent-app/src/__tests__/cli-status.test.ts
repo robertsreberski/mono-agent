@@ -49,6 +49,20 @@ describe("printAppStatus exporter line", () => {
     expect(out).toContain("http://127.0.0.1:6006/v1/traces");
     expect(out).toContain("app http://127.0.0.1:6006");
     expect(out).toContain("JSONL artifacts remain local at /work/demo/.mono-agent/artifacts");
+    expect(out).not.toContain("[WARN] includeSensitiveData=true");
+  });
+
+  it("prints a warning when sensitive data export is enabled", () => {
+    const endpoint = "http://127.0.0.1:6006/v1/traces";
+    const out = captureStatus(
+      fakeApp({ kind: "configured", endpoint, includeSensitiveData: true }),
+    );
+    expect(out).toContain("[WARN] includeSensitiveData=true");
+    expect(out).toContain(endpoint);
+    expect(out).toContain("user input");
+    expect(out).toContain("assistant replies");
+    expect(out).toContain("tool args/results");
+    expect(out).toContain("system prompt");
   });
 
   it("prints a disabled exporter line when no exporter is configured", () => {

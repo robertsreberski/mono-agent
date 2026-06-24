@@ -14,7 +14,12 @@ import type { ConfigViewSection } from "@mono-agent/config";
 
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp } from "./app.js";
-import { isAppCoreConfigError, loadAppCoreConfig, phoenixAppBaseUrl } from "./app-config.js";
+import {
+  describeSensitiveDataExportWarning,
+  isAppCoreConfigError,
+  loadAppCoreConfig,
+  phoenixAppBaseUrl,
+} from "./app-config.js";
 import { runAuditRuns } from "./audit-runs.js";
 import { runBackfill } from "./backfill.js";
 import {
@@ -997,7 +1002,7 @@ function describeExporter(status: ExporterStatus, artifactDir: string | undefine
     parts.push(`app ${appUrl}`);
   }
   if (status.includeSensitiveData) {
-    parts.push("includeSensitiveData=true");
+    parts.push(ui.style.yellow(describeSensitiveDataExportWarning(status.endpoint)));
   }
   if (status.lastWarning !== undefined) {
     parts.push(`last warning: ${status.lastWarning}`);
