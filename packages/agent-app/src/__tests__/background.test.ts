@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { TraceSourceListItem } from "@mono-agent/observability";
+import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
 import {
   restartBackground,
@@ -123,6 +123,7 @@ interface Harness {
 function makeHarness(opts: {
   runner: LaunchctlRunner;
   list: BackgroundDeps["listTraceSources"];
+  listRecordedRuns?: BackgroundDeps["listRecordedRuns"];
   isAlive?: (pid: number) => boolean;
 }): Harness {
   const out: string[] = [];
@@ -139,6 +140,7 @@ function makeHarness(opts: {
     sleep: async (ms) => {
       clock += ms;
     },
+    listRecordedRuns: opts.listRecordedRuns ?? (async () => ({ runs: [], warnings: [] })),
     listTraceSources: opts.list,
     writeFile: async (path, data) => {
       written.push({ path, data });
@@ -335,6 +337,40 @@ describe("statusBackground", () => {
     expect(stdout).toContain("JSONL artifacts remain local");
   });
 
+  it("prints runs-health explanations from recent local summaries", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target);
+    const startedAt = new Date(CLOCK_START - 5 * 60_000).toISOString();
+    const runs: RecordedRunListItem[] = [
+      makeRun({ runId: "run-usage", status: "failed", failureKind: "usage_limit", startedAt }),
+      makeRun({ runId: "run-process", status: "interrupted", failureKind: "process_death", startedAt }),
+      makeRun({ runId: "run-cancelled", status: "cancelled", startedAt }),
+      makeRun({ runId: "run-provider-error", status: "failed", failureKind: "provider_error", startedAt }),
+    ];
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [current]),
+      listRecordedRuns: async (options) => {
+        expect(options.artifactDir).toBe(current.artifactDir);
+        expect(options.maxRuns).toBe(50);
+        return { runs, warnings: [] };
+      },
+    });
+
+    await statusBackground(target, harness.deps);
+
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("runs health");
+    expect(stdout).toContain("Recent status counts: running=0, succeeded=0, failed=2, cancelled=1, interrupted=1.");
+    expect(stdout).toContain("Usage limit [usage_limit, 1 recent]");
+    expect(stdout).toContain("Process death [process_death, 1 recent]");
+    expect(stdout).toContain("Cancelled [cancelled, 1 recent]");
+    expect(stdout).toContain("Unclassified failure (provider_error) [provider_error (unclassified), 1 recent]");
+    expect(stdout).toContain("The runtime hit a model, provider, turn, or context limit");
+    expect(stdout).toContain("not yet part of the documented display taxonomy");
+  });
+
   it("returns non-zero when no instance is running for this config", async () => {
     const { runner } = makeRunner({ loaded: false });
     const target = makeTarget();
@@ -356,6 +392,18 @@ describe("statusBackground", () => {
     expect(harness.out.join("")).toContain("mono-agent start --config /work/demo/custom.json");
   });
 });
+
+function makeRun(overrides: Partial<RecordedRunListItem>): RecordedRunListItem {
+  return {
+    runId: "run",
+    conversationId: "chat",
+    status: "succeeded",
+    durationMs: 1000,
+    eventCount: 1,
+    updatedAt: new Date(CLOCK_START).toISOString(),
+    ...overrides,
+  };
+}
 
 describe("tailLogs", () => {
   it("tails the error then output log, following when asked", async () => {

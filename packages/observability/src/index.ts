@@ -37,6 +37,15 @@ export type {
   AuditRecordedRunsOptions,
 } from "./artifact-audit.js";
 export {
+  describeRunFailureKind,
+  KNOWN_RUN_FAILURE_KINDS,
+} from "./failure-kinds.js";
+export type {
+  DescribeRunFailureKindInput,
+  KnownRunFailureKindDescription,
+  RunFailureKindDescription,
+} from "./failure-kinds.js";
+export {
   listRecordedRuns,
   ObservabilityReadError,
   readRecordedRun,

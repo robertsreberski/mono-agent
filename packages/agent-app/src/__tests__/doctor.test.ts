@@ -328,7 +328,17 @@ describe("validateMonoAgentFolder — runs health section", () => {
       runId: "run-failed",
       conversationId: "chat",
       status: "failed",
-      failureKind: "runtime_error",
+      failureKind: "usage_limit",
+      startedAt,
+      durationMs: 1000,
+      eventCount: 3,
+      artifactPaths: [],
+    });
+    await writeRunSummary(artifactDir, "unknown-failure.summary.json", {
+      runId: "run-unknown",
+      conversationId: "chat",
+      status: "failed",
+      failureKind: "provider_error",
       startedAt,
       durationMs: 1000,
       eventCount: 3,
@@ -361,11 +371,16 @@ describe("validateMonoAgentFolder — runs health section", () => {
     expect(runs.status).toBe("waiting");
     const text = runs.details.join("\n");
     expect(text).toContain(`Artifact dir: ${artifactDir}`);
-    expect(text).toContain("Inspected recent runs: 5 (max 50).");
-    expect(text).toContain("Recent status counts: running=1, succeeded=1, failed=1, cancelled=1, interrupted=1.");
+    expect(text).toContain("Inspected recent runs: 6 (max 50).");
+    expect(text).toContain("Recent status counts: running=1, succeeded=1, failed=2, cancelled=1, interrupted=1.");
+    expect(text).toContain("[WARN] Recent non-successful runs:");
     expect(text).toContain("[WARN] Cancelled recent runs: 1.");
     expect(text).toContain("[WARN] Interrupted recent runs: 1.");
-    expect(text).toContain("[WARN] Failure kinds: cancelled=1, process_death=1, runtime_error=1.");
+    expect(text).toContain("[WARN] Failure kinds: cancelled=1, process_death=1, provider_error=1, usage_limit=1.");
+    expect(text).toContain("Usage limit [usage_limit, 1 recent]");
+    expect(text).toContain("Process death [process_death, 1 recent]");
+    expect(text).toContain("Cancelled [cancelled, 1 recent]");
+    expect(text).toContain("Unclassified failure (provider_error) [provider_error (unclassified), 1 recent]");
     expect(report.ok).toBe(true);
   });
 
