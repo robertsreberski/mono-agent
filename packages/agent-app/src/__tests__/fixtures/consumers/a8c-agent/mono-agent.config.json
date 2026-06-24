@@ -1,0 +1,132 @@
+{
+  "runtime": {
+    "model": "pi:openai-codex:gpt-5.5",
+    "fallbackModels": [
+      "pi:opencode-go:glm-5.2"
+    ],
+    "executionMode": "sdk",
+    "effort": "xhigh",
+    "workspace": ".",
+    "permissionMode": "bypassPermissions",
+    "session": {
+      "mode": "continuous",
+      "idleTimeoutMs": 1800000,
+      "rollover": "daily",
+      "rolloverTimezone": "Europe/Rome"
+    }
+  },
+  "context": {
+    "identityPath": "./IDENTITY.md",
+    "skillsRoot": "./skills",
+    "selectedSkills": []
+  },
+  "providers": {
+    "piAuthPath": "./pi-auth/auth.json",
+    "piNative": {
+      "piSessionsRoot": "./.a8c-agent/sessions"
+    }
+  },
+  "memory": {
+    "mode": "journal",
+    "path": "./.a8c-agent/memory",
+    "maxBytes": 64000,
+    "writeMode": "append-host-summary",
+    "embeddings": {
+      "provider": "ollama",
+      "model": "nomic-embed-text:v1.5",
+      "endpoint": "http://localhost:11434",
+      "dim": 768
+    },
+    "recallTool": {
+      "enabled": true
+    }
+  },
+  "tools": {
+    "allowedTools": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "slack_send_message",
+      "memory_recall"
+    ],
+    "disallowedTools": [],
+    "mcpConfigPath": "./mcp.json"
+  },
+  "sandbox": {
+    "mode": "native",
+    "network": {
+      "mode": "all",
+      "allowlist": []
+    },
+    "readableRoots": [
+      ".",
+      "./fixture-home/.config/todoist-cli",
+      "./fixture-home/.config/gws-a8c",
+      "./fixture-home/.config/a8c-cli",
+      "./fixture-home/Automattic_Repositories/a8c-cli",
+      "./fixture-home/.config/gh",
+      "./fixture-home/.claude"
+    ],
+    "writableRoots": [
+      ".",
+      "./fixture-home/.config/todoist-cli",
+      "./fixture-home/.config/gws-a8c",
+      "./fixture-home/.config/a8c-cli",
+      "./fixture-home/.config/gh",
+      "./fixture-home/.claude"
+    ],
+    "denyWrite": [
+      ".env",
+      ".env.*",
+      ".git/config",
+      ".git/hooks/**"
+    ],
+    "fallback": "unsafe-host-process",
+    "unsafeAllowHostProcess": true
+  },
+  "slack": {
+    "enabled": true,
+    "allowedChannelIds": [
+      "D0B0F9GTDGC"
+    ],
+    "allowAllChannels": false
+  },
+  "cron": {
+    "dir": "cron"
+  },
+  "openaiApi": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 4311,
+    "basePath": "/v1",
+    "allowNonLoopback": false,
+    "modelId": "a8c-agent"
+  },
+  "artifacts": {
+    "dir": "./.a8c-agent/artifacts"
+  },
+  "traceability": {
+    "registryDir": "./.a8c-agent/trace",
+    "sourceId": "a8c-agent",
+    "sourceLabel": "A8C Agent"
+  },
+  "observability": {
+    "exporters": [
+      {
+        "type": "phoenix",
+        "endpoint": "http://127.0.0.1:6006/v1/traces",
+        "projectName": "a8c-agent",
+        "includeSensitiveData": true
+      }
+    ]
+  },
+  "console": {
+    "enabled": true,
+    "port": 4310
+  }
+}
