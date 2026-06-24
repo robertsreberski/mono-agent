@@ -161,6 +161,13 @@ async function main() {
   for (const warning of result.warnings) {
     process.stderr.write(`WARN ${warning}\n`);
   }
+  if (result.checked === 0) {
+    process.stderr.write(
+      "ERROR No consumer folders were checked; at least one requested --consumer path must contain README.md.\n",
+    );
+    process.exitCode = 1;
+    return;
+  }
   if (result.issues.length > 0) {
     for (const issue of result.issues) {
       process.stderr.write(`ERROR ${issue}\n`);

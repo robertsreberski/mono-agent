@@ -68,6 +68,18 @@ describe("consumer docs/config consistency checker", () => {
     expect(result.stderr).toContain("README.md missing; skipped");
   });
 
+  it("fails when every requested consumer is skipped", async () => {
+    const missingReadmeDir = await writeConsumer({
+      config: { tools: { allowedTools: ["Read"] } },
+    });
+
+    await expectScriptFailure(["--consumer", missingReadmeDir], (error) => {
+      expect(error.stderr).toContain("README.md missing; skipped");
+      expect(error.stderr).toContain("No consumer folders were checked");
+      expect(error.stdout).toBe("");
+    });
+  });
+
   it("fails on malformed consumer config JSON", async () => {
     const dir = await writeConsumer({
       readme: "No retired surfaces here.",
