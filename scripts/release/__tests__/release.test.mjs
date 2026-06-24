@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, test } from "vitest";
 
 import { packageCatalog } from "../../package-catalog.mjs";
@@ -5,6 +9,10 @@ import {
   discoverPackages,
   sortForPublish,
 } from "../package-graph.mjs";
+import {
+  assertPackResult,
+  parsePnpmPackOutput,
+} from "../pack-release.mjs";
 import {
   releaseVersionFromTag,
   validateRelease,
@@ -110,6 +118,57 @@ describe("release graph validation", () => {
     });
 
     expect(() => sortForPublish([one, two])).toThrow(/cycle in publishable package dependencies/);
+  });
+});
+
+describe("release pack validation", () => {
+  const pkg = packageRecord({ name: "@mono-agent/example" });
+
+  test("parses pnpm pack JSON output", () => {
+    expect(parsePnpmPackOutput(JSON.stringify({ name: pkg.name, filename: "example.tgz", files: [] }))).toEqual({
+      name: pkg.name,
+      filename: "example.tgz",
+      files: [],
+    });
+  });
+
+  test("asserts required files and a non-empty tarball", () => {
+    const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
+    try {
+      const tarballPath = path.join(packDestination, "mono-agent-example-1.2.3.tgz");
+      fs.writeFileSync(tarballPath, "tgz");
+
+      expect(
+        assertPackResult(pkg, {
+          name: pkg.name,
+          version: "1.2.3",
+          filename: tarballPath,
+          files: [{ path: "package.json" }, { path: "README.md" }],
+        }, packDestination),
+      ).toEqual({
+        fileCount: 2,
+        tarballPath,
+        tarballSize: 3,
+      });
+    } finally {
+      fs.rmSync(packDestination, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects pack output without a tarball", () => {
+    const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
+    try {
+      expect(() =>
+        assertPackResult(pkg, {
+          name: pkg.name,
+          version: "1.2.3",
+          filename: "missing.tgz",
+          files: [{ path: "package.json" }, { path: "README.md" }],
+        }, packDestination),
+      ).toThrow(/did not create/);
+    } finally {
+      fs.rmSync(packDestination, { recursive: true, force: true });
+    }
   });
 });
 
