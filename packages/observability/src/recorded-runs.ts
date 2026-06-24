@@ -19,6 +19,12 @@ import {
 import { buildEventDescriptors, classifyRecordedRunEvent } from "./event-classify.js";
 import { redactJsonValue } from "./recorder.js";
 import { normalizeFailoverHistory } from "./run-export-mapping.js";
+import {
+  EVENTS_SUFFIX,
+  SUMMARY_SUFFIX,
+  isRunSummaryStatus,
+  isStaleRunningSummary,
+} from "./summary-schema.js";
 import type {
   JsonlRunReaderOptions,
   RecordedRunDetail,
@@ -31,9 +37,6 @@ import type {
 } from "./types.js";
 
 export { classifyRecordedRunEvent };
-
-const SUMMARY_SUFFIX = ".summary.json";
-const EVENTS_SUFFIX = ".events.jsonl";
 
 interface NormalizedReaderOptions {
   readonly artifactDir: string;
@@ -133,13 +136,9 @@ export async function reconcileStaleRunArtifacts(
     } catch {
       continue; // unreadable/invalid summary — leave it for the reader's own warnings
     }
-    if (parsed.status !== "running") {
-      continue;
-    }
     // Only reclaim runs that began before this process started — a live run of THIS process
     // (started at/after the cutoff) is genuinely in flight and must not be touched.
-    const startedAtMs = typeof parsed.startedAt === "string" ? Date.parse(parsed.startedAt) : Number.NaN;
-    if (Number.isFinite(startedAtMs) && startedAtMs >= options.startedBeforeMs) {
+    if (!isStaleRunningSummary(parsed, options.startedBeforeMs)) {
       continue;
     }
     const updated = {
@@ -313,7 +312,7 @@ function coerceRunSummary(
   }
   const runId = stringField(value, "runId");
   const conversationId = stringField(value, "conversationId");
-  const status = runSummaryStatus(value.status);
+  const status = isRunSummaryStatus(value.status) ? value.status : undefined;
   const durationMs = finiteNumberField(value, "durationMs");
   const eventCount = integerNumberField(value, "eventCount");
   if (runId === undefined || conversationId === undefined || status === undefined || durationMs === undefined || eventCount === undefined) {
@@ -420,12 +419,6 @@ function safeJoin(root: string, fileName: string): string {
   return safeJoinGuard(root, fileName, () => {
     throw new ObservabilityReadError("invalid_run_id", "Resolved artifact path escapes artifactDir.");
   });
-}
-
-function runSummaryStatus(value: unknown): RunSummaryStatus | undefined {
-  return value === "running" || value === "succeeded" || value === "failed" || value === "cancelled" || value === "interrupted"
-    ? value
-    : undefined;
 }
 
 function summaryUpdatedAtMs(entry: ParsedSummaryFile): number {

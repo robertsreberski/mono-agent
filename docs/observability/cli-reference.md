@@ -23,6 +23,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--follow` / `-f`, `--lines <n>` |
 | `install-skill` | Copy the bundled `mono-agent-composer` skill into the agent skill folders. | `--target claude\|codex\|both`, `--force` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
+| `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
 | `help` | Print the usage screen. | — |
 
 Every command is `cli` coverage. `start`, `restart`, `stop`, `status`, and `logs` are the background service commands; `start --foreground` is the cross-platform fallback. `stop`, `logs`, and `start --foreground` are real commands (they were absent from older feature listings).
@@ -183,6 +184,26 @@ mono-agent install-skill --target claude --force
 ```
 
 See [Skills](/context/skills/) for how skills are surfaced to the agent.
+
+## `audit-runs`
+
+Audits recorded run summary artifacts without exporting, reconciling, or rewriting anything. Use it when you need a structural inventory of a consumer's local artifact directory: how many summaries parse, which statuses and production failure kinds are present, whether any values are unrecognized, how many `running` summaries are stale, and the per-failure-kind rates.
+
+| Flag | Effect |
+| --- | --- |
+| `--artifact-dir <path>` | Read this artifact directory directly. Wins over config-based resolution. |
+| `--consumer <path>` | Resolve `artifacts.dir` and `traceability.staleAfterMs` relative to this consumer folder. |
+| `--config <path>` | Use a non-default config file when resolving a consumer. |
+| `--env-file <path>` | Load secrets or env overrides from a non-default dotenv file. |
+| `--stale-after-ms <n>` | Override the stale-running cutoff interval. |
+| `--json` | Print the full machine-readable audit report. |
+
+```bash
+mono-agent audit-runs --consumer ~/personal-agent --json
+mono-agent audit-runs --artifact-dir ./.mono-agent/artifacts --stale-after-ms 30000
+```
+
+The command only reads `*.summary.json` files. A malformed summary is reported as a parse failure, and a stale `running` summary is reported without being rewritten. Startup reconciliation is still the only path that changes stale `running` summaries to `interrupted`.
 
 ## `backfill`
 
