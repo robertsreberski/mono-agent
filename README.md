@@ -14,9 +14,9 @@ Use Node.js 20 or newer.
 
 ```bash
 # in the agent folder
-npx @mono-agent/agent-app init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
-npx @mono-agent/agent-app validate
-npx @mono-agent/agent-app start
+npm exec --package @mono-agent/agent-app -- mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
+npm exec --package @mono-agent/agent-app -- mono-agent validate
+npm exec --package @mono-agent/agent-app -- mono-agent start
 ```
 
 For repeated local use, install the CLI globally with `npm i -g @mono-agent/agent-app` and run the same commands as `mono-agent init`, `mono-agent validate`, and `mono-agent start`. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.

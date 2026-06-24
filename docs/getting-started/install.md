@@ -15,10 +15,10 @@ The shipped command line lives in `@mono-agent/agent-app` (the config-first host
 | Requirement | Version | Why |
 | --- | --- | --- |
 | Node.js | `>=20` | Runtime for the CLI, host, and TUI. |
-| pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npx`). |
+| pnpm | `>=10` | Only needed to build the workspace from source (the published packages install with plain `npm`/`npm exec`). |
 
 :::note
-You do **not** need pnpm to use the published packages — `npm i -g` and `npx` are enough. pnpm is only required for the "run an unreleased build" path below, which builds the workspace from source.
+You do **not** need pnpm to use the published packages — `npm i -g` and `npm exec` are enough. pnpm is only required for the "run an unreleased build" path below, which builds the workspace from source.
 :::
 
 ## Install the CLI
@@ -29,10 +29,10 @@ Install `@mono-agent/agent-app` globally to get the `mono-agent` command on your
 npm i -g @mono-agent/agent-app
 ```
 
-This also installs the `mono-agent-memory-recall` helper bin used by the memory recall tool. Prefer not to install globally? Run any command through `npx` instead:
+This also installs the `mono-agent-memory-recall` helper bin used by the memory recall tool. Prefer not to install globally? Run any command through `npm exec` instead:
 
 ```bash
-npx @mono-agent/agent-app --help
+npm exec --package @mono-agent/agent-app -- mono-agent --help
 ```
 
 ## Scaffold without installing
@@ -40,11 +40,10 @@ npx @mono-agent/agent-app --help
 If you only want to create an agent folder, run `init` through a package runner instead of installing the CLI globally:
 
 ```bash
-npx @mono-agent/agent-app init
-pnpm dlx @mono-agent/agent-app init
+npm exec --package @mono-agent/agent-app -- mono-agent init
 ```
 
-Both commands download and run the published CLI for that one scaffold command. They do not require a global install, and `pnpm dlx` does not require the source-build workspace setup.
+This downloads and runs the published CLI for that one scaffold command. It does not require a global install or the source-build workspace setup.
 
 ## Install the TUI console
 
@@ -107,7 +106,7 @@ For reproducible installs or one-shot scaffolds, pin the version explicitly:
 
 ```bash
 npm i -g @mono-agent/agent-app@0.4.0 @mono-agent/tui@0.4.0
-npx @mono-agent/agent-app@0.4.0 init
+npm exec --package @mono-agent/agent-app@0.4.0 -- mono-agent init
 ```
 
 Review published version notes in [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases).
