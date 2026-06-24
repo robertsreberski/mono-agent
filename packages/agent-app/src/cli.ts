@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createInterface } from "node:readline/promises";
 import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import process from "node:process";
@@ -42,6 +43,8 @@ import type { InstallSkillTarget } from "./install-skill.js";
 import { findRecipe, RECIPE_CATALOG, recipeIds, resolveRecipeInputs } from "./recipes/index.js";
 import type { AgentRecipe } from "./recipes/index.js";
 import { purgeSessions } from "./sessions.js";
+import { collectSetupOptions } from "./setup.js";
+import type { SecretChecklistItem } from "./setup.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -50,7 +53,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -330,6 +333,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    signature: "mono-agent setup [--recipe <id>] [--with <csv>] [--dry-run]\n" +
+      "                 [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]",
+    lines: [
+      "Guided setup when attached to a TTY: choose a recipe, answer non-secret",
+      "inputs, select channel add-ons, scaffold, validate, and print the secrets",
+      "checklist. In non-TTY contexts it falls back to init-style flags.",
+    ],
+  },
+  {
     signature: "mono-agent recipes list | show <id>",
     lines: [
       "List the executable config blueprints, or show one's generated config,",
@@ -464,6 +476,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 0;
     case "init":
       return await runInit(args);
+    case "setup":
+      return await runSetup(args);
     case "validate":
       return await runValidate(args);
     case "config":
@@ -500,25 +514,14 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 }
 
 async function runInit(args: ParsedCliArgs): Promise<number> {
-  let recipe: AgentRecipe | undefined;
-  if (args.recipe !== undefined) {
-    recipe = findRecipe(args.recipe);
-    if (recipe === undefined) {
-      process.stderr.write(ui.errorLine(`Unknown recipe \`${args.recipe}\`.`));
-      process.stderr.write(ui.hint("Run `mono-agent recipes list` to see available recipes."));
-      return 1;
-    }
+  const recipe = resolveRecipeArg(args);
+  if (recipe === "unknown") {
+    return 1;
   }
 
-  let withChannels: readonly WithChannel[] | undefined;
-  if (args.withChannels !== undefined) {
-    const invalid = args.withChannels.filter((channel) => !isWithChannel(channel));
-    if (invalid.length > 0) {
-      process.stderr.write(ui.errorLine(`Unknown --with channel(s): ${invalid.join(", ")}.`));
-      process.stderr.write(ui.hint("Valid channels: telegram, slack, a2a, webhook, openaiApi, cron."));
-      return 1;
-    }
-    withChannels = args.withChannels.filter(isWithChannel);
+  const withChannels = resolveWithChannels(args);
+  if (withChannels === "invalid") {
+    return 1;
   }
 
   const result = await initMonoAgentFolder({
@@ -531,6 +534,103 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
     dryRun: args.dryRun,
   });
 
+  printInitResult(result, recipe);
+
+  printNextSteps(result.configPath, recipe);
+  return 0;
+}
+
+async function runSetup(args: ParsedCliArgs): Promise<number> {
+  if (process.stdin.isTTY !== true) {
+    return await runInit(args);
+  }
+
+  const recipeArg = resolveRecipeArg(args);
+  if (recipeArg === "unknown") {
+    return 1;
+  }
+  const withChannelsArg = resolveWithChannels(args);
+  if (withChannelsArg === "invalid") {
+    return 1;
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  let collected;
+  try {
+    collected = await collectSetupOptions({
+      prompt: { question: (prompt) => rl.question(prompt) },
+      ...(recipeArg === undefined ? {} : { recipe: recipeArg }),
+      ...(args.model === undefined ? {} : { model: args.model }),
+      ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
+      ...(withChannelsArg === undefined ? {} : { withChannels: withChannelsArg }),
+    });
+  } finally {
+    rl.close();
+  }
+
+  const result = await initMonoAgentFolder({
+    dir: process.cwd(),
+    ...(collected.fallbackModels.length === 0 ? {} : { fallbackModels: collected.fallbackModels }),
+    ...(args.memory === undefined ? {} : { memory: args.memory }),
+    recipe: collected.recipe,
+    recipeInputs: collected.recipeInputs,
+    withChannels: collected.withChannels,
+    dryRun: args.dryRun,
+  });
+
+  printInitResult(result, collected.recipe);
+
+  if (!result.dryRun) {
+    const report = await validateMonoAgentFolder({
+      env: process.env,
+      cwd: process.cwd(),
+      configPath: result.configPath,
+    });
+    process.stdout.write("\n" + ui.heading("Validation"));
+    for (const section of report.sections) {
+      process.stdout.write(formatSection(section));
+    }
+    process.stdout.write(renderRecipeCompleteness(collected.recipe, report));
+    printSecretsChecklist(collected.secrets);
+    printNextSteps(result.configPath, collected.recipe);
+    return report.ok ? 0 : 1;
+  }
+
+  printSecretsChecklist(collected.secrets);
+  printNextSteps(result.configPath, collected.recipe);
+  return 0;
+}
+
+function resolveRecipeArg(args: ParsedCliArgs): AgentRecipe | undefined | "unknown" {
+  if (args.recipe === undefined) {
+    return undefined;
+  }
+  const recipe = findRecipe(args.recipe);
+  if (recipe === undefined) {
+    process.stderr.write(ui.errorLine(`Unknown recipe \`${args.recipe}\`.`));
+    process.stderr.write(ui.hint("Run `mono-agent recipes list` to see available recipes."));
+    return "unknown";
+  }
+  return recipe;
+}
+
+function resolveWithChannels(args: ParsedCliArgs): readonly WithChannel[] | undefined | "invalid" {
+  if (args.withChannels === undefined) {
+    return undefined;
+  }
+  const invalid = args.withChannels.filter((channel) => !isWithChannel(channel));
+  if (invalid.length > 0) {
+    process.stderr.write(ui.errorLine(`Unknown --with channel(s): ${invalid.join(", ")}.`));
+    process.stderr.write(ui.hint("Valid channels: telegram, slack, a2a, webhook, openaiApi, cron."));
+    return "invalid";
+  }
+  return args.withChannels.filter(isWithChannel);
+}
+
+function printInitResult(
+  result: Awaited<ReturnType<typeof initMonoAgentFolder>>,
+  recipe: AgentRecipe | undefined,
+): void {
   if (result.dryRun) {
     process.stdout.write(ui.style.dim("Dry run — nothing was written.\n"));
   }
@@ -550,16 +650,30 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
       process.stdout.write(ui.style.dim("Fill the secret placeholders in .env.example, then copy it to .env.\n"));
     }
   }
+}
 
+function printSecretsChecklist(secrets: readonly SecretChecklistItem[]): void {
+  process.stdout.write("\n" + ui.heading("Secrets checklist"));
+  if (secrets.length === 0) {
+    process.stdout.write(ui.style.dim("No secret recipe inputs were prompted. Review .env.example if the recipe created one.\n"));
+    return;
+  }
+  process.stdout.write(ui.style.dim("Copy .env.example to .env, then fill these variables. Secret values were not prompted or written to JSON.\n"));
+  for (const secret of secrets) {
+    const key = secret.envVar ?? secret.id;
+    process.stdout.write(`  ${ui.style.bold(key)} ${ui.style.dim(`- ${secret.label}: ${secret.description}`)}\n`);
+  }
+}
+
+function printNextSteps(configPath: string, recipe: AgentRecipe | undefined): void {
   const validateCmd = recipe === undefined ? "mono-agent validate" : `mono-agent validate --recipe ${recipe.id}`;
   process.stdout.write(
     "\n" +
       ui.heading("Next steps") +
-      `  ${ui.style.bold("1.")} Edit ${result.configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
+      `  ${ui.style.bold("1.")} Edit ${configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
       `  ${ui.style.bold("2.")} ${validateCmd}\n` +
       `  ${ui.style.bold("3.")} mono-agent start\n`,
   );
-  return 0;
 }
 
 async function runInstallSkill(args: ParsedCliArgs): Promise<number> {

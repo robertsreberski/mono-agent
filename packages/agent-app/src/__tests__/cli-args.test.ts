@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadCliEnvFile, parseCliArgs } from "../cli.js";
+import { loadCliEnvFile, parseCliArgs, renderHelp } from "../cli.js";
 
 const tempDirs: string[] = [];
 
@@ -41,6 +41,15 @@ describe("parseCliArgs", () => {
       follow: false,
       all: false,
       dryRun: false,
+    });
+  });
+
+  it("parses setup with recipe, channel add-ons, and dry-run flags", () => {
+    expect(parseCliArgs(["setup", "--recipe", "full-safe", "--with", "slack,cron", "--dry-run"])).toMatchObject({
+      command: "setup",
+      recipe: "full-safe",
+      withChannels: ["slack", "cron"],
+      dryRun: true,
     });
   });
 
@@ -150,6 +159,10 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--what"])).toThrow(/Unknown flag/u);
     expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/Unknown flag/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
+  });
+
+  it("includes setup in the help screen", () => {
+    expect(renderHelp()).toContain("mono-agent setup");
   });
 
   it("accepts --memory bujo and --memory lite, rejects --memory markdown", () => {
