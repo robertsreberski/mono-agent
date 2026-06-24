@@ -93,6 +93,16 @@ export interface SlackNotifyResult {
   readonly reason?: string;
 }
 
+/**
+ * Options for {@link SlackAdapter.notify}. With `verbatim`, `text` is posted to
+ * the destination UNCHANGED with no model call (native cron/webhook notification
+ * — the producing run already wrote the message) and recorded to history so a
+ * reply resumes with it in context. Without it, `text` is run as a turn.
+ */
+export interface SlackNotifyOptions {
+  readonly verbatim?: boolean;
+}
+
 export interface SlackAdapterMessages {
   welcomeText?: string;
   helpText?: string;
@@ -655,6 +665,7 @@ export class SlackAdapter {
     channelId: SlackChannelId,
     threadTs: SlackMessageTs | undefined,
     text: string,
+    options?: SlackNotifyOptions,
   ): Promise<SlackNotifyResult> {
     const conversationId = threadTs === undefined ? `slack:${channelId}` : `slack:${channelId}:${threadTs}`;
     // A threaded proactive run shares the inbound /cancel key so a user's
@@ -669,7 +680,11 @@ export class SlackAdapter {
       this.admissionQueues.set(conversationId, queue);
     }
     try {
-      return await queue.run(() => this.runProactiveTurn(conversationId, channelId, threadTs, text, runKey, controller));
+      return await queue.run(() =>
+        options?.verbatim === true
+          ? this.runVerbatimDelivery(conversationId, channelId, threadTs, text, runKey, controller)
+          : this.runProactiveTurn(conversationId, channelId, threadTs, text, runKey, controller),
+      );
     } catch (error) {
       if (isSerialQueueFullError(error)) {
         this.unregisterController(runKey, controller);
@@ -861,14 +876,18 @@ export class SlackAdapter {
     return blocks;
   }
 
-  private async runProactiveTurn(
+  /**
+   * Build the stream options shared by both proactive delivery paths
+   * ({@link runProactiveTurn} and {@link runVerbatimDelivery}): a threaded post
+   * targets the existing thread; a top-level post records its ts → this
+   * conversation so a user's in-thread reply resolves back here.
+   */
+  private buildProactiveStreamOptions(
     conversationId: string,
     channelId: SlackChannelId,
     threadTs: SlackMessageTs | undefined,
-    text: string,
-    runKey: string,
     controller: AbortController,
-  ): Promise<SlackNotifyResult> {
+  ): SlackMessageStreamOptions {
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
       channelId,
@@ -907,7 +926,69 @@ export class SlackAdapter {
     if (this.logger !== undefined) {
       streamOptions.logger = this.logger;
     }
-    const stream = new SlackMessageStream(streamOptions);
+    return streamOptions;
+  }
+
+  /**
+   * Deliver `text` VERBATIM to a Slack destination: post it unchanged through the
+   * normal stream with NO model call (the producing cron/webhook run already wrote
+   * the message), then record it to the destination's durable history via the
+   * responder so a later reply resumes with it in context. Best-effort: a
+   * history-record failure never fails an already-delivered post.
+   */
+  private async runVerbatimDelivery(
+    conversationId: string,
+    channelId: SlackChannelId,
+    threadTs: SlackMessageTs | undefined,
+    text: string,
+    runKey: string,
+    controller: AbortController,
+  ): Promise<SlackNotifyResult> {
+    const stream = new SlackMessageStream(
+      this.buildProactiveStreamOptions(conversationId, channelId, threadTs, controller),
+    );
+    try {
+      if (controller.signal.aborted) {
+        return { delivered: false, reason: "cancelled" };
+      }
+      if (text.trim().length === 0) {
+        return { delivered: false, reason: "empty notification" };
+      }
+      try {
+        await stream.finish(text);
+      } catch (error) {
+        if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
+          return { delivered: false, reason: "cancelled" };
+        }
+        this.logger?.error?.("Slack verbatim notify delivery failed.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return { delivered: false, reason: "delivery failed" };
+      }
+      try {
+        await this.responder.deliverVerbatim?.(conversationId, text);
+      } catch (error) {
+        this.logger?.warn?.("Slack verbatim notify history record failed.", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return { delivered: true };
+    } finally {
+      this.unregisterController(runKey, controller);
+    }
+  }
+
+  private async runProactiveTurn(
+    conversationId: string,
+    channelId: SlackChannelId,
+    threadTs: SlackMessageTs | undefined,
+    text: string,
+    runKey: string,
+    controller: AbortController,
+  ): Promise<SlackNotifyResult> {
+    const stream = new SlackMessageStream(
+      this.buildProactiveStreamOptions(conversationId, channelId, threadTs, controller),
+    );
     try {
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled" };

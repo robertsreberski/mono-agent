@@ -11,11 +11,12 @@ import type {
 import {
   createTelegramBot,
   type CreateTelegramBotOptions,
+  type TelegramNotifyOptions,
   type TelegramNotifyResult,
 } from "./bot.js";
 import type { TelegramChatId } from "./types.js";
 
-export type { TelegramNotifyResult } from "./bot.js";
+export type { TelegramNotifyOptions, TelegramNotifyResult } from "./bot.js";
 
 export interface TelegramAdapterStartOptions {
   /** Bot API token used to construct the grammY {@link Bot}. */
@@ -56,12 +57,13 @@ export interface TelegramAdapterStartResult {
   /** Stops polling and waits for the runner to settle. */
   stop(): Promise<void>;
   /**
-   * Deliver a proactive notification to a chat by running it as a turn on that
-   * chat's own harness (same session/history/per-chat queue as inbound messages)
-   * and posting the answer through the normal stream. Used by cron/webhook nudges
-   * so the destination channel's agent — not a side channel — owns the message.
+   * Deliver a proactive notification to a chat, serialized through that chat's
+   * per-chat queue. By default runs `text` as a turn and posts the answer; with
+   * `options.verbatim` posts `text` unchanged (no model call) and records it to
+   * history. Used by cron/webhook nudges so the destination channel — not a side
+   * channel — owns the message.
    */
-  notify(chatId: TelegramChatId, text: string): Promise<TelegramNotifyResult>;
+  notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
 }
 
 /**
@@ -80,7 +82,7 @@ export async function startTelegramAdapter(
   await controller.start();
   return {
     stop: () => controller.stop(),
-    notify: (chatId, text) => controller.notify(chatId, text),
+    notify: (chatId, text, notifyOptions) => controller.notify(chatId, text, notifyOptions),
   };
 }
 

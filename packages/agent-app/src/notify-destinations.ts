@@ -3,8 +3,19 @@ import { loadTelegramAdapterConfig } from "@mono-agent/telegram-adapter";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
-import type { NotifyToolDestination } from "./notify-tool.js";
 import { listSeenNotifyDestinations } from "./seen-conversations.js";
+
+/** A conversation a native cron/webhook notification can be delivered to. */
+export interface NotifyDestination {
+  /** Destination conversationId, e.g. `telegram:42` or `slack:C1:171.5`. */
+  readonly conversationId: string;
+  /** Owning channel id (telegram/slack). */
+  readonly channelId: string;
+  /** ISO timestamp of the most recent turn on this conversation, if known. */
+  readonly lastSeen?: string;
+  /** True when this is an allowlisted destination the agent has not yet conversed with. */
+  readonly fromAllowlist?: boolean;
+}
 
 /** Channels whose conversations can receive a proactive notification turn. */
 const NOTIFY_CAPABLE: ReadonlySet<ChannelId> = new Set<ChannelId>(["telegram", "slack"]);
@@ -18,8 +29,9 @@ export interface ResolveNotifyDestinationsInput {
 }
 
 /**
- * The conversations the agent may proactively notify, for the `list_notify_destinations`
- * tool. Combines two id-free sources so the operator never types a conversationId:
+ * The conversations a native cron/webhook notification may be delivered to, used by
+ * the app to infer a destination when a job/endpoint sets no explicit
+ * `notifyConversationId`. Combines two id-free sources so the operator never types a conversationId:
  *  - conversations the agent has actually handled (run-artifact summaries), filtered to
  *    notify-capable + running channels, newest-first;
  *  - the adapter allowlist entries (when not allow-all), surfaced as candidates the agent
@@ -28,8 +40,8 @@ export interface ResolveNotifyDestinationsInput {
  */
 export async function resolveNotifyDestinations(
   opts: ResolveNotifyDestinationsInput,
-): Promise<readonly NotifyToolDestination[]> {
-  const out: NotifyToolDestination[] = [];
+): Promise<readonly NotifyDestination[]> {
+  const out: NotifyDestination[] = [];
   const present = new Set<string>();
 
   const seen = await listSeenNotifyDestinations(opts.artifactDir);
@@ -60,7 +72,7 @@ export async function resolveNotifyDestinations(
 }
 
 function addAllowlisted(
-  out: NotifyToolDestination[],
+  out: NotifyDestination[],
   present: Set<string>,
   conversationId: string,
   channelId: ChannelId,

@@ -88,6 +88,8 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
   const enabled = readBoolean(meta.enabled, `${fileName} frontmatter \`enabled\``, true, invalidConfig);
   const conversationId = normalizeOptionalString(meta.conversationId);
   const maxRunMs = readOptionalPositiveInteger(meta.maxRunMs, `${fileName} frontmatter \`maxRunMs\``, fileName);
+  const notify = readBoolean(meta.notify, `${fileName} frontmatter \`notify\``, false, invalidConfig);
+  const notifyConversationId = normalizeOptionalString(meta.notifyConversationId);
 
   return {
     id,
@@ -97,6 +99,8 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
     ...(maxRunMs === undefined ? {} : { maxRunMs }),
+    ...(notify ? { notify } : {}),
+    ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
   };
 }
 

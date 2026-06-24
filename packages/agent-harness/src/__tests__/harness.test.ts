@@ -175,6 +175,50 @@ describe("AgentHarness", () => {
     await expect(historyStore.load("telegram:1")).resolves.toHaveLength(3);
   });
 
+  it("injects native-notify delivery guidance for a notify-enabled cron turn (and omits it otherwise)", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Digest" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir });
+
+    await harness.run({
+      conversationId: "cron:digest",
+      userMessage: "Produce the digest.",
+      abortSignal: new AbortController().signal,
+      metadata: { cron: { jobId: "digest", nativeNotify: { enabled: true } } },
+    });
+    const notifyPrompt = fake.calls[0]?.prompt ?? "";
+    expect(notifyPrompt).toContain("your final reply is delivered to the user");
+    expect(notifyPrompt).toContain("delivery is automatic and posts your reply verbatim");
+    expect(notifyPrompt).toContain("NOTHING_TO_REPORT");
+
+    await harness.run({
+      conversationId: "cron:maintenance",
+      userMessage: "Run maintenance.",
+      abortSignal: new AbortController().signal,
+      metadata: { cron: { jobId: "maintenance" } },
+    });
+    expect(fake.calls[1]?.prompt ?? "").not.toContain("NOTHING_TO_REPORT");
+  });
+
+  it("appendVerbatimTurn records a delivered notification to history without a model call", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const fake = createFakeRuntime(async () => ({ text: "unused" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+
+    await harness.appendVerbatimTurn?.("telegram:42", "Your morning brief.");
+
+    const history = await historyStore.load("telegram:42");
+    expect(history.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(history.at(-1)?.content).toBe("Your morning brief.");
+    // No model turn ran — delivery happened in the channel, this only records it.
+    expect(fake.calls).toHaveLength(0);
+  });
+
   it("lists every discovered skill in the index while inlining only the selected skill bodies", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -374,12 +418,9 @@ describe("AgentHarness", () => {
 
     expect(response.text).toBe("Final answer");
     expect(fake.calls).toHaveLength(1);
-    // A non-push conversation id is told it cannot itself receive a proactive follow-up.
+    // A non-push conversation id is told it is a request-driven run with no interactive user.
     expect(fake.calls[0]?.prompt).toContain("You are currently handling the conversation `conversation-extension`.");
-    expect(fake.calls[0]?.prompt).toContain("This conversation cannot itself receive a proactive follow-up");
-    expect(fake.calls[0]?.prompt).toContain("`list_notify_destinations`");
-    // ...and how notify_conversation delivers: the destination's reply is sent, not text verbatim.
-    expect(fake.calls[0]?.prompt).toContain("ITS reply is what the user sees");
+    expect(fake.calls[0]?.prompt).toContain("request-driven run (scheduled, webhook, or API) with no interactive user");
     expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "ask_collaborator"]);
     expect(fake.calls[0]?.options.disallowedTools).toEqual(["Write"]);
     expect(fake.calls[0]?.options.mcpServers).toEqual({

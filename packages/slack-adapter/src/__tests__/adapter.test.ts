@@ -121,6 +121,37 @@ describe("SlackAdapter", () => {
     expect(api.reactionsAddCalls).toEqual([]);
   });
 
+  it("notify() verbatim posts the text as-is without running a turn and records it to history", async () => {
+    const api = new FakeSlackApi();
+    let responded = false;
+    const verbatim: Array<[string, string]> = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async () => {
+          responded = true;
+          return { text: "should not run" };
+        },
+        deliverVerbatim: async (conversationId, text) => {
+          verbatim.push([conversationId, text]);
+        },
+      },
+    });
+
+    const result = await adapter.notify("C1", "171.5", "All clear today.", { verbatim: true });
+
+    expect(result).toEqual({ delivered: true });
+    // No model turn ran — the body is posted as-is to the thread.
+    expect(responded).toBe(false);
+    const post = api.postMessageCalls.at(-1);
+    expect(post?.channel).toBe("C1");
+    expect(post?.thread_ts).toBe("171.5");
+    expect(post?.text).toContain("All clear today.");
+    // The body is recorded to history so a later reply resumes with it in context.
+    expect(verbatim).toEqual([["slack:C1:171.5", "All clear today."]]);
+  });
+
   it("notify() reports an honest drop when the agent produces no answer", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({
