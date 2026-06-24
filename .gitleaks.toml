@@ -1,0 +1,20 @@
+title = "mono-agent gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated dependency lockfiles"
+paths = [
+  '''pnpm-lock\.yaml$''',
+]
+
+[[allowlists]]
+description = "Clearly fake secret placeholders used by docs and tests"
+regexTarget = "secret"
+regexes = [
+  '''(?i)^(?:dummy|fake|fixture|inline|json|resolved|redacted|secret|test|top)[-_]?(?:api[-_]?key|secret|token|value)?$''',
+  '''(?i)^sk-(?:env|json|secret|test)-secret$''',
+  '''(?i)^sm[-_]secret$''',
+  '''^SUPER_SECRET_PROMPT_PAYLOAD$''',
+]

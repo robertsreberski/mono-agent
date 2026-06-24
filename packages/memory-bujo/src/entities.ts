@@ -27,7 +27,7 @@ Return ONLY the following JSON structure with no additional text:
 {"entities":[{"id":"type:name-kebab","name":"display name","type":"person|project|org|concept|..."}],"relations":[{"src":"entity-id","dst":"entity-id","relation":"verb phrase"}]}
 
 Rules:
-- Entity id must be a slug like "person:robert-reberski" or "project:mono-agent"
+- Entity id must be a slug like "person:morgan-reberski" or "project:mono-agent"
 - Include only entities clearly mentioned in the text
 - Relations must reference entity ids present in the entities array
 - Use lowercase kebab-case for ids

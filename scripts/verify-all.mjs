@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { runVerifyConsumers } from "./verify-consumers.mjs";
 
 const repoGate = [
+  { label: "check:secrets", command: "pnpm", args: ["run", "check:secrets"] },
+  { label: "check:oss-hygiene", command: "pnpm", args: ["run", "check:oss-hygiene"] },
   { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
   { label: "build", command: "pnpm", args: ["run", "build"] },
   { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },
@@ -37,7 +39,7 @@ export async function runVerifyAll(options = {}) {
     parsed = parseVerifyAllArgs(argv);
   } catch (error) {
     stderr.write(`${reasonOf(error)}\n\n${usage()}\n`);
-    stdout.write(renderFinalSummary({ repoOk: false, personalOk: false, a8cOk: false }));
+    stdout.write(renderFinalSummary({ repoOk: false, alphaOk: false, betaOk: false }));
     return { exitCode: 1 };
   }
 
@@ -56,8 +58,8 @@ export async function runVerifyAll(options = {}) {
     }
   }
 
-  let personalOk = false;
-  let a8cOk = false;
+  let alphaOk = false;
+  let betaOk = false;
   if (repoOk) {
     const consumerResult = await verifyConsumers({
       argv: ["--skip-build"],
@@ -67,15 +69,15 @@ export async function runVerifyAll(options = {}) {
       runCommand,
       writeOutput: true,
     });
-    personalOk = consumerResult.statusByLabel.get("personal-agent contract") === true;
-    a8cOk = consumerResult.statusByLabel.get("a8c-agent contract") === true;
+    alphaOk = consumerResult.statusByLabel.get("local-agent-alpha contract") === true;
+    betaOk = consumerResult.statusByLabel.get("local-agent-beta contract") === true;
   } else {
     stderr.write("Consumer verification skipped because the repo gate is not green.\n");
   }
 
-  stdout.write(renderFinalSummary({ repoOk, personalOk, a8cOk }));
+  stdout.write(renderFinalSummary({ repoOk, alphaOk, betaOk }));
   return {
-    exitCode: repoOk && personalOk && a8cOk ? 0 : 1,
+    exitCode: repoOk && alphaOk && betaOk ? 0 : 1,
   };
 }
 
@@ -83,11 +85,11 @@ export function renderFinalSummary(input) {
   return [
     "final summary",
     `repo ${input.repoOk ? "ok" : "fail"}`,
-    `personal-agent contract ${input.personalOk ? "ok" : "fail"}`,
-    `a8c-agent contract ${input.a8cOk ? "ok" : "fail"}`,
+    `local-agent-alpha contract ${input.alphaOk ? "ok" : "fail"}`,
+    `local-agent-beta contract ${input.betaOk ? "ok" : "fail"}`,
     `repo ${input.repoOk ? "green" : "failed"}`,
-    `personal-agent contract ${input.personalOk ? "green" : "failed"}`,
-    `a8c-agent contract ${input.a8cOk ? "green" : "failed"}`,
+    `local-agent-alpha contract ${input.alphaOk ? "green" : "failed"}`,
+    `local-agent-beta contract ${input.betaOk ? "green" : "failed"}`,
   ].join("\n") + "\n";
 }
 
@@ -107,7 +109,7 @@ function usage() {
     "Usage:",
     "  pnpm run verify:all",
     "",
-    "Runs check:architecture, build, typecheck, test, test:demo, git diff --check, then verify:consumers.",
+    "Runs check:secrets, check:oss-hygiene, check:architecture, build, typecheck, test, test:demo, git diff --check, then verify:consumers.",
   ].join("\n");
 }
 

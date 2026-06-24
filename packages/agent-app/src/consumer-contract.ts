@@ -10,7 +10,7 @@ import type { RunSummaryStatus } from "@mono-agent/observability";
 import { loadAppCoreConfig } from "./app-config.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 
-export const consumerContractNames = ["personal-agent", "a8c-agent"] as const;
+export const consumerContractNames = ["local-agent-alpha", "local-agent-beta"] as const;
 
 export type ConsumerContractName = (typeof consumerContractNames)[number];
 
@@ -68,7 +68,7 @@ interface ConsumerFixture {
 }
 
 const expectedContracts = {
-  "personal-agent": {
+  "local-agent-alpha": {
     memoryMode: "bujo",
     allowedTools: [
       "Read",
@@ -98,7 +98,7 @@ const expectedContracts = {
       "openai-api": true,
     },
   },
-  "a8c-agent": {
+  "local-agent-beta": {
     memoryMode: "journal",
     allowedTools: [
       "Read",

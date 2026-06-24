@@ -898,7 +898,7 @@ describe("agent host phoenix exporter wiring", () => {
       createRunId: () => "run-ctx",
       observabilityContext: {
         sourceId: "src-123",
-        sourceLabel: "Personal Agent",
+        sourceLabel: "Local Agent Alpha",
         configPath: "/home/me/mono-agent.config.json",
       },
       exporterFactory: (cfg) => realPhoenixExporter(cfg, { fetch: fetchImpl }),
@@ -914,7 +914,7 @@ describe("agent host phoenix exporter wiring", () => {
     expect(exported).toContain("mono.agent.source_id");
     expect(exported).toContain("src-123");
     expect(exported).toContain("mono.agent.source_label");
-    expect(exported).toContain("Personal Agent");
+    expect(exported).toContain("Local Agent Alpha");
     expect(exported).toContain("mono.agent.config_path");
     expect(exported).toContain("/home/me/mono-agent.config.json");
   });

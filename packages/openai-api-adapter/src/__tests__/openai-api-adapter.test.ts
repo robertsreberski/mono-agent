@@ -635,7 +635,7 @@ describe("OpenAI API adapter", () => {
         await stream.event?.({
           type: "tool_call_started",
           id: "call-1",
-          name: "mcp__context_a8c__search",
+          name: "mcp__context_example__search",
           arguments: { query: "OpenWebUI tool rendering" },
         });
         await stream.event?.({
@@ -669,10 +669,10 @@ describe("OpenAI API adapter", () => {
       expect(response.status).toBe(200);
       const body = await response.text();
       expect(body).toContain("\"reasoning_content\":\"checking available context\"");
-      expect(body).toContain("\"reasoning_content\":\"Running mcp__context_a8c__search...\"");
+      expect(body).toContain("\"reasoning_content\":\"Running mcp__context_example__search...\"");
       expect(body).toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
       expect(body).toContain("id=\\\"call-1\\\"");
-      expect(body).toContain("name=\\\"mcp__context_a8c__search\\\"");
+      expect(body).toContain("name=\\\"mcp__context_example__search\\\"");
       expect(body).toContain("OpenWebUI tool rendering");
       expect(body).toContain("{\\\"matches\\\":2}");
       expect(body).not.toContain("\"tool_calls\"");
@@ -691,7 +691,7 @@ describe("OpenAI API adapter", () => {
         await stream.event?.({
           type: "tool_call_started",
           id: "call-1",
-          name: "mcp__context_a8c__search",
+          name: "mcp__context_example__search",
           arguments: { query: "OpenWebUI tool rendering" },
         });
         await releaseTool.promise;
@@ -729,7 +729,7 @@ describe("OpenAI API adapter", () => {
       }
       const earlyBody = await readUntil(
         reader,
-        "\"reasoning_content\":\"Running mcp__context_a8c__search...\"",
+        "\"reasoning_content\":\"Running mcp__context_example__search...\"",
       );
       expect(earlyBody).not.toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
 
@@ -746,11 +746,11 @@ describe("OpenAI API adapter", () => {
   it("does not duplicate tool-start progress already emitted as a runtime thought", async () => {
     const responder: AgentResponder = {
       async respond(_request, stream) {
-        await stream.event?.({ type: "assistant_thought", text: "Running mcp__context_a8c__search..." });
+        await stream.event?.({ type: "assistant_thought", text: "Running mcp__context_example__search..." });
         await stream.event?.({
           type: "tool_call_started",
           id: "call-1",
-          name: "mcp__context_a8c__search",
+          name: "mcp__context_example__search",
           arguments: { query: "OpenWebUI tool rendering" },
         });
         await stream.event?.({
@@ -782,7 +782,7 @@ describe("OpenAI API adapter", () => {
 
       expect(response.status).toBe(200);
       const body = await response.text();
-      expect(body.match(/"reasoning_content":"Running mcp__context_a8c__search\.\.\."/gu)).toHaveLength(1);
+      expect(body.match(/"reasoning_content":"Running mcp__context_example__search\.\.\."/gu)).toHaveLength(1);
       expect(body).toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
     } finally {
       await server.stop();
