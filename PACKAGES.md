@@ -54,6 +54,7 @@ flowchart TB
     Contracts["@mono-agent/agent-contracts"]
     Settings["@mono-agent/settings"]
     Config["@mono-agent/config"]
+    RepoGuard["@mono-agent/repo-guard"]
     ToolPolicy["@mono-agent/tool-policy"]
   end
 
@@ -75,6 +76,7 @@ flowchart TB
   AgentApp --> Host
   AgentApp --> Config
   AgentApp --> Observability
+  AgentApp --> RepoGuard
 
   MultiDemo --> A2A
   MultiDemo --> Telegram
@@ -138,7 +140,7 @@ flowchart TB
 | Layer | Packages |
 | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` |
-| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/repo-guard`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |

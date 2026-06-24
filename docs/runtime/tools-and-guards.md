@@ -6,7 +6,7 @@ sidebar:
 
 # Built-in tools & auto-guards
 
-This page covers the tools every mono-agent ships with out of the box (Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch) and the runtime guards that protect each turn: the tool-output bloat guard, per-run usage/cost tracking, provider-delegated context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
+This page covers the tools every mono-agent ships with out of the box (Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch) and the runtime guards that protect each turn: the tool-output bloat guard, per-run usage/cost tracking, provider-delegated context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically. For development-time GitHub metadata checks, see [Repo-visible output guard](/runtime/repo-visible-output-guard/).
 
 ## Built-in tools
 
@@ -113,3 +113,4 @@ There is no config-file or CLI key for this (coverage: `code`). Enable it only w
 | Context compaction | `provider` + `settings` | Bridge-driven; `agent_compaction_*` settings |
 | WebFetch retry | `auto` | Built into the WebFetch tool |
 | Tool parallelism | `code` | `runtimeOptions.piToolParallelismMode` |
+| Repo-visible output guard | `cli / code` | `mono-agent repo-guard scan`; `@mono-agent/repo-guard` |

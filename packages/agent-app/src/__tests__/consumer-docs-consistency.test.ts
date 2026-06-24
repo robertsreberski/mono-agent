@@ -20,7 +20,7 @@ describe("consumer docs/config consistency checker", () => {
   it("fails when README references retired surfaces that the local config does not expose", async () => {
     const dir = await writeConsumer({
       readme: [
-        "# A8C Agent",
+        "# Local Agent Beta",
         "",
         "Install @mono-agent/memory-mcp, call memory_note, and inspect the operator console.",
       ].join("\n"),

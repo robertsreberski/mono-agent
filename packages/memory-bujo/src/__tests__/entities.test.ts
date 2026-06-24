@@ -4,10 +4,10 @@ import { fakeLlm } from "./helpers.js";
 
 const GOOD_RESPONSE = JSON.stringify({
   entities: [
-    { id: "person:robert", name: "Robert", type: "person" },
+    { id: "person:example-operator", name: "Example Operator", type: "person" },
     { id: "project:mono-agent", name: "mono-agent", type: "project" },
   ],
-  relations: [{ src: "person:robert", dst: "project:mono-agent", relation: "maintains" }],
+  relations: [{ src: "person:example-operator", dst: "project:mono-agent", relation: "maintains" }],
 });
 
 describe("extractEntities", () => {
@@ -23,12 +23,12 @@ describe("extractEntities", () => {
 
   it("parses well-formed entities and relations from canned LLM response", async () => {
     const llm = fakeLlm([["entities", GOOD_RESPONSE]]);
-    const result = await extractEntities("Robert maintains mono-agent", llm);
+    const result = await extractEntities("Example Operator maintains mono-agent", llm);
     expect(result.entities).toHaveLength(2);
-    expect(result.entities[0]).toMatchObject({ id: "person:robert", name: "Robert", type: "person" });
+    expect(result.entities[0]).toMatchObject({ id: "person:example-operator", name: "Example Operator", type: "person" });
     expect(result.entities[1]).toMatchObject({ id: "project:mono-agent", name: "mono-agent" });
     expect(result.relations).toHaveLength(1);
-    expect(result.relations[0]).toMatchObject({ src: "person:robert", dst: "project:mono-agent", relation: "maintains" });
+    expect(result.relations[0]).toMatchObject({ src: "person:example-operator", dst: "project:mono-agent", relation: "maintains" });
   });
 
   it("drops entities missing id", async () => {
@@ -120,7 +120,7 @@ describe("extractEntities", () => {
   it("handles fenced JSON response from LLM", async () => {
     const fenced = `Sure, here are the entities:\n\`\`\`json\n${GOOD_RESPONSE}\n\`\`\``;
     const llm = fakeLlm([["entities", fenced]]);
-    const result = await extractEntities("Robert maintains mono-agent", llm);
+    const result = await extractEntities("Example Operator maintains mono-agent", llm);
     expect(result.entities).toHaveLength(2);
     expect(result.relations).toHaveLength(1);
   });

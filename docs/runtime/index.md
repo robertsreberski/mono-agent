@@ -45,6 +45,7 @@ The `runtime.model` string is always `<backend>:<...>` — `claude:*`, `codex:*`
 - [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint via `providers.local[]` for `pi:<provider>:<model>` references, plus pi-native transport tuning and OAuth credential resolution.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
 - [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the bundled Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch tools and the automatic guards (tool-output bloat truncation, WebFetch retry, cost tracking, context compaction).
+- [Repo-visible output guard](/runtime/repo-visible-output-guard/) — local denylist guard and scan command for GitHub-visible metadata.
 
 ## Local providers in one block
 

@@ -27,6 +27,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
 | `metrics` | Aggregate local run summaries into status rates, failure-kind rates, duration percentiles, and cost totals. | `--artifacts <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--json`, `--config <path>`, `--env-file <path>` |
+| `repo-guard` | Audit repo-visible output against the local denylist. | `scan`, `--local`, `--github --repo owner/name`, `--include-untracked`, `--denylist-file <path>`, `--json` |
 | `help` | Print the usage screen. | — |
 
 Every command is `cli` coverage. `start`, `restart`, `stop`, `status`, and `logs` are the background service commands; `start --foreground` is the cross-platform fallback. `stop`, `logs`, and `start --foreground` are real commands (they were absent from older feature listings).
@@ -112,7 +113,7 @@ Loads every config section and prints a status report, then exits `0` when the c
 ```bash
 mono-agent validate
 mono-agent validate --config ./agents/support.config.json --env-file ./.env.staging
-mono-agent validate --consumer ../personal-agent
+mono-agent validate --consumer ../local-agent-alpha
 ```
 
 | Flag | Effect |
@@ -255,7 +256,7 @@ Audits recorded run summary artifacts without exporting, reconciling, or rewriti
 | `--json` | Print the full machine-readable audit report. |
 
 ```bash
-mono-agent audit-runs --consumer ~/personal-agent --json
+mono-agent audit-runs --consumer ~/local-agent-alpha --json
 mono-agent audit-runs --artifact-dir ./.mono-agent/artifacts --stale-after-ms 30000
 ```
 
@@ -283,6 +284,27 @@ mono-agent metrics --by model --since 2026-06-01T00:00:00Z --json
 The command reports total runs, status counts/rates, failure-kind rates, `durationMs` p50/p90/p99/max, and cost totals. Cost prefers `cost.cumulativeUsd`, then `cost.totalUsd`, then `usage.cost_usd`; malformed or redacted non-numeric values are ignored. Channel grouping is derived from the `conversationId` prefix before `:`, so treat it as best-effort until summaries persist a first-class channel field.
 
 See [Artifact metrics](/observability/artifact-metrics/) for the full report contract and window semantics.
+
+## `repo-guard`
+
+Audits repo-visible content against local-only exact-match denylist entries. The
+default scan reads tracked text files from `git ls-files` and skips lockfiles and
+generated outputs:
+
+```bash
+mono-agent repo-guard scan
+```
+
+Use `--include-untracked` for local working files, and `--github --repo owner/name`
+to scan issue/PR titles, bodies, PR branch refs, comments, reviews, and inline
+review comments through `gh`. Findings print surface, identifier, field path,
+and denylist label only. The raw matched value is not printed, and the command
+exits nonzero when findings exist.
+
+Configure entries with the ignored default file
+`.mono-agent/repo-visible-denylist.jsonl`, `--denylist-file <path>`,
+`MONO_AGENT_REPO_VISIBLE_DENYLIST_FILE`, or the JSON-array smoke-test variable
+`MONO_AGENT_REPO_VISIBLE_DENYLIST`. See [Repo-visible output guard](/runtime/repo-visible-output-guard/).
 
 ## `backfill`
 

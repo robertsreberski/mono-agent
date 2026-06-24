@@ -44,6 +44,7 @@ import type { InstallSkillTarget } from "./install-skill.js";
 import { runMetrics } from "./metrics.js";
 import { findRecipe, RECIPE_CATALOG, recipeIds, resolveRecipeInputs } from "./recipes/index.js";
 import type { AgentRecipe } from "./recipes/index.js";
+import { runRepoGuard } from "./repo-guard.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeSessions } from "./sessions.js";
 import { collectSetupOptions } from "./setup.js";
@@ -56,7 +57,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs", "metrics"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs", "metrics", "repo-guard"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -95,6 +96,16 @@ interface ParsedCliArgs {
   readonly artifactDir?: string;
   /** metrics: group totals by this summary dimension. */
   readonly groupBy?: "model" | "channel" | "failureKind";
+  /** repo-guard: scan tracked local files. Defaults on unless --github is the only selected scan. */
+  readonly repoGuardLocal?: boolean;
+  /** repo-guard: scan GitHub issue/PR metadata through gh. */
+  readonly repoGuardGithub?: boolean;
+  /** repo-guard: include untracked files in local scan. */
+  readonly includeUntracked?: boolean;
+  /** repo-guard: GitHub owner/name for metadata scans. */
+  readonly githubRepo?: string;
+  /** repo-guard: explicit local-only denylist path. */
+  readonly denylistFile?: string;
   /** validate/audit-runs: resolve config, env, artifacts, and checks relative to this consumer folder. */
   readonly consumerPath?: string;
   /** audit-runs: override the stale-running cutoff interval. */
@@ -134,6 +145,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let dryRun = false;
   let artifactDir: string | undefined;
   let groupBy: "model" | "channel" | "failureKind" | undefined;
+  let repoGuardLocal = false;
+  let repoGuardGithub = false;
+  let includeUntracked = false;
+  let githubRepo: string | undefined;
+  let denylistFile: string | undefined;
   let consumerPath: string | undefined;
   let staleAfterMs: number | undefined;
   let json = false;
@@ -187,6 +203,21 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       }
       case "--json":
         json = true;
+        break;
+      case "--local":
+        repoGuardLocal = true;
+        break;
+      case "--github":
+        repoGuardGithub = true;
+        break;
+      case "--include-untracked":
+        includeUntracked = true;
+        break;
+      case "--repo":
+        githubRepo = requireValue(rest, ++i, flag);
+        break;
+      case "--denylist-file":
+        denylistFile = requireValue(rest, ++i, flag);
         break;
       case "--model":
         model = requireValue(rest, ++i, flag);
@@ -290,6 +321,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     dryRun,
     ...(artifactDir === undefined ? {} : { artifactDir }),
     ...(groupBy === undefined ? {} : { groupBy }),
+    ...(repoGuardLocal ? { repoGuardLocal } : {}),
+    ...(repoGuardGithub ? { repoGuardGithub } : {}),
+    ...(includeUntracked ? { includeUntracked } : {}),
+    ...(githubRepo === undefined ? {} : { githubRepo }),
+    ...(denylistFile === undefined ? {} : { denylistFile }),
     ...(consumerPath === undefined ? {} : { consumerPath }),
     ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
     ...(json ? { json } : {}),
@@ -440,6 +476,16 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   },
   {
     signature:
+      "mono-agent repo-guard scan [--local] [--github --repo owner/name]\n" +
+      "                         [--include-untracked] [--denylist-file <path>] [--json]",
+    lines: [
+      "Audit repo-visible output against the local denylist. Local scan defaults",
+      "to tracked text files; --github reads issue/PR titles, bodies, comments,",
+      "reviews, and inline review comments through gh. Findings print labels only.",
+    ],
+  },
+  {
+    signature:
       "mono-agent metrics [--artifacts <path>] [--since <iso>] [--until <iso>]\n" +
       "                   [--by model|channel|failureKind] [--json] [--config <path>] [--env-file <path>]",
     lines: [
@@ -544,6 +590,16 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.since === undefined ? {} : { since: args.since }),
         ...(args.until === undefined ? {} : { until: args.until }),
         ...(args.groupBy === undefined ? {} : { groupBy: args.groupBy }),
+        json: args.json === true,
+      });
+    case "repo-guard":
+      return await runRepoGuard({
+        positionals: args.positionals,
+        ...(args.repoGuardLocal === undefined ? {} : { local: args.repoGuardLocal }),
+        ...(args.repoGuardGithub === undefined ? {} : { github: args.repoGuardGithub }),
+        ...(args.includeUntracked === undefined ? {} : { includeUntracked: args.includeUntracked }),
+        ...(args.githubRepo === undefined ? {} : { repo: args.githubRepo }),
+        ...(args.denylistFile === undefined ? {} : { denylistFile: args.denylistFile }),
         json: args.json === true,
       });
   }

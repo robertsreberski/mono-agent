@@ -35,7 +35,7 @@ const runSummaryStatuses = {
 
 type ValidationReport = Awaited<ReturnType<typeof validateMonoAgentFolder>>;
 type ChannelStatus = ValidationReport["sections"][number]["status"];
-type ConsumerName = "personal-agent" | "a8c-agent";
+type ConsumerName = "local-agent-alpha" | "local-agent-beta";
 type ConsumerSourceJson = MonoAgentConfigJson & {
   readonly telegram?: { readonly enabled?: boolean };
   readonly slack?: { readonly enabled?: boolean };
@@ -53,7 +53,7 @@ interface ConsumerFixture {
 }
 
 const expectedContracts = {
-  "personal-agent": {
+  "local-agent-alpha": {
     memoryMode: "bujo",
     allowedTools: [
       "Read",
@@ -83,7 +83,7 @@ const expectedContracts = {
       "openai-api": true,
     },
   },
-  "a8c-agent": {
+  "local-agent-beta": {
     memoryMode: "journal",
     allowedTools: [
       "Read",
@@ -124,9 +124,9 @@ afterEach(async () => {
 });
 
 describe("golden consumer config contracts", () => {
-  it("validates the personal-agent fixture without network access", async () => {
+  it("validates the local-agent-alpha fixture without network access", async () => {
     const fetchSpy = disableNetwork();
-    const fixture = await loadConsumerFixture("personal-agent");
+    const fixture = await loadConsumerFixture("local-agent-alpha");
 
     assertConsumerContract(fixture);
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -200,9 +200,9 @@ describe("golden consumer config contracts", () => {
     `);
   });
 
-  it("validates the a8c-agent fixture without network access", async () => {
+  it("validates the local-agent-beta fixture without network access", async () => {
     const fetchSpy = disableNetwork();
-    const fixture = await loadConsumerFixture("a8c-agent");
+    const fixture = await loadConsumerFixture("local-agent-beta");
 
     assertConsumerContract(fixture);
     expect(fetchSpy).not.toHaveBeenCalled();

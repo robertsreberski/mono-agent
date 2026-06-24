@@ -147,6 +147,7 @@ All channels are independent JSON sections and opt-in via an `enabled` flag (def
 | `app.cli-restart-clean` | cli | `mono-agent restart [--config] [--force]` | — | [CLI reference](/observability/cli-reference/) | — |
 | `app.cli-install-skill` | cli | `mono-agent install-skill [--target claude\|codex\|both] [--force]` | — | [CLI reference](/observability/cli-reference/) | — |
 | `app.env-file` | cli | automatic; `--env-file <path>` to override | — | [Env vars](/config/env-vars/) | — |
+| `app.repo-visible-guard` | cli / code | `mono-agent repo-guard scan`; `@mono-agent/repo-guard` | `MONO_AGENT_REPO_VISIBLE_DENYLIST`, `MONO_AGENT_REPO_VISIBLE_DENYLIST_FILE` | [Repo-visible output guard](/runtime/repo-visible-output-guard/) | — |
 | `harness.failure-handling` | auto | (built into every run) | — | [Composition](/programmatic/composition/) | — |
 | `harness.request-runtime-options` | code | `createConfiguredAgentResponder({ runtimeOptionsForRequest })` | — | [Composition](/programmatic/composition/) | — |
 | `orchestrator.ask-collaborator` | code | `createCollaboratorToolRuntimeExtension` + `runtimeOptionsForRequest` | — | [Multi-agent](/programmatic/multi-agent/) | [Multi-agent orchestration](/playbooks/multi-agent-orchestration/) |

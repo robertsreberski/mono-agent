@@ -59,6 +59,9 @@ importers:
       '@mono-agent/openai-api-adapter':
         specifier: workspace:0.4.0
         version: link:packages/openai-api-adapter
+      '@mono-agent/repo-guard':
+        specifier: workspace:0.4.0
+        version: link:packages/repo-guard
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:packages/runtime-adapter
@@ -156,6 +159,9 @@ importers:
       '@mono-agent/openai-api-adapter':
         specifier: workspace:0.4.0
         version: link:../openai-api-adapter
+      '@mono-agent/repo-guard':
+        specifier: workspace:0.4.0
+        version: link:../repo-guard
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
@@ -389,6 +395,8 @@ importers:
       '@types/express':
         specifier: ^5.0.2
         version: 5.0.6
+
+  packages/repo-guard: {}
 
   packages/runtime-adapter:
     dependencies:

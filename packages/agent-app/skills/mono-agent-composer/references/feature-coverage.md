@@ -79,6 +79,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate [--consumer <path>]\|config\|recipes\|start\|install-skill` |
 | Recipe capability check (selected recipe live?) | cli | `mono-agent validate --recipe <id>` |
 | `.env` auto-loading | cli | automatic; `--env-file <path>` |
+| Repo-visible output guard and scan | cli / code | `mono-agent repo-guard scan`; `@mono-agent/repo-guard`; local entries from `.mono-agent/repo-visible-denylist.jsonl`, `MONO_AGENT_REPO_VISIBLE_DENYLIST_FILE`, or `MONO_AGENT_REPO_VISIBLE_DENYLIST` |
 | Explicit failure objects (no fake success) | auto | harness |
 | Per-request runtime options, custom memory/history stores | code | `createConfiguredAgentResponder` options |
 | Multi-agent delegation (`ask_collaborator` loopback MCP tool) | code | `@mono-agent/agent-orchestrator` |

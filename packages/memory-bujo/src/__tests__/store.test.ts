@@ -19,7 +19,7 @@ describe("BujoMemoryStore — tier derivation", () => {
 
     expect(store.tier()).toBe("lite");
 
-    await store.appendHostSummary("s1", "Robert prefers opt-in memory.");
+    await store.appendHostSummary("s1", "Example Operator prefers opt-in memory.");
     const block = await store.load("opt-in");
     // FTS recall: keyword must appear in the block
     expect(block?.content).toContain("opt-in memory");
@@ -55,18 +55,18 @@ describe("BujoMemoryStore — tier derivation", () => {
     const llm = fakeLlm([
       [
         "type:name-kebab",
-        JSON.stringify({ entities: [{ id: "person:robert", name: "Robert", type: "person" }], relations: [] }),
+        JSON.stringify({ entities: [{ id: "person:example-operator", name: "Example Operator", type: "person" }], relations: [] }),
       ],
       [
         "TEXT:",
-        JSON.stringify([{ type: "note", text: "Robert prefers morning routines", salience: 0.8, isInsight: false }]),
+        JSON.stringify([{ type: "note", text: "Example Operator prefers morning routines", salience: 0.8, isInsight: false }]),
       ],
     ]);
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, llm, clock: () => now });
 
     expect(store.tier()).toBe("bujo");
 
-    const result = await store.capture("s1", "Robert prefers morning routines for focus.");
+    const result = await store.capture("s1", "Example Operator prefers morning routines for focus.");
     expect(result).toBeDefined();
     expect(result?.actions).toBeGreaterThanOrEqual(1);
 
@@ -104,7 +104,7 @@ describe("BujoMemoryStore", () => {
     const now = new Date("2026-06-15T09:00:00.000Z");
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
 
-    const result = await store.appendHostSummary("global", "Robert prefers opt-in memory, never silent fallback.");
+    const result = await store.appendHostSummary("global", "Example Operator prefers opt-in memory, never silent fallback.");
     expect(result.bytesWritten).toBeGreaterThan(0);
 
     const file = readFileSync(dailyFilePath(root, now), "utf8");
@@ -174,19 +174,19 @@ describe("BujoMemoryStore", () => {
       [
         "type:name-kebab",
         JSON.stringify({
-          entities: [{ id: "person:robert", name: "Robert", type: "person" }],
+          entities: [{ id: "person:example-operator", name: "Example Operator", type: "person" }],
           relations: [],
         }),
       ],
       [
         "TEXT:",
-        JSON.stringify([{ type: "note", text: "Robert prefers opt-in memory", salience: 0.8, isInsight: false }]),
+        JSON.stringify([{ type: "note", text: "Example Operator prefers opt-in memory", salience: 0.8, isInsight: false }]),
       ],
     ]);
 
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now, llm });
 
-    const result = await store.capture("s1", "Robert prefers opt-in memory, never silent fallback.");
+    const result = await store.capture("s1", "Example Operator prefers opt-in memory, never silent fallback.");
     expect(result).toBeDefined();
     expect(result?.actions).toBeGreaterThanOrEqual(1);
     expect(result?.entities).toBe(1);
@@ -233,9 +233,9 @@ describe("BujoMemoryStore", () => {
 
     interface SeedSpec { id: string; text: string; salience: number }
     const seedSpecs: SeedSpec[] = [
-      { id: "S1", text: "Robert prefers morning focused work", salience: 0.7 },
-      { id: "S2", text: "Robert blocks calendar for deep work sessions", salience: 0.65 },
-      { id: "S3", text: "Robert avoids meetings before noon", salience: 0.6 },
+      { id: "S1", text: "Example Operator prefers morning focused work", salience: 0.7 },
+      { id: "S2", text: "Example Operator blocks calendar for deep work sessions", salience: 0.65 },
+      { id: "S3", text: "Example Operator avoids meetings before noon", salience: 0.6 },
     ];
     for (const spec of seedSpecs) {
       const bullet: Bullet = {
@@ -265,7 +265,7 @@ describe("BujoMemoryStore", () => {
     }
     db.close();
 
-    const insightText = "Robert guards his morning focus hours";
+    const insightText = "Example Operator guards his morning focus hours";
     const llm = fakeLlm([
       ["insight", JSON.stringify([{ text: insightText, sourceIds: ["S1", "S2"] }])],
     ]);

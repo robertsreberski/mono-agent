@@ -164,6 +164,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "repo-guard",
+    name: "@mono-agent/repo-guard",
+    category: "core",
+    responsibility: "Guards repo-visible GitHub output and repository scans against local-only denylisted identifiers.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
     dir: "runtime-adapter",
     name: "@mono-agent/runtime-adapter",
     category: "runtime",

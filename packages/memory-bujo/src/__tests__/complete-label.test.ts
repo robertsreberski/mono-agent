@@ -30,7 +30,7 @@ describe("memory LLM call labels", () => {
 
   it("extractEntities tags its completion with the capture:entities label", async () => {
     const rec = recordingLlm();
-    await extractEntities("Robert works on mono-agent", rec.llm);
+    await extractEntities("Example Operator works on mono-agent", rec.llm);
     expect(rec.calls).toHaveLength(1);
     expect(rec.calls[0]?.opts?.label).toBe("capture:entities");
   });

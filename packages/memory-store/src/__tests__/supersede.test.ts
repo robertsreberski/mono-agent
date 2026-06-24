@@ -11,8 +11,8 @@ function note(id: string, text: string): MemoryRecord {
 describe("supersede", () => {
   it("invalidates the old record (keeps the row) and links the new one", async () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64, clock: () => new Date("2026-06-16T00:00:00.000Z") });
-    await db.upsert(note("old", "Robert lives in Berlin"));
-    await db.supersede("old", note("new", "Robert lives in Lisbon"));
+    await db.upsert(note("old", "Example Operator lives in Berlin"));
+    await db.supersede("old", note("new", "Example Operator lives in Lisbon"));
 
     const old = db.get("old");
     expect(old).toBeDefined();                       // not deleted

@@ -58,8 +58,8 @@ When a downstream consumer folder lives outside this repo, run the manual docs/c
 
 ```sh
 node scripts/check-consumer-docs-consistency.mjs \
-  --consumer /Users/robertsreberski/personal-agent \
-  --consumer /Users/robertsreberski/a8c-agents/orchestrator
+  --consumer /Users/example/local-agent-alpha \
+  --consumer /Users/example/sentinel-workspace/orchestrator
 ```
 
 The check is static and offline. It compares each consumer `README.md` with that same folder's `mono-agent.config.json` and configured MCP file, then fails stale references to retired surfaces such as `@mono-agent/memory-mcp`, `memory_note`, and the operator console when the local config no longer exposes them.

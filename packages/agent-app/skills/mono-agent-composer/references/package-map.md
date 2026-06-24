@@ -22,6 +22,7 @@ Every real host needs these concepts:
 | --- | --- | --- | --- |
 | Shared request/response shape | `@mono-agent/agent-contracts` | `AgentResponder`, request, response, stream, cancellation contracts | Prompt building, runtime execution, transport |
 | Core config | `@mono-agent/config` | Runtime, context, memory, tools, artifact, traceability settings | Adapter credentials, chat allowlists |
+| Repo-visible metadata guard | `@mono-agent/repo-guard` | Local denylist loading, GitHub payload guard errors, local/GitHub metadata scans | Private dogfood role scripts, operator-specific denylist values |
 | Runtime facade | `@mono-agent/runtime-adapter` | Model refs, execution-mode validation, local provider runtime options | Prompts, adapters, memory |
 | Configured responder | `@mono-agent/agent-host` | Turns `MonoAgentConfig` into runtime, harness, and responder | Polling chats, serving APIs, adapter settings |
 
@@ -87,6 +88,8 @@ const runtimeOptions = toolPolicyToRuntimeOptions(policy);
 ```
 
 Do not grant broad tool access as a fallback. If the requested task needs tools, ask for the narrow allowlist or MCP config path.
+
+Use `@mono-agent/repo-guard` only for repo-visible metadata guardrails around GitHub titles, bodies, comments, reviews, branch names, and task metadata. Local denylist values stay outside git in `.mono-agent/repo-visible-denylist.jsonl` or env.
 
 ## Adapter Join
 

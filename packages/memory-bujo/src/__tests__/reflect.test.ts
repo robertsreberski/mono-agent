@@ -80,12 +80,12 @@ describe("reflect", () => {
     const db = openDb(root);
 
     // Seed 3 non-insight memories.
-    await seed(db, root, "MEM1", "Robert prefers quiet focused work in the mornings");
-    await seed(db, root, "MEM2", "Robert tends to schedule deep work sessions early in the day");
-    await seed(db, root, "MEM3", "Robert blocks calendar from 8am to noon for focus time");
+    await seed(db, root, "MEM1", "Example Operator prefers quiet focused work in the mornings");
+    await seed(db, root, "MEM2", "Example Operator tends to schedule deep work sessions early in the day");
+    await seed(db, root, "MEM3", "Example Operator blocks calendar from 8am to noon for focus time");
 
     // fakeLlm returns 1 insight referencing MEM1 and MEM2.
-    const insightText = "Robert is a morning-focused worker who guards his peak hours";
+    const insightText = "Example Operator is a morning-focused worker who guards his peak hours";
     const llm = fakeLlm([
       [
         "insight",
@@ -127,9 +127,9 @@ describe("reflect", () => {
     const root = newRoot();
     const db = openDb(root);
 
-    await seed(db, root, "MEM1", "Robert prefers quiet focused work in the mornings");
-    await seed(db, root, "MEM2", "Robert tends to schedule deep work sessions early");
-    await seed(db, root, "MEM3", "Robert blocks calendar for focus time");
+    await seed(db, root, "MEM1", "Example Operator prefers quiet focused work in the mornings");
+    await seed(db, root, "MEM2", "Example Operator tends to schedule deep work sessions early");
+    await seed(db, root, "MEM3", "Example Operator blocks calendar for focus time");
 
     const throwingLlm = {
       id: "throwing-llm",
@@ -154,10 +154,10 @@ describe("reflect", () => {
     const db = openDb(root);
 
     // Only 2 memories.
-    await seed(db, root, "MEM1", "Robert prefers quiet focused work");
-    await seed(db, root, "MEM2", "Robert schedules deep work early");
+    await seed(db, root, "MEM1", "Example Operator prefers quiet focused work");
+    await seed(db, root, "MEM2", "Example Operator schedules deep work early");
 
-    const insightText = "Robert guards his morning hours";
+    const insightText = "Example Operator guards his morning hours";
     const llm = fakeLlm([
       ["insight", JSON.stringify([{ text: insightText, sourceIds: ["MEM1"] }])],
     ]);
@@ -206,7 +206,7 @@ describe("reflect", () => {
     const db = openDb(root);
 
     // Seed 1 memory — not enough for insight synthesis, but decay still runs.
-    await seed(db, root, "MEM1", "Robert prefers focused mornings");
+    await seed(db, root, "MEM1", "Example Operator prefers focused mornings");
 
     const llm = fakeLlm([]);
     const result = await reflect(makeDeps(db, root, { llm, halfLifeDays: 7, floor: 0.1 }));

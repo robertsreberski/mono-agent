@@ -5,26 +5,26 @@ import { fakeEmbeddings } from "./helpers.js";
 describe("entity repository", () => {
   it("upserts entities idempotently and reads them back", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
-    db.upsertEntity({ id: "person:robert", name: "Robert", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
-    db.upsertEntity({ id: "person:robert", name: "Robert", type: "person", summary: "prefers opt-in memory", createdAt: "2026-06-15T09:00:00.000Z", updatedAt: "2026-06-16T00:00:00.000Z" });
-    expect(db.getEntity("person:robert")).toMatchObject({ name: "Robert", type: "person", summary: "prefers opt-in memory" });
+    db.upsertEntity({ id: "person:example-operator", name: "Example Operator", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
+    db.upsertEntity({ id: "person:example-operator", name: "Example Operator", type: "person", summary: "prefers opt-in memory", createdAt: "2026-06-15T09:00:00.000Z", updatedAt: "2026-06-16T00:00:00.000Z" });
+    expect(db.getEntity("person:example-operator")).toMatchObject({ name: "Example Operator", type: "person", summary: "prefers opt-in memory" });
     expect(db.countEntities()).toBe(1);
     db.close();
   });
 
   it("stores entity relations and lists them by src", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
-    db.upsertEntity({ id: "person:robert", name: "Robert", createdAt: "2026-06-15T09:00:00.000Z" });
+    db.upsertEntity({ id: "person:example-operator", name: "Example Operator", createdAt: "2026-06-15T09:00:00.000Z" });
     db.upsertEntity({ id: "project:mono-agent", name: "mono-agent", createdAt: "2026-06-15T09:00:00.000Z" });
-    db.addEntityRelation("person:robert", "project:mono-agent", "maintains");
-    expect(db.relationsFor("person:robert")).toContainEqual(expect.objectContaining({ dst: "project:mono-agent", relation: "maintains" }));
+    db.addEntityRelation("person:example-operator", "project:mono-agent", "maintains");
+    expect(db.relationsFor("person:example-operator")).toContainEqual(expect.objectContaining({ dst: "project:mono-agent", relation: "maintains" }));
     db.close();
   });
 
   it("listEntities returns entities ordered by name up to limit", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
     db.upsertEntity({ id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: "2026-06-15T09:00:00.000Z" });
-    db.upsertEntity({ id: "person:robert", name: "Robert", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
+    db.upsertEntity({ id: "person:example-operator", name: "Example Operator", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
     db.upsertEntity({ id: "concept:bujo", name: "BuJo", type: "concept", createdAt: "2026-06-15T09:00:00.000Z" });
 
     const all = db.listEntities(50);
