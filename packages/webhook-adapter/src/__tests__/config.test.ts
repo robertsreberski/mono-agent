@@ -76,7 +76,13 @@ describe("loadWebhookAdapterConfig", () => {
           defaultMode: "sync",
           endpoints: [
             { name: "invoke", path: "/webhook/invoke" },
-            { path: "/webhook/research-result", mode: "async", prompt: "Match the incoming result to a request." },
+            {
+              path: "/webhook/research-result",
+              mode: "async",
+              prompt: "Match the incoming result to a request.",
+              notify: true,
+              notifyConversationId: "telegram:42",
+            },
           ],
         },
       })}\n`,
@@ -92,6 +98,8 @@ describe("loadWebhookAdapterConfig", () => {
         mode: "async",
         enabled: true,
         prompt: "Match the incoming result to a request.",
+        notify: true,
+        notifyConversationId: "telegram:42",
       },
     ]);
     expect(config.path).toBe("/webhook/invoke");
@@ -101,10 +109,37 @@ describe("loadWebhookAdapterConfig", () => {
   it("reads endpoints from MONO_AGENT_WEBHOOK_ENDPOINTS_JSON", async () => {
     const config = await loadWebhookAdapterConfig({
       env: {
-        MONO_AGENT_WEBHOOK_ENDPOINTS_JSON: JSON.stringify([{ name: "hook", path: "/hook", mode: "async" }]),
+        MONO_AGENT_WEBHOOK_ENDPOINTS_JSON: JSON.stringify([
+          { name: "hook", path: "/hook", mode: "async", notify: true, notifyConversationId: "slack:C1" },
+        ]),
       },
     });
-    expect(config.endpoints).toEqual([{ name: "hook", path: "/hook", mode: "async", enabled: true }]);
+    expect(config.endpoints).toEqual([
+      { name: "hook", path: "/hook", mode: "async", enabled: true, notify: true, notifyConversationId: "slack:C1" },
+    ]);
+  });
+
+  it("loads native notification fields for the legacy single endpoint from env", async () => {
+    const config = await loadWebhookAdapterConfig({
+      env: {
+        MONO_AGENT_WEBHOOK_ENABLED: "true",
+        MONO_AGENT_WEBHOOK_PATH: "/hook",
+        MONO_AGENT_WEBHOOK_PROMPT: "Summarize the payload.",
+        MONO_AGENT_WEBHOOK_NOTIFY: "true",
+        MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID: "telegram:42",
+      },
+    });
+    expect(config.endpoints).toEqual([
+      {
+        name: "default",
+        path: "/hook",
+        mode: "sync",
+        enabled: true,
+        prompt: "Summarize the payload.",
+        notify: true,
+        notifyConversationId: "telegram:42",
+      },
+    ]);
   });
 
   it("synthesizes the legacy single endpoint with a prompt from webhook.prompt", async () => {
@@ -131,7 +166,7 @@ describe("loadWebhookAdapterConfig", () => {
     await mkdir(webhookDir);
     await writeFile(
       join(webhookDir, "deep-research.md"),
-      "---\npath: /webhook/deep-research\nmode: async\n---\nMatch the request and file it.",
+      "---\npath: /webhook/deep-research\nmode: async\nnotify: true\nnotifyConversationId: telegram:42\n---\nMatch the request and file it.",
       "utf8",
     );
 
@@ -141,6 +176,8 @@ describe("loadWebhookAdapterConfig", () => {
       path: "/webhook/deep-research",
       mode: "async",
       prompt: "Match the request and file it.",
+      notify: true,
+      notifyConversationId: "telegram:42",
     });
   });
 

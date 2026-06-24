@@ -16,6 +16,10 @@ export interface CronRequestMetadata {
   readonly timezone: string;
   readonly scheduledAt: string;
   readonly startedAt: string;
+  readonly nativeNotify?: {
+    readonly enabled: true;
+    readonly conversationId?: string;
+  };
 }
 
 export interface CronJob {
@@ -26,6 +30,10 @@ export interface CronJob {
   readonly conversationId?: string;
   /** Per-job watchdog override in milliseconds. Falls back to CronAdapterOptions.maxRunMs. */
   readonly maxRunMs?: number;
+  /** When true, the app host may deliver the final answer to a notify-capable conversation. */
+  readonly notify?: boolean;
+  /** Optional destination conversationId for native notification delivery. */
+  readonly notifyConversationId?: string;
 }
 
 /**
@@ -321,6 +329,14 @@ function startRun(
         timezone: job.timezone ?? DEFAULT_TIMEZONE,
         scheduledAt,
         startedAt,
+        ...(job.notify === true
+          ? {
+              nativeNotify: {
+                enabled: true,
+                ...(job.notifyConversationId === undefined ? {} : { conversationId: job.notifyConversationId }),
+              },
+            }
+          : {}),
       } satisfies CronRequestMetadata,
     },
   };

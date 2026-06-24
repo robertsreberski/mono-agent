@@ -21,9 +21,9 @@ Accept fast sync HTTP calls and long-running async jobs (202 + status polling) a
 - [`webhook.http-invoke`](/channels/webhook/) — `POST` a JSON body, the agent runs a turn.
 - [`webhook.sync-async-modes`](/channels/webhook/) — `sync` returns the body inline; `async` returns `202` + a status URL to poll.
 - [`webhook.endpoints-dir`](/channels/webhook/) — multiple named endpoints inline (`webhook.endpoints[]`) or as `*.md` files under `webhook.dir`.
-- [`channel.proactive-notify`](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns) — a webhook turn can call `notify_conversation` to deliver a result back into a chat (the async-callback pattern below).
+- [`channel.proactive-notify`](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns) — a webhook turn can call `notify_conversation` to deliver a result back into a chat, or an endpoint can use `notify: true` when its final answer should be delivered natively.
 
-The first three are **config** coverage (the `webhook` section plus `MONO_AGENT_WEBHOOK_*` env overrides); the notify tools are auto-injected on webhook turns.
+The first three are **config** coverage (the `webhook` section plus `MONO_AGENT_WEBHOOK_*` env overrides); the low-level notify tools are auto-injected on webhook turns unless the endpoint uses native notification.
 
 ## Configuration
 
@@ -58,7 +58,7 @@ The first three are **config** coverage (the `webhook` section plus `MONO_AGENT_
 }
 ```
 
-The matching env overrides are `MONO_AGENT_WEBHOOK_HOST`, `MONO_AGENT_WEBHOOK_PORT`, `MONO_AGENT_WEBHOOK_DEFAULT_MODE`, `MONO_AGENT_WEBHOOK_RETENTION_MS`, `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS`, and `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` (the `endpoints` array as a JSON string).
+The matching env overrides are `MONO_AGENT_WEBHOOK_HOST`, `MONO_AGENT_WEBHOOK_PORT`, `MONO_AGENT_WEBHOOK_DEFAULT_MODE`, `MONO_AGENT_WEBHOOK_RETENTION_MS`, `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS`, `MONO_AGENT_WEBHOOK_NOTIFY`, `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID`, and `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` (the `endpoints` array as a JSON string).
 
 :::caution
 The server binds to loopback by default. A non-loopback `host` (e.g. `0.0.0.0`) without `allowNonLoopback: true` is rejected — and a public endpoint bypasses channel allowlists, so put it behind a reverse proxy or auth layer you control.
@@ -77,11 +77,11 @@ mode: async
 You are triaging an inbound support ticket. Classify and summarize.
 ```
 
-`path` is required; `name` defaults to the filename stem, `mode` to `defaultMode`, and `enabled` to `true`. This mirrors how [cron](/channels/cron/) jobs can be authored as `cron/*.md` files.
+`path` is required; `name` defaults to the filename stem, `mode` to `defaultMode`, `enabled` to `true`, and `notify` to `false`. This mirrors how [cron](/channels/cron/) jobs can be authored as `cron/*.md` files.
 
 ## Async callback: deliver a result back into a chat
 
-Polling is fine for a script, but when the original request came from a **chat** the agent can instead push the result back into that conversation when the work finishes. A webhook turn automatically gets the `notify_conversation` / `list_notify_destinations` tools (not gated by `tools.allowedTools`), which makes the webhook the inbound half of an async callback:
+Polling is fine for a script, but when the original request came from a **chat** the agent can instead push the result back into that conversation when the work finishes. For simple one-message delivery, set `notify: true` on the endpoint and make the final answer the notification body. For dynamic destinations, a webhook turn without native notification automatically gets the `notify_conversation` / `list_notify_destinations` tools (not gated by `tools.allowedTools`), which makes the webhook the inbound half of an async callback:
 
 1. In a Telegram/Slack chat, the agent starts a long-running external job and asks the service to call back, embedding the current conversation id (from the [Session context block](/context/assembly/#session)) in the callback request.
 2. The service finishes and `POST`s to a webhook endpoint here, carrying that id in the body (e.g. as `conversationId` or inside `metadata`).

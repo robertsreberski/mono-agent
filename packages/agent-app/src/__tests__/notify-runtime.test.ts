@@ -15,9 +15,37 @@ describe("createNotifyToolsRuntimeExtension", () => {
     });
   });
 
+  it("does NOT inject notify tools on cron turns with native notification enabled", async () => {
+    const result = await ext({
+      request: {
+        metadata: {
+          cron: {
+            jobId: "morning",
+            nativeNotify: { enabled: true, conversationId: "telegram:42" },
+          },
+        },
+      },
+    });
+    expect(result.runtimeOptions.mcpServers).toBeUndefined();
+  });
+
   it("injects the notify MCP server on webhook trigger turns", async () => {
     const result = await ext({ request: { metadata: { webhook: { endpoint: "deploy-callback" } } } });
     expect(result.runtimeOptions.mcpServers?.[NOTIFY_TOOLS_MCP_SERVER_NAME]).toBeDefined();
+  });
+
+  it("does NOT inject notify tools on webhook turns with native notification enabled", async () => {
+    const result = await ext({
+      request: {
+        metadata: {
+          webhook: {
+            endpointName: "deploy-callback",
+            nativeNotify: { enabled: true, conversationId: "telegram:42" },
+          },
+        },
+      },
+    });
+    expect(result.runtimeOptions.mcpServers).toBeUndefined();
   });
 
   it("does NOT inject on live channel turns (telegram metadata)", async () => {

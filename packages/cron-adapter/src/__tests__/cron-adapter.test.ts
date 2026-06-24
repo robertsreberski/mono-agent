@@ -30,6 +30,8 @@ describe("Cron adapter", () => {
         timezone: "UTC",
         prompt: "check status",
         conversationId: "cron:heartbeat",
+        notify: true,
+        notifyConversationId: "telegram:42",
       }],
       now: () => new Date(Date.now()),
       onResult: (result) => {
@@ -44,6 +46,10 @@ describe("Cron adapter", () => {
         expect.objectContaining({
           jobId: "heartbeat",
           expression: "* * * * *",
+          nativeNotify: {
+            enabled: true,
+            conversationId: "telegram:42",
+          },
           scheduledAt: "1970-01-01T00:01:00.000Z",
           startedAt: "1970-01-01T00:01:00.000Z",
         }),

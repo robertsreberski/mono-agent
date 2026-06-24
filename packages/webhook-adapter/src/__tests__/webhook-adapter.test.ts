@@ -48,6 +48,57 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("includes native notify metadata and reports completed runs", async () => {
+    const seen: unknown[] = [];
+    const results: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        seen.push(request.metadata?.webhook);
+        await stream.append(`digest: ${request.text}`);
+        return {};
+      },
+    };
+
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [
+        {
+          name: "digest",
+          path: "/digest",
+          mode: "sync",
+          notify: true,
+          notifyConversationId: "telegram:42",
+        },
+      ],
+      responder,
+      onResult: (status, request) => {
+        results.push({ status, webhook: request.metadata.webhook });
+      },
+    });
+
+    try {
+      const response = await fetch(`${server.url}/digest`, postJson({ text: "payload", conversationId: "c1", mode: "sync" }));
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ status: "succeeded", text: "digest: payload" });
+      expect(seen).toEqual([
+        expect.objectContaining({
+          endpointName: "digest",
+          nativeNotify: { enabled: true, conversationId: "telegram:42" },
+        }),
+      ]);
+      expect(results).toEqual([
+        expect.objectContaining({
+          status: expect.objectContaining({ status: "succeeded", text: "digest: payload" }),
+          webhook: expect.objectContaining({ endpointName: "digest" }),
+        }),
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("accepts async invocations and exposes in-memory request status", async () => {
     let finish!: () => void;
     const responder: AgentResponder = {

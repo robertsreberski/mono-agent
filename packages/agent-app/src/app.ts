@@ -621,6 +621,8 @@ class MonoAgentAppController implements MonoAgentApp {
         coreConfig,
         responder,
         cwd: this.cwd,
+        notifyDestination: (conversationId, text) => this.notifyDestination(conversationId, text),
+        listNotifyDestinations: () => this.listNotifyDestinations(),
         postedMessageIndexPath,
         ...(this.logger === undefined ? {} : { logger: this.logger }),
         onFailure: (failureReason) => {

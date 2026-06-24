@@ -86,7 +86,7 @@ Consequences:
 
 - Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
-- This same model covers app-injected MCP tools such as `memory_recall`, the proactive `notify_conversation` / `list_notify_destinations` tools (injected **only on cron/webhook turns**, gated by request metadata — see [Delivery & send tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns)), and the `ask-collaborator` orchestration tool — they are gated by their own enable switches (or by which turn they appear on), not by the allowlist.
+- This same model covers app-injected MCP tools such as `memory_recall`, the proactive `notify_conversation` / `list_notify_destinations` tools (injected **only on cron/webhook turns without native notification**, gated by request metadata — see [Delivery & send tools](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns)), and the `ask-collaborator` orchestration tool — they are gated by their own enable switches (or by which turn they appear on), not by the allowlist.
 
 The `memory_recall` description is written to direct **proactive** recall: the agent is told to call it whenever context is missing or uncertain, before assuming or asking. This is behavioral guidance, not a gate — `memory_recall`'s availability is still governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
 

@@ -31,6 +31,10 @@ export interface WebhookRequestMetadata {
   readonly remoteAddress?: string;
   readonly headers: Record<string, string | string[] | undefined>;
   readonly payloadMetadata?: unknown;
+  readonly nativeNotify?: {
+    readonly enabled: true;
+    readonly conversationId?: string;
+  };
 }
 
 export interface WebhookInvocationRequest extends AgentRequestBase {
@@ -103,6 +107,10 @@ export interface WebhookEndpointOption {
   readonly path: string;
   readonly mode?: WebhookInvocationMode;
   readonly prompt?: string;
+  /** When true, the app host may deliver the final answer to a notify-capable conversation. */
+  readonly notify?: boolean;
+  /** Optional destination conversationId for native notification delivery. */
+  readonly notifyConversationId?: string;
 }
 
 export interface WebhookAdapterOptions {
@@ -119,6 +127,8 @@ export interface WebhookAdapterOptions {
   readonly path?: string;
   /** Default invocation mode for the legacy single endpoint and for endpoints that omit `mode`. */
   readonly defaultMode?: WebhookInvocationMode;
+  /** Best-effort completion hook; failures here must not affect HTTP responses or stored status. */
+  readonly onResult?: (status: WebhookInvocationStatus, request: WebhookInvocationRequest) => void;
 }
 
 export interface WebhookEndpointSummary {
@@ -149,6 +159,8 @@ interface ResolvedEndpoint {
   readonly path: string;
   readonly mode: WebhookInvocationMode;
   readonly prompt?: string;
+  readonly notify?: boolean;
+  readonly notifyConversationId?: string;
   readonly statusBasePath: string;
 }
 
@@ -317,6 +329,14 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
           headers: req.headers,
           ...(body.metadata === undefined ? {} : { payloadMetadata: body.metadata }),
+          ...(endpoint.notify === true
+            ? {
+                nativeNotify: {
+                  enabled: true,
+                  ...(endpoint.notifyConversationId === undefined ? {} : { conversationId: endpoint.notifyConversationId }),
+                },
+              }
+            : {}),
         },
       },
     };
@@ -437,6 +457,15 @@ async function runResponder(input: {
     }
   }
   setStatus(input.statuses, status, input.retentionMs, input.maxStoredRequests);
+  try {
+    input.options.onResult?.(status, input.request);
+  } catch (error) {
+    input.options.logger?.warn?.("Webhook onResult callback failed.", {
+      requestId: input.active.requestId,
+      conversationId: input.request.conversationId,
+      error: errorToMessage(error),
+    });
+  }
   return status;
 }
 
@@ -526,6 +555,8 @@ function resolveEndpoints(options: WebhookAdapterOptions): readonly ResolvedEndp
       mode: endpoint.mode ?? defaultMode,
       statusBasePath: statusBasePathFor(path),
       ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
+      ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
+      ...(endpoint.notifyConversationId === undefined ? {} : { notifyConversationId: endpoint.notifyConversationId }),
     };
   });
 

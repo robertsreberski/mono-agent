@@ -10,7 +10,13 @@ import {
 import type { A2AAdapterConfig, A2AProviderOptions, A2AProviderStartResult } from "@mono-agent/a2a-adapter";
 import { loadA2AAdapterConfig } from "@mono-agent/a2a-adapter";
 import { CronAdapterError, loadCronAdapterConfig, startCronAdapter } from "@mono-agent/cron-adapter";
-import type { CronAdapterConfig, CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
+import type {
+  CronAdapterConfig,
+  CronAdapterOptions,
+  CronAdapterStartResult,
+  CronJobConfig,
+  CronJobResult,
+} from "@mono-agent/cron-adapter";
 import { describeRunFailureKind } from "@mono-agent/observability";
 import {
   loadOpenAIApiAdapterConfig,
@@ -53,6 +59,9 @@ import type {
   WebhookAdapterConfig,
   WebhookAdapterOptions,
   WebhookAdapterStartResult,
+  WebhookEndpointConfig,
+  WebhookInvocationRequest,
+  WebhookInvocationStatus,
 } from "@mono-agent/webhook-adapter";
 import {
   loadWhatsAppAdapterConfig,
@@ -67,6 +76,7 @@ import type {
 } from "@mono-agent/whatsapp-adapter";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
+import type { NotifyToolDestination } from "./notify-tool.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import { appendPostedMessage, lookupProducingConversation } from "./posted-message-index.js";
 
@@ -124,6 +134,10 @@ export interface ChannelStartInput<TConfig> {
   readonly logger?: MonoAgentAppLogger;
   /** Reports a transport that died after a successful start (e.g. polling loop). */
   readonly onFailure: (reason: string) => void;
+  /** Native scheduled/webhook delivery hook owned by the app, used by proactive trigger channels. */
+  readonly notifyDestination?: (conversationId: string, text: string) => Promise<NotifyDeliveryResult>;
+  /** Candidate destinations for native delivery inference. */
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
   /**
    * Path to the posted-message index (the artifact-dir JSONL linking a posted
    * message back to its producing conversation). The Slack driver uses it to
@@ -417,6 +431,8 @@ export function createWebhookChannelDriver(
         : "Webhook adapter has no enabled endpoints.";
     },
     async start(input) {
+      const endpoints = input.config.endpoints.filter((endpoint) => endpoint.enabled);
+      const endpointByName = new Map(endpoints.map((endpoint) => [endpoint.name, endpoint]));
       const adapterFactory = overrides.adapterFactory ?? startWebhookAdapter;
       const adapter = await adapterFactory({
         host: input.config.host,
@@ -425,15 +441,26 @@ export function createWebhookChannelDriver(
         defaultMode: input.config.defaultMode,
         retentionMs: input.config.retentionMs,
         maxStoredRequests: input.config.maxStoredRequests,
-        endpoints: input.config.endpoints
-          .filter((endpoint) => endpoint.enabled)
+        endpoints: endpoints
           .map((endpoint) => ({
             name: endpoint.name,
             path: endpoint.path,
             mode: endpoint.mode,
             ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
+            ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
+            ...(endpoint.notifyConversationId === undefined ? {} : { notifyConversationId: endpoint.notifyConversationId }),
           })),
         responder: input.responder,
+        onResult: (status, request) => {
+          void deliverNativeWebhookNotification({
+            endpoint: endpointByName.get(request.metadata.webhook.endpointName),
+            status,
+            request,
+            ...(input.notifyDestination === undefined ? {} : { notifyDestination: input.notifyDestination }),
+            ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
+            ...(input.logger === undefined ? {} : { logger: input.logger }),
+          });
+        },
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
       return {
@@ -503,6 +530,9 @@ export interface CronChannelOverrides {
  * hung run is reclaimed rather than blocking the job indefinitely.
  */
 const DEFAULT_CRON_MAX_RUN_MS = 20 * 60 * 1000;
+const NATIVE_NOTIFY_PROMPT_PREFIX =
+  "Reply once with the exact notification body below and nothing else. " +
+  "Do not call tools. Do not add a preface, summary, or closing.";
 
 export function createCronChannelDriver(
   overrides: CronChannelOverrides = {},
@@ -522,6 +552,7 @@ export function createCronChannelDriver(
     },
     async start(input) {
       const jobs = input.config.jobs.filter((job) => job.enabled);
+      const jobById = new Map(jobs.map((job) => [job.id, job]));
       const adapterFactory = overrides.adapterFactory ?? startCronAdapter;
       const adapter = adapterFactory({
         responder: input.responder,
@@ -542,10 +573,19 @@ export function createCronChannelDriver(
           prompt: job.prompt,
           ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
           ...(job.maxRunMs === undefined ? {} : { maxRunMs: job.maxRunMs }),
+          ...(job.notify === undefined ? {} : { notify: job.notify }),
+          ...(job.notifyConversationId === undefined ? {} : { notifyConversationId: job.notifyConversationId }),
         })),
         onResult: (result) => {
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
           input.logger?.[level]?.("Cron job finished.", { result });
+          void deliverNativeCronNotification({
+            job: jobById.get(result.jobId),
+            result,
+            ...(input.notifyDestination === undefined ? {} : { notifyDestination: input.notifyDestination }),
+            ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
+            ...(input.logger === undefined ? {} : { logger: input.logger }),
+          });
         },
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
@@ -557,6 +597,154 @@ export function createCronChannelDriver(
       };
     },
   };
+}
+
+async function deliverNativeCronNotification(input: {
+  readonly job: CronJobConfig | undefined;
+  readonly result: CronJobResult;
+  readonly notifyDestination?: (conversationId: string, text: string) => Promise<NotifyDeliveryResult>;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  readonly logger?: MonoAgentAppLogger;
+}): Promise<void> {
+  const job = input.job;
+  if (job?.notify !== true || input.result.kind !== "succeeded") {
+    return;
+  }
+  const text = input.result.text;
+  if (text === undefined || text.trim().length === 0) {
+    return;
+  }
+  try {
+    if (input.notifyDestination === undefined) {
+      input.logger?.warn?.("Native cron notification skipped: no delivery hook is available.", { jobId: job.id });
+      return;
+    }
+
+    const destination = await resolveNativeCronNotifyDestination({
+      job,
+      ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
+      ...(input.logger === undefined ? {} : { logger: input.logger }),
+    });
+    if (destination === undefined) {
+      return;
+    }
+
+    const delivery = await input.notifyDestination(destination, nativeNotifyPrompt(text));
+    if (!delivery.delivered) {
+      input.logger?.warn?.("Native cron notification was not delivered.", {
+        jobId: job.id,
+        conversationId: destination,
+        ...(delivery.reason === undefined ? {} : { reason: delivery.reason }),
+      });
+    }
+  } catch (error) {
+    input.logger?.warn?.("Native cron notification failed.", {
+      jobId: job.id,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function resolveNativeCronNotifyDestination(input: {
+  readonly job: CronJobConfig;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  readonly logger?: MonoAgentAppLogger;
+}): Promise<string | undefined> {
+  if (input.job.notifyConversationId !== undefined) {
+    return input.job.notifyConversationId;
+  }
+  if (input.listNotifyDestinations === undefined) {
+    input.logger?.warn?.("Native cron notification skipped: no destination is configured and no destination resolver is available.", {
+      jobId: input.job.id,
+    });
+    return undefined;
+  }
+  const destinations = await input.listNotifyDestinations();
+  if (destinations.length !== 1) {
+    input.logger?.warn?.("Native cron notification skipped: destination inference requires exactly one candidate.", {
+      jobId: input.job.id,
+      destinationCount: destinations.length,
+    });
+    return undefined;
+  }
+  return destinations[0]?.conversationId;
+}
+
+async function deliverNativeWebhookNotification(input: {
+  readonly endpoint: WebhookEndpointConfig | undefined;
+  readonly status: WebhookInvocationStatus;
+  readonly request: WebhookInvocationRequest;
+  readonly notifyDestination?: (conversationId: string, text: string) => Promise<NotifyDeliveryResult>;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  readonly logger?: MonoAgentAppLogger;
+}): Promise<void> {
+  const endpoint = input.endpoint;
+  if (endpoint?.notify !== true || input.status.status !== "succeeded") {
+    return;
+  }
+  const text = input.status.text;
+  if (text === undefined || text.trim().length === 0) {
+    return;
+  }
+  const source = { endpointName: input.request.metadata.webhook.endpointName };
+  try {
+    if (input.notifyDestination === undefined) {
+      input.logger?.warn?.("Native webhook notification skipped: no delivery hook is available.", source);
+      return;
+    }
+
+    const destination = await resolveNativeWebhookNotifyDestination({
+      endpoint,
+      source,
+      ...(input.listNotifyDestinations === undefined ? {} : { listNotifyDestinations: input.listNotifyDestinations }),
+      ...(input.logger === undefined ? {} : { logger: input.logger }),
+    });
+    if (destination === undefined) {
+      return;
+    }
+
+    const delivery = await input.notifyDestination(destination, nativeNotifyPrompt(text));
+    if (!delivery.delivered) {
+      input.logger?.warn?.("Native webhook notification was not delivered.", {
+        ...source,
+        conversationId: destination,
+        ...(delivery.reason === undefined ? {} : { reason: delivery.reason }),
+      });
+    }
+  } catch (error) {
+    input.logger?.warn?.("Native webhook notification failed.", {
+      ...source,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function resolveNativeWebhookNotifyDestination(input: {
+  readonly endpoint: WebhookEndpointConfig;
+  readonly source: Record<string, unknown>;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyToolDestination[]>;
+  readonly logger?: MonoAgentAppLogger;
+}): Promise<string | undefined> {
+  if (input.endpoint.notifyConversationId !== undefined) {
+    return input.endpoint.notifyConversationId;
+  }
+  if (input.listNotifyDestinations === undefined) {
+    input.logger?.warn?.("Native webhook notification skipped: no destination is configured and no destination resolver is available.", input.source);
+    return undefined;
+  }
+  const destinations = await input.listNotifyDestinations();
+  if (destinations.length !== 1) {
+    input.logger?.warn?.("Native webhook notification skipped: destination inference requires exactly one candidate.", {
+      ...input.source,
+      destinationCount: destinations.length,
+    });
+    return undefined;
+  }
+  return destinations[0]?.conversationId;
+}
+
+function nativeNotifyPrompt(text: string): string {
+  return `${NATIVE_NOTIFY_PROMPT_PREFIX}\n\n---BEGIN NOTIFICATION---\n${text}\n---END NOTIFICATION---`;
 }
 
 export interface WhatsAppChannelOverrides {

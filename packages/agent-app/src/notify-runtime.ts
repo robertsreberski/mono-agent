@@ -33,7 +33,7 @@ export function createNotifyToolsRuntimeExtension(
     },
   };
   return async (input) => {
-    return isProactiveTrigger(input.request.metadata)
+    return isProactiveTrigger(input.request.metadata) && !isNativeNotify(input.request.metadata)
       ? { runtimeOptions: { mcpServers: entry }, cleanup: async () => {} }
       : EMPTY;
   };
@@ -41,4 +41,20 @@ export function createNotifyToolsRuntimeExtension(
 
 function isProactiveTrigger(metadata: Record<string, unknown> | undefined): boolean {
   return metadata !== undefined && (metadata.cron !== undefined || metadata.webhook !== undefined);
+}
+
+function isNativeNotify(metadata: Record<string, unknown> | undefined): boolean {
+  return isNativeNotifyTrigger(metadata?.cron) || isNativeNotifyTrigger(metadata?.webhook);
+}
+
+function isNativeNotifyTrigger(trigger: unknown): boolean {
+  if (typeof trigger !== "object" || trigger === null) {
+    return false;
+  }
+  const nativeNotify = (trigger as { nativeNotify?: unknown }).nativeNotify;
+  return (
+    typeof nativeNotify === "object" &&
+    nativeNotify !== null &&
+    (nativeNotify as { enabled?: unknown }).enabled === true
+  );
 }

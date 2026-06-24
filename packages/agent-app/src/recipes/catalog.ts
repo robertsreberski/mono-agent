@@ -206,7 +206,7 @@ const openaiApiGateway: AgentRecipe = {
 const cronDigest: AgentRecipe = {
   id: "cron-digest",
   title: "Cron digest agent",
-  description: "A scheduled cron job (authored as cron/digest.md) plus webhook loopback so the run has a delivery channel.",
+  description: "A scheduled cron job (authored as cron/digest.md) that can use native notification when a Telegram or Slack destination is configured.",
   tags: ["cron", "proactive", "digest"],
   riskLevel: "low",
   playbook: "cron-digest-proactive-notify.md",
@@ -221,18 +221,19 @@ const cronDigest: AgentRecipe = {
   ],
   config: (input) => withSections(input, {
     cron: { enabled: true },
-    webhook: { enabled: true },
   }),
   files: (input) => [
     {
       path: "cron/digest.md",
       contents: [
         "---",
-        `cron: "${input.cronExpression ?? "0 8 * * *"}"`,
+        `expression: "${input.cronExpression ?? "0 8 * * *"}"`,
+        "conversationId: cron-digest",
+        "notify: true",
         "---",
         "",
-        "Produce a concise digest of anything noteworthy since the last run and",
-        "deliver it to the configured notification channel.",
+        "Produce a concise digest of anything noteworthy since the last run.",
+        "Your final answer is the message to notify.",
         "",
       ].join("\n"),
     },

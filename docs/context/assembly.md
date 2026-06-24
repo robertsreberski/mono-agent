@@ -56,7 +56,7 @@ Skills are loaded from `<skillsRoot>/<name>/SKILL.md`, one per entry in `selecte
 The **Session** block (section 3) is auto-generated each turn (coverage `auto`, no config) and tells the agent which conversation it is currently handling — the turn's `conversationId`, with any daily-rollover date suffix stripped so the id is the stable, deliverable one.
 
 - For a deliverable push destination (`telegram:` / `slack:`), it also tells the agent how to wire an **async callback**: if the agent starts a long-running external operation, it can ask the service to include `"conversationId": "<id>"` in the JSON body of its callback to an inbound webhook, and the follow-up is routed back to this same conversation. See [Webhook](/channels/webhook/) and the [`notify_conversation` tool](/channels/delivery-and-send-tools/#proactive-notify-tools-cronwebhook-turns).
-- For non-push conversations (cron / webhook / openai-api / a2a), it instead clarifies that this conversation cannot itself receive a proactive follow-up — only `telegram:`/`slack:` ids are valid `notify_conversation` destinations (the agent uses `list_notify_destinations` to find one).
+- For non-push conversations (cron / webhook / openai-api / a2a), it instead clarifies that this conversation cannot itself receive a proactive follow-up — only `telegram:`/`slack:` ids are valid `notify_conversation` destinations (the agent uses `list_notify_destinations` to find one). Cron jobs and webhook endpoints with `notify: true` normally do not need this tool path; their successful final answer is delivered by the runtime.
 
 ## Memory recall
 

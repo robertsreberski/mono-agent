@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { CronAdapterConfig, CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
@@ -21,6 +21,33 @@ const baseInput = {
     jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true }],
   },
 } satisfies ChannelStartInput<CronAdapterConfig>;
+
+function succeededResult(text?: string) {
+  return {
+    kind: "succeeded" as const,
+    jobId: "j",
+    scheduledAt: "2026-01-01T00:00:00.000Z",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    ...(text === undefined ? {} : { text }),
+  };
+}
+
+async function startCapturingCron(input: unknown): Promise<CronAdapterOptions> {
+  let captured: CronAdapterOptions | undefined;
+  const driver = createCronChannelDriver({
+    adapterFactory: (options): CronAdapterStartResult => {
+      captured = options;
+      return { jobs: options.jobs, activeJobCount: 0, stop: () => {} };
+    },
+  });
+
+  await driver.start(input as never);
+  if (captured === undefined) {
+    throw new Error("Cron adapter was not started.");
+  }
+  return captured;
+}
 
 describe("cron channel driver — run watchdog", () => {
   it("passes a default maxRunMs so a hung run is reclaimed instead of blocking the job forever", async () => {
@@ -88,5 +115,182 @@ describe("cron channel driver — run watchdog", () => {
         maxRunMs: 2_700_000,
       },
     ]);
+  });
+});
+
+describe("cron channel driver — native notification delivery", () => {
+  it("passes native notify settings through to the cron adapter", async () => {
+    const captured = await startCapturingCron({
+      ...baseInput,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+          },
+        ],
+      },
+    });
+
+    expect(captured.jobs).toEqual([
+      {
+        id: "j",
+        expression: "* * * * *",
+        timezone: "UTC",
+        prompt: "p",
+        notify: true,
+        notifyConversationId: "telegram:42",
+      },
+    ]);
+  });
+
+  it("delivers successful native notify jobs to the configured destination", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+          },
+        ],
+      },
+    });
+
+    await captured.onResult?.(succeededResult("Morning brief"));
+
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
+    expect(notifyDestination).toHaveBeenCalledWith(
+      "telegram:42",
+      expect.stringContaining("Morning brief"),
+    );
+    const prompt = (notifyDestination.mock.calls[0] as [string, string] | undefined)?.[1];
+    expect(prompt).toContain("Do not call tools");
+  });
+
+  it("infers a single notify destination when no destination is configured", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const listNotifyDestinations = vi.fn(async () => [
+      { conversationId: "slack:C1", channelId: "slack" as const },
+    ]);
+    const captured = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      listNotifyDestinations,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+          },
+        ],
+      },
+    });
+
+    await captured.onResult?.(succeededResult("Digest"));
+
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledWith("slack:C1", expect.any(String)));
+  });
+
+  it("skips native delivery for blank final text", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+          },
+        ],
+      },
+    });
+
+    await captured.onResult?.(succeededResult("   "));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(notifyDestination).not.toHaveBeenCalled();
+  });
+
+  it("skips and warns when destination inference has zero or multiple candidates", async () => {
+    const warn = vi.fn();
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const listNotifyDestinations = vi.fn(async () => [
+      { conversationId: "telegram:42", channelId: "telegram" as const },
+      { conversationId: "slack:C1", channelId: "slack" as const },
+    ]);
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { warn },
+      notifyDestination,
+      listNotifyDestinations,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+          },
+        ],
+      },
+    });
+
+    await captured.onResult?.(succeededResult("Digest"));
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(notifyDestination).not.toHaveBeenCalled();
+  });
+
+  it("logs delivery failures without failing the cron result path", async () => {
+    const warn = vi.fn();
+    const notifyDestination = vi.fn(async () => ({ delivered: false, reason: "blocked" }));
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { warn },
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+          },
+        ],
+      },
+    });
+
+    expect(() => captured.onResult?.(succeededResult("Digest"))).not.toThrow();
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+    expect(warn.mock.calls.at(-1)?.[1]).toMatchObject({ jobId: "j", reason: "blocked" });
   });
 });
