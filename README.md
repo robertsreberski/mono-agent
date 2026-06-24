@@ -44,6 +44,8 @@ Package categories are catalog metadata, documentation, and architecture-guard i
 
 See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
+Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
+
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
