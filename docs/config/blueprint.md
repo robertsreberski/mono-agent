@@ -253,6 +253,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 ```bash
 mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b [--memory lite|journal|bujo]
 mono-agent validate     # per-section report incl. sandbox, observability, every channel; exit 0 means ready
+mono-agent validate --consumer ../personal-agent  # read-only report for a downstream folder
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
 mono-agent restart --force  # restart AND purge persisted pi sessions (fresh start; durable memory kept)
@@ -260,7 +261,7 @@ mono-agent restart --force  # restart AND purge persisted pi sessions (fresh sta
 
 Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it too) and run `mono-agent restart` to apply. There is no live browser re-apply. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
 
-A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. Keep all secrets there or in `MONO_AGENT_*` env vars — never commit real tokens.
+A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. Keep all secrets there or in `MONO_AGENT_*` env vars — never commit real tokens.
 
 :::caution
 :::

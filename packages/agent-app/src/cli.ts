@@ -87,7 +87,7 @@ interface ParsedCliArgs {
   readonly dryRun: boolean;
   /** audit-runs: read this artifact directory directly. */
   readonly artifactDir?: string;
-  /** audit-runs: resolve artifacts and stale interval relative to this consumer folder. */
+  /** validate/audit-runs: resolve config, env, artifacts, and checks relative to this consumer folder. */
   readonly consumerPath?: string;
   /** audit-runs: override the stale-running cutoff interval. */
   readonly staleAfterMs?: number;
@@ -244,6 +244,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     }
   }
 
+  if (consumerPath !== undefined && cmd !== "validate" && cmd !== "audit-runs") {
+    throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent audit-runs`.");
+  }
+
   return {
     command: cmd,
     ...(configPath === undefined ? {} : { configPath }),
@@ -285,6 +289,23 @@ export function loadCliEnvFile(path: string): boolean {
   }
 }
 
+interface ValidateContext {
+  readonly cwd: string;
+  readonly configPath: string;
+  readonly envFilePath: string;
+  readonly allowFilesystemWrites: boolean;
+}
+
+function resolveValidateContext(args: ParsedCliArgs, invocationCwd: string): ValidateContext {
+  const cwd = resolve(invocationCwd, args.consumerPath ?? ".");
+  return {
+    cwd,
+    configPath: resolve(cwd, args.configPath ?? "mono-agent.config.json"),
+    envFilePath: resolve(cwd, args.envFile ?? ".env"),
+    allowFilesystemWrites: args.consumerPath === undefined,
+  };
+}
+
 function requireValue(args: readonly string[], index: number, flag: string): string {
   const value = args[index];
   if (value === undefined || value.startsWith("--")) {
@@ -316,9 +337,10 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent validate [--recipe <id>] [--config <path>] [--env-file <path>]",
+    signature: "mono-agent validate [--recipe <id>] [--consumer <path>] [--config <path>] [--env-file <path>]",
     lines: [
       "Load every config section and report what would run, wait, or fail.",
+      "--consumer validates another agent folder read-only, including its .env.",
       "With --recipe, also report whether the recipe's capabilities are live.",
     ],
   },
@@ -429,7 +451,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
-  loadCliEnvFile(resolve(process.cwd(), args.envFile ?? ".env"));
+  const invocationCwd = process.cwd();
+  loadCliEnvFile(
+    args.command === "validate"
+      ? resolveValidateContext(args, invocationCwd).envFilePath
+      : resolve(invocationCwd, args.envFile ?? ".env"),
+  );
 
   switch (args.command) {
     case "help":
@@ -553,11 +580,12 @@ async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
 }
 
 async function runValidate(args: ParsedCliArgs): Promise<number> {
-  const cwd = process.cwd();
+  const context = resolveValidateContext(args, process.cwd());
   const report = await validateMonoAgentFolder({
     env: process.env,
-    cwd,
-    configPath: resolve(cwd, args.configPath ?? "mono-agent.config.json"),
+    cwd: context.cwd,
+    configPath: context.configPath,
+    allowFilesystemWrites: context.allowFilesystemWrites,
   });
 
   for (const section of report.sections) {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,15 @@ function sectionById(report: Awaited<ReturnType<typeof validateMonoAgentFolder>>
   const section = report.sections.find((candidate) => candidate.id === id);
   expect(section, `section ${id}`).toBeDefined();
   return section!;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function writeRunSummary(artifactDir: string, name: string, summary: Record<string, unknown>): Promise<void> {
@@ -814,6 +823,56 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     const memory = sectionById(report, "memory");
     expect(memory.status).toBe("waiting");
     expect(memory.details.join("\n")).toMatch(/writable|mkdir/iu);
+    expect(report.ok).toBe(true);
+  });
+
+  it("does not create a missing lite memory root when filesystem writes are disabled", async () => {
+    const memoryPath = join(dir, "missing-lite-memory");
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "lite",
+        path: memoryPath,
+        writeMode: "append-host-summary",
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      allowFilesystemWrites: false,
+    });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toContain("Consumer validation is read-only and did not create it");
+    expect(await pathExists(memoryPath)).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  it("does not create a missing journal memory root when filesystem writes are disabled", async () => {
+    const memoryPath = join(dir, "missing-journal-memory");
+    const configPath = await writeMinimalConfig({
+      memory: {
+        mode: "journal",
+        path: memoryPath,
+        writeMode: "append-host-summary",
+        embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    const memory = sectionById(report, "memory");
+    expect(memory.status).toBe("waiting");
+    expect(memory.details.join("\n")).toContain("Consumer validation is read-only and did not create it");
+    expect(await pathExists(memoryPath)).toBe(false);
     expect(report.ok).toBe(true);
   });
 
