@@ -98,6 +98,12 @@ Each section prints a status badge, a label, and its details. The statuses are:
 
 This catches the class of silent failure where an expired OAuth token quietly breaks crons or memory capture without any structural config error. Because the worst it returns is `waiting`, it never blocks `start` — read the section.
 
+### Runs health
+
+`validate` includes a **Runs health** section that reads the configured local run artifact directory only. It inspects the most recent recorded summaries, reports recent counts by status, warns for stale `running` summaries, surfaces `cancelled` / `interrupted` runs, and prints a compact failure-kind breakdown. Advisory lines use the `[WARN]` prefix and yield `waiting`, not `error`.
+
+An empty or missing artifact directory reports `disabled` and stays non-fatal. The section does not read event JSONL files, export anything, reconcile stale runs, or add network probes to the `start` / `restart` preflight.
+
 ## `start`
 
 Starts the agent. Without `--foreground`, it registers a background macOS service (launchd) for the config, prints the instance info, and returns; re-running restarts the running instance. Both modes refuse to start unless a valid `mono-agent.config.json` is present in the folder.

@@ -68,6 +68,10 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
+          "id": "runs",
+          "status": "disabled",
+        },
+        {
           "id": "channel:telegram",
           "status": "waiting",
         },
@@ -138,6 +142,10 @@ describe("golden consumer config contracts", () => {
         {
           "id": "observability",
           "status": "ok",
+        },
+        {
+          "id": "runs",
+          "status": "disabled",
         },
         {
           "id": "channel:telegram",

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,11 @@ function sectionById(report: Awaited<ReturnType<typeof validateMonoAgentFolder>>
   const section = report.sections.find((candidate) => candidate.id === id);
   expect(section, `section ${id}`).toBeDefined();
   return section!;
+}
+
+async function writeRunSummary(artifactDir: string, name: string, summary: Record<string, unknown>): Promise<void> {
+  await mkdir(artifactDir, { recursive: true });
+  await writeFile(join(artifactDir, name), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 }
 
 describe("validateMonoAgentFolder", () => {
@@ -276,6 +281,151 @@ describe("validateMonoAgentFolder — observability exporter section", () => {
     const section = sectionById(report, "observability");
     expect(section.status).toBe("error");
     expect(report.ok).toBe(false);
+  });
+});
+
+describe("validateMonoAgentFolder — runs health section", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function writeRunsConfig(artifactDirName = "artifacts"): Promise<{
+    readonly artifactDir: string;
+    readonly configPath: string;
+  }> {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const artifactDir = join(dir, artifactDirName);
+    const configPath = await writeConfig({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+      context: { identityPath: "./IDENTITY.md" },
+      artifacts: { dir: `./${artifactDirName}` },
+    });
+    return { artifactDir, configPath };
+  }
+
+  it("reports recent status counts and a failure-kind breakdown from summaries", async () => {
+    const { artifactDir, configPath } = await writeRunsConfig();
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    await writeRunSummary(artifactDir, "succeeded.summary.json", {
+      runId: "run-succeeded",
+      conversationId: "chat",
+      status: "succeeded",
+      startedAt,
+      durationMs: 1000,
+      eventCount: 2,
+      artifactPaths: [],
+    });
+    await writeRunSummary(artifactDir, "running.summary.json", {
+      runId: "run-running",
+      conversationId: "chat",
+      status: "running",
+      startedAt,
+      durationMs: 0,
+      eventCount: 1,
+      artifactPaths: [],
+    });
+    await writeRunSummary(artifactDir, "failed.summary.json", {
+      runId: "run-failed",
+      conversationId: "chat",
+      status: "failed",
+      failureKind: "runtime_error",
+      startedAt,
+      durationMs: 1000,
+      eventCount: 3,
+      artifactPaths: [],
+    });
+    await writeRunSummary(artifactDir, "cancelled.summary.json", {
+      runId: "run-cancelled",
+      conversationId: "chat",
+      status: "cancelled",
+      failureKind: "cancelled",
+      startedAt,
+      durationMs: 500,
+      eventCount: 1,
+      artifactPaths: [],
+    });
+    await writeRunSummary(artifactDir, "interrupted.summary.json", {
+      runId: "run-interrupted",
+      conversationId: "chat",
+      status: "interrupted",
+      failureKind: "process_death",
+      startedAt,
+      durationMs: 500,
+      eventCount: 1,
+      artifactPaths: [],
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runs = sectionById(report, "runs");
+    expect(runs.status).toBe("waiting");
+    const text = runs.details.join("\n");
+    expect(text).toContain(`Artifact dir: ${artifactDir}`);
+    expect(text).toContain("Inspected recent runs: 5 (max 50).");
+    expect(text).toContain("Recent status counts: running=1, succeeded=1, failed=1, cancelled=1, interrupted=1.");
+    expect(text).toContain("[WARN] Cancelled recent runs: 1.");
+    expect(text).toContain("[WARN] Interrupted recent runs: 1.");
+    expect(text).toContain("[WARN] Failure kinds: cancelled=1, process_death=1, runtime_error=1.");
+    expect(report.ok).toBe(true);
+  });
+
+  it("warns when a running summary is older than the staleness threshold", async () => {
+    const { artifactDir, configPath } = await writeRunsConfig();
+    const staleStartedAt = new Date(Date.now() - 31 * 60_000).toISOString();
+    await writeRunSummary(artifactDir, "stale.summary.json", {
+      runId: "run-stale",
+      conversationId: "chat",
+      status: "running",
+      startedAt: staleStartedAt,
+      durationMs: 0,
+      eventCount: 1,
+      artifactPaths: [],
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runs = sectionById(report, "runs");
+    expect(runs.status).toBe("waiting");
+    expect(runs.details.join("\n")).toContain("[WARN] Stale running runs older than 30m: run-stale");
+    expect(report.ok).toBe(true);
+  });
+
+  it("treats missing and empty artifact directories as disabled and non-fatal", async () => {
+    const { artifactDir, configPath } = await writeRunsConfig("missing-artifacts");
+
+    const missing = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(missing, "runs").status).toBe("disabled");
+    expect(sectionById(missing, "runs").details.join("\n")).toContain("No recent run summaries found.");
+    expect(missing.ok).toBe(true);
+
+    await mkdir(artifactDir, { recursive: true });
+    const empty = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(empty, "runs").status).toBe("disabled");
+    expect(sectionById(empty, "runs").details.join("\n")).toContain("No recent run summaries found.");
+    expect(empty.ok).toBe(true);
+  });
+
+  it("does not add a network probe during liveness:false preflight", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { artifactDir, configPath } = await writeRunsConfig();
+    await writeRunSummary(artifactDir, "succeeded.summary.json", {
+      runId: "run-succeeded",
+      conversationId: "chat",
+      status: "succeeded",
+      startedAt: new Date().toISOString(),
+      durationMs: 1000,
+      eventCount: 1,
+      artifactPaths: [],
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runs = sectionById(report, "runs");
+    expect(runs.status).toBe("ok");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
