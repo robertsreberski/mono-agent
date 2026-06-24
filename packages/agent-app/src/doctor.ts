@@ -1,4 +1,5 @@
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { listRecordedRuns } from "@mono-agent/observability";
@@ -46,6 +47,12 @@ export interface ValidationReport {
 export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput {
   readonly drivers?: readonly ChannelDriver[];
   /**
+   * When false, validation must not create directories or otherwise mutate the
+   * target filesystem. This is used for downstream consumer validation from a
+   * different working directory. Defaults to true.
+   */
+  readonly allowFilesystemWrites?: boolean;
+  /**
    * When false, skip the live network probes (Ollama reachability and the
    * Phoenix export probe) and validate only structure/shape. Those probes can
    * only ever downgrade a section to `waiting`, never `error`, so skipping them
@@ -66,6 +73,7 @@ export async function validateMonoAgentFolder(
   const sections: ValidationSection[] = [];
   const drivers = options.drivers ?? defaultChannelDrivers();
   const liveness = options.liveness ?? true;
+  const allowFilesystemWrites = options.allowFilesystemWrites ?? true;
 
   let coreConfig: MonoAgentConfig | undefined;
   try {
@@ -93,7 +101,7 @@ export async function validateMonoAgentFolder(
     sections.push(runtimeSection(coreConfig));
     sections.push(await credentialsSection(coreConfig));
     sections.push(await contextSection(coreConfig));
-    sections.push(await memorySection(coreConfig, liveness));
+    sections.push(await memorySection(coreConfig, liveness, allowFilesystemWrites));
     sections.push(await toolsSection(coreConfig, options));
     sections.push(sandboxSection(coreConfig));
   }
@@ -294,7 +302,11 @@ async function contextSection(config: MonoAgentConfig): Promise<ValidationSectio
 const DEFAULT_REFLECTION_CRON = "0 3 * * *";
 const DEFAULT_MIGRATION_CRON = "0 4 1 * *";
 
-async function memorySection(config: MonoAgentConfig, liveness: boolean): Promise<ValidationSection> {
+async function memorySection(
+  config: MonoAgentConfig,
+  liveness: boolean,
+  allowFilesystemWrites: boolean,
+): Promise<ValidationSection> {
   if (config.memory === undefined) {
     return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
   }
@@ -359,14 +371,14 @@ async function memorySection(config: MonoAgentConfig, liveness: boolean): Promis
   }
 
   if (config.memory.mode === "journal" || config.memory.mode === "bujo") {
-    const warns = await memoryLivenessWarnings(config.memory, liveness);
+    const warns = await memoryLivenessWarnings(config.memory, liveness, allowFilesystemWrites);
     if (warns.length > 0) {
       return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...warns] };
     }
   }
 
   if (config.memory.mode === "lite") {
-    const liteWarns = await liteRootWritableWarning(config.memory.path);
+    const liteWarns = await liteRootWritableWarning(config.memory.path, allowFilesystemWrites);
     if (liteWarns.length > 0) {
       return { id: "memory", label: "Memory", status: "waiting", details: [...details, ...liteWarns] };
     }
@@ -375,15 +387,8 @@ async function memorySection(config: MonoAgentConfig, liveness: boolean): Promis
   return { id: "memory", label: "Memory", status: "ok", details };
 }
 
-async function liteRootWritableWarning(memoryPath: string): Promise<string[]> {
-  try {
-    await mkdir(memoryPath, { recursive: true });
-    return [];
-  } catch (err) {
-    return [
-      `[WARN] lite memory root is not writable: ${memoryPath} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
-    ];
-  }
+async function liteRootWritableWarning(memoryPath: string, allowFilesystemWrites: boolean): Promise<string[]> {
+  return await memoryRootWritableWarnings("lite", memoryPath, allowFilesystemWrites);
 }
 
 const BUJO_PROBE_TIMEOUT_MS = 3_000;
@@ -407,6 +412,7 @@ async function fetchOllamaModels(endpoint: string): Promise<string[]> {
 async function memoryLivenessWarnings(
   memory: NonNullable<MonoAgentConfig["memory"]>,
   liveness: boolean,
+  allowFilesystemWrites: boolean,
 ): Promise<string[]> {
   const warns: string[] = [];
   const mode = memory.mode;
@@ -415,13 +421,8 @@ async function memoryLivenessWarnings(
   const ollamaModelsByEndpoint = new Map<string, string[] | undefined>();
 
   // 1. Memory root writable (every embedded tier) — local I/O, always checked.
-  try {
-    await mkdir(memory.path, { recursive: true });
-  } catch (err) {
-    warns.push(
-      `[WARN] ${mode} memory root is not writable: ${memory.path} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
-    );
-  }
+  const rootWarns = await memoryRootWritableWarnings(mode, memory.path, allowFilesystemWrites);
+  warns.push(...rootWarns);
 
   // Network-dependent probes below only ever produce `waiting`, so the start
   // preflight skips them (liveness=false) without changing the pass/fail verdict.
@@ -471,6 +472,42 @@ async function memoryLivenessWarnings(
   }
 
   return warns;
+}
+
+async function memoryRootWritableWarnings(
+  mode: string,
+  memoryPath: string,
+  allowFilesystemWrites: boolean,
+): Promise<string[]> {
+  if (allowFilesystemWrites) {
+    try {
+      await mkdir(memoryPath, { recursive: true });
+      return [];
+    } catch (err) {
+      return [
+        `[WARN] ${mode} memory root is not writable: ${memoryPath} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
+      ];
+    }
+  }
+
+  try {
+    const info = await stat(memoryPath);
+    if (!info.isDirectory()) {
+      return [`[WARN] ${mode} memory root is not a directory: ${memoryPath}. Fix filesystem permissions.`];
+    }
+    await access(memoryPath, constants.W_OK);
+    return [];
+  } catch (err) {
+    const code = err !== null && typeof err === "object" && "code" in err ? String(err.code) : undefined;
+    if (code === "ENOENT") {
+      return [
+        `[WARN] ${mode} memory root is missing: ${memoryPath}. Consumer validation is read-only and did not create it.`,
+      ];
+    }
+    return [
+      `[WARN] ${mode} memory root is not writable: ${memoryPath} (${err instanceof Error ? err.message : String(err)}). Fix filesystem permissions.`,
+    ];
+  }
 }
 
 function memoryLlmLabel(llm: NonNullable<MonoAgentConfig["memory"]>["llm"]): string {

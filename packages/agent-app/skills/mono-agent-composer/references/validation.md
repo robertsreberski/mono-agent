@@ -12,6 +12,14 @@ mono-agent validate
 
 The report covers core config, runtime support for the primary and every fallback model, identity/skills/memory/MCP paths, the sandbox policy, the observability section (artifacts, traceability, and any configured exporters), and every channel (`ok` / `waiting` / `off` / `error`). Exit 0 means the folder is ready to start. Fix every `[error]`; `[waiting]` channels are simply unconfigured.
 
+From a separate orchestration folder, validate a downstream consumer without changing cwd:
+
+```bash
+mono-agent validate --consumer <agent-folder>
+```
+
+The consumer folder's `.env` loads by default, relative `--config` and `--env-file` paths resolve inside that folder, and missing memory roots warn read-only instead of being created.
+
 Then start and confirm the status lines:
 
 ```bash

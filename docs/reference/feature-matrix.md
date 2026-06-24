@@ -69,7 +69,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `memory.bujo-reflection` | config | `memory.reflection.{enabled,cron}` | `MONO_AGENT_MEMORY_REFLECTION_CRON`, `MONO_AGENT_MEMORY_REFLECTION_ENABLED` | [Rituals](/memory/rituals/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
 | `memory.bujo-migration` | config | `memory.migration.{enabled,cron}` | `MONO_AGENT_MEMORY_MIGRATION_CRON`, `MONO_AGENT_MEMORY_MIGRATION_ENABLED` | [Rituals](/memory/rituals/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
 | `memory.bujo-cli` | cli | `memory-bujo rebuild\|recall\|index\|reflect\|migrate <root>` | `MONO_AGENT_MEMORY_EMBEDDINGS_*`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT` | [Validation & CLI](/memory/validation-and-cli/) | — |
-| `memory.validate` | cli | `mono-agent validate [--config]` | — | [Validation & CLI](/memory/validation-and-cli/) | — |
+| `memory.validate` | cli | `mono-agent validate [--consumer] [--config]` | — | [Validation & CLI](/memory/validation-and-cli/) | — |
 | `memory.write-mode` | config | `memory.writeMode` | `MONO_AGENT_MEMORY_WRITE_MODE` | [Capture & recall](/memory/capture-and-recall/) | — |
 | `memory.per-turn-capture` | config | `memory.writeMode: "capture"` (requires `memory.mode: "bujo"`) | `MONO_AGENT_MEMORY_WRITE_MODE=capture`, `MONO_AGENT_MEMORY_MODE=bujo` | [Capture & recall](/memory/capture-and-recall/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
 | `memory.recall-tool` | config | `memory.recallTool.enabled` | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | [Capture & recall](/memory/capture-and-recall/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
@@ -138,7 +138,7 @@ All channels are independent JSON sections and opt-in via an `enabled` flag (def
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
 | `app.cli-init` | cli | `mono-agent init [--model] [--fallback-models] [--memory]` | — | [Quickstart](/getting-started/quickstart/) | — |
-| `app.cli-validate` | cli | `mono-agent validate [--config] [--env-file]` | — | [Blueprint](/config/blueprint/) | — |
+| `app.cli-validate` | cli | `mono-agent validate [--consumer] [--config] [--env-file]` | — | [Blueprint](/config/blueprint/) | — |
 | `app.provider-credentials-check` | cli | part of `mono-agent validate`; resolves Pi models against `providers.piAuthPath` + `models.json` | `MONO_AGENT_PI_AUTH_PATH` | [CLI reference](/observability/cli-reference/#provider-credentials) | — |
 | `app.cli-start` | cli | `mono-agent start [--config] [--env-file] [--foreground\|-f]` | — | [Install](/getting-started/install/) | — |
 | `app.cli-stop` | cli | `mono-agent stop [--config]` | — | [Install](/getting-started/install/) | — |

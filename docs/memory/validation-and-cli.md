@@ -10,7 +10,7 @@ The memory subsystem **never silently falls back**: the host never downgrades th
 
 ## `mono-agent validate` — memory liveness
 
-`mono-agent validate` (the agent-app doctor) runs a memory liveness check that **scales with the configured tier** (`memory.mode`). Failures emit a loud `[warn]` in the validate report's Memory section. The Memory section reports status `waiting` rather than `error`, so warnings do not flip the overall result — you must read the Memory section.
+`mono-agent validate` (the agent-app doctor) runs a memory liveness check that **scales with the configured tier** (`memory.mode`). Failures emit a loud `[warn]` in the validate report's Memory section. The Memory section reports status `waiting` rather than `error`, so warnings do not flip the overall result — you must read the Memory section. When validating a downstream folder with `mono-agent validate --consumer <path>`, missing memory roots warn instead of being created because consumer validation is read-only.
 
 Coverage: cli.
 

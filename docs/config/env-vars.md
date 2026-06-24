@@ -12,7 +12,7 @@ Every field in `mono-agent.config.json` also has a `MONO_AGENT_*` environment va
 
 The resolution order is **env > JSON > built-in defaults**. An environment variable always wins over the matching key in `mono-agent.config.json`, which wins over the framework default.
 
-A `.env` file in the agent folder is loaded automatically by the CLI. Variables already exported in your shell take precedence over values in `.env` (exported shell vars win). Pass `--env-file <path>` to load an alternate file instead of `./.env`.
+A `.env` file in the agent folder is loaded automatically by the CLI. Variables already exported in your shell take precedence over values in `.env` (exported shell vars win). Pass `--env-file <path>` to load an alternate file instead of `./.env`. For `mono-agent validate --consumer <path>`, the consumer folder's `.env` loads by default, and relative `--env-file` paths resolve inside that consumer folder.
 
 :::caution
 Secrets belong in `.env` (or exported shell vars), never in `mono-agent.config.json`, which is meant to be committed. Keep `.env` untracked.

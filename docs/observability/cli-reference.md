@@ -15,7 +15,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | Command | Purpose | Key flags |
 | --- | --- | --- |
 | `init` | Scaffold `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` in the current folder (never overwrites existing files). | `--model <ref>`, `--fallback-models <csv>`, `--memory lite\|journal\|bujo` |
-| `validate` | Load every config section and report what would run, wait, or fail. | `--config <path>`, `--env-file <path>` |
+| `validate` | Load every config section and report what would run, wait, or fail. | `--consumer <path>`, `--config <path>`, `--env-file <path>` |
 | `start` | Start the agent as a background launchd service (or foreground worker). | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
 | `restart` | Restart the background instance for this config (starts it if stopped). | `--config <path>`, `--force` |
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
@@ -30,7 +30,7 @@ Every command is `cli` coverage. `start`, `restart`, `stop`, `status`, and `logs
 
 ## `.env` auto-load
 
-On every invocation the CLI loads a dotenv file before dispatching the command. By default it looks for `.env` in the current working directory; pass `--env-file <path>` to point elsewhere. The file is resolved relative to the current folder.
+On every invocation the CLI loads a dotenv file before dispatching the command. By default it looks for `.env` in the current working directory; pass `--env-file <path>` to point elsewhere. The file is resolved relative to the current folder. For `validate --consumer <path>`, the default `.env` and any relative `--env-file` path are resolved inside the consumer folder, not the caller's current directory.
 
 Variables already present in the process environment are never overwritten, so **exported shell variables win** over the file. A missing or unreadable file is silently ignored — it is not an error.
 
@@ -69,12 +69,19 @@ The generated config matches [the config blueprint](/config/blueprint/). See [Ba
 
 ## `validate`
 
-Loads every config section and prints a status report, then exits `0` when the config is ready to start and `1` otherwise. By default it reads `mono-agent.config.json` from the current folder; override with `--config <path>`. It also honors `--env-file <path>` for the dotenv load above.
+Loads every config section and prints a status report, then exits `0` when the config is ready to start and `1` otherwise. By default it reads `mono-agent.config.json` from the current folder; override with `--config <path>`. Use `--consumer <path>` to run the same readiness report against a downstream agent folder without changing the current directory or creating missing memory roots there. With `--consumer`, a relative `--config` points inside the consumer folder and the consumer `.env` is loaded by default. It also honors `--env-file <path>` for the dotenv load above.
 
 ```bash
 mono-agent validate
 mono-agent validate --config ./agents/support.config.json --env-file ./.env.staging
+mono-agent validate --consumer ../personal-agent
 ```
+
+| Flag | Effect |
+| --- | --- |
+| `--consumer <path>` | Validate another agent folder read-only. Relative `--config` and `--env-file` paths resolve inside that folder. |
+| `--config <path>` | Use a non-default config file. With `--consumer`, relative paths are inside the consumer folder. |
+| `--env-file <path>` | Load secrets from a non-default dotenv file. With `--consumer`, relative paths are inside the consumer folder. |
 
 Each section prints a status badge, a label, and its details. The statuses are:
 
