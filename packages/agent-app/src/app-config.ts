@@ -242,6 +242,13 @@ export function phoenixAppBaseUrl(endpoint: string): string | undefined {
   }
 }
 
+export function describeSensitiveDataExportWarning(endpoint: string): string {
+  return [
+    "[WARN] includeSensitiveData=true exports redacted/capped user input, assistant replies,",
+    `tool args/results, and system prompt to Phoenix at ${endpoint}; substantive run content leaves this machine.`,
+  ].join(" ");
+}
+
 function validateExporterEndpoint(value: unknown, source: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new MonoAgentConfigError("invalid_env", `${source}.endpoint must be a non-empty string.`, { env: source });
