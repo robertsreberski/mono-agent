@@ -134,6 +134,15 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["audit-runs", "--stale-after-ms", "0"])).toThrow(/--stale-after-ms/u);
   });
 
+  it("parses validate --consumer and keeps it validate/audit-runs scoped", () => {
+    expect(parseCliArgs(["validate", "--consumer", "../personal-agent"])).toMatchObject({
+      command: "validate",
+      consumerPath: "../personal-agent",
+    });
+    expect(() => parseCliArgs(["validate", "--consumer"])).toThrow(/--consumer requires a value/u);
+    expect(() => parseCliArgs(["start", "--consumer", "../personal-agent"])).toThrow(/--consumer/u);
+  });
+
   it("defaults to help and rejects unknown commands and flags", () => {
     expect(parseCliArgs([]).command).toBe("help");
     expect(parseCliArgs(["--help"]).command).toBe("help");

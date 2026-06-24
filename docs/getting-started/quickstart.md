@@ -109,7 +109,7 @@ export ANTHROPIC_API_KEY=sk-...
 
 :::tip
 :::
-Point validate at a non-default config or env file with `mono-agent validate --config ./other.config.json --env-file ./.env`.
+Point validate at a non-default config or env file with `mono-agent validate --config ./other.config.json --env-file ./.env`. To check a downstream agent folder from elsewhere, use `mono-agent validate --consumer ../personal-agent`; the consumer `.env` loads by default and relative `--config` / `--env-file` paths resolve inside that folder.
 
 ## 3. Start (`cli`)
 

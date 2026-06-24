@@ -76,7 +76,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Terminal chat (TUI with transcript + redacted config pane) | cli | `mono-agent-tui --config ./mono-agent.config.json` |
 | Executable config blueprints (generate config + `.env.example` + checklist) | cli | `mono-agent recipes list\|show <id>`, `mono-agent init --recipe <id>` |
 | Resolved config view (every field tagged env/json/default) | cli | `mono-agent config` |
-| Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate\|config\|recipes\|start\|install-skill` |
+| Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate [--consumer <path>]\|config\|recipes\|start\|install-skill` |
 | Recipe capability check (selected recipe live?) | cli | `mono-agent validate --recipe <id>` |
 | `.env` auto-loading | cli | automatic; `--env-file <path>` |
 | Explicit failure objects (no fake success) | auto | harness |

@@ -72,7 +72,7 @@ Everything below runs in the user's agent folder, not the workspace.
 4. **Validate.**
 
    ```bash
-   mono-agent validate [--recipe <id>]
+   mono-agent validate [--recipe <id>] [--consumer <path>]
    ```
 
    Fix every `[error]` section. `[waiting]` channels are fine — they are simply not configured yet. With `--recipe`, the report also flags any capability the recipe promised that is not yet live. Re-run until the report says the config is ready.
