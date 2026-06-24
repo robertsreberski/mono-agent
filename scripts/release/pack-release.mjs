@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { REPO_ROOT } from "./package-graph.mjs";
@@ -10,28 +13,85 @@ function argValue(name, argv = process.argv.slice(2)) {
   return index === -1 ? null : argv[index + 1] || null;
 }
 
-function runPnpmPack(pkg) {
-  const args = ["--dir", pkg.relativeDir, "pack", "--dry-run", "--json"];
-  console.log(`$ pnpm ${args.join(" ")}`);
-  const result = spawnSync("pnpm", args, {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-  });
-
-  if (result.status !== 0) {
-    process.stderr.write(result.stdout || "");
-    process.stderr.write(result.stderr || "");
-    process.exit(result.status || 1);
+export function parsePnpmPackOutput(stdout) {
+  const output = stdout.trim();
+  if (!output) {
+    throw new Error("pnpm pack did not return JSON output");
   }
 
-  const packed = JSON.parse(result.stdout);
+  const packed = JSON.parse(output);
+  if (Array.isArray(packed)) {
+    if (packed.length !== 1) {
+      throw new Error(`expected one pnpm pack result; received ${packed.length}`);
+    }
+    return packed[0];
+  }
+
+  return packed;
+}
+
+function tarballPathFromPackResult(packed, packDestination) {
+  if (!packed.filename || typeof packed.filename !== "string") {
+    throw new Error(`${packed.name || "package"} pack output did not report a tarball filename`);
+  }
+
+  return path.isAbsolute(packed.filename)
+    ? packed.filename
+    : path.join(packDestination, packed.filename);
+}
+
+export function assertPackResult(pkg, packed, packDestination) {
   const files = new Set((packed.files || []).map((file) => file.path));
   const missing = ["package.json", "README.md"].filter((file) => !files.has(file));
   if (missing.length > 0) {
     throw new Error(`${pkg.name} pack output is missing ${missing.join(", ")}`);
   }
 
-  console.log(`${packed.name}@${packed.version}: ${packed.files.length} files`);
+  const tarballPath = tarballPathFromPackResult(packed, packDestination);
+  let stats;
+  try {
+    stats = fs.statSync(tarballPath);
+  } catch (error) {
+    throw new Error(`${pkg.name} pack output did not create ${tarballPath}`);
+  }
+
+  if (!stats.isFile() || stats.size <= 0) {
+    throw new Error(`${pkg.name} pack output created an empty tarball at ${tarballPath}`);
+  }
+
+  return {
+    fileCount: packed.files.length,
+    tarballPath,
+    tarballSize: stats.size,
+  };
+}
+
+function runPnpmPack(pkg) {
+  const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-release-pack-"));
+
+  try {
+    const args = ["--dir", pkg.relativeDir, "pack", "--pack-destination", packDestination, "--json"];
+    console.log(`$ pnpm ${args.join(" ")}`);
+    const result = spawnSync("pnpm", args, {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+
+    if (result.status !== 0) {
+      process.stderr.write(result.stdout || "");
+      process.stderr.write(result.stderr || "");
+      const error = new Error(`${pkg.name} pnpm pack failed`);
+      error.exitCode = result.status || 1;
+      throw error;
+    }
+
+    const packed = parsePnpmPackOutput(result.stdout);
+    const { fileCount, tarballPath, tarballSize } = assertPackResult(pkg, packed, packDestination);
+
+    console.log(`${packed.name}@${packed.version}: ${fileCount} files, ${path.basename(tarballPath)} (${tarballSize} bytes)`);
+  } finally {
+    fs.rmSync(packDestination, { recursive: true, force: true });
+  }
 }
 
 async function main() {
@@ -46,6 +106,6 @@ async function main() {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((err) => {
     console.error(err.message);
-    process.exit(1);
+    process.exit(err.exitCode || 1);
   });
 }

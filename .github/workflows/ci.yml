@@ -34,11 +34,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Derive release smoke tag
+        id: release-smoke
+        run: |
+          set -euo pipefail
+          VERSION="$(node -e "process.stdout.write(require('./packages/agent-app/package.json').version)")"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release package graph
+        run: pnpm run release:validate -- --tag "${{ steps.release-smoke.outputs.tag }}"
+
       - name: Check package architecture
         run: pnpm run check:architecture
 
       - name: Build packages and demos
         run: pnpm run build
+
+      - name: Validate package tarballs
+        run: pnpm run release:pack -- --tag "${{ steps.release-smoke.outputs.tag }}"
 
       - name: Typecheck packages and demos
         run: pnpm run typecheck
