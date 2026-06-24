@@ -206,6 +206,29 @@ describe("buildRunReadableSpans", () => {
     expect(spans[0]!.status.message).toBe("boom");
   });
 
+  it("surfaces the underlying error and failover history on the failed root span", () => {
+    const failed: RunSummary = {
+      ...summary,
+      status: "failed",
+      failureKind: "provider_unavailable_exhausted",
+      error: "503 Service Unavailable",
+      failoverHistory: [
+        { model: "pi:openai-codex:gpt-5.5", subkind: "timeout" },
+        { model: "pi:opencode-go:kimi-k2.6", subkind: "server_error", requestId: "abc123" },
+      ],
+    };
+    const root = build({ summary: failed })[0]!;
+    expect(root.status.code).toBe(2);
+    expect(root.status.message).toContain("provider_unavailable_exhausted");
+    expect(root.status.message).toContain("pi:openai-codex:gpt-5.5 → timeout");
+    expect(root.status.message).toContain("last error: 503 Service Unavailable");
+    // The non-sensitive root output mirrors the rich detail (no reply was produced).
+    expect(String(root.attributes["output.value"])).toContain("server_error (req abc123)");
+    // Structured, queryable mirrors of the same operational metadata.
+    expect(root.attributes["mono.agent.failover.count"]).toBe(2);
+    expect(root.attributes["mono.agent.error.message"]).toBe("503 Service Unavailable");
+  });
+
   it("is metadata-only by default: no raw payload attribute", () => {
     const spans = build();
     for (const span of spans) {
