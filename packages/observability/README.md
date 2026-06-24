@@ -17,6 +17,7 @@ pnpm --filter @mono-agent/observability run build
 ```ts
 import {
   createJsonlRunRecorder,
+  auditRecordedRuns,
   registerTraceSource,
   combineRecordedRunEvents,
   listRecordedRuns,
@@ -28,6 +29,7 @@ import {
 ## Public API
 
 - `createJsonlRunRecorder`, `JsonlRunRecorder`
+- `auditRecordedRuns`
 - `listRecordedRuns`, `readRecordedRun`, `classifyRecordedRunEvent`
 - `combineRecordedRunEvents`
 - `registerTraceSource`, `listTraceSources`, `listTraceRuns`, `readTraceRun`

@@ -15,6 +15,7 @@ import type { ConfigViewSection } from "@mono-agent/config";
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp } from "./app.js";
 import { isAppCoreConfigError, loadAppCoreConfig, phoenixAppBaseUrl } from "./app-config.js";
+import { runAuditRuns } from "./audit-runs.js";
 import { runBackfill } from "./backfill.js";
 import {
   defaultBackgroundDeps,
@@ -44,7 +45,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill"] as const;
+const KNOWN_COMMANDS = ["init", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs"] as const;
 
 type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
 
@@ -79,6 +80,14 @@ interface ParsedCliArgs {
   readonly until?: string;
   /** backfill: map + serialize but do not POST. */
   readonly dryRun: boolean;
+  /** audit-runs: read this artifact directory directly. */
+  readonly artifactDir?: string;
+  /** audit-runs: resolve artifacts and stale interval relative to this consumer folder. */
+  readonly consumerPath?: string;
+  /** audit-runs: override the stale-running cutoff interval. */
+  readonly staleAfterMs?: number;
+  /** audit-runs: print the full machine-readable report. */
+  readonly json?: boolean;
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
@@ -110,6 +119,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let since: string | undefined;
   let until: string | undefined;
   let dryRun = false;
+  let artifactDir: string | undefined;
+  let consumerPath: string | undefined;
+  let staleAfterMs: number | undefined;
+  let json = false;
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
@@ -131,6 +144,24 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--dry-run":
         dryRun = true;
+        break;
+      case "--artifact-dir":
+        artifactDir = requireValue(rest, ++i, flag);
+        break;
+      case "--consumer":
+        consumerPath = requireValue(rest, ++i, flag);
+        break;
+      case "--stale-after-ms": {
+        const raw = requireValue(rest, ++i, flag);
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          throw new Error("--stale-after-ms must be a positive integer.");
+        }
+        staleAfterMs = parsed;
+        break;
+      }
+      case "--json":
+        json = true;
         break;
       case "--model":
         model = requireValue(rest, ++i, flag);
@@ -228,6 +259,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(since === undefined ? {} : { since }),
     ...(until === undefined ? {} : { until }),
     dryRun,
+    ...(artifactDir === undefined ? {} : { artifactDir }),
+    ...(consumerPath === undefined ? {} : { consumerPath }),
+    ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
+    ...(json ? { json } : {}),
   };
 }
 
@@ -336,6 +371,16 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "serializes without sending.",
     ],
   },
+  {
+    signature:
+      "mono-agent audit-runs [--artifact-dir <path> | --consumer <path>]\n" +
+      "                      [--config <path>] [--env-file <path>] [--stale-after-ms <n>] [--json]",
+    lines: [
+      "Read local run summary artifacts without rewriting them. Reports parse",
+      "failures, status and failure-kind histograms, stale running summaries,",
+      "and per-failure-kind rates.",
+    ],
+  },
 ];
 
 const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
@@ -410,6 +455,14 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.since === undefined ? {} : { since: args.since }),
         ...(args.until === undefined ? {} : { until: args.until }),
         dryRun: args.dryRun,
+      });
+    case "audit-runs":
+      return await runAuditRuns({
+        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
+        ...(args.artifactDir === undefined ? {} : { artifactDir: args.artifactDir }),
+        ...(args.consumerPath === undefined ? {} : { consumerPath: args.consumerPath }),
+        ...(args.staleAfterMs === undefined ? {} : { staleAfterMs: args.staleAfterMs }),
+        json: args.json === true,
       });
   }
 }

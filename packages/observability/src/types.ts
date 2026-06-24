@@ -29,6 +29,50 @@ export interface RuntimeResultLike {
 
 export type RunSummaryStatus = "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
 
+export type KnownArtifactFailureKind =
+  | "provider_unavailable"
+  | "provider_unavailable_exhausted"
+  | "usage_limit"
+  | "process_death"
+  | "runtime_error"
+  | "cancelled";
+
+export interface ArtifactAuditFileIssue {
+  readonly fileName: string;
+  readonly reason: string;
+  readonly value?: string;
+}
+
+export interface ArtifactFailureKindRate {
+  readonly failureKind: KnownArtifactFailureKind;
+  readonly count: number;
+  readonly rateOfParsedSummaries: number;
+  readonly rateOfSummariesWithFailureKind: number;
+}
+
+export interface ArtifactAuditReport {
+  readonly artifactDir: string;
+  readonly totalSummaryFiles: number;
+  readonly parsedSummaryFiles: number;
+  readonly parseFailureCount: number;
+  readonly parseFailures: readonly ArtifactAuditFileIssue[];
+  readonly statusHistogram: Readonly<Record<RunSummaryStatus, number>>;
+  readonly unrecognizedStatusCount: number;
+  readonly unrecognizedStatuses: readonly ArtifactAuditFileIssue[];
+  readonly failureKindHistogram: Readonly<Record<KnownArtifactFailureKind, number>>;
+  readonly summariesWithFailureKind: number;
+  readonly unrecognizedFailureKindCount: number;
+  readonly unrecognizedFailureKinds: readonly ArtifactAuditFileIssue[];
+  readonly staleRunningCount: number;
+  readonly staleRunning: readonly ArtifactAuditFileIssue[];
+  readonly failureKindRates: readonly ArtifactFailureKindRate[];
+  readonly rateDenominators: {
+    readonly parsedSummaries: number;
+    readonly summariesWithFailureKind: number;
+  };
+  readonly warnings: readonly string[];
+}
+
 /**
  * One provider attempt recorded by the fallback router when a run fails over.
  * Canonicalized (model reference flattened to a string, `retryableSubkind` →
