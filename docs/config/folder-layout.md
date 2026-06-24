@@ -52,6 +52,18 @@ For what goes inside each, see [Identity & soul](/context/identity-and-soul/), [
 The `.env` file in the folder is loaded automatically on `start`; exported shell variables win over it, and `--env-file <path>` selects an alternate file. Keep tokens as placeholders here (`xoxb-...`, `sk-...`) and never commit real secrets.
 :::
 
+## Consumer docs consistency
+
+When a downstream consumer folder lives outside this repo, run the manual docs/config drift gate against explicit local paths:
+
+```sh
+node scripts/check-consumer-docs-consistency.mjs \
+  --consumer /Users/robertsreberski/personal-agent \
+  --consumer /Users/robertsreberski/a8c-agents/orchestrator
+```
+
+The check is static and offline. It compares each consumer `README.md` with that same folder's `mono-agent.config.json` and configured MCP file, then fails stale references to retired surfaces such as `@mono-agent/memory-mcp`, `memory_note`, and the operator console when the local config no longer exposes them.
+
 ## The `.mono-agent/` runtime directory
 
 The framework creates and writes everything under `.mono-agent/`. You generally do not edit these files; add the whole directory to `.gitignore`.
