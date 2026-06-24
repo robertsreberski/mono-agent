@@ -1,16 +1,7 @@
-import { readdir, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-
-import {
-  errorMessage,
-  isErrno,
-  isRecord,
-  safeJoin as safeJoinGuard,
-} from "./artifact-fs.js";
+import { readArtifactSummaryRecords } from "./artifact-summaries.js";
 import {
   KNOWN_ARTIFACT_FAILURE_KINDS,
   RUN_SUMMARY_STATUSES,
-  SUMMARY_SUFFIX,
   isKnownArtifactFailureKind,
   isRunSummaryStatus,
   isStaleRunningSummary,
@@ -43,66 +34,16 @@ export async function auditRecordedRuns(
     throw new Error("now must be a finite epoch millisecond value.");
   }
 
-  const normalizedDir = resolve(artifactDir);
+  const records = await readArtifactSummaryRecords(artifactDir);
   const startedBeforeMs = now - options.staleAfterMs;
   const statusHistogram = emptyStatusHistogram();
   const failureKindHistogram = emptyFailureKindHistogram();
-  const parseFailures: ArtifactAuditFileIssue[] = [];
   const unrecognizedStatuses: ArtifactAuditFileIssue[] = [];
   const unrecognizedFailureKinds: ArtifactAuditFileIssue[] = [];
   const staleRunning: ArtifactAuditFileIssue[] = [];
-  const warnings: string[] = [];
-  let totalSummaryFiles = 0;
-  let parsedSummaryFiles = 0;
   let summariesWithFailureKind = 0;
 
-  let entries;
-  try {
-    entries = await readdir(normalizedDir, { withFileTypes: true });
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) {
-      return buildReport({
-        artifactDir: normalizedDir,
-        totalSummaryFiles,
-        parsedSummaryFiles,
-        summariesWithFailureKind,
-        statusHistogram,
-        failureKindHistogram,
-        parseFailures,
-        unrecognizedStatuses,
-        unrecognizedFailureKinds,
-        staleRunning,
-        warnings,
-      });
-    }
-    warnings.push(`Unable to read artifact directory: ${errorMessage(error)}.`);
-    return buildReport({
-      artifactDir: normalizedDir,
-      totalSummaryFiles,
-      parsedSummaryFiles,
-      summariesWithFailureKind,
-      statusHistogram,
-      failureKindHistogram,
-      parseFailures,
-      unrecognizedStatuses,
-      unrecognizedFailureKinds,
-      staleRunning,
-      warnings,
-    });
-  }
-
-  const summaryFiles = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(SUMMARY_SUFFIX))
-    .map((entry) => entry.name)
-    .sort((a, b) => a.localeCompare(b));
-
-  for (const fileName of summaryFiles) {
-    totalSummaryFiles += 1;
-    const raw = await readSummaryRecord(normalizedDir, fileName, parseFailures);
-    if (raw === undefined) {
-      continue;
-    }
-    parsedSummaryFiles += 1;
+  for (const { fileName, raw } of records.summaries) {
     recordStatus(raw, fileName, statusHistogram, unrecognizedStatuses);
     summariesWithFailureKind += recordFailureKind(raw, fileName, failureKindHistogram, unrecognizedFailureKinds);
     if (isStaleRunningSummary(raw, startedBeforeMs)) {
@@ -111,46 +52,18 @@ export async function auditRecordedRuns(
   }
 
   return buildReport({
-    artifactDir: normalizedDir,
-    totalSummaryFiles,
-    parsedSummaryFiles,
+    artifactDir: records.artifactDir,
+    totalSummaryFiles: records.totalSummaryFiles,
+    parsedSummaryFiles: records.parsedSummaryFiles,
     summariesWithFailureKind,
     statusHistogram,
     failureKindHistogram,
-    parseFailures,
+    parseFailures: records.parseFailures,
     unrecognizedStatuses,
     unrecognizedFailureKinds,
     staleRunning,
-    warnings,
+    warnings: records.warnings,
   });
-}
-
-async function readSummaryRecord(
-  artifactDir: string,
-  fileName: string,
-  parseFailures: ArtifactAuditFileIssue[],
-): Promise<Record<string, unknown> | undefined> {
-  const filePath = safeJoin(artifactDir, fileName);
-  let raw: string;
-  try {
-    raw = await readFile(filePath, "utf8");
-  } catch (error) {
-    parseFailures.push(fileIssue(fileName, `unable to read: ${errorMessage(error)}`));
-    return undefined;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    parseFailures.push(fileIssue(fileName, `invalid JSON: ${errorMessage(error)}`));
-    return undefined;
-  }
-  if (!isRecord(parsed)) {
-    parseFailures.push(fileIssue(fileName, "summary is not an object", parsed));
-    return undefined;
-  }
-  return parsed;
 }
 
 function recordStatus(
@@ -272,12 +185,6 @@ function emptyFailureKindHistogram(): Record<KnownArtifactFailureKind, number> {
     (histogram, failureKind) => ({ ...histogram, [failureKind]: 0 }),
     {} as Record<KnownArtifactFailureKind, number>,
   );
-}
-
-function safeJoin(root: string, fileName: string): string {
-  return safeJoinGuard(root, fileName, () => {
-    throw new Error("Resolved artifact path escapes artifactDir.");
-  });
 }
 
 function fileIssue(fileName: string, reason: string, value?: unknown): ArtifactAuditFileIssue {

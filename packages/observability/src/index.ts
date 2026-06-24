@@ -37,6 +37,18 @@ export type {
   AuditRecordedRunsOptions,
 } from "./artifact-audit.js";
 export {
+  summarizeRecordedRunMetrics,
+} from "./metrics.js";
+export type {
+  RecordedRunCostMetrics,
+  RecordedRunDurationMetrics,
+  RecordedRunFailureKindMetric,
+  RecordedRunMetricGroupBy,
+  RecordedRunMetricsBucket,
+  RecordedRunMetricsOptions,
+  RecordedRunMetricsReport,
+} from "./metrics.js";
+export {
   describeRunFailureKind,
   KNOWN_RUN_FAILURE_KINDS,
 } from "./failure-kinds.js";
