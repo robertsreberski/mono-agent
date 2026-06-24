@@ -100,9 +100,11 @@ This catches the class of silent failure where an expired OAuth token quietly br
 
 ### Runs health
 
-`validate` includes a **Runs health** section that reads the configured local run artifact directory only. It inspects the most recent recorded summaries, reports recent counts by status, warns for stale `running` summaries, surfaces `cancelled` / `interrupted` runs, and prints a compact failure-kind breakdown. Advisory lines use the `[WARN]` prefix and yield `waiting`, not `error`.
+`validate` includes a **Runs health** section that reads the configured local run artifact directory only. It inspects the most recent recorded summaries, reports recent counts by status, warns for stale `running` summaries, surfaces `cancelled` / `interrupted` runs, and prints a compact failure-kind breakdown with explanations and next steps for known kinds such as `usage_limit`, `process_death`, `cancelled`, `provider_unavailable`, and `provider_unavailable_exhausted`. Unknown kinds use a generic "inspect the artifact summary and logs" explanation. Advisory lines use the `[WARN]` prefix and yield `waiting`, not `error`.
 
 An empty or missing artifact directory reports `disabled` and stays non-fatal. The section does not read event JSONL files, export anything, reconcile stale runs, or add network probes to the `start` / `restart` preflight.
+
+`status` uses the same local run-summary display for the running instance when the trace-source manifest includes an artifact directory, so operators can see recent failure-kind explanations without running a separate validation command.
 
 ## `start`
 

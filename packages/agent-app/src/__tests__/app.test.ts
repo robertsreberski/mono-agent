@@ -387,8 +387,22 @@ describe("startMonoAgentApp", () => {
       }),
       request: { text: "calendar lions" } as never,
     });
-    expect(terminalText).toContain("turn limit");
+    expect(terminalText).toContain("model, provider, turn, or context limit");
+    expect(terminalText).toContain("8 turns");
+    expect(terminalText).toContain("Narrow the prompt or task");
     expect(terminalText).not.toContain("failed honestly");
+
+    const cancelledText = await (errorText as Extract<TelegramAdapterErrorText, (input: never) => unknown>)({
+      error: Object.assign(new Error("cancelled"), {
+        failure: {
+          kind: "cancelled",
+          message: "cancelled",
+        },
+      }),
+      request: { text: "calendar lions" } as never,
+    });
+    expect(cancelledText).toContain("The run was cancelled before completion");
+    expect(cancelledText).toContain("If the cancellation was expected");
 
     await running.stop();
   });
