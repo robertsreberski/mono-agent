@@ -401,7 +401,8 @@ describe("validateMonoAgentFolder — runs health section", () => {
     expect(runs.status).toBe("waiting");
     const text = runs.details.join("\n");
     expect(text).toContain(`Artifact dir: ${artifactDir}`);
-    expect(text).toContain("Inspected recent runs: 6 (max 50).");
+    expect(text).toContain("Recorded runs: 6 total; showing 6 recent (max 50).");
+    expect(text).toContain("Last runs:");
     expect(text).toContain("Recent status counts: running=1, succeeded=1, failed=2, cancelled=1, interrupted=1.");
     expect(text).toContain("[WARN] Recent non-successful runs:");
     expect(text).toContain("[WARN] Cancelled recent runs: 1.");
@@ -411,6 +412,29 @@ describe("validateMonoAgentFolder — runs health section", () => {
     expect(text).toContain("Process death [process_death, 1 recent]");
     expect(text).toContain("Cancelled [cancelled, 1 recent]");
     expect(text).toContain("Unclassified failure (provider_error) [provider_error (unclassified), 1 recent]");
+    expect(report.ok).toBe(true);
+  });
+
+  it("reports the exact run total when the recent list is capped", async () => {
+    const { artifactDir, configPath } = await writeRunsConfig();
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    for (let index = 0; index < 55; index += 1) {
+      await writeRunSummary(artifactDir, `run-${index}.summary.json`, {
+        runId: `run-${index}`,
+        conversationId: "chat",
+        status: "succeeded",
+        startedAt,
+        durationMs: 1000,
+        eventCount: 1,
+        artifactPaths: [],
+      });
+    }
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runs = sectionById(report, "runs");
+    expect(runs.status).toBe("ok");
+    expect(runs.details.join("\n")).toContain("Recorded runs: 55 total; showing 50 recent (max 50).");
     expect(report.ok).toBe(true);
   });
 
@@ -441,14 +465,14 @@ describe("validateMonoAgentFolder — runs health section", () => {
     const missing = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
     expect(sectionById(missing, "runs").status).toBe("disabled");
-    expect(sectionById(missing, "runs").details.join("\n")).toContain("No recent run summaries found.");
+    expect(sectionById(missing, "runs").details.join("\n")).toContain("No runs recorded yet.");
     expect(missing.ok).toBe(true);
 
     await mkdir(artifactDir, { recursive: true });
     const empty = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
     expect(sectionById(empty, "runs").status).toBe("disabled");
-    expect(sectionById(empty, "runs").details.join("\n")).toContain("No recent run summaries found.");
+    expect(sectionById(empty, "runs").details.join("\n")).toContain("No runs recorded yet.");
     expect(empty.ok).toBe(true);
   });
 

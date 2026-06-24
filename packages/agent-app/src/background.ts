@@ -425,21 +425,39 @@ async function writeRunsHealthDetail(source: TraceSourceListItem, deps: Backgrou
   if (source.artifactDir === undefined || source.artifactDir.trim().length === 0) {
     return;
   }
-  const { runs, warnings } = await deps.listRecordedRuns({
+  const { totalRuns, runs, warnings } = await deps.listRecordedRuns({
     artifactDir: source.artifactDir,
     maxRuns: RUNS_HEALTH_MAX_RUNS,
   });
+  const selectedSkills = selectedSkillsFromMetadata(source.metadata);
+  const runOwnerAlive = source.pid === undefined ? undefined : deps.isAlive(source.pid);
   const display = buildRunsHealthDisplay({
     artifactDir: source.artifactDir,
+    totalRuns,
     runs,
     warnings,
+    includeSelectedSkills: true,
     nowMs: deps.now(),
     maxRuns: RUNS_HEALTH_MAX_RUNS,
+    ...(selectedSkills === undefined ? {} : { selectedSkills }),
+    ...(runOwnerAlive === undefined ? {} : { runOwnerAlive }),
   });
   deps.stdout(ui.rule("runs health"));
   for (const detail of display.details) {
     deps.stdout(`  ${detail}\n`);
   }
+}
+
+function selectedSkillsFromMetadata(metadata: Record<string, unknown> | undefined): readonly string[] | undefined {
+  const context = metadata?.context;
+  if (context === null || typeof context !== "object") {
+    return undefined;
+  }
+  const selectedSkills = (context as Record<string, unknown>).selectedSkills;
+  if (!Array.isArray(selectedSkills)) {
+    return undefined;
+  }
+  return selectedSkills.flatMap((skill) => typeof skill === "string" ? [skill] : []);
 }
 
 function formatOtherInstance(source: TraceSourceListItem): string {

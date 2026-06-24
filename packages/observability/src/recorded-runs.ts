@@ -71,6 +71,7 @@ export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<
   const normalized = normalizeReaderOptions(options);
   const { summaries, warnings } = await loadSummaryFiles(normalized);
   return {
+    totalRuns: summaries.length,
     runs: [...summaries]
       // Newest first by logical update time, with file mtime then runId as deterministic
       // tiebreakers — two runs finishing in the same millisecond share an `updatedAt`, and

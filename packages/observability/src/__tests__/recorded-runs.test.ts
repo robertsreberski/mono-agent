@@ -40,6 +40,7 @@ describe("recorded run reader", () => {
     const list = await listRecordedRuns({ artifactDir: dir });
 
     expect(list.warnings).toEqual([]);
+    expect(list.totalRuns).toBe(2);
     expect(list.runs.map((run) => run.runId)).toEqual(["run-two", "run-one"]);
     expect(list.runs[0]).toMatchObject({ status: "failed", failureKind: "provider_error", eventCount: 0 });
     expect(JSON.stringify(list.runs)).not.toContain("fixture-redacted-value");
@@ -49,7 +50,7 @@ describe("recorded run reader", () => {
 
   it("returns an empty list when the artifact directory does not exist", async () => {
     const dir = join(await tempDir(), "missing");
-    await expect(listRecordedRuns({ artifactDir: dir })).resolves.toEqual({ runs: [], warnings: [] });
+    await expect(listRecordedRuns({ artifactDir: dir })).resolves.toEqual({ totalRuns: 0, runs: [], warnings: [] });
   });
 
   it("reads event timelines, classifies visible runtime events, caps events, and warns for malformed lines", async () => {
@@ -99,6 +100,7 @@ describe("recorded run reader", () => {
 
     const list = await listRecordedRuns({ artifactDir: dir });
 
+    expect(list.totalRuns).toBe(1);
     expect(list.runs.map((run) => run.runId)).toEqual(["good"]);
     expect(list.warnings[0]).toMatch(/Skipping bad.summary.json: invalid JSON/u);
   });

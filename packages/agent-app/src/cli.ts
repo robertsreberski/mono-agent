@@ -12,6 +12,7 @@ import {
   redactMonoAgentConfig,
 } from "@mono-agent/config";
 import type { ConfigViewSection } from "@mono-agent/config";
+import { listRecordedRuns } from "@mono-agent/observability";
 
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp } from "./app.js";
@@ -43,6 +44,7 @@ import type { InstallSkillTarget } from "./install-skill.js";
 import { runMetrics } from "./metrics.js";
 import { findRecipe, RECIPE_CATALOG, recipeIds, resolveRecipeInputs } from "./recipes/index.js";
 import type { AgentRecipe } from "./recipes/index.js";
+import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeSessions } from "./sessions.js";
 import { collectSetupOptions } from "./setup.js";
 import type { SecretChecklistItem } from "./setup.js";
@@ -1053,7 +1055,7 @@ async function runForeground(args: ParsedCliArgs): Promise<number> {
     logger: consoleLogger(),
   });
 
-  printAppStatus(app);
+  await printAppStatus(app);
   // Block until a shutdown signal. Returning here (the old behavior) let the
   // process exit immediately whenever no channel owned a live handle — e.g. a
   // traceability-only config, now that the operator console is retired and the
@@ -1141,7 +1143,12 @@ function requireDarwin(command: string): number | undefined {
   return 1;
 }
 
-export function printAppStatus(app: MonoAgentApp): void {
+export interface PrintAppStatusOptions {
+  readonly listRecordedRuns?: typeof listRecordedRuns;
+  readonly nowMs?: number;
+}
+
+export async function printAppStatus(app: MonoAgentApp, options: PrintAppStatusOptions = {}): Promise<void> {
   const trace = app.traceabilityStatus;
   process.stdout.write(ui.rule("instance"));
   process.stdout.write(
@@ -1166,6 +1173,44 @@ export function printAppStatus(app: MonoAgentApp): void {
       process.stdout.write(`  ${ui.channelBadge(status.kind)}${ui.style.bold(id.padEnd(11))} ${describeChannelStatus(status)}\n`);
     }
   }
+  await writeAppRunsHealthDetail(app, options);
+}
+
+async function writeAppRunsHealthDetail(app: MonoAgentApp, options: PrintAppStatusOptions): Promise<void> {
+  const artifactDir = app.traceabilityStatus.kind === "running" ? app.traceabilityStatus.artifactDir : undefined;
+  if (artifactDir === undefined || artifactDir.trim().length === 0) {
+    return;
+  }
+  const reader = options.listRecordedRuns ?? listRecordedRuns;
+  let result;
+  try {
+    result = await reader({ artifactDir, maxRuns: RUNS_HEALTH_MAX_RUNS });
+  } catch (error) {
+    result = {
+      totalRuns: 0,
+      runs: [],
+      warnings: [`Unable to read run summaries: ${reasonOf(error)}`],
+    };
+  }
+  const display = buildRunsHealthDisplay({
+    artifactDir,
+    totalRuns: result.totalRuns,
+    runs: result.runs,
+    warnings: result.warnings,
+    includeSelectedSkills: true,
+    runOwnerAlive: true,
+    maxRuns: RUNS_HEALTH_MAX_RUNS,
+    ...(app.selectedSkills === undefined ? {} : { selectedSkills: app.selectedSkills }),
+    ...(options.nowMs === undefined ? {} : { nowMs: options.nowMs }),
+  });
+  process.stdout.write(ui.rule("runs health"));
+  for (const detail of display.details) {
+    process.stdout.write(`  ${detail}\n`);
+  }
+}
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function describeExporter(status: ExporterStatus, artifactDir: string | undefined): string {

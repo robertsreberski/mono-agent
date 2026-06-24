@@ -97,6 +97,7 @@ export interface MonoAgentApp {
   readonly configPath: string;
   readonly traceabilityStatus: TraceabilityStatus;
   readonly exporterStatus: ExporterStatus;
+  readonly selectedSkills: readonly string[] | undefined;
   channelStatus(id: ChannelId): ChannelStatus;
   channelStatuses(): ReadonlyMap<ChannelId, ChannelStatus>;
   startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
@@ -168,6 +169,7 @@ class MonoAgentAppController implements MonoAgentApp {
     kind: "disabled",
     reason: "No observability exporter configured.",
   };
+  private selectedSkillsValue: readonly string[] | undefined;
   /** The exporter the responder threads into agent-host (first configured exporter). */
   private resolvedExporter: ResolvedExporter | undefined;
   private traceSource: TraceSourceHandle | undefined;
@@ -206,6 +208,10 @@ class MonoAgentAppController implements MonoAgentApp {
 
   get exporterStatus(): ExporterStatus {
     return this.exporterStatusValue;
+  }
+
+  get selectedSkills(): readonly string[] | undefined {
+    return this.selectedSkillsValue;
   }
 
   channelStatus(id: ChannelId): ChannelStatus {
@@ -280,6 +286,7 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     try {
       const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      await this.refreshSelectedSkillsSnapshot(reason);
       const [registryDir, artifactDir, sourceId, label, heartbeatMs] = await Promise.all([
         resolveAppTraceRegistryDir(input),
         resolveAppArtifactDir(input),
@@ -442,6 +449,7 @@ class MonoAgentAppController implements MonoAgentApp {
     try {
       const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
       coreConfig = await loadAppCoreConfig(input);
+      this.rememberSelectedSkills(coreConfig);
     } catch {
       // Config not ready yet — rituals will start on the next applyConfigChange.
       return;
@@ -592,6 +600,7 @@ class MonoAgentAppController implements MonoAgentApp {
     let coreConfig: MonoAgentConfig;
     try {
       coreConfig = await loadAppCoreConfig(input);
+      this.rememberSelectedSkills(coreConfig);
     } catch (error) {
       if (isAppCoreConfigError(error)) {
         this.logger?.info?.("Waiting for a valid agent config.", { reason: error.message });
@@ -905,6 +914,20 @@ class MonoAgentAppController implements MonoAgentApp {
     return transports;
   }
 
+  private async refreshSelectedSkillsSnapshot(reason: string): Promise<void> {
+    try {
+      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      this.rememberSelectedSkills(await loadAppCoreConfig(input));
+    } catch (error) {
+      this.selectedSkillsValue = undefined;
+      this.logger?.info?.("Selected skills unavailable until agent config loads.", { reason, detail: reasonOf(error) });
+    }
+  }
+
+  private rememberSelectedSkills(coreConfig: MonoAgentConfig): void {
+    this.selectedSkillsValue = [...coreConfig.context.selectedSkills];
+  }
+
   private traceMetadata(reason: string): Record<string, unknown> {
     const channels: Record<string, unknown> = {};
     for (const driver of this.drivers) {
@@ -936,6 +959,13 @@ class MonoAgentAppController implements MonoAgentApp {
             },
           }
         : {}),
+      ...(this.selectedSkillsValue === undefined
+        ? {}
+        : {
+            context: {
+              selectedSkills: [...this.selectedSkillsValue],
+            },
+          }),
       channels,
     };
   }
