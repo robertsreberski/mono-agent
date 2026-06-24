@@ -401,7 +401,8 @@ describe("validateMonoAgentFolder — runs health section", () => {
     expect(runs.status).toBe("waiting");
     const text = runs.details.join("\n");
     expect(text).toContain(`Artifact dir: ${artifactDir}`);
-    expect(text).toContain("Inspected recent runs: 6 (max 50).");
+    expect(text).toContain("Recorded runs: 6 total; showing 6 recent (max 50).");
+    expect(text).toContain("Last runs:");
     expect(text).toContain("Recent status counts: running=1, succeeded=1, failed=2, cancelled=1, interrupted=1.");
     expect(text).toContain("[WARN] Recent non-successful runs:");
     expect(text).toContain("[WARN] Cancelled recent runs: 1.");
@@ -441,14 +442,14 @@ describe("validateMonoAgentFolder — runs health section", () => {
     const missing = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
     expect(sectionById(missing, "runs").status).toBe("disabled");
-    expect(sectionById(missing, "runs").details.join("\n")).toContain("No recent run summaries found.");
+    expect(sectionById(missing, "runs").details.join("\n")).toContain("No runs recorded yet.");
     expect(missing.ok).toBe(true);
 
     await mkdir(artifactDir, { recursive: true });
     const empty = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
     expect(sectionById(empty, "runs").status).toBe("disabled");
-    expect(sectionById(empty, "runs").details.join("\n")).toContain("No recent run summaries found.");
+    expect(sectionById(empty, "runs").details.join("\n")).toContain("No runs recorded yet.");
     expect(empty.ok).toBe(true);
   });
 

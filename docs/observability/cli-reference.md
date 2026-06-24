@@ -111,7 +111,7 @@ This catches the class of silent failure where an expired OAuth token quietly br
 
 An empty or missing artifact directory reports `disabled` and stays non-fatal. The section does not read event JSONL files, export anything, reconcile stale runs, or add network probes to the `start` / `restart` preflight.
 
-`status` uses the same local run-summary display for the running instance when the trace-source manifest includes an artifact directory, so operators can see recent failure-kind explanations without running a separate validation command.
+`status` and foreground `start --foreground` use the same local run-summary display for the running instance when the trace-source manifest includes an artifact directory, so operators can see active selected skills, the exact recorded-run count, the most recent run ids with status and age, failure-kind counts with explanations, and any `running` summaries whose owner process is gone without running a separate validation command.
 
 ## `start`
 
@@ -138,6 +138,7 @@ On start the CLI prints per-section status blocks:
 - **instance** — the resolved config path and traceability status (`running (source <id>)`, or `<kind>: <reason>`).
 - **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, `includeSensitiveData=true` when enabled, any last warning/error, and where JSONL artifacts remain local.
 - **channels** — one line per configured channel with a status badge: `running` (plus a `key=value` summary of its facts) or `<kind>: <reason>` (e.g. `disabled`, `waiting`).
+- **runs health** — in foreground mode, the active selected skills, local artifact directory, total recorded summaries, last runs with relative ages, status counts, stale/process-gone `running` summaries, and compact failure-kind counts with explanations.
 
 A channel shown as `disabled` is opted out via its `enabled` flag rather than misconfigured. See [Channels overview](/channels/) and [Artifacts & traces](/observability/artifacts-and-traces/).
 
@@ -183,6 +184,8 @@ mono-agent logs --lines 500      # print the last 500 lines and exit
 | `logs` | `--lines <n>` | Number of trailing lines to print (1–100000, default 200). |
 
 For `logs`, `-f` means **follow**; for `start`, `-f` means **foreground**. A `--lines` value outside `1`–`100000` (or non-integer) errors.
+
+`status` prints the same compact **runs health** block for the detached instance after the instance, observability, and channel details. Missing or empty artifact directories show `No runs recorded yet.` and do not change the command's existing exit-code semantics.
 
 ## `install-skill`
 
