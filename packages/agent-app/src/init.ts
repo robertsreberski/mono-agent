@@ -5,10 +5,10 @@ import { writeMonoAgentConfigJson } from "@mono-agent/config";
 import type { MonoAgentConfigJson } from "@mono-agent/config";
 
 import { resolveRecipeInputs } from "./recipes/index.js";
-import type { AgentRecipe } from "./recipes/index.js";
+import type { AgentRecipe, RecipeInputValues } from "./recipes/index.js";
 
 /** Channels `--with` can switch on, merged onto a recipe's config. */
-const WITH_CHANNELS = ["telegram", "slack", "a2a", "webhook", "openaiApi", "cron"] as const;
+export const WITH_CHANNELS = ["telegram", "slack", "a2a", "webhook", "openaiApi", "cron"] as const;
 export type WithChannel = (typeof WITH_CHANNELS)[number];
 
 export function isWithChannel(value: string): value is WithChannel {
@@ -26,6 +26,8 @@ export interface InitMonoAgentFolderOptions {
   readonly memory?: "lite" | "journal" | "bujo";
   /** When set, the config comes from this recipe instead of the default scaffold. */
   readonly recipe?: AgentRecipe;
+  /** Prompted non-secret values to layer onto recipe defaults. Secret recipe inputs are ignored. */
+  readonly recipeInputs?: RecipeInputValues;
   /** Additional channels to enable on top of the (recipe or default) config. */
   readonly withChannels?: readonly WithChannel[];
   /** Plan the scaffold and report it without writing anything. */
@@ -96,7 +98,7 @@ export async function initMonoAgentFolder(
   await planFile(configPath, () => writeMonoAgentConfigJson({ path: configPath, patch: configJson }));
 
   if (options.recipe !== undefined) {
-    const inputs = resolveRecipeInputs(options.recipe, modelOverride(options));
+    const inputs = resolveRecipeInputs(options.recipe, recipeOverrides(options.recipe, options));
     const envExample = options.recipe.envExample?.(inputs);
     if (envExample !== undefined && envExample.trim().length > 0) {
       const envExamplePath = join(dir, ".env.example");
@@ -114,8 +116,17 @@ export async function initMonoAgentFolder(
   return { dir, configPath, identityPath, created, skipped, knowledgeFiles, dryRun };
 }
 
-function modelOverride(options: InitMonoAgentFolderOptions): Record<string, string> {
-  return options.model === undefined ? {} : { model: options.model };
+function recipeOverrides(recipe: AgentRecipe, options: InitMonoAgentFolderOptions): RecipeInputValues {
+  const overrides: Record<string, string | undefined> = { ...(options.recipeInputs ?? {}) };
+  for (const input of recipe.inputs) {
+    if (input.secret === true) {
+      delete overrides[input.id];
+    }
+  }
+  if (options.model !== undefined) {
+    overrides.model = options.model;
+  }
+  return overrides;
 }
 
 async function resolveConfigJson(
@@ -124,10 +135,27 @@ async function resolveConfigJson(
   skillsRootExists: boolean,
 ): Promise<MonoAgentConfigJson> {
   if (options.recipe !== undefined) {
-    const inputs = resolveRecipeInputs(options.recipe, modelOverride(options));
-    return withChannels(options.recipe.config(inputs), options.withChannels ?? []);
+    const inputs = resolveRecipeInputs(options.recipe, recipeOverrides(options.recipe, options));
+    return withChannels(withRuntimeOverrides(options.recipe.config(inputs), options), options.withChannels ?? []);
   }
   return withChannels(configTemplate(dir, options, skillsRootExists), options.withChannels ?? []);
+}
+
+function withRuntimeOverrides(
+  config: MonoAgentConfigJson,
+  options: InitMonoAgentFolderOptions,
+): MonoAgentConfigJson {
+  const fallbackModels = (options.fallbackModels ?? []).filter((entry) => entry.trim().length > 0);
+  if (fallbackModels.length === 0) {
+    return config;
+  }
+  return {
+    ...config,
+    runtime: {
+      ...(config.runtime ?? {}),
+      fallbackModels,
+    },
+  } as MonoAgentConfigJson;
 }
 
 /** Switch on additional channels by merging `{ <channel>: { enabled: true } }`. */
