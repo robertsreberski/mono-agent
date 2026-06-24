@@ -14,6 +14,7 @@ import {
 import type { MonoAgentConfig } from "@mono-agent/config";
 
 import {
+  describeSensitiveDataExportWarning,
   isAppCoreConfigError,
   loadAppCoreConfig,
   phoenixAppBaseUrl,
@@ -562,7 +563,7 @@ async function exporterSection(input: MonoAgentAppConfigInput, liveness: boolean
     details.push(`Phoenix app: ${appUrl}`);
   }
   if (exporter.includeSensitiveData) {
-    details.push("includeSensitiveData=true (redacted payloads are exported).");
+    details.push(describeSensitiveDataExportWarning(exporter.endpoint));
   }
 
   // The reachability probe only ever yields `waiting`, so the start preflight
