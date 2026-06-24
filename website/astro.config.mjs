@@ -24,12 +24,12 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/robertsreberski/mono-agent',
+          href: 'https://github.com/example/mono-agent',
         },
       ],
       // "Edit this page on GitHub" — content lives under docs/ in the repo.
       editLink: {
-        baseUrl: 'https://github.com/robertsreberski/mono-agent/edit/main/docs/',
+        baseUrl: 'https://github.com/example/mono-agent/edit/main/docs/',
       },
       // Curated section order, mirroring the old just-the-docs nav_order.
       sidebar: [

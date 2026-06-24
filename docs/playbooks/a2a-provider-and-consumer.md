@@ -85,4 +85,4 @@ Send a message to the provider's Agent Card URL (with bearer) using `sendA2AMess
 - [Channels overview & opt-in flags](/channels/)
 - [Environment variables](/config/env-vars/)
 - [Config blueprint](/config/blueprint/)
-- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [mono-agent-composer skill](https://github.com/example/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

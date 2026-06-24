@@ -115,7 +115,7 @@ describe("startMonoAgentApp", () => {
   it("persists active selected skills in the trace-source manifest", async () => {
     await writeConfig({
       ...baseConfig(),
-      context: { identityPath: "./IDENTITY.md", selectedSkills: ["context-ops", "todoist-cli"] },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: ["context-example", "todoist-cli"] },
     });
 
     const app = await startMonoAgentApp({
@@ -123,10 +123,10 @@ describe("startMonoAgentApp", () => {
       env: {},
     });
 
-    expect(app.selectedSkills).toEqual(["context-ops", "todoist-cli"]);
+    expect(app.selectedSkills).toEqual(["context-example", "todoist-cli"]);
     const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
     const context = sources[0]?.metadata?.context as { selectedSkills?: readonly string[] } | undefined;
-    expect(context?.selectedSkills).toEqual(["context-ops", "todoist-cli"]);
+    expect(context?.selectedSkills).toEqual(["context-example", "todoist-cli"]);
 
     await app.stop();
   });

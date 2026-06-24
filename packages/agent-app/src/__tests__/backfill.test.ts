@@ -109,7 +109,7 @@ describe("backfill mapping integration", () => {
       summary: parsed,
       events,
       context: { runId: parsed.runId, conversationId: parsed.conversationId, includeSensitiveData: false },
-      projectName: "personal-agent",
+      projectName: "local-agent-alpha",
       startTimeUnixNanos: start,
       endTimeUnixNanos: end,
       idFactory: createDeterministicIdFactory(parsed.runId),

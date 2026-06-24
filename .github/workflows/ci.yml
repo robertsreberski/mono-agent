@@ -34,6 +34,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check secrets
+        run: |
+          docker run --rm \
+            -v "$PWD:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir --redact --no-banner --config /repo/.gitleaks.toml /repo
+
+      - name: Check OSS hygiene
+        run: pnpm run check:oss-hygiene
+
       - name: Derive release smoke tag
         id: release-smoke
         run: |

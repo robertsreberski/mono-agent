@@ -23,12 +23,12 @@
   "providers": {
     "piAuthPath": "./pi-auth/auth.json",
     "piNative": {
-      "piSessionsRoot": "./.ops-agent/sessions"
+      "piSessionsRoot": "./.local-agent-beta/sessions"
     }
   },
   "memory": {
     "mode": "journal",
-    "path": "./.ops-agent/memory",
+    "path": "./.local-agent-beta/memory",
     "maxBytes": 64000,
     "writeMode": "append-host-summary",
     "embeddings": {
@@ -66,17 +66,17 @@
     "readableRoots": [
       ".",
       "./fixture-home/.config/todoist-cli",
-      "./fixture-home/.config/gws-ops",
-      "./fixture-home/.config/ops-cli",
-      "./fixture-home/Example Corp_Repositories/ops-cli",
+      "./fixture-home/.config/gws-work",
+      "./fixture-home/.config/work-cli",
+      "./fixture-home/ExampleCorp_Repositories/work-cli",
       "./fixture-home/.config/gh",
       "./fixture-home/.claude"
     ],
     "writableRoots": [
       ".",
       "./fixture-home/.config/todoist-cli",
-      "./fixture-home/.config/gws-ops",
-      "./fixture-home/.config/ops-cli",
+      "./fixture-home/.config/gws-work",
+      "./fixture-home/.config/work-cli",
       "./fixture-home/.config/gh",
       "./fixture-home/.claude"
     ],
@@ -92,7 +92,7 @@
   "slack": {
     "enabled": true,
     "allowedChannelIds": [
-      "D0B0F9GTDGC"
+      "CLOCALBETA"
     ],
     "allowAllChannels": false
   },
@@ -105,22 +105,22 @@
     "port": 4311,
     "basePath": "/v1",
     "allowNonLoopback": false,
-    "modelId": "ops-agent"
+    "modelId": "local-agent-beta"
   },
   "artifacts": {
-    "dir": "./.ops-agent/artifacts"
+    "dir": "./.local-agent-beta/artifacts"
   },
   "traceability": {
-    "registryDir": "./.ops-agent/trace",
-    "sourceId": "ops-agent",
-    "sourceLabel": "OPS Agent"
+    "registryDir": "./.local-agent-beta/trace",
+    "sourceId": "local-agent-beta",
+    "sourceLabel": "Local Agent Beta"
   },
   "observability": {
     "exporters": [
       {
         "type": "phoenix",
         "endpoint": "http://127.0.0.1:6006/v1/traces",
-        "projectName": "ops-agent",
+        "projectName": "local-agent-beta",
         "includeSensitiveData": true
       }
     ]

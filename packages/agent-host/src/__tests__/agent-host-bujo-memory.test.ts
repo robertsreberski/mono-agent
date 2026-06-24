@@ -131,7 +131,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     );
 
     const result = await (store as unknown as { capture(conversationId: string, text: string): Promise<unknown> })
-      .capture("conv-1", "Robert prefers agent-host memory LLM calls.");
+      .capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
 
     expect(result).toEqual({ actions: 0, entities: 0 });
     expect(runtime.calls.length).toBeGreaterThanOrEqual(2);
@@ -181,7 +181,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
       { runtime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
     ) as unknown as CapturableStore;
 
-    await store.capture("conv-1", "Robert prefers agent-host memory LLM calls.");
+    await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
     await store.close();
 
     const summaries = await readSummaries(join(dir, "artifacts"));

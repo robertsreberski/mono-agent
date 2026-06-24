@@ -734,7 +734,7 @@ describe("AgentHarness", () => {
               {
                 type: "tool_use",
                 id: "tool-1",
-                name: "mcp__context_a8c__search",
+                name: "mcp__context_example__search",
                 input: { query: "release plan" },
               },
             ],
@@ -782,7 +782,7 @@ describe("AgentHarness", () => {
       {
         type: "tool_call_started",
         id: "tool-1",
-        name: "mcp__context_a8c__search",
+        name: "mcp__context_example__search",
         arguments: { query: "release plan" },
       },
       {

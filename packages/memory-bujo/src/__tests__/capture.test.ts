@@ -50,14 +50,14 @@ describe("captureTurn", () => {
       [
         "Extract named entities",
         JSON.stringify({
-          entities: [{ id: "person:robert", name: "Robert", type: "person" }],
-          relations: [{ src: "person:robert", dst: "person:robert", relation: "self-reference" }],
+          entities: [{ id: "person:morgan", name: "Morgan", type: "person" }],
+          relations: [{ src: "person:morgan", dst: "person:morgan", relation: "self-reference" }],
         }),
       ],
       [
         "TEXT:",
         JSON.stringify([
-          { type: "note", text: "Robert prefers opt-in memory capture", salience: 0.8, isInsight: false },
+          { type: "note", text: "Morgan prefers opt-in memory capture", salience: 0.8, isInsight: false },
           { type: "task", text: "ship Phase 2 memory pipeline", salience: 0.7, isInsight: false },
         ]),
       ],
@@ -71,7 +71,7 @@ describe("captureTurn", () => {
       now: () => FIXED,
     };
 
-    const result = await captureTurn("Robert discussed the memory pipeline today", deps);
+    const result = await captureTurn("Morgan discussed the memory pipeline today", deps);
 
     // 2 memories distilled and added
     expect(result.actions).toHaveLength(2);
@@ -89,23 +89,23 @@ describe("captureTurn", () => {
     expect(result.relations).toBe(1);
 
     // Entity present in db
-    const entity = db.getEntity("person:robert");
+    const entity = db.getEntity("person:morgan");
     expect(entity).toBeDefined();
-    expect(entity?.name).toBe("Robert");
+    expect(entity?.name).toBe("Morgan");
     expect(entity?.type).toBe("person");
 
     // Entity present in graph.jsonl
     const graph = readGraph(root);
-    expect(graph.entities.some((e) => e.id === "person:robert")).toBe(true);
+    expect(graph.entities.some((e) => e.id === "person:morgan")).toBe(true);
 
     // Relation present in graph.jsonl
-    expect(graph.relations.some((r) => r.src === "person:robert" && r.relation === "self-reference")).toBe(true);
+    expect(graph.relations.some((r) => r.src === "person:morgan" && r.relation === "self-reference")).toBe(true);
 
     // about edges: each added memory links to the extracted entity
     for (const action of result.actions) {
       if (action.kind === "add") {
         const edges = db.edges(action.id);
-        expect(edges.some((e) => e.kind === "about" && e.dst === "person:robert")).toBe(true);
+        expect(edges.some((e) => e.kind === "about" && e.dst === "person:morgan")).toBe(true);
       }
     }
   });
@@ -163,24 +163,24 @@ describe("captureTurn", () => {
         "Extract named entities",
         JSON.stringify({
           entities: [
-            { id: "person:robert", name: "Robert", type: "person" },
+            { id: "person:morgan", name: "Morgan", type: "person" },
             { id: "project:mono-agent", name: "mono-agent", type: "project" },
           ],
-          relations: [{ src: "person:robert", dst: "project:mono-agent", relation: "maintains" }],
+          relations: [{ src: "person:morgan", dst: "project:mono-agent", relation: "maintains" }],
         }),
       ],
       [
         "TEXT:",
-        JSON.stringify([{ type: "note", text: "Robert maintains mono-agent", salience: 0.7, isInsight: false }]),
+        JSON.stringify([{ type: "note", text: "Morgan maintains mono-agent", salience: 0.7, isInsight: false }]),
       ],
     ]);
 
     const deps: ReconcileDeps = { db: failingDb, root, llm, nextId: makeSeqNextId(), now: () => FIXED };
-    await expect(captureTurn("Robert maintains mono-agent", deps)).resolves.toBeDefined();
+    await expect(captureTurn("Morgan maintains mono-agent", deps)).resolves.toBeDefined();
 
     const graph = readGraph(root);
-    expect(graph.entities.some((e) => e.id === "person:robert")).toBe(true);
-    expect(graph.relations.some((r) => r.src === "person:robert" && r.relation === "maintains")).toBe(true);
+    expect(graph.entities.some((e) => e.id === "person:morgan")).toBe(true);
+    expect(graph.relations.some((r) => r.src === "person:morgan" && r.relation === "maintains")).toBe(true);
   });
 
   it("propagates a model failure (does not silently no-op the whole turn)", async () => {

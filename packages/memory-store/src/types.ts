@@ -51,7 +51,7 @@ export interface SimilarHit {
 }
 
 export interface EntityRecord {
-  readonly id: string;       // slug, e.g. "person:robert"
+  readonly id: string;       // slug, e.g. "person:morgan"
   readonly name: string;
   readonly type?: string;    // person | project | org | concept | ...
   readonly summary?: string;

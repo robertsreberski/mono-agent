@@ -5,7 +5,7 @@ import { fakeLlm } from "./helpers.js";
 
 describe("distill", () => {
   it("parses well-formed candidates and normalizes/clamps fields", async () => {
-    const llm = fakeLlm([["TEXT:", '```json\n[{"type":"note","text":"Robert prefers opt-in memory","salience":1.4,"isInsight":true},{"type":"task","text":"ship P2","salience":-1,"isInsight":false}]\n```']]);
+    const llm = fakeLlm([["TEXT:", '```json\n[{"type":"note","text":"Morgan prefers opt-in memory","salience":1.4,"isInsight":true},{"type":"task","text":"ship P2","salience":-1,"isInsight":false}]\n```']]);
     const out = await distill("the team discussed memory", llm);
     expect(out).toHaveLength(2);
     expect(out[0]).toMatchObject({ type: "note", isInsight: true });

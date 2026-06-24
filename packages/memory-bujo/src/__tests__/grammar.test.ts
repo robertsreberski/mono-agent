@@ -20,7 +20,7 @@ describe("parseBullet/serializeBullet", () => {
       LINE,
       '- [x] Confirmed nomic tag is v1.5.  <!--mem id=01C type=note status=done salience=0.4 isInsight=0 created=2026-06-15T10:00:00.000Z refs=-->',
       '- ◦ Met about memory rituals.  <!--mem id=01D type=event status=open salience=0.5 isInsight=0 created=2026-06-15T11:00:00.000Z refs=-->',
-      '- – Robert prefers opt-in, never silent fallback.  <!--mem id=01E type=note status=open salience=0.9 isInsight=1 created=2026-06-15T12:00:00.000Z refs=01C-->',
+      '- – Morgan prefers opt-in, never silent fallback.  <!--mem id=01E type=note status=open salience=0.9 isInsight=1 created=2026-06-15T12:00:00.000Z refs=01C-->',
     ];
     for (const line of samples) {
       const parsed = parseBullet(line);

@@ -21,7 +21,7 @@ A model reference is a `:`-delimited string. The leading segment is the runtime 
 | `pi` | `pi:<provider>:<model>` | `pi:openai:gpt-5.5` |
 | `opencode` | `opencode:<provider>:<model>` | `opencode:github-copilot:gpt-4.1` |
 
-Only four SDK ids are active: `claude`, `pi`, `codex`, `opencode` (`ACTIVE_RUNTIME_IDS` in [`packages/agent-runtime/src/ai/runtime/model-refs.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/model-refs.js)). The ids `openai`, `vercel`, `claude-code`, and `codex-cli` are *reserved legacy spellings* — they are canonicalized (`openai:x` → `pi:openai:x`, `claude-code:x` → `claude:x`, `vercel:p:m` → `pi:p:m`) or rejected. Tier aliases (`haiku`, `sonnet`, `opus`) are rejected; use an exact model id.
+Only four SDK ids are active: `claude`, `pi`, `codex`, `opencode` (`ACTIVE_RUNTIME_IDS` in [`packages/agent-runtime/src/ai/runtime/model-refs.js`](https://github.com/example/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/model-refs.js)). The ids `openai`, `vercel`, `claude-code`, and `codex-cli` are *reserved legacy spellings* — they are canonicalized (`openai:x` → `pi:openai:x`, `claude-code:x` → `claude:x`, `vercel:p:m` → `pi:p:m`) or rejected. Tier aliases (`haiku`, `sonnet`, `opus`) are rejected; use an exact model id.
 
 For `pi:` and `opencode:` only the **first** colon separates provider from model, so model ids may contain slashes (e.g. `opencode:openrouter:anthropic/claude-3.5-sonnet`).
 
@@ -98,7 +98,7 @@ Copilot-class models are therefore reachable two ways: through `pi:github-copilo
 
 :::note
 :::
-OpenCode is registered as the `opencode-app` bridge in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js); it self-registers and matches `sdk === "opencode" && executionMode === "cli"`.
+OpenCode is registered as the `opencode-app` bridge in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/example/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js); it self-registers and matches `sdk === "opencode" && executionMode === "cli"`.
 
 ## Execution modes
 
@@ -115,8 +115,8 @@ OpenCode is registered as the `opencode-app` bridge in [`packages/agent-runtime/
 
 There are two backend tables in the codebase, and only one of them performs routing.
 
-- **Routing (real):** the agent-runtime bridge registry in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js). `listRuntimeBridges()` / `resolveRuntimeBridge()` pick the first bridge whose `supports(ref, options)` matches. This registry includes `opencode-app`, so OpenCode is fully routable.
-- **Vocabulary metadata (descriptive only):** `RUNTIME_BACKEND_DEFINITIONS` in [`packages/runtime-adapter/src/runtime-adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/runtime-adapter/src/runtime-adapter.ts) lists four entries (claude-sdk, claude-code-cli, codex-app-cli, pi-sdk). Its own docstring states it is **"NOT wired into agent-host routing; consumers read it to align vocabularies."** It is a declarative descriptor table, not the router — the absence of an OpenCode entry there does not mean OpenCode is unrouted.
+- **Routing (real):** the agent-runtime bridge registry in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/example/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js). `listRuntimeBridges()` / `resolveRuntimeBridge()` pick the first bridge whose `supports(ref, options)` matches. This registry includes `opencode-app`, so OpenCode is fully routable.
+- **Vocabulary metadata (descriptive only):** `RUNTIME_BACKEND_DEFINITIONS` in [`packages/runtime-adapter/src/runtime-adapter.ts`](https://github.com/example/mono-agent/blob/main/packages/runtime-adapter/src/runtime-adapter.ts) lists four entries (claude-sdk, claude-code-cli, codex-app-cli, pi-sdk). Its own docstring states it is **"NOT wired into agent-host routing; consumers read it to align vocabularies."** It is a declarative descriptor table, not the router — the absence of an OpenCode entry there does not mean OpenCode is unrouted.
 
 :::caution
 :::

@@ -15,7 +15,7 @@ describe("rebuildFromMarkdown", () => {
     writeFileSync(join(root, "daily", "2026-06-14.md"),
       '# 2026-06-14\n\n- [ ] Ship substrate.  <!--mem id=01A type=task status=open salience=0.8 isInsight=0 created=2026-06-14T09:00:00.000Z refs=-->\n');
     writeFileSync(join(root, "daily", "2026-06-15.md"),
-      '# 2026-06-15\n\n- – Robert prefers opt-in memory.  <!--mem id=01B type=note status=open salience=0.9 isInsight=1 created=2026-06-15T09:00:00.000Z refs=-->\n');
+      '# 2026-06-15\n\n- – Morgan prefers opt-in memory.  <!--mem id=01B type=note status=open salience=0.9 isInsight=1 created=2026-06-15T09:00:00.000Z refs=-->\n');
 
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
     const result = await rebuildFromMarkdown(root, db);
@@ -32,13 +32,13 @@ describe("rebuildFromMarkdown", () => {
     // Write a daily file so rebuild has something to index
     writeFileSync(
       join(root, "daily", "2026-06-15.md"),
-      "# 2026-06-15\n\n- – Robert maintains mono-agent.  <!--mem id=RB1 type=note status=open salience=0.7 isInsight=0 created=2026-06-15T09:00:00.000Z refs=-->\n",
+      "# 2026-06-15\n\n- – Morgan maintains mono-agent.  <!--mem id=RB1 type=note status=open salience=0.7 isInsight=0 created=2026-06-15T09:00:00.000Z refs=-->\n",
     );
 
     // Write graph.jsonl with an entity and a relation
-    appendEntity(root, { id: "person:robert", name: "Robert", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
+    appendEntity(root, { id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
     appendEntity(root, { id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: "2026-06-15T09:00:00.000Z" });
-    appendRelation(root, { src: "person:robert", dst: "project:mono-agent", relation: "maintains", createdAt: "2026-06-15T09:00:00.000Z" });
+    appendRelation(root, { src: "person:morgan", dst: "project:mono-agent", relation: "maintains", createdAt: "2026-06-15T09:00:00.000Z" });
 
     // Open a fresh db (simulates a delete+rebuild)
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
@@ -51,11 +51,11 @@ describe("rebuildFromMarkdown", () => {
     expect(result.indexed).toBe(1);
 
     // Entities were loaded from graph.jsonl into the db
-    expect(db.getEntity("person:robert")).toMatchObject({ name: "Robert", type: "person" });
+    expect(db.getEntity("person:morgan")).toMatchObject({ name: "Morgan", type: "person" });
     expect(db.getEntity("project:mono-agent")).toMatchObject({ name: "mono-agent", type: "project" });
 
     // Relations were loaded
-    expect(db.relationsFor("person:robert")).toContainEqual(
+    expect(db.relationsFor("person:morgan")).toContainEqual(
       expect.objectContaining({ dst: "project:mono-agent", relation: "maintains" }),
     );
 

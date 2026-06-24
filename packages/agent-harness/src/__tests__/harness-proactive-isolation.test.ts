@@ -88,17 +88,17 @@ describe("AgentHarness proactive session isolation", () => {
     const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session: isolatingSession });
 
     // A cron turn runs ephemerally...
-    await harness.run(cronRequest("telegram:robert", "cron tick"));
+    await harness.run(cronRequest("telegram:morgan", "cron tick"));
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
 
     // ...then an interactive turn on the SAME conversation must start fresh (no
     // resume of the cron turn's session) because the cron turn saved nothing.
-    await harness.run(request("telegram:robert", "human message"));
+    await harness.run(request("telegram:morgan", "human message"));
     expect(fake.calls[1]?.options.sessionId).toBeUndefined();
 
     // But the interactive turn DOES warm the shared session — a subsequent
     // interactive turn resumes it, proving isolation only suppressed the cron turn.
-    await harness.run(request("telegram:robert", "follow-up"));
+    await harness.run(request("telegram:morgan", "follow-up"));
     expect(fake.calls[2]?.options.sessionId).toBe("ps-2");
   });
 
@@ -124,13 +124,13 @@ describe("AgentHarness proactive session isolation", () => {
       identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session: isolatingSession,
     });
 
-    await harness.run(request("telegram:robert", "first"));
+    await harness.run(request("telegram:morgan", "first"));
     expect(fake.calls[0]?.options.sessionKeepAlive).toBe(true);
     // Interactive turns still resume the warm session.
-    await harness.run(request("telegram:robert", "second"));
+    await harness.run(request("telegram:morgan", "second"));
     expect(fake.calls[1]?.options.sessionId).toBe("ps-1");
     // Both interactive turns committed to history.
-    const history = await historyStore.load("telegram:robert");
+    const history = await historyStore.load("telegram:morgan");
     expect(history).toHaveLength(4);
   });
 });

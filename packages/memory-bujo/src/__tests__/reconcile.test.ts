@@ -196,13 +196,13 @@ describe("reconcile", () => {
   it("case 4 — refinement candidate + LLM says update → target text merged, count unchanged", async () => {
     const root = newRoot();
     const db = openDb(root);
-    await seed(db, root, "UPD1", "robert prefers opt in memory capture");
+    await seed(db, root, "UPD1", "morgan prefers opt in memory capture");
 
-    const merged = "robert prefers opt in memory capture with manual review";
+    const merged = "morgan prefers opt in memory capture with manual review";
     const llm = fakeLlm([["CLASSIFY", `{"action":"update","targetId":"UPD1","text":"${merged}"}`]]);
     const candidate: CandidateMemory = {
       type: "note",
-      text: "robert prefers opt in memory capture and manual review",
+      text: "morgan prefers opt in memory capture and manual review",
       salience: 0.6,
       isInsight: false,
     };
@@ -228,14 +228,14 @@ describe("reconcile", () => {
     const db = openDb(root);
     // Index record whose canonical daily file is MISSING (simulated index/markdown divergence).
     await db.upsert({
-      id: "GHOST", type: "note", status: "open", text: "robert prefers opt in memory capture",
+      id: "GHOST", type: "note", status: "open", text: "morgan prefers opt in memory capture",
       salience: 0.5, isInsight: false, createdAt: FIXED.toISOString(), accessCount: 0, tags: [],
       source: { file: "daily/2099-01-01.md" },
     });
     // First candidate is similar to GHOST; LLM says "update" → rewriteBullet reads the missing file → throws.
     // Second candidate is novel → must still be ADDed despite the first failing.
     const llm = fakeLlm([["CLASSIFY", '{"action":"update","targetId":"GHOST","text":"merged text here"}']]);
-    const failing: CandidateMemory = { type: "note", text: "robert prefers opt in memory capture and review", salience: 0.6, isInsight: false };
+    const failing: CandidateMemory = { type: "note", text: "morgan prefers opt in memory capture and review", salience: 0.6, isInsight: false };
     const novel: CandidateMemory = { type: "task", text: "schedule the offsite logistics budget", salience: 0.7, isInsight: false };
 
     const actions = await reconcile([failing, novel], makeDeps(db, root, llm));
