@@ -1,6 +1,7 @@
 import {
   buildEventSpans,
   buildRootSpanAttributes,
+  composeFailureDetail,
   countRuntimeWarnings,
   spanKindHint,
   spanStatusFor,
@@ -153,8 +154,14 @@ export function buildRunReadableSpans(input: BuildRunReadableSpansInput): Readab
   // "what was asked" and "what was answered". Both are conversation content, so
   // they fall back to ids/status when sensitive export is off. The prompt is only
   // available on the live path (threaded via context.userInput); backfill lacks it.
+  // Failure detail = the collapsed failure kind PLUS the per-attempt failover
+  // summary (which models were tried, how each failed) and the capped underlying
+  // provider message — so a failed trace reads "failed (provider_unavailable_exhausted:
+  // gpt-5.5 → timeout, kimi-k2.6 → server_error; last error: 503 …)" instead of a
+  // bare kind. Undefined for a clean run.
+  const failureDetail = composeFailureDetail(summary, { maxErrorChars: 300 });
   const statusText =
-    summary.failureKind === undefined ? summary.status : `${summary.status} (${summary.failureKind})`;
+    failureDetail === undefined ? summary.status : `${summary.status} (${failureDetail})`;
   const lastMessage = [...eventSpans].reverse().find((mapping) => mapping.category === "message");
   const finalReply = lastMessage === undefined ? "" : String(lastMessage.attributes["output.value"] ?? "");
   const rootInput =
@@ -205,7 +212,7 @@ export function buildRunReadableSpans(input: BuildRunReadableSpansInput): Readab
       endTime: end,
       attributes: rootAttributes,
       statusError: rootError,
-      ...(rootError && summary.failureKind !== undefined ? { statusMessage: summary.failureKind } : {}),
+      ...(rootError && failureDetail !== undefined ? { statusMessage: failureDetail } : {}),
       resource,
       scope,
     }),

@@ -3,6 +3,7 @@ import { buildEventDescriptors } from "./event-classify.js";
 import { DEFAULT_MAX_STRING_BYTES, isRecord, stringField } from "./guards.js";
 import { redactJsonValue } from "./redaction.js";
 import type {
+  FailoverAttempt,
   RecordedRunEventCategory,
   RunExportContext,
   RunSummary,
@@ -37,6 +38,104 @@ export interface EventSpanMapping {
   readonly payload?: unknown;
 }
 
+// Concise cap for the underlying error message woven into a failure status line.
+const DEFAULT_FAILURE_ERROR_CHARS = 300;
+// Wider cap for the standalone `mono.agent.error.message` attribute (its own field,
+// not a status line, so it can hold a bit more before truncation).
+const ERROR_ATTRIBUTE_CHARS = 500;
+
+function failoverModel(model: unknown): string | undefined {
+  if (typeof model === "string" && model.trim().length > 0) return model.trim();
+  if (isRecord(model)) return stringField(model, "reference") ?? stringField(model, "model");
+  return undefined;
+}
+
+/**
+ * Canonicalize the router's loosely-typed `failoverHistory` (ModelRef objects +
+ * `retryableSubkind`) into the stable {@link FailoverAttempt} shape persisted in
+ * the summary. Idempotent on already-normalized data, so it is safe to call again
+ * at read/export time. Returns undefined when there is nothing recordable.
+ */
+export function normalizeFailoverHistory(value: unknown): FailoverAttempt[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const attempts: FailoverAttempt[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const model = failoverModel(entry.model);
+    const failureKind = stringField(entry, "failureKind");
+    // `retryableSubkind` is the router's field name; `subkind` keeps the helper
+    // idempotent when fed already-normalized attempts.
+    const subkind = stringField(entry, "retryableSubkind") ?? stringField(entry, "subkind");
+    const requestId = stringField(entry, "requestId");
+    if (model === undefined && failureKind === undefined && subkind === undefined && requestId === undefined) {
+      continue;
+    }
+    attempts.push({
+      ...(model === undefined ? {} : { model }),
+      ...(failureKind === undefined ? {} : { failureKind }),
+      ...(subkind === undefined ? {} : { subkind }),
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+  }
+  return attempts.length === 0 ? undefined : attempts;
+}
+
+/**
+ * Render a failover history into a compact, single-line `model → reason (req id)`
+ * list (e.g. "pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 →
+ * server_error (req abc123)"). `reason` prefers the retryable subkind, then the
+ * raw failure kind.
+ */
+export function renderFailoverHistory(history: readonly FailoverAttempt[] | undefined): string | undefined {
+  if (history === undefined || history.length === 0) return undefined;
+  return history
+    .map((attempt) => {
+      const label = attempt.model ?? "(unknown model)";
+      const reason = attempt.subkind ?? attempt.failureKind ?? "failed";
+      const req = attempt.requestId === undefined ? "" : ` (req ${attempt.requestId})`;
+      return `${label} → ${reason}${req}`;
+    })
+    .join(", ");
+}
+
+/**
+ * Compose the human-facing failure detail for a failed run: the taxonomy kind,
+ * the per-attempt failover summary, and the capped underlying provider message.
+ * Returns undefined when the run carries no failure signal (a clean run). This is
+ * the descriptive string Phoenix shows in place of the bare `failureKind`.
+ */
+export function composeFailureDetail(
+  summary: RunSummary,
+  options: { readonly maxErrorChars?: number } = {},
+): string | undefined {
+  const failover = renderFailoverHistory(summary.failoverHistory);
+  const hasError = typeof summary.error === "string" && summary.error.trim().length > 0;
+  if (summary.failureKind === undefined && failover === undefined && !hasError) {
+    return undefined;
+  }
+  let detail = summary.failureKind ?? "error";
+  if (failover !== undefined) detail += `: ${failover}`;
+  if (hasError) {
+    detail += `; last error: ${compactString(summary.error as string, options.maxErrorChars ?? DEFAULT_FAILURE_ERROR_CHARS)}`;
+  }
+  return detail;
+}
+
+/** Always-on operational attributes describing a run's failure (never gated content). */
+function failureDetailAttributes(summary: RunSummary): SpanAttributes {
+  const attrs: SpanAttributes = {};
+  if (typeof summary.error === "string" && summary.error.trim().length > 0) {
+    attrs["mono.agent.error.message"] = compactString(summary.error, ERROR_ATTRIBUTE_CHARS);
+  }
+  const failover = summary.failoverHistory;
+  if (failover !== undefined && failover.length > 0) {
+    attrs["mono.agent.failover.count"] = failover.length;
+    const detail = renderFailoverHistory(failover);
+    if (detail !== undefined) attrs["mono.agent.failover.detail"] = detail;
+  }
+  return attrs;
+}
+
 /**
  * Build the root run span attribute bag (spec section 7 root keys). Optional
  * context fields are omitted entirely when absent (conditional spreads, never
@@ -63,6 +162,10 @@ export function buildRootSpanAttributes(
     ...(ctx.configPath === undefined ? {} : { "mono.agent.config_path": ctx.configPath }),
     "mono.agent.status": summary.status,
     ...(summary.failureKind === undefined ? {} : { "mono.agent.failure_kind": summary.failureKind }),
+    // The underlying provider message + per-attempt failover detail (which models
+    // were tried and how each failed) — operational metadata, always surfaced so a
+    // failed trace shows the "why", not only the collapsed failure kind.
+    ...failureDetailAttributes(summary),
     ...(summary.providerSessionId === undefined || summary.providerSessionId === null
       ? {}
       : { "mono.agent.provider_session_id": summary.providerSessionId }),

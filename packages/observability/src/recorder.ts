@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 
 import { DEFAULT_MAX_STRING_BYTES, mkdir, safeArtifactName, writeJsonAtomic } from "./artifact-fs.js";
 import { errorFailureKind, errorToJson, redactJsonValue, truncateString } from "./redaction.js";
+import { normalizeFailoverHistory } from "./run-export-mapping.js";
 import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
 
 // System prompts are bounded by their OWN cap, not the per-event `maxStringBytes`
@@ -96,11 +97,21 @@ class JsonlRunRecorder implements RunRecorder {
       typeof result.systemPrompt === "string"
         ? truncateString(result.systemPrompt, SYSTEM_PROMPT_MAX_BYTES)
         : this.systemPrompt;
+    // Underlying provider/runtime message (the "why" behind `failureKind`) and the
+    // router's per-attempt failover detail. Both ride on the runtime result but were
+    // historically dropped here, leaving a failed trace with only the collapsed kind.
+    const error =
+      typeof result.error === "string" && result.error.trim().length > 0
+        ? (redactJsonValue(result.error, this.maxStringBytes) as string)
+        : undefined;
+    const failoverHistory = normalizeFailoverHistory(result.failoverHistory);
     const summary: RunSummary = {
       runId: this.runId,
       conversationId: this.conversationId,
       status,
       ...(failureKind === undefined ? {} : { failureKind }),
+      ...(error === undefined ? {} : { error }),
+      ...(failoverHistory === undefined ? {} : { failoverHistory }),
       startedAt: this.startedAtIso,
       ...(status === "running" ? {} : { endedAt: nowIso }),
       updatedAt: nowIso,
