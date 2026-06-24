@@ -57,7 +57,7 @@ export type {
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
 export { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
-export { buildMonoAgentConfigView, CONFIG_ENV_KEYS } from "./config-view.js";
+export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings } from "./config-view.js";
 export type {
   BuildMonoAgentConfigViewInput,
   ConfigViewField,

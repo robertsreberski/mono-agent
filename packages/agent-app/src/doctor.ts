@@ -4,7 +4,13 @@ import { dirname, join } from "node:path";
 import { serializeTraceSpans } from "@mono-agent/observability-otel";
 import { describeMonoRuntimeSupport, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
-import { resolveSupermemoryContainer } from "@mono-agent/config";
+import {
+  buildMonoAgentConfigView,
+  findJsonSecretConfigWarnings,
+  readMonoAgentConfigJson,
+  redactMonoAgentConfig,
+  resolveSupermemoryContainer,
+} from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 
 import {
@@ -69,6 +75,17 @@ export async function validateMonoAgentFolder(
   }
 
   if (coreConfig !== undefined) {
+    const jsonResult = await readMonoAgentConfigJson(options.configPath);
+    const secretWarnings = findJsonSecretConfigWarnings(
+      buildMonoAgentConfigView({
+        redacted: redactMonoAgentConfig(coreConfig),
+        json: jsonResult.json,
+        env: options.env,
+      }),
+    );
+    if (secretWarnings.length > 0) {
+      sections.push({ id: "secret-placement", label: "Secret placement", status: "waiting", details: secretWarnings });
+    }
     sections.push(runtimeSection(coreConfig));
     sections.push(await credentialsSection(coreConfig));
     sections.push(await contextSection(coreConfig));

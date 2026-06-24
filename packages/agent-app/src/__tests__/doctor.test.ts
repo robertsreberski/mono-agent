@@ -116,6 +116,58 @@ describe("validateMonoAgentFolder", () => {
     expect(core.status).toBe("error");
     expect(core.details.join("\n")).toContain("MONO_AGENT_MODEL");
   });
+
+  it("warns non-fatally when a secret is sourced from JSON", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        mode: "journal",
+        path: dir,
+        embeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+          apiKey: "sk-json-secret",
+        },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    const placement = sectionById(report, "secret-placement");
+    expect(placement.status).toBe("waiting");
+    expect(placement.details).toEqual([
+      "[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).",
+    ]);
+  });
+
+  it("does not add a secret-placement warning when the same secret is env-sourced", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        mode: "journal",
+        path: dir,
+        embeddings: {
+          provider: "openai",
+          model: "text-embedding-3-small",
+        },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "sk-env-secret" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.sections.find((section) => section.id === "secret-placement")).toBeUndefined();
+  });
 });
 
 describe("validateMonoAgentFolder — observability exporter section", () => {
