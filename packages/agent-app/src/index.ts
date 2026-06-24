@@ -54,6 +54,18 @@ export type {
   ValidationSection,
   ValidationStatus,
 } from "./doctor.js";
+export {
+  consumerContractNames,
+  consumerContractRunSummaryStatuses,
+  validateConsumerContractFixture,
+} from "./consumer-contract.js";
+export type {
+  ConsumerContractFixtureOptions,
+  ConsumerContractFixtureResult,
+  ConsumerContractIssue,
+  ConsumerContractName,
+  ConsumerContractSectionStatus,
+} from "./consumer-contract.js";
 export { parseCliArgs, runCli, loadCliEnvFile, ensureStartable, renderHelp, printAppStatus } from "./cli.js";
 export type { PreflightResult } from "./cli.js";
 export { badge, channelBadge, computeColorEnabled, healthBadge, isColorEnabled, keyValue, rule, style } from "./ui.js";
