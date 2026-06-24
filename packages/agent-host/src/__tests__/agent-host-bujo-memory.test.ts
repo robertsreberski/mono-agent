@@ -105,7 +105,7 @@ describe("createConfiguredMemory — bujo mode", () => {
           executionMode: "sdk",
         },
       }),
-      { runtime },
+      { memoryRuntime: runtime },
     );
 
     expect(store).toBeDefined();
@@ -127,7 +127,7 @@ describe("createConfiguredMemory — bujo mode", () => {
           executionMode: "sdk",
         },
       }),
-      { runtime },
+      { memoryRuntime: runtime },
     );
 
     const result = await (store as unknown as { capture(conversationId: string, text: string): Promise<unknown> })
@@ -161,7 +161,7 @@ describe("createConfiguredMemory — bujo mode", () => {
             model: "codex:gpt-5.5",
           },
         }),
-        { runtime: createRecordingRuntime() },
+        { memoryRuntime: createRecordingRuntime() },
       ),
     ).toThrow(/SDK execution mode only/u);
   });
@@ -178,7 +178,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const dir = await tempDir();
     const store = createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
-      { runtime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
+      { memoryRuntime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
     ) as unknown as CapturableStore;
 
     await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
@@ -209,7 +209,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
         observabilityExporters: [{ type: "phoenix" }],
       }),
       {
-        runtime: createRecordingRuntime(),
+        memoryRuntime: createRecordingRuntime(),
         observability: { observabilityContext: { sourceId: "s1" }, exporterFactory: () => spy.exporter },
       },
     ) as unknown as CapturableStore;
@@ -235,7 +235,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
       const dir = await tempDir();
       const store = createConfiguredMemory(
         bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
-        { runtime: createAbortAwareRuntime() },
+        { memoryRuntime: createAbortAwareRuntime() },
       ) as unknown as CapturableStore;
 
       const expectation = expect(store.capture("conv-1", "text")).rejects.toThrow(
@@ -253,7 +253,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const dir = await tempDir();
     const store = createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
-      { runtime: createFailingRuntime(), observability: { observabilityContext: { sourceId: "s1" } } },
+      { memoryRuntime: createFailingRuntime(), observability: { observabilityContext: { sourceId: "s1" } } },
     ) as unknown as CapturableStore;
 
     await expect(store.capture("conv-1", "text")).rejects.toThrow();
@@ -269,7 +269,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const runtime = createRecordingRuntime();
     const store = createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
-      { runtime },
+      { memoryRuntime: runtime },
     ) as unknown as CapturableStore;
 
     await store.capture("conv-1", "text");
@@ -292,7 +292,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
         memoryRoot: join(dir, "m"),
         llm: { ...agentHostLlm, trace: false },
       }),
-      { runtime, observability: { observabilityContext: { sourceId: "s1" } } },
+      { memoryRuntime: runtime, observability: { observabilityContext: { sourceId: "s1" } } },
     ) as unknown as CapturableStore;
 
     await store.capture("conv-1", "text");

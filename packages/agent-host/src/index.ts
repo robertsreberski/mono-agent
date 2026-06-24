@@ -216,7 +216,13 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
   const runtime = options.runtime ?? createConfiguredAgentRuntime({ config, model, executionMode });
-  const memory = options.memory ?? createConfiguredMemory(config, { runtime });
+  // The memory LLM must NOT ride the channel `runtime`: that runtime carries the
+  // channel fallback chain whose primary is `config.runtime.model`, and the
+  // fallback router overrides each run's per-call `model` — so reusing it would
+  // execute memory capture on `config.runtime.model` instead of
+  // `config.memory.llm.model`. createConfiguredMemory builds the memory LLM its own
+  // fallback-free runtime when no `memoryRuntime` is injected.
+  const memory = options.memory ?? createConfiguredMemory(config, {});
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),
@@ -304,7 +310,17 @@ export function createConfiguredMemory(
   config: MonoAgentConfig,
   deps: {
     logger?: { warn(message: string): void };
-    runtime?: MonoRuntimeLike;
+    /**
+     * Injection seam for the bujo memory LLM's runtime (tests). This runtime MUST
+     * NOT carry the channel runtime's fallback chain: the agent-runtime fallback
+     * router overrides each run's per-call `model` with the chain's primary entry,
+     * so a memory LLM riding the channel runtime would silently execute on
+     * `config.runtime.model` instead of `config.memory.llm.model`. When omitted the
+     * memory LLM builds its OWN fallback-free runtime from
+     * `runtimeHostOptionsForConfig(config)` (preserving the pi auth resolver) so the
+     * per-call `config.memory.llm.model` is the sole, effective primary.
+     */
+    memoryRuntime?: MonoRuntimeLike;
     /**
      * When supplied, the bujo memory LLM records each `complete()` as a run via
      * the same JSONL + Phoenix pipeline as channel runs (subject to the
@@ -388,7 +404,7 @@ export function createConfiguredMemory(
     deps.observability === undefined
       ? undefined
       : recorderCompositionDeps(config, deps.observability);
-  const llm = configuredMemoryLlm(config, llmConfig, deps.runtime, recording);
+  const llm = configuredMemoryLlm(config, llmConfig, deps.memoryRuntime, recording);
   return createBujoMemoryStore({
     root,
     embeddings,
@@ -412,7 +428,10 @@ function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof
 function configuredMemoryLlm(
   config: MonoAgentConfig,
   llmConfig: NonNullable<MonoAgentConfig["memory"]>["llm"],
-  runtimeOverride: MonoRuntimeLike | undefined,
+  // Explicit memory-LLM runtime (tests). MUST be fallback-chain-free — see the
+  // `memoryRuntime` doc on createConfiguredMemory. When undefined the memory LLM
+  // builds its own fallback-free runtime so the per-call memory model is primary.
+  memoryRuntimeOverride: MonoRuntimeLike | undefined,
   recording: RecorderCompositionDeps | undefined,
 ): LlmComplete | undefined {
   if (llmConfig === undefined) {
@@ -431,7 +450,12 @@ function configuredMemoryLlm(
   if (executionMode !== "sdk") {
     throw new Error("memory.llm provider agent-host supports SDK execution mode only.");
   }
-  const runtime = runtimeOverride ?? createMonoRuntime(runtimeHostOptionsForConfig(config));
+  // NOTE: createMonoRuntime is called WITHOUT a fallbackChain here on purpose, so
+  // the per-call `model: config.memory.llm.model` is the sole/primary model. The
+  // channel runtime (which carries the fallback chain whose primary is
+  // `config.runtime.model`) is intentionally NOT reused — see the `memoryRuntime`
+  // doc on createConfiguredMemory.
+  const runtime = memoryRuntimeOverride ?? createMonoRuntime(runtimeHostOptionsForConfig(config));
   return createAgentHostMemoryLlm({
     runtime,
     model,
