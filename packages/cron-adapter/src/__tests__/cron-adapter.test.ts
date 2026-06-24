@@ -105,6 +105,44 @@ describe("Cron adapter", () => {
     }
   });
 
+  it("lets a job-specific maxRunMs override the adapter watchdog limit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const responder: AgentResponder = {
+      async respond() {
+        await new Promise(() => {});
+        return {};
+      },
+    };
+    const results: unknown[] = [];
+
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "short", expression: "* * * * *", timezone: "UTC", prompt: "x", maxRunMs: 2_000 }],
+      now: () => new Date(Date.now()),
+      onResult: (result) => {
+        results.push(result);
+      },
+      maxRunMs: 10_000,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(results.some((r) => (r as { kind?: string }).kind === "failed")).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      const failed = results.find(
+        (r): r is { kind: string; error?: string } => (r as { kind?: string }).kind === "failed",
+      );
+      expect(failed).toBeDefined();
+      expect(failed?.error).toMatch(/timed out after 2000ms/u);
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("queues overlapping ticks for the same job and runs each after the prior finishes (preserve)", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

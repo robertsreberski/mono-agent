@@ -87,6 +87,7 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
   const timezone = normalizeOptionalString(meta.timezone) ?? DEFAULT_TIMEZONE;
   const enabled = readBoolean(meta.enabled, `${fileName} frontmatter \`enabled\``, true, invalidConfig);
   const conversationId = normalizeOptionalString(meta.conversationId);
+  const maxRunMs = readOptionalPositiveInteger(meta.maxRunMs, `${fileName} frontmatter \`maxRunMs\``, fileName);
 
   return {
     id,
@@ -95,6 +96,7 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
     timezone,
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
+    ...(maxRunMs === undefined ? {} : { maxRunMs }),
   };
 }
 
@@ -139,6 +141,21 @@ function stripQuotes(value: string): string {
 
 function stripMarkdownExtension(fileName: string): string {
   return fileName.replace(/\.md$/iu, "");
+}
+
+function readOptionalPositiveInteger(value: string | undefined, field: string, fileName: string): number | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (normalized === undefined) {
+    return undefined;
+  }
+  if (!/^\d+$/u.test(normalized)) {
+    throw invalidConfig(`${field} must be a positive integer number of milliseconds.`, { file: fileName, value });
+  }
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw invalidConfig(`${field} must be a positive integer number of milliseconds.`, { file: fileName, value });
+  }
+  return parsed;
 }
 
 function errorToMessage(error: unknown): string {

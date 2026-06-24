@@ -540,6 +540,7 @@ export function createCronChannelDriver(
           timezone: job.timezone,
           prompt: job.prompt,
           ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
+          ...(job.maxRunMs === undefined ? {} : { maxRunMs: job.maxRunMs }),
         })),
         onResult: (result) => {
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
