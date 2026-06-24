@@ -569,8 +569,8 @@ function sandboxSection(config: MonoAgentConfig): ValidationSection {
 
 async function runsSection(input: MonoAgentAppConfigInput): Promise<ValidationSection> {
   const artifactDir = await resolveAppArtifactDir(input);
-  const { runs, warnings } = await listRecordedRuns({ artifactDir, maxRuns: RUNS_HEALTH_MAX_RUNS });
-  const display = buildRunsHealthDisplay({ artifactDir, runs, warnings });
+  const { totalRuns, runs, warnings } = await listRecordedRuns({ artifactDir, maxRuns: RUNS_HEALTH_MAX_RUNS });
+  const display = buildRunsHealthDisplay({ artifactDir, totalRuns, runs, warnings });
   return { id: "runs", label: "Runs health", status: display.status, details: display.details };
 }
 

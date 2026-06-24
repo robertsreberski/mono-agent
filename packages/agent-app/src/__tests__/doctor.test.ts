@@ -415,6 +415,29 @@ describe("validateMonoAgentFolder — runs health section", () => {
     expect(report.ok).toBe(true);
   });
 
+  it("reports the exact run total when the recent list is capped", async () => {
+    const { artifactDir, configPath } = await writeRunsConfig();
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    for (let index = 0; index < 55; index += 1) {
+      await writeRunSummary(artifactDir, `run-${index}.summary.json`, {
+        runId: `run-${index}`,
+        conversationId: "chat",
+        status: "succeeded",
+        startedAt,
+        durationMs: 1000,
+        eventCount: 1,
+        artifactPaths: [],
+      });
+    }
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runs = sectionById(report, "runs");
+    expect(runs.status).toBe("ok");
+    expect(runs.details.join("\n")).toContain("Recorded runs: 55 total; showing 50 recent (max 50).");
+    expect(report.ok).toBe(true);
+  });
+
   it("warns when a running summary is older than the staleness threshold", async () => {
     const { artifactDir, configPath } = await writeRunsConfig();
     const staleStartedAt = new Date(Date.now() - 31 * 60_000).toISOString();
