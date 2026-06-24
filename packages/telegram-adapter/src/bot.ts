@@ -70,6 +70,17 @@ export interface TelegramNotifyResult {
 }
 
 /**
+ * Options for {@link TelegramBotController.notify}. With `verbatim`, `text` is
+ * posted to the chat UNCHANGED with no model call (native cron/webhook
+ * notification — the producing run already wrote the message) and recorded to
+ * the chat's history so a reply resumes with it in context. Without it, `text`
+ * is run as a turn on the chat's harness and the agent's answer is delivered.
+ */
+export interface TelegramNotifyOptions {
+  readonly verbatim?: boolean;
+}
+
+/**
  * Minimal per-conversation serial queue: each submitted task runs only after the
  * previous one settles, preserving arrival order. A task's failure does not
  * poison the queue (the chain swallows it; the caller still sees the rejection).
@@ -158,11 +169,12 @@ export interface TelegramBotController {
   /** Stop polling and wait for the runner to settle. */
   stop(): Promise<void>;
   /**
-   * Run a proactive (externally triggered) turn on `chatId` and deliver the
-   * answer to that chat, serialized through the same per-chat queue as inbound
-   * messages. Used by cron/webhook nudges.
+   * Deliver a proactive notification to `chatId`, serialized through the same
+   * per-chat queue as inbound messages. By default runs `text` as a turn and
+   * delivers the answer; with `options.verbatim` posts `text` unchanged (no model
+   * call) and records it to history. Used by cron/webhook nudges.
    */
-  notify(chatId: TelegramChatId, text: string): Promise<TelegramNotifyResult>;
+  notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
   /**
    * Test seam: total in-flight AbortControllers tracked across all chats. Used to
    * assert the over-cap busy path does not leak an eagerly-created controller.
@@ -703,11 +715,56 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   }
 
   /**
+   * Deliver `text` VERBATIM to `chatId`: post it unchanged through the normal
+   * stream with NO model call (the producing cron/webhook run already wrote the
+   * message), then record it to the chat's durable history via the responder so a
+   * later reply resumes with it in context. Serialized through the per-chat queue
+   * by {@link notify}. Best-effort: a history-record failure never fails an
+   * already-delivered post.
+   */
+  async function runVerbatimDelivery(
+    chatId: TelegramChatId,
+    text: string,
+    controller: AbortController,
+  ): Promise<TelegramNotifyResult> {
+    try {
+      if (controller.signal.aborted) {
+        return { delivered: false, reason: "cancelled" };
+      }
+      if (text.trim().length === 0) {
+        return { delivered: false, reason: "empty notification" };
+      }
+      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal));
+      try {
+        await stream.finish(text);
+      } catch (error) {
+        if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
+          return { delivered: false, reason: "cancelled" };
+        }
+        logger?.error?.("Telegram verbatim notify delivery failed.", { error: errorMessage(error) });
+        return { delivered: false, reason: "delivery failed" };
+      }
+      try {
+        await options.responder.deliverVerbatim?.(`telegram:${String(chatId)}`, text);
+      } catch (error) {
+        logger?.warn?.("Telegram verbatim notify history record failed.", { error: errorMessage(error) });
+      }
+      return { delivered: true };
+    } finally {
+      unregisterController(chatId, controller);
+    }
+  }
+
+  /**
    * Deliver a proactive notification to `chatId` by running it as a turn on this
    * chat through the same per-chat admission queue as inbound messages, so it
    * serializes with live traffic on the same conversation.
    */
-  async function notify(chatId: TelegramChatId, text: string): Promise<TelegramNotifyResult> {
+  async function notify(
+    chatId: TelegramChatId,
+    text: string,
+    notifyOptions?: TelegramNotifyOptions,
+  ): Promise<TelegramNotifyResult> {
     if (stopped) {
       return { delivered: false, reason: "adapter stopped" };
     }
@@ -719,7 +776,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     await admit(
       chatId,
       async () => {
-        outcome = await runProactiveTurn(chatId, text, controller);
+        outcome = notifyOptions?.verbatim === true
+          ? await runVerbatimDelivery(chatId, text, controller)
+          : await runProactiveTurn(chatId, text, controller);
       },
       () => {
         unregisterController(chatId, controller);

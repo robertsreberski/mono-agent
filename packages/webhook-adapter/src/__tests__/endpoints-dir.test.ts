@@ -28,6 +28,8 @@ describe("parseWebhookEndpointMarkdown", () => {
         "path: /webhook/deep-research",
         "mode: async",
         "enabled: true",
+        "notify: true",
+        "notifyConversationId: telegram:42",
         "---",
         "",
         "Check deep-research/requests/*.md and match the incoming request.",
@@ -41,6 +43,8 @@ describe("parseWebhookEndpointMarkdown", () => {
       path: "/webhook/deep-research",
       mode: "async",
       enabled: true,
+      notify: true,
+      notifyConversationId: "telegram:42",
       prompt:
         "Check deep-research/requests/*.md and match the incoming request.\nAfter addressing it, move the file to deep-research/researched/.",
     });
@@ -78,6 +82,12 @@ describe("parseWebhookEndpointMarkdown", () => {
   it("rejects a non-boolean enabled value", () => {
     expect(() => parseWebhookEndpointMarkdown("x.md", "---\npath: /x\nenabled: maybe\n---\nBody.", "sync")).toThrowError(
       /enabled/u,
+    );
+  });
+
+  it("rejects a non-boolean notify value", () => {
+    expect(() => parseWebhookEndpointMarkdown("x.md", "---\npath: /x\nnotify: maybe\n---\nBody.", "sync")).toThrowError(
+      /notify/u,
     );
   });
 
