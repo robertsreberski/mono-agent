@@ -115,6 +115,25 @@ describe("parseCliArgs", () => {
     });
   });
 
+  it("parses audit-runs flags", () => {
+    expect(
+      parseCliArgs(["audit-runs", "--artifact-dir", "./runs", "--stale-after-ms", "1234", "--json"]),
+    ).toMatchObject({
+      command: "audit-runs",
+      artifactDir: "./runs",
+      staleAfterMs: 1234,
+      json: true,
+    });
+    expect(
+      parseCliArgs(["audit-runs", "--consumer", "../personal-agent", "--config", "agent.config.json"]),
+    ).toMatchObject({
+      command: "audit-runs",
+      consumerPath: "../personal-agent",
+      configPath: "agent.config.json",
+    });
+    expect(() => parseCliArgs(["audit-runs", "--stale-after-ms", "0"])).toThrow(/--stale-after-ms/u);
+  });
+
   it("defaults to help and rejects unknown commands and flags", () => {
     expect(parseCliArgs([]).command).toBe("help");
     expect(parseCliArgs(["--help"]).command).toBe("help");

@@ -15,7 +15,7 @@ Every mono-agent run is recorded locally as append-only JSONL artifacts — the 
 | JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`, secrets redacted | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifest so dashboards discover live agents | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Phoenix exporter + backfill | Best-effort OTLP/HTTP export of run lifecycles; retroactive backfill | config / cli | [Phoenix export & backfill](/observability/phoenix-and-backfill/) |
-| `mono-agent` CLI | init / validate / start / stop / logs / restart / backfill / install-skill | cli | [CLI reference](/observability/cli-reference/) |
+| `mono-agent` CLI | init / validate / start / stop / logs / restart / backfill / audit-runs / install-skill | cli | [CLI reference](/observability/cli-reference/) |
 | TUI | Terminal chat + transcript + redacted config pane | cli | [TUI](/observability/tui/) |
 
 ## JSONL run artifacts (always on)
@@ -76,7 +76,7 @@ See [Phoenix export & backfill](/observability/phoenix-and-backfill/) for the fu
 
 ## The CLI
 
-`mono-agent` drives the entire agent lifecycle from one config: `init` scaffolds non-destructively, `validate` prints a per-section report (including observability and every channel), `start` launches traceability plus every configured channel (a background launchd service on macOS by default), and `stop` / `logs` / `restart` operate the running instance. `backfill` exports historical runs to Phoenix.
+`mono-agent` drives the entire agent lifecycle from one config: `init` scaffolds non-destructively, `validate` prints a per-section report (including observability and every channel), `start` launches traceability plus every configured channel (a background launchd service on macOS by default), and `stop` / `logs` / `restart` operate the running instance. `backfill` exports historical runs to Phoenix, while `audit-runs` scans local run summaries read-only.
 
 The full command and flag matrix is in the [CLI reference](/observability/cli-reference/).
 

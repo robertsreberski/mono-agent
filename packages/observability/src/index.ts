@@ -31,6 +31,12 @@ export type {
   SpanStatusHint,
 } from "./run-export-mapping.js";
 export {
+  auditRecordedRuns,
+} from "./artifact-audit.js";
+export type {
+  AuditRecordedRunsOptions,
+} from "./artifact-audit.js";
+export {
   listRecordedRuns,
   ObservabilityReadError,
   readRecordedRun,
@@ -53,8 +59,12 @@ export type {
   TraceSourceRegistryErrorDetails,
 } from "./trace-sources.js";
 export type {
+  ArtifactAuditFileIssue,
+  ArtifactAuditReport,
+  ArtifactFailureKindRate,
   JsonlRunReaderOptions,
   JsonlRunRecorderOptions,
+  KnownArtifactFailureKind,
   ObservabilityExporterConfig,
   PhoenixExporterConfig,
   RunExportContext,
