@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check package architecture
+        run: pnpm run check:architecture
+
+      - name: Build packages and demos
+        run: pnpm run build
+
+      - name: Typecheck packages and demos
+        run: pnpm run typecheck
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Build demos
+        run: pnpm run build:demo
+
+      - name: Typecheck demos
+        run: pnpm run typecheck:demo
+
+      - name: Test demos
+        run: pnpm run test:demo
+
+      - name: Check whitespace
+        run: git diff --check
