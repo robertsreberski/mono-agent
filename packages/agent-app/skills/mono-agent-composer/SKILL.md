@@ -5,9 +5,30 @@ description: Construct a working mono-agent in the current folder from one mono-
 
 # Mono Agent Composer
 
-Construct a working mono-agent in the user's current folder — empty or already holding knowledge — from one `mono-agent.config.json`. Discover what the user wants (runtime with backup models, communication channels incl. crons and webhooks, skills, MCP servers, memory strategy incl. semantic search, sandbox, observability), write the config, then make it run with the `mono-agent` CLI. The config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it too); changes apply on the next `mono-agent restart`. No hand-written host code unless the user genuinely needs programmatic composition. `references/feature-coverage.md` maps every framework feature to a config key, CLI flag, or the programmatic escape hatch — consult it before declaring anything impossible or inventing keys.
+Construct a working mono-agent in the user's current folder — empty or already holding knowledge — from one `mono-agent.config.json`. Discover what the user wants (runtime with backup models, communication channels incl. crons and webhooks, skills, MCP servers, memory strategy incl. semantic search, sandbox, observability), write the config, then make it run with the `mono-agent` CLI. The config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it too); changes apply on the next `mono-agent restart`. No hand-written host code unless the user genuinely needs programmatic composition.
+
+## Authoritative Sources — Read the References, Not the Package Source
+
+The `references/*.md` bundled beside this SKILL.md ARE the source of truth for what a mono-agent can do and how to configure it. They are maintained in lockstep with the framework and are **complete for configuration and capabilities**. Answer every "can it do X?", "what is the key for Y?", and "how is Z configured?" from them.
+
+Do **not** read or grep the `@mono-agent` TypeScript/package source — `packages/*/src`, `node_modules/@mono-agent/*`, the vendored runtime — to compose, configure, or troubleshoot an agent. For configuration the source is not more authoritative than the references: it is slower, easy to misread, and full of internal-only knobs that are NOT user-configurable. You will usually be working in the user's own agent folder where that source does not even exist.
+
+- `references/feature-coverage.md` is the **exhaustive** map of every feature to a `config` key, `cli` flag, `auto` behavior, or `code`-only escape hatch. If a capability is listed `config`/`cli`, use that key/flag verbatim. If it is **not in the table, or is marked `code`**, it is not reachable through `mono-agent.config.json` — say so plainly and name the escape hatch. Absence from the table means "not configurable," never "go check the source."
+- The real exception: if the user is **modifying the framework itself** (changing `@mono-agent` package code), that is framework development, not composing an agent — outside this skill. Only then is reading `packages/*/src` correct.
+- The published docs site (<https://mono-agent-docs.vercel.app/>) is the human-facing companion and the repo's `docs/` is a repo-only long-form mirror an end user will not have. Neither is needed: the bundled references work offline and are sufficient.
+
+**Red flags — STOP, you are about to grep source you should not:**
+
+| Thought | Reality |
+| --- | --- |
+| "Let me verify the key name against the source." | The references give the exact key. Trust them; don't re-derive from source. |
+| "The references might be incomplete — I'll double-check `packages/.../src`." | `feature-coverage.md` is exhaustive for config/CLI. Not in it = not configurable. |
+| "I'll confirm the docs and source agree." | You are composing an agent, not auditing the framework. The references are the contract. |
+| "The real behavior is in the source, not just the docs." | For configuration the references are authoritative. Answer from them and stop. |
 
 ## Operating Rules
+
+- Answer capability/config questions from the bundled `references/*.md` (authoritative and complete) — never grep or read the `@mono-agent` package source to compose an agent. See "Authoritative Sources" above.
 
 - The deliverable is a folder that works: `mono-agent.config.json` + `IDENTITY.md` (+ optional `skills/`, `mcp.json`), validated and started — not a tutorial.
 - Start by discovering the intended agent product, not by naming packages.
@@ -76,12 +97,7 @@ Config-first covers one responder served over any combination of the seven chann
 - `references/package-map.md` — which package owns what, for programmatic composition and troubleshooting.
 - `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
 
-Human-facing companion: the published documentation site at
-<https://mono-agent-docs.vercel.app/> (notably its Playbooks index and
-Feature Matrix). The LLM-facing source of truth stays the in-repo markdown
-(`docs/reference/feature-registry.md` plus these `references/*` files) — these work offline
-when the skill is bundled with `@mono-agent/agent-app`, so do not depend on the
-live site being reachable.
+These bundled `references/*` files are your authoritative, self-sufficient source — they ship with `@mono-agent/agent-app` and work offline, so always read them rather than the package source or a remote site. The published documentation site at <https://mono-agent-docs.vercel.app/> (notably its Playbooks index and Feature Matrix) is the human-facing companion, and the repo's `docs/reference/feature-registry.md` is a longer-form mirror that exists only inside a framework checkout — neither is required, and do not depend on the live site being reachable.
 
 ## Done Criteria
 
