@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
@@ -94,6 +94,38 @@ describe("Webhook adapter", () => {
           webhook: expect.objectContaining({ endpointName: "digest" }),
         }),
       ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("logs and contains rejected async onResult hooks", async () => {
+    const logger = { warn: vi.fn() };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/webhook/invoke",
+      responder: echoResponder(),
+      logger,
+      onResult: async () => {
+        await Promise.resolve();
+        throw new Error("async hook failure");
+      },
+    });
+
+    try {
+      const response = await invokeSync(server.url, "payload", "conversation-hook");
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: payload" });
+      await expect.poll(() => logger.warn.mock.calls.length).toBe(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Webhook onResult callback failed.",
+        expect.objectContaining({
+          conversationId: "conversation-hook",
+          error: "async hook failure",
+        }),
+      );
     } finally {
       await server.stop();
     }

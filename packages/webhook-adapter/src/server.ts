@@ -128,7 +128,7 @@ export interface WebhookAdapterOptions {
   /** Default invocation mode for the legacy single endpoint and for endpoints that omit `mode`. */
   readonly defaultMode?: WebhookInvocationMode;
   /** Best-effort completion hook; failures here must not affect HTTP responses or stored status. */
-  readonly onResult?: (status: WebhookInvocationStatus, request: WebhookInvocationRequest) => void;
+  readonly onResult?: (status: WebhookInvocationStatus, request: WebhookInvocationRequest) => void | Promise<void>;
 }
 
 export interface WebhookEndpointSummary {
@@ -457,16 +457,37 @@ async function runResponder(input: {
     }
   }
   setStatus(input.statuses, status, input.retentionMs, input.maxStoredRequests);
-  try {
-    input.options.onResult?.(status, input.request);
-  } catch (error) {
-    input.options.logger?.warn?.("Webhook onResult callback failed.", {
-      requestId: input.active.requestId,
-      conversationId: input.request.conversationId,
-      error: errorToMessage(error),
-    });
-  }
+  emitResult(input, status);
   return status;
+}
+
+function emitResult(input: {
+  readonly request: WebhookInvocationRequest;
+  readonly active: ActiveRun;
+  readonly options: WebhookAdapterOptions;
+}, status: WebhookInvocationStatus): void {
+  try {
+    const result = input.options.onResult?.(status, input.request);
+    if (result !== undefined) {
+      void Promise.resolve(result).catch((error: unknown) => {
+        logResultHookFailure(input, error);
+      });
+    }
+  } catch (error) {
+    logResultHookFailure(input, error);
+  }
+}
+
+function logResultHookFailure(input: {
+  readonly request: WebhookInvocationRequest;
+  readonly active: ActiveRun;
+  readonly options: WebhookAdapterOptions;
+}, error: unknown): void {
+  input.options.logger?.warn?.("Webhook onResult callback failed.", {
+    requestId: input.active.requestId,
+    conversationId: input.request.conversationId,
+    error: errorToMessage(error),
+  });
 }
 
 function normalizeBody(body: unknown, input: { readonly requestId: string; readonly defaultMode: WebhookInvocationMode }): NormalizedBody {
