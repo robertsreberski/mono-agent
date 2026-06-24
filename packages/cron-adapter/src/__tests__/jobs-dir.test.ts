@@ -32,6 +32,7 @@ describe("parseCronJobMarkdown", () => {
         "timezone: Europe/Warsaw",
         "enabled: true",
         "conversationId: digest-thread",
+        "maxRunMs: 2700000",
         "---",
         "",
         "Summarize yesterday and post the digest.",
@@ -46,6 +47,7 @@ describe("parseCronJobMarkdown", () => {
       timezone: "Europe/Warsaw",
       prompt: "Summarize yesterday and post the digest.\nKeep it under five bullet points.",
       conversationId: "digest-thread",
+      maxRunMs: 2_700_000,
     });
   });
 
@@ -92,6 +94,12 @@ describe("parseCronJobMarkdown", () => {
   it("rejects a non-boolean enabled value", () => {
     expect(() => parseCronJobMarkdown("x.md", "---\nexpression: 0 0 * * *\nenabled: maybe\n---\nBody.")).toThrowError(
       /enabled/u,
+    );
+  });
+
+  it("rejects a non-positive maxRunMs value", () => {
+    expect(() => parseCronJobMarkdown("x.md", "---\nexpression: 0 0 * * *\nmaxRunMs: 0\n---\nBody.")).toThrowError(
+      /maxRunMs/u,
     );
   });
 

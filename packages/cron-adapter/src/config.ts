@@ -19,6 +19,7 @@ export interface CronJobConfig {
   readonly timezone: string;
   readonly prompt: string;
   readonly conversationId?: string;
+  readonly maxRunMs?: number;
 }
 
 export interface CronAdapterConfig {
@@ -155,6 +156,7 @@ export function toCronJobs(config: CronAdapterConfig): CronJob[] {
       timezone: job.timezone,
       prompt: job.prompt,
       ...(job.conversationId === undefined ? {} : { conversationId: job.conversationId }),
+      ...(job.maxRunMs === undefined ? {} : { maxRunMs: job.maxRunMs }),
     }));
 }
 
@@ -192,6 +194,7 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
     throw invalidConfig("Cron jobs require id, expression, and prompt.", { index });
   }
   const conversationId = asOptionalString(entry.conversationId);
+  const maxRunMs = asOptionalPositiveInteger(entry.maxRunMs, "cron.jobs[].maxRunMs", { index });
   return {
     id,
     enabled: typeof entry.enabled === "boolean" ? entry.enabled : true,
@@ -199,6 +202,7 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
     timezone: asOptionalString(entry.timezone) ?? DEFAULT_TIMEZONE,
     prompt,
     ...(conversationId === undefined ? {} : { conversationId }),
+    ...(maxRunMs === undefined ? {} : { maxRunMs }),
   };
 }
 
@@ -219,6 +223,20 @@ function layerCronJsonOntoEnv(
 /** Trim a JSON value to a non-empty string, treating non-strings as absent. */
 function asOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? normalizeOptionalString(value) : undefined;
+}
+
+function asOptionalPositiveInteger(
+  value: unknown,
+  field: string,
+  details: Record<string, unknown>,
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw invalidConfig(`${field} must be a positive integer number of milliseconds.`, { ...details, value });
+  }
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

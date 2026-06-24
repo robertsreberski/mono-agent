@@ -24,6 +24,8 @@ export interface CronJob {
   readonly timezone?: string;
   readonly prompt: string;
   readonly conversationId?: string;
+  /** Per-job watchdog override in milliseconds. Falls back to CronAdapterOptions.maxRunMs. */
+  readonly maxRunMs?: number;
 }
 
 /**
@@ -346,8 +348,9 @@ function startRun(
       });
   };
 
-  if (options.maxRunMs !== undefined && options.maxRunMs > 0) {
-    const limitMs = options.maxRunMs;
+  const effectiveMaxRunMs = job.maxRunMs ?? options.maxRunMs;
+  if (effectiveMaxRunMs !== undefined && effectiveMaxRunMs > 0) {
+    const limitMs = effectiveMaxRunMs;
     watchdog = setTimeout(() => {
       // Signal the responder to stop, then reclaim the slot even if it never settles.
       controller.abort(new Error(`Cron job exceeded maxRunMs (${limitMs}ms).`));
@@ -484,6 +487,12 @@ function validateOptions(options: CronAdapterOptions): void {
     seen.add(job.id);
     if (normalizeOptionalString(job.prompt) === undefined) {
       throw new CronAdapterError("invalid_config", "Cron job prompt is required.", { jobId: job.id });
+    }
+    if (job.maxRunMs !== undefined && (!Number.isInteger(job.maxRunMs) || job.maxRunMs <= 0)) {
+      throw new CronAdapterError("invalid_config", "Cron job maxRunMs must be a positive integer.", {
+        jobId: job.id,
+        maxRunMs: job.maxRunMs,
+      });
     }
     assertFiveFieldExpression(job);
     nextDateFor(job, options.now?.() ?? new Date());
