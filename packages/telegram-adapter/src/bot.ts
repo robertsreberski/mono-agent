@@ -235,9 +235,17 @@ export interface CreateTelegramBotOptions {
   readonly pollWatchdogMs?: number;
   /**
    * Called when polling crashes after a successful start (the runner's task
-   * rejects). Lets a host mark the channel failed instead of leaving it running.
+   * rejects). The adapter ALWAYS schedules a backoff restart afterwards, so a host
+   * should treat this as "degraded, recovering" — not terminal — and pair it with
+   * {@link onPollingRecovered}.
    */
   readonly onPollingError?: (error: unknown) => void;
+  /**
+   * Called when a (re)started runner stays up past the stability window AFTER a
+   * prior crash — i.e. the poller has recovered. Lets a host flip a "degraded"
+   * channel back to "running". Not fired for the initial healthy start.
+   */
+  readonly onPollingRecovered?: () => void;
   /**
    * Inbound attachment download tuning (byte cap + MIME allowlist). Inbound
    * Telegram media bytes are fetched via the Bot API and inlined into
@@ -407,7 +415,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   if (options.transport?.ipFamily !== undefined) {
     // The Telegram Bot API is HTTPS-only, so one family-locked https.Agent covers
     // every call; keep-alive matches the long-poll's connection reuse.
-    transportAgent = new HttpsAgent({ family: options.transport.ipFamily, keepAlive: true });
+    // keepAlive:false so a network switch can't strand a pooled socket bound to the
+    // dead interface (it would ENETUNREACH for ~50s, the Api timeout, before the
+    // poller retries). A fresh socket per ~30s long-poll detects the live route
+    // immediately; pooling buys almost nothing at 1 request/30s.
+    transportAgent = new HttpsAgent({ family: options.transport.ipFamily, keepAlive: false });
     clientOptions.baseFetchConfig = {
       ...clientOptions.baseFetchConfig,
       agent: transportAgent,
@@ -1169,6 +1181,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const pollWatchdogMs = options.pollWatchdogMs ?? DEFAULT_POLL_WATCHDOG_MS;
   let pollWatchdogTimer: ReturnType<typeof setInterval> | undefined;
   let watchdogRestarting = false;
+  // True once polling has crashed and not yet recovered. Gates onPollingRecovered
+  // so it fires only after a real crash→recovery cycle, never on the initial start.
+  let pollingDegraded = false;
 
   /** Arm the lifetime-scoped poll-liveness watchdog (idempotent, no-op if disabled). */
   function startPollWatchdog(): void {
@@ -1259,6 +1274,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       stabilityTimer = undefined;
       if (!stopped && runnerHandle === spawned) {
         restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
+        // This runner stayed up past the stability window. If it followed a crash,
+        // polling has recovered — tell the host so it can clear a "degraded" state.
+        if (pollingDegraded) {
+          pollingDegraded = false;
+          options.onPollingRecovered?.();
+        }
       }
     }, DEFAULT_RESTART_STABILITY_MS);
     stabilityTimer.unref?.();
@@ -1289,6 +1310,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       error: errorMessage(error),
       restartInMs: restartBackoffMs,
     });
+    // Mark degraded so the stability-window callback fires onPollingRecovered once a
+    // restarted runner stays up. The adapter always restarts (capped backoff), so a
+    // crash is "degraded, recovering" to the host — never terminal.
+    pollingDegraded = true;
     options.onPollingError?.(error);
     scheduleRestart();
   }

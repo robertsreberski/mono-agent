@@ -58,8 +58,10 @@ export interface TelegramAdapterStartOptions {
   readonly transport?: { readonly ipFamily?: 4 | 6 };
   /** Poll-liveness watchdog window (ms). Default 120000; set <= 0 to disable. */
   readonly pollWatchdogMs?: number;
-  /** Called when polling crashes after a successful start (lets the host mark the channel failed). */
+  /** Called when polling crashes after a successful start (host marks the channel degraded; the adapter self-restarts). */
   readonly onPollingError?: (error: unknown) => void;
+  /** Called when a restarted runner stays up after a crash (host flips degraded → running). */
+  readonly onPollingRecovered?: () => void;
   /** Test seam: build the grammY {@link Bot}. */
   readonly botFactory?: (token: string) => Bot;
   /** Test seam: build the polling runner. */
@@ -125,6 +127,7 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.transport === undefined ? {} : { transport: options.transport }),
     ...(options.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: options.pollWatchdogMs }),
     ...(options.onPollingError === undefined ? {} : { onPollingError: options.onPollingError }),
+    ...(options.onPollingRecovered === undefined ? {} : { onPollingRecovered: options.onPollingRecovered }),
     ...(options.botFactory === undefined ? {} : { botFactory: options.botFactory }),
     ...(options.runnerFactory === undefined ? {} : { runnerFactory: options.runnerFactory }),
   };

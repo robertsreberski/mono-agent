@@ -143,6 +143,10 @@ export function channelBadge(kind: string): string {
   if (kind === "disabled") {
     return badge("disabled");
   }
+  if (kind === "degraded") {
+    // Still serving, transport self-recovering — a warning, not an error.
+    return badge("waiting");
+  }
   if (/error|fail|crash/u.test(kind)) {
     return badge("error");
   }
