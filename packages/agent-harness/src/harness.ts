@@ -7,8 +7,13 @@ import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
 import { loadContextFromFiles, loadSkillIndexFromDirectory } from "@mono-agent/context";
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono-agent/context";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
-import { monoRuntimeSupportsSessionResume } from "@mono-agent/runtime-adapter";
-import type { RuntimeExecutionMode, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import {
+  assertExecutionModeCompatible,
+  defaultExecutionModeForModel,
+  modelReferenceKey,
+  monoRuntimeSupportsSessionResume,
+} from "@mono-agent/runtime-adapter";
+import type { RuntimeExecutionMode, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import { createSkillsCache } from "@mono-agent/skills";
 import type { SkillsCache } from "@mono-agent/skills";
 import { mergeSandboxPolicies, sandboxPolicyToRuntimeOptions } from "@mono-agent/sandbox";
@@ -178,7 +183,14 @@ export class MonoAgentHarness implements AgentHarness {
     // session, so its large tool dumps stay out of the interactive transcript.
     // Computed once and applied as a minimal gate on the session machinery below;
     // interactive (non-cron) runs are byte-for-byte unchanged.
-    const isolated = this.isProactiveIsolated(request);
+    //
+    // A per-trigger MODEL override is ALWAYS isolated, regardless of the opt-in:
+    // the turn runs on a different model (often a different runtime) and the
+    // provider session is keyed by conversationId + bound to a model, so resuming
+    // or persisting it against the shared session would mix two models' lineage
+    // (durable-session corruption / wrong-runtime disposal). Effort-only and
+    // same-model overrides carry no model string and are unaffected.
+    const isolated = this.isProactiveIsolated(request) || requestOverridesModel(request);
     const sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
@@ -639,22 +651,49 @@ export class MonoAgentHarness implements AgentHarness {
       ? {}
       : sandboxPolicyToRuntimeOptions(this.options.sandboxPolicy);
     const requestExtension = await this.options.runtimeOptionsForRequest?.({ request, runId, context });
+    const merged = mergeRuntimeOptions(
+      policyOptions,
+      sandboxOptions,
+      this.options.runtimeOptions,
+      requestExtension?.runtimeOptions,
+    );
+    // Per-request overrides (cron job / webhook per-trigger model + effort) win
+    // over the harness defaults. These are applied AFTER the `...merged` spread so
+    // the precedence is explicit. Non-override turns are byte-for-byte unchanged.
+    const overrideModel = isRuntimeModelReference(merged.model) ? merged.model : undefined;
+    const effectiveModel = overrideModel ?? this.options.model;
+    // executionMode for an override turn: keep the host's configured mode when the
+    // override model supports it (so a host running e.g. claude in cli mode is not
+    // silently flipped to sdk for a same-family override), else fall back to that
+    // model's default mode (so a codex override under an sdk host correctly runs
+    // cli). executionMode is harness/runtime-owned — extensions cannot set it.
+    const effectiveExecutionMode = overrideModel === undefined
+      ? this.options.executionMode
+      : executionModeForOverride(overrideModel, this.options.executionMode);
+    const overrideEffort = typeof merged.effort === "string" ? merged.effort : undefined;
+    const effectiveEffort = overrideEffort ?? this.options.effort;
+    // When the override names a DIFFERENT model, run it on a runtime built for
+    // that model (override as the fallback-chain primary, configured backups
+    // after) so failover is preserved. Falls back to the shared runtime when no
+    // factory is wired (the app wires it only when fallbacks exist; a plain
+    // runtime honors the per-run model) or the model is unchanged.
+    const runtime =
+      overrideModel !== undefined &&
+      this.options.runtimeForModel !== undefined &&
+      !sameRuntimeModel(overrideModel, this.options.model)
+        ? this.options.runtimeForModel(effectiveModel, effectiveExecutionMode)
+        : this.options.runtime;
     const runtimeOptions: RuntimeRunOptions = {
-      ...mergeRuntimeOptions(
-        policyOptions,
-        sandboxOptions,
-        this.options.runtimeOptions,
-        requestExtension?.runtimeOptions,
-      ),
-      model: this.options.model,
+      ...merged,
+      model: effectiveModel,
       // Recalled memory is appended to the user message (NOT the system prompt) so
       // it reaches the model on every turn, including resumed turns. See
       // prepareContext for why.
       messages: [{ role: "user", content: composeUserMessageWithMemory(request.userMessage, memory) }],
       abortSignal: request.abortSignal,
-      ...(this.options.executionMode === undefined ? {} : { executionMode: this.options.executionMode }),
+      ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
       ...(this.options.cwd === undefined ? {} : { cwd: this.options.cwd }),
-      ...(this.options.effort === undefined ? {} : { effort: this.options.effort }),
+      ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
       ...(this.options.maxTurns === undefined ? {} : { maxTurns: this.options.maxTurns }),
       // Durable provider-session root (pi-native): when set, sessions persist to
       // disk so resume recovers from there instead of re-sending full history.
@@ -673,7 +712,14 @@ export class MonoAgentHarness implements AgentHarness {
       // Session keys live after the merge so request extensions cannot
       // clobber the harness's session decision — including forcing the keys
       // back to undefined on fresh runs.
-      ...(this.sessionsEnabled()
+      //
+      // Omitted entirely when running on a per-turn OVERRIDE runtime (a model
+      // override built via runtimeForModel): that runtime is not the one the
+      // shared session store / disposal is keyed to, so keeping a session alive
+      // on it would leak (the store disposes against the base runtime). An
+      // override turn is one-shot, so it runs stateless. Non-override turns
+      // (runtime === this.options.runtime) are byte-for-byte unchanged.
+      ...(this.sessionsEnabled() && runtime === this.options.runtime
         ? {
           sessionKeepAlive: true,
           sessionIdleTimeoutMs: this.options.session?.idleTimeoutMs,
@@ -727,7 +773,7 @@ export class MonoAgentHarness implements AgentHarness {
       // attachment persistence, compaction, admission wait).
       const bridgeStartMs = Date.now();
       try {
-        return await this.options.runtime.run(context.prompt, runtimeOptions);
+        return await runtime.run(context.prompt, runtimeOptions);
       } finally {
         const latencyEvent: RuntimeEventLike = {
           type: "provider_bridge_latency",
@@ -853,6 +899,34 @@ function mergeRuntimeOptions(
 
 function asSandboxPolicy(value: unknown): SandboxPolicy | undefined {
   return isRecord(value) ? value as unknown as SandboxPolicy : undefined;
+}
+
+/** Narrow a merged-options value to a RuntimeModelReference (a per-request model override). */
+function isRuntimeModelReference(value: unknown): value is RuntimeModelReference {
+  return isRecord(value) && typeof value.sdk === "string" && typeof value.model === "string";
+}
+
+function sameRuntimeModel(a: RuntimeModelReference, b: RuntimeModelReference): boolean {
+  return modelReferenceKey(a) === modelReferenceKey(b);
+}
+
+/**
+ * Execution mode for an override model: keep the host's configured mode when the
+ * override model supports it, otherwise the override model's default mode.
+ */
+function executionModeForOverride(
+  model: RuntimeModelReference,
+  hostMode: string | undefined,
+): RuntimeExecutionMode {
+  if (hostMode !== undefined) {
+    try {
+      assertExecutionModeCompatible(model, hostMode);
+      return hostMode as RuntimeExecutionMode;
+    } catch {
+      // Host mode is incompatible with the override model — use the model default.
+    }
+  }
+  return defaultExecutionModeForModel(model);
 }
 
 function mergeStringLists(current: unknown, next: unknown): readonly string[] {
@@ -1229,4 +1303,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function isCronRequest(request: AgentHarnessRequest): boolean {
   return isRecord(request.metadata) && request.metadata.cron !== undefined;
+}
+
+/**
+ * Whether the request carries a per-trigger MODEL override (a non-empty `model`
+ * string under cron/webhook metadata). Such a turn runs on a different model and
+ * must be session-isolated. Effort-only overrides carry no model string and are
+ * not treated as model overrides here.
+ */
+function requestOverridesModel(request: AgentHarnessRequest): boolean {
+  const metadata = request.metadata;
+  if (!isRecord(metadata)) {
+    return false;
+  }
+  const source = isRecord(metadata.webhook)
+    ? metadata.webhook
+    : isRecord(metadata.cron)
+      ? metadata.cron
+      : undefined;
+  return source !== undefined && typeof source.model === "string" && source.model.trim().length > 0;
 }

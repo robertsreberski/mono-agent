@@ -181,6 +181,8 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | `webhook.endpoints[]` | JSON array of named endpoints. |
 | `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` | Single-endpoint native notification toggle. |
 | `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID` | `webhook.notifyConversationId` | Single-endpoint native notification destination. |
+| `MONO_AGENT_WEBHOOK_MODEL` | `webhook.model` | Single-endpoint model override (e.g. `claude:claude-opus-4-8`). A request body `model` wins. |
+| `MONO_AGENT_WEBHOOK_EFFORT` | `webhook.effort` | Single-endpoint reasoning-effort override (`none`/`low`/`medium`/`high`/`xhigh`/`max`). A request body `effort` wins. |
 | `MONO_AGENT_WEBHOOK_DIR` | `webhook.dir` | Folder of `*.md` endpoint files. See [../channels/webhook.md](/channels/webhook/). |
 
 ### OpenAI-compatible API
@@ -203,7 +205,7 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
-| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (id, expression, timezone, prompt, conversationId, notify, notifyConversationId). |
+| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (id, expression, timezone, prompt, conversationId, notify, notifyConversationId, model, effort). |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [../channels/cron.md](/channels/cron/). |
 
 ## Evals

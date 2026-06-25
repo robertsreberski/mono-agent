@@ -55,6 +55,23 @@ describe("parseCronJobMarkdown", () => {
     });
   });
 
+  it("reads per-job model and effort overrides from frontmatter", () => {
+    const job = parseCronJobMarkdown(
+      "research.md",
+      [
+        "---",
+        "expression: 0 9 * * *",
+        "model: claude:claude-opus-4-8",
+        "effort: high",
+        "---",
+        "Run the deep research.",
+      ].join("\n"),
+    );
+
+    expect(job.model).toBe("claude:claude-opus-4-8");
+    expect(job.effort).toBe("high");
+  });
+
   it("defaults id to the filename stem and timezone to UTC", () => {
     const job = parseCronJobMarkdown("weekly-review.md", "---\nexpression: 0 9 * * 1\n---\nWeekly review.");
     expect(job.id).toBe("weekly-review");

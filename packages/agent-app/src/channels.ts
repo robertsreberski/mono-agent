@@ -468,6 +468,8 @@ export function createWebhookChannelDriver(
             ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
             ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
             ...(endpoint.notifyConversationId === undefined ? {} : { notifyConversationId: endpoint.notifyConversationId }),
+            ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
+            ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
           })),
         responder: input.responder,
         onResult: (status, request) => {
@@ -608,6 +610,8 @@ export function createCronChannelDriver(
           ...(job.maxRunMs === undefined ? {} : { maxRunMs: job.maxRunMs }),
           ...(job.notify === undefined ? {} : { notify: job.notify }),
           ...(job.notifyConversationId === undefined ? {} : { notifyConversationId: job.notifyConversationId }),
+          ...(job.model === undefined ? {} : { model: job.model }),
+          ...(job.effort === undefined ? {} : { effort: job.effort }),
         })),
         onResult: (result) => {
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";

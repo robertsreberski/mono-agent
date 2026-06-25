@@ -35,6 +35,10 @@ export interface WebhookRequestMetadata {
     readonly enabled: true;
     readonly conversationId?: string;
   };
+  /** Resolved runtime model override (request body `model` wins over endpoint config). Validated by the app. */
+  readonly model?: string;
+  /** Resolved reasoning effort override (request body `effort` wins over endpoint config). Validated by the app. */
+  readonly effort?: string;
 }
 
 export interface WebhookInvocationRequest extends AgentRequestBase {
@@ -111,6 +115,10 @@ export interface WebhookEndpointOption {
   readonly notify?: boolean;
   /** Optional destination conversationId for native notification delivery. */
   readonly notifyConversationId?: string;
+  /** Per-endpoint runtime model override (raw string; a request body `model` wins). */
+  readonly model?: string;
+  /** Per-endpoint reasoning effort override (raw string; a request body `effort` wins). */
+  readonly effort?: string;
 }
 
 export interface WebhookAdapterOptions {
@@ -161,6 +169,8 @@ interface ResolvedEndpoint {
   readonly prompt?: string;
   readonly notify?: boolean;
   readonly notifyConversationId?: string;
+  readonly model?: string;
+  readonly effort?: string;
   readonly statusBasePath: string;
 }
 
@@ -203,6 +213,10 @@ interface NormalizedBody {
   readonly conversationId: string;
   readonly mode: WebhookInvocationMode;
   readonly metadata?: unknown;
+  /** Per-request runtime model override (wins over the endpoint config). */
+  readonly model?: string;
+  /** Per-request reasoning effort override (wins over the endpoint config). */
+  readonly effort?: string;
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -337,6 +351,9 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
                 },
               }
             : {}),
+          // Precedence: request body model/effort win over the endpoint config defaults.
+          ...((body.model ?? endpoint.model) === undefined ? {} : { model: body.model ?? endpoint.model }),
+          ...((body.effort ?? endpoint.effort) === undefined ? {} : { effort: body.effort ?? endpoint.effort }),
         },
       },
     };
@@ -503,11 +520,15 @@ function normalizeBody(body: unknown, input: { readonly requestId: string; reado
     throw new WebhookAdapterError("invalid_config", "Webhook mode must be sync or async.");
   }
   const rawConversationId = normalizeOptionalString(body.conversationId);
+  const model = normalizeOptionalString(body.model);
+  const effort = normalizeOptionalString(body.effort);
   return {
     text,
     conversationId: rawConversationId ?? `webhook:${input.requestId}`,
     mode,
     ...(body.metadata === undefined ? {} : { metadata: body.metadata }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
   };
 }
 
@@ -578,6 +599,8 @@ function resolveEndpoints(options: WebhookAdapterOptions): readonly ResolvedEndp
       ...(endpoint.prompt === undefined ? {} : { prompt: endpoint.prompt }),
       ...(endpoint.notify === undefined ? {} : { notify: endpoint.notify }),
       ...(endpoint.notifyConversationId === undefined ? {} : { notifyConversationId: endpoint.notifyConversationId }),
+      ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
+      ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
     };
   });
 
