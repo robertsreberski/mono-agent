@@ -92,6 +92,8 @@ describe("loadWebhookAdapterConfig", () => {
               prompt: "Match the incoming result to a request.",
               notify: true,
               notifyConversationId: "telegram:42",
+              model: "claude:claude-opus-4-8",
+              effort: "high",
             },
           ],
         },
@@ -110,6 +112,8 @@ describe("loadWebhookAdapterConfig", () => {
         prompt: "Match the incoming result to a request.",
         notify: true,
         notifyConversationId: "telegram:42",
+        model: "claude:claude-opus-4-8",
+        effort: "high",
       },
     ]);
     expect(config.path).toBe("/webhook/invoke");

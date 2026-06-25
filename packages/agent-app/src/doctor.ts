@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 
 import { listRecordedRuns } from "@mono-agent/observability";
 import { serializeTraceSpans } from "@mono-agent/observability-otel";
-import { describeMonoRuntimeSupport, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { describeMonoRuntimeSupport, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import {
   buildMonoAgentConfigView,
@@ -694,7 +694,7 @@ async function channelSection(
 }
 
 function referenceOf(model: RuntimeModelReference): string {
-  return model.reference ?? `${model.sdk}:${model.provider === undefined ? "" : `${model.provider}:`}${model.model}`;
+  return modelReferenceKey(model);
 }
 
 async function pathExists(path: string): Promise<boolean> {

@@ -183,6 +183,66 @@ describe("loadCronAdapterConfig", () => {
       },
     ]);
   });
+
+  it("loads per-job model and effort overrides from the cron.jobs JSON array", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        cron: {
+          jobs: [
+            {
+              id: "research",
+              enabled: true,
+              expression: "0 9 * * *",
+              prompt: "Deep research.",
+              model: "claude:claude-opus-4-8",
+              effort: "high",
+            },
+          ],
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadCronAdapterConfig({ env: {}, jsonPath: path });
+
+    expect(config.jobs).toEqual([
+      {
+        id: "research",
+        enabled: true,
+        expression: "0 9 * * *",
+        timezone: "UTC",
+        prompt: "Deep research.",
+        model: "claude:claude-opus-4-8",
+        effort: "high",
+      },
+    ]);
+  });
+
+  it("loads model and effort from single-job env fields", async () => {
+    const config = await loadCronAdapterConfig({
+      env: {
+        MONO_AGENT_CRON_ENABLED: "true",
+        MONO_AGENT_CRON_EXPRESSION: "0 8 * * *",
+        MONO_AGENT_CRON_PROMPT: "brief",
+        MONO_AGENT_CRON_MODEL: "claude:claude-opus-4-8",
+        MONO_AGENT_CRON_EFFORT: "max",
+      },
+    });
+
+    expect(config.jobs).toEqual([
+      {
+        id: "default",
+        enabled: true,
+        expression: "0 8 * * *",
+        timezone: "UTC",
+        prompt: "brief",
+        model: "claude:claude-opus-4-8",
+        effort: "max",
+      },
+    ]);
+  });
 });
 
 describe("redactCronAdapterConfig", () => {
@@ -209,6 +269,8 @@ describe("toCronJobs", () => {
           maxRunMs: 45_000,
           notify: true,
           notifyConversationId: "telegram:42",
+          model: "claude:claude-opus-4-8",
+          effort: "high",
         },
         { id: "off", enabled: false, expression: "0 0 * * *", timezone: "UTC", prompt: "skip" },
       ],
@@ -224,6 +286,8 @@ describe("toCronJobs", () => {
         maxRunMs: 45_000,
         notify: true,
         notifyConversationId: "telegram:42",
+        model: "claude:claude-opus-4-8",
+        effort: "high",
       },
     ]);
     expect(jobs.some((job) => job.id === "off")).toBe(false);

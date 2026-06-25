@@ -22,6 +22,10 @@ export interface CronJobConfig {
   readonly maxRunMs?: number;
   readonly notify?: boolean;
   readonly notifyConversationId?: string;
+  /** Per-job runtime model override (e.g. `claude:claude-opus-4-8`). Validated by the app. */
+  readonly model?: string;
+  /** Per-job reasoning effort override (e.g. `high`). Validated by the app. */
+  readonly effort?: string;
 }
 
 export interface CronAdapterConfig {
@@ -90,6 +94,8 @@ function loadConfigJobs(
   const conversationId = normalizeOptionalString(layered.MONO_AGENT_CRON_CONVERSATION_ID);
   const notify = readBoolean(layered.MONO_AGENT_CRON_NOTIFY, "MONO_AGENT_CRON_NOTIFY", false, invalidConfig);
   const notifyConversationId = normalizeOptionalString(layered.MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID);
+  const model = normalizeOptionalString(layered.MONO_AGENT_CRON_MODEL);
+  const effort = normalizeOptionalString(layered.MONO_AGENT_CRON_EFFORT);
   return [{
     id: DEFAULT_JOB_ID,
     enabled,
@@ -99,6 +105,8 @@ function loadConfigJobs(
     ...(conversationId === undefined ? {} : { conversationId }),
     ...(notify ? { notify } : {}),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
   }];
 }
 
@@ -165,6 +173,8 @@ export function toCronJobs(config: CronAdapterConfig): CronJob[] {
       ...(job.maxRunMs === undefined ? {} : { maxRunMs: job.maxRunMs }),
       ...(job.notify === undefined ? {} : { notify: job.notify }),
       ...(job.notifyConversationId === undefined ? {} : { notifyConversationId: job.notifyConversationId }),
+      ...(job.model === undefined ? {} : { model: job.model }),
+      ...(job.effort === undefined ? {} : { effort: job.effort }),
     }));
 }
 
@@ -205,6 +215,8 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
   const maxRunMs = asOptionalPositiveInteger(entry.maxRunMs, "cron.jobs[].maxRunMs", { index });
   const notify = asOptionalBoolean(entry.notify, "cron.jobs[].notify", { index });
   const notifyConversationId = asOptionalString(entry.notifyConversationId);
+  const model = asOptionalString(entry.model);
+  const effort = asOptionalString(entry.effort);
   return {
     id,
     enabled: typeof entry.enabled === "boolean" ? entry.enabled : true,
@@ -215,6 +227,8 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
     ...(maxRunMs === undefined ? {} : { maxRunMs }),
     ...(notify === undefined ? {} : { notify }),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
   };
 }
 
@@ -231,6 +245,8 @@ function layerCronJsonOntoEnv(
     { env: "MONO_AGENT_CRON_CONVERSATION_ID", value: section.conversationId },
     { env: "MONO_AGENT_CRON_NOTIFY", value: section.notify, kind: "boolean" },
     { env: "MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID", value: section.notifyConversationId },
+    { env: "MONO_AGENT_CRON_MODEL", value: section.model },
+    { env: "MONO_AGENT_CRON_EFFORT", value: section.effort },
   ]);
 }
 

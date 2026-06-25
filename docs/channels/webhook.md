@@ -47,6 +47,8 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `prompt` | string | — | Pre-instructions prepended to the request text (see [Prompts](#endpoint-prompts)). |
 | `notify` | boolean | `false` | Deliver the successful final answer via native notification. |
 | `notifyConversationId` | string | inferred if exactly one destination | Destination conversation id for native notification. |
+| `model` | string | `runtime.model` | Per-endpoint model override (e.g. `claude:claude-opus-4-8`). A request body `model` wins. See [Per-trigger model & effort](#per-trigger-model--effort). |
+| `effort` | string | `runtime.effort` | Per-endpoint reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). A request body `effort` wins. |
 | `endpoints` | array | — | Multiple named endpoints — see [Multiple endpoints](#multiple-endpoints). |
 | `dir` | string | `webhook` | Folder of `*.md` endpoint files, resolved against the app working directory. |
 
@@ -63,6 +65,8 @@ The request body is a JSON object. `text` is required; everything else is option
 | `text` | yes | The user message for this turn. Non-empty. |
 | `mode` | no | `sync` or `async`, overriding the endpoint's mode for this request. |
 | `conversationId` | no | Reuse to continue a thread. Defaults to a per-request id (`webhook:<requestId>`). |
+| `model` | no | Per-request model override (`sdk:model` / `sdk:provider:model`). Wins over the endpoint's `model`. See [Per-trigger model & effort](#per-trigger-model--effort). |
+| `effort` | no | Per-request reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). Wins over the endpoint's `effort`. |
 | `metadata` | no | Arbitrary JSON passed through to the turn. |
 
 ### Sync mode
@@ -96,6 +100,21 @@ The operator just writes the endpoint prompt; on a notify turn the harness auto-
 **Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, or `slack:C123:1718.99` for a Slack thread). If it is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist); with 0 or 2+ candidates it skips delivery with a warning rather than guessing. The allowlist is the destination boundary: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAll*`) is refused.
 
 Notifying multiple or other conversations from one endpoint is not a built-in: compose it from a skill or from multiple endpoints, each with its own `notifyConversationId`.
+
+## Per-trigger model & effort
+
+An endpoint can run on a different model or reasoning effort than the agent's default, set per-endpoint in config **and/or** per-request in the body. This powers a **delegate** pattern: the host "deploys" a sub-agent by POSTing to a webhook that runs a heavier task (e.g. deep research) on a more powerful model.
+
+```bash
+curl -X POST "$URL/delegate" -H 'content-type: application/json' \
+  -d '{"text": "Deep-research X and write a brief.", "model": "claude:claude-opus-4-8", "effort": "high"}'
+```
+
+Precedence is **request body > endpoint config > agent default** (`runtime.model` / `runtime.effort`). The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved. An invalid `model`/`effort` is logged and ignored — the request still runs on the default model rather than failing. Model strings use the standard `sdk:model` / `sdk:provider:model` form; effort is one of `none`/`low`/`medium`/`high`/`xhigh`/`max`.
+
+The dynamic request-body override is always allowed — its safety rests on the webhook's loopback-only default (`allowNonLoopback: false`). If you expose the endpoint beyond loopback, gate it behind your own auth/reverse proxy.
+
+A model-override request runs **ephemerally**: it does not resume or persist a shared continuous session, so the delegated model never mixes into a conversation's session lineage (the per-request `conversationId` default already keeps deploys separate). Overrides target cloud/registry models; overriding to a model on a different local provider than the host default is not supported. Execution mode is preserved from the host config when the override model supports it, otherwise the model's default mode is used. An `effort`-only request keeps the same model and is unaffected.
 
 ## Multiple endpoints
 
@@ -167,6 +186,8 @@ Every key has a `MONO_AGENT_WEBHOOK_*` override, which takes precedence over the
 | `MONO_AGENT_WEBHOOK_PROMPT` | `webhook.prompt` |
 | `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` |
 | `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID` | `webhook.notifyConversationId` |
+| `MONO_AGENT_WEBHOOK_MODEL` | `webhook.model` |
+| `MONO_AGENT_WEBHOOK_EFFORT` | `webhook.effort` |
 | `MONO_AGENT_WEBHOOK_DIR` | `webhook.dir` |
 | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | `webhook.endpoints` (JSON array string) |
 

@@ -9,6 +9,7 @@ export {
   isRuntimeExecutionMode,
   listMonoRuntimeBackends,
   listMonoRuntimeSelectionTable,
+  modelReferenceKey,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeBackendForModel,

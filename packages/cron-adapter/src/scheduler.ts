@@ -20,6 +20,10 @@ export interface CronRequestMetadata {
     readonly enabled: true;
     readonly conversationId?: string;
   };
+  /** Per-job runtime model override (raw string; parsed/validated by the app). */
+  readonly model?: string;
+  /** Per-job reasoning effort override (raw string; validated by the app). */
+  readonly effort?: string;
 }
 
 export interface CronJob {
@@ -34,6 +38,10 @@ export interface CronJob {
   readonly notify?: boolean;
   /** Optional destination conversationId for native notification delivery. */
   readonly notifyConversationId?: string;
+  /** Per-job runtime model override (raw string; parsed/validated by the app). */
+  readonly model?: string;
+  /** Per-job reasoning effort override (raw string; validated by the app). */
+  readonly effort?: string;
 }
 
 /**
@@ -337,6 +345,8 @@ function startRun(
               },
             }
           : {}),
+        ...(job.model === undefined ? {} : { model: job.model }),
+        ...(job.effort === undefined ? {} : { effort: job.effort }),
       } satisfies CronRequestMetadata,
     },
   };
