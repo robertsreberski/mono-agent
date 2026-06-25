@@ -43,8 +43,14 @@ export interface TelegramAdapterStartOptions {
   readonly allowedUpdates?: readonly string[];
   /** Delete any configured webhook before polling. Defaults to true. */
   readonly deleteWebhookOnStart?: boolean;
+  /** Bound (ms) for the startup deleteWebhook call so a flaky network can't stall boot. Default 5000. */
+  readonly deleteWebhookTimeoutMs?: number;
   /** Drop updates queued before start. Defaults to false. */
   readonly dropPendingUpdates?: boolean;
+  /** Pin the Bot API HTTP client to IPv4 (`4`) or IPv6 (`6`). Omit for dual-stack. */
+  readonly transport?: { readonly ipFamily?: 4 | 6 };
+  /** Poll-liveness watchdog window (ms). Default 120000; set <= 0 to disable. */
+  readonly pollWatchdogMs?: number;
   /** Called when polling crashes after a successful start (lets the host mark the channel failed). */
   readonly onPollingError?: (error: unknown) => void;
   /** Test seam: build the grammY {@link Bot}. */
@@ -100,9 +106,14 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.deleteWebhookOnStart === undefined
       ? {}
       : { deleteWebhookOnStart: options.deleteWebhookOnStart }),
+    ...(options.deleteWebhookTimeoutMs === undefined
+      ? {}
+      : { deleteWebhookTimeoutMs: options.deleteWebhookTimeoutMs }),
     ...(options.dropPendingUpdates === undefined
       ? {}
       : { dropPendingUpdates: options.dropPendingUpdates }),
+    ...(options.transport === undefined ? {} : { transport: options.transport }),
+    ...(options.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: options.pollWatchdogMs }),
     ...(options.onPollingError === undefined ? {} : { onPollingError: options.onPollingError }),
     ...(options.botFactory === undefined ? {} : { botFactory: options.botFactory }),
     ...(options.runnerFactory === undefined ? {} : { runnerFactory: options.runnerFactory }),

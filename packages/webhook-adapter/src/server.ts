@@ -119,6 +119,13 @@ export interface WebhookAdapterOptions {
   readonly allowNonLoopback?: boolean;
   readonly retentionMs?: number;
   readonly maxStoredRequests?: number;
+  /**
+   * Wall-clock bound (ms) for a single webhook run. On timeout the request
+   * signal is aborted and the conversation's slot is reclaimed even if the
+   * responder never settles. Omit or set <= 0 to disable. Matters most for
+   * async runs, which have no client disconnect to bound them.
+   */
+  readonly maxRunMs?: number;
   readonly responder: AgentResponder<WebhookInvocationRequest, AgentMessageStream, AgentResponse>;
   readonly logger?: WebhookAdapterLogger;
   /** Endpoints to serve. When omitted, a single legacy endpoint is built from `path`/`defaultMode`. */
@@ -420,22 +427,73 @@ async function runResponder(input: {
       new WebhookAdapterError("invalid_config", "Cannot write to a finished webhook stream."),
   });
   let status: WebhookInvocationStatus;
+  // Max-run watchdog (mirrors the cron adapter): bound the run so a responder
+  // that hangs — especially in async mode, where there is no client to
+  // disconnect — cannot hold the conversation's slot (activeByRun) forever. On
+  // timeout we abort the request signal AND win the race below, so the slot is
+  // reclaimed even if the responder never settles.
+  const maxRunMs = input.options.maxRunMs;
+  let timedOut = false;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
   try {
-    const response = await input.options.responder.respond(input.request, stream);
-    await stream.finish(response.text);
-    status = {
-      status: "succeeded",
-      requestId: input.active.requestId,
-      conversationId: input.request.conversationId,
-      statusUrl: input.statusUrl,
-      receivedAt: input.receivedAt,
-      startedAt: input.startedAt,
-      completedAt: new Date().toISOString(),
-      ...(stream.text.length === 0 ? {} : { text: stream.text }),
-      ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
-    };
+    const respondPromise = (async () => {
+      const result = await input.options.responder.respond(input.request, stream);
+      await stream.finish(result.text);
+      return result;
+    })();
+    // If the timeout wins the race, the responder promise may reject later (on
+    // the abort) with nobody awaiting it — attach a no-op handler so that does
+    // not surface as an unhandled rejection.
+    void respondPromise.catch(() => undefined);
+
+    let response: AgentResponse;
+    if (maxRunMs !== undefined && maxRunMs > 0) {
+      const timeoutPromise = new Promise<never>((_resolve, reject) => {
+        watchdog = setTimeout(() => {
+          timedOut = true;
+          input.active.controller.abort(new Error(`Webhook run exceeded maxRunMs (${maxRunMs}ms).`));
+          reject(new Error(`Webhook run timed out after ${maxRunMs}ms.`));
+        }, maxRunMs);
+        (watchdog as { unref?: () => void }).unref?.();
+      });
+      response = await Promise.race([respondPromise, timeoutPromise]);
+    } else {
+      response = await respondPromise;
+    }
+    if (input.request.abortSignal.aborted) {
+      // The responder resolved but the run was aborted in flight (client
+      // disconnect or a maxRunMs the responder ignored): report it as cancelled,
+      // not succeeded. Mirrors the cron adapter's post-run abort guard.
+      status = {
+        status: "cancelled",
+        requestId: input.active.requestId,
+        conversationId: input.request.conversationId,
+        statusUrl: input.statusUrl,
+        receivedAt: input.receivedAt,
+        startedAt: input.startedAt,
+        completedAt: new Date().toISOString(),
+        error: "Webhook run was aborted before completion.",
+      };
+      input.options.logger?.warn?.("Webhook responder resolved after an abort; reporting cancelled.", {
+        requestId: input.active.requestId,
+        conversationId: input.request.conversationId,
+      });
+    } else {
+      status = {
+        status: "succeeded",
+        requestId: input.active.requestId,
+        conversationId: input.request.conversationId,
+        statusUrl: input.statusUrl,
+        receivedAt: input.receivedAt,
+        startedAt: input.startedAt,
+        completedAt: new Date().toISOString(),
+        ...(stream.text.length === 0 ? {} : { text: stream.text }),
+        ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
+      };
+    }
   } catch (error) {
-    const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
+    // A watchdog timeout is a server-imposed failure, not a user cancel.
+    const cancelled = !timedOut && (input.request.abortSignal.aborted || isAgentResponseCancelledError(error));
     status = {
       status: cancelled ? "cancelled" : "failed",
       requestId: input.active.requestId,
@@ -444,7 +502,9 @@ async function runResponder(input: {
       receivedAt: input.receivedAt,
       startedAt: input.startedAt,
       completedAt: new Date().toISOString(),
-      error: errorToMessage(error),
+      error: timedOut
+        ? `Webhook run timed out after ${String(maxRunMs)}ms (responder did not settle); reclaiming the slot.`
+        : errorToMessage(error),
     };
     input.options.logger?.[cancelled ? "warn" : "error"]?.("Webhook responder failed.", {
       requestId: input.active.requestId,
@@ -452,6 +512,9 @@ async function runResponder(input: {
       error: status.error,
     });
   } finally {
+    if (watchdog !== undefined) {
+      clearTimeout(watchdog);
+    }
     if (input.activeByRun.get(input.runKey) === input.active) {
       input.activeByRun.delete(input.runKey);
     }
