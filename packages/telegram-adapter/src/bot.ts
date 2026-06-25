@@ -363,12 +363,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // The botFactory test seam owns full Bot construction, so the cap (and the
   // optional IPv4/IPv6 transport pin) is applied only on the default path.
   const clientOptions: BotClientOptions = { timeoutSeconds: DEFAULT_API_TIMEOUT_SECONDS };
+  // Retained so stop() can destroy it: a keep-alive agent holds idle sockets in
+  // its pool, which would otherwise linger after teardown.
+  let transportAgent: HttpsAgent | undefined;
   if (options.transport?.ipFamily !== undefined) {
     // The Telegram Bot API is HTTPS-only, so one family-locked https.Agent covers
     // every call; keep-alive matches the long-poll's connection reuse.
+    transportAgent = new HttpsAgent({ family: options.transport.ipFamily, keepAlive: true });
     clientOptions.baseFetchConfig = {
       ...clientOptions.baseFetchConfig,
-      agent: new HttpsAgent({ family: options.transport.ipFamily, keepAlive: true }),
+      agent: transportAgent,
     };
   }
   const bot =
@@ -1141,8 +1145,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         // Bound + best-effort: the host awaits start() before reporting ready, so
         // an unbounded deleteWebhook over a flaky network could hang ~50s (the Api
         // client timeout) and blow past the launcher's readiness deadline. Cap it
-        // and never reject — if a webhook really was set, the auto-restart monitor
-        // and poll watchdog recover from any resulting getUpdates conflict.
+        // and never reject so boot proceeds. This is safe for a polling bot with no
+        // webhook configured (the call is a no-op). NOTE: if a webhook genuinely IS
+        // set and this call is skipped/times out, getUpdates returns 409 and the
+        // runner crash-restarts on a backoff — the backoff path does NOT re-issue
+        // deleteWebhook, so polling only resumes once the webhook is cleared (a
+        // later full start(), or its natural expiry). Deployments that use webhooks
+        // should not rely on this fallback.
         try {
           // grammY types `signal` with the abort-controller shim, not the global
           // AbortSignal; the runtime value is identical (cf. grammy-client.ts).
@@ -1194,6 +1203,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         await runnerHandle.stop();
       }
       runnerHandle = undefined;
+      // Release the family-pinned keep-alive agent's pooled sockets (no-op when
+      // the default dual-stack transport is used and no agent was created).
+      transportAgent?.destroy();
     },
   };
 

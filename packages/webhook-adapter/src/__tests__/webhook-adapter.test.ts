@@ -445,6 +445,53 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("reports cancelled when a responder resolves after the run was aborted", async () => {
+    let resolveResult: ((status: { status: string }) => void) | undefined;
+    const resultPromise = new Promise<{ status: string }>((resolve) => { resolveResult = resolve; });
+    let abortObserved!: () => void;
+    const abortSeen = new Promise<void>((resolve) => { abortObserved = resolve; });
+    // A responder that observes the abort but RESOLVES successfully anyway — the
+    // success path must still classify the run as cancelled, not succeeded.
+    const responder: AgentResponder = {
+      async respond(request) {
+        await new Promise<void>((resolve) => {
+          request.abortSignal.addEventListener("abort", () => { abortObserved(); resolve(); }, { once: true });
+        });
+        return { text: "ignored the abort" };
+      },
+    };
+
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/webhook/invoke",
+      responder,
+      onResult: (status) => { resolveResult?.(status as { status: string }); },
+    });
+
+    try {
+      const controller = new AbortController();
+      const pending = fetch(`${server.url}/webhook/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "x", conversationId: "c-abort-success", mode: "sync" }),
+        signal: controller.signal,
+      });
+      const settled = pending.catch(() => undefined);
+
+      await expect.poll(async () => server.activeRequestCount).toBe(1);
+      controller.abort();
+      await abortSeen;
+      await settled;
+
+      const result = await resultPromise;
+      expect(result.status).toBe("cancelled");
+      await expect.poll(async () => server.activeRequestCount).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("leaves a run that finishes within maxRunMs untouched", async () => {
     const server = await startWebhookAdapter({
       host: "127.0.0.1",

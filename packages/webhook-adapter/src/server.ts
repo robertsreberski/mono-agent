@@ -460,17 +460,37 @@ async function runResponder(input: {
     } else {
       response = await respondPromise;
     }
-    status = {
-      status: "succeeded",
-      requestId: input.active.requestId,
-      conversationId: input.request.conversationId,
-      statusUrl: input.statusUrl,
-      receivedAt: input.receivedAt,
-      startedAt: input.startedAt,
-      completedAt: new Date().toISOString(),
-      ...(stream.text.length === 0 ? {} : { text: stream.text }),
-      ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
-    };
+    if (input.request.abortSignal.aborted) {
+      // The responder resolved but the run was aborted in flight (client
+      // disconnect or a maxRunMs the responder ignored): report it as cancelled,
+      // not succeeded. Mirrors the cron adapter's post-run abort guard.
+      status = {
+        status: "cancelled",
+        requestId: input.active.requestId,
+        conversationId: input.request.conversationId,
+        statusUrl: input.statusUrl,
+        receivedAt: input.receivedAt,
+        startedAt: input.startedAt,
+        completedAt: new Date().toISOString(),
+        error: "Webhook run was aborted before completion.",
+      };
+      input.options.logger?.warn?.("Webhook responder resolved after an abort; reporting cancelled.", {
+        requestId: input.active.requestId,
+        conversationId: input.request.conversationId,
+      });
+    } else {
+      status = {
+        status: "succeeded",
+        requestId: input.active.requestId,
+        conversationId: input.request.conversationId,
+        statusUrl: input.statusUrl,
+        receivedAt: input.receivedAt,
+        startedAt: input.startedAt,
+        completedAt: new Date().toISOString(),
+        ...(stream.text.length === 0 ? {} : { text: stream.text }),
+        ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
+      };
+    }
   } catch (error) {
     // A watchdog timeout is a server-imposed failure, not a user cancel.
     const cancelled = !timedOut && (input.request.abortSignal.aborted || isAgentResponseCancelledError(error));
