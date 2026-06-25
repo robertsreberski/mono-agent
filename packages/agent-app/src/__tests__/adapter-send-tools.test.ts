@@ -292,6 +292,7 @@ describe("adapter send MCP tools", () => {
     };
     const server = createAdapterSendToolsServer(settings, {
       telegram: {
+        sendMessage: vi.fn(),
         async sendDocument(params): Promise<TelegramSentMessage> {
           docCalls.push({
             chat_id: params.chat_id,
@@ -329,7 +330,7 @@ describe("adapter send MCP tools", () => {
       },
     };
     const sendDocument = vi.fn();
-    const server = createAdapterSendToolsServer(settings, { telegram: { sendDocument } });
+    const server = createAdapterSendToolsServer(settings, { telegram: { sendMessage: vi.fn(), sendDocument } });
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({

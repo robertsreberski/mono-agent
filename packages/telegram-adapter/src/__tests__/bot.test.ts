@@ -210,7 +210,7 @@ function callbackUpdate(options: {
         reply_markup: { inline_keyboard: [buttons] },
       },
     },
-  } as Parameters<Bot["handleUpdate"]>[0];
+  } as unknown as Parameters<Bot["handleUpdate"]>[0];
 }
 
 function stickerUpdate(): Parameters<Bot["handleUpdate"]>[0] {
