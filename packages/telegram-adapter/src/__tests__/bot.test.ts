@@ -180,6 +180,39 @@ function commandUpdate(
   } as Parameters<Bot["handleUpdate"]>[0];
 }
 
+function callbackUpdate(options: {
+  data: string;
+  chatId?: number;
+  messageId?: number;
+  updateId?: number;
+  questionText?: string;
+  buttons?: Array<{ text: string; callback_data: string }>;
+}): Parameters<Bot["handleUpdate"]>[0] {
+  const chatId = options.chatId ?? 42;
+  const messageId = options.messageId ?? 500;
+  const buttons = options.buttons ?? [
+    { text: "Approve", callback_data: "ask:0" },
+    { text: "Reject", callback_data: "ask:1" },
+  ];
+  return {
+    update_id: options.updateId ?? 1,
+    callback_query: {
+      id: "cbq-1",
+      from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+      chat_instance: "ci-1",
+      data: options.data,
+      message: {
+        message_id: messageId,
+        date: 1234,
+        chat: { id: chatId, type: "private" },
+        from: FAKE_BOT_INFO,
+        text: options.questionText ?? "Proceed?",
+        reply_markup: { inline_keyboard: [buttons] },
+      },
+    },
+  } as unknown as Parameters<Bot["handleUpdate"]>[0];
+}
+
 function stickerUpdate(): Parameters<Bot["handleUpdate"]>[0] {
   return {
     update_id: 1,
@@ -326,6 +359,13 @@ function responderFrom(respond: AgentResponder["respond"]): AgentResponder {
   return { respond };
 }
 
+/** The sequence of reaction emojis applied (undefined = a cleared reaction). */
+function reactionEmojis(calls: RecordedCall[]): Array<string | undefined> {
+  return calls
+    .filter((call) => call.method === "setMessageReaction")
+    .map((call) => (call.payload.reaction as Array<{ emoji: string }>)[0]?.emoji);
+}
+
 function texts(calls: RecordedCall[], method: string): unknown[] {
   return calls.filter((call) => call.method === method).map((call) => call.payload.text);
 }
@@ -361,6 +401,155 @@ describe("createTelegramBot", () => {
       "Send text, documents, photos, audio, video, or voice messages. I forward your caption and download supported attachments (within size/type limits) for the agent. Use /cancel to stop the current response.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a configured command by running its prompt as a turn", async () => {
+    const requests: AgentRequest[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        requests.push(request as AgentRequest);
+        return { text: "Brief all clear" };
+      },
+    };
+    const { bot, calls } = buildTestBot({
+      responder,
+      commands: [{ command: "brief", description: "Morning brief", prompt: "Compose my morning brief" }],
+    });
+
+    await bot.handleUpdate(commandUpdate("/brief"));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.text).toBe("Compose my morning brief");
+    expect(requests[0]?.conversationId).toBe("telegram:42");
+    expect(texts(calls, "sendMessage")).toContain("Brief all clear");
+  });
+
+  it("treats a prompt-less command as menu-only and echoes its description", async () => {
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const { bot, calls } = buildTestBot({
+      responder,
+      commands: [{ command: "about", description: "What this agent does" }],
+    });
+
+    await bot.handleUpdate(commandUpdate("/about"));
+
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(texts(calls, "sendMessage")).toEqual(["What this agent does"]);
+  });
+
+  it("reacts 👀 then 👍 around a successful turn when all reactions are enabled", async () => {
+    const responder = responderFrom(async () => ({ text: "done" }));
+    const { bot, calls } = buildTestBot({
+      responder,
+      reactions: { working: true, done: true, error: true },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(textUpdate("hello"));
+
+    expect(reactionEmojis(calls)).toEqual(["👀", "👍"]);
+  });
+
+  it("does not react when reactions are disabled", async () => {
+    const responder = responderFrom(async () => ({ text: "done" }));
+    const { bot, calls } = buildTestBot({ responder, stream: { editDebounceMs: 0 } });
+
+    await bot.handleUpdate(textUpdate("hello"));
+
+    expect(calls.some((call) => call.method === "setMessageReaction")).toBe(false);
+  });
+
+  it("reacts 👎 when the responder fails and the error reaction is enabled", async () => {
+    const responder = responderFrom(async () => {
+      throw new Error("boom");
+    });
+    const { bot, calls } = buildTestBot({
+      responder,
+      reactions: { working: true, done: true, error: true },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(textUpdate("hello"));
+
+    const reactions = reactionEmojis(calls);
+    expect(reactions[0]).toBe("👀");
+    expect(reactions.at(-1)).toBe("👎");
+  });
+
+  it("clears the working reaction on success when the done reaction is disabled", async () => {
+    const responder = responderFrom(async () => ({ text: "done" }));
+    const { bot, calls } = buildTestBot({
+      responder,
+      reactions: { working: true, done: false, error: true },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(textUpdate("hello"));
+
+    // 👀 while working, then cleared on success (no 👍 clutter).
+    expect(reactionEmojis(calls)).toEqual(["👀", undefined]);
+  });
+
+  it("only reacts on completion when the working reaction is disabled", async () => {
+    const responder = responderFrom(async () => ({ text: "done" }));
+    const { bot, calls } = buildTestBot({
+      responder,
+      reactions: { working: false, done: true, error: true },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(textUpdate("hello"));
+
+    // No 👀 (working off) and nothing to clear: just the 👍 on success.
+    expect(reactionEmojis(calls)).toEqual(["👍"]);
+  });
+
+  it("re-runs the chosen inline-keyboard option as a turn when callbacks are enabled", async () => {
+    const requests: AgentRequest[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        requests.push(request as AgentRequest);
+        return { text: "Proceeding" };
+      },
+    };
+    const { bot, calls } = buildTestBot({
+      responder,
+      callbacksEnabled: true,
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
+
+    expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
+    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.conversationId).toBe("telegram:42");
+    expect(requests[0]?.text).toContain("Approve");
+    expect(requests[0]?.text).toContain("Proceed?");
+  });
+
+  it("de-dupes a second tap on the same question", async () => {
+    let runCount = 0;
+    const responder = responderFrom(async () => {
+      runCount += 1;
+      return { text: "ok" };
+    });
+    const { bot } = buildTestBot({ responder, callbacksEnabled: true, stream: { editDebounceMs: 0 } });
+
+    await bot.handleUpdate(callbackUpdate({ data: "ask:0", messageId: 500 }));
+    await bot.handleUpdate(callbackUpdate({ data: "ask:1", messageId: 500, updateId: 2 }));
+
+    expect(runCount).toBe(1);
+  });
+
+  it("ignores inline-keyboard callbacks when callbacks are disabled", async () => {
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const { bot, calls } = buildTestBot({ responder });
+
+    await bot.handleUpdate(callbackUpdate({ data: "ask:0" }));
+
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(false);
   });
 
   it("denies unauthorized chats without calling the responder", async () => {

@@ -48,6 +48,76 @@ Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which 
 | `MONO_AGENT_TELEGRAM_BOT_TOKEN` | `telegram.botToken` |
 | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` (comma-separated) |
 | `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | `telegram.allowAllChats` |
+| `MONO_AGENT_TELEGRAM_REACTIONS` | `telegram.reactions` |
+
+## Interactive features
+
+All of the features below are **opt-in and default off**. With none configured the bot behaves exactly as before (long-poll `message` updates only).
+
+### Command menu
+
+Register custom slash commands that appear in Telegram's command menu (autocomplete) and run a configured prompt as a turn. Built-in `/start`, `/help`, and `/cancel` are always present and cannot be overridden.
+
+```json
+{
+  "telegram": {
+    "commands": [
+      { "command": "brief", "description": "Compose my morning brief", "prompt": "Compose my morning brief." },
+      { "command": "about", "description": "What this agent does" }
+    ]
+  }
+}
+```
+
+Each entry needs a `command` (1–32 lowercase letters/digits/underscores) and a `description`. With a `prompt`, tapping the command runs it on that chat through the normal per-chat queue; without a `prompt` it is a menu-only entry that echoes its description. The command list is registered via `setMyCommands` at startup (scoped to private chats); it is skipped entirely when no custom commands are configured.
+
+### Status reactions
+
+Set `telegram.reactions: true` to have the bot react to your message with a lifecycle emoji: **👀** while the agent works, **👍** on success, **👎** on failure (and the reaction is cleared when you `/cancel`). Telegram constrains bot reactions to a fixed emoji set, so these stand in for ✅/❌. Best-effort — a missing reaction permission never affects the run.
+
+```json
+{ "telegram": { "reactions": true } }
+```
+
+Each state can be toggled independently with an object — every key defaults to `true`, so you set the ones you *don't* want to `false`. For example, to keep the working and error reactions but drop the success 👍 (which can feel cluttered):
+
+```json
+{ "telegram": { "reactions": { "done": false } } }
+```
+
+When a terminal state's reaction is disabled, the working **👀** is **cleared** on completion rather than left lingering — so a turn that only reacts while working ends with a clean, reaction-free message. The `MONO_AGENT_TELEGRAM_REACTIONS` env var is a simple all-on/all-off override; granular per-state control is JSON-only.
+
+### Quiet hours (silent notifications)
+
+Deliver proactive notifications (cron/webhook `notify`) silently during a daily window, so an overnight result lands without a push sound. `start`/`end` are 24-hour `HH:MM` clock times in `timezone` (an IANA zone); an `end` earlier than `start` wraps midnight.
+
+```json
+{
+  "telegram": {
+    "quietHours": { "start": "22:00", "end": "07:00", "timezone": "Europe/Rome" }
+  }
+}
+```
+
+Only the push notification is suppressed (`disable_notification`); the message still arrives. Live replies to your messages are never silenced.
+
+### Asking you a question (inline keyboards)
+
+Expose the `telegram_ask` app tool to let the agent ask you a structured question with tappable buttons — a confirmation, an approval, or a multiple choice — instead of waiting for free-text. Add it to `tools.allowedTools`:
+
+```json
+{ "tools": { "allowedTools": ["telegram_ask"] } }
+```
+
+The tool takes a `question` and 2–8 option labels and posts an inline keyboard, then **returns immediately** (it does not block the turn). When you tap a button, your choice arrives as a **new message on the same conversation**, so the agent continues on the next turn — exactly like a typed reply, on the warm session. Allowing `telegram_ask` is the single switch that also subscribes the bot to `callback_query` updates and wires the tap handler; the chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
+
+### Sending files
+
+Expose `telegram_send_document` and/or `telegram_send_photo` to let the agent send a generated file or image back to an allowed chat. Each accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path`, plus an optional `caption`; uploads are bounded by the adapter's attachment size cap.
+
+```json
+{ "tools": { "allowedTools": ["telegram_send_document", "telegram_send_photo"] } }
+```
 
 ## Final-only delivery
 

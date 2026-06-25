@@ -59,6 +59,11 @@ export interface TelegramMessageStreamOptions {
    * "typing…" chat action while the agent works. Default false.
    */
   finalOnly?: boolean;
+  /**
+   * Post messages silently — `disable_notification` is set so the message arrives
+   * without a push sound. Used by proactive notify during quiet hours. Default false.
+   */
+  silent?: boolean;
   /** Aborts in-flight retry waits (e.g. on /cancel). */
   abortSignal?: AbortSignal;
   logger?: TelegramMessageStreamLogger;
@@ -128,6 +133,7 @@ class TelegramChannelTransport implements ChannelTransport {
   private readonly api: TelegramMessageSender;
   private readonly chatId: TelegramChatId;
   private readonly replyToMessageId: number | undefined;
+  private readonly silent: boolean;
 
   constructor(options: {
     api: TelegramMessageSender;
@@ -135,12 +141,14 @@ class TelegramChannelTransport implements ChannelTransport {
     maxMessageChars: number;
     replyToMessageId: number | undefined;
     markdownEnabled: boolean;
+    silent: boolean;
   }) {
     this.api = options.api;
     this.chatId = options.chatId;
     this.maxMessageChars = options.maxMessageChars;
     this.replyToMessageId = options.replyToMessageId;
     this.markdownEnabled = options.markdownEnabled;
+    this.silent = options.silent;
   }
 
   renderMarkdown(text: string): string {
@@ -216,6 +224,9 @@ class TelegramChannelTransport implements ChannelTransport {
     if (this.replyToMessageId !== undefined) {
       params.reply_to_message_id = this.replyToMessageId;
     }
+    if (this.silent) {
+      params.disable_notification = true;
+    }
     return params;
   }
 }
@@ -252,6 +263,7 @@ export class TelegramMessageStream implements AgentMessageStream {
       replyToMessageId: options.replyToMessageId,
       // Streaming begins with the configured formatting; finish() may override it.
       markdownEnabled: this.formatMarkdown,
+      silent: options.silent ?? false,
     });
 
     const innerOptions: ConstructorParameters<typeof ResilientMessageStream>[0] = {

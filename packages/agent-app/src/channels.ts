@@ -40,6 +40,7 @@ import type {
   SlackAdapterStartResult,
 } from "@mono-agent/slack-adapter";
 import {
+  isWithinQuietHours,
   loadTelegramAdapterConfig,
   startTelegramAdapter,
   TelegramAdapterConfigError,
@@ -76,6 +77,7 @@ import type {
   WhatsAppSocketFactory,
 } from "@mono-agent/whatsapp-adapter";
 
+import { isAdapterSendToolAllowed } from "./adapter-send-tools.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
@@ -221,7 +223,19 @@ export function createTelegramChannelDriver(
             input.logger?.warn?.("Telegram proactive notify skipped: destination not in allowlist.", { conversationId });
             return { delivered: false, reason: "telegram chat is not in the adapter allowlist" };
           }
-          return await result.notify(chatId, text, verbatim === undefined ? undefined : { verbatim });
+          // During configured quiet hours, deliver silently (disable_notification)
+          // so an overnight cron/webhook result lands without a push sound.
+          const silent =
+            input.config.quietHours !== undefined &&
+            isWithinQuietHours(new Date(), input.config.quietHours);
+          const notifyOptions =
+            verbatim === undefined && !silent
+              ? undefined
+              : {
+                  ...(verbatim === undefined ? {} : { verbatim }),
+                  ...(silent ? { silent: true } : {}),
+                };
+          return await result.notify(chatId, text, notifyOptions);
         },
       };
     },
@@ -871,12 +885,21 @@ function telegramStartOptions(
   input: ChannelStartInput<TelegramAdapterConfig>,
   overrides: TelegramChannelOverrides,
 ): TelegramAdapterStartOptions {
+  // Subscribe to (and handle) inline-keyboard taps only when the `telegram_ask`
+  // tool is permitted by the tool policy — so enabling the tool is the single
+  // switch that turns on the whole ask/answer round-trip. Without it the bot
+  // stays message-only and never registers the callback handler.
+  const callbacksEnabled = isAdapterSendToolAllowed("telegram_ask", {
+    allowedTools: input.coreConfig.tools.allowedTools,
+    disallowedTools: input.coreConfig.tools.disallowedTools,
+  });
   return {
     botToken: input.config.botToken,
     allowedChatIds: [...input.config.allowedChatIds],
     allowAllChats: input.config.allowAllChats,
     responder: input.responder,
-    allowedUpdates: ["message"],
+    allowedUpdates: callbacksEnabled ? ["message", "callback_query"] : ["message"],
+    ...(callbacksEnabled ? { callbacksEnabled: true } : {}),
     deleteWebhookOnStart: true,
     stream: {
       initialStatusText: "Agent is thinking...",
@@ -898,6 +921,8 @@ function telegramStartOptions(
       input.onFailure(error instanceof Error ? error.message : String(error)),
     ...(input.config.ipFamily === undefined ? {} : { transport: { ipFamily: input.config.ipFamily } }),
     ...(input.config.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: input.config.pollWatchdogMs }),
+    ...(input.config.commands === undefined ? {} : { commands: [...input.config.commands] }),
+    ...(input.config.reactions === undefined ? {} : { reactions: input.config.reactions }),
     ...(input.logger === undefined ? {} : { logger: input.logger }),
     ...(overrides.botFactory === undefined ? {} : { botFactory: overrides.botFactory }),
     ...(overrides.runnerFactory === undefined ? {} : { runnerFactory: overrides.runnerFactory }),
