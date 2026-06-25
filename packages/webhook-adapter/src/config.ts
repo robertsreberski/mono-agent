@@ -34,6 +34,8 @@ export interface WebhookAdapterConfig {
   readonly allowNonLoopback: boolean;
   readonly retentionMs: number;
   readonly maxStoredRequests: number;
+  /** Wall-clock bound (ms) per webhook run. Omit to use the adapter default (20 min). */
+  readonly maxRunMs?: number;
   readonly endpoints: readonly WebhookEndpointConfig[];
   /** Back-compat mirror of `endpoints[0].path`. */
   readonly path: string;
@@ -79,6 +81,11 @@ export async function loadWebhookAdapterConfig(
   const defaultMode = readChoice(env.MONO_AGENT_WEBHOOK_DEFAULT_MODE, "MONO_AGENT_WEBHOOK_DEFAULT_MODE", WEBHOOK_MODES, DEFAULT_MODE, invalidConfig);
   const retentionMs = readInteger(env.MONO_AGENT_WEBHOOK_RETENTION_MS, "MONO_AGENT_WEBHOOK_RETENTION_MS", DEFAULT_RETENTION_MS, invalidConfig, { min: 1, max: 86_400_000 });
   const maxStoredRequests = readInteger(env.MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS, "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", DEFAULT_MAX_STORED_REQUESTS, invalidConfig, { min: 1, max: 10_000 });
+  const maxRunMsRaw = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_MAX_RUN_MS);
+  const maxRunMs =
+    maxRunMsRaw === undefined
+      ? undefined
+      : readInteger(maxRunMsRaw, "MONO_AGENT_WEBHOOK_MAX_RUN_MS", 0, invalidConfig, { min: 0, max: 86_400_000 });
 
   const configEndpoints = loadConfigEndpoints(json, env, defaultMode);
   const directoryEndpoints = await loadDirectoryEndpoints(json, input, defaultMode);
@@ -93,6 +100,7 @@ export async function loadWebhookAdapterConfig(
     allowNonLoopback,
     retentionMs,
     maxStoredRequests,
+    ...(maxRunMs === undefined ? {} : { maxRunMs }),
     endpoints,
     path: primary.path,
     defaultMode: primary.mode,
@@ -282,6 +290,7 @@ function layerWebhookJsonOntoEnv(
     { env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", value: section.defaultMode },
     { env: "MONO_AGENT_WEBHOOK_RETENTION_MS", value: section.retentionMs, kind: "integer" },
     { env: "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", value: section.maxStoredRequests, kind: "integer" },
+    { env: "MONO_AGENT_WEBHOOK_MAX_RUN_MS", value: section.maxRunMs, kind: "integer" },
   ]);
 }
 

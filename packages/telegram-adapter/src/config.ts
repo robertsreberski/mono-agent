@@ -1,8 +1,11 @@
 import {
   layerJsonOntoEnv,
+  normalizeOptionalString,
   readBoolean,
   readCsv,
+  readInteger,
   readJsonSection,
+  readRecord,
   readRequired,
   readSettingsJson,
   redactedSecret,
@@ -17,6 +20,10 @@ export interface TelegramAdapterConfig {
   readonly botToken: string;
   readonly allowedChatIds: readonly string[];
   readonly allowAllChats: boolean;
+  /** Pin the Bot API HTTP client to IPv4 (`4`) or IPv6 (`6`). Omit for dual-stack. */
+  readonly ipFamily?: 4 | 6;
+  /** Poll-liveness watchdog window (ms). Omit to use the adapter default (120000). */
+  readonly pollWatchdogMs?: number;
 }
 
 export interface RedactedTelegramAdapterConfig {
@@ -24,6 +31,8 @@ export interface RedactedTelegramAdapterConfig {
   readonly botToken: RedactedSecretValue;
   readonly allowedChatIds: { readonly count: number };
   readonly allowAllChats: boolean;
+  readonly ipFamily?: 4 | 6;
+  readonly pollWatchdogMs?: number;
 }
 
 export type TelegramAdapterConfigErrorCode =
@@ -110,7 +119,42 @@ export async function loadTelegramAdapterConfig(
     );
   }
 
-  return { enabled: true, botToken, allowedChatIds, allowAllChats };
+  const ipFamily = readIpFamily(env.MONO_AGENT_TELEGRAM_IP_FAMILY);
+  const pollWatchdogRaw = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS);
+  const pollWatchdogMs =
+    pollWatchdogRaw === undefined
+      ? undefined
+      : readInteger(pollWatchdogRaw, "MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS", 0, invalidConfig, {
+          min: 0,
+          max: 3_600_000,
+        });
+
+  return {
+    enabled: true,
+    botToken,
+    allowedChatIds,
+    allowAllChats,
+    ...(ipFamily === undefined ? {} : { ipFamily }),
+    ...(pollWatchdogMs === undefined ? {} : { pollWatchdogMs }),
+  };
+}
+
+/** Parse an optional IPv4/IPv6 transport pin. Empty → undefined; anything but 4/6 throws. */
+function readIpFamily(raw: string | undefined): 4 | 6 | undefined {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) {
+    return undefined;
+  }
+  if (normalized === "4") {
+    return 4;
+  }
+  if (normalized === "6") {
+    return 6;
+  }
+  throw invalidConfig("MONO_AGENT_TELEGRAM_IP_FAMILY must be 4 or 6.", {
+    env: "MONO_AGENT_TELEGRAM_IP_FAMILY",
+    reason: normalized,
+  });
 }
 
 export function redactTelegramAdapterConfig(
@@ -121,6 +165,8 @@ export function redactTelegramAdapterConfig(
     botToken: redactedSecret(config.botToken),
     allowedChatIds: { count: config.allowedChatIds.length },
     allowAllChats: config.allowAllChats,
+    ...(config.ipFamily === undefined ? {} : { ipFamily: config.ipFamily }),
+    ...(config.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: config.pollWatchdogMs }),
   };
 }
 
@@ -129,10 +175,13 @@ function layerTelegramJsonOntoEnv(
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
   const section = readJsonSection(json, "telegram");
+  const transport = readRecord(section.transport);
   return layerJsonOntoEnv(env, [
     { env: "MONO_AGENT_TELEGRAM_ENABLED", value: section.enabled, kind: "boolean" },
     { env: "MONO_AGENT_TELEGRAM_BOT_TOKEN", value: section.botToken },
     { env: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS", value: section.allowedChatIds, kind: "csv" },
     { env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS", value: section.allowAllChats, kind: "boolean" },
+    { env: "MONO_AGENT_TELEGRAM_IP_FAMILY", value: transport.ipFamily, kind: "integer" },
+    { env: "MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS", value: section.pollWatchdogMs, kind: "integer" },
   ]);
 }

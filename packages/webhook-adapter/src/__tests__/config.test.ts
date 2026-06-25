@@ -65,6 +65,16 @@ describe("loadWebhookAdapterConfig", () => {
     expect(config.path).toBe("/webhook/invoke");
   });
 
+  it("parses webhook.maxRunMs (and omits it when unset)", async () => {
+    const unset = await loadWebhookAdapterConfig({ env: {} });
+    expect(unset.maxRunMs).toBeUndefined();
+
+    const config = await loadWebhookAdapterConfig({
+      env: { MONO_AGENT_WEBHOOK_MAX_RUN_MS: "600000" },
+    });
+    expect(config.maxRunMs).toBe(600000);
+  });
+
   it("loads multiple endpoints from webhook.endpoints, mirroring the first as path/defaultMode", async () => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(

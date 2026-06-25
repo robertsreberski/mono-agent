@@ -429,3 +429,187 @@ describe("startTelegramAdapter polling auto-restart", () => {
     }
   });
 });
+
+describe("startTelegramAdapter poll-liveness watchdog", () => {
+  it("force-restarts a runner that is connected but no longer polling", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const warnings: string[] = [];
+      const runnerFactory = vi.fn(() => new FakeRunner());
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        // Small window so the test does not advance fake time by minutes.
+        pollWatchdogMs: 3000,
+        logger: { warn: (message) => { warnings.push(message); } },
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+
+      // No getUpdates ever resolves (the FakeRunner never calls it), so the
+      // heartbeat stays stale. The watchdog ticks (every ~1000ms) and at >3000ms
+      // staleness force-restarts the runner — even though it reports running and
+      // its task never rejected.
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(runnerFactory).toHaveBeenCalledTimes(2);
+      expect(warnings.some((w) => /poll liveness stalled/i.test(w))).toBe(true);
+
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT restart while getUpdates keeps resolving (fresh polls)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const runnerFactory = vi.fn(() => new FakeRunner());
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 3000,
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      // Each gap (2000ms) is under the 3000ms window, and every getUpdates
+      // resolution refreshes the heartbeat — so the watchdog must never fire.
+      for (let i = 0; i < 5; i += 1) {
+        await vi.advanceTimersByTimeAsync(2000);
+        await bot.api.getUpdates({});
+      }
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stop() clears the watchdog so no restart fires after teardown", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const runnerFactory = vi.fn(() => new FakeRunner());
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 3000,
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await result.stop();
+
+      // Well past the watchdog window: a cleared watchdog must not respawn.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("can be disabled with pollWatchdogMs <= 0", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const runnerFactory = vi.fn(() => new FakeRunner());
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 0,
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("startTelegramAdapter startup deleteWebhook resilience", () => {
+  /** A bot whose deleteWebhook fails the given way; every other call is a no-op ok. */
+  function botWithDeleteWebhook(behavior: "reject" | "hang"): Bot {
+    const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+    bot.api.config.use(async (_prev, method, _payload, signal) => {
+      if (method === "deleteWebhook") {
+        if (behavior === "reject") {
+          throw new Error("getUpdates ETIMEDOUT");
+        }
+        // Hang until the caller's timeout signal aborts the call.
+        return await new Promise((_resolve, reject) => {
+          const abortSignal = signal as AbortSignal | undefined;
+          abortSignal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        });
+      }
+      return { ok: true, result: true } as never;
+    });
+    return bot;
+  }
+
+  it("start() resolves and polls when deleteWebhook rejects at startup", async () => {
+    const warnings: string[] = [];
+    let runner: FakeRunner | undefined;
+
+    const result = await startTelegramAdapter({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder: { respond: vi.fn() } satisfies AgentResponder,
+      deleteWebhookOnStart: true,
+      logger: { warn: (message) => { warnings.push(message); } },
+      botFactory: () => botWithDeleteWebhook("reject"),
+      runnerFactory: () => {
+        runner = new FakeRunner();
+        return runner;
+      },
+    });
+
+    expect(runner?.isRunning()).toBe(true);
+    expect(warnings.some((w) => /deleteWebhook/i.test(w))).toBe(true);
+    await result.stop();
+  });
+
+  it("start() returns within the bound when deleteWebhook hangs", async () => {
+    let runner: FakeRunner | undefined;
+
+    // Real timers + a tiny bound: a hanging deleteWebhook is aborted at ~30ms and
+    // start() proceeds to spawn the runner rather than blocking on the network.
+    const result = await startTelegramAdapter({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder: { respond: vi.fn() } satisfies AgentResponder,
+      deleteWebhookOnStart: true,
+      deleteWebhookTimeoutMs: 30,
+      botFactory: () => botWithDeleteWebhook("hang"),
+      runnerFactory: () => {
+        runner = new FakeRunner();
+        return runner;
+      },
+    });
+
+    expect(runner?.isRunning()).toBe(true);
+    await result.stop();
+  });
+});
