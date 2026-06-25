@@ -3,6 +3,7 @@ import { Bot } from "grammy";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "../adapter.js";
+import { createTelegramBot } from "../bot.js";
 import { startTelegramAdapter } from "../start.js";
 
 const FAKE_BOT_INFO = {
@@ -758,6 +759,38 @@ describe("startTelegramAdapter onPollingRecovered", () => {
       expect(onPollingRecovered).not.toHaveBeenCalled();
 
       await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT fire a stale recovery across a stop()/start() cycle", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const onPollingRecovered = vi.fn();
+      const runners: RecoverableRunner[] = [];
+      const controller = createTelegramBot({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 0,
+        onPollingRecovered,
+        botFactory: () => bot,
+        runnerFactory: () => { const r = new RecoverableRunner(); runners.push(r); return r; },
+      });
+
+      await controller.start();
+      runners[0]?.crash();        // sets the crash flag, then we stop before recovery
+      await controller.stop();
+      // A fresh start must clear the stale flag: the new runner staying up is the
+      // initial start of THIS session, not a recovery.
+      await controller.start();
+      await vi.advanceTimersByTimeAsync(STABILITY_MS * 2);
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+
+      await controller.stop();
     } finally {
       vi.useRealTimers();
     }

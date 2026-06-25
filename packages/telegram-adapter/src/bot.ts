@@ -409,16 +409,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // The botFactory test seam owns full Bot construction, so the cap (and the
   // optional IPv4/IPv6 transport pin) is applied only on the default path.
   const clientOptions: BotClientOptions = { timeoutSeconds: DEFAULT_API_TIMEOUT_SECONDS };
-  // Retained so stop() can destroy it: a keep-alive agent holds idle sockets in
-  // its pool, which would otherwise linger after teardown.
+  // Retained so stop() can destroy it (closes any in-flight socket on teardown).
   let transportAgent: HttpsAgent | undefined;
   if (options.transport?.ipFamily !== undefined) {
     // The Telegram Bot API is HTTPS-only, so one family-locked https.Agent covers
-    // every call; keep-alive matches the long-poll's connection reuse.
-    // keepAlive:false so a network switch can't strand a pooled socket bound to the
-    // dead interface (it would ENETUNREACH for ~50s, the Api timeout, before the
-    // poller retries). A fresh socket per ~30s long-poll detects the live route
-    // immediately; pooling buys almost nothing at 1 request/30s.
+    // every call. keepAlive:false so a network switch can't strand a pooled socket
+    // bound to the dead interface (it would ENETUNREACH for ~50s, the Api timeout,
+    // before the poller retries). A fresh socket per ~30s long-poll detects the live
+    // route immediately; pooling buys almost nothing at 1 request/30s.
     transportAgent = new HttpsAgent({ family: options.transport.ipFamily, keepAlive: false });
     clientOptions.baseFetchConfig = {
       ...clientOptions.baseFetchConfig,
@@ -1368,6 +1366,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // handles messages again instead of silently dropping every one.
       stopped = false;
       restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
+      // Clear any crash flag left over from a previous session: onPollingRecovered
+      // must only fire for a crash→recovery within THIS run, never for a stale
+      // crash that preceded a stop()/start() cycle.
+      pollingDegraded = false;
       if ((options.deleteWebhookOnStart ?? true) === true) {
         // Bound + best-effort: the host awaits start() before reporting ready, so
         // an unbounded deleteWebhook over a flaky network could hang ~50s (the Api
@@ -1455,8 +1457,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         await runnerHandle.stop();
       }
       runnerHandle = undefined;
-      // Release the family-pinned keep-alive agent's pooled sockets (no-op when
-      // the default dual-stack transport is used and no agent was created).
+      // Close any in-flight socket on the family-pinned agent (no-op when the
+      // default dual-stack transport is used and no agent was created).
       transportAgent?.destroy();
     },
   };

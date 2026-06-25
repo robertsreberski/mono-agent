@@ -76,6 +76,7 @@ describe("section rules and domain badges", () => {
     expect(channelBadge("running")).toBe(badge("ok"));
     expect(channelBadge("waiting_for_config")).toBe(badge("waiting"));
     expect(channelBadge("disabled")).toBe(badge("disabled"));
+    expect(channelBadge("degraded")).toBe(badge("waiting"));
     expect(channelBadge("crashed")).toBe(badge("error"));
     expect(channelBadge("mystery")).toBe(badge("waiting"));
   });

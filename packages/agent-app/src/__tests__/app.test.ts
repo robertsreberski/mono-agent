@@ -535,6 +535,37 @@ describe("startMonoAgentApp", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("does not resurrect a stopped channel when recovery races the stop", async () => {
+    await writeConfig({ ...baseConfig(), telegram: { enabled: true, botToken: "test-token", allowAllChats: true } });
+    let captured: TelegramAdapterStartOptions | undefined;
+    const telegramDriver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
+      },
+    });
+    const disposeSpy = vi.fn(async () => {});
+    const wrapped = {
+      ...telegramDriver,
+      async start(input: Parameters<typeof telegramDriver.start>[0]) {
+        (input.responder as { dispose?: () => Promise<void> }).dispose = disposeSpy;
+        return await telegramDriver.start(input);
+      },
+    };
+    const drivers = defaultChannelDrivers().map((driver) => (driver.id === "telegram" ? wrapped : driver));
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers });
+    captured?.onPollingError?.(new Error("connect ENETUNREACH"));
+    await app.stop();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+
+    // A late recovery firing after the channel was stopped/disposed must NOT
+    // resurrect it to running (the onRecovered guard checks the running entry).
+    captured?.onPollingRecovered?.();
+    expect(app.channelStatus("telegram").kind).not.toBe("running");
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("logs an accurate skip (not 'started') when bujo mode has no chat LLM (tier downgrades to journal)", async () => {
     const infos: string[] = [];
     const logger = { info: (m: string) => { infos.push(m); } };
