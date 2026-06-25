@@ -889,6 +889,8 @@ function telegramStartOptions(
     // not leave it reported as running.
     onPollingError: (error) =>
       input.onFailure(error instanceof Error ? error.message : String(error)),
+    ...(input.config.ipFamily === undefined ? {} : { transport: { ipFamily: input.config.ipFamily } }),
+    ...(input.config.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: input.config.pollWatchdogMs }),
     ...(input.logger === undefined ? {} : { logger: input.logger }),
     ...(overrides.botFactory === undefined ? {} : { botFactory: overrides.botFactory }),
     ...(overrides.runnerFactory === undefined ? {} : { runnerFactory: overrides.runnerFactory }),

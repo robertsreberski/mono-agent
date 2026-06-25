@@ -1,3 +1,5 @@
+import { Agent as HttpsAgent } from "node:https";
+
 import { isAgentResponseCancelledError } from "@mono-agent/agent-contracts";
 import { run, type RunnerHandle, type RunOptions } from "@grammyjs/runner";
 import { Bot, type Context } from "grammy";
@@ -29,6 +31,7 @@ import type { TelegramChatId, TelegramMessage, TelegramUpdate } from "./types.js
 
 type RunnerFetchOptions = NonNullable<NonNullable<RunOptions<Context>["runner"]>["fetch"]>;
 type AllowedUpdates = NonNullable<RunnerFetchOptions["allowed_updates"]>;
+type BotClientOptions = NonNullable<NonNullable<ConstructorParameters<typeof Bot>[1]>["client"]>;
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
 // Quiet window after the last album message before we flush the group as one
@@ -57,6 +60,18 @@ const DEFAULT_RESTART_MAX_BACKOFF_MS = 30_000;
 // the backoff resets to the initial delay. A runner that crashes again before
 // this window keeps growing the backoff (avoids hammering a flapping connection).
 const DEFAULT_RESTART_STABILITY_MS = 30_000;
+// Poll-liveness watchdog: if no getUpdates call has RESOLVED within this window
+// the runner is force-restarted, even though its task() never rejected. grammY's
+// runner self-retries getUpdates internally, so a degraded connection can stop
+// delivering updates WITHOUT the task rejecting — the crash-based auto-restart
+// then never fires and the bot goes silently deaf. 120s comfortably clears the
+// 30s long-poll heartbeat (DEFAULT_LONG_POLL_TIMEOUT_SECONDS) so a normal
+// idle poll never trips it. Set pollWatchdogMs <= 0 to disable.
+const DEFAULT_POLL_WATCHDOG_MS = 120_000;
+// Cap the startup deleteWebhook call so a flaky network cannot block boot: the
+// app awaits start() before reporting ready, and an unbounded deleteWebhook can
+// hang ~50s (the Api client timeout), past the launcher's readiness deadline.
+const DEFAULT_DELETE_WEBHOOK_TIMEOUT_MS = 5_000;
 
 // Mirrors the harness LiveSessionManager's DEFAULT_MAX_PENDING_PER_CONVERSATION:
 // the per-chat admission queue rejects past this depth so a flood of same-chat
@@ -160,8 +175,26 @@ export interface CreateTelegramBotOptions {
   readonly albumAggregationDelayMs?: number;
   /** Delete any configured webhook before polling. Defaults to true. */
   readonly deleteWebhookOnStart?: boolean;
+  /**
+   * Bound (ms) for the startup `deleteWebhook` call so a flaky network cannot
+   * stall boot. Defaults to {@link DEFAULT_DELETE_WEBHOOK_TIMEOUT_MS} (5000).
+   */
+  readonly deleteWebhookTimeoutMs?: number;
   /** Drop updates queued before start. Defaults to false. */
   readonly dropPendingUpdates?: boolean;
+  /**
+   * Outbound transport tuning. `ipFamily: 4` pins the Bot API HTTP client to
+   * IPv4 (and `6` to IPv6) via a family-locked keep-alive https.Agent — a
+   * workaround for networks whose IPv6 route to api.telegram.org is broken and
+   * times out getUpdates. Omit for the default dual-stack behavior.
+   */
+  readonly transport?: { readonly ipFamily?: 4 | 6 };
+  /**
+   * Poll-liveness watchdog window (ms). If no getUpdates resolves within this
+   * window the runner is force-restarted even though its task never rejected.
+   * Defaults to {@link DEFAULT_POLL_WATCHDOG_MS} (120000). Set <= 0 to disable.
+   */
+  readonly pollWatchdogMs?: number;
   /**
    * Called when polling crashes after a successful start (the runner's task
    * rejects). Lets a host mark the channel failed instead of leaving it running.
@@ -327,11 +360,33 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   // Cap the Api client's overall HTTP timeout so a half-open getUpdates socket
   // fails in ~50s instead of grammY's 500s default — see DEFAULT_API_TIMEOUT_SECONDS.
-  // The botFactory test seam owns full Bot construction, so the cap is applied
-  // only on the default path.
+  // The botFactory test seam owns full Bot construction, so the cap (and the
+  // optional IPv4/IPv6 transport pin) is applied only on the default path.
+  const clientOptions: BotClientOptions = { timeoutSeconds: DEFAULT_API_TIMEOUT_SECONDS };
+  if (options.transport?.ipFamily !== undefined) {
+    // The Telegram Bot API is HTTPS-only, so one family-locked https.Agent covers
+    // every call; keep-alive matches the long-poll's connection reuse.
+    clientOptions.baseFetchConfig = {
+      ...clientOptions.baseFetchConfig,
+      agent: new HttpsAgent({ family: options.transport.ipFamily, keepAlive: true }),
+    };
+  }
   const bot =
     options.botFactory?.(options.botToken) ??
-    new Bot(options.botToken, { client: { timeoutSeconds: DEFAULT_API_TIMEOUT_SECONDS } });
+    new Bot(options.botToken, { client: clientOptions });
+  // Poll-liveness heartbeat: stamp the time each getUpdates call RESOLVED. The
+  // watchdog uses this to detect a runner that has gone silently deaf (connected
+  // but no longer delivering) and force-restart it. Installed last so it is the
+  // OUTERMOST transformer (grammY runs the most-recently-installed first), so it
+  // observes every getUpdates resolution even beneath a test-injected transformer.
+  let lastPollMs = Date.now();
+  bot.api.config.use(async (prev, method, payload, signal) => {
+    const result = await prev(method, payload, signal);
+    if (method === "getUpdates") {
+      lastPollMs = Date.now();
+    }
+    return result;
+  });
   const sender = createGrammyTelegramApi(bot.api);
   const fileDownloader =
     options.fileDownloaderFactory?.(bot, options.botToken) ??
@@ -901,6 +956,75 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // Current restart backoff (ms). Doubles on each consecutive crash that recurs
   // before the stability window; resets to the initial delay on a clean restart.
   let restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
+  // Poll-liveness watchdog. Lifetime-scoped (armed at first spawn, cleared on
+  // stop()) so it spans crash/backoff/restart cycles. `pollWatchdogMs <= 0`
+  // disables it. `watchdogRestarting` prevents a second tick from stacking
+  // another stop()/spawn while a forced restart is still settling.
+  const pollWatchdogMs = options.pollWatchdogMs ?? DEFAULT_POLL_WATCHDOG_MS;
+  let pollWatchdogTimer: ReturnType<typeof setInterval> | undefined;
+  let watchdogRestarting = false;
+
+  /** Arm the lifetime-scoped poll-liveness watchdog (idempotent, no-op if disabled). */
+  function startPollWatchdog(): void {
+    if (pollWatchdogMs <= 0 || pollWatchdogTimer !== undefined) {
+      return;
+    }
+    // Check a few times per window so a stall is caught within ~1/3 of it.
+    const checkMs = Math.max(1_000, Math.floor(pollWatchdogMs / 3));
+    pollWatchdogTimer = setInterval(() => {
+      checkPollLiveness();
+    }, checkMs);
+    pollWatchdogTimer.unref?.();
+  }
+
+  function clearPollWatchdog(): void {
+    if (pollWatchdogTimer !== undefined) {
+      clearInterval(pollWatchdogTimer);
+      pollWatchdogTimer = undefined;
+    }
+  }
+
+  /**
+   * Force-restart the current runner if no getUpdates has resolved within the
+   * watchdog window. This covers the case the crash monitor cannot: grammY's
+   * runner self-retries getUpdates internally, so a degraded connection can stop
+   * delivering updates WITHOUT the task rejecting. We only act on a runner that
+   * reports running (a crashed/stopped one is handled by the crash monitor), and
+   * we go through a clean stop() + respawn so the crash monitor is not tripped.
+   */
+  function checkPollLiveness(): void {
+    if (stopped || watchdogRestarting) {
+      return;
+    }
+    const current = runnerHandle;
+    if (current?.isRunning() !== true) {
+      return;
+    }
+    const stalledMs = Date.now() - lastPollMs;
+    if (stalledMs <= pollWatchdogMs) {
+      return;
+    }
+    watchdogRestarting = true;
+    // Reset the window up front so the replacement runner gets a full grace
+    // period and a slow stop() cannot let a later tick re-trigger.
+    lastPollMs = Date.now();
+    logger?.warn?.("Telegram poll liveness stalled; force-restarting the runner.", {
+      stalledMs,
+      thresholdMs: pollWatchdogMs,
+    });
+    void Promise.resolve(current.stop())
+      .catch(() => undefined)
+      .finally(() => {
+        watchdogRestarting = false;
+        // Only respawn if nothing else swapped/stopped the runner meanwhile. A
+        // watchdog restart is a clean recovery, so reset the backoff (mirrors a
+        // stable restart) rather than inheriting the crash backoff.
+        if (!stopped && runnerHandle === current) {
+          restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
+          spawnRunnerWithMonitor();
+        }
+      });
+  }
 
   /**
    * Spawn a runner and attach the crash monitor. The runner's task rejects when
@@ -915,6 +1039,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       clearTimeout(stabilityTimer);
       stabilityTimer = undefined;
     }
+    // Give the (re)spawned runner a full watchdog window before it can be judged
+    // stalled, and ensure the lifetime-scoped watchdog is armed.
+    lastPollMs = Date.now();
+    startPollWatchdog();
     runnerHandle = (options.runnerFactory ?? defaultRunnerFactory)(bot);
     const spawned = runnerHandle;
     // A runner that stays up for the stability window counts as a clean restart:
@@ -1010,7 +1138,26 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       stopped = false;
       restartBackoffMs = DEFAULT_RESTART_INITIAL_BACKOFF_MS;
       if ((options.deleteWebhookOnStart ?? true) === true) {
-        await bot.api.deleteWebhook({ drop_pending_updates: options.dropPendingUpdates ?? false });
+        // Bound + best-effort: the host awaits start() before reporting ready, so
+        // an unbounded deleteWebhook over a flaky network could hang ~50s (the Api
+        // client timeout) and blow past the launcher's readiness deadline. Cap it
+        // and never reject — if a webhook really was set, the auto-restart monitor
+        // and poll watchdog recover from any resulting getUpdates conflict.
+        try {
+          // grammY types `signal` with the abort-controller shim, not the global
+          // AbortSignal; the runtime value is identical (cf. grammy-client.ts).
+          const timeoutSignal = AbortSignal.timeout(
+            options.deleteWebhookTimeoutMs ?? DEFAULT_DELETE_WEBHOOK_TIMEOUT_MS,
+          ) as unknown as Parameters<typeof bot.api.deleteWebhook>[1];
+          await bot.api.deleteWebhook(
+            { drop_pending_updates: options.dropPendingUpdates ?? false },
+            timeoutSignal,
+          );
+        } catch (error) {
+          logger?.warn?.("Telegram deleteWebhook failed or timed out at startup; continuing to poll.", {
+            error: errorMessage(error),
+          });
+        }
       }
       // Spawn the runner with the auto-restart monitor attached: a late polling
       // crash is surfaced (logger + onPollingError) AND triggers a backoff
@@ -1034,6 +1181,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         clearTimeout(stabilityTimer);
         stabilityTimer = undefined;
       }
+      clearPollWatchdog();
       for (const buffer of albumBuffers.values()) {
         clearTimeout(buffer.timer);
         // Settle the reserved admission slot so the parked admit() task does not
