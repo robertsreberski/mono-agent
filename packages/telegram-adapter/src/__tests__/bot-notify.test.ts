@@ -118,6 +118,36 @@ describe("createTelegramBot notify (proactive)", () => {
     expect(verbatimCalls).toEqual([["telegram:42", "Your morning brief: all clear."]]);
   });
 
+  it("forwards silent through the verbatim path as disable_notification", async () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return { text: "should not run" };
+      },
+      async deliverVerbatim() {},
+    };
+    const { controller, calls } = buildNotifiableBot(responder);
+
+    await controller.notify(42, "Overnight digest.", { verbatim: true, silent: true });
+
+    const sent = calls.filter((call) => call.method === "sendMessage");
+    expect(sent).toHaveLength(1);
+    expect(sent.at(-1)?.payload).toMatchObject({ disable_notification: true });
+  });
+
+  it("does not set disable_notification when silent is not requested", async () => {
+    const responder: AgentResponder = {
+      async respond() {
+        return { text: "answer" };
+      },
+    };
+    const { controller, calls } = buildNotifiableBot(responder);
+
+    await controller.notify(42, "Anything urgent?");
+
+    const sent = calls.filter((call) => call.method === "sendMessage");
+    expect(sent.at(-1)?.payload.disable_notification).toBeUndefined();
+  });
+
   it("posts nothing (and reports the reason) when the proactive turn produces no answer", async () => {
     const responder: AgentResponder = {
       async respond() {

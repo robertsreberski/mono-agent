@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { basename, resolve as resolvePath } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +14,10 @@ import type {
 } from "@mono-agent/slack-adapter";
 import {
   createTelegramMessageSender,
+  DEFAULT_ATTACHMENT_MAX_BYTES,
   loadTelegramAdapterConfig,
+  TELEGRAM_ASK_MAX_OPTIONS,
+  telegramAskCallbackData,
 } from "@mono-agent/telegram-adapter";
 import type {
   TelegramChatId,
@@ -47,6 +52,13 @@ export interface TelegramSendToolSettings {
   readonly botToken: string;
   readonly allowedChatIds: readonly string[];
   readonly allowAllChats: boolean;
+  /** Which telegram tools the policy permits (the adapter config gates the rest). */
+  readonly tools: {
+    readonly send: boolean;
+    readonly ask: boolean;
+    readonly document: boolean;
+    readonly photo: boolean;
+  };
 }
 
 export interface AdapterSendToolsSettings {
@@ -56,7 +68,7 @@ export interface AdapterSendToolsSettings {
 
 export interface AdapterSendToolsClients {
   readonly slack?: Pick<SlackWebApi, "chatPostMessage">;
-  readonly telegram?: Pick<TelegramMessageSender, "sendMessage">;
+  readonly telegram?: Pick<TelegramMessageSender, "sendMessage" | "sendDocument" | "sendPhoto">;
 }
 
 export interface AdapterSendToolsRuntimeExtension {
@@ -93,12 +105,23 @@ export async function resolveAdapterSendToolsSettings(
   input: MonoAgentAppConfigInput,
   options: AdapterSendToolsResolveOptions = {},
 ): Promise<AdapterSendToolsSettings | undefined> {
+  const telegramSendAllowed = isAdapterToolAllowed("telegram_send_message", options);
+  const telegramAskAllowed = isAdapterToolAllowed("telegram_ask", options);
+  const telegramDocumentAllowed = isAdapterToolAllowed("telegram_send_document", options);
+  const telegramPhotoAllowed = isAdapterToolAllowed("telegram_send_photo", options);
+  const telegramAnyAllowed =
+    telegramSendAllowed || telegramAskAllowed || telegramDocumentAllowed || telegramPhotoAllowed;
   const [slack, telegram] = await Promise.all([
     isAdapterToolAllowed("slack_send_message", options)
       ? resolveSlackSendToolSettings(input, options)
       : undefined,
-    isAdapterToolAllowed("telegram_send_message", options)
-      ? resolveTelegramSendToolSettings(input, options)
+    telegramAnyAllowed
+      ? resolveTelegramSendToolSettings(input, options, {
+          send: telegramSendAllowed,
+          ask: telegramAskAllowed,
+          document: telegramDocumentAllowed,
+          photo: telegramPhotoAllowed,
+        })
       : undefined,
   ]);
   if (slack === undefined && telegram === undefined) {
@@ -115,10 +138,31 @@ export function adapterSendToolNames(settings: AdapterSendToolsSettings): readon
   if (settings.slack !== undefined) {
     names.push("slack_send_message");
   }
-  if (settings.telegram !== undefined) {
+  if (settings.telegram?.tools.send === true) {
     names.push("telegram_send_message");
   }
+  if (settings.telegram?.tools.ask === true) {
+    names.push("telegram_ask");
+  }
+  if (settings.telegram?.tools.document === true) {
+    names.push("telegram_send_document");
+  }
+  if (settings.telegram?.tools.photo === true) {
+    names.push("telegram_send_photo");
+  }
   return names;
+}
+
+/**
+ * Public re-export of the per-tool allow check so callers (e.g. the Telegram
+ * channel driver) can gate behavior on whether a specific adapter send tool is
+ * permitted by `tools.allowedTools`/`disallowedTools`, matching this module's policy.
+ */
+export function isAdapterSendToolAllowed(
+  name: string,
+  policy: { readonly allowedTools?: readonly string[]; readonly disallowedTools?: readonly string[] },
+): boolean {
+  return isAdapterToolAllowed(name, policy);
 }
 
 export function adapterSendToolsMcpEnv(
@@ -232,7 +276,18 @@ export function createAdapterSendToolsServer(
     registerSlackSendTool(server, settings.slack, clients.slack, indexing);
   }
   if (settings.telegram !== undefined && clients.telegram !== undefined) {
-    registerTelegramSendTool(server, settings.telegram, clients.telegram);
+    if (settings.telegram.tools.send) {
+      registerTelegramSendTool(server, settings.telegram, clients.telegram);
+    }
+    if (settings.telegram.tools.ask) {
+      registerTelegramAskTool(server, settings.telegram, clients.telegram);
+    }
+    if (settings.telegram.tools.document) {
+      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "document");
+    }
+    if (settings.telegram.tools.photo) {
+      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "photo");
+    }
   }
 
   return server;
@@ -321,6 +376,154 @@ function registerTelegramSendTool(
   );
 }
 
+function registerTelegramAskTool(
+  server: McpServer,
+  settings: TelegramSendToolSettings,
+  client: Pick<TelegramMessageSender, "sendMessage">,
+): void {
+  server.registerTool(
+    "telegram_ask",
+    {
+      title: "Ask via Telegram buttons",
+      description:
+        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard options (e.g. a confirmation or a multiple-choice). This tool returns immediately after posting the question; it does NOT wait for the answer. When the user taps a button, their choice arrives as a new message on the same conversation, so continue on that next turn.",
+      inputSchema: {
+        chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
+        question: z.string().min(1).describe("The question to show above the buttons."),
+        options: z
+          .array(z.string().min(1).max(100))
+          .min(2)
+          .max(TELEGRAM_ASK_MAX_OPTIONS)
+          .describe("Button labels (2–8). The label the user taps is echoed back as a new message."),
+        note: z.string().min(1).optional().describe("Optional extra context shown beneath the question."),
+      },
+    },
+    async (args) => {
+      assertTelegramChatAllowed(settings, args.chat_id);
+      const inlineKeyboard = args.options.map((label, index) => [
+        { text: label, callback_data: telegramAskCallbackData(index) },
+      ]);
+      const text = args.note === undefined ? args.question : `${args.question}\n\n${args.note}`;
+      const result: TelegramSentMessage = await client.sendMessage({
+        chat_id: args.chat_id,
+        text,
+        reply_markup: { inline_keyboard: inlineKeyboard },
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Posted question ${result.message_id} to ${String(result.chat.id)} with ${String(args.options.length)} options. The user's choice will arrive as a new message.`,
+          },
+        ],
+        structuredContent: {
+          ok: true,
+          chat_id: result.chat.id,
+          message_id: result.message_id,
+          options: args.options,
+        },
+      };
+    },
+  );
+}
+
+/**
+ * Register `telegram_send_document` / `telegram_send_photo`. Both accept the file
+ * as base64 `data` (with a `filename`) OR a workspace `path` (filename derived
+ * from the basename), enforce the adapter allowlist, and bound the size to the
+ * adapter's inbound cap before uploading via the adapter-owned sender.
+ */
+function registerTelegramSendFileTool(
+  server: McpServer,
+  settings: TelegramSendToolSettings,
+  client: Pick<TelegramMessageSender, "sendDocument" | "sendPhoto">,
+  kind: "document" | "photo",
+): void {
+  const toolName = kind === "document" ? "telegram_send_document" : "telegram_send_photo";
+  server.registerTool(
+    toolName,
+    {
+      title: kind === "document" ? "Send Telegram document" : "Send Telegram photo",
+      description:
+        kind === "document"
+          ? "Upload and send a file (document) to an allowed Telegram chat. Provide the bytes as base64 `data` with a `filename`, or a workspace `path`."
+          : "Upload and send an image (photo, shown inline) to an allowed Telegram chat. Provide the bytes as base64 `data`, or a workspace `path`.",
+      inputSchema: {
+        chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
+        data: z.string().min(1).optional().describe("Base64-encoded file bytes. Provide this or `path`."),
+        path: z.string().min(1).optional().describe("Path to a file to upload (resolved against the agent working dir). Provide this or `data`."),
+        filename: z.string().min(1).optional().describe("Filename to present. Required with `data` for a document; derived from `path` otherwise."),
+        caption: z.string().min(1).optional().describe("Optional caption shown with the file."),
+      },
+    },
+    async (args) => {
+      assertTelegramChatAllowed(settings, args.chat_id);
+      const { bytes, filename } = await resolveTelegramFileBytes({
+        data: args.data,
+        path: args.path,
+        filename: args.filename,
+        requireFilename: kind === "document",
+      });
+      const result: TelegramSentMessage =
+        kind === "document"
+          ? await client.sendDocument!({
+              chat_id: args.chat_id,
+              document: bytes,
+              filename,
+              ...(args.caption === undefined ? {} : { caption: args.caption }),
+            })
+          : await client.sendPhoto!({
+              chat_id: args.chat_id,
+              photo: bytes,
+              filename,
+              ...(args.caption === undefined ? {} : { caption: args.caption }),
+            });
+      return {
+        content: [{ type: "text", text: `Sent ${kind} ${result.message_id} (${filename}) to ${String(result.chat.id)}.` }],
+        structuredContent: { ok: true, chat_id: result.chat.id, message_id: result.message_id, filename },
+      };
+    },
+  );
+}
+
+/** Resolve the upload bytes + filename from exactly one of base64 `data` or a `path`. */
+async function resolveTelegramFileBytes(input: {
+  data: string | undefined;
+  path: string | undefined;
+  filename: string | undefined;
+  requireFilename: boolean;
+}): Promise<{ bytes: Uint8Array; filename: string }> {
+  const hasData = input.data !== undefined;
+  const hasPath = input.path !== undefined;
+  if (hasData === hasPath) {
+    throw new Error("provide exactly one of `data` (base64) or `path`.");
+  }
+  let bytes: Uint8Array;
+  let filename: string;
+  if (hasData) {
+    bytes = new Uint8Array(Buffer.from(input.data!, "base64"));
+    if (input.filename === undefined) {
+      if (input.requireFilename) {
+        throw new Error("`filename` is required when sending a document by `data`.");
+      }
+      filename = "image";
+    } else {
+      filename = input.filename;
+    }
+  } else {
+    const resolved = resolvePath(process.cwd(), input.path!);
+    bytes = new Uint8Array(await readFile(resolved));
+    filename = input.filename ?? basename(resolved);
+  }
+  if (bytes.byteLength === 0) {
+    throw new Error("file is empty.");
+  }
+  if (bytes.byteLength > DEFAULT_ATTACHMENT_MAX_BYTES) {
+    throw new Error(`file exceeds the ${String(DEFAULT_ATTACHMENT_MAX_BYTES)}-byte upload cap.`);
+  }
+  return { bytes, filename };
+}
+
 async function resolveSlackSendToolSettings(
   input: MonoAgentAppConfigInput,
   options: AdapterSendToolsResolveOptions,
@@ -346,6 +549,7 @@ async function resolveSlackSendToolSettings(
 async function resolveTelegramSendToolSettings(
   input: MonoAgentAppConfigInput,
   options: AdapterSendToolsResolveOptions,
+  tools: TelegramSendToolSettings["tools"],
 ): Promise<TelegramSendToolSettings | undefined> {
   try {
     const config = await loadTelegramAdapterConfig({ env: input.env, jsonPath: input.configPath });
@@ -356,6 +560,7 @@ async function resolveTelegramSendToolSettings(
       botToken: config.botToken,
       allowedChatIds: config.allowedChatIds,
       allowAllChats: config.allowAllChats,
+      tools,
     };
   } catch (error) {
     options.logger?.warn?.("Telegram send tool skipped because Telegram adapter config is unavailable.", {

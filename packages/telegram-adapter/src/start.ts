@@ -14,6 +14,7 @@ import {
   type TelegramNotifyOptions,
   type TelegramNotifyResult,
 } from "./bot.js";
+import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
 import type { TelegramChatId } from "./types.js";
 
 export type { TelegramNotifyOptions, TelegramNotifyResult } from "./bot.js";
@@ -41,6 +42,12 @@ export interface TelegramAdapterStartOptions {
   readonly attachments?: DownloadTelegramAttachmentsOptions;
   /** Restrict the update types polled from Telegram. Defaults to messages only. */
   readonly allowedUpdates?: readonly string[];
+  /** Custom command-menu entries registered via setMyCommands and dispatched as turns. */
+  readonly commands?: readonly TelegramCommandConfig[];
+  /** Per-state lifecycle reactions (👀/👍/👎). Omit to disable. */
+  readonly reactions?: TelegramReactionsConfig;
+  /** Subscribe to and handle inline-keyboard taps (telegram_ask callbacks). Default off. */
+  readonly callbacksEnabled?: boolean;
   /** Delete any configured webhook before polling. Defaults to true. */
   readonly deleteWebhookOnStart?: boolean;
   /** Bound (ms) for the startup deleteWebhook call so a flaky network can't stall boot. Default 5000. */
@@ -103,6 +110,9 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.allowedUpdates === undefined ? {} : { allowedUpdates: options.allowedUpdates }),
+    ...(options.commands === undefined ? {} : { commands: options.commands }),
+    ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
+    ...(options.callbacksEnabled === undefined ? {} : { callbacksEnabled: options.callbacksEnabled }),
     ...(options.deleteWebhookOnStart === undefined
       ? {}
       : { deleteWebhookOnStart: options.deleteWebhookOnStart }),

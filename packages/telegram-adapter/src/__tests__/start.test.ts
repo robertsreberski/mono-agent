@@ -156,6 +156,42 @@ describe("startTelegramAdapter", () => {
     expect(runner?.isRunning()).toBe(false);
   });
 
+  it("registers configured commands via setMyCommands at startup", async () => {
+    const { bot, calls } = recordingBot();
+
+    const result = await startTelegramAdapter({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder: { respond: vi.fn() } satisfies AgentResponder,
+      commands: [{ command: "brief", description: "Morning brief", prompt: "Compose the brief" }],
+      botFactory: () => bot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    const setCommands = calls.find((call) => call.method === "setMyCommands");
+    expect(setCommands).toBeDefined();
+    const registered = setCommands?.payload.commands as Array<{ command: string }>;
+    expect(registered.map((entry) => entry.command)).toEqual(["help", "cancel", "brief"]);
+
+    await result.stop();
+  });
+
+  it("skips setMyCommands when no custom commands are configured", async () => {
+    const { bot, calls } = recordingBot();
+
+    const result = await startTelegramAdapter({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder: { respond: vi.fn() } satisfies AgentResponder,
+      botFactory: () => bot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    expect(calls.some((call) => call.method === "setMyCommands")).toBe(false);
+
+    await result.stop();
+  });
+
   it("routes a fake update through the wired bot to the responder", async () => {
     const { bot } = recordingBot();
     const respondCalls: Array<{ text: string; chatId: unknown }> = [];

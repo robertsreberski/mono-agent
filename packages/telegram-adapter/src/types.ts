@@ -84,18 +84,65 @@ export interface TelegramRequestOptions {
   signal?: AbortSignal;
 }
 
+/** A single inline-keyboard button. Only the subset of fields we emit. */
+export interface TelegramInlineKeyboardButton {
+  text: string;
+  /** Opaque payload (<= 64 bytes) echoed back on tap as a `callback_query`. */
+  callback_data?: string;
+  url?: string;
+}
+
+/** Inline keyboard attached to a message via `reply_markup`. */
+export interface TelegramInlineKeyboardMarkup {
+  inline_keyboard: TelegramInlineKeyboardButton[][];
+}
+
 export interface TelegramSendMessageParams {
   chat_id: TelegramChatId;
   text: string;
   parse_mode?: string;
   reply_to_message_id?: number;
   disable_web_page_preview?: boolean;
+  /** Send silently — message arrives without a push notification sound. */
+  disable_notification?: boolean;
+  /** Inline keyboard to attach below the message. */
+  reply_markup?: TelegramInlineKeyboardMarkup;
 }
 
 export interface TelegramSendChatActionParams {
   chat_id: TelegramChatId;
   /** Telegram chat action, e.g. "typing". */
   action: string;
+}
+
+export interface TelegramSendDocumentParams {
+  chat_id: TelegramChatId;
+  /** Raw file bytes to upload. */
+  document: Uint8Array;
+  /** Filename shown to the recipient. */
+  filename: string;
+  caption?: string;
+}
+
+export interface TelegramSendPhotoParams {
+  chat_id: TelegramChatId;
+  /** Raw image bytes to upload. */
+  photo: Uint8Array;
+  filename?: string;
+  caption?: string;
+}
+
+/** An emoji reaction. `emoji` must be one of Telegram's allowed reaction emojis. */
+export interface TelegramReaction {
+  type: "emoji";
+  emoji: string;
+}
+
+export interface TelegramSetMessageReactionParams {
+  chat_id: TelegramChatId;
+  message_id: number;
+  /** The reaction to set; an empty array clears the bot's reaction. */
+  reaction: TelegramReaction[];
 }
 
 export interface TelegramEditMessageTextParams {
@@ -137,6 +184,21 @@ export interface TelegramMessageSender {
     params: TelegramSendChatActionParams,
     options?: TelegramRequestOptions,
   ): Promise<true>;
+  /** Optional: set (or clear) the bot's emoji reaction on a message. Best-effort. */
+  setMessageReaction?(
+    params: TelegramSetMessageReactionParams,
+    options?: TelegramRequestOptions,
+  ): Promise<true>;
+  /** Optional: upload and send a document (any file) to a chat. */
+  sendDocument?(
+    params: TelegramSendDocumentParams,
+    options?: TelegramRequestOptions,
+  ): Promise<TelegramSentMessage>;
+  /** Optional: upload and send a photo (shown inline) to a chat. */
+  sendPhoto?(
+    params: TelegramSendPhotoParams,
+    options?: TelegramRequestOptions,
+  ): Promise<TelegramSentMessage>;
 }
 
 export interface TelegramBotApi extends TelegramMessageSender {

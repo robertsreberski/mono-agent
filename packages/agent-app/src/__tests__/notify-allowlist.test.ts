@@ -6,11 +6,11 @@ import {
   type ChannelStartInput,
 } from "../channels.js";
 
-/** Minimal ChannelStartInput; the notify hook only reads `config`. */
+/** Minimal ChannelStartInput; the driver reads `config` and `coreConfig.tools`. */
 function startInput<T>(config: T): ChannelStartInput<T> {
   return {
     config,
-    coreConfig: {} as never,
+    coreConfig: { tools: { allowedTools: [], disallowedTools: [] } } as never,
     responder: {} as never,
     cwd: "/tmp",
     onFailure: vi.fn(),
