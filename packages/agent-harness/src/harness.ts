@@ -12,6 +12,7 @@ import {
   defaultExecutionModeForModel,
   modelReferenceKey,
   monoRuntimeSupportsSessionResume,
+  parseMonoRuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import type { RuntimeExecutionMode, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import { createSkillsCache } from "@mono-agent/skills";
@@ -184,13 +185,15 @@ export class MonoAgentHarness implements AgentHarness {
     // Computed once and applied as a minimal gate on the session machinery below;
     // interactive (non-cron) runs are byte-for-byte unchanged.
     //
-    // A per-trigger MODEL override is ALWAYS isolated, regardless of the opt-in:
-    // the turn runs on a different model (often a different runtime) and the
-    // provider session is keyed by conversationId + bound to a model, so resuming
-    // or persisting it against the shared session would mix two models' lineage
-    // (durable-session corruption / wrong-runtime disposal). Effort-only and
-    // same-model overrides carry no model string and are unaffected.
-    const isolated = this.isProactiveIsolated(request) || requestOverridesModel(request);
+    // A per-trigger MODEL override is isolated, regardless of the opt-in, ONLY
+    // when it names a model DIFFERENT from the harness default: the turn runs on a
+    // different model (often a different runtime) and the provider session is keyed
+    // by conversationId + bound to a model, so resuming or persisting it against
+    // the shared session would mix two models' lineage (durable-session corruption
+    // / wrong-runtime disposal). Effort-only, same-model, and invalid overrides
+    // leave the model chain unchanged, so they keep the shared session — matching
+    // the runtime/session-key decision taken later in runRuntime.
+    const isolated = this.isProactiveIsolated(request) || requestOverridesModel(request, this.options.model);
     const sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
@@ -1306,12 +1309,23 @@ function isCronRequest(request: AgentHarnessRequest): boolean {
 }
 
 /**
- * Whether the request carries a per-trigger MODEL override (a non-empty `model`
- * string under cron/webhook metadata). Such a turn runs on a different model and
- * must be session-isolated. Effort-only overrides carry no model string and are
- * not treated as model overrides here.
+ * Whether the request carries a per-trigger MODEL override that resolves to a
+ * model DIFFERENT from the harness default. Only a different model forces session
+ * isolation — it runs on a different model (often a different runtime), and the
+ * provider session is keyed by conversationId + bound to a model, so resuming or
+ * persisting it against the shared session would mix two models' lineage
+ * (durable-session corruption / wrong-runtime disposal).
+ *
+ * A SAME-MODEL override (e.g. an endpoint redundantly naming the host default)
+ * leaves the runtime/model chain unchanged, so it must keep the shared continuous
+ * session like an ordinary turn. An effort-only override carries no model string;
+ * an unparseable string is ignored downstream (warn+ignore → the turn runs on the
+ * default), so both are treated as "no model override" here. This keys off the
+ * SAME canonical `modelReferenceKey` comparison the harness uses to decide whether
+ * to switch runtimes (`sameRuntimeModel`), so the isolation decision and the
+ * runtime/session-key decision can never disagree.
  */
-function requestOverridesModel(request: AgentHarnessRequest): boolean {
+function requestOverridesModel(request: AgentHarnessRequest, defaultModel: RuntimeModelReference): boolean {
   const metadata = request.metadata;
   if (!isRecord(metadata)) {
     return false;
@@ -1321,5 +1335,14 @@ function requestOverridesModel(request: AgentHarnessRequest): boolean {
     : isRecord(metadata.cron)
       ? metadata.cron
       : undefined;
-  return source !== undefined && typeof source.model === "string" && source.model.trim().length > 0;
+  if (source === undefined || typeof source.model !== "string" || source.model.trim().length === 0) {
+    return false;
+  }
+  try {
+    return modelReferenceKey(parseMonoRuntimeModelReference(source.model)) !== modelReferenceKey(defaultModel);
+  } catch {
+    // An unparseable override is warned-and-ignored downstream, so the turn runs
+    // on the default model — i.e. no model change, no isolation.
+    return false;
+  }
 }

@@ -235,6 +235,43 @@ describe("AgentHarness per-trigger override session isolation", () => {
     expect(base.calls[1]?.options.sessionId).toBe("ps-1");
   });
 
+  it("a same-model override is NOT isolated — it resumes and persists the shared session", async () => {
+    const identityPath = await identityFixture();
+    const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
+    const override = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: defaultModel,
+      executionMode: "sdk",
+      session: continuousSession,
+      runtimeForModel: () => override.runtime,
+      // Mirror the app extension: a webhook `model` that parses to the SAME model
+      // as the host default is a redundant/no-op override.
+      runtimeOptionsForRequest: (input) => {
+        const webhook = (input.request.metadata as { webhook?: { model?: string } } | undefined)?.webhook;
+        return { runtimeOptions: webhook?.model === undefined ? {} : { model: defaultModel } };
+      },
+    });
+
+    // An interactive turn warms the shared session on the base runtime.
+    await harness.run(request("conv"));
+    expect(base.calls[0]?.options.sessionKeepAlive).toBe(true);
+
+    // A webhook override naming the SAME model as the host default leaves the
+    // model/runtime chain unchanged, so it must NOT be isolated: it stays on the
+    // base runtime and resumes the shared session rather than starting fresh.
+    await harness.run(webhookOverrideRequest("conv", defaultModel.reference));
+    expect(override.calls).toHaveLength(0);
+    expect(base.calls).toHaveLength(2);
+    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+    expect(base.calls[1]?.options.sessionKeepAlive).toBe(true);
+
+    // The next interactive turn resumes the session the same-model turn PERSISTED.
+    await harness.run(request("conv"));
+    expect(base.calls[2]?.options.sessionId).toBe("ps-2");
+  });
+
   it("an effort-only override is NOT isolated — it uses the shared session", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async () => ({ text: "a", providerSessionId: "ps-shared" }));
