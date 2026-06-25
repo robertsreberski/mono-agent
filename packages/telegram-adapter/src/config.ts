@@ -15,6 +15,30 @@ import type {
   SettingsJson,
 } from "@mono-agent/settings";
 
+/**
+ * A daily window during which proactive notifications (cron/webhook deliveries)
+ * are posted silently (`disable_notification`). `start`/`end` are 24-hour `HH:MM`
+ * clock times interpreted in `timezone` (an IANA zone); a window where `end` is
+ * earlier than `start` wraps midnight (e.g. `22:00`–`07:00`).
+ */
+export interface TelegramQuietHours {
+  readonly start: string;
+  readonly end: string;
+  readonly timezone: string;
+}
+
+/**
+ * A custom bot command surfaced in Telegram's command menu (`setMyCommands`).
+ * `command` is the bare name (no leading slash) of 1–32 lowercase letters,
+ * digits, or underscores. When `prompt` is set, invoking the command runs that
+ * prompt as a turn; a command with no `prompt` is a menu-only entry.
+ */
+export interface TelegramCommandConfig {
+  readonly command: string;
+  readonly description: string;
+  readonly prompt?: string;
+}
+
 export interface TelegramAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
@@ -24,6 +48,12 @@ export interface TelegramAdapterConfig {
   readonly ipFamily?: 4 | 6;
   /** Poll-liveness watchdog window (ms). Omit to use the adapter default (120000). */
   readonly pollWatchdogMs?: number;
+  /** Window during which proactive notifications are delivered silently. Omit to always notify. */
+  readonly quietHours?: TelegramQuietHours;
+  /** Custom command-menu entries. Omit (or empty) to leave only the built-in commands. */
+  readonly commands?: readonly TelegramCommandConfig[];
+  /** React to inbound messages with a lifecycle emoji (👀/👍/👎). Default off. */
+  readonly reactions?: boolean;
 }
 
 export interface RedactedTelegramAdapterConfig {
@@ -33,6 +63,9 @@ export interface RedactedTelegramAdapterConfig {
   readonly allowAllChats: boolean;
   readonly ipFamily?: 4 | 6;
   readonly pollWatchdogMs?: number;
+  readonly quietHours?: TelegramQuietHours;
+  readonly commands?: { readonly count: number };
+  readonly reactions?: boolean;
 }
 
 export type TelegramAdapterConfigErrorCode =
@@ -128,6 +161,14 @@ export async function loadTelegramAdapterConfig(
           min: 0,
           max: 3_600_000,
         });
+  const quietHours = readTelegramQuietHours(json);
+  const commands = readTelegramCommands(json);
+  const reactions = readBoolean(
+    env.MONO_AGENT_TELEGRAM_REACTIONS,
+    "MONO_AGENT_TELEGRAM_REACTIONS",
+    false,
+    invalidConfig,
+  );
 
   return {
     enabled: true,
@@ -136,7 +177,166 @@ export async function loadTelegramAdapterConfig(
     allowAllChats,
     ...(ipFamily === undefined ? {} : { ipFamily }),
     ...(pollWatchdogMs === undefined ? {} : { pollWatchdogMs }),
+    ...(quietHours === undefined ? {} : { quietHours }),
+    ...(commands.length === 0 ? {} : { commands }),
+    ...(reactions ? { reactions: true } : {}),
   };
+}
+
+const RESERVED_TELEGRAM_COMMANDS = new Set(["start", "help", "cancel"]);
+const TELEGRAM_COMMAND_PATTERN = /^[a-z0-9_]{1,32}$/u;
+
+/**
+ * Read `telegram.commands` straight from the JSON config section. Absent → none;
+ * a non-array, a malformed entry, a reserved name, or a duplicate is a hard
+ * config error so a typo surfaces loudly instead of silently dropping a command.
+ */
+function readTelegramCommands(json: SettingsJson): readonly TelegramCommandConfig[] {
+  const section = readJsonSection(json, "telegram");
+  const raw = section.commands;
+  if (raw === undefined || raw === null) {
+    return [];
+  }
+  if (!Array.isArray(raw)) {
+    throw invalidConfig("telegram.commands must be an array of { command, description, prompt? } objects.");
+  }
+  const commands = raw.map((entry, index) => normalizeCommandConfig(entry, index));
+  const seen = new Set<string>();
+  for (const command of commands) {
+    if (seen.has(command.command)) {
+      throw invalidConfig("telegram.commands entries must have unique command names.", {
+        command: command.command,
+      });
+    }
+    seen.add(command.command);
+  }
+  return commands;
+}
+
+function normalizeCommandConfig(entry: unknown, index: number): TelegramCommandConfig {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    throw invalidConfig("telegram.commands entries must be objects.", { index });
+  }
+  const record = entry as Record<string, unknown>;
+  const rawCommand = record.command;
+  if (typeof rawCommand !== "string") {
+    throw invalidConfig("telegram.commands entries require a string command name.", { index });
+  }
+  const name = rawCommand.trim().replace(/^\//u, "").toLowerCase();
+  if (!TELEGRAM_COMMAND_PATTERN.test(name)) {
+    throw invalidConfig(
+      "telegram.commands command must be 1–32 lowercase letters, digits, or underscores.",
+      { index, command: name },
+    );
+  }
+  if (RESERVED_TELEGRAM_COMMANDS.has(name)) {
+    throw invalidConfig("telegram.commands cannot redefine the built-in start, help, or cancel commands.", {
+      index,
+      command: name,
+    });
+  }
+  const description = record.description;
+  if (typeof description !== "string" || description.trim().length === 0 || description.length > 256) {
+    throw invalidConfig("telegram.commands entries require a non-empty description (max 256 chars).", {
+      index,
+    });
+  }
+  const prompt = record.prompt;
+  if (prompt !== undefined && (typeof prompt !== "string" || prompt.trim().length === 0)) {
+    throw invalidConfig("telegram.commands prompt must be a non-empty string when set.", { index });
+  }
+  const config: { command: string; description: string; prompt?: string } = {
+    command: name,
+    description: description.trim(),
+  };
+  if (prompt !== undefined) {
+    config.prompt = prompt;
+  }
+  return config;
+}
+
+/**
+ * Read `telegram.quietHours` straight from the JSON config section (a structured
+ * object, so not layered through env). Absent → undefined; a malformed shape is a
+ * hard config error so a typo surfaces loudly instead of silently disabling the
+ * window.
+ */
+function readTelegramQuietHours(json: SettingsJson): TelegramQuietHours | undefined {
+  const section = readJsonSection(json, "telegram");
+  const raw = section.quietHours;
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidConfig("telegram.quietHours must be an object with { start, end, timezone }.");
+  }
+  const record = raw as Record<string, unknown>;
+  const start = readClockTime(record.start, "telegram.quietHours.start");
+  const end = readClockTime(record.end, "telegram.quietHours.end");
+  const timezone = record.timezone;
+  if (typeof timezone !== "string" || timezone.trim().length === 0) {
+    throw invalidConfig("telegram.quietHours.timezone must be a non-empty IANA timezone string.");
+  }
+  const tz = timezone.trim();
+  if (!isValidTimeZone(tz)) {
+    throw invalidConfig("telegram.quietHours.timezone is not a recognized IANA timezone.", { reason: tz });
+  }
+  return { start, end, timezone: tz };
+}
+
+/** Validate a 24-hour `HH:MM` clock string, returning it trimmed. */
+function readClockTime(value: unknown, field: string): string {
+  if (typeof value !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/u.test(value.trim())) {
+    throw invalidConfig(`${field} must be a 24-hour HH:MM time.`, { field });
+  }
+  return value.trim();
+}
+
+function isValidTimeZone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when `now` falls inside the configured quiet-hours window. Same-day
+ * windows (`start < end`) are a simple range; an `end <= start` window wraps
+ * midnight. A degenerate `start === end` window is never active (always notify).
+ */
+export function isWithinQuietHours(now: Date, quietHours: TelegramQuietHours): boolean {
+  const nowMinutes = minutesOfDayInZone(now, quietHours.timezone);
+  const startMinutes = clockToMinutes(quietHours.start);
+  const endMinutes = clockToMinutes(quietHours.end);
+  if (startMinutes === endMinutes) {
+    return false;
+  }
+  if (startMinutes < endMinutes) {
+    return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+  }
+  return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+}
+
+/** Minutes-since-midnight for `now` rendered in `timeZone` (0–1439). */
+function minutesOfDayInZone(now: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+  const hourRaw = Number(parts.find((part) => part.type === "hour")?.value ?? "0");
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? "0");
+  // Node's ICU can render midnight as "24" under hour12:false; normalize to 0.
+  const hour = hourRaw === 24 ? 0 : hourRaw;
+  return hour * 60 + minute;
+}
+
+function clockToMinutes(clock: string): number {
+  const [hour, minute] = clock.split(":");
+  return Number(hour) * 60 + Number(minute);
 }
 
 /** Parse an optional IPv4/IPv6 transport pin. Empty → undefined; anything but 4/6 throws. */
@@ -167,6 +367,9 @@ export function redactTelegramAdapterConfig(
     allowAllChats: config.allowAllChats,
     ...(config.ipFamily === undefined ? {} : { ipFamily: config.ipFamily }),
     ...(config.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: config.pollWatchdogMs }),
+    ...(config.quietHours === undefined ? {} : { quietHours: config.quietHours }),
+    ...(config.commands === undefined ? {} : { commands: { count: config.commands.length } }),
+    ...(config.reactions === undefined ? {} : { reactions: config.reactions }),
   };
 }
 
@@ -183,5 +386,6 @@ function layerTelegramJsonOntoEnv(
     { env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS", value: section.allowAllChats, kind: "boolean" },
     { env: "MONO_AGENT_TELEGRAM_IP_FAMILY", value: transport.ipFamily, kind: "integer" },
     { env: "MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS", value: section.pollWatchdogMs, kind: "integer" },
+    { env: "MONO_AGENT_TELEGRAM_REACTIONS", value: section.reactions, kind: "boolean" },
   ]);
 }

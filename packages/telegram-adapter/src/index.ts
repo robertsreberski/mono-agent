@@ -12,7 +12,9 @@ export type {
   TelegramMessageSender,
   TelegramPhotoSize,
   TelegramRequestOptions,
+  TelegramSendDocumentParams,
   TelegramSendMessageParams,
+  TelegramSendPhotoParams,
   TelegramSentMessage,
   TelegramUpdate,
   TelegramUser,
@@ -40,6 +42,13 @@ export type {
 
 export { renderTelegramMarkdown } from "./telegram-markdown.js";
 export { createGrammyTelegramApi, createTelegramMessageSender } from "./grammy-client.js";
+
+export {
+  TELEGRAM_ASK_CALLBACK_PREFIX,
+  TELEGRAM_ASK_MAX_OPTIONS,
+  isTelegramAskCallbackData,
+  telegramAskCallbackData,
+} from "./ask.js";
 
 export { createTelegramBot } from "./bot.js";
 export type {
@@ -83,6 +92,7 @@ export type {
 } from "./start.js";
 
 export {
+  isWithinQuietHours,
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,
   TelegramAdapterConfigError,
@@ -93,4 +103,6 @@ export type {
   TelegramAdapterConfig,
   TelegramAdapterConfigErrorCode,
   TelegramAdapterConfigErrorDetails,
+  TelegramCommandConfig,
+  TelegramQuietHours,
 } from "./config.js";

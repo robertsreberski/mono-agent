@@ -1,4 +1,4 @@
-import { Bot, GrammyError, HttpError, type Api } from "grammy";
+import { Bot, GrammyError, HttpError, InputFile, type Api } from "grammy";
 
 import {
   TelegramApiError,
@@ -9,8 +9,11 @@ import type {
   TelegramMessageSender,
   TelegramRequestOptions,
   TelegramSendChatActionParams,
+  TelegramSendDocumentParams,
   TelegramSendMessageParams,
+  TelegramSendPhotoParams,
   TelegramSentMessage,
+  TelegramSetMessageReactionParams,
 } from "./types.js";
 
 type SendOther = NonNullable<Parameters<Api["sendMessage"]>[2]>;
@@ -101,6 +104,62 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
         throw toTelegramApiError("sendChatAction", error, options?.signal);
       }
     },
+
+    async setMessageReaction(
+      params: TelegramSetMessageReactionParams,
+      options?: TelegramRequestOptions,
+    ): Promise<true> {
+      try {
+        await api.setMessageReaction(
+          params.chat_id,
+          params.message_id,
+          params.reaction as Parameters<Api["setMessageReaction"]>[2],
+          {},
+          asGrammySignal(options?.signal) as Parameters<Api["setMessageReaction"]>[4],
+        );
+        return true;
+      } catch (error) {
+        throw toTelegramApiError("setMessageReaction", error, options?.signal);
+      }
+    },
+
+    async sendDocument(
+      params: TelegramSendDocumentParams,
+      options?: TelegramRequestOptions,
+    ): Promise<TelegramSentMessage> {
+      try {
+        const message = await api.sendDocument(
+          params.chat_id,
+          new InputFile(params.document, params.filename),
+          params.caption === undefined ? {} : { caption: params.caption },
+          asGrammySignal(options?.signal),
+        );
+        return message as unknown as TelegramSentMessage;
+      } catch (error) {
+        throw toTelegramApiError("sendDocument", error, options?.signal);
+      }
+    },
+
+    async sendPhoto(
+      params: TelegramSendPhotoParams,
+      options?: TelegramRequestOptions,
+    ): Promise<TelegramSentMessage> {
+      try {
+        const photo =
+          params.filename === undefined
+            ? new InputFile(params.photo)
+            : new InputFile(params.photo, params.filename);
+        const message = await api.sendPhoto(
+          params.chat_id,
+          photo,
+          params.caption === undefined ? {} : { caption: params.caption },
+          asGrammySignal(options?.signal),
+        );
+        return message as unknown as TelegramSentMessage;
+      } catch (error) {
+        throw toTelegramApiError("sendPhoto", error, options?.signal);
+      }
+    },
   };
 }
 
@@ -122,6 +181,12 @@ function buildSendOther(params: TelegramSendMessageParams): SendOther {
   }
   if (params.disable_web_page_preview !== undefined) {
     other.link_preview_options = { is_disabled: params.disable_web_page_preview };
+  }
+  if (params.disable_notification !== undefined) {
+    other.disable_notification = params.disable_notification;
+  }
+  if (params.reply_markup !== undefined) {
+    other.reply_markup = params.reply_markup as NonNullable<SendOther["reply_markup"]>;
   }
   return other;
 }

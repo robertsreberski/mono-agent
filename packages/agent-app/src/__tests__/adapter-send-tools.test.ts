@@ -85,6 +85,7 @@ describe("resolveAdapterSendToolsSettings", () => {
         botToken: "telegram-token",
         allowedChatIds: ["42", "-100"],
         allowAllChats: false,
+        tools: { send: true, ask: false, document: false, photo: false },
       },
     });
     expect(adapterSendToolNames(settings!)).toEqual(["slack_send_message", "telegram_send_message"]);
@@ -118,6 +119,21 @@ describe("resolveAdapterSendToolsSettings", () => {
         disallowedTools: ["mcp__mono-agent-adapter-send__*"],
       },
     )).resolves.toBeUndefined();
+  });
+
+  it("exposes telegram_ask (and not telegram_send_message) when only the ask tool is allowed", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      telegram: { enabled: true, botToken: "telegram-token", allowedChatIds: ["42"] },
+    });
+
+    const settings = await resolveAdapterSendToolsSettings(
+      { env: {}, cwd: dir, configPath },
+      { allowedTools: ["telegram_ask"] },
+    );
+
+    expect(settings?.telegram).toMatchObject({ tools: { send: false, ask: true } });
+    expect(adapterSendToolNames(settings!)).toEqual(["telegram_ask"]);
   });
 
   it("skips an invalid enabled adapter without exposing a partial broken tool", async () => {
@@ -222,6 +238,131 @@ describe("adapter send MCP tools", () => {
 
     expect(slackCalls).toEqual([{ channel: "C1", text: "hello", thread_ts: "171.1", unfurl_links: false }]);
     expect(telegramCalls).toEqual([{ chat_id: -100, text: "hi", disable_web_page_preview: true }]);
+  });
+
+  it("telegram_ask posts the question with an inline keyboard of callback options", async () => {
+    const telegramCalls: TelegramSendMessageParams[] = [];
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: true, document: false, photo: false },
+      },
+    };
+    const server = createAdapterSendToolsServer(settings, {
+      telegram: {
+        async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+          telegramCalls.push(params);
+          return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
+        },
+      },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["telegram_ask"]);
+
+      const result = await client.callTool({
+        name: "telegram_ask",
+        arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"] },
+      });
+      expect(result.structuredContent).toMatchObject({ ok: true, chat_id: 42, message_id: 88 });
+    });
+
+    expect(telegramCalls).toHaveLength(1);
+    expect(telegramCalls[0]?.text).toBe("Deploy now?");
+    expect(telegramCalls[0]?.reply_markup).toEqual({
+      inline_keyboard: [
+        [{ text: "Approve", callback_data: "ask:0" }],
+        [{ text: "Reject", callback_data: "ask:1" }],
+      ],
+    });
+  });
+
+  it("telegram_send_document uploads base64 bytes with the given filename and caption", async () => {
+    const docCalls: Array<{ chat_id: unknown; filename: string; bytes: number; caption?: string }> = [];
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: false, document: true, photo: false },
+      },
+    };
+    const server = createAdapterSendToolsServer(settings, {
+      telegram: {
+        async sendDocument(params): Promise<TelegramSentMessage> {
+          docCalls.push({
+            chat_id: params.chat_id,
+            filename: params.filename,
+            bytes: params.document.byteLength,
+            ...(params.caption === undefined ? {} : { caption: params.caption }),
+          });
+          return { message_id: 91, chat: { id: params.chat_id }, text: "" };
+        },
+      },
+    });
+
+    const data = Buffer.from("hello report").toString("base64");
+    await withMcpClient(server, async (client) => {
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["telegram_send_document"]);
+
+      const result = await client.callTool({
+        name: "telegram_send_document",
+        arguments: { chat_id: 42, data, filename: "report.txt", caption: "Daily report" },
+      });
+      expect(result.structuredContent).toMatchObject({ ok: true, chat_id: 42, message_id: 91, filename: "report.txt" });
+    });
+
+    expect(docCalls).toEqual([{ chat_id: 42, filename: "report.txt", bytes: "hello report".length, caption: "Daily report" }]);
+  });
+
+  it("telegram_send_document rejects when neither data nor path is provided", async () => {
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: false, document: true, photo: false },
+      },
+    };
+    const sendDocument = vi.fn();
+    const server = createAdapterSendToolsServer(settings, { telegram: { sendDocument } });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "telegram_send_document",
+        arguments: { chat_id: 42, filename: "x.txt" },
+      });
+      expect(result.isError).toBe(true);
+    });
+
+    expect(sendDocument).not.toHaveBeenCalled();
+  });
+
+  it("telegram_ask rejects a chat outside the adapter allowlist before calling the client", async () => {
+    const telegram = { sendMessage: vi.fn() };
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: true, document: false, photo: false },
+      },
+    };
+    const server = createAdapterSendToolsServer(settings, { telegram });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "telegram_ask",
+        arguments: { chat_id: 999, question: "Deploy?", options: ["Yes", "No"] },
+      });
+      expect(result.isError).toBe(true);
+    });
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
   it("rejects Slack and Telegram destinations outside the adapter allowlists before calling clients", async () => {
@@ -427,6 +568,7 @@ function bothAdaptersSettings(): AdapterSendToolsSettings {
       botToken: "telegram-token",
       allowedChatIds: ["42", "-100"],
       allowAllChats: false,
+      tools: { send: true, ask: false, document: false, photo: false },
     },
   };
 }

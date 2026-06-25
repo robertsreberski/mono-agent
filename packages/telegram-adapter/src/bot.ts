@@ -22,6 +22,8 @@ import {
   type TelegramAdapterStreamOptions,
   type TelegramFileDownloader,
 } from "./adapter.js";
+import { isTelegramAskCallbackData } from "./ask.js";
+import type { TelegramCommandConfig } from "./config.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
 import {
   TelegramMessageStream,
@@ -37,6 +39,18 @@ const DEFAULT_INITIAL_STATUS_TEXT = "Thinking…";
 // Quiet window after the last album message before we flush the group as one
 // request. Telegram sends album parts back-to-back (sub-second), so ~1s is safe.
 const DEFAULT_ALBUM_AGGREGATION_DELAY_MS = 1000;
+
+// Lifecycle reaction emojis (when `reactions` is enabled): 👀 while the agent
+// works, 👍 on success, 👎 on failure. Constrained to Telegram's allowed reaction
+// set — ✅/❌ are NOT valid bot reactions, so the closest allowed emojis are used.
+const REACTION_WORKING = "👀";
+const REACTION_DONE = "👍";
+const REACTION_ERROR = "👎";
+
+// Bound on the in-memory set of already-answered callback keys so a long-running
+// bot cannot grow it unbounded. A double-tap on an old question past this many
+// distinct answered questions would simply re-run (acceptable, very rare).
+const CALLBACK_DEDUPE_MAX = 200;
 
 // grammY's Api client default `timeoutSeconds` is 500 (8m20s overall HTTP
 // timeout). A half-open socket (after a network blip or host sleep) therefore
@@ -116,6 +130,11 @@ export interface TelegramNotifyResult {
  */
 export interface TelegramNotifyOptions {
   readonly verbatim?: boolean;
+  /**
+   * Post the notification silently (`disable_notification`) so it arrives without
+   * a push sound. Set by the channel driver during configured quiet hours.
+   */
+  readonly silent?: boolean;
 }
 
 /**
@@ -167,6 +186,24 @@ export interface CreateTelegramBotOptions {
   readonly logger?: TelegramAdapterLogger;
   /** Update types to long-poll for. Defaults to messages only. */
   readonly allowedUpdates?: readonly string[];
+  /**
+   * Custom command-menu entries. When non-empty the bot registers them (plus the
+   * built-in help/cancel) via `setMyCommands` at startup and dispatches each
+   * command's `prompt` as a turn. Built-in start/help/cancel cannot be overridden.
+   */
+  readonly commands?: readonly TelegramCommandConfig[];
+  /**
+   * React to the inbound message with a lifecycle emoji (👀 working, 👍 done,
+   * 👎 error) via `setMessageReaction`. Best-effort and default off.
+   */
+  readonly reactions?: boolean;
+  /**
+   * Handle inline-keyboard taps (`callback_query`) produced by the `telegram_ask`
+   * tool: re-run the user's choice as a turn on the same conversation. When set,
+   * `callback_query` is added to the default `allowedUpdates`. Default off — with
+   * it unset the bot never subscribes to callbacks and the handler is not wired.
+   */
+  readonly callbacksEnabled?: boolean;
   /**
    * Quiet window (ms) for aggregating a multi-photo/video album (messages sharing
    * a `media_group_id`) into one request. Defaults to 1000. Set 0 to flush on the
@@ -404,6 +441,34 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const isAuthorized = (chatId: TelegramChatId | undefined): boolean =>
     chatId !== undefined && (allowAllChats || allowedChatIds.has(String(chatId)));
 
+  const reactionsEnabled = options.reactions === true;
+  /**
+   * Set (or clear, when `emoji` is undefined) the bot's reaction on a message.
+   * Best-effort: a no-op when reactions are disabled or the sender lacks the
+   * method, and a failure (e.g. missing permission) is swallowed so it never
+   * affects the turn. Telegram constrains reactions to a fixed emoji set.
+   */
+  async function setReaction(
+    chatId: TelegramChatId,
+    messageId: number,
+    emoji: string | undefined,
+  ): Promise<void> {
+    if (!reactionsEnabled || sender.setMessageReaction === undefined) {
+      return;
+    }
+    try {
+      await sender.setMessageReaction({
+        chat_id: chatId,
+        message_id: messageId,
+        reaction: emoji === undefined ? [] : [{ type: "emoji", emoji }],
+      });
+    } catch (error) {
+      logger?.debug?.("Telegram setMessageReaction failed (best-effort).", {
+        error: errorMessage(error),
+      });
+    }
+  }
+
   bot.use(async (ctx, next) => {
     const chatId = ctx.chat?.id;
     if (chatId === undefined) {
@@ -429,6 +494,97 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     await ctx.reply(messages.cancelledText);
   });
+
+  // Custom config-driven commands. Registered before the catch-all `message`
+  // handler so a `/cmd` is dispatched here (and never falls through to the agent
+  // as raw text). A command with a `prompt` runs it as a turn through the same
+  // per-chat queue as a typed message; a prompt-less command is menu-only and
+  // just echoes its description. Built-in start/help/cancel are reserved (config
+  // validation rejects them), so these never shadow a built-in.
+  const customCommands = options.commands ?? [];
+  for (const command of customCommands) {
+    const prompt = command.prompt;
+    bot.command(command.command, async (ctx) => {
+      const chatId = ctx.chat?.id;
+      if (chatId === undefined) {
+        return;
+      }
+      if (prompt === undefined) {
+        await ctx.reply(command.description);
+        return;
+      }
+      await notify(chatId, prompt);
+    });
+  }
+
+  // Inline-keyboard callbacks (telegram_ask). Subscribed only when enabled (the
+  // default `allowedUpdates` then also includes `callback_query`). The auth gate
+  // above already blocks unauthorized chats; we re-check defensively. On a tap we
+  // resolve the chosen LABEL from the tapped message's own keyboard (so no
+  // cross-process state is needed), answer the callback promptly, strip the
+  // buttons, and re-run the choice as a turn on the same conversation — exactly
+  // like a typed reply, on the warm session.
+  const callbacksEnabled = options.callbacksEnabled === true;
+  const answeredCallbacks = new Set<string>();
+  const rememberAnswered = (key: string): void => {
+    answeredCallbacks.add(key);
+    if (answeredCallbacks.size > CALLBACK_DEDUPE_MAX) {
+      const oldest = answeredCallbacks.values().next().value;
+      if (oldest !== undefined) {
+        answeredCallbacks.delete(oldest);
+      }
+    }
+  };
+  async function answerCallbackQuietly(ctx: Context, text?: string): Promise<void> {
+    try {
+      await ctx.answerCallbackQuery(text === undefined ? undefined : { text });
+    } catch (error) {
+      logger?.debug?.("Telegram answerCallbackQuery failed (best-effort).", {
+        error: errorMessage(error),
+      });
+    }
+  }
+  if (callbacksEnabled) {
+    bot.on("callback_query:data", async (ctx) => {
+      if (stopped) {
+        return;
+      }
+      const chatId = ctx.chat?.id;
+      const data = ctx.callbackQuery.data;
+      if (chatId === undefined || !isAuthorized(chatId) || !isTelegramAskCallbackData(data)) {
+        await answerCallbackQuietly(ctx);
+        return;
+      }
+      const messageId = ctx.callbackQuery.message?.message_id;
+      const dedupeKey = `${String(chatId)}:${messageId ?? "?"}`;
+      if (answeredCallbacks.has(dedupeKey)) {
+        await answerCallbackQuietly(ctx, "Already recorded.");
+        return;
+      }
+      // Claim synchronously (no await before this) so a near-simultaneous second
+      // tap on the same question de-dupes instead of running a second turn.
+      rememberAnswered(dedupeKey);
+      const label = labelForCallbackData(ctx.callbackQuery.message?.reply_markup, data);
+      await answerCallbackQuietly(ctx, label === undefined ? undefined : `You chose: ${label}`);
+      if (label === undefined) {
+        return;
+      }
+      // Strip the keyboard so the question cannot be answered twice (best-effort).
+      try {
+        await ctx.editMessageReplyMarkup();
+      } catch (error) {
+        logger?.debug?.("Telegram editMessageReplyMarkup failed after callback (best-effort).", {
+          error: errorMessage(error),
+        });
+      }
+      const question = ctx.callbackQuery.message?.text;
+      const syntheticText =
+        question !== undefined && question.trim().length > 0
+          ? `Re: "${question.trim()}" — I chose: ${label}`
+          : `I chose: ${label}`;
+      await notify(chatId, syntheticText);
+    });
+  }
 
   // A single handler for every message type so all messages reach the per-chat
   // admission queue at the same middleware depth. Separate per-type handlers sit
@@ -674,14 +830,21 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       buildStreamOptions(chatId, message.message_id, controller.signal),
     );
 
+    // Tracks the lifecycle reaction to apply on teardown. Defaults to "error" so
+    // an unexpected throw still lands on the 👎 reaction.
+    let reactionOutcome: "done" | "error" | "cancelled" = "error";
     try {
       // Parked-then-cancelled: /cancel aborted this controller while the message
       // waited behind an earlier same-chat run. Bail before any responder call so a
       // queued message is genuinely cancelled (not run on the warm session later).
       if (controller.signal.aborted) {
+        reactionOutcome = "cancelled";
         await finishSafely(stream, messages.cancelledText, logger);
         return;
       }
+      // Acknowledge receipt with the working reaction before the (slower) status
+      // post + agent run, so the user sees the bot picked up the message at once.
+      await setReaction(chatId, message.message_id, REACTION_WORKING);
       try {
         await stream.status(initialStatusText);
       } catch (statusError) {
@@ -690,6 +853,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         });
       }
       if (controller.signal.aborted) {
+        reactionOutcome = "cancelled";
         await finishSafely(stream, messages.cancelledText, logger);
         return;
       }
@@ -699,6 +863,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         response = await options.responder.respond(request, stream);
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
+          reactionOutcome = "cancelled";
           await finishSafely(stream, messages.cancelledText, logger);
           return;
         }
@@ -714,14 +879,17 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
 
       if (controller.signal.aborted) {
+        reactionOutcome = "cancelled";
         await finishSafely(stream, messages.cancelledText, logger);
         return;
       }
 
       try {
         await stream.finish(response.text);
+        reactionOutcome = "done";
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
+          reactionOutcome = "cancelled";
           return;
         }
         // The AI run succeeded; a delivery failure is degraded, never an error.
@@ -730,6 +898,18 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         });
       }
     } finally {
+      // Replace the working reaction with the terminal one: 👍 on success, 👎 on
+      // failure, and clear it (no reaction) when the user cancelled. No-op when
+      // reactions are disabled.
+      if (reactionsEnabled) {
+        const finalEmoji =
+          reactionOutcome === "done"
+            ? REACTION_DONE
+            : reactionOutcome === "cancelled"
+              ? undefined
+              : REACTION_ERROR;
+        await setReaction(chatId, message.message_id, finalEmoji);
+      }
       unregisterController(chatId, controller);
     }
   }
@@ -746,6 +926,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     chatId: TelegramChatId,
     text: string,
     controller: AbortController,
+    silent: boolean,
   ): Promise<TelegramNotifyResult> {
     try {
       if (controller.signal.aborted) {
@@ -766,7 +947,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           },
         },
       };
-      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal));
+      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent));
       let response: AgentResponse;
       try {
         response = await options.responder.respond(request, stream);
@@ -814,6 +995,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     chatId: TelegramChatId,
     text: string,
     controller: AbortController,
+    silent: boolean,
   ): Promise<TelegramNotifyResult> {
     try {
       if (controller.signal.aborted) {
@@ -822,7 +1004,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (text.trim().length === 0) {
         return { delivered: false, reason: "empty notification" };
       }
-      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal));
+      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent));
       try {
         await stream.finish(text);
       } catch (error) {
@@ -857,6 +1039,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return { delivered: false, reason: "adapter stopped" };
     }
     const controller = registerController(chatId);
+    const silent = notifyOptions?.silent === true;
     // `admit` returns void, so capture the run's outcome in a closure variable.
     // It defaults to the queue-full reason and is only overwritten when the task
     // actually runs (an over-cap rejection settles via onReject, leaving it).
@@ -865,8 +1048,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       chatId,
       async () => {
         outcome = notifyOptions?.verbatim === true
-          ? await runVerbatimDelivery(chatId, text, controller)
-          : await runProactiveTurn(chatId, text, controller);
+          ? await runVerbatimDelivery(chatId, text, controller, silent)
+          : await runProactiveTurn(chatId, text, controller, silent);
       },
       () => {
         unregisterController(chatId, controller);
@@ -901,6 +1084,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     chatId: TelegramChatId,
     replyToMessageId: number | undefined,
     signal: AbortSignal,
+    silent = false,
   ): TelegramMessageStreamOptions {
     const streamOptions: TelegramMessageStreamOptions = {
       api: sender,
@@ -910,6 +1094,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // edits); a tuning override can restore interim streaming.
       finalOnly: options.stream?.finalOnly ?? true,
     };
+    if (silent) {
+      streamOptions.silent = true;
+    }
     // Proactive notifications have no inbound message to reply to, so the caller
     // may omit replyToMessageId (a top-level send rather than a threaded reply).
     if (replyToMessageId !== undefined) {
@@ -1168,6 +1355,31 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           });
         }
       }
+      // Register the command menu (setMyCommands) when custom commands are
+      // configured: the built-in help/cancel plus each custom command, scoped to
+      // private chats. Best-effort + bounded so a flaky network can't stall boot
+      // (the menu is cosmetic); skipped entirely with no custom commands so an
+      // existing deployment sees no menu it never asked for.
+      if (customCommands.length > 0) {
+        const menu = [
+          { command: "help", description: "How to use this agent" },
+          { command: "cancel", description: "Stop the current response" },
+          ...customCommands.map((command) => ({
+            command: command.command,
+            description: command.description,
+          })),
+        ];
+        try {
+          const timeoutSignal = AbortSignal.timeout(
+            options.deleteWebhookTimeoutMs ?? DEFAULT_DELETE_WEBHOOK_TIMEOUT_MS,
+          ) as unknown as Parameters<typeof bot.api.setMyCommands>[2];
+          await bot.api.setMyCommands(menu, { scope: { type: "all_private_chats" } }, timeoutSignal);
+        } catch (error) {
+          logger?.warn?.("Telegram setMyCommands failed or timed out at startup; continuing.", {
+            error: errorMessage(error),
+          });
+        }
+      }
       // Spawn the runner with the auto-restart monitor attached: a late polling
       // crash is surfaced (logger + onPollingError) AND triggers a backoff
       // restart instead of leaving the bot silent. stop() settles the runner and
@@ -1210,7 +1422,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   };
 
   function defaultRunnerFactory(target: Bot): RunnerHandle {
-    const allowed = [...(options.allowedUpdates ?? ["message"])] as unknown as AllowedUpdates;
+    const defaultAllowed = callbacksEnabled ? ["message", "callback_query"] : ["message"];
+    const allowed = [...(options.allowedUpdates ?? defaultAllowed)] as unknown as AllowedUpdates;
     return run(target, {
       runner: {
         // Self-retry transient getUpdates errors (network blips) with exponential
@@ -1393,6 +1606,30 @@ async function readBodyWithCap(
     offset += chunk.byteLength;
   }
   return out;
+}
+
+/**
+ * Resolve the label of the button whose `callback_data` matches `data` by reading
+ * the tapped message's own inline keyboard. Returns undefined when the keyboard or
+ * a matching button is absent. Pure so it can be unit-tested directly.
+ */
+function labelForCallbackData(replyMarkup: unknown, data: string): string | undefined {
+  const keyboard = (
+    replyMarkup as
+      | { inline_keyboard?: ReadonlyArray<ReadonlyArray<{ text?: unknown; callback_data?: unknown }>> }
+      | undefined
+  )?.inline_keyboard;
+  if (!Array.isArray(keyboard)) {
+    return undefined;
+  }
+  for (const row of keyboard) {
+    for (const button of row) {
+      if (button?.callback_data === data && typeof button.text === "string") {
+        return button.text;
+      }
+    }
+  }
+  return undefined;
 }
 
 function controlCommandFromCaption(
