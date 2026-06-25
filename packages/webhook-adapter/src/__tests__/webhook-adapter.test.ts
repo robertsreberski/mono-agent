@@ -406,6 +406,62 @@ describe("Webhook adapter", () => {
       }),
     ).rejects.toMatchObject({ code: "unsafe_host" });
   });
+
+  it("aborts a hung async run at maxRunMs and reclaims the conversation slot", async () => {
+    let resolveResult: ((status: { status: string; error?: string }) => void) | undefined;
+    const resultPromise = new Promise<{ status: string; error?: string }>((resolve) => {
+      resolveResult = resolve;
+    });
+    // A responder that never settles AND ignores the abort signal: the runaway
+    // case the cron-style watchdog must reclaim. async mode has no client to
+    // disconnect, so the max-run bound is its only escape.
+    const hangingResponder: AgentResponder = { respond: () => new Promise<never>(() => {}) };
+
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/webhook/invoke",
+      defaultMode: "async",
+      maxRunMs: 100,
+      responder: hangingResponder,
+      onResult: (status) => { resolveResult?.(status as { status: string; error?: string }); },
+    });
+
+    try {
+      const accepted = await fetch(`${server.url}/webhook/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "hang", conversationId: "c-timeout", mode: "async" }),
+      });
+      expect(accepted.status).toBe(202);
+
+      const result = await resultPromise;
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/timed out/i);
+      // The slot was reclaimed even though the responder never settled.
+      await expect.poll(async () => server.activeRequestCount).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("leaves a run that finishes within maxRunMs untouched", async () => {
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/webhook/invoke",
+      maxRunMs: 5000,
+      responder: echoResponder(),
+    });
+
+    try {
+      const response = await invokeSync(server.url, "hi", "c-fast");
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: hi" });
+    } finally {
+      await server.stop();
+    }
+  });
 });
 
 describe("Webhook adapter multi-endpoint", () => {

@@ -428,6 +428,10 @@ export interface WebhookChannelOverrides {
   readonly adapterFactory?: (options: WebhookAdapterOptions) => Promise<WebhookAdapterStartResult>;
 }
 
+// Default wall-clock bound for a webhook run, reclaiming a hung slot. Mirrors
+// {@link DEFAULT_CRON_MAX_RUN_MS}; an operator can override via webhook.maxRunMs.
+const DEFAULT_WEBHOOK_MAX_RUN_MS = 20 * 60 * 1000;
+
 export function createWebhookChannelDriver(
   overrides: WebhookChannelOverrides = {},
 ): ChannelDriver<WebhookAdapterConfig> {
@@ -460,6 +464,9 @@ export function createWebhookChannelDriver(
         defaultMode: input.config.defaultMode,
         retentionMs: input.config.retentionMs,
         maxStoredRequests: input.config.maxStoredRequests,
+        // Default-on max-run bound so a hung (esp. async) webhook can't hold a
+        // conversation slot forever; mirrors the cron adapter's 20-min default.
+        maxRunMs: input.config.maxRunMs ?? DEFAULT_WEBHOOK_MAX_RUN_MS,
         endpoints: endpoints
           .map((endpoint) => ({
             name: endpoint.name,
