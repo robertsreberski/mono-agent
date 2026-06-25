@@ -39,6 +39,18 @@ export interface TelegramCommandConfig {
   readonly prompt?: string;
 }
 
+/**
+ * Which lifecycle reactions are enabled. Resolved from `telegram.reactions`:
+ * `true` enables all three; an object enables them individually (each key
+ * defaults to `true`, so `{ done: false }` keeps 👀/👎 but drops 👍). Resolves to
+ * `undefined` when reactions are off entirely.
+ */
+export interface TelegramReactionsConfig {
+  readonly working: boolean;
+  readonly done: boolean;
+  readonly error: boolean;
+}
+
 export interface TelegramAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
@@ -52,8 +64,8 @@ export interface TelegramAdapterConfig {
   readonly quietHours?: TelegramQuietHours;
   /** Custom command-menu entries. Omit (or empty) to leave only the built-in commands. */
   readonly commands?: readonly TelegramCommandConfig[];
-  /** React to inbound messages with a lifecycle emoji (👀/👍/👎). Default off. */
-  readonly reactions?: boolean;
+  /** Per-state lifecycle reactions (👀/👍/👎). Omit (or all-off) to disable reactions. */
+  readonly reactions?: TelegramReactionsConfig;
 }
 
 export interface RedactedTelegramAdapterConfig {
@@ -65,7 +77,7 @@ export interface RedactedTelegramAdapterConfig {
   readonly pollWatchdogMs?: number;
   readonly quietHours?: TelegramQuietHours;
   readonly commands?: { readonly count: number };
-  readonly reactions?: boolean;
+  readonly reactions?: TelegramReactionsConfig;
 }
 
 export type TelegramAdapterConfigErrorCode =
@@ -163,12 +175,7 @@ export async function loadTelegramAdapterConfig(
         });
   const quietHours = readTelegramQuietHours(json);
   const commands = readTelegramCommands(json);
-  const reactions = readBoolean(
-    env.MONO_AGENT_TELEGRAM_REACTIONS,
-    "MONO_AGENT_TELEGRAM_REACTIONS",
-    false,
-    invalidConfig,
-  );
+  const reactions = readTelegramReactions(json, env);
 
   return {
     enabled: true,
@@ -179,8 +186,57 @@ export async function loadTelegramAdapterConfig(
     ...(pollWatchdogMs === undefined ? {} : { pollWatchdogMs }),
     ...(quietHours === undefined ? {} : { quietHours }),
     ...(commands.length === 0 ? {} : { commands }),
-    ...(reactions ? { reactions: true } : {}),
+    ...(reactions === undefined ? {} : { reactions }),
   };
+}
+
+/**
+ * Resolve `telegram.reactions` into a per-state config. The boolean env override
+ * (`MONO_AGENT_TELEGRAM_REACTIONS`) wins and toggles all three at once; otherwise
+ * the JSON value is read as either a boolean (all on/off) or an object whose
+ * `working`/`done`/`error` keys each default to `true`. All-off resolves to
+ * `undefined` (feature off).
+ */
+function readTelegramReactions(
+  json: SettingsJson,
+  env: Record<string, string | undefined>,
+): TelegramReactionsConfig | undefined {
+  const envRaw = normalizeOptionalString(env.MONO_AGENT_TELEGRAM_REACTIONS);
+  if (envRaw !== undefined) {
+    const on = readBoolean(envRaw, "MONO_AGENT_TELEGRAM_REACTIONS", false, invalidConfig);
+    return on ? { working: true, done: true, error: true } : undefined;
+  }
+  const raw = readJsonSection(json, "telegram").reactions;
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (typeof raw === "boolean") {
+    return raw ? { working: true, done: true, error: true } : undefined;
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw invalidConfig("telegram.reactions must be a boolean or an object of { working?, done?, error? } booleans.");
+  }
+  const record = raw as Record<string, unknown>;
+  const reactions: TelegramReactionsConfig = {
+    working: readReactionFlag(record.working, "telegram.reactions.working"),
+    done: readReactionFlag(record.done, "telegram.reactions.done"),
+    error: readReactionFlag(record.error, "telegram.reactions.error"),
+  };
+  if (!reactions.working && !reactions.done && !reactions.error) {
+    return undefined;
+  }
+  return reactions;
+}
+
+/** Read a reaction flag: absent → on (the object subtracts from the default-on set). */
+function readReactionFlag(value: unknown, field: string): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  if (typeof value !== "boolean") {
+    throw invalidConfig(`${field} must be a boolean.`, { field });
+  }
+  return value;
 }
 
 const RESERVED_TELEGRAM_COMMANDS = new Set(["start", "help", "cancel"]);
@@ -386,6 +442,5 @@ function layerTelegramJsonOntoEnv(
     { env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS", value: section.allowAllChats, kind: "boolean" },
     { env: "MONO_AGENT_TELEGRAM_IP_FAMILY", value: transport.ipFamily, kind: "integer" },
     { env: "MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS", value: section.pollWatchdogMs, kind: "integer" },
-    { env: "MONO_AGENT_TELEGRAM_REACTIONS", value: section.reactions, kind: "boolean" },
   ]);
 }

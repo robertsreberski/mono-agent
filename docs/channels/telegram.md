@@ -79,6 +79,14 @@ Set `telegram.reactions: true` to have the bot react to your message with a life
 { "telegram": { "reactions": true } }
 ```
 
+Each state can be toggled independently with an object — every key defaults to `true`, so you set the ones you *don't* want to `false`. For example, to keep the working and error reactions but drop the success 👍 (which can feel cluttered):
+
+```json
+{ "telegram": { "reactions": { "done": false } } }
+```
+
+When a terminal state's reaction is disabled, the working **👀** is **cleared** on completion rather than left lingering — so a turn that only reacts while working ends with a clean, reaction-free message. The `MONO_AGENT_TELEGRAM_REACTIONS` env var is a simple all-on/all-off override; granular per-state control is JSON-only.
+
 ### Quiet hours (silent notifications)
 
 Deliver proactive notifications (cron/webhook `notify`) silently during a daily window, so an overnight result lands without a push sound. `start`/`end` are 24-hour `HH:MM` clock times in `timezone` (an IANA zone); an `end` earlier than `start` wraps midnight.

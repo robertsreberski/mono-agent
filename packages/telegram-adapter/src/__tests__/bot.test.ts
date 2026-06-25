@@ -359,6 +359,13 @@ function responderFrom(respond: AgentResponder["respond"]): AgentResponder {
   return { respond };
 }
 
+/** The sequence of reaction emojis applied (undefined = a cleared reaction). */
+function reactionEmojis(calls: RecordedCall[]): Array<string | undefined> {
+  return calls
+    .filter((call) => call.method === "setMessageReaction")
+    .map((call) => (call.payload.reaction as Array<{ emoji: string }>)[0]?.emoji);
+}
+
 function texts(calls: RecordedCall[], method: string): unknown[] {
   return calls.filter((call) => call.method === method).map((call) => call.payload.text);
 }
@@ -430,16 +437,17 @@ describe("createTelegramBot", () => {
     expect(texts(calls, "sendMessage")).toEqual(["What this agent does"]);
   });
 
-  it("reacts 👀 then 👍 around a successful turn when reactions are enabled", async () => {
+  it("reacts 👀 then 👍 around a successful turn when all reactions are enabled", async () => {
     const responder = responderFrom(async () => ({ text: "done" }));
-    const { bot, calls } = buildTestBot({ responder, reactions: true, stream: { editDebounceMs: 0 } });
+    const { bot, calls } = buildTestBot({
+      responder,
+      reactions: { working: true, done: true, error: true },
+      stream: { editDebounceMs: 0 },
+    });
 
     await bot.handleUpdate(textUpdate("hello"));
 
-    const reactions = calls
-      .filter((call) => call.method === "setMessageReaction")
-      .map((call) => (call.payload.reaction as Array<{ emoji: string }>)[0]?.emoji);
-    expect(reactions).toEqual(["👀", "👍"]);
+    expect(reactionEmojis(calls)).toEqual(["👀", "👍"]);
   });
 
   it("does not react when reactions are disabled", async () => {
@@ -451,19 +459,49 @@ describe("createTelegramBot", () => {
     expect(calls.some((call) => call.method === "setMessageReaction")).toBe(false);
   });
 
-  it("reacts 👎 when the responder fails and reactions are enabled", async () => {
+  it("reacts 👎 when the responder fails and the error reaction is enabled", async () => {
     const responder = responderFrom(async () => {
       throw new Error("boom");
     });
-    const { bot, calls } = buildTestBot({ responder, reactions: true, stream: { editDebounceMs: 0 } });
+    const { bot, calls } = buildTestBot({
+      responder,
+      reactions: { working: true, done: true, error: true },
+      stream: { editDebounceMs: 0 },
+    });
 
     await bot.handleUpdate(textUpdate("hello"));
 
-    const reactions = calls
-      .filter((call) => call.method === "setMessageReaction")
-      .map((call) => (call.payload.reaction as Array<{ emoji: string }>)[0]?.emoji);
+    const reactions = reactionEmojis(calls);
     expect(reactions[0]).toBe("👀");
     expect(reactions.at(-1)).toBe("👎");
+  });
+
+  it("clears the working reaction on success when the done reaction is disabled", async () => {
+    const responder = responderFrom(async () => ({ text: "done" }));
+    const { bot, calls } = buildTestBot({
+      responder,
+      reactions: { working: true, done: false, error: true },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(textUpdate("hello"));
+
+    // 👀 while working, then cleared on success (no 👍 clutter).
+    expect(reactionEmojis(calls)).toEqual(["👀", undefined]);
+  });
+
+  it("only reacts on completion when the working reaction is disabled", async () => {
+    const responder = responderFrom(async () => ({ text: "done" }));
+    const { bot, calls } = buildTestBot({
+      responder,
+      reactions: { working: false, done: true, error: true },
+      stream: { editDebounceMs: 0 },
+    });
+
+    await bot.handleUpdate(textUpdate("hello"));
+
+    // No 👀 (working off) and nothing to clear: just the 👍 on success.
+    expect(reactionEmojis(calls)).toEqual(["👍"]);
   });
 
   it("re-runs the chosen inline-keyboard option as a turn when callbacks are enabled", async () => {

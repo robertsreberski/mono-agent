@@ -23,7 +23,7 @@ import {
   type TelegramFileDownloader,
 } from "./adapter.js";
 import { isTelegramAskCallbackData } from "./ask.js";
-import type { TelegramCommandConfig } from "./config.js";
+import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
 import {
   TelegramMessageStream,
@@ -193,10 +193,11 @@ export interface CreateTelegramBotOptions {
    */
   readonly commands?: readonly TelegramCommandConfig[];
   /**
-   * React to the inbound message with a lifecycle emoji (👀 working, 👍 done,
-   * 👎 error) via `setMessageReaction`. Best-effort and default off.
+   * Per-state lifecycle reactions via `setMessageReaction` (👀 working, 👍 done,
+   * 👎 error). Each state can be toggled independently; a disabled terminal state
+   * clears the working reaction instead of leaving it. Best-effort, default off.
    */
-  readonly reactions?: boolean;
+  readonly reactions?: TelegramReactionsConfig;
   /**
    * Handle inline-keyboard taps (`callback_query`) produced by the `telegram_ask`
    * tool: re-run the user's choice as a turn on the same conversation. When set,
@@ -441,19 +442,19 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const isAuthorized = (chatId: TelegramChatId | undefined): boolean =>
     chatId !== undefined && (allowAllChats || allowedChatIds.has(String(chatId)));
 
-  const reactionsEnabled = options.reactions === true;
+  const reactions = options.reactions;
   /**
    * Set (or clear, when `emoji` is undefined) the bot's reaction on a message.
-   * Best-effort: a no-op when reactions are disabled or the sender lacks the
-   * method, and a failure (e.g. missing permission) is swallowed so it never
+   * Per-state gating is the caller's job; this only no-ops when the sender lacks
+   * the method, and swallows a failure (e.g. missing permission) so it never
    * affects the turn. Telegram constrains reactions to a fixed emoji set.
    */
-  async function setReaction(
+  async function applyReaction(
     chatId: TelegramChatId,
     messageId: number,
     emoji: string | undefined,
   ): Promise<void> {
-    if (!reactionsEnabled || sender.setMessageReaction === undefined) {
+    if (sender.setMessageReaction === undefined) {
       return;
     }
     try {
@@ -833,6 +834,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     // Tracks the lifecycle reaction to apply on teardown. Defaults to "error" so
     // an unexpected throw still lands on the 👎 reaction.
     let reactionOutcome: "done" | "error" | "cancelled" = "error";
+    // Whether we set the working 👀, so a terminal state with its own reaction
+    // disabled can CLEAR it rather than leave it lingering on the message.
+    let workingReacted = false;
     try {
       // Parked-then-cancelled: /cancel aborted this controller while the message
       // waited behind an earlier same-chat run. Bail before any responder call so a
@@ -844,7 +848,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
       // Acknowledge receipt with the working reaction before the (slower) status
       // post + agent run, so the user sees the bot picked up the message at once.
-      await setReaction(chatId, message.message_id, REACTION_WORKING);
+      if (reactions?.working === true) {
+        await applyReaction(chatId, message.message_id, REACTION_WORKING);
+        workingReacted = true;
+      }
       try {
         await stream.status(initialStatusText);
       } catch (statusError) {
@@ -898,17 +905,25 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         });
       }
     } finally {
-      // Replace the working reaction with the terminal one: 👍 on success, 👎 on
-      // failure, and clear it (no reaction) when the user cancelled. No-op when
-      // reactions are disabled.
-      if (reactionsEnabled) {
-        const finalEmoji =
+      // Apply the terminal reaction: 👍 on success / 👎 on failure when that state
+      // is enabled; otherwise (or on cancel) clear the working 👀 if we set one, so
+      // a disabled terminal state never leaves the message marked "working".
+      if (reactions !== undefined) {
+        const terminalEnabled =
           reactionOutcome === "done"
-            ? REACTION_DONE
-            : reactionOutcome === "cancelled"
-              ? undefined
-              : REACTION_ERROR;
-        await setReaction(chatId, message.message_id, finalEmoji);
+            ? reactions.done
+            : reactionOutcome === "error"
+              ? reactions.error
+              : false;
+        if (terminalEnabled) {
+          await applyReaction(
+            chatId,
+            message.message_id,
+            reactionOutcome === "done" ? REACTION_DONE : REACTION_ERROR,
+          );
+        } else if (workingReacted) {
+          await applyReaction(chatId, message.message_id, undefined);
+        }
       }
       unregisterController(chatId, controller);
     }

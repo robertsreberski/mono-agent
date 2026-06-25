@@ -14,7 +14,7 @@ import {
   type TelegramNotifyOptions,
   type TelegramNotifyResult,
 } from "./bot.js";
-import type { TelegramCommandConfig } from "./config.js";
+import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
 import type { TelegramChatId } from "./types.js";
 
 export type { TelegramNotifyOptions, TelegramNotifyResult } from "./bot.js";
@@ -44,8 +44,8 @@ export interface TelegramAdapterStartOptions {
   readonly allowedUpdates?: readonly string[];
   /** Custom command-menu entries registered via setMyCommands and dispatched as turns. */
   readonly commands?: readonly TelegramCommandConfig[];
-  /** React to inbound messages with a lifecycle emoji (👀/👍/👎). Default off. */
-  readonly reactions?: boolean;
+  /** Per-state lifecycle reactions (👀/👍/👎). Omit to disable. */
+  readonly reactions?: TelegramReactionsConfig;
   /** Subscribe to and handle inline-keyboard taps (telegram_ask callbacks). Default off. */
   readonly callbacksEnabled?: boolean;
   /** Delete any configured webhook before polling. Defaults to true. */

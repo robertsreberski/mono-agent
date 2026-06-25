@@ -227,6 +227,90 @@ describe("loadTelegramAdapterConfig", () => {
     );
   });
 
+  it("parses telegram.reactions: true as all states enabled", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        telegram: { enabled: true, botToken: "123456:json-token", allowAllChats: true, reactions: true },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadTelegramAdapterConfig({ env: {}, jsonPath: path });
+    expect(config.reactions).toEqual({ working: true, done: true, error: true });
+  });
+
+  it("parses a granular telegram.reactions object, defaulting unspecified states to on", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        telegram: { enabled: true, botToken: "123456:json-token", allowAllChats: true, reactions: { done: false } },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadTelegramAdapterConfig({ env: {}, jsonPath: path });
+    expect(config.reactions).toEqual({ working: true, done: false, error: true });
+  });
+
+  it("treats an all-off telegram.reactions object as disabled", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        telegram: {
+          enabled: true,
+          botToken: "123456:json-token",
+          allowAllChats: true,
+          reactions: { working: false, done: false, error: false },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadTelegramAdapterConfig({ env: {}, jsonPath: path });
+    expect(config.reactions).toBeUndefined();
+  });
+
+  it("lets MONO_AGENT_TELEGRAM_REACTIONS override the JSON object to all-on", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        telegram: { enabled: true, botToken: "123456:json-token", allowAllChats: true, reactions: { done: false } },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadTelegramAdapterConfig({
+      env: { MONO_AGENT_TELEGRAM_REACTIONS: "true" },
+      jsonPath: path,
+    });
+    expect(config.reactions).toEqual({ working: true, done: true, error: true });
+  });
+
+  it("rejects a non-boolean telegram.reactions state flag", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        telegram: {
+          enabled: true,
+          botToken: "123456:json-token",
+          allowAllChats: true,
+          reactions: { working: "yes" },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadTelegramAdapterConfig({ env: {}, jsonPath: path })).rejects.toBeInstanceOf(
+      TelegramAdapterConfigError,
+    );
+  });
+
   it("parses telegram.quietHours from JSON", async () => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(

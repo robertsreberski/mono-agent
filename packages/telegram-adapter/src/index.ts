@@ -105,4 +105,5 @@ export type {
   TelegramAdapterConfigErrorDetails,
   TelegramCommandConfig,
   TelegramQuietHours,
+  TelegramReactionsConfig,
 } from "./config.js";
