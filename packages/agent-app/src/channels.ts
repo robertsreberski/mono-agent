@@ -103,6 +103,11 @@ export type ChannelStatus =
   | { readonly kind: "disabled"; readonly reason: string }
   | { readonly kind: "waiting_for_config"; readonly reason: string }
   | { readonly kind: "running"; readonly summary: Record<string, unknown> }
+  // Transport is temporarily down but the channel owns its own recovery (e.g. the
+  // telegram poller crashed on a network blip and is restarting). The responder/
+  // harness stays alive and the channel keeps serving once polling resumes — a
+  // non-fatal state distinct from "failed".
+  | { readonly kind: "degraded"; readonly reason: string }
   | { readonly kind: "failed"; readonly reason: string };
 
 export interface RunningChannel {
@@ -144,8 +149,23 @@ export interface ChannelStartInput<TConfig> {
   readonly responder: AgentResponder;
   readonly cwd: string;
   readonly logger?: MonoAgentAppLogger;
-  /** Reports a transport that died after a successful start (e.g. polling loop). */
+  /**
+   * Reports a transport that died after a successful start with NO self-recovery
+   * (e.g. the webhook HTTP server crashed). The app disposes the responder/harness
+   * and marks the channel failed. For a transport that owns its own reconnect, use
+   * {@link onDegraded}/{@link onRecovered} instead so the responder is NOT disposed.
+   */
   readonly onFailure: (reason: string) => void;
+  /**
+   * Reports a transport that is temporarily down but is self-recovering (e.g. a
+   * telegram poll crash on a network blip; the adapter restarts its own runner).
+   * The app marks the channel "degraded" and KEEPS the responder/harness alive so
+   * the self-restarted transport delivers into a live harness. Optional — drivers
+   * that have no self-recovery only wire {@link onFailure}.
+   */
+  readonly onDegraded?: (reason: string) => void;
+  /** Reports that a previously-degraded transport's self-recovery succeeded (back to running). */
+  readonly onRecovered?: () => void;
   /** Native scheduled/webhook delivery hook owned by the app, used by proactive trigger channels. */
   readonly notifyDestination?: (
     conversationId: string,
@@ -919,10 +939,13 @@ function telegramStartOptions(
       unauthorizedText: "This chat is not allowlisted for this agent.",
       errorText: telegramErrorText,
     },
-    // A polling crash after a successful start must flip the channel to failed,
-    // not leave it reported as running.
+    // A polling crash is recoverable by construction: the adapter always schedules
+    // a backoff restart (it never gives up on its own), so report it as DEGRADED
+    // (keep the responder/harness alive) rather than fatal. onPollingRecovered flips
+    // the channel back to running once a restarted runner stays up.
     onPollingError: (error) =>
-      input.onFailure(error instanceof Error ? error.message : String(error)),
+      input.onDegraded?.(error instanceof Error ? error.message : String(error)),
+    onPollingRecovered: () => input.onRecovered?.(),
     ...(input.config.ipFamily === undefined ? {} : { transport: { ipFamily: input.config.ipFamily } }),
     ...(input.config.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: input.config.pollWatchdogMs }),
     ...(input.config.commands === undefined ? {} : { commands: [...input.config.commands] }),

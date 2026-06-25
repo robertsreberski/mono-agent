@@ -3,6 +3,7 @@ import { Bot } from "grammy";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "../adapter.js";
+import { createTelegramBot } from "../bot.js";
 import { startTelegramAdapter } from "../start.js";
 
 const FAKE_BOT_INFO = {
@@ -647,5 +648,151 @@ describe("startTelegramAdapter startup deleteWebhook resilience", () => {
 
     expect(runner?.isRunning()).toBe(true);
     await result.stop();
+  });
+});
+
+describe("startTelegramAdapter onPollingRecovered", () => {
+  /** A runner that stays pending (healthy) until crash() rejects its task. */
+  class RecoverableRunner implements RunnerHandle {
+    running = true;
+    private reject: ((error: Error) => void) | undefined;
+    private readonly promise = new Promise<void>((_resolve, rej) => { this.reject = rej; });
+    start(): void { this.running = true; }
+    stop(): Promise<void> { this.running = false; return Promise.resolve(); }
+    size(): number { return 0; }
+    task(): Promise<void> | undefined { return this.promise; }
+    isRunning(): boolean { return this.running; }
+    crash(): void { this.running = false; this.reject?.(new Error("getUpdates ETIMEDOUT")); }
+  }
+
+  const STABILITY_MS = 30_000;
+
+  it("fires after a crash once a restarted runner stays up past the stability window", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const onPollingRecovered = vi.fn();
+      const runners: RecoverableRunner[] = [];
+      const runnerFactory = vi.fn(() => { const r = new RecoverableRunner(); runners.push(r); return r; });
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 0,
+        onPollingRecovered,
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      expect(runnerFactory).toHaveBeenCalledTimes(1);
+      // Crash the initial runner → backoff restart at 500ms spawns runner #2.
+      runners[0]?.crash();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(runnerFactory).toHaveBeenCalledTimes(2);
+
+      // Recovery only fires once the restarted runner survives the stability window.
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(STABILITY_MS);
+      expect(onPollingRecovered).toHaveBeenCalledTimes(1);
+
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT fire on the initial healthy start (no prior crash)", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const onPollingRecovered = vi.fn();
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 0,
+        onPollingRecovered,
+        botFactory: () => bot,
+        runnerFactory: () => new FakeRunner(),
+      });
+
+      // The initial runner crosses the stability window, but with no prior crash
+      // there is nothing to recover from.
+      await vi.advanceTimersByTimeAsync(STABILITY_MS * 2);
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT fire if the runner crashes again before the stability window", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const onPollingRecovered = vi.fn();
+      const runners: RecoverableRunner[] = [];
+      const runnerFactory = vi.fn(() => { const r = new RecoverableRunner(); runners.push(r); return r; });
+
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 0,
+        onPollingRecovered,
+        botFactory: () => bot,
+        runnerFactory,
+      });
+
+      runners[0]?.crash();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(runnerFactory).toHaveBeenCalledTimes(2);
+      // Crash again BEFORE the restarted runner stabilizes → no recovery.
+      runners[1]?.crash();
+      await vi.advanceTimersByTimeAsync(STABILITY_MS);
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+
+      await result.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT fire a stale recovery across a stop()/start() cycle", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bot } = recordingBot();
+      const onPollingRecovered = vi.fn();
+      const runners: RecoverableRunner[] = [];
+      const controller = createTelegramBot({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: { respond: vi.fn() } satisfies AgentResponder,
+        deleteWebhookOnStart: false,
+        pollWatchdogMs: 0,
+        onPollingRecovered,
+        botFactory: () => bot,
+        runnerFactory: () => { const r = new RecoverableRunner(); runners.push(r); return r; },
+      });
+
+      await controller.start();
+      runners[0]?.crash();        // sets the crash flag, then we stop before recovery
+      await controller.stop();
+      // A fresh start must clear the stale flag: the new runner staying up is the
+      // initial start of THIS session, not a recovery.
+      await controller.start();
+      await vi.advanceTimersByTimeAsync(STABILITY_MS * 2);
+      expect(onPollingRecovered).not.toHaveBeenCalled();
+
+      await controller.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
