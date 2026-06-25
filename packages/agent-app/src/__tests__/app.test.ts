@@ -426,12 +426,14 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
-  it("reports a post-start Telegram polling crash to onFailure", async () => {
+  it("routes a Telegram poll crash to onDegraded (not the fatal onFailure) and recovery to onRecovered", async () => {
     const onFailure = vi.fn();
+    const onDegraded = vi.fn();
+    const onRecovered = vi.fn();
+    let captured: TelegramAdapterStartOptions | undefined;
     const driver = createTelegramChannelDriver({
-      // Simulate the adapter starting, then its polling loop crashing later.
       startAdapter: async (options: TelegramAdapterStartOptions) => {
-        queueMicrotask(() => options.onPollingError?.(new Error("getUpdates died")));
+        captured = options;
         return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
       },
     });
@@ -442,10 +444,19 @@ describe("startMonoAgentApp", () => {
       responder: { async respond() { return { text: "ok" }; } },
       cwd: dir,
       onFailure,
+      onDegraded,
+      onRecovered,
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(onFailure).toHaveBeenCalledWith("getUpdates died");
+    // A polling crash is recoverable (the adapter self-restarts) → degraded, NOT the
+    // fatal onFailure path that would dispose the harness.
+    captured?.onPollingError?.(new Error("getUpdates died"));
+    expect(onDegraded).toHaveBeenCalledWith("getUpdates died");
+    expect(onFailure).not.toHaveBeenCalled();
+
+    // The adapter's later recovery flips the channel back to running.
+    captured?.onPollingRecovered?.();
+    expect(onRecovered).toHaveBeenCalledTimes(1);
 
     await running.stop();
   });
@@ -485,6 +496,74 @@ describe("startMonoAgentApp", () => {
     expect(app.channelStatus("webhook").kind).toBe("failed");
     expect(disposeSpy).toHaveBeenCalledTimes(1);
     await app.stop();
+  });
+
+  it("keeps the responder alive on a transient Telegram poll crash, marks degraded, then recovers", async () => {
+    await writeConfig({ ...baseConfig(), telegram: { enabled: true, botToken: "test-token", allowAllChats: true } });
+    let captured: TelegramAdapterStartOptions | undefined;
+    const telegramDriver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
+      },
+    });
+    const disposeSpy = vi.fn(async () => {});
+    const wrapped = {
+      ...telegramDriver,
+      async start(input: Parameters<typeof telegramDriver.start>[0]) {
+        (input.responder as { dispose?: () => Promise<void> }).dispose = disposeSpy;
+        return await telegramDriver.start(input);
+      },
+    };
+    const drivers = defaultChannelDrivers().map((driver) => (driver.id === "telegram" ? wrapped : driver));
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers });
+    expect(app.channelStatus("telegram").kind).toBe("running");
+
+    // Transient poll crash → degraded, and crucially the responder is NOT disposed
+    // (the adapter self-restarts and must deliver into a live harness).
+    captured?.onPollingError?.(new Error("connect ENETUNREACH"));
+    expect(app.channelStatus("telegram").kind).toBe("degraded");
+    expect(disposeSpy).not.toHaveBeenCalled();
+
+    // The adapter's restart stays up → recovered → back to running.
+    captured?.onPollingRecovered?.();
+    expect(app.channelStatus("telegram").kind).toBe("running");
+
+    // A genuine stop still disposes the responder exactly once.
+    await app.stop();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resurrect a stopped channel when recovery races the stop", async () => {
+    await writeConfig({ ...baseConfig(), telegram: { enabled: true, botToken: "test-token", allowAllChats: true } });
+    let captured: TelegramAdapterStartOptions | undefined;
+    const telegramDriver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
+      },
+    });
+    const disposeSpy = vi.fn(async () => {});
+    const wrapped = {
+      ...telegramDriver,
+      async start(input: Parameters<typeof telegramDriver.start>[0]) {
+        (input.responder as { dispose?: () => Promise<void> }).dispose = disposeSpy;
+        return await telegramDriver.start(input);
+      },
+    };
+    const drivers = defaultChannelDrivers().map((driver) => (driver.id === "telegram" ? wrapped : driver));
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers });
+    captured?.onPollingError?.(new Error("connect ENETUNREACH"));
+    await app.stop();
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+
+    // A late recovery firing after the channel was stopped/disposed must NOT
+    // resurrect it to running (the onRecovered guard checks the running entry).
+    captured?.onPollingRecovered?.();
+    expect(app.channelStatus("telegram").kind).not.toBe("running");
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
   it("logs an accurate skip (not 'started') when bujo mode has no chat LLM (tier downgrades to journal)", async () => {

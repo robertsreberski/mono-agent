@@ -65,7 +65,8 @@ export type TelegramStatus =
   | { readonly kind: "disabled"; readonly reason: string }
   | { readonly kind: "waiting_for_config"; readonly reason: string }
   | { readonly kind: "running"; readonly config: RedactedFinalAgentDemoConfig }
-  | { readonly kind: "failed"; readonly reason: string };
+  | { readonly kind: "failed"; readonly reason: string }
+  | { readonly kind: "degraded"; readonly reason: string };
 
 export type A2AStatus =
   | { readonly kind: "disabled"; readonly reason: string }
@@ -75,7 +76,8 @@ export type A2AStatus =
       readonly agentCardUrl: string;
       readonly config: RedactedFinalAgentDemoConfig;
     }
-  | { readonly kind: "failed"; readonly reason: string };
+  | { readonly kind: "failed"; readonly reason: string }
+  | { readonly kind: "degraded"; readonly reason: string };
 
 export type WebhookStatus =
   | { readonly kind: "disabled"; readonly reason: string }
@@ -85,7 +87,8 @@ export type WebhookStatus =
       readonly invokeUrl: string;
       readonly config: RedactedFinalAgentDemoConfig;
     }
-  | { readonly kind: "failed"; readonly reason: string };
+  | { readonly kind: "failed"; readonly reason: string }
+  | { readonly kind: "degraded"; readonly reason: string };
 
 export type OpenAIApiStatus =
   | { readonly kind: "disabled"; readonly reason: string }
@@ -95,7 +98,8 @@ export type OpenAIApiStatus =
       readonly baseUrl: string;
       readonly config: RedactedFinalAgentDemoConfig;
     }
-  | { readonly kind: "failed"; readonly reason: string };
+  | { readonly kind: "failed"; readonly reason: string }
+  | { readonly kind: "degraded"; readonly reason: string };
 
 export type CronStatus =
   | { readonly kind: "disabled"; readonly reason: string }
@@ -105,7 +109,8 @@ export type CronStatus =
       readonly jobs: number;
       readonly config: RedactedFinalAgentDemoConfig;
     }
-  | { readonly kind: "failed"; readonly reason: string };
+  | { readonly kind: "failed"; readonly reason: string }
+  | { readonly kind: "degraded"; readonly reason: string };
 
 export type TraceabilityStatus = AppTraceabilityStatus;
 

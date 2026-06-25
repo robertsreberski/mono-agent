@@ -625,6 +625,26 @@ class MonoAgentAppController implements MonoAgentApp {
             });
           });
         },
+        // A self-recovering transport (e.g. telegram poll crash on a network blip).
+        // Unlike onFailure, this must NOT delete the running entry or dispose the
+        // responder: the channel owns its own restart, so the harness stays alive
+        // for the restarted transport to deliver into, and a later stop/reload still
+        // finds the entry and disposes it exactly once.
+        onDegraded: (reason) => {
+          this.setStatus(driver.id, { kind: "degraded", reason });
+          this.logger?.warn?.(`${driver.label} channel degraded; transport is recovering.`, { reason });
+        },
+        // The transport's self-recovery succeeded. Flip back to running, reusing the
+        // preserved entry's summary. Guard on the entry: a recovery that races a
+        // stop/reload must not resurrect a torn-down channel's status.
+        onRecovered: () => {
+          const entry = this.running.get(driver.id);
+          if (entry === undefined) {
+            return;
+          }
+          this.setStatus(driver.id, { kind: "running", summary: entry.summary });
+          this.logger?.info?.(`${driver.label} channel recovered.`, {});
+        },
       });
       this.running.set(driver.id, {
         ...runningChannel,
@@ -899,8 +919,10 @@ class MonoAgentAppController implements MonoAgentApp {
       };
     }
 
-    const hasRunningChannel = statuses.some((status) => status.kind === "running");
-    if (!hasRunningChannel && statuses.some((status) => status.kind === "waiting_for_config")) {
+    // A degraded channel is still serving (transport self-recovering, harness alive),
+    // so it counts as running for the "is anything live?" check.
+    const hasServingChannel = statuses.some((status) => status.kind === "running" || status.kind === "degraded");
+    if (!hasServingChannel && statuses.some((status) => status.kind === "waiting_for_config")) {
       return {
         kind: "waiting_for_config",
         message: "Saved config, but no agent channel is running yet.",
@@ -935,7 +957,9 @@ class MonoAgentAppController implements MonoAgentApp {
   private activeTransports(): readonly string[] {
     const transports: string[] = [];
     for (const driver of this.drivers) {
-      if (this.statuses.get(driver.id)?.kind === "running") {
+      const kind = this.statuses.get(driver.id)?.kind;
+      // A degraded channel is still an active transport (self-recovering, serving).
+      if (kind === "running" || kind === "degraded") {
         transports.push(driver.id);
       }
     }
