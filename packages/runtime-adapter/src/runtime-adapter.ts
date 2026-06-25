@@ -65,6 +65,16 @@ export function defaultExecutionModeForModel(model: RuntimeModelReference): Runt
   return model.sdk === "codex" ? "cli" : "sdk";
 }
 
+/**
+ * Stable canonical string for a model reference — its authored `reference` when
+ * present, else `sdk[:provider]:model`. The one place this format lives, so
+ * callers comparing/caching/keying by model (harness override selection, app
+ * runtime cache, host/doctor display ids) stay in agreement.
+ */
+export function modelReferenceKey(model: RuntimeModelReference): string {
+  return model.reference ?? `${model.sdk}:${model.provider === undefined ? "" : `${model.provider}:`}${model.model}`;
+}
+
 export function listMonoRuntimeBackends(): readonly MonoRuntimeBackendDescriptor[] {
   return RUNTIME_BACKEND_DEFINITIONS.map((definition) => buildBackendDescriptor(definition));
 }

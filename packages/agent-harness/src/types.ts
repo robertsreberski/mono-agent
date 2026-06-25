@@ -143,6 +143,15 @@ export interface AgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  /**
+   * Factory for a runtime bound to a specific model, used when a per-request
+   * extension overrides {@link model} (cron job / webhook per-turn model). The
+   * app wires this to build a runtime whose fallback chain has the override as
+   * primary followed by the configured backups, so an override keeps failover.
+   * When unset, an override still sets the per-run model but cannot reshape a
+   * frozen fallback chain (the router would ignore it).
+   */
+  readonly runtimeForModel?: (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike;
   readonly memory?: MemoryStore;
   readonly memoryWriteMode?: MemoryWriteMode;
   readonly historyStore?: ConversationHistoryStore;
@@ -182,6 +191,13 @@ export interface AgentHarnessRuntimeOptionsInput {
 }
 
 export interface AgentHarnessRuntimeOptionsExtension {
-  readonly runtimeOptions?: Omit<RuntimeRunOptions, "model" | "messages" | "abortSignal" | "executionMode" | "onEvent">;
+  // `model`/`effort` are allowed so a per-request extension can override them for
+  // a single turn (cron/webhook per-trigger model). The harness applies them with
+  // precedence over its defaults. `Partial` keeps every field optional (an
+  // extension that sets only `mcpServers` stays valid). `messages`/`abortSignal`/
+  // `onEvent` and `executionMode` stay harness-owned: executionMode is derived
+  // from the effective model + host config in the harness, so an extension must
+  // not set it.
+  readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "executionMode">>;
   readonly cleanup?: () => void | Promise<void>;
 }

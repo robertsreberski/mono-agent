@@ -9,7 +9,8 @@ import {
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
-import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
+import { modelReferenceKey } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import {
   isAppCoreConfigError,
@@ -38,6 +39,7 @@ import {
   createMemoryRecallRuntimeExtension,
   resolveMemoryRecallSettings,
 } from "./memory-recall.js";
+import { createRequestModelOverrideRuntimeExtension } from "./request-model-override.js";
 import { resolveNotifyDestinations } from "./notify-destinations.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
@@ -672,11 +674,28 @@ class MonoAgentAppController implements MonoAgentApp {
     const memoryRecall = this.memoryRecallRuntimeOptions(coreConfig);
     const supermemoryMcp = this.supermemoryMcpRuntimeOptions(coreConfig);
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
-    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([memoryRecall, supermemoryMcp, adapterSendTools]);
+    // Always active: a no-op for interactive turns (which carry no cron/webhook
+    // metadata), it applies the per-trigger model/effort override otherwise.
+    const requestModelOverride = this.requestModelOverrideRuntimeOptions();
+    const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
+      memoryRecall,
+      supermemoryMcp,
+      adapterSendTools,
+      requestModelOverride,
+    ]);
+    // The override factory is only needed when fallbacks are configured: the
+    // fallback router freezes the model chain, so an override must run on a runtime
+    // whose chain has it as primary. With no fallbacks the shared (plain) runtime
+    // honors the per-run model directly, so building a separate runtime would be
+    // redundant. Omit the factory there and the harness uses the shared runtime.
+    const runtimeForModel = (coreConfig.runtime.fallbackModels?.length ?? 0) > 0
+      ? this.buildRuntimeForModel(coreConfig)
+      : undefined;
     const observabilityContext = await this.observabilityContext();
     const responder = createConfiguredAgentResponder({
       config: coreConfig,
       runtime,
+      ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
       ...(memory !== undefined && { memory }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
       // Thread run-identifying context onto exported spans and surface per-run
@@ -686,6 +705,45 @@ class MonoAgentAppController implements MonoAgentApp {
       exporterWarn: (warning) => this.recordExporterWarning(warning),
     });
     return responder;
+  }
+
+  /**
+   * Per-request extension that applies a cron/webhook per-trigger model + effort
+   * override (validated, warn-and-ignore on bad input). Composed alongside the
+   * memory/adapter extensions.
+   */
+  private requestModelOverrideRuntimeOptions(): RuntimeOptionsExtension {
+    const extension = createRequestModelOverrideRuntimeExtension(this.logger);
+    return async (input) => extension({ request: input.request });
+  }
+
+  /**
+   * Memoized factory for runtimes bound to a per-request override model. Reuses
+   * createConfiguredAgentRuntime so the override becomes the fallback-chain
+   * primary with the configured backups after it (override + keep fallbacks).
+   * Built runtimes register in `activeRuntimes`, which is disposed on `stop()`
+   * (config reload rebuilds the responder but does not drain prior runtimes —
+   * same lifetime as the base runtime built in `buildResponder`).
+   */
+  private buildRuntimeForModel(
+    coreConfig: MonoAgentConfig,
+  ): (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike {
+    const cache = new Map<string, MonoRuntimeLike>();
+    return (model, executionMode) => {
+      const key = `${modelReferenceKey(model)}|${executionMode ?? ""}`;
+      const cached = cache.get(key);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const runtime = createConfiguredAgentRuntime({
+        config: coreConfig,
+        model,
+        ...(executionMode === undefined ? {} : { executionMode }),
+      });
+      cache.set(key, runtime);
+      this.activeRuntimes.push(runtime);
+      return runtime;
+    };
   }
 
   /**

@@ -33,6 +33,7 @@ import {
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
   defaultExecutionModeForModel,
+  modelReferenceKey,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
 } from "@mono-agent/runtime-adapter";
@@ -68,6 +69,12 @@ export interface ConfiguredAgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  /**
+   * Factory for a runtime bound to a per-request override model (cron/webhook
+   * per-trigger model). Wired by the app so override runtimes share the
+   * configured fallback chain and participate in config-reload disposal.
+   */
+  readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
   /**
    * Exporter-context fields the factory input cannot supply. Surfaced on the
    * exported root span so Phoenix traces map back to the running host and its
@@ -203,10 +210,13 @@ function fallbackChainForConfig(
   }
   const primaryModel = options?.model ?? config.runtime.model;
   const primaryExecutionMode = options?.executionMode ?? config.runtime.executionMode;
+  // Drop any fallback equal to the primary so a per-trigger override that happens
+  // to match a configured backup is not retried against itself before advancing.
+  const primaryKey = modelReferenceKey(primaryModel);
   return {
     fallbackChain: [
       { model: primaryModel, executionMode: primaryExecutionMode as RuntimeExecutionMode },
-      ...fallbackModels.map((model) => ({ model })),
+      ...fallbackModels.filter((model) => modelReferenceKey(model) !== primaryKey).map((model) => ({ model })),
     ],
   };
 }
@@ -268,6 +278,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
     ...(options.runtimeOptionsForRequest === undefined
       ? {}
       : { runtimeOptionsForRequest: options.runtimeOptionsForRequest }),
+    ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     historyStore: options.historyStore ?? createInMemoryHistoryStore({ maxMessages: historyMaxMessages(config.runtime.maxTurns) }),
@@ -628,7 +639,7 @@ function textFromMemoryRuntimeResult(
 }
 
 function referenceOf(model: RuntimeModelReference): string {
-  return model.reference ?? `${model.sdk}:${model.provider === undefined ? "" : `${model.provider}:`}${model.model}`;
+  return modelReferenceKey(model);
 }
 
 function mergeStaticRuntimeOptions(

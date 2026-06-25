@@ -50,6 +50,24 @@ describe("parseWebhookEndpointMarkdown", () => {
     });
   });
 
+  it("reads per-endpoint model and effort overrides from frontmatter", () => {
+    const endpoint = parseWebhookEndpointMarkdown(
+      "delegate.md",
+      [
+        "---",
+        "path: /delegate",
+        "model: claude:claude-opus-4-8",
+        "effort: high",
+        "---",
+        "Run the delegated deep research.",
+      ].join("\n"),
+      "sync",
+    );
+
+    expect(endpoint.model).toBe("claude:claude-opus-4-8");
+    expect(endpoint.effort).toBe("high");
+  });
+
   it("defaults name to the filename stem and mode to the provided default", () => {
     const endpoint = parseWebhookEndpointMarkdown("results.md", "---\npath: /results\n---\nFile it.", "async");
     expect(endpoint.name).toBe("results");

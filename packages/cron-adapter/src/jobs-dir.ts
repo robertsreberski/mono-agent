@@ -90,6 +90,8 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
   const maxRunMs = readOptionalPositiveInteger(meta.maxRunMs, `${fileName} frontmatter \`maxRunMs\``, fileName);
   const notify = readBoolean(meta.notify, `${fileName} frontmatter \`notify\``, false, invalidConfig);
   const notifyConversationId = normalizeOptionalString(meta.notifyConversationId);
+  const model = normalizeOptionalString(meta.model);
+  const effort = normalizeOptionalString(meta.effort);
 
   return {
     id,
@@ -101,6 +103,8 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
     ...(maxRunMs === undefined ? {} : { maxRunMs }),
     ...(notify ? { notify } : {}),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
   };
 }
 

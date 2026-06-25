@@ -57,6 +57,20 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 | `jobs[].maxRunMs` | number | no | `1200000` | Per-job watchdog in milliseconds. |
 | `jobs[].notify` | boolean | no | `false` | Deliver the successful final answer via native cron notification. |
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. |
+| `jobs[].model` | string | no | `runtime.model` | Per-job model override (e.g. `claude:claude-opus-4-8`). Becomes this turn's primary, keeping `runtime.fallbackModels` as backups. See [Per-trigger model & effort](#per-trigger-model--effort). |
+| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). |
+
+## Per-trigger model & effort
+
+A job can run on a different model or reasoning effort than the agent's default — useful for a nightly deep-research job that should run on a more powerful (and pricier) model than the interactive default. Set `model` and/or `effort` on the job:
+
+```json
+{ "id": "deep-research", "expression": "0 3 * * *", "prompt": "…", "model": "claude:claude-opus-4-8", "effort": "high" }
+```
+
+The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved. An invalid model/effort value is logged and ignored (the turn falls back to the default). Only the overridden turn is affected — interactive turns keep using `runtime.model`.
+
+A model-override tick runs **ephemerally**: it does not resume or persist a shared continuous session (so a different model never mixes into the conversation's session lineage), though it still sees the job's run history. Overrides target cloud/registry models; overriding to a model served by a different local provider than the host default is not supported. (An `effort`-only override keeps the same model and is unaffected.)
 
 ## Environment variables
 
@@ -64,7 +78,7 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 | --- | --- | --- |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
-| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (`id`, `expression`, `timezone`, `prompt`, `conversationId`, `notify`, `notifyConversationId`). |
+| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (`id`, `expression`, `timezone`, `prompt`, `conversationId`, `notify`, `notifyConversationId`, `model`, `effort`). |
 
 See [Environment variables](/config/env-vars/) for the full precedence rules.
 

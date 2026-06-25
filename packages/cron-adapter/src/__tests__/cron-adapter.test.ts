@@ -32,6 +32,8 @@ describe("Cron adapter", () => {
         conversationId: "cron:heartbeat",
         notify: true,
         notifyConversationId: "telegram:42",
+        model: "claude:claude-opus-4-8",
+        effort: "high",
       }],
       now: () => new Date(Date.now()),
       onResult: (result) => {
@@ -50,6 +52,8 @@ describe("Cron adapter", () => {
             enabled: true,
             conversationId: "telegram:42",
           },
+          model: "claude:claude-opus-4-8",
+          effort: "high",
           scheduledAt: "1970-01-01T00:01:00.000Z",
           startedAt: "1970-01-01T00:01:00.000Z",
         }),

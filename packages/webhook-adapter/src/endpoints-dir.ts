@@ -90,6 +90,8 @@ export function parseWebhookEndpointMarkdown(
   const enabled = readBoolean(meta.enabled, `${fileName} frontmatter \`enabled\``, true, invalidConfig);
   const notify = readBoolean(meta.notify, `${fileName} frontmatter \`notify\``, false, invalidConfig);
   const notifyConversationId = normalizeOptionalString(meta.notifyConversationId);
+  const model = normalizeOptionalString(meta.model);
+  const effort = normalizeOptionalString(meta.effort);
   const prompt = body.trim().length === 0 ? undefined : body.trim();
 
   return {
@@ -99,6 +101,8 @@ export function parseWebhookEndpointMarkdown(
     enabled,
     ...(notify ? { notify } : {}),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
     ...(prompt === undefined ? {} : { prompt }),
   };
 }

@@ -99,6 +99,49 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("carries endpoint model/effort and lets the request body override them", async () => {
+    const seen: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        seen.push(request.metadata?.webhook);
+        await stream.append("ok");
+        return {};
+      },
+    };
+
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [
+        {
+          name: "delegate",
+          path: "/delegate",
+          mode: "sync",
+          model: "claude:claude-sonnet-4-6",
+          effort: "low",
+        },
+      ],
+      responder,
+    });
+
+    try {
+      // Request body model/effort win over the endpoint defaults (delegate use case).
+      await fetch(
+        `${server.url}/delegate`,
+        postJson({ text: "deep research", conversationId: "c1", mode: "sync", model: "claude:claude-opus-4-8", effort: "high" }),
+      );
+      // No body override: endpoint defaults apply.
+      await fetch(`${server.url}/delegate`, postJson({ text: "quick", conversationId: "c2", mode: "sync" }));
+
+      expect(seen).toEqual([
+        expect.objectContaining({ model: "claude:claude-opus-4-8", effort: "high" }),
+        expect.objectContaining({ model: "claude:claude-sonnet-4-6", effort: "low" }),
+      ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("logs and contains rejected async onResult hooks", async () => {
     const logger = { warn: vi.fn() };
     const server = await startWebhookAdapter({

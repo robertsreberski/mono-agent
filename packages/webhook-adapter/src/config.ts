@@ -25,6 +25,10 @@ export interface WebhookEndpointConfig {
   readonly prompt?: string;
   readonly notify?: boolean;
   readonly notifyConversationId?: string;
+  /** Per-endpoint runtime model override (e.g. `claude:claude-opus-4-8`). A request body `model` wins. */
+  readonly model?: string;
+  /** Per-endpoint reasoning effort override (e.g. `high`). A request body `effort` wins. */
+  readonly effort?: string;
 }
 
 export interface WebhookAdapterConfig {
@@ -138,7 +142,16 @@ function loadConfigEndpoints(
   const prompt = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_PROMPT);
   const notify = readBoolean(env.MONO_AGENT_WEBHOOK_NOTIFY, "MONO_AGENT_WEBHOOK_NOTIFY", false, invalidConfig);
   const notifyConversationId = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID);
-  if (path === undefined && prompt === undefined && !notify && notifyConversationId === undefined) {
+  const model = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_MODEL);
+  const effort = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_EFFORT);
+  if (
+    path === undefined &&
+    prompt === undefined &&
+    !notify &&
+    notifyConversationId === undefined &&
+    model === undefined &&
+    effort === undefined
+  ) {
     return [];
   }
   return [{
@@ -149,6 +162,8 @@ function loadConfigEndpoints(
     ...(prompt === undefined ? {} : { prompt }),
     ...(notify ? { notify } : {}),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
   }];
 }
 
@@ -243,6 +258,8 @@ function normalizeEndpointConfig(
   const prompt = asOptionalString(entry.prompt);
   const notify = asOptionalBoolean(entry.notify, "webhook.endpoints[].notify", { index });
   const notifyConversationId = asOptionalString(entry.notifyConversationId);
+  const model = asOptionalString(entry.model);
+  const effort = asOptionalString(entry.effort);
   const name = asOptionalString(entry.name) ?? deriveEndpointName(path);
   const enabled = typeof entry.enabled === "boolean" ? entry.enabled : true;
   return {
@@ -253,6 +270,8 @@ function normalizeEndpointConfig(
     ...(prompt === undefined ? {} : { prompt }),
     ...(notify === undefined ? {} : { notify }),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
   };
 }
 
@@ -286,6 +305,8 @@ function layerWebhookJsonOntoEnv(
     { env: "MONO_AGENT_WEBHOOK_PROMPT", value: section.prompt },
     { env: "MONO_AGENT_WEBHOOK_NOTIFY", value: section.notify, kind: "boolean" },
     { env: "MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID", value: section.notifyConversationId },
+    { env: "MONO_AGENT_WEBHOOK_MODEL", value: section.model },
+    { env: "MONO_AGENT_WEBHOOK_EFFORT", value: section.effort },
     { env: "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", value: section.allowNonLoopback, kind: "boolean" },
     { env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", value: section.defaultMode },
     { env: "MONO_AGENT_WEBHOOK_RETENTION_MS", value: section.retentionMs, kind: "integer" },
