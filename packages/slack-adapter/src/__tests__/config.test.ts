@@ -54,6 +54,75 @@ describe("loadSlackAdapterConfig", () => {
     });
   });
 
+  it("loads Socket Mode resilience tuning from JSON, lets env override it, and redacts it", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "b",
+          appToken: "a",
+          allowAllChannels: true,
+          heartbeatIntervalMs: 15000,
+          heartbeatTimeoutMs: 120000,
+          reconnectInitialBackoffMs: 250,
+          reconnectMaxBackoffMs: 20000,
+          reconnectStabilityMs: 45000,
+          reconnectStartupGraceMs: 8000,
+          drainDeadlineMs: 4000,
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
+    expect(config.heartbeatIntervalMs).toBe(15000);
+    expect(config.heartbeatTimeoutMs).toBe(120000);
+    expect(config.reconnectInitialBackoffMs).toBe(250);
+    expect(config.reconnectMaxBackoffMs).toBe(20000);
+    expect(config.reconnectStabilityMs).toBe(45000);
+    expect(config.reconnectStartupGraceMs).toBe(8000);
+    expect(config.drainDeadlineMs).toBe(4000);
+
+    // env wins over JSON.
+    const overridden = await loadSlackAdapterConfig({
+      env: { MONO_AGENT_SLACK_RECONNECT_MAX_BACKOFF_MS: "60000" },
+      jsonPath: path,
+    });
+    expect(overridden.reconnectMaxBackoffMs).toBe(60000);
+
+    // The tuning is plain (non-secret) and surfaces in the redacted view.
+    expect(redactSlackAdapterConfig(config).reconnectMaxBackoffMs).toBe(20000);
+  });
+
+  it("defaults Socket Mode tuning to undefined when unset (runner defaults apply)", async () => {
+    const config = await loadSlackAdapterConfig({
+      env: {
+        MONO_AGENT_SLACK_ENABLED: "true",
+        MONO_AGENT_SLACK_BOT_TOKEN: "b",
+        MONO_AGENT_SLACK_APP_TOKEN: "a",
+        MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS: "true",
+      },
+    });
+    expect(config.reconnectMaxBackoffMs).toBeUndefined();
+    expect(config.heartbeatTimeoutMs).toBeUndefined();
+  });
+
+  it("rejects a non-integer Socket Mode tuning value", async () => {
+    await expect(
+      loadSlackAdapterConfig({
+        env: {
+          MONO_AGENT_SLACK_ENABLED: "true",
+          MONO_AGENT_SLACK_BOT_TOKEN: "b",
+          MONO_AGENT_SLACK_APP_TOKEN: "a",
+          MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS: "true",
+          MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS: "soon",
+        },
+      }),
+    ).rejects.toThrow(SlackAdapterConfigError);
+  });
+
   it("lets env override JSON and supports explicit allow-all", async () => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(

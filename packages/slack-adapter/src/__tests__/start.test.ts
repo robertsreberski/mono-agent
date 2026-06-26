@@ -171,6 +171,44 @@ describe("startSlackAdapter", () => {
       }),
     ).rejects.toThrow(/allowedChannelIds/);
   });
+
+  it("forwards onConnectionLost/onConnectionRestored through to the Socket Mode runner", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = new FakeSlackApi();
+      const sockets: FakeWebSocket[] = [];
+      const lost: string[] = [];
+      let restored = 0;
+      const started = await startSlackAdapter(buildOptions({
+        createApi: () => api,
+        webSocketFactory: () => {
+          const socket = new FakeWebSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        responder: responderFrom(async () => ({ text: "ok" })),
+        reconnect: { initialMs: 0, maxMs: 0, stabilityMs: 1000 },
+        heartbeat: { intervalMs: 0, timeoutMs: 0 },
+        onConnectionLost: (reason) => { lost.push(reason); },
+        onConnectionRestored: () => { restored += 1; },
+      }));
+
+      try {
+        await vi.waitFor(() => expect(sockets).toHaveLength(1));
+        sockets[0]?.emitOpen();
+        sockets[0]?.emitMessage({ type: "disconnect", reason: "too_many_websockets" });
+        await vi.waitFor(() => expect(lost).toEqual(["too_many_websockets"]));
+        await vi.waitFor(() => expect(sockets).toHaveLength(2));
+        sockets[1]?.emitOpen();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(restored).toBe(1);
+      } finally {
+        await started.stop();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function buildOptions(

@@ -1,7 +1,9 @@
 import {
   layerJsonOntoEnv,
+  normalizeOptionalString,
   readBoolean,
   readCsv,
+  readInteger,
   readJsonSection,
   readRequired,
   readSettingsJson,
@@ -53,6 +55,16 @@ export interface SlackAdapterConfig {
   readonly shortcuts: readonly SlackShortcutConfig[];
   /** App Home tab config, read from the `slack.homeTab` JSON object. */
   readonly homeTab: SlackHomeTabConfig;
+  // Optional Socket Mode resilience tuning. Each is undefined unless the operator
+  // sets it; the Socket Mode runner then applies its own defaults. See the runner's
+  // SlackSocketModeRunnerBackoffOptions / SlackSocketModeRunnerHeartbeatOptions.
+  readonly heartbeatIntervalMs?: number;
+  readonly heartbeatTimeoutMs?: number;
+  readonly reconnectInitialBackoffMs?: number;
+  readonly reconnectMaxBackoffMs?: number;
+  readonly reconnectStabilityMs?: number;
+  readonly reconnectStartupGraceMs?: number;
+  readonly drainDeadlineMs?: number;
 }
 
 export interface RedactedSlackAdapterConfig {
@@ -66,6 +78,14 @@ export interface RedactedSlackAdapterConfig {
   readonly stripMentionText: boolean;
   readonly shortcuts: { readonly count: number };
   readonly homeTab: { readonly enabled: boolean; readonly buttonCount: number };
+  // Tuning values are plain integers (non-secret) — echoed as-is for the operator view.
+  readonly heartbeatIntervalMs?: number;
+  readonly heartbeatTimeoutMs?: number;
+  readonly reconnectInitialBackoffMs?: number;
+  readonly reconnectMaxBackoffMs?: number;
+  readonly reconnectStabilityMs?: number;
+  readonly reconnectStartupGraceMs?: number;
+  readonly drainDeadlineMs?: number;
 }
 
 export type SlackAdapterConfigErrorCode =
@@ -178,7 +198,58 @@ export async function loadSlackAdapterConfig(
     stripMentionText,
     shortcuts,
     homeTab,
+    ...readSlackSocketTuning(env),
   };
+}
+
+/** Field name → env var for the optional integer Socket Mode resilience knobs. */
+const SLACK_SOCKET_TUNING_ENV: ReadonlyArray<readonly [keyof SlackSocketTuning, string]> = [
+  ["heartbeatIntervalMs", "MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS"],
+  ["heartbeatTimeoutMs", "MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS"],
+  ["reconnectInitialBackoffMs", "MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS"],
+  ["reconnectMaxBackoffMs", "MONO_AGENT_SLACK_RECONNECT_MAX_BACKOFF_MS"],
+  ["reconnectStabilityMs", "MONO_AGENT_SLACK_RECONNECT_STABILITY_MS"],
+  ["reconnectStartupGraceMs", "MONO_AGENT_SLACK_RECONNECT_STARTUP_GRACE_MS"],
+  ["drainDeadlineMs", "MONO_AGENT_SLACK_DRAIN_DEADLINE_MS"],
+];
+
+type SlackSocketTuning = Pick<
+  SlackAdapterConfig,
+  | "heartbeatIntervalMs"
+  | "heartbeatTimeoutMs"
+  | "reconnectInitialBackoffMs"
+  | "reconnectMaxBackoffMs"
+  | "reconnectStabilityMs"
+  | "reconnectStartupGraceMs"
+  | "drainDeadlineMs"
+>;
+
+/**
+ * Read the optional integer Socket Mode resilience knobs. Each is omitted (not 0) when
+ * unset so the runner falls back to its own default; an invalid value is a hard error.
+ */
+function readSlackSocketTuning(env: Record<string, string | undefined>): SlackSocketTuning {
+  const tuning: { -readonly [K in keyof SlackSocketTuning]?: number } = {};
+  for (const [key, name] of SLACK_SOCKET_TUNING_ENV) {
+    const raw = normalizeOptionalString(env[name]);
+    if (raw === undefined) {
+      continue;
+    }
+    tuning[key] = readInteger(raw, name, 0, invalidConfig, { min: 0, max: 3_600_000 });
+  }
+  return tuning;
+}
+
+/** Copy only the set Socket Mode tuning fields from a loaded config (for redaction/forwarding). */
+function extractSlackSocketTuning(config: SlackAdapterConfig): SlackSocketTuning {
+  const tuning: { -readonly [K in keyof SlackSocketTuning]?: number } = {};
+  for (const [key] of SLACK_SOCKET_TUNING_ENV) {
+    const value = config[key];
+    if (value !== undefined) {
+      tuning[key] = value;
+    }
+  }
+  return tuning;
 }
 
 /**
@@ -339,6 +410,8 @@ export function redactSlackAdapterConfig(
     stripMentionText: config.stripMentionText,
     shortcuts: { count: config.shortcuts.length },
     homeTab: { enabled: config.homeTab.enabled, buttonCount: config.homeTab.buttons.length },
+    // Plain (non-secret) tuning values, only the ones the operator actually set.
+    ...extractSlackSocketTuning(config),
   };
 }
 
@@ -356,5 +429,12 @@ function layerSlackJsonOntoEnv(
     { env: "MONO_AGENT_SLACK_BOT_USER_IDS", value: section.botUserIds, kind: "csv" },
     { env: "MONO_AGENT_SLACK_MENTION_TEXT_ALIASES", value: section.mentionTextAliases, kind: "csv" },
     { env: "MONO_AGENT_SLACK_STRIP_MENTION_TEXT", value: section.stripMentionText, kind: "boolean" },
+    { env: "MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS", value: section.heartbeatIntervalMs, kind: "integer" },
+    { env: "MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS", value: section.heartbeatTimeoutMs, kind: "integer" },
+    { env: "MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS", value: section.reconnectInitialBackoffMs, kind: "integer" },
+    { env: "MONO_AGENT_SLACK_RECONNECT_MAX_BACKOFF_MS", value: section.reconnectMaxBackoffMs, kind: "integer" },
+    { env: "MONO_AGENT_SLACK_RECONNECT_STABILITY_MS", value: section.reconnectStabilityMs, kind: "integer" },
+    { env: "MONO_AGENT_SLACK_RECONNECT_STARTUP_GRACE_MS", value: section.reconnectStartupGraceMs, kind: "integer" },
+    { env: "MONO_AGENT_SLACK_DRAIN_DEADLINE_MS", value: section.drainDeadlineMs, kind: "integer" },
   ]);
 }
