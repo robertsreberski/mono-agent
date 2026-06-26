@@ -61,12 +61,18 @@ export interface SlackAdapterStartOptions {
   /** Record a posted message `(channel, ts) → conversationId` for later reply resolution. */
   readonly recordPostedMessage?: (channelId: string, ts: string, conversationId: string) => void;
 
-  /** Reconnect backoff bounds forwarded to the Socket Mode runner. */
+  /** Reconnect backoff bounds (and jitter/stability/startup-grace/drain tuning) forwarded to the Socket Mode runner. */
   readonly reconnect?: SlackSocketModeRunnerBackoffOptions;
   /** Heartbeat watchdog for detecting and recycling a silently dead socket. */
   readonly heartbeat?: SlackSocketModeRunnerHeartbeatOptions;
   /** Observe every Socket Mode event handling result. */
   readonly onEventResult?: (result: SlackEventHandlingResult) => void | Promise<void>;
+  /** Called once when the connection drops into the reconnect/backoff loop (degraded). Wire to the app's onDegraded. */
+  readonly onConnectionLost?: (reason: string) => void;
+  /** Called once a reconnect has stayed up for the stability window after a prior loss (recovered). Wire to onRecovered. */
+  readonly onConnectionRestored?: () => void;
+  /** Injected RNG for backoff jitter; defaults to Math.random. Tests inject a deterministic value. */
+  readonly random?: () => number;
 
   /**
    * Injected Slack Web API factory. Defaults to constructing a real
@@ -224,6 +230,15 @@ function buildRunnerOptions(
   }
   if (options.onEventResult !== undefined) {
     runnerOptions.onEventResult = options.onEventResult;
+  }
+  if (options.onConnectionLost !== undefined) {
+    runnerOptions.onConnectionLost = options.onConnectionLost;
+  }
+  if (options.onConnectionRestored !== undefined) {
+    runnerOptions.onConnectionRestored = options.onConnectionRestored;
+  }
+  if (options.random !== undefined) {
+    runnerOptions.random = options.random;
   }
   // Only subscribe to interactivity when shortcuts or Home-tab buttons are bound,
   // so the runner's behavior is unchanged for agents that wire none.

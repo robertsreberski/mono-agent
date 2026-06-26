@@ -10,9 +10,14 @@ import type {
   TelegramAdapterErrorText,
   TelegramAdapterStartOptions,
 } from "@mono-agent/telegram-adapter";
+import type { SlackAdapterStartOptions } from "@mono-agent/slack-adapter";
 
 import { startMonoAgentApp } from "../app.js";
-import { createTelegramChannelDriver, defaultChannelDrivers } from "../channels.js";
+import {
+  createSlackChannelDriver,
+  createTelegramChannelDriver,
+  defaultChannelDrivers,
+} from "../channels.js";
 
 let dir: string;
 
@@ -457,6 +462,92 @@ describe("startMonoAgentApp", () => {
     // The adapter's later recovery flips the channel back to running.
     captured?.onPollingRecovered?.();
     expect(onRecovered).toHaveBeenCalledTimes(1);
+
+    await running.stop();
+  });
+
+  it("routes a Slack Socket Mode loss to onDegraded (not the fatal onFailure) and recovery to onRecovered", async () => {
+    const onFailure = vi.fn();
+    const onDegraded = vi.fn();
+    const onRecovered = vi.fn();
+    let captured: SlackAdapterStartOptions | undefined;
+    const driver = createSlackChannelDriver({
+      startAdapter: async (options: SlackAdapterStartOptions) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          adapter: { notify: async () => ({ delivered: true }) },
+        } as never;
+      },
+    });
+
+    const running = await driver.start({
+      config: {
+        enabled: true,
+        botToken: "xoxb",
+        appToken: "xapp",
+        allowedChannelIds: ["D1"],
+        allowAllChannels: false,
+        botUserIds: [],
+        mentionTextAliases: [],
+        stripMentionText: false,
+      } as never,
+      coreConfig: baseConfig() as never,
+      responder: { async respond() { return { text: "ok" }; } },
+      cwd: dir,
+      onFailure,
+      onDegraded,
+      onRecovered,
+    });
+
+    // A Socket Mode drop is recoverable (the runner reconnects with backoff) →
+    // degraded (responder/harness kept alive), NOT the fatal onFailure path.
+    captured?.onConnectionLost?.("too_many_websockets");
+    expect(onDegraded).toHaveBeenCalledWith("too_many_websockets");
+    expect(onFailure).not.toHaveBeenCalled();
+
+    // A reconnect that stays up past the stability window flips back to running.
+    captured?.onConnectionRestored?.();
+    expect(onRecovered).toHaveBeenCalledTimes(1);
+
+    await running.stop();
+  });
+
+  it("forwards Slack Socket Mode tuning config into the adapter's reconnect/heartbeat options", async () => {
+    let captured: SlackAdapterStartOptions | undefined;
+    const driver = createSlackChannelDriver({
+      startAdapter: async (options: SlackAdapterStartOptions) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          adapter: { notify: async () => ({ delivered: true }) },
+        } as never;
+      },
+    });
+
+    const running = await driver.start({
+      config: {
+        enabled: true,
+        botToken: "xoxb",
+        appToken: "xapp",
+        allowedChannelIds: ["D1"],
+        allowAllChannels: false,
+        botUserIds: [],
+        mentionTextAliases: [],
+        stripMentionText: false,
+        reconnectMaxBackoffMs: 45000,
+        reconnectStabilityMs: 20000,
+        heartbeatTimeoutMs: 120000,
+      } as never,
+      coreConfig: baseConfig() as never,
+      responder: { async respond() { return { text: "ok" }; } },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+
+    expect(captured?.reconnect?.maxMs).toBe(45000);
+    expect(captured?.reconnect?.stabilityMs).toBe(20000);
+    expect(captured?.heartbeat?.timeoutMs).toBe(120000);
 
     await running.stop();
   });
