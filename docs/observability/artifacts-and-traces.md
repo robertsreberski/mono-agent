@@ -15,7 +15,7 @@ This page covers where artifacts land, the latency-attribution events inside the
 Each run writes two files into `artifacts.dir`:
 
 - `run-<id>.events.jsonl` — an append-only event stream (assistant deltas, tool calls/results, timing, usage/cost).
-- `run-<id>.summary.json` — a roll-up of the run (final `status`, aggregate usage/cost, model). See [Run status](#run-status-and-stale-run-reconciliation) for the status values.
+- `run-<id>.summary.json` — a roll-up of the run (final `status`, aggregate usage/cost, model). See [Run status](#run-status-and-stale-run-reconciliation) for the status values. A failed run also persists `error` (the redacted underlying provider/runtime message — the "why" behind `failureKind`) and, when the fallback router exhausted its chain, `failoverHistory` — an array of per-attempt records (`{ model, failureKind, subkind, requestId }`) canonicalized from the router's `ModelRef` + `retryableSubkind` shape. These show *which* models were tried and *how* each failed, instead of only the collapsed `provider_unavailable_exhausted` kind.
 
 Artifacts are written for every run regardless of whether any exporter is configured. Secrets are redacted and long strings are truncated before they hit disk, so the files are safe to keep and to ship to a viewer. The same tool-bloat guard that truncates oversized tool output persists the full payload here as an artifact (coverage: `auto`).
 
@@ -29,7 +29,7 @@ Artifacts are written for every run regardless of whether any exporter is config
 | --- | --- | --- | --- |
 | `artifacts.dir` | `./.mono-agent/artifacts` | `MONO_AGENT_ARTIFACT_DIR` | config |
 
-These files are exactly what the [backfill command](/observability/phoenix-and-backfill/) replays into Phoenix after the fact — `run-*.summary.json` plus `run-*.events.jsonl` are read back and exported with their original historical timestamps.
+These files are exactly what the [backfill command](/observability/phoenix-and-backfill/) replays into Phoenix after the fact — `run-*.summary.json` plus `run-*.events.jsonl` are read back and exported with their original historical timestamps. The `error` / `failoverHistory` fields are written into the live record *and* re-canonicalized by the recorded-runs list reader, so they surface for both freshly-failed runs and re-read artifacts (artifacts written before this field was added carry no source data to recover).
 
 ### Run status and stale-run reconciliation
 

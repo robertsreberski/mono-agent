@@ -145,11 +145,21 @@ This catches the class of silent failure where an expired OAuth token quietly br
 
 ### Runs health
 
-`validate` includes a **Runs health** section that reads the configured local run artifact directory only. It inspects the most recent recorded summaries, reports recent counts by status, warns for stale `running` summaries, surfaces `cancelled` / `interrupted` runs, and prints a compact failure-kind breakdown with explanations and next steps for known kinds such as `usage_limit`, `process_death`, `cancelled`, `provider_unavailable`, and `provider_unavailable_exhausted`. Unknown kinds use a generic "inspect the artifact summary and logs" explanation. Advisory lines use the `[WARN]` prefix and yield `waiting`, not `error`.
+`validate` includes a **Runs health** section that reads the configured local run artifact directory only. It prints the exact corpus size as `Recorded runs: <N> total; showing <M> recent (max 50).`, a `Last runs: <runId> <status> <age> ago, ...` line (relative ages render as `Ns/Nm/Nh/Nd ago`, or `age unknown` when the timestamp is missing or unparseable; capped at 5 examples with an `and N more` suffix), reports recent counts by status, warns for stale `running` summaries, surfaces `cancelled` / `interrupted` runs, and prints a compact failure-kind breakdown with explanations and next steps for known kinds such as `usage_limit`, `process_death`, `cancelled`, `provider_unavailable`, and `provider_unavailable_exhausted`. Unknown kinds use a generic "inspect the artifact summary and logs" explanation. Advisory lines use the `[WARN]` prefix and yield `waiting`, not `error`.
 
-An empty or missing artifact directory reports `disabled` and stays non-fatal. The section does not read event JSONL files, export anything, reconcile stale runs, or add network probes to the `start` / `restart` preflight.
+An empty or missing artifact directory prints `No runs recorded yet.`, reports `disabled`, and stays non-fatal. The section does not read event JSONL files, export anything, reconcile stale runs, or add network probes to the `start` / `restart` preflight.
 
 `status` and foreground `start --foreground` use the same local run-summary display for the running instance when the trace-source manifest includes an artifact directory, so operators can see active selected skills, the exact recorded-run count, the most recent run ids with status and age, failure-kind counts with explanations, and any `running` summaries whose owner process is gone without running a separate validation command.
+
+### Secret placement
+
+`validate` includes a **Secret placement** section that warns when a secret-marked config field (e.g. `memory.embeddings.apiKey`, `memory.supermemory.apiKey`) is resolved from the committed `mono-agent.config.json` rather than from `.env`. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
+
+```text
+[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).
+```
+
+The warning prints only the stable field id and env-var name — never the secret value. The section is omitted entirely when no secret is JSON-sourced (e.g. when the same secret is supplied via `.env`). The same warnings are printed by [`mono-agent config`](/config/) after the resolved-config view.
 
 ## `start`
 
@@ -174,8 +184,8 @@ mono-agent start --foreground
 On start the CLI prints per-section status blocks:
 
 - **instance** — the resolved config path and traceability status (`running (source <id>)`, or `<kind>: <reason>`).
-- **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, `includeSensitiveData=true` when enabled, any last warning/error, and where JSONL artifacts remain local.
-- **channels** — one line per configured channel with a status badge: `running` (plus a `key=value` summary of its facts) or `<kind>: <reason>` (e.g. `disabled`, `waiting`).
+- **observability** — the exporter status: when configured, the Phoenix endpoint, the Phoenix app URL, any last warning/error, and where JSONL artifacts remain local. When `includeSensitiveData` is enabled it surfaces an explicit yellow `[WARN] includeSensitiveData=true exports redacted/capped user input, assistant replies, tool args/results, and system prompt to Phoenix at <endpoint>; substantive run content leaves this machine.` line (also emitted across `validate` / `status` / background output). The export remains a valid opt-in — this warning does not flip `report.ok` or the `validate` status.
+- **channels** — one line per configured channel with a status badge: `running` (plus a `key=value` summary of its facts) or `<kind>: <reason>` (e.g. `disabled`, `waiting`, `degraded`). A channel rendered `degraded: <reason>` carries a warning badge — it is a non-fatal, still-serving state where the live transport dropped but the responder is kept alive and the adapter is self-recovering (e.g. a Telegram poll crash on a network switch). `degraded` counts as an active/serving transport (not idle, not failed) and flips back to `running` once the transport recovers.
 - **runs health** — in foreground mode, the active selected skills, local artifact directory, total recorded summaries, last runs with relative ages, status counts, stale/process-gone `running` summaries, and compact failure-kind counts with explanations.
 
 A channel shown as `disabled` is opted out via its `enabled` flag rather than misconfigured. See [Channels overview](/channels/) and [Artifacts & traces](/observability/artifacts-and-traces/).

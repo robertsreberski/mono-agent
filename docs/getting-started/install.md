@@ -75,6 +75,8 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | Command | Purpose |
 | --- | --- |
 | `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. |
+| `setup` | Guided, terminal-native recipe setup (recipe chooser, non-secret prompts, auto-validate, and a secrets checklist) when attached to a TTY; falls back to flag-driven `init` in non-TTY contexts. |
+| `recipes` | List executable setup recipes (`list`) or show a recipe's generated config, `.env.example`, and checklist (`show <id>`). |
 | `validate` | Validate `mono-agent.config.json` (and resolved secrets) before starting. |
 | `start` | Start the host for every configured channel (backgrounds on macOS; use `--foreground`/`-f` elsewhere). |
 | `restart` / `stop` / `status` / `logs` | Manage the backgrounded instance (macOS). |
@@ -87,6 +89,12 @@ Once the binaries are verified, scaffold a project folder:
 
 ```bash
 mono-agent init
+```
+
+On a TTY, prefer `mono-agent setup` as the guided alternative: it lets you pick a recipe, answer non-secret prompts (model, fallbacks, channel add-ons), then auto-validates and prints a secrets checklist. It falls back to flag-driven `init` when stdin is not a TTY.
+
+```bash
+mono-agent setup
 ```
 
 Then continue with the [Quickstart](/getting-started/quickstart/). For the full key reference, see [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/).
