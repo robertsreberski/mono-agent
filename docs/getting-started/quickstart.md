@@ -10,7 +10,7 @@ This page walks the happy path: scaffold a config-first agent with `mono-agent i
 
 ## Prerequisites
 
-You need Node.js installed, the `mono-agent` CLI available (`npx mono-agent ...` works too), and credentials for whatever model you point at. The default model is `claude:claude-sonnet-4-6`, which reads `ANTHROPIC_API_KEY` from the environment. See [Install](/getting-started/install/) for the full setup and [Environment Variables](/config/env-vars/) for the keys each backend expects.
+You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you point at. The `mono-agent` bin ships inside `@mono-agent/agent-app` — install it globally with `npm i -g @mono-agent/agent-app`, or run any command without installing via `npm exec --package @mono-agent/agent-app -- mono-agent ...` (there is no standalone `mono-agent` package, so `npx mono-agent` would fail). The default model is `claude:claude-sonnet-4-6`, which reads `ANTHROPIC_API_KEY` from the environment. See [Install](/getting-started/install/) for the full setup and [Environment Variables](/config/env-vars/) for the keys each backend expects.
 
 ## 1. Scaffold the folder (`cli`)
 
@@ -19,6 +19,10 @@ Run `init` inside an empty folder (or an existing project — it never overwrite
 ```bash
 mono-agent init --model claude:claude-sonnet-4-6
 ```
+
+:::tip
+Prefer a guided first run? On a TTY, `mono-agent setup` is the interactive alternative to `init`: pick a recipe, answer non-secret prompts (model, fallback models, channel add-ons), then it auto-validates and prints a secrets checklist. It scaffolds through the same path as `init` and falls back to flag-driven `init` when stdin is not a TTY. See the [`setup` section of the CLI reference](/observability/cli-reference/#setup) for details.
+:::
 
 Optional flags:
 

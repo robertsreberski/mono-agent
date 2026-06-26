@@ -44,6 +44,7 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `allowNonLoopback` | boolean | `false` | Required to bind a non-loopback `host`. See warning below. |
 | `retentionMs` | integer | `300000` | How long async run statuses are retained (min 1, max 86_400_000). |
 | `maxStoredRequests` | integer | `100` | Max async statuses kept before pruning (min 1, max 10_000). Async only. |
+| `maxRunMs` | integer | `1200000` | Wall-clock bound per run (20 min). `0` disables; min 0, max 86_400_000. See [Run watchdog](#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve). |
 | `prompt` | string | — | Pre-instructions prepended to the request text (see [Prompts](#endpoint-prompts)). |
 | `notify` | boolean | `false` | Deliver the successful final answer via native notification. |
 | `notifyConversationId` | string | inferred if exactly one destination | Destination conversation id for native notification. |
@@ -90,6 +91,12 @@ curl -s http://127.0.0.1:<port>/webhook/invoke/status/<requestId>
 ```
 
 Async statuses are kept in memory subject to `retentionMs` and `maxStoredRequests`; a status URL polled after expiry returns `not_found`. If a turn is already running and the runtime cannot accept another, a request returns **HTTP 409** (`status: "busy"`) — that transient state is not stored or replayed via the status URL.
+
+## Run watchdog: a wedged run is aborted, not left to starve
+
+A hung run (a responder that never settles, a stuck provider call) would otherwise hold its conversation slot forever. This matters most in **async** mode: with no client connection to disconnect, nothing else bounds the run. To prevent that, each webhook run is raced against a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time has its request signal aborted and its conversation slot reclaimed even if the responder never settles. This brings webhook to parity with [cron's](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve) `maxRunMs`.
+
+Set `webhook.maxRunMs` to override the default (min 0, max 86_400_000); `0` disables the watchdog. A run whose responder resolves **after** the abort is classified `cancelled` rather than `succeeded` — see [Run artifacts & traces](/observability/artifacts-and-traces/).
 
 ## Proactive delivery
 
@@ -183,6 +190,7 @@ Every key has a `MONO_AGENT_WEBHOOK_*` override, which takes precedence over the
 | `MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK` | `webhook.allowNonLoopback` |
 | `MONO_AGENT_WEBHOOK_RETENTION_MS` | `webhook.retentionMs` |
 | `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS` | `webhook.maxStoredRequests` |
+| `MONO_AGENT_WEBHOOK_MAX_RUN_MS` | `webhook.maxRunMs` |
 | `MONO_AGENT_WEBHOOK_PROMPT` | `webhook.prompt` |
 | `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` |
 | `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID` | `webhook.notifyConversationId` |

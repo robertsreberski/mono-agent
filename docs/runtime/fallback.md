@@ -10,11 +10,11 @@ This page covers `runtime.fallbackModels` — an ordered list of backup model re
 
 When a turn fails against the primary `runtime.model` with a retryable provider error (transport errors, rate limits, transient 5xx), the router advances to the next entry in `runtime.fallbackModels` and retries the same turn there. It walks the list in order until one succeeds or the list is exhausted. Because mono-agent runs continuous provider sessions, the backup continues the existing conversation via transcript-tail resume — the prior turns are replayed onto the backup model so context is preserved across the switch.
 
-The chosen model and the fact that failover occurred are surfaced in the run result, so callers (and observability traces) can see exactly which model produced the answer. See [Sessions & concurrency](/runtime/sessions-concurrency/) for how continuous sessions work and [Artifacts & traces](/observability/artifacts-and-traces/) for where run results land.
+The chosen model and the fact that failover occurred are surfaced in the run result, so callers (and observability traces) can see exactly which model produced the answer. When a chain is exhausted, the run no longer surfaces as a bare `provider_unavailable_exhausted` with no detail: the per-attempt failover history (each attempted model plus its failure subkind) and the underlying provider error are persisted to the run summary (`failoverHistory` + `error`) and surfaced in Phoenix traces as the `mono.agent.failover.count` / `mono.agent.failover.detail` / `mono.agent.error.message` attributes and the composed root-span status message (e.g. `failed (provider_unavailable_exhausted: pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 → server_error; last error: 503 Service Unavailable …)`). See [Sessions & concurrency](/runtime/sessions-concurrency/) for how continuous sessions work, [Artifacts & traces](/observability/artifacts-and-traces/) for where run results land, and [Phoenix per-run attributes](/observability/phoenix-and-backfill/#per-run-attributes) for the trace fields.
 
 :::note
-:::
 Failover is for retryable *provider* failures, not for application-level disagreement with the answer. A successful-but-wrong response is not a failover trigger.
+:::
 
 ## Coverage
 

@@ -45,7 +45,7 @@ There is exactly one agent responder — the thing that turns an incoming prompt
 
 Each channel is its own JSON section and runs independently — one failing or waiting on config never blocks the others. See [Channels](/channels/) for per-channel setup.
 
-## Opt-in `enabled` and the four channel statuses
+## Opt-in `enabled` and the five channel statuses
 
 Every channel is **off by default**. You turn one on with its `enabled` flag:
 
@@ -66,13 +66,14 @@ When you run `mono-agent start`, each channel prints exactly one status line:
 | `disabled` | `enabled` is false (or unset). The channel does nothing. |
 | `waiting_for_config` | Enabled but a required setting is missing. The start line names the exact missing field. |
 | `running` | Enabled and configured; the line shows its endpoint facts. |
-| `failed` | Enabled and configured but it could not start; the line shows the reason. |
+| `degraded` | Was running, but the live transport hit a transient failure (e.g. the Telegram poller crashed on a network switch / `ENETUNREACH`). The channel owns its own recovery, so the responder/harness stays alive and keeps serving while the transport restarts; the line shows `degraded: <reason>` with a warning badge. It flips back to `running` once the restarted transport stays up. |
+| `failed` | Enabled and configured but it could not start (or hit a fatal error); the line shows the reason. Unlike `degraded`, this is terminal — the responder is disposed and there is no auto-restart. |
 
-An enabled-but-incomplete channel reports `waiting_for_config` rather than crashing the process — the rest of the agent keeps serving.
+An enabled-but-incomplete channel reports `waiting_for_config` rather than crashing the process — the rest of the agent keeps serving. A `degraded` channel is non-fatal too: it is still serving and self-recovering, distinct from a `failed` channel.
 
 :::note
-:::
 There is no "off but configured" trap: a channel with `enabled: false` reports `disabled` even if every other field is filled in.
+:::
 
 ## Fail-closed defaults
 

@@ -52,18 +52,28 @@ mono-agent derives MCP **send tools** from already-enabled chat adapters so the 
 
 - `slack_send_message` — send through the configured Slack adapter
 - `telegram_send_message` — send through the configured Telegram adapter
+- `telegram_ask` — post an inline-keyboard question (2–8 option labels) through the Telegram adapter
+- `telegram_send_document` — upload and send a file through the Telegram adapter
+- `telegram_send_photo` — upload and send an image (shown inline) through the Telegram adapter
 
 Coverage: `config`. Two conditions must both hold for a send tool to work:
 
-1. The **exact tool name** must appear in `tools.allowedTools` (`slack_send_message` and/or `telegram_send_message`). The fail-closed tool policy excludes them otherwise.
-2. The corresponding adapter must have **valid config** — `slack.*` for `slack_send_message`, `telegram.*` for `telegram_send_message` — which supplies the credentials and the destination bounds.
+1. The **exact tool name** must appear in `tools.allowedTools` (e.g. `slack_send_message`, `telegram_send_message`, `telegram_ask`, `telegram_send_document`, `telegram_send_photo`). The fail-closed tool policy excludes them otherwise.
+2. The corresponding adapter must have **valid config** — `slack.*` for `slack_send_message`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
+
+### Telegram interactive send tools
+
+`telegram_ask`, `telegram_send_document`, and `telegram_send_photo` (added by the Telegram interactivity work) are gated exactly like the plain send tools above: their exact name in `tools.allowedTools` plus valid `telegram.*` config, with the adapter chat allowlist (`telegram.allowedChatIds` / `telegram.allowAllChats`) remaining the destination boundary.
+
+- **`telegram_ask`** posts an inline-keyboard question with **2–8** option labels and **returns immediately** — it does not block the turn waiting for an answer. When the user taps a button, the tapped label arrives as a **new message on the same conversation**, so the agent continues on the next turn (just like a typed reply). Allowing `telegram_ask` is also the single switch that subscribes the bot to `callback_query` updates and wires the tap handler. See [Telegram](/channels/telegram/) for the full interactivity setup.
+- **`telegram_send_document`** and **`telegram_send_photo`** upload and send a file/image to an allowed chat. Each accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
 
 ```json
 {
   "tools": {
-    "allowedTools": ["Read", "Grep", "slack_send_message", "telegram_send_message"]
+    "allowedTools": ["Read", "Grep", "slack_send_message", "telegram_send_message", "telegram_ask"]
   },
   "slack": {
     "enabled": true,

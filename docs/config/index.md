@@ -89,7 +89,7 @@ A handful of capabilities are `code`-only — for example structured output sche
 
 ## Validate before you run
 
-`mono-agent validate` prints a per-section report — runtime, **provider credentials** (Pi OAuth token presence/expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel — and exits 0 only when the config is ready to start. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a `pi auth login <provider>` hint; see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
+`mono-agent validate` prints a per-section report — **secret placement**, runtime, **provider credentials** (Pi OAuth token presence/expiry for every referenced model), context, memory, tools, sandbox, observability, and every channel — and exits 0 only when the config is ready to start. The provider-credentials check is static and read-only, flagging a keyless or expired-OAuth provider as `waiting` with a `pi auth login <provider>` hint; see [CLI reference → Provider credentials](/observability/cli-reference/#provider-credentials):
 
 ```bash
 mono-agent validate
@@ -97,6 +97,10 @@ mono-agent start     # traceability + every configured channel
 ```
 
 On `start`, each channel prints one status line: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
+
+:::note
+The **secret placement** section is advisory and non-fatal: it surfaces a `waiting` warning when a secret-marked field (e.g. `memory.embeddings.apiKey`) is resolved from the committed `mono-agent.config.json` instead of `.env`, naming the `MONO_AGENT_*` variable to move it to. The secret value is never printed, and the warning never blocks `start`. The same warnings are also emitted by `mono-agent config`. See [Environment Variables](/config/env-vars/) for the variable map.
+:::
 
 ## Related pages
 

@@ -24,13 +24,14 @@ Channels are fully independent: enabling one neither requires nor affects anothe
 
 ## Opt-in and the status lifecycle
 
-Every channel defaults to **off**. You turn one on with `enabled: true` and supply its required settings. On `mono-agent start`, the host prints one status line per channel reflecting one of four states:
+Every channel defaults to **off**. You turn one on with `enabled: true` and supply its required settings. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
 
 | State | Meaning |
 | --- | --- |
 | `disabled` | `enabled` is false (or unset). The channel is inert. |
 | `waiting_for_config` | `enabled: true` but a required setting is missing — the line names the exact missing field. |
 | `running` | Ready and listening; the line includes endpoint facts (host/port/path, or the bot it connected as). |
+| `degraded` | Was running but the live transport connection dropped on a transient failure (e.g. a Telegram poll crash on a network switch, or a Slack Socket Mode disconnect); the responder/harness is kept alive and the adapter is reconnecting, so the channel keeps serving. Rendered `degraded: <reason>` with a warning badge. Non-fatal and self-recovering — it returns to `running` automatically once the transport stays up, unlike `failed`. |
 | `failed` | The channel errored on startup; the line includes the reason. |
 
 ```json
