@@ -301,6 +301,23 @@ export function createSlackChannelDriver(
       // Link posted messages to their producing conversation so an in-thread reply
       // resumes that conversation instead of a fresh, history-less slack: thread.
       const indexPath = input.postedMessageIndexPath;
+      // Forward the operator's optional Socket Mode resilience tuning; omitting a
+      // field lets the runner apply its own default.
+      const reconnect: {
+        initialMs?: number;
+        maxMs?: number;
+        stabilityMs?: number;
+        startupGraceMs?: number;
+        drainDeadlineMs?: number;
+      } = {};
+      if (input.config.reconnectInitialBackoffMs !== undefined) reconnect.initialMs = input.config.reconnectInitialBackoffMs;
+      if (input.config.reconnectMaxBackoffMs !== undefined) reconnect.maxMs = input.config.reconnectMaxBackoffMs;
+      if (input.config.reconnectStabilityMs !== undefined) reconnect.stabilityMs = input.config.reconnectStabilityMs;
+      if (input.config.reconnectStartupGraceMs !== undefined) reconnect.startupGraceMs = input.config.reconnectStartupGraceMs;
+      if (input.config.drainDeadlineMs !== undefined) reconnect.drainDeadlineMs = input.config.drainDeadlineMs;
+      const heartbeat: { intervalMs?: number; timeoutMs?: number } = {};
+      if (input.config.heartbeatIntervalMs !== undefined) heartbeat.intervalMs = input.config.heartbeatIntervalMs;
+      if (input.config.heartbeatTimeoutMs !== undefined) heartbeat.timeoutMs = input.config.heartbeatTimeoutMs;
       const result = await startAdapter({
         botToken: input.config.botToken,
         appToken: input.config.appToken,
@@ -312,6 +329,14 @@ export function createSlackChannelDriver(
         shortcuts: input.config.shortcuts,
         homeTab: input.config.homeTab,
         responder: input.responder,
+        // A Socket Mode drop is recoverable by construction (the runner always
+        // reconnects with backoff), so report it as DEGRADED — keep the responder/
+        // harness alive — rather than fatal. onConnectionRestored flips the channel
+        // back to running once a reconnect stays up past the stability window.
+        onConnectionLost: (reason) => input.onDegraded?.(reason),
+        onConnectionRestored: () => input.onRecovered?.(),
+        ...(Object.keys(reconnect).length === 0 ? {} : { reconnect }),
+        ...(Object.keys(heartbeat).length === 0 ? {} : { heartbeat }),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
         ...(indexPath === undefined
           ? {}
