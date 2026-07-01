@@ -10,7 +10,7 @@ This page covers writing your own channel driver and registering it with `startM
 
 The built-in drivers (Telegram, Slack, WhatsApp, A2A, Webhook, OpenAI-compatible API, Cron) cover every channel the `mono-agent` CLI runs from config. Write a custom `ChannelDriver` only when you need a transport that ships nothing — for example an in-house message bus, an SMS gateway, an email poller, or a test harness. A driver is thin: it reuses an adapter's config loader plus its `start` function and adds the wiring the app host would otherwise copy by hand.
 
-All of the types below are exported from `@mono-agent/agent-app`.
+The driver contract lives in **`@mono-agent/agent-contracts`** — a dependency-free contracts package — so a channel author does not need the host package at all. `@mono-agent/agent-app` re-exports every type below (with the core-config parameter bound to `MonoAgentConfig`), so existing imports keep working.
 
 ## The ChannelDriver interface
 
@@ -19,34 +19,39 @@ import type {
   ChannelDriver,
   ChannelStartInput,
   RunningChannel,
-  MonoAgentAppConfigInput,
-} from "@mono-agent/agent-app";
+  ChannelConfigInput,
+} from "@mono-agent/agent-contracts";
+// or the same names from "@mono-agent/agent-app" (host-bound aliases)
 
-interface ChannelDriver<TConfig = unknown> {
-  readonly id: ChannelId;     // "telegram" | "slack" | "a2a" | "webhook" | "openai-api" | "cron" | "whatsapp"
+interface ChannelDriver<TConfig = unknown, TCore = unknown> {
+  readonly id: ChannelId;     // any string; built-ins use "telegram", "slack", …
   readonly label: string;     // human label for status output
-  loadConfig(input: MonoAgentAppConfigInput): Promise<TConfig>;
+  loadConfig(input: ChannelConfigInput): Promise<TConfig>;
   isConfigError(error: unknown): boolean;
   disabledReason?(config: TConfig): string | undefined;
   waitingReason?(config: TConfig): string | undefined;
-  start(input: ChannelStartInput<TConfig>): Promise<RunningChannel>;
+  configView?(input: ChannelConfigInput): Promise<ChannelConfigViewSection>;
+  configIssues?(config: TConfig): readonly string[];
+  start(input: ChannelStartInput<TConfig, TCore>): Promise<RunningChannel>;
 }
 ```
 
 | Member | Contract |
 |---|---|
-| `id` | Identifies the channel in `channelStatus(id)` / `channelStatuses()`. The `ChannelId` union is fixed; reuse the closest id, or use a built-in id you are not otherwise running. |
+| `id` | Identifies the channel in `channelStatus(id)` / `channelStatuses()` and its `channel:<id>` validate section. `ChannelId` is **any string** — pick your own (e.g. `"discord"`, `"sms"`); `BUILTIN_CHANNEL_IDS` (from `@mono-agent/agent-app`) lists the ids the CLI drives from config. |
 | `label` | Display name shown in status / doctor output. |
 | `loadConfig` | Receives `{ env, cwd, configPath }`. Read your section out of `mono-agent.config.json` (and env). Throw your own typed config error when the config is malformed. |
 | `isConfigError` | Return `true` for your loader's own typed errors. The app treats those as `waiting_for_config` (incomplete) rather than a crash. |
 | `disabledReason` | Return a string when the loaded config explicitly disables the channel (e.g. `enabled: false`) → status `disabled`. Return `undefined` to proceed. |
 | `waitingReason` | Return a string when the config is enabled but still missing a required sub-section → status `waiting_for_config`. |
+| `configView` | Optional. Compose a source-annotated config section (field-by-field `env`/`json`/`default` provenance, secrets as set/unset) for `mono-agent config` and the secret-placement warnings. Read-only. |
+| `configIssues` | Optional. Structural problems in a loaded, enabled config (e.g. an invalid per-trigger model override). `validate` reports them as an `error`; `start` logs them and starts anyway. |
 | `start` | Boot the transport and return a `RunningChannel`. |
 
-`MonoAgentAppConfigInput` is exactly:
+`ChannelConfigInput` (the app-side alias is `MonoAgentAppConfigInput`) is exactly:
 
 ```ts
-interface MonoAgentAppConfigInput {
+interface ChannelConfigInput {
   readonly env: Record<string, string | undefined>;
   readonly cwd: string;
   readonly configPath: string;
@@ -58,12 +63,12 @@ interface MonoAgentAppConfigInput {
 `start` receives everything the transport needs, including the shared `AgentResponder` the app built from your runtime config:
 
 ```ts
-interface ChannelStartInput<TConfig> {
+interface ChannelStartInput<TConfig, TCore = unknown> {
   readonly config: TConfig;          // what loadConfig returned
-  readonly coreConfig: MonoAgentConfig;
+  readonly coreConfig: TCore;        // MonoAgentConfig when run by the mono-agent app
   readonly responder: AgentResponder; // run the agent through this
   readonly cwd: string;
-  readonly logger?: MonoAgentAppLogger;
+  readonly logger?: ChannelLogger;
   readonly onFailure: (reason: string) => void; // report a post-start death
 }
 
@@ -92,7 +97,7 @@ import {
 class SmsConfigError extends Error {}
 
 const smsDriver: ChannelDriver<{ enabled: boolean; gatewayUrl?: string }> = {
-  id: "webhook", // reuse an id you are not otherwise running
+  id: "sms", // any string works; the id keys status maps and the channel:sms validate section
   label: "SMS gateway",
   async loadConfig({ env }) {
     return {

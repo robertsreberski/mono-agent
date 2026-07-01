@@ -1,4 +1,10 @@
+import type { NotifyDeliveryResult } from "@mono-agent/agent-contracts";
+
 import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+
+// The delivery-result contract moved to @mono-agent/agent-contracts; keep the
+// historical export from this module.
+export type { NotifyDeliveryResult } from "@mono-agent/agent-contracts";
 
 /**
  * Push channels a proactive notification can be delivered to. The conversationId
@@ -19,18 +25,6 @@ export function channelIdForConversation(conversationId: string): ChannelId | un
     return undefined;
   }
   return PUSH_CHANNEL_BY_SCHEME[conversationId.slice(0, colon)];
-}
-
-/**
- * Outcome of attempting to deliver a proactive notification. `delivered` is true
- * only when the destination channel actually ran the nudge as a turn; otherwise
- * `reason` carries a short, inspectable explanation (unrecognized destination,
- * channel not running, destination not in the adapter allowlist, unsupported
- * channel, …). The tool surfaces this back to the model and the run summary.
- */
-export interface NotifyDeliveryResult {
-  readonly delivered: boolean;
-  readonly reason?: string;
 }
 
 export interface ProactiveNotifyInput {

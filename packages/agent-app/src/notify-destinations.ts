@@ -1,3 +1,4 @@
+import type { NotifyDestination } from "@mono-agent/agent-contracts";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { loadTelegramAdapterConfig } from "@mono-agent/telegram-adapter";
 
@@ -5,17 +6,9 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
 import { listSeenNotifyDestinations } from "./seen-conversations.js";
 
-/** A conversation a native cron/webhook notification can be delivered to. */
-export interface NotifyDestination {
-  /** Destination conversationId, e.g. `telegram:42` or `slack:C1:171.5`. */
-  readonly conversationId: string;
-  /** Owning channel id (telegram/slack). */
-  readonly channelId: string;
-  /** ISO timestamp of the most recent turn on this conversation, if known. */
-  readonly lastSeen?: string;
-  /** True when this is an allowlisted destination the agent has not yet conversed with. */
-  readonly fromAllowlist?: boolean;
-}
+// The destination contract moved to @mono-agent/agent-contracts; keep the
+// historical export from this module.
+export type { NotifyDestination } from "@mono-agent/agent-contracts";
 
 /** Channels whose conversations can receive a proactive notification turn. */
 const NOTIFY_CAPABLE: ReadonlySet<ChannelId> = new Set<ChannelId>(["telegram", "slack"]);

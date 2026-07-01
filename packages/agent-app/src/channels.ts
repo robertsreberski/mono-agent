@@ -1,8 +1,15 @@
 import { resolve } from "node:path";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type {
+  AgentResponder,
+  ChannelDriver as ContractChannelDriver,
+  ChannelId as ContractChannelId,
+  ChannelLogger,
+  ChannelStartInput as ContractChannelStartInput,
+  RunningChannel,
+} from "@mono-agent/agent-contracts";
 import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
-import type { ConfigViewSection, MonoAgentConfig } from "@mono-agent/config";
+import type { MonoAgentConfig } from "@mono-agent/config";
 import {
   A2A_CONFIG_FIELDS,
   A2AConsumerError,
@@ -91,136 +98,29 @@ import type { NotifyDestination } from "./notify-destinations.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import { appendPostedMessage, lookupProducingConversation } from "./posted-message-index.js";
 
-export type ChannelId =
-  | "telegram"
-  | "slack"
-  | "a2a"
-  | "webhook"
-  | "openai-api"
-  | "cron"
-  | "whatsapp";
-
-export interface MonoAgentAppLogger {
-  debug?(message: string, metadata?: Record<string, unknown>): void;
-  info?(message: string, metadata?: Record<string, unknown>): void;
-  warn?(message: string, metadata?: Record<string, unknown>): void;
-  error?(message: string, metadata?: Record<string, unknown>): void;
-}
-
-export type ChannelStatus =
-  | { readonly kind: "disabled"; readonly reason: string }
-  | { readonly kind: "waiting_for_config"; readonly reason: string }
-  | { readonly kind: "running"; readonly summary: Record<string, unknown> }
-  // Transport is temporarily down but the channel owns its own recovery (e.g. the
-  // telegram poller crashed on a network blip and is restarting). The responder/
-  // harness stays alive and the channel keeps serving once polling resumes — a
-  // non-fatal state distinct from "failed".
-  | { readonly kind: "degraded"; readonly reason: string }
-  | { readonly kind: "failed"; readonly reason: string };
-
-export interface RunningChannel {
-  /** Channel-specific connection facts (invoke URL, agent card URL, job count). */
-  readonly summary: Record<string, unknown>;
-  stop(): Promise<void>;
-  /**
-   * Optional responder/harness teardown, set by the app (not the driver). Stopping
-   * the transport alone leaves the per-channel harness + live-session manager alive;
-   * on stop/reload the app disposes the responder so warm provider sessions and
-   * queued turns against stale config are retired. Transport stops first.
-   */
-  dispose?(): Promise<void>;
-  /**
-   * Deliver a proactive notification to a destination this channel owns: run it as
-   * a turn on the destination's own harness (shared session/history) and deliver
-   * through the channel's normal stream. Set only by push channels (telegram/slack);
-   * absent on request-driven channels. Used by the app's proactive-notify router.
-   *
-   * Enforces the channel's own adapter allowlist (so a payload-supplied destination
-   * cannot reach a non-allowlisted chat) and reports the outcome so the caller can
-   * surface it to the model and the run summary.
-   */
-  notify?(input: {
-    readonly conversationId: string;
-    readonly text: string;
-    /**
-     * Deliver `text` VERBATIM — post it unchanged with no model call, then record
-     * it to the destination's history (native cron/webhook notification). Without
-     * it, `text` is run as a turn on the destination's harness.
-     */
-    readonly verbatim?: boolean;
-  }): Promise<NotifyDeliveryResult>;
-}
-
-export interface ChannelStartInput<TConfig> {
-  readonly config: TConfig;
-  readonly coreConfig: MonoAgentConfig;
-  readonly responder: AgentResponder;
-  readonly cwd: string;
-  readonly logger?: MonoAgentAppLogger;
-  /**
-   * Reports a transport that died after a successful start with NO self-recovery
-   * (e.g. the webhook HTTP server crashed). The app disposes the responder/harness
-   * and marks the channel failed. For a transport that owns its own reconnect, use
-   * {@link onDegraded}/{@link onRecovered} instead so the responder is NOT disposed.
-   */
-  readonly onFailure: (reason: string) => void;
-  /**
-   * Reports a transport that is temporarily down but is self-recovering (e.g. a
-   * telegram poll crash on a network blip; the adapter restarts its own runner).
-   * The app marks the channel "degraded" and KEEPS the responder/harness alive so
-   * the self-restarted transport delivers into a live harness. Optional — drivers
-   * that have no self-recovery only wire {@link onFailure}.
-   */
-  readonly onDegraded?: (reason: string) => void;
-  /** Reports that a previously-degraded transport's self-recovery succeeded (back to running). */
-  readonly onRecovered?: () => void;
-  /** Native scheduled/webhook delivery hook owned by the app, used by proactive trigger channels. */
-  readonly notifyDestination?: (
-    conversationId: string,
-    text: string,
-    options?: { readonly verbatim?: boolean },
-  ) => Promise<NotifyDeliveryResult>;
-  /** Candidate destinations for native delivery inference. */
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
-  /**
-   * Path to the posted-message index (the artifact-dir JSONL linking a posted
-   * message back to its producing conversation). The Slack driver uses it to
-   * resolve in-thread replies and to record top-level proactive posts.
-   */
-  readonly postedMessageIndexPath?: string;
-}
-
 /**
- * One communication channel the app can run from config. Drivers stay thin:
- * they reuse the adapter package's config loader and start function and add
- * only the wiring an app host previously copied by hand.
+ * The channel contract now lives in @mono-agent/agent-contracts (neutral,
+ * dependency-free) so third-party drivers depend on the contracts package, not
+ * this host. The aliases below bind the contract's core-config parameter to
+ * MonoAgentConfig and preserve every historical export from this module.
  */
-export interface ChannelDriver<TConfig = unknown> {
-  readonly id: ChannelId;
-  readonly label: string;
-  loadConfig(input: MonoAgentAppConfigInput): Promise<TConfig>;
-  /** True for the adapter's own typed config errors (incomplete config → waiting). */
-  isConfigError(error: unknown): boolean;
-  /** Reason the channel is explicitly disabled by its loaded config. */
-  disabledReason?(config: TConfig): string | undefined;
-  /** Reason a loaded, enabled config still cannot start (missing sub-section). */
-  waitingReason?(config: TConfig): string | undefined;
-  /**
-   * Compose this channel's source-annotated config section (field-by-field
-   * env/json/default provenance, secrets shown only as set/unset) for
-   * `mono-agent config` and the secret-placement check. Read-only — never
-   * starts the transport.
-   */
-  configView?(input: MonoAgentAppConfigInput): Promise<ConfigViewSection>;
-  /**
-   * Structural issues in a loaded, enabled config an operator must fix (e.g.
-   * an invalid per-trigger model override). `validate` reports them as an
-   * error; `start` logs them and starts anyway — the run-time path stays
-   * graceful (ignore-and-fallback).
-   */
-  configIssues?(config: TConfig): readonly string[];
-  start(input: ChannelStartInput<TConfig>): Promise<RunningChannel>;
-}
+export type ChannelId = ContractChannelId;
+export type MonoAgentAppLogger = ChannelLogger;
+export type { ChannelLogger, ChannelStatus, NotifyDeliveryResult, NotifyDestination, RunningChannel } from "@mono-agent/agent-contracts";
+export type ChannelStartInput<TConfig> = ContractChannelStartInput<TConfig, MonoAgentConfig>;
+export type ChannelDriver<TConfig = unknown> = ContractChannelDriver<TConfig, MonoAgentConfig>;
+
+/** The channel ids this app can drive from config (third-party drivers add their own). */
+export const BUILTIN_CHANNEL_IDS = [
+  "telegram",
+  "slack",
+  "a2a",
+  "webhook",
+  "openai-api",
+  "cron",
+  "whatsapp",
+] as const;
+export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
 
 export interface TelegramChannelOverrides {
   readonly botFactory?: TelegramAdapterStartOptions["botFactory"];

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
+import type { ChannelConfigInput } from "@mono-agent/agent-contracts";
 import {
   loadMonoAgentConfigWithSources,
   MonoAgentConfigError,
@@ -9,11 +10,10 @@ import {
 } from "@mono-agent/config";
 import type { MonoAgentConfig, ObservabilityExporterConfig } from "@mono-agent/config";
 
-export interface MonoAgentAppConfigInput {
-  readonly env: Record<string, string | undefined>;
-  readonly cwd: string;
-  readonly configPath: string;
-}
+// The structural shape moved to @mono-agent/agent-contracts (ChannelConfigInput)
+// so channel drivers can be authored against the neutral contract; this alias
+// preserves the historical app-side name.
+export type MonoAgentAppConfigInput = ChannelConfigInput;
 
 export async function loadAppCoreConfig(input: MonoAgentAppConfigInput): Promise<MonoAgentConfig> {
   return await loadMonoAgentConfigWithSources({
