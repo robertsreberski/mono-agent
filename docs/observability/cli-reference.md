@@ -17,7 +17,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `init` | Scaffold `mono-agent.config.json`, `IDENTITY.md`, and `.mono-agent/` in the current folder (never overwrites existing files). | `--model <ref>`, `--fallback-models <csv>`, `--memory lite\|journal\|bujo` |
 | `setup` | Guided recipe setup when attached to a TTY; flag-driven `init` behavior when stdin is not a TTY. | `--recipe <id>`, `--with <csv>`, `--dry-run`, `--model <ref>`, `--fallback-models <csv>`, `--memory lite\|journal\|bujo` |
 | `recipes` | List executable setup recipes or show a recipe's generated config, `.env.example`, and checklist. | `list`, `show <id>` |
-| `validate` | Load every config section and report what would run, wait, or fail. | `--consumer <path>`, `--config <path>`, `--env-file <path>` |
+| `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). | `--consumer <path>`, `--config <path>`, `--env-file <path>` |
 | `start` | Start the agent as a background launchd service (or foreground worker). | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
 | `restart` | Restart the background instance for this config (starts it if stopped). | `--config <path>`, `--force` |
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
@@ -82,7 +82,7 @@ mono-agent setup --recipe personal-telegram-bujo --with slack,cron
 | Flag | Effect |
 | --- | --- |
 | `--recipe <id>` | Preselect a recipe and skip the recipe chooser. Use `mono-agent recipes list` to inspect ids. |
-| `--with <csv>` | Preselect add-on channels. Valid values are `telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, and `cron`. |
+| `--with <csv>` | Preselect add-on channels. Valid values are `telegram`, `slack`, `whatsapp`, `a2a`, `webhook`, `openaiApi`, and `cron`. |
 | `--model <ref>` | Use this as the default answer for the shared model input. |
 | `--fallback-models <csv>` | Use these as the default fallback-model answer and write them into `runtime.fallbackModels`. |
 | `--memory lite\|journal\|bujo` | Seed memory in non-recipe setup fallback mode. |
@@ -107,7 +107,7 @@ mono-agent recipes show personal-telegram-bujo
 
 ## `validate`
 
-Loads every config section and prints a status report, then exits `0` when the config is ready to start and `1` otherwise. By default it reads `mono-agent.config.json` from the current folder; override with `--config <path>`. Use `--consumer <path>` to run the same readiness report against a downstream agent folder without changing the current directory or creating missing memory roots there. With `--consumer`, a relative `--config` points inside the consumer folder and the consumer `.env` is loaded by default. It also honors `--env-file <path>` for the dotenv load above.
+Loads every config section and prints a status report, then exits `0` when the config is ready to start and `1` otherwise. `mono-agent doctor` is an alias — same flags, same report. By default it reads `mono-agent.config.json` from the current folder; override with `--config <path>`. Use `--consumer <path>` to run the same readiness report against a downstream agent folder without changing the current directory or creating missing memory roots there. With `--consumer`, a relative `--config` points inside the consumer folder and the consumer `.env` is loaded by default. It also honors `--env-file <path>` for the dotenv load above.
 
 ```bash
 mono-agent validate

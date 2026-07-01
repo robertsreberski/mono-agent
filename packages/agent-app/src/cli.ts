@@ -56,9 +56,10 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs", "metrics"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs", "metrics"] as const;
 
-type CliCommand = (typeof KNOWN_COMMANDS)[number] | "help";
+// `doctor` never reaches routing: parseCliArgs normalizes it to `validate`.
+type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor"> | "help";
 
 interface ParsedCliArgs {
   readonly command: CliCommand;
@@ -111,7 +112,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
   }
-  const cmd = command as CliCommand;
+  // `doctor` is an alias of `validate`; normalize here so every downstream
+  // validate path (env-file resolution, --consumer, routing) applies unchanged.
+  const cmd = (command === "doctor" ? "validate" : command) as CliCommand;
   const isLogs = cmd === "logs";
 
   let configPath: string | undefined;
@@ -372,6 +375,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "Load every config section and report what would run, wait, or fail.",
       "--consumer validates another agent folder read-only, including its .env.",
       "With --recipe, also report whether the recipe's capabilities are live.",
+      "`mono-agent doctor` is an alias for this command.",
     ],
   },
   {
@@ -657,7 +661,7 @@ function resolveWithChannels(args: ParsedCliArgs): readonly WithChannel[] | unde
   const invalid = args.withChannels.filter((channel) => !isWithChannel(channel));
   if (invalid.length > 0) {
     process.stderr.write(ui.errorLine(`Unknown --with channel(s): ${invalid.join(", ")}.`));
-    process.stderr.write(ui.hint("Valid channels: telegram, slack, a2a, webhook, openaiApi, cron."));
+    process.stderr.write(ui.hint("Valid channels: telegram, slack, whatsapp, a2a, webhook, openaiApi, cron."));
     return "invalid";
   }
   return args.withChannels.filter(isWithChannel);
