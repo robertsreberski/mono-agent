@@ -21,7 +21,7 @@ mono-agent init --model claude:claude-sonnet-4-6
 ```
 
 :::tip
-Prefer a guided first run? On a TTY, `mono-agent setup` is the interactive alternative to `init`: pick a recipe, answer non-secret prompts (model, fallback models, channel add-ons), then it auto-validates and prints a secrets checklist. It scaffolds through the same path as `init` and falls back to flag-driven `init` when stdin is not a TTY. See the [`setup` section of the CLI reference](/observability/cli-reference/#setup) for details.
+Prefer a guided first run? On a TTY, `mono-agent setup` is the interactive alternative to `init`: pick a recipe, answer non-secret prompts (model, fallback models, channel add-ons), then it auto-validates and prints a secrets checklist. It scaffolds through the same path as `init` and falls back to flag-driven `init` when stdin is not a TTY. See the [`setup` section of the CLI reference](/observability/cli-reference/#setup) for details, and the [Recipe catalog](/reference/recipes/) for what each recipe sets up.
 :::
 
 Optional flags:
