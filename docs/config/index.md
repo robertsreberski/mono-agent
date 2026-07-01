@@ -71,6 +71,15 @@ Each top-level key maps to one capability area. All are optional except the two 
 
 Every channel section is independent. An unconfigured channel reports `waiting_for_config` (or `disabled` when `enabled` is false) and never blocks the others.
 
+## How sections activate
+
+There are two activation idioms, split by what the section controls:
+
+- **Core sections activate by presence.** Adding a `memory`, `sandbox`, `observability`, `concurrency`, or `providers` key turns that capability on with the values you set; omitting the key means the capability is off. These sections configure in-process behavior, so there is nothing to "wait for" — presence is intent.
+- **Channels activate by `enabled: true` (default off).** `telegram`, `slack`, `whatsapp`, `a2a`, `webhook`, and `openaiApi` all require the explicit flag; a section that exists without `enabled: true` stays `disabled`. Channels open sockets and talk to the outside world, so a copy-pasted section must never go live by accident. `cron` follows the same spirit per job: it runs when at least one job is `enabled` (from `cron.jobs`, the single-job env form, or `cron/*.md` files).
+
+If a channel section seems ignored, check `enabled` first — `mono-agent validate` reports it as `disabled` rather than `waiting`.
+
 ## Coverage types
 
 The [Feature Registry](/reference/feature-matrix/) tags each capability so you know how to reach it:

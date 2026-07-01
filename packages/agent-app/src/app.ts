@@ -573,6 +573,13 @@ class MonoAgentAppController implements MonoAgentApp {
       return this.setStatus(driver.id, { kind: "waiting_for_config", reason: waitingReason });
     }
 
+    // Structural issues (e.g. an invalid per-trigger model override) fail
+    // `validate` but only WARN here: the run-time override path ignores the
+    // bad value and falls back, so starting is still the safe choice.
+    for (const issue of driver.configIssues?.(config) ?? []) {
+      this.logger?.warn?.("Channel config issue (run `mono-agent validate`).", { channel: driver.id, issue });
+    }
+
     let coreConfig: MonoAgentConfig;
     try {
       coreConfig = await loadAppCoreConfig(input);

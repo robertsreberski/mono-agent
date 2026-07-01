@@ -262,7 +262,7 @@ const a2aProvider: AgentRecipe = {
     },
   ],
   config: (input) => withSections(input, {
-    a2a: { provider: { enabled: true } },
+    a2a: { enabled: true },
   }),
   envExample: () => "# Bearer token A2A consumers must present (when requireBearer is set)\nMONO_AGENT_A2A_BEARER_TOKEN=\n",
   validateExpectations: [
@@ -354,7 +354,7 @@ const sandboxedCodeAgent: AgentRecipe = {
 const ALL_CHANNELS_SECTIONS = {
   telegram: { enabled: true },
   slack: { enabled: true },
-  a2a: { provider: { enabled: true } },
+  a2a: { enabled: true },
   webhook: { enabled: true },
   openaiApi: { enabled: true },
   cron: { enabled: true },

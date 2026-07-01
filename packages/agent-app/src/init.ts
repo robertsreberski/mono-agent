@@ -168,7 +168,7 @@ function withChannels(
   }
   const extra: Record<string, unknown> = {};
   for (const channel of channels) {
-    extra[channel] = channel === "a2a" ? { provider: { enabled: true } } : { enabled: true };
+    extra[channel] = { enabled: true };
   }
   return { ...config, ...extra } as MonoAgentConfigJson;
 }

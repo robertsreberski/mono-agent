@@ -85,6 +85,7 @@ import type {
 
 import { isAdapterSendToolAllowed } from "./adapter-send-tools.js";
 import { buildChannelConfigView } from "./channel-config-view.js";
+import { findTriggerOverrideIssues } from "./trigger-overrides.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
@@ -211,6 +212,13 @@ export interface ChannelDriver<TConfig = unknown> {
    * starts the transport.
    */
   configView?(input: MonoAgentAppConfigInput): Promise<ConfigViewSection>;
+  /**
+   * Structural issues in a loaded, enabled config an operator must fix (e.g.
+   * an invalid per-trigger model override). `validate` reports them as an
+   * error; `start` logs them and starts anyway — the run-time path stays
+   * graceful (ignore-and-fallback).
+   */
+  configIssues?(config: TConfig): readonly string[];
   start(input: ChannelStartInput<TConfig>): Promise<RunningChannel>;
 }
 
@@ -523,6 +531,17 @@ export function createWebhookChannelDriver(
     configView(input) {
       return buildChannelConfigView(this, WEBHOOK_CONFIG_FIELDS, input);
     },
+    configIssues(config) {
+      return findTriggerOverrideIssues(
+        config.endpoints
+          .filter((endpoint) => endpoint.enabled)
+          .map((endpoint) => ({
+            name: `webhook endpoint "${endpoint.name}"`,
+            ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
+            ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
+          })),
+      );
+    },
     async loadConfig(input) {
       // cwd is required so `webhook/*.md` endpoint files are discovered.
       return await loadWebhookAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
@@ -672,6 +691,17 @@ export function createCronChannelDriver(
     label: "Cron",
     configView(input) {
       return buildChannelConfigView(this, CRON_CONFIG_FIELDS, input);
+    },
+    configIssues(config) {
+      return findTriggerOverrideIssues(
+        config.jobs
+          .filter((job) => job.enabled)
+          .map((job) => ({
+            name: `cron job "${job.id}"`,
+            ...(job.model === undefined ? {} : { model: job.model }),
+            ...(job.effort === undefined ? {} : { effort: job.effort }),
+          })),
+      );
     },
     async loadConfig(input) {
       return await loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });

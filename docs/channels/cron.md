@@ -68,7 +68,7 @@ A job can run on a different model or reasoning effort than the agent's default 
 { "id": "deep-research", "expression": "0 3 * * *", "prompt": "…", "model": "claude:claude-opus-4-8", "effort": "high" }
 ```
 
-The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved. An invalid model/effort value is logged and ignored (the turn falls back to the default). Only the overridden turn is affected — interactive turns keep using `runtime.model`.
+The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved. A typo'd model/effort value fails `mono-agent validate` (the cron channel section reports `error`) and is warn-logged at `start`; at run time it is still logged and ignored (the turn falls back to the default), so a job never crashes on it. Only the overridden turn is affected — interactive turns keep using `runtime.model`.
 
 A model-override tick runs **ephemerally**: it does not resume or persist a shared continuous session (so a different model never mixes into the conversation's session lineage), though it still sees the job's run history. Overrides target cloud/registry models; overriding to a model served by a different local provider than the host default is not supported. (An `effort`-only override keeps the same model and is unaffected.)
 

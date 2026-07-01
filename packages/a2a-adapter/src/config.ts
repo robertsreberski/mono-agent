@@ -81,7 +81,10 @@ export async function loadA2AAdapterConfig(
 ): Promise<A2AAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerA2AJsonOntoEnv(json, input.env);
-  const enabled = readBoolean(env.MONO_AGENT_A2A_PROVIDER_ENABLED, "MONO_AGENT_A2A_PROVIDER_ENABLED", false, invalidConfig);
+  // Canonical root flag first (`a2a.enabled` / MONO_AGENT_A2A_ENABLED), matching
+  // every other channel; the legacy `a2a.provider.enabled` form keeps working.
+  const enabledVar = env.MONO_AGENT_A2A_ENABLED !== undefined ? "MONO_AGENT_A2A_ENABLED" : "MONO_AGENT_A2A_PROVIDER_ENABLED";
+  const enabled = readBoolean(env.MONO_AGENT_A2A_ENABLED ?? env.MONO_AGENT_A2A_PROVIDER_ENABLED, enabledVar, false, invalidConfig);
   const publicBaseUrl = normalizeOptionalString(env.MONO_AGENT_A2A_PUBLIC_BASE_URL);
   const providerBearerToken = normalizeOptionalString(env.MONO_AGENT_A2A_BEARER_TOKEN);
   const provider: A2AAdapterProviderConfig = {
@@ -235,6 +238,8 @@ function validateConsumer(consumer: A2AAdapterConsumerConfig): void {
  * `a2a.skill.*`, `a2a.consumer.*`).
  */
 export const A2A_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  // Canonical channel-root flag; wins over the legacy `a2a.provider.enabled` below.
+  { id: "a2a.enabled", env: "MONO_AGENT_A2A_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
   { id: "a2a.provider.enabled", env: "MONO_AGENT_A2A_PROVIDER_ENABLED", kind: "boolean", fromJson: (s) => readRecord(s.provider).enabled },
   { id: "a2a.provider.host", env: "MONO_AGENT_A2A_HOST", fromJson: (s) => readRecord(s.provider).host },
   { id: "a2a.provider.port", env: "MONO_AGENT_A2A_PORT", kind: "integer", fromJson: (s) => readRecord(s.provider).port },

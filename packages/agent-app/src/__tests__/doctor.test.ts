@@ -202,6 +202,54 @@ describe("validateMonoAgentFolder", () => {
     expect(placement.details.join("\n")).not.toContain("json-bot-token");
   });
 
+  it("errors on an invalid per-trigger model/effort override at validate time", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      cron: {
+        jobs: [
+          { id: "digest", enabled: true, expression: "0 7 * * *", prompt: "Summarize.", model: "not-a-model" },
+        ],
+      },
+      webhook: { enabled: true, effort: "extreme" },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const cron = sectionById(report, "channel:cron");
+    expect(cron.status).toBe("error");
+    expect(cron.details.join("\n")).toContain('cron job "digest" has an invalid model override "not-a-model"');
+    const webhook = sectionById(report, "channel:webhook");
+    expect(webhook.status).toBe("error");
+    expect(webhook.details.join("\n")).toContain('invalid effort override "extreme"');
+  });
+
+  it("accepts valid per-trigger model/effort overrides", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      cron: {
+        jobs: [
+          {
+            id: "digest",
+            enabled: true,
+            expression: "0 7 * * *",
+            prompt: "Summarize.",
+            model: "claude:claude-opus-4-8",
+            effort: "high",
+          },
+        ],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "channel:cron").status).toBe("ok");
+  });
+
   it("does not warn about a channel secret supplied via env", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({

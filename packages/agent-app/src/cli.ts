@@ -763,6 +763,9 @@ async function runValidate(args: ParsedCliArgs): Promise<number> {
       ? `\n${ui.style.green("✓ Config is ready to start.")}\n${ui.style.dim("Run `mono-agent config` for the full field-by-field view.")}\n`
       : `\n${ui.hint("Fix the errors above, then re-run mono-agent validate.")}`,
   );
+  process.stdout.write(
+    ui.style.dim("Core sections activate by presence; channels need `enabled: true` — see docs/config (How sections activate).\n"),
+  );
   return report.ok ? 0 : 1;
 }
 
