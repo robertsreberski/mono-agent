@@ -436,6 +436,35 @@ describe("startMemoryRituals", () => {
     expect(migrationTimer!.fireAt).toBeLessThan(expectedMs + 5000);
   });
 
+  it("clamps an over-24.8-day migration delay and re-arms instead of busy-looping", async () => {
+    const MAX_TIMEOUT_MS = 2_147_483_647; // Node's setTimeout ceiling
+    const fakeTimers = createFakeTimers();
+    const store = createFakeStore("bujo");
+    const result = startMemoryRituals({
+      store,
+      // Just after 04:00 on the 1st → next '0 4 1 * *' is ~31 days out (Aug 1),
+      // past Node's 24.8-day setTimeout cap. Unclamped, Node fires it at 1ms and
+      // the ritual busy-loops.
+      now: () => new Date("2026-07-01T05:00:00Z"),
+      setTimer: fakeTimers.setTimer,
+      clearTimer: fakeTimers.clearTimer,
+      reflection: { enabled: false },
+    });
+
+    // The delay handed to setTimeout must be capped, never the raw ~31 days.
+    const armed = fakeTimers.timers.find((t) => !t.cancelled);
+    expect(armed).toBeDefined();
+    expect(armed!.fireAt).toBe(MAX_TIMEOUT_MS);
+
+    // Firing the capped timer must re-arm, not run the ritual (target not reached).
+    fakeTimers.fireAll();
+    await vi.runAllTimersAsync();
+    expect(store.calls).not.toContain("migrate");
+    expect(fakeTimers.pendingCount()).toBeGreaterThan(0);
+
+    result.stop();
+  });
+
   // -------------------------------------------------------------------------
   // 9. Custom cron expressions
   // -------------------------------------------------------------------------
