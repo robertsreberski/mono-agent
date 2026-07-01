@@ -5,7 +5,7 @@ import { createMemoryRecallServer, createRecallStore, memoryRecallSettingsFromEn
 
 async function main(): Promise<void> {
   const settings = memoryRecallSettingsFromEnv(process.env);
-  const store = createRecallStore(settings);
+  const store = await createRecallStore(settings);
   const server = createMemoryRecallServer(store);
   // Registering these listeners overrides Node's default terminate-on-signal, so we must exit
   // explicitly. store.close() drains/closes the db before the process leaves.

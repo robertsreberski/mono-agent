@@ -306,7 +306,7 @@ describe("memory_recall MCP tool (FTS, hermetic)", () => {
 describe("createRecallStore", () => {
   it("builds an FTS-only store when settings carry no embeddings (F12)", async () => {
     // No embeddings → lite tier → FTS recall answers without any Ollama/OpenAI backend.
-    const store = createRecallStore({ root: dir }) as unknown as BujoMemoryStore;
+    const store = (await createRecallStore({ root: dir })) as unknown as BujoMemoryStore;
     try {
       expect(store.tier()).toBe("lite");
       await store.appendHostSummary("conv-1", "The deploy pipeline uses blue-green releases on Fridays.");
@@ -320,7 +320,7 @@ describe("createRecallStore", () => {
   it("applies the embeddings timeout + circuit breaker so a dead backend fast-fails (F11)", async () => {
     // Unreachable endpoint + tiny timeout + a one-failure breaker: the first embed fails and trips
     // the breaker OPEN, so a subsequent recall fast-fails (no 30s hang, no inner provider call).
-    const store = createRecallStore({
+    const store = await createRecallStore({
       root: dir,
       embeddings: {
         provider: "ollama",
@@ -416,8 +416,8 @@ describe("supermemory backend recall", () => {
     ).toThrow(/SUPERMEMORY_CONTAINER/);
   });
 
-  it("builds a SupermemoryMemoryStore from supermemory settings", () => {
-    const store = createRecallStore({ supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" } });
+  it("builds a SupermemoryMemoryStore from supermemory settings", async () => {
+    const store = await createRecallStore({ supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" } });
     expect(store).toBeInstanceOf(SupermemoryMemoryStore);
   });
 

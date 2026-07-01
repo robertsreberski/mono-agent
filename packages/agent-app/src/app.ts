@@ -176,7 +176,7 @@ class MonoAgentAppController implements MonoAgentApp {
   private memoryRituals: RunningRituals | undefined;
   // One shared memory store across all channel responders + the ritual scheduler, so there is a single
   // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
-  private sharedMemory: ReturnType<typeof createConfiguredMemory> = undefined;
+  private sharedMemory: Awaited<ReturnType<typeof createConfiguredMemory>> = undefined;
   private sharedMemoryBuilt = false;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
@@ -719,7 +719,7 @@ class MonoAgentAppController implements MonoAgentApp {
       ? this.buildRuntimeForModel(coreConfig)
       : undefined;
     const observabilityContext = await this.observabilityContext();
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: coreConfig,
       runtime,
       ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
@@ -854,7 +854,7 @@ class MonoAgentAppController implements MonoAgentApp {
   /** Build the configured memory store once and share it across responders + the ritual scheduler. */
   private async memoryStore(
     coreConfig: MonoAgentConfig,
-  ): Promise<ReturnType<typeof createConfiguredMemory>> {
+  ): Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> {
     if (!this.sharedMemoryBuilt) {
       const appLogger = this.logger;
       const logger = appLogger?.warn !== undefined
@@ -871,7 +871,7 @@ class MonoAgentAppController implements MonoAgentApp {
       // router overrides each run's per-call model. createConfiguredMemory builds
       // the memory LLM its own fallback-free runtime when no `memoryRuntime` is set.
       const observabilityContext = await this.observabilityContext();
-      this.sharedMemory = createConfiguredMemory(coreConfig, {
+      this.sharedMemory = await createConfiguredMemory(coreConfig, {
         ...(logger === undefined ? {} : { logger }),
         observability: {
           observabilityContext,
@@ -899,7 +899,7 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   /** @internal Test-only seam: seed the shared memory store without going through config. */
-  __setSharedMemoryForTest(store: ReturnType<typeof createConfiguredMemory>): void {
+  __setSharedMemoryForTest(store: Awaited<ReturnType<typeof createConfiguredMemory>>): void {
     this.sharedMemory = store;
     this.sharedMemoryBuilt = true;
   }

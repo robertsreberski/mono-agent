@@ -15,11 +15,8 @@ import { resolve as resolvePath } from "node:path";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createBujoMemoryStore, createOllamaLlm } from "@mono-agent/memory-bujo";
 import type { LlmComplete } from "@mono-agent/memory-bujo";
-import { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } from "@mono-agent/memory-search";
 import type { MemoryStore } from "@mono-agent/memory-store";
-import { createSupermemoryStore } from "@mono-agent/memory-supermemory";
 import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
 import type {
   PhoenixExporterConfig,
@@ -221,7 +218,25 @@ function fallbackChainForConfig(
   };
 }
 
-export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): AgentHarness {
+/**
+ * Memory backends load lazily: the SQLite/BuJo stack (better-sqlite3,
+ * sqlite-vec) and the Supermemory REST client are imported only when
+ * `config.memory` selects them, so a memory-less or supermemory-only agent
+ * never pays for the other backend. This is what makes the configured
+ * composition functions async.
+ */
+type MemoryBujoModule = typeof import("@mono-agent/memory-bujo");
+type MemorySearchModule = typeof import("@mono-agent/memory-search");
+
+let memoryBujoModule: MemoryBujoModule | undefined;
+let memorySearchModule: MemorySearchModule | undefined;
+
+const loadMemoryBujoModule = async (): Promise<MemoryBujoModule> =>
+  (memoryBujoModule ??= await import("@mono-agent/memory-bujo"));
+const loadMemorySearchModule = async (): Promise<MemorySearchModule> =>
+  (memorySearchModule ??= await import("@mono-agent/memory-search"));
+
+export async function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): Promise<AgentHarness> {
   const config = options.config;
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
@@ -232,7 +247,7 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
   // execute memory capture on `config.runtime.model` instead of
   // `config.memory.llm.model`. createConfiguredMemory builds the memory LLM its own
   // fallback-free runtime when no `memoryRuntime` is injected.
-  const memory = options.memory ?? createConfiguredMemory(config, {});
+  const memory = options.memory ?? (await createConfiguredMemory(config, {}));
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),
@@ -299,10 +314,10 @@ export function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOpti
   });
 }
 
-export function createConfiguredAgentResponder(options: ConfiguredAgentResponderOptions): AgentResponder {
+export async function createConfiguredAgentResponder(options: ConfiguredAgentResponderOptions): Promise<AgentResponder> {
   const session = options.config.runtime.session;
   return createAgentResponder({
-    harness: createConfiguredAgentHarness(options),
+    harness: await createConfiguredAgentHarness(options),
     ...(session.rollover === undefined ? {} : { rollover: session.rollover }),
     ...(session.rolloverTimezone === undefined ? {} : { rolloverTimezone: session.rolloverTimezone }),
     ...(options.now === undefined ? {} : { now: options.now }),
@@ -317,7 +332,7 @@ function historyMaxMessages(maxTurns: number | undefined): number {
 // provider default (30s). The harness degrades recall to empty on timeout.
 const DEFAULT_EMBEDDINGS_TIMEOUT_MS = 10_000;
 
-export function createConfiguredMemory(
+export async function createConfiguredMemory(
   config: MonoAgentConfig,
   deps: {
     logger?: { warn(message: string): void };
@@ -342,7 +357,7 @@ export function createConfiguredMemory(
       "observabilityContext" | "exporterWarn" | "exporterFactory"
     >;
   } = {},
-): MemoryStore | undefined {
+): Promise<MemoryStore | undefined> {
   if (config.memory === undefined) {
     return undefined;
   }
@@ -353,6 +368,7 @@ export function createConfiguredMemory(
       // Defensive: the loader already rejects this combination.
       throw new Error("memory.backend 'supermemory' requires a memory.supermemory block.");
     }
+    const { createSupermemoryStore } = await import("@mono-agent/memory-supermemory");
     // External backend: `mode`/`embeddings`/`llm` are bujo-only and intentionally ignored. Recall +
     // capture both go over the REST client; Supermemory extracts/consolidates server-side.
     return createSupermemoryStore({
@@ -365,10 +381,11 @@ export function createConfiguredMemory(
     });
   }
   const { mode, path: root, maxBytes, embeddings: embeddingsConfig, llm: llmConfig } = config.memory;
+  const bujo = await loadMemoryBujoModule();
 
   if (mode === "lite") {
     // Lite tier: FTS-only recall, no external deps.
-    return createBujoMemoryStore({
+    return bujo.createBujoMemoryStore({
       root,
       ...(maxBytes !== undefined && { maxBytes }),
       ...(deps.logger !== undefined && { logger: deps.logger }),
@@ -380,8 +397,9 @@ export function createConfiguredMemory(
   // the request, and the circuit breaker fast-fails after repeated failures so
   // a sustained outage stops blocking recall entirely. The harness degrades
   // recall to empty (with a memory_degraded warning) when this errors.
-  const embeddings = createCircuitBreakerEmbeddingProvider(
-    createEmbeddingProvider({
+  const search = await loadMemorySearchModule();
+  const embeddings = search.createCircuitBreakerEmbeddingProvider(
+    search.createEmbeddingProvider({
       provider: embeddingsConfig?.provider ?? "ollama",
       model: embeddingsConfig?.model ?? "nomic-embed-text:v1.5",
       ...(embeddingsConfig?.endpoint !== undefined && { endpoint: embeddingsConfig.endpoint }),
@@ -401,7 +419,7 @@ export function createConfiguredMemory(
 
   if (mode === "journal") {
     // Journal tier: hybrid recall + decay; no chat LLM.
-    return createBujoMemoryStore({
+    return bujo.createBujoMemoryStore({
       root,
       embeddings,
       dim,
@@ -415,8 +433,8 @@ export function createConfiguredMemory(
     deps.observability === undefined
       ? undefined
       : recorderCompositionDeps(config, deps.observability);
-  const llm = configuredMemoryLlm(config, llmConfig, deps.memoryRuntime, recording);
-  return createBujoMemoryStore({
+  const llm = configuredMemoryLlm(bujo, config, llmConfig, deps.memoryRuntime, recording);
+  return bujo.createBujoMemoryStore({
     root,
     embeddings,
     dim,
@@ -437,6 +455,7 @@ function runtimeHostOptionsForConfig(config: MonoAgentConfig): Parameters<typeof
 }
 
 function configuredMemoryLlm(
+  bujo: MemoryBujoModule,
   config: MonoAgentConfig,
   llmConfig: NonNullable<MonoAgentConfig["memory"]>["llm"],
   // Explicit memory-LLM runtime (tests). MUST be fallback-chain-free — see the
@@ -450,7 +469,7 @@ function configuredMemoryLlm(
   }
   if (llmConfig.provider === "ollama") {
     // The ollama memory LLM does not ride `runtime.run`, so it is not recorded.
-    return createOllamaLlm({
+    return bujo.createOllamaLlm({
       model: llmConfig.model,
       ...(llmConfig.endpoint !== undefined && { endpoint: llmConfig.endpoint }),
     });

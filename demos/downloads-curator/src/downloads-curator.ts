@@ -104,8 +104,8 @@ export function buildDownloadsCuratorConfig(input: DownloadsCuratorConfigInput):
   };
 }
 
-export function createDownloadsCuratorResponder(options: DownloadsCuratorResponderOptions): AgentResponder {
-  return createConfiguredAgentResponder({
+export async function createDownloadsCuratorResponder(options: DownloadsCuratorResponderOptions): Promise<AgentResponder> {
+  return await createConfiguredAgentResponder({
     config: options.config.mono,
     ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
     model: options.config.model,

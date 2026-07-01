@@ -66,7 +66,7 @@ describe("memory LLM honours config.memory.llm.model", () => {
   it("runs the memory LLM on config.memory.llm.model even when runtime.model differs and fallbackModels is non-empty", async () => {
     const dir = await tempDir();
 
-    const store = createConfiguredMemory(memoryModelConfig(dir), {}) as unknown as {
+    const store = await createConfiguredMemory(memoryModelConfig(dir), {}) as unknown as {
       capture(conversationId: string, text: string): Promise<unknown>;
       close(): Promise<void>;
     };
