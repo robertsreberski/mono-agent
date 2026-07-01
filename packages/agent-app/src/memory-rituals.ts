@@ -18,6 +18,12 @@
 const DEFAULT_REFLECTION_CRON = "0 3 * * *";
 const DEFAULT_MIGRATION_CRON = "0 4 1 * *";
 
+// Node's setTimeout stores the delay in a 32-bit signed int; anything larger
+// silently fires after 1ms (with a TimeoutOverflowWarning). A monthly ritual is
+// often >24.8 days out, so the raw cron delay must be capped and re-armed —
+// otherwise the ritual busy-loops every ~1ms until its target date arrives.
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 export interface MemoryRitualSchedule {
   readonly enabled?: boolean;
   readonly cron?: string;
@@ -106,6 +112,13 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
           return;
         }
 
+        if (delayMs > MAX_TIMEOUT_MS) {
+          // The timer was capped below the real target — the ritual isn't due
+          // yet. Re-arm for the remaining time instead of running it.
+          schedule();
+          return;
+        }
+
         if (inFlight) {
           // Skip: the previous run is still in flight. Do NOT reschedule here — the in-flight run's
           // .finally schedules the next tick, keeping exactly one pending timer per ritual (no double-schedule).
@@ -124,7 +137,7 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
             inFlight = false;
             schedule();
           });
-      }, delayMs);
+      }, Math.min(delayMs, MAX_TIMEOUT_MS));
 
       handle.unref?.();
       currentHandle = handle;
