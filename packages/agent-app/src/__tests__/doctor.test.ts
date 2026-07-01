@@ -182,6 +182,44 @@ describe("validateMonoAgentFolder", () => {
     expect(report.ok).toBe(true);
     expect(report.sections.find((section) => section.id === "secret-placement")).toBeUndefined();
   });
+
+  it("warns non-fatally when a channel secret (bot token) is sourced from JSON", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      telegram: { enabled: true, botToken: "123:json-bot-token", allowAllChats: true },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    const placement = sectionById(report, "secret-placement");
+    expect(placement.status).toBe("waiting");
+    expect(placement.details).toEqual([
+      "[WARN] telegram.botToken is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_TELEGRAM_BOT_TOKEN).",
+    ]);
+    expect(placement.details.join("\n")).not.toContain("json-bot-token");
+  });
+
+  it("does not warn about a channel secret supplied via env", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      telegram: { enabled: true, allowAllChats: true },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "123:env-bot-token" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.sections.find((section) => section.id === "secret-placement")).toBeUndefined();
+  });
 });
 
 describe("validateMonoAgentFolder — observability exporter section", () => {

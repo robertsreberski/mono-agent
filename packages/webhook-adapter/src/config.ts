@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 import {
+  fieldSpecMappings,
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
@@ -10,7 +11,7 @@ import {
   readSettingsJson,
   readString,
 } from "@mono-agent/settings";
-import type { SettingsJson } from "@mono-agent/settings";
+import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/settings";
 
 import { loadWebhookEndpointsFromDirectory } from "./endpoints-dir.js";
 import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "./server.js";
@@ -292,27 +293,34 @@ function deriveEndpointName(path: string): string {
   return segments[segments.length - 1] ?? "default";
 }
 
+/**
+ * The `webhook` section's field registry: the single source of truth both the
+ * JSON→env layering below and the app's config provenance view derive from.
+ * Covers the single-endpoint fields (multi-endpoint `endpoints[]` and `dir`
+ * are read straight from JSON / their own env forms).
+ */
+export const WEBHOOK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  { id: "webhook.enabled", env: "MONO_AGENT_WEBHOOK_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
+  { id: "webhook.host", env: "MONO_AGENT_WEBHOOK_HOST", fromJson: (s) => s.host },
+  { id: "webhook.port", env: "MONO_AGENT_WEBHOOK_PORT", kind: "integer", fromJson: (s) => s.port },
+  { id: "webhook.path", env: "MONO_AGENT_WEBHOOK_PATH", fromJson: (s) => s.path },
+  { id: "webhook.prompt", env: "MONO_AGENT_WEBHOOK_PROMPT", fromJson: (s) => s.prompt },
+  { id: "webhook.notify", env: "MONO_AGENT_WEBHOOK_NOTIFY", kind: "boolean", fromJson: (s) => s.notify },
+  { id: "webhook.notifyConversationId", env: "MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID", fromJson: (s) => s.notifyConversationId },
+  { id: "webhook.model", env: "MONO_AGENT_WEBHOOK_MODEL", fromJson: (s) => s.model },
+  { id: "webhook.effort", env: "MONO_AGENT_WEBHOOK_EFFORT", fromJson: (s) => s.effort },
+  { id: "webhook.allowNonLoopback", env: "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", kind: "boolean", fromJson: (s) => s.allowNonLoopback },
+  { id: "webhook.defaultMode", env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", fromJson: (s) => s.defaultMode },
+  { id: "webhook.retentionMs", env: "MONO_AGENT_WEBHOOK_RETENTION_MS", kind: "integer", fromJson: (s) => s.retentionMs },
+  { id: "webhook.maxStoredRequests", env: "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", kind: "integer", fromJson: (s) => s.maxStoredRequests },
+  { id: "webhook.maxRunMs", env: "MONO_AGENT_WEBHOOK_MAX_RUN_MS", kind: "integer", fromJson: (s) => s.maxRunMs },
+];
+
 function layerWebhookJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readJsonSection(json, "webhook");
-  return layerJsonOntoEnv(env, [
-    { env: "MONO_AGENT_WEBHOOK_ENABLED", value: section.enabled, kind: "boolean" },
-    { env: "MONO_AGENT_WEBHOOK_HOST", value: section.host },
-    { env: "MONO_AGENT_WEBHOOK_PORT", value: section.port, kind: "integer" },
-    { env: "MONO_AGENT_WEBHOOK_PATH", value: section.path },
-    { env: "MONO_AGENT_WEBHOOK_PROMPT", value: section.prompt },
-    { env: "MONO_AGENT_WEBHOOK_NOTIFY", value: section.notify, kind: "boolean" },
-    { env: "MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID", value: section.notifyConversationId },
-    { env: "MONO_AGENT_WEBHOOK_MODEL", value: section.model },
-    { env: "MONO_AGENT_WEBHOOK_EFFORT", value: section.effort },
-    { env: "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", value: section.allowNonLoopback, kind: "boolean" },
-    { env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", value: section.defaultMode },
-    { env: "MONO_AGENT_WEBHOOK_RETENTION_MS", value: section.retentionMs, kind: "integer" },
-    { env: "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", value: section.maxStoredRequests, kind: "integer" },
-    { env: "MONO_AGENT_WEBHOOK_MAX_RUN_MS", value: section.maxRunMs, kind: "integer" },
-  ]);
+  return layerJsonOntoEnv(env, fieldSpecMappings(readJsonSection(json, "webhook"), WEBHOOK_CONFIG_FIELDS));
 }
 
 /** Trim a JSON value to a non-empty string, treating non-strings as absent. */

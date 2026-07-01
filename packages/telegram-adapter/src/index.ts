@@ -95,6 +95,7 @@ export {
   isWithinQuietHours,
   loadTelegramAdapterConfig,
   redactTelegramAdapterConfig,
+  TELEGRAM_CONFIG_FIELDS,
   TelegramAdapterConfigError,
 } from "./config.js";
 export type {

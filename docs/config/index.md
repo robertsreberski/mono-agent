@@ -99,7 +99,7 @@ mono-agent start     # traceability + every configured channel
 On `start`, each channel prints one status line: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
 
 :::note
-The **secret placement** section is advisory and non-fatal: it surfaces a `waiting` warning when a secret-marked field (e.g. `memory.embeddings.apiKey`) is resolved from the committed `mono-agent.config.json` instead of `.env`, naming the `MONO_AGENT_*` variable to move it to. The secret value is never printed, and the warning never blocks `start`. The same warnings are also emitted by `mono-agent config`. See [Environment Variables](/config/env-vars/) for the variable map.
+The **secret placement** section is advisory and non-fatal: it surfaces a `waiting` warning when a secret-marked field is resolved from the committed `mono-agent.config.json` instead of `.env`, naming the `MONO_AGENT_*` variable to move it to. It covers core secrets (e.g. `memory.embeddings.apiKey`) and every channel credential (`telegram.botToken`, `slack.botToken`/`slack.appToken`, `openaiApi.apiKey`, the A2A bearer tokens). The secret value is never printed, and the warning never blocks `start`. The same warnings are also emitted by `mono-agent config`, which additionally shows every channel section field-by-field with the same `[env]`/`[json]`/`[default]` provenance as the core sections. See [Environment Variables](/config/env-vars/) for the variable map.
 :::
 
 ## Related pages

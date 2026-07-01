@@ -2,15 +2,16 @@ import { resolve } from "node:path";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
-import type { MonoAgentConfig } from "@mono-agent/config";
+import type { ConfigViewSection, MonoAgentConfig } from "@mono-agent/config";
 import {
+  A2A_CONFIG_FIELDS,
   A2AConsumerError,
   A2AProviderError,
   startA2AProvider,
 } from "@mono-agent/a2a-adapter";
 import type { A2AAdapterConfig, A2AProviderOptions, A2AProviderStartResult } from "@mono-agent/a2a-adapter";
 import { loadA2AAdapterConfig } from "@mono-agent/a2a-adapter";
-import { CronAdapterError, loadCronAdapterConfig, startCronAdapter } from "@mono-agent/cron-adapter";
+import { CRON_CONFIG_FIELDS, CronAdapterError, loadCronAdapterConfig, startCronAdapter } from "@mono-agent/cron-adapter";
 import type {
   CronAdapterConfig,
   CronAdapterOptions,
@@ -21,6 +22,7 @@ import type {
 import { describeRunFailureKind } from "@mono-agent/observability";
 import {
   loadOpenAIApiAdapterConfig,
+  OPENAI_API_CONFIG_FIELDS,
   OpenAIApiAdapterError,
   startOpenAIApiAdapter,
 } from "@mono-agent/openai-api-adapter";
@@ -31,6 +33,7 @@ import type {
 } from "@mono-agent/openai-api-adapter";
 import {
   loadSlackAdapterConfig,
+  SLACK_CONFIG_FIELDS,
   SlackAdapterConfigError,
   startSlackAdapter,
 } from "@mono-agent/slack-adapter";
@@ -43,6 +46,7 @@ import {
   isWithinQuietHours,
   loadTelegramAdapterConfig,
   startTelegramAdapter,
+  TELEGRAM_CONFIG_FIELDS,
   TelegramAdapterConfigError,
 } from "@mono-agent/telegram-adapter";
 import type {
@@ -55,6 +59,7 @@ import type {
 import {
   loadWebhookAdapterConfig,
   startWebhookAdapter,
+  WEBHOOK_CONFIG_FIELDS,
   WebhookAdapterError,
 } from "@mono-agent/webhook-adapter";
 import type {
@@ -68,6 +73,7 @@ import type {
 import {
   loadWhatsAppAdapterConfig,
   startWhatsAppAdapter,
+  WHATSAPP_CONFIG_FIELDS,
   WhatsAppAdapterConfigError,
 } from "@mono-agent/whatsapp-adapter";
 import type {
@@ -78,6 +84,7 @@ import type {
 } from "@mono-agent/whatsapp-adapter";
 
 import { isAdapterSendToolAllowed } from "./adapter-send-tools.js";
+import { buildChannelConfigView } from "./channel-config-view.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
@@ -197,6 +204,13 @@ export interface ChannelDriver<TConfig = unknown> {
   disabledReason?(config: TConfig): string | undefined;
   /** Reason a loaded, enabled config still cannot start (missing sub-section). */
   waitingReason?(config: TConfig): string | undefined;
+  /**
+   * Compose this channel's source-annotated config section (field-by-field
+   * env/json/default provenance, secrets shown only as set/unset) for
+   * `mono-agent config` and the secret-placement check. Read-only — never
+   * starts the transport.
+   */
+  configView?(input: MonoAgentAppConfigInput): Promise<ConfigViewSection>;
   start(input: ChannelStartInput<TConfig>): Promise<RunningChannel>;
 }
 
@@ -214,6 +228,9 @@ export function createTelegramChannelDriver(
   return {
     id: "telegram",
     label: "Telegram",
+    configView(input) {
+      return buildChannelConfigView(this, TELEGRAM_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
       return await loadTelegramAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
@@ -287,6 +304,9 @@ export function createSlackChannelDriver(
   return {
     id: "slack",
     label: "Slack",
+    configView(input) {
+      return buildChannelConfigView(this, SLACK_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
       return await loadSlackAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
@@ -430,6 +450,9 @@ export function createA2AChannelDriver(
   return {
     id: "a2a",
     label: "A2A",
+    configView(input) {
+      return buildChannelConfigView(this, A2A_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
       return await loadA2AAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
@@ -497,6 +520,9 @@ export function createWebhookChannelDriver(
   return {
     id: "webhook",
     label: "Webhook",
+    configView(input) {
+      return buildChannelConfigView(this, WEBHOOK_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
       // cwd is required so `webhook/*.md` endpoint files are discovered.
       return await loadWebhookAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
@@ -572,6 +598,9 @@ export function createOpenAIApiChannelDriver(
   return {
     id: "openai-api",
     label: "OpenAI API",
+    configView(input) {
+      return buildChannelConfigView(this, OPENAI_API_CONFIG_FIELDS, input, { jsonKey: "openaiApi" });
+    },
     async loadConfig(input) {
       return await loadOpenAIApiAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
@@ -641,6 +670,9 @@ export function createCronChannelDriver(
   return {
     id: "cron",
     label: "Cron",
+    configView(input) {
+      return buildChannelConfigView(this, CRON_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
       return await loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
     },
@@ -878,6 +910,9 @@ export function createWhatsAppChannelDriver(
   return {
     id: "whatsapp",
     label: "WhatsApp",
+    configView(input) {
+      return buildChannelConfigView(this, WHATSAPP_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
       return await loadWhatsAppAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },

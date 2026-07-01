@@ -18,6 +18,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `setup` | Guided recipe setup when attached to a TTY; flag-driven `init` behavior when stdin is not a TTY. | `--recipe <id>`, `--with <csv>`, `--dry-run`, `--model <ref>`, `--fallback-models <csv>`, `--memory lite\|journal\|bujo` |
 | `recipes` | List executable setup recipes or show a recipe's generated config, `.env.example`, and checklist. | `list`, `show <id>` |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). | `--consumer <path>`, `--config <path>`, `--env-file <path>` |
+| `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>` |
 | `start` | Start the agent as a background launchd service (or foreground worker). | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
 | `restart` | Restart the background instance for this config (starts it if stopped). | `--config <path>`, `--force` |
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
@@ -153,13 +154,27 @@ An empty or missing artifact directory prints `No runs recorded yet.`, reports `
 
 ### Secret placement
 
-`validate` includes a **Secret placement** section that warns when a secret-marked config field (e.g. `memory.embeddings.apiKey`, `memory.supermemory.apiKey`) is resolved from the committed `mono-agent.config.json` rather than from `.env`. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
+`validate` includes a **Secret placement** section that warns when a secret-marked config field is resolved from the committed `mono-agent.config.json` rather than from `.env`. It covers the core secrets (`memory.embeddings.apiKey`, `memory.supermemory.apiKey`) and every channel credential — `telegram.botToken`, `slack.botToken` / `slack.appToken`, `openaiApi.apiKey`, and the A2A bearer tokens. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
 
 ```text
-[WARN] memory.embeddings.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).
+[WARN] telegram.botToken is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_TELEGRAM_BOT_TOKEN).
 ```
 
 The warning prints only the stable field id and env-var name — never the secret value. The section is omitted entirely when no secret is JSON-sourced (e.g. when the same secret is supplied via `.env`). The same warnings are printed by [`mono-agent config`](/config/) after the resolved-config view.
+
+## `config`
+
+Prints the resolved configuration read-only: every core section field-by-field, each value tagged with its origin — `[env]`, `[json]`, or `[default]` — followed by a **Channels** block with the same per-field provenance for every channel section (composed from each adapter's field registry, so it can never disagree with what the adapter actually reads), any JSON-secret placement warnings, and the channel status summary. Secret fields are shown only as `set` / `unset`, never as values.
+
+```bash
+mono-agent config
+mono-agent config --config ./agents/support.config.json --env-file ./.env.staging
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--config <path>` | Use a non-default config file. |
+| `--env-file <path>` | Load secrets from a non-default dotenv file. |
 
 ## `start`
 

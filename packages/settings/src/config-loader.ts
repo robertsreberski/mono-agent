@@ -155,6 +155,49 @@ export interface JsonEnvMapping {
 }
 
 /**
+ * One config field in an adapter's exported field registry: the JSON→env
+ * layering facts (id + env + kind) plus the metadata provenance/secret surfaces
+ * need. The registry is the single source of truth — the adapter's layer
+ * function and the app's config view both derive from it, so the two can never
+ * drift apart.
+ */
+export interface JsonEnvFieldSpec {
+  /** Stable dotted field id mirroring the JSON path, e.g. `telegram.botToken`. */
+  readonly id: string;
+  readonly env: string;
+  readonly kind?: EnvEncodeKind;
+  /** True for credential fields: views redact the value and flag JSON placement. */
+  readonly secret?: boolean;
+  /** Extract the field's raw value from the channel's JSON section. */
+  readonly fromJson: (section: Record<string, unknown>) => unknown;
+}
+
+/** Build the {@link layerJsonOntoEnv} mappings from a field registry. */
+export function fieldSpecMappings(
+  section: Record<string, unknown>,
+  fields: readonly JsonEnvFieldSpec[],
+): readonly JsonEnvMapping[] {
+  return fields.map((field) => ({
+    env: field.env,
+    value: field.fromJson(section),
+    ...(field.kind === undefined ? {} : { kind: field.kind }),
+  }));
+}
+
+/**
+ * Encode a JSON value exactly the way {@link layerJsonOntoEnv} would
+ * (`undefined` = absent or wrong type, i.e. the loader would fall through to
+ * the real env or the default). Exposed so provenance views resolve a field's
+ * source with the loader's own semantics.
+ */
+export function encodeJsonEnvValue(
+  value: unknown,
+  kind: EnvEncodeKind = "string",
+): string | undefined {
+  return encodeEnvValue(value, kind);
+}
+
+/**
  * Encode a JSON config section into the string env shape, then overlay the real
  * process env so explicit env vars always win over JSON defaults. This replaces
  * each adapter's bespoke `layer<X>JsonOntoEnv` + `set*` helpers.

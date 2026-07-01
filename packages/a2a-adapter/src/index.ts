@@ -44,6 +44,7 @@ export type {
 } from "./errors.js";
 
 export {
+  A2A_CONFIG_FIELDS,
   loadA2AAdapterConfig,
   redactA2AAdapterConfig,
 } from "./config.js";

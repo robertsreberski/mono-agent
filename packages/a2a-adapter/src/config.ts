@@ -1,4 +1,5 @@
 import {
+  fieldSpecMappings,
   isLoopbackHost,
   layerJsonOntoEnv,
   normalizeOptionalString,
@@ -12,7 +13,7 @@ import {
   readString,
   redactedSecret,
 } from "@mono-agent/settings";
-import type { RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
+import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
 
 import type { A2AAgentSkillOptions } from "./card.js";
 import { A2AProviderError } from "./errors.js";
@@ -227,41 +228,43 @@ function validateConsumer(consumer: A2AAdapterConsumerConfig): void {
   }
 }
 
+/**
+ * The `a2a` section's field registry: the single source of truth both the
+ * JSON→env layering below and the app's config provenance view derive from.
+ * Field ids mirror the JSON paths (`a2a.provider.*`, `a2a.agent.*`,
+ * `a2a.skill.*`, `a2a.consumer.*`).
+ */
+export const A2A_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  { id: "a2a.provider.enabled", env: "MONO_AGENT_A2A_PROVIDER_ENABLED", kind: "boolean", fromJson: (s) => readRecord(s.provider).enabled },
+  { id: "a2a.provider.host", env: "MONO_AGENT_A2A_HOST", fromJson: (s) => readRecord(s.provider).host },
+  { id: "a2a.provider.port", env: "MONO_AGENT_A2A_PORT", kind: "integer", fromJson: (s) => readRecord(s.provider).port },
+  { id: "a2a.provider.publicBaseUrl", env: "MONO_AGENT_A2A_PUBLIC_BASE_URL", fromJson: (s) => readRecord(s.provider).publicBaseUrl },
+  { id: "a2a.provider.allowNonLoopback", env: "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", kind: "boolean", fromJson: (s) => readRecord(s.provider).allowNonLoopback },
+  { id: "a2a.provider.requireBearer", env: "MONO_AGENT_A2A_REQUIRE_BEARER", kind: "boolean", fromJson: (s) => readRecord(s.provider).requireBearer },
+  { id: "a2a.provider.bearerToken", env: "MONO_AGENT_A2A_BEARER_TOKEN", secret: true, fromJson: (s) => readRecord(s.provider).bearerToken },
+
+  { id: "a2a.agent.name", env: "MONO_AGENT_A2A_AGENT_NAME", fromJson: (s) => readRecord(s.agent).name },
+  { id: "a2a.agent.description", env: "MONO_AGENT_A2A_AGENT_DESCRIPTION", fromJson: (s) => readRecord(s.agent).description },
+  { id: "a2a.agent.version", env: "MONO_AGENT_A2A_AGENT_VERSION", fromJson: (s) => readRecord(s.agent).version },
+  { id: "a2a.agent.providerOrganization", env: "MONO_AGENT_A2A_PROVIDER_ORGANIZATION", fromJson: (s) => readRecord(s.agent).providerOrganization },
+  { id: "a2a.agent.providerUrl", env: "MONO_AGENT_A2A_PROVIDER_URL", fromJson: (s) => readRecord(s.agent).providerUrl },
+
+  { id: "a2a.skill.id", env: "MONO_AGENT_A2A_SKILL_ID", fromJson: (s) => readRecord(s.skill).id },
+  { id: "a2a.skill.name", env: "MONO_AGENT_A2A_SKILL_NAME", fromJson: (s) => readRecord(s.skill).name },
+  { id: "a2a.skill.description", env: "MONO_AGENT_A2A_SKILL_DESCRIPTION", fromJson: (s) => readRecord(s.skill).description },
+  { id: "a2a.skill.tags", env: "MONO_AGENT_A2A_SKILL_TAGS", kind: "csv", fromJson: (s) => readRecord(s.skill).tags },
+
+  { id: "a2a.consumer.remoteAgentUrls", env: "MONO_AGENT_A2A_REMOTE_AGENT_URLS", kind: "csv", fromJson: (s) => readRecord(s.consumer).remoteAgentUrls },
+  { id: "a2a.consumer.defaultRemoteAgentUrl", env: "MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL", fromJson: (s) => readRecord(s.consumer).defaultRemoteAgentUrl },
+  { id: "a2a.consumer.bearerToken", env: "MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN", secret: true, fromJson: (s) => readRecord(s.consumer).bearerToken },
+  { id: "a2a.consumer.timeoutMs", env: "MONO_AGENT_A2A_TIMEOUT_MS", kind: "integer", fromJson: (s) => readRecord(s.consumer).timeoutMs },
+];
+
 function layerA2AJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readJsonSection(json, "a2a");
-  const provider = readRecord(section.provider);
-  const agent = readRecord(section.agent);
-  const skill = readRecord(section.skill);
-  const consumer = readRecord(section.consumer);
-
-  return layerJsonOntoEnv(env, [
-    { env: "MONO_AGENT_A2A_PROVIDER_ENABLED", value: provider.enabled, kind: "boolean" },
-    { env: "MONO_AGENT_A2A_HOST", value: provider.host },
-    { env: "MONO_AGENT_A2A_PORT", value: provider.port, kind: "integer" },
-    { env: "MONO_AGENT_A2A_PUBLIC_BASE_URL", value: provider.publicBaseUrl },
-    { env: "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", value: provider.allowNonLoopback, kind: "boolean" },
-    { env: "MONO_AGENT_A2A_REQUIRE_BEARER", value: provider.requireBearer, kind: "boolean" },
-    { env: "MONO_AGENT_A2A_BEARER_TOKEN", value: provider.bearerToken },
-
-    { env: "MONO_AGENT_A2A_AGENT_NAME", value: agent.name },
-    { env: "MONO_AGENT_A2A_AGENT_DESCRIPTION", value: agent.description },
-    { env: "MONO_AGENT_A2A_AGENT_VERSION", value: agent.version },
-    { env: "MONO_AGENT_A2A_PROVIDER_ORGANIZATION", value: agent.providerOrganization },
-    { env: "MONO_AGENT_A2A_PROVIDER_URL", value: agent.providerUrl },
-
-    { env: "MONO_AGENT_A2A_SKILL_ID", value: skill.id },
-    { env: "MONO_AGENT_A2A_SKILL_NAME", value: skill.name },
-    { env: "MONO_AGENT_A2A_SKILL_DESCRIPTION", value: skill.description },
-    { env: "MONO_AGENT_A2A_SKILL_TAGS", value: skill.tags, kind: "csv" },
-
-    { env: "MONO_AGENT_A2A_REMOTE_AGENT_URLS", value: consumer.remoteAgentUrls, kind: "csv" },
-    { env: "MONO_AGENT_A2A_DEFAULT_REMOTE_AGENT_URL", value: consumer.defaultRemoteAgentUrl },
-    { env: "MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN", value: consumer.bearerToken },
-    { env: "MONO_AGENT_A2A_TIMEOUT_MS", value: consumer.timeoutMs, kind: "integer" },
-  ]);
+  return layerJsonOntoEnv(env, fieldSpecMappings(readJsonSection(json, "a2a"), A2A_CONFIG_FIELDS));
 }
 
 function withoutBearer(

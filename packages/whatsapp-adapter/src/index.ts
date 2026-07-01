@@ -31,6 +31,7 @@ export { WhatsAppMessageStream } from "./message-stream.js";
 export {
   loadWhatsAppAdapterConfig,
   redactWhatsAppAdapterConfig,
+  WHATSAPP_CONFIG_FIELDS,
   WhatsAppAdapterConfigError,
 } from "./config.js";
 export type {

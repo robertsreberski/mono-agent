@@ -30,6 +30,12 @@ export interface ConfigViewField {
   readonly source: ConfigViewFieldSource;
   /** True when the underlying value is a secret that has been redacted. */
   readonly redacted?: boolean;
+  /**
+   * Env var for fields outside {@link CONFIG_ENV_KEYS} (channel sections the
+   * app composes on top of the core view). Core fields omit it and resolve
+   * through the registry instead.
+   */
+  readonly envKey?: string;
 }
 
 export interface ConfigViewSection {
@@ -884,7 +890,7 @@ export function findJsonSecretConfigWarnings(
       if (field.redacted !== true || field.source !== "json") {
         continue;
       }
-      const envVar = envKeyForFieldId(field.id);
+      const envVar = field.envKey ?? envKeyForFieldId(field.id);
       if (envVar === undefined) {
         continue;
       }

@@ -34,6 +34,8 @@ import {
   tailLogs,
 } from "./background.js";
 import type { BackgroundDeps, InstanceTarget } from "./background.js";
+import { collectChannelConfigViews } from "./channel-config-view.js";
+import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelStatus } from "./channels.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
@@ -935,17 +937,22 @@ async function runConfig(args: ParsedCliArgs): Promise<number> {
     json: jsonResult.json,
     env,
   });
+  const channelViews = await collectChannelConfigViews(defaultChannelDrivers(), { env, cwd, configPath });
 
   process.stdout.write(ui.banner("mono-agent", "resolved config") + "\n");
   process.stdout.write(renderConfigView(sections));
-  for (const warning of findJsonSecretConfigWarnings(sections)) {
+  if (channelViews.length > 0) {
+    process.stdout.write("\n" + ui.heading("Channels"));
+    process.stdout.write(renderConfigView(channelViews));
+  }
+  for (const warning of findJsonSecretConfigWarnings([...sections, ...channelViews])) {
     process.stdout.write(`${ui.style.yellow(warning)}\n`);
   }
 
   const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false });
   const channels = report.sections.filter((section) => section.id.startsWith("channel:"));
   if (channels.length > 0) {
-    process.stdout.write("\n" + ui.heading("Channels"));
+    process.stdout.write("\n" + ui.heading("Channel status"));
     for (const section of channels) {
       process.stdout.write(formatSection(section));
     }
