@@ -82,8 +82,18 @@ describe("shared agent contracts", () => {
           return event.text;
         case "tool_call_started":
           return `${event.id}:${event.name}`;
+        case "tool_call_progress":
+          return `${event.id}:${String(event.partialResult ?? "")}`;
         case "tool_call_completed":
-          return event.id;
+          return `${event.id}${event.executionMs === undefined ? "" : `:${event.executionMs}ms`}`;
+        case "usage_update":
+          return `${event.tokens?.input ?? 0}/${event.tokens?.output ?? 0}`;
+        case "provider_status":
+          return event.kind;
+        case "memory_recalled":
+          return `${event.bytes ?? 0}b`;
+        case "runtime_telemetry":
+          return event.kind;
         case "runtime_warning":
           return event.message;
         default: {
@@ -95,7 +105,12 @@ describe("shared agent contracts", () => {
 
     expect(describeEvent({ type: "assistant_thought", text: "thinking" })).toBe("thinking");
     expect(describeEvent({ type: "tool_call_started", id: "t1", name: "search" })).toBe("t1:search");
-    expect(describeEvent({ type: "tool_call_completed", id: "t1" })).toBe("t1");
+    expect(describeEvent({ type: "tool_call_progress", id: "t1", partialResult: "p" })).toBe("t1:p");
+    expect(describeEvent({ type: "tool_call_completed", id: "t1", executionMs: 5 })).toBe("t1:5ms");
+    expect(describeEvent({ type: "usage_update", tokens: { input: 1, output: 2, cacheRead: 0, cacheCreation: 0 } })).toBe("1/2");
+    expect(describeEvent({ type: "provider_status", kind: "request_started" })).toBe("request_started");
+    expect(describeEvent({ type: "memory_recalled", bytes: 9 })).toBe("9b");
+    expect(describeEvent({ type: "runtime_telemetry", kind: "cache_hit" })).toBe("cache_hit");
     expect(describeEvent({ type: "runtime_warning", message: "warned" })).toBe("warned");
   });
 });

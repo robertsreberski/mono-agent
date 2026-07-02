@@ -63,6 +63,62 @@ export type AgentStreamEvent =
       readonly arguments?: unknown;
       readonly content?: unknown;
       readonly isError?: boolean;
+      /** Wall-clock tool execution time, when the runtime reported it. */
+      readonly executionMs?: number;
+      readonly metadata?: AgentResponseMetadata;
+    }
+  | {
+      readonly type: "tool_call_progress";
+      readonly id: string;
+      readonly name?: string;
+      /** Partial tool output captured while the tool is still running. */
+      readonly partialResult?: unknown;
+      readonly metadata?: AgentResponseMetadata;
+    }
+  | {
+      readonly type: "usage_update";
+      readonly model?: string;
+      /** Cumulative run cost in USD, when the runtime prices the model. */
+      readonly cumulativeUsd?: number;
+      readonly tokens?: {
+        readonly input: number;
+        readonly output: number;
+        readonly cacheRead: number;
+        readonly cacheCreation: number;
+      };
+      readonly metadata?: AgentResponseMetadata;
+    }
+  | {
+      readonly type: "provider_status";
+      readonly kind:
+        | "request_started"
+        | "request_completed"
+        | "failover_started"
+        | "failover_completed";
+      readonly model?: string;
+      readonly from?: string;
+      readonly to?: string;
+      readonly attemptIndex?: number;
+      readonly durationMs?: number;
+      readonly cancelled?: boolean;
+      readonly metadata?: AgentResponseMetadata;
+    }
+  | {
+      readonly type: "memory_recalled";
+      readonly source?: string;
+      readonly bytes?: number;
+      readonly metadata?: AgentResponseMetadata;
+    }
+  | {
+      /**
+       * Catch-all for low-frequency runtime telemetry (cache_hit/cache_miss,
+       * capabilities_resolved, provider_bridge_latency, …) so new kinds ride
+       * through without further union growth. Consumers render or ignore by
+       * `kind`; `data` is the raw event payload minus its `type`.
+       */
+      readonly type: "runtime_telemetry";
+      readonly kind: string;
+      readonly data?: Record<string, unknown>;
       readonly metadata?: AgentResponseMetadata;
     }
   | {
@@ -140,6 +196,12 @@ export function isAgentResponseCancelledError(
 }
 
 export { CodedError, isCodedError } from "./coded-error.js";
+export {
+  serializeAgentStreamFrame,
+  parseAgentStreamFrame,
+  frameFeedingMessageStream,
+} from "./stream-wire.js";
+export type { AgentStreamWireFrame } from "./stream-wire.js";
 export {
   BufferedMessageStream,
 } from "./buffered-message-stream.js";

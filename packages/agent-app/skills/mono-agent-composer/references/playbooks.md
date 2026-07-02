@@ -180,7 +180,7 @@ const ext = createCollaboratorToolRuntimeExtension({
   "observability": { "exporters": [{ "type": "phoenix", "endpoint": "http://127.0.0.1:6006/v1/traces", "projectName": "my-project", "includeSensitiveData": false, "timeoutMs": 5000 }] }
 }
 ```
-**Steps:** start Phoenix (6006) → `init` → add artifacts/traceability/exporter → `validate` (POSTs an empty protobuf) → `start` (prints the Phoenix endpoint) → `mono-agent-tui --config ./mono-agent.config.json`.
+**Steps:** start Phoenix (6006) → `init` → add artifacts/traceability/exporter → `validate` (POSTs an empty protobuf) → `start` (prints the Phoenix endpoint) → `mono-agent tui`.
 **Smoke:** complete a TUI prompt; confirm a redacted JSONL artifact AND a Phoenix trace with merged tool spans under the project.
 
 ## 11. Backfill historical runs to Phoenix

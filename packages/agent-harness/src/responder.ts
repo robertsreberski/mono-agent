@@ -67,6 +67,9 @@ export function createAgentResponder(options: {
     },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       const runtimeEventStream = createRuntimeEventStream(stream);
+      // Per-turn scratch: tool_timing arrives strictly before its tool_result and
+      // is folded into that tool_call_completed rather than emitted on its own.
+      const eventContext: StreamEventContext = { toolTimings: new Map() };
       const response = await invoke({
         conversationId: bucket(request.conversationId),
         userMessage: request.text,
@@ -74,7 +77,7 @@ export function createAgentResponder(options: {
         ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
         ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
         onEvent: (event) => {
-          const streamEvent = streamEventFromRuntimeEvent(event);
+          const streamEvent = streamEventFromRuntimeEvent(event, eventContext);
           if (streamEvent !== undefined) {
             runtimeEventStream.enqueueEvent(streamEvent);
           }
@@ -115,7 +118,33 @@ export function assistantTextFromRuntimeEvent(event: unknown): string {
   return text;
 }
 
-export function streamEventFromRuntimeEvent(event: unknown): AgentStreamEvent | undefined {
+/**
+ * Per-turn state threaded through the mapper. `toolTimings` collects
+ * tool_timing events (tool_use_id → execution_ms) so the duration can be
+ * stamped onto the matching tool_call_completed instead of surfacing as a
+ * separate event; entries are consumed on use.
+ */
+export interface StreamEventContext {
+  readonly toolTimings?: Map<string, number>;
+}
+
+/**
+ * Raw runtime event kinds that ride through as the generic runtime_telemetry
+ * variant. Deliberately an allowlist, not a catch-all: other unmapped runtime
+ * events (bridge-specific `system`/`result` payloads, …) stay off the channel
+ * stream as before.
+ */
+const RUNTIME_TELEMETRY_KINDS = new Set([
+  "cache_hit",
+  "cache_miss",
+  "capabilities_resolved",
+  "provider_bridge_latency",
+]);
+
+export function streamEventFromRuntimeEvent(
+  event: unknown,
+  context?: StreamEventContext,
+): AgentStreamEvent | undefined {
   if (!isRecord(event)) {
     return undefined;
   }
@@ -130,6 +159,80 @@ export function streamEventFromRuntimeEvent(event: unknown): AgentStreamEvent | 
       message,
       ...(warningKind === undefined ? {} : { warningKind }),
     };
+  }
+  if (event.type === "tool_update") {
+    const id = stringField(event, "tool_use_id");
+    if (id === undefined) {
+      return undefined;
+    }
+    const name = stringField(event, "name");
+    return {
+      type: "tool_call_progress",
+      id,
+      ...(name === undefined ? {} : { name }),
+      ...(hasOwn(event, "partial_result") ? { partialResult: event.partial_result } : {}),
+    };
+  }
+  if (event.type === "tool_timing") {
+    const id = stringField(event, "tool_use_id");
+    if (id !== undefined && typeof event.execution_ms === "number") {
+      context?.toolTimings?.set(id, event.execution_ms);
+    }
+    return undefined;
+  }
+  if (event.type === "cost_accumulated") {
+    const model = stringField(event, "model");
+    const tokens = isRecord(event.tokens)
+      ? {
+          input: numberOrZero(event.tokens.input),
+          output: numberOrZero(event.tokens.output),
+          cacheRead: numberOrZero(event.tokens.cacheReadTokens),
+          cacheCreation: numberOrZero(event.tokens.cacheCreationTokens),
+        }
+      : undefined;
+    return {
+      type: "usage_update",
+      ...(model === undefined ? {} : { model }),
+      ...(typeof event.cumulativeUsd === "number" ? { cumulativeUsd: event.cumulativeUsd } : {}),
+      ...(tokens === undefined ? {} : { tokens }),
+    };
+  }
+  if (
+    event.type === "provider_request_started" ||
+    event.type === "provider_request_completed" ||
+    event.type === "provider_failover_started" ||
+    event.type === "provider_failover_completed"
+  ) {
+    const kind = event.type.replace("provider_", "") as
+      | "request_started"
+      | "request_completed"
+      | "failover_started"
+      | "failover_completed";
+    const model = stringField(event, "model");
+    const from = stringField(event, "from");
+    const to = stringField(event, "to");
+    return {
+      type: "provider_status",
+      kind,
+      ...(model === undefined ? {} : { model }),
+      ...(from === undefined ? {} : { from }),
+      ...(to === undefined ? {} : { to }),
+      ...(typeof event.attemptIndex === "number" ? { attemptIndex: event.attemptIndex } : {}),
+      ...(typeof event.durationMs === "number" ? { durationMs: event.durationMs } : {}),
+      ...(typeof event.cancelled === "boolean" ? { cancelled: event.cancelled } : {}),
+    };
+  }
+  if (event.type === "memory_recalled") {
+    const source = stringField(event, "source");
+    return {
+      type: "memory_recalled",
+      ...(source === undefined ? {} : { source }),
+      ...(typeof event.bytes === "number" ? { bytes: event.bytes } : {}),
+    };
+  }
+  if (typeof event.type === "string" && RUNTIME_TELEMETRY_KINDS.has(event.type)) {
+    const { type, ...data } = event;
+    return { type: "runtime_telemetry", kind: type, data };
   }
   if (event.type !== "assistant" && event.type !== "user") {
     return undefined;
@@ -163,11 +266,16 @@ export function streamEventFromRuntimeEvent(event: unknown): AgentStreamEvent | 
     if (event.type === "user" && block.type === "tool_result") {
       const id = stringField(block, "tool_use_id") ?? stringField(block, "tool_call_id");
       if (id !== undefined) {
+        const executionMs = context?.toolTimings?.get(id);
+        if (executionMs !== undefined) {
+          context?.toolTimings?.delete(id);
+        }
         return {
           type: "tool_call_completed",
           id,
           ...(hasOwn(block, "content") ? { content: block.content } : {}),
           ...(typeof block.is_error === "boolean" ? { isError: block.is_error } : {}),
+          ...(executionMs === undefined ? {} : { executionMs }),
         };
       }
     }
@@ -243,6 +351,10 @@ function thoughtTextFromBlock(block: Record<string, unknown>): string | undefine
 function stringField(value: Record<string, unknown>, field: string): string | undefined {
   const candidate = value[field];
   return typeof candidate === "string" && candidate.length > 0 ? candidate : undefined;
+}
+
+function numberOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {

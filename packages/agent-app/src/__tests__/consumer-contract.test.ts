@@ -94,6 +94,10 @@ describe("golden consumer config contracts", () => {
           "id": "channel:whatsapp",
           "status": "disabled",
         },
+        {
+          "id": "channel:tui",
+          "status": "ok",
+        },
       ]
     `);
   });
@@ -169,6 +173,10 @@ describe("golden consumer config contracts", () => {
         {
           "id": "channel:whatsapp",
           "status": "disabled",
+        },
+        {
+          "id": "channel:tui",
+          "status": "ok",
         },
       ]
     `);

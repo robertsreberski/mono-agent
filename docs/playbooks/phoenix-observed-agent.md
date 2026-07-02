@@ -21,7 +21,7 @@ Run an agent locally with the TUI and stream every run lifecycle to Phoenix as O
 - [`observability.phoenix-exporter`](/observability/phoenix-and-backfill/) — additive, best-effort OTLP/HTTP protobuf export of each run as a semantic timeline (config).
 - [`observability.jsonl-artifacts`](/observability/artifacts-and-traces/) — redacted `run-*.summary.json` + `run-*.events.jsonl` written on every run; the local fallback (config).
 - [`observability.trace-registry`](/observability/artifacts-and-traces/) — heartbeat manifests that `mono-agent status` reads (config).
-- [`tui.chat`](/observability/tui/) — terminal chat with transcript and a redacted config pane (cli).
+- [`tui.chat`](/observability/tui/) — the operator console: live chat with thinking/tool/telemetry insight, run replay, and a config view (cli).
 
 ## Configuration
 
@@ -64,7 +64,7 @@ With `includeSensitiveData: false`, exported spans are metadata-only and prompt/
 2. `mono-agent init --model claude:claude-sonnet-4-6`.
 3. Add the `artifacts`, `traceability`, and `observability.exporters[]` phoenix entry to `mono-agent.config.json`.
 4. `mono-agent validate` (it POSTs an empty protobuf to confirm export-compatibility, not just reachability), then `mono-agent start` (it prints the Phoenix endpoint as the trace source).
-5. `mono-agent-tui --config ./mono-agent.config.json` and complete a prompt.
+5. `mono-agent tui` (from any directory — it discovers the running agent) and complete a prompt.
 6. Open Phoenix and confirm the run appears as AGENT / LLM / TOOL spans under `my-project`.
 
 ## Smoke test

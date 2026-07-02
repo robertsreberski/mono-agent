@@ -223,6 +223,14 @@ All Slack resilience vars are optional integers (`0`–`3600000`); omit to use t
 | `MONO_AGENT_OPENAI_API_KEY` | `openaiApi.apiKey` | Optional bearer required from clients (`sk-...`). |
 | `MONO_AGENT_OPENAI_API_MODEL_ID` | `openaiApi.modelId` | Advertised model id. See [../channels/openai-api.md](/channels/openai-api/). |
 
+### TUI stream endpoint
+
+| Env var | JSON key it overrides | Notes |
+| --- | --- | --- |
+| `MONO_AGENT_TUI_ENABLED` | `tui.enabled` | **Default `true`** — the one channel on by default (loopback operator surface for `mono-agent tui`). |
+| `MONO_AGENT_TUI_PORT` | `tui.port` | Default `0` (ephemeral; published to the trace-source registry). |
+| `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. See [../channels/tui.md](/channels/tui/). |
+
 ### A2A
 
 | Env var | JSON key it overrides | Notes |

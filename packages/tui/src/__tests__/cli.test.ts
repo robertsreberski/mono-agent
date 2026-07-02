@@ -3,61 +3,47 @@ import { describe, expect, it } from "vitest";
 import { parseArgs } from "../bin/cli.js";
 
 describe("parseArgs", () => {
-  it("defaults help to false with no arguments", () => {
-    const result = parseArgs([]);
-    expect(result).toEqual({ help: false });
-  });
-
-  it("sets help for -h and --help", () => {
-    expect(parseArgs(["-h"])).toEqual({ help: true });
-    expect(parseArgs(["--help"])).toEqual({ help: true });
-  });
-
-  it("parses every value flag", () => {
-    const result = parseArgs([
-      "--responder",
-      "./responder.js",
-      "--config",
-      "./mono-agent.config.json",
-      "--title",
-      "Demo",
-      "--conversation",
-      "conv-1",
-    ]);
-    expect(result).toEqual({
+  it("parses in-process mode flags (legacy surface preserved)", () => {
+    expect(
+      parseArgs(["--responder", "./responder.js", "--config", "./mono-agent.config.json", "--title", "T", "--conversation", "c1"]),
+    ).toEqual({
       help: false,
       responder: "./responder.js",
       config: "./mono-agent.config.json",
-      title: "Demo",
-      conversationId: "conv-1",
+      title: "T",
+      conversationId: "c1",
     });
   });
 
-  it("returns an error when a value flag is missing its argument", () => {
-    expect(parseArgs(["--responder"])).toEqual({
-      error: "--responder requires a path",
-    });
-    expect(parseArgs(["--config"])).toEqual({
-      error: "--config requires a path",
-    });
-    expect(parseArgs(["--title"])).toEqual({
-      error: "--title requires a value",
-    });
-    expect(parseArgs(["--conversation"])).toEqual({
-      error: "--conversation requires a value",
+  it("parses remote mode flags", () => {
+    expect(parseArgs(["--url", "http://127.0.0.1:5000/tui", "--api-key", "k"])).toEqual({
+      help: false,
+      url: "http://127.0.0.1:5000/tui",
+      apiKey: "k",
     });
   });
 
-  it("rejects unknown arguments", () => {
-    expect(parseArgs(["--nope"])).toEqual({
-      error: "unknown argument: --nope",
+  it("parses discovery flags and bare invocation", () => {
+    expect(parseArgs([])).toEqual({ help: false });
+    expect(parseArgs(["--registry-dir", "/tmp/registry"])).toEqual({
+      help: false,
+      registryDir: "/tmp/registry",
     });
   });
 
-  it("omits unset optional flags rather than emitting undefined values", () => {
-    const result = parseArgs(["--responder", "./responder.js"]);
-    expect(result).toEqual({ help: false, responder: "./responder.js" });
-    expect(Object.keys(result)).not.toContain("config");
-    expect(Object.keys(result)).not.toContain("title");
+  it("rejects mixing --responder with --url", () => {
+    expect(parseArgs(["--responder", "a.js", "--url", "http://x"])).toEqual({
+      error: "--responder and --url are mutually exclusive",
+    });
+  });
+
+  it("rejects flags missing their value and unknown flags", () => {
+    expect(parseArgs(["--url"])).toEqual({ error: "--url requires a value" });
+    expect(parseArgs(["--nope"])).toEqual({ error: "unknown argument: --nope" });
+  });
+
+  it("parses help", () => {
+    expect(parseArgs(["--help"])).toEqual({ help: true });
+    expect(parseArgs(["-h"])).toEqual({ help: true });
   });
 });

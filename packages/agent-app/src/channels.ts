@@ -38,6 +38,11 @@ import type {
   TelegramChatId,
 } from "@mono-agent/telegram-adapter";
 import type {
+  TuiAdapterConfig,
+  TuiAdapterOptions,
+  TuiAdapterStartResult,
+} from "@mono-agent/tui-adapter";
+import type {
   WebhookAdapterConfig,
   WebhookAdapterOptions,
   WebhookAdapterStartResult,
@@ -45,6 +50,7 @@ import type {
   WebhookInvocationRequest,
   WebhookInvocationStatus,
 } from "@mono-agent/webhook-adapter";
+import { modelReferenceKey } from "@mono-agent/runtime-adapter";
 import type {
   StartWhatsAppAdapterOptions,
   WhatsAppAdapterConfig,
@@ -83,6 +89,7 @@ export const BUILTIN_CHANNEL_IDS = [
   "openai-api",
   "cron",
   "whatsapp",
+  "tui",
 ] as const;
 export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
 
@@ -104,6 +111,7 @@ type WebhookAdapterModule = typeof import("@mono-agent/webhook-adapter");
 type OpenAIApiAdapterModule = typeof import("@mono-agent/openai-api-adapter");
 type CronAdapterModule = typeof import("@mono-agent/cron-adapter");
 type WhatsAppAdapterModule = typeof import("@mono-agent/whatsapp-adapter");
+type TuiAdapterModule = typeof import("@mono-agent/tui-adapter");
 
 let telegramModule: TelegramAdapterModule | undefined;
 let slackModule: SlackAdapterModule | undefined;
@@ -112,6 +120,7 @@ let webhookModule: WebhookAdapterModule | undefined;
 let openaiApiModule: OpenAIApiAdapterModule | undefined;
 let cronModule: CronAdapterModule | undefined;
 let whatsappModule: WhatsAppAdapterModule | undefined;
+let tuiModule: TuiAdapterModule | undefined;
 
 const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
   (telegramModule ??= await import("@mono-agent/telegram-adapter"));
@@ -127,6 +136,8 @@ const loadCronModule = async (): Promise<CronAdapterModule> =>
   (cronModule ??= await import("@mono-agent/cron-adapter"));
 const loadWhatsAppModule = async (): Promise<WhatsAppAdapterModule> =>
   (whatsappModule ??= await import("@mono-agent/whatsapp-adapter"));
+const loadTuiModule = async (): Promise<TuiAdapterModule> =>
+  (tuiModule ??= await import("@mono-agent/tui-adapter"));
 
 const TELEGRAM_GATE: ChannelGateSpec = { jsonKey: "telegram", envPrefix: "MONO_AGENT_TELEGRAM_" };
 const SLACK_GATE: ChannelGateSpec = { jsonKey: "slack", envPrefix: "MONO_AGENT_SLACK_" };
@@ -709,6 +720,63 @@ export function createOpenAIApiChannelDriver(
   };
 }
 
+export interface TuiChannelOverrides {
+  readonly adapterFactory?: (options: TuiAdapterOptions) => Promise<TuiAdapterStartResult>;
+}
+
+/**
+ * The TUI stream endpoint deviates from the channels-off convention: with no
+ * `tui` section and no `MONO_AGENT_TUI_*` env it is ENABLED on loopback with
+ * an ephemeral port, so `mono-agent tui` can reach any running agent without a
+ * per-agent config edit. There is consequently no isChannelConfigured gate and
+ * no synthetic UNCONFIGURED constant — the real loader always answers (its
+ * empty-input output is `enabled: true` + defaults). `"tui": {"enabled": false}`
+ * opts out.
+ */
+export function createTuiChannelDriver(
+  overrides: TuiChannelOverrides = {},
+): ChannelDriver<TuiAdapterConfig> {
+  return {
+    id: "tui",
+    label: "TUI",
+    async configView(input) {
+      const adapter = await loadTuiModule();
+      return await buildChannelConfigView(this, adapter.TUI_CONFIG_FIELDS, input, { jsonKey: "tui" });
+    },
+    async loadConfig(input) {
+      const adapter = await loadTuiModule();
+      return await adapter.loadTuiAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return tuiModule !== undefined && error instanceof tuiModule.TuiAdapterError;
+    },
+    disabledReason(config) {
+      return config.enabled ? undefined : "TUI stream endpoint is disabled.";
+    },
+    async start(input) {
+      const adapterModule = await loadTuiModule();
+      const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
+      const adapter = await adapterFactory({
+        host: input.config.host,
+        port: input.config.port,
+        basePath: input.config.basePath,
+        allowNonLoopback: input.config.allowNonLoopback,
+        ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
+        responder: input.responder,
+        info: { model: modelReferenceKey(input.coreConfig.runtime.model) },
+        // A dead endpoint must flip the channel to failed, not serve nothing
+        // silently — the TUI's only discovery signal is this channel's status.
+        onServerError: (reason) => input.onFailure(reason),
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+      });
+      return {
+        summary: { baseUrl: adapter.baseUrl },
+        stop: () => adapter.stop(),
+      };
+    },
+  };
+}
+
 export interface CronChannelOverrides {
   readonly adapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
   /**
@@ -1058,6 +1126,7 @@ export interface ChannelDriverOverrides {
   readonly openaiApi?: OpenAIApiChannelOverrides;
   readonly cron?: CronChannelOverrides;
   readonly whatsapp?: WhatsAppChannelOverrides;
+  readonly tui?: TuiChannelOverrides;
 }
 
 /** Every channel the app can drive, in startup/status display order. */
@@ -1070,6 +1139,7 @@ export function defaultChannelDrivers(overrides: ChannelDriverOverrides = {}): r
     createOpenAIApiChannelDriver(overrides.openaiApi),
     createCronChannelDriver(overrides.cron),
     createWhatsAppChannelDriver(overrides.whatsapp),
+    createTuiChannelDriver(overrides.tui),
   ] as readonly ChannelDriver[];
 }
 

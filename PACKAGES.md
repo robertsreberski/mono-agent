@@ -24,6 +24,7 @@ flowchart TB
     OpenAIApi["@mono-agent/openai-api-adapter"]
     Slack["@mono-agent/slack-adapter"]
     Telegram["@mono-agent/telegram-adapter"]
+    TuiAdapter["@mono-agent/tui-adapter"]
     WhatsApp["@mono-agent/whatsapp-adapter"]
     Webhook["@mono-agent/webhook-adapter"]
   end
@@ -70,8 +71,10 @@ flowchart TB
   AgentApp --> OpenAIApi
   AgentApp --> Slack
   AgentApp --> Telegram
+  AgentApp --> TuiAdapter
   AgentApp --> WhatsApp
   AgentApp --> Webhook
+  AgentApp --> Tui
   AgentApp --> Host
   AgentApp --> Config
   AgentApp --> Observability
@@ -84,6 +87,7 @@ flowchart TB
 
   Tui --> Contracts
   Tui --> Config
+  Tui --> Observability
 
   A2A --> Contracts
   A2A --> Settings
@@ -95,6 +99,8 @@ flowchart TB
   Slack --> Settings
   Telegram --> Contracts
   Telegram --> Settings
+  TuiAdapter --> Contracts
+  TuiAdapter --> Settings
   WhatsApp --> Contracts
   WhatsApp --> Settings
   Webhook --> Contracts
@@ -143,7 +149,7 @@ flowchart TB
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |
 | `evaluation` | `@mono-agent/agent-evals` |
-| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
+| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
 | `operator-surface` | `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |
 
