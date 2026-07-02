@@ -36,7 +36,7 @@ Choose along three axes, in order: **channel** (how messages reach the agent), t
 | Plain HTTP (sync + async jobs) | [Webhook Automation](/playbooks/webhook-automation-sync-async/) |
 | Another agent over A2A | [A2A Provider + Consumer](/playbooks/a2a-provider-and-consumer/) |
 | A scheduled prompt (no inbound channel) | [Cron Digest](/playbooks/cron-digest-proactive-notify/) |
-| The local terminal TUI only | [Local-Only Ollama Agent](/playbooks/local-only-ollama-agent/) · [Phoenix-Observed Agent](/playbooks/phoenix-observed-agent/) |
+| The local terminal TUI only | [Local-Only Ollama Agent](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio Agent](/playbooks/local-only-lmstudio-agent/) · [Phoenix-Observed Agent](/playbooks/phoenix-observed-agent/) |
 
 See [Channels](/channels/) for the full per-channel reference.
 
@@ -55,7 +55,7 @@ Memory tiers, `writeMode`, embeddings, and rituals are covered in [Memory](/memo
 | Shape | Recipe |
 | --- | --- |
 | Single agent, one channel | most recipes above |
-| Fully local / air-gapped (no cloud, no outbound network) | [Local-Only Ollama](/playbooks/local-only-ollama-agent/) · [Sandboxed Code Agent](/playbooks/sandboxed-code-agent/) |
+| Fully local / air-gapped (no cloud, no outbound network) | [Local-Only Ollama](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio](/playbooks/local-only-lmstudio-agent/) · [Sandboxed Code Agent](/playbooks/sandboxed-code-agent/) |
 | Reliability-hardened (ordered model fallback) | [Multi-Model Fallback Chain](/playbooks/multi-model-fallback-chain/) |
 | Composed / multi-agent (delegation) | [Multi-Agent Orchestration](/playbooks/multi-agent-orchestration/) · [A2A Pair](/playbooks/a2a-provider-and-consumer/) |
 | Observed (tracing + dashboards) | [Phoenix-Observed Agent](/playbooks/phoenix-observed-agent/) · [Backfill Historical Runs](/playbooks/backfill-historical-runs/) |
@@ -68,6 +68,7 @@ Memory tiers, `writeMode`, embeddings, and rituals are covered in [Memory](/memo
 | [Personal Telegram Assistant with BuJo Memory](/playbooks/telegram-personal-assistant-bujo/) | Individual power user wanting a private assistant that remembers | Telegram long-polling bot that captures every turn into BuJo memory (nightly reflection + monthly migration) and recalls past notes semantically. |
 | [Slack Team Bot with MCP Tools](/playbooks/slack-team-bot-mcp-tools/) | DevOps engineer running a shared team bot | Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MCP tool plus Read/Grep and `slack_send_message` for proactive posts. |
 | [Fully Local Ollama Agent (No Cloud)](/playbooks/local-only-ollama-agent/) | Privacy-focused user with no cloud API budget | Agent running entirely on local Ollama via the Pi runtime, with journal memory on local embeddings and no outbound network. |
+| [Fully Local LM Studio Agent (No Cloud)](/playbooks/local-only-lmstudio-agent/) | Privacy-focused user who prefers LM Studio's GUI over Ollama's CLI | Agent running entirely on a local LM Studio provider via the Pi runtime, with lite-tier FTS memory and no outbound network. |
 | [OpenAI-Compatible Endpoint for Open WebUI](/playbooks/openai-endpoint-open-webui/) | AI infra engineer fronting the agent with a chat UI | Expose the agent as an OpenAI-compatible `/v1` endpoint so Open WebUI can stream responses and keep multi-turn state. |
 | [Webhook Automation with Sync + Async Endpoints](/playbooks/webhook-automation-sync-async/) | Backend developer integrating the agent into a pipeline | Accept fast sync HTTP calls and long-running async jobs (202 + status polling) across multiple named endpoints, some defined as markdown. |
 | [Cron Digest with Native Notify](/playbooks/cron-digest-proactive-notify/) | Data analyst wanting a scheduled briefing pushed to a chat | Timezone-aware cron job that builds a daily digest with shared history and delivers the final answer through native Telegram/Slack notification. |

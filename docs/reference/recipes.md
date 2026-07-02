@@ -30,6 +30,7 @@ Most recipes mirror a copy-paste [playbook](/playbooks/) that walks the same set
 | `cron-digest` | Cron digest agent — scheduled prompt with native proactive notification. | low | [Cron digest](/playbooks/cron-digest-proactive-notify/) |
 | `a2a-provider` | A2A provider — Agent Card discovery + JSON-RPC/REST endpoints, optional bearer. | medium | [A2A provider & consumer](/playbooks/a2a-provider-and-consumer/) |
 | `local-ollama-private` | Local Ollama private agent — fully local model + memory, no cloud calls. | low | [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) |
+| `local-lmstudio-private` | Local LM Studio private agent — fully local model + lite (FTS-only) memory, no cloud calls. | low | [Local-only LM Studio agent](/playbooks/local-only-lmstudio-agent/) |
 | `phoenix-observed` | Phoenix-observed agent — OTLP trace export of every run to a local Phoenix. | low | [Phoenix-observed agent](/playbooks/phoenix-observed-agent/) |
 | `sandboxed-code-agent` | Sandboxed code agent — fail-closed sandbox policy for runtime-owned commands. | medium | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
 | `full-safe` | Full (safe) blueprint — every channel enabled with conservative defaults. | medium | — |

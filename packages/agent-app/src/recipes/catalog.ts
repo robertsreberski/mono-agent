@@ -305,6 +305,37 @@ const localOllamaPrivate: AgentRecipe = {
   ],
 };
 
+/** `local-lmstudio-private` — fully local agent (LM Studio provider + lite memory). */
+const localLmStudioPrivate: AgentRecipe = {
+  id: "local-lmstudio-private",
+  title: "Local LM Studio private agent",
+  description: "Runs entirely on a local LM Studio provider with lite-tier (FTS-only) memory — no remote calls, no external embeddings dependency.",
+  tags: ["local", "lmstudio", "private", "memory"],
+  riskLevel: "low",
+  playbook: "local-only-lmstudio-agent.md",
+  inputs: [
+    { ...MODEL_INPUT, default: "pi:lmstudio:qwen3.6-32b" },
+  ],
+  config: (input) => withSections(input, {
+    providers: {
+      local: [
+        {
+          id: "lmstudio",
+          type: "lmstudio",
+          baseUrl: "http://localhost:1234",
+          enabled: true,
+        },
+      ],
+    },
+    memory: memoryBlock("lite"),
+    webhook: { enabled: true },
+  }),
+  validateExpectations: [
+    { sectionId: "runtime", mustBe: "ok", note: "Start LM Studio's local server and load the configured model." },
+    { sectionId: "memory", mustBe: "ok" },
+  ],
+};
+
 /** `phoenix-observed` — local artifacts plus a Phoenix OTLP exporter. */
 const phoenixObserved: AgentRecipe = {
   id: "phoenix-observed",
@@ -452,6 +483,7 @@ export const RECIPE_CATALOG: readonly AgentRecipe[] = [
   cronDigest,
   a2aProvider,
   localOllamaPrivate,
+  localLmStudioPrivate,
   phoenixObserved,
   sandboxedCodeAgent,
   fullSafe,
