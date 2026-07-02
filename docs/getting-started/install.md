@@ -6,7 +6,7 @@ sidebar:
 
 # Install & Prerequisites
 
-This page covers how to install the `mono-agent` CLI and the `mono-agent-tui` console, the runtime prerequisites you need, and how to run an unreleased build straight from a clone of the repo.
+This page covers how to install the `mono-agent` CLI (which includes the `mono-agent tui` operator console), the runtime prerequisites you need, and how to run an unreleased build straight from a clone of the repo.
 
 The shipped command line lives in `@mono-agent/agent-app` (the config-first host that reads one `mono-agent.config.json`), and the terminal chat console lives in `@mono-agent/tui`. Both publish under the `@mono-agent/*` scope on npm.
 
@@ -45,18 +45,18 @@ npm exec --package @mono-agent/agent-app -- mono-agent init
 
 This downloads and runs the published CLI for that one scaffold command. It does not require a global install or the source-build workspace setup.
 
-## Install the TUI console
+## The TUI console
 
-The terminal chat + transcript + redacted-config console ships separately in `@mono-agent/tui`, which provides the `mono-agent-tui` bin (coverage type: `cli`):
+The operator console is built into the CLI — once an agent is running (`mono-agent start`), open it from **any directory**:
 
 ```bash
-npm i -g @mono-agent/tui
+mono-agent tui
 ```
 
-Point it at the same config the host uses:
+It discovers running agents on the machine and gives you live chat with full thinking/tool/telemetry insight, recorded-run replay, and a config view. The underlying `@mono-agent/tui` package also ships a low-level `mono-agent-tui` bin for custom hosts (`--responder` embedded mode, `--url` direct connect):
 
 ```bash
-mono-agent-tui --config ./mono-agent.config.json
+npm i -g @mono-agent/tui   # only needed for the standalone bin
 ```
 
 See [TUI](/observability/tui/) for the console walkthrough.
@@ -80,6 +80,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | `validate` | Validate `mono-agent.config.json` (and resolved secrets) before starting. |
 | `start` | Start the host for every configured channel (backgrounds on macOS; use `--foreground`/`-f` elsewhere). |
 | `restart` / `stop` / `status` / `logs` | Manage the backgrounded instance (macOS). |
+| `tui` | Open the operator console and connect to any running agent. |
 | `install-skill` | Install a skill into the agent folder. |
 | `backfill` | Replay historical runs into observability. |
 

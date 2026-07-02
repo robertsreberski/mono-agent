@@ -15,8 +15,8 @@ Every mono-agent run is recorded locally as append-only JSONL artifacts — the 
 | JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`, secrets redacted | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifest so dashboards discover live agents | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Phoenix exporter + backfill | Best-effort OTLP/HTTP export of run lifecycles; retroactive backfill | config / cli | [Phoenix export & backfill](/observability/phoenix-and-backfill/) |
-| `mono-agent` CLI | init / validate / start / stop / logs / restart / backfill / audit-runs / metrics / install-skill | cli | [CLI reference](/observability/cli-reference/) |
-| TUI | Terminal chat + transcript + redacted config pane | cli | [TUI](/observability/tui/) |
+| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / backfill / audit-runs / metrics / install-skill | cli | [CLI reference](/observability/cli-reference/) |
+| TUI | Operator console: live chat with thinking/tool/telemetry insight, run replay, config view | cli | [TUI](/observability/tui/) |
 
 ## JSONL run artifacts (always on)
 
@@ -82,13 +82,14 @@ The full command and flag matrix is in the [CLI reference](/observability/cli-re
 
 ## The TUI
 
-`mono-agent-tui` (ships with `@mono-agent/tui`) is a terminal chat client with a live transcript and a redacted config pane — useful for poking an agent without a channel attached.
+`mono-agent tui` opens the operator console from any directory and connects to any running agent on the machine: live chat with full thinking/tool/telemetry insight, a recorded-run replay browser (every channel's turns), and a source-annotated config view.
 
 ```bash
-mono-agent-tui --responder ./tui-responder.mjs --config ./mono-agent.config.json
+mono-agent tui                        # discover running agents and connect
+mono-agent tui --agent personal-agent # pick one directly
 ```
 
-See the [TUI page](/observability/tui/) for details.
+See the [TUI page](/observability/tui/) for details, including the embedded `--responder` mode for custom hosts.
 
 ## Related
 

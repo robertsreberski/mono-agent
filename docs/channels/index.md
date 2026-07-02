@@ -8,7 +8,7 @@ sidebar:
 
 Channels are how a mono-agent receives input and delivers replies. Each is an independent JSON section in `mono-agent.config.json`, opt-in via its own `enabled` flag, and composed into the running host by `@mono-agent/agent-app`. This page explains the shared lifecycle, how to pick a channel, and links to every per-channel guide. Coverage: **config** unless a feature is noted otherwise.
 
-## The seven channels
+## The eight channels
 
 | Channel | Transport | Section | Guide |
 | --- | --- | --- | --- |
@@ -19,12 +19,13 @@ Channels are how a mono-agent receives input and delivers replies. Each is an in
 | OpenAI-compatible API | `/v1/chat/completions` (SSE) | `openaiApi` | [OpenAI-compatible API](/channels/openai-api/) |
 | A2A | Agent-to-Agent provider/consumer | `a2a` | [A2A](/channels/a2a/) |
 | Cron | Scheduled prompts | `cron` | [Cron](/channels/cron/) |
+| TUI stream endpoint | Loopback NDJSON stream for `mono-agent tui` | `tui` | [TUI stream endpoint](/channels/tui/) |
 
 Channels are fully independent: enabling one neither requires nor affects another, and a misconfigured channel never blocks the rest of the host from starting.
 
 ## Opt-in and the status lifecycle
 
-Every channel defaults to **off**. You turn one on with `enabled: true` and supply its required settings. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
+Every channel defaults to **off**, with one deliberate exception: the [TUI stream endpoint](/channels/tui/) defaults to **on** (it is a loopback-only operator surface, so `mono-agent tui` can reach any running agent without a config edit; `"tui": {"enabled": false}` opts out). You turn a channel on with `enabled: true` and supply its required settings. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
 
 | State | Meaning |
 | --- | --- |

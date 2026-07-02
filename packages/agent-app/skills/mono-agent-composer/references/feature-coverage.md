@@ -73,7 +73,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | JSONL run artifacts (events + summaries, secrets redacted) | config | `artifacts.dir` |
 | Trace-source registry (heartbeat manifests `mono-agent status` reads) | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` |
 | Phoenix trace viewer (OTLP exporter; local JSONL artifacts are the fallback) | config | `observability.exporters` (phoenix entry) |
-| Terminal chat (TUI with transcript + redacted config pane) | cli | `mono-agent-tui --config ./mono-agent.config.json` |
+| Operator console (live chat with thinking/tool/telemetry insight, run replay, config view) | cli | `mono-agent tui [--agent <label>]`; agents serve the `tui` stream endpoint by default (`tui.enabled`, loopback) |
 | Executable config blueprints (generate config + `.env.example` + checklist) | cli | `mono-agent recipes list\|show <id>`, `mono-agent init --recipe <id>` |
 | Resolved config view (every field tagged env/json/default) | cli | `mono-agent config` |
 | Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate [--consumer <path>]\|config\|recipes\|start\|install-skill` |

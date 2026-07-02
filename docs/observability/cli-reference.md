@@ -250,6 +250,24 @@ For `logs`, `-f` means **follow**; for `start`, `-f` means **foreground**. A `--
 
 `status` prints the same compact **runs health** block for the detached instance after the instance, observability, and channel details. Missing or empty artifact directories show `No runs recorded yet.` and do not change the command's existing exit-code semantics.
 
+## `tui`
+
+Opens the [operator console](/observability/tui/) from **any directory**: live chat with full thinking/tool/telemetry insight, recorded-run replay, and a source-annotated config view. Discovers running agents via the trace-source registry — zero running agents prints a `mono-agent start` hint and exits `1`, one connects directly, several open an in-TUI picker. Requires an interactive TTY.
+
+```bash
+mono-agent tui                          # discover + connect
+mono-agent tui --agent personal-agent   # connect by label or sourceId
+mono-agent tui --conversation ops       # chat under a stable conversation id
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--agent <label\|sourceId>` | Connect to a specific running instance; errors with the available list when there is no match. |
+| `--conversation <id>` | Conversation id for the chat (default `tui-<sourceId>`). |
+| `--config <path>` | Resolve a custom `traceability.registryDir` from this config (for agents registered outside the global registry). |
+
+The live-chat connection uses the agent's [`tui` channel](/channels/tui/) (on by default); an agent with the channel disabled still gets replay and config views.
+
 ## `install-skill`
 
 Copies the bundled `mono-agent-composer` skill into the agent skill folders (`~/.claude/skills` and/or `~/.codex/skills`). Refuses to overwrite an existing copy unless `--force` is passed.
