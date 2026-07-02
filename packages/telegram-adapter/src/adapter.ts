@@ -546,6 +546,7 @@ export const DEFAULT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
   "audio/aac",
   "audio/wav",
   "audio/webm",
+  "audio/flac",
   // Video.
   "video/mp4",
   "video/mpeg",
@@ -589,6 +590,7 @@ interface ResolvedTelegramAttachmentSource {
   readonly mimeType: string;
   readonly name: string | undefined;
   readonly declaredSize: number | undefined;
+  readonly durationSeconds: number | undefined;
 }
 
 /**
@@ -680,6 +682,9 @@ function buildAgentAttachment(
   if (source.name !== undefined) {
     attachment.name = source.name;
   }
+  if (source.durationSeconds !== undefined) {
+    attachment.durationSeconds = source.durationSeconds;
+  }
   if (mimeType.startsWith("text/")) {
     attachment.text = Buffer.from(bytes).toString("utf8");
   }
@@ -693,6 +698,7 @@ function attachmentSource(attachment: TelegramAttachment): ResolvedTelegramAttac
     mimeType: attachmentMimeType(attachment),
     name,
     declaredSize: attachment.fileSize,
+    durationSeconds: "duration" in attachment ? attachment.duration : undefined,
   };
 }
 

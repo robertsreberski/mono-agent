@@ -25,6 +25,8 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_ALLOWED_TOOLS: "Read, Grep",
         MONO_AGENT_DISALLOWED_TOOLS: "Bash",
         MONO_AGENT_MCP_CONFIG_PATH: "mcp.json",
+        MONO_AGENT_MCP_CALL_TIMEOUT_MS: "150000",
+        MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS: "2700000",
         MONO_AGENT_MEMORY_PATH: "memory.md",
         MONO_AGENT_MEMORY_WRITE_MODE: "append-host-summary",
         MONO_AGENT_MEMORY_MAX_BYTES: "2048",
@@ -53,6 +55,8 @@ describe("loadMonoAgentConfig", () => {
       allowedTools: ["Read", "Grep"],
       disallowedTools: ["Bash"],
       mcpConfigPath: "/repo/mcp.json",
+      mcpCallTimeoutMs: 150000,
+      mcpCallMaxTotalTimeoutMs: 2700000,
     });
     expect(config.artifacts.dir).toBe("/repo/artifacts");
     expect(config.providers?.piAuthPath).toBe(join(homedir(), ".pi", "agent", "auth.json"));

@@ -116,7 +116,17 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   "tools": {
     "allowedTools": ["Read", "Grep"],      // built-ins: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
     "disallowedTools": ["Bash"],
-    "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
+    "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
+    "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
+    "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
+  },
+
+  // Human-in-the-loop bridge: blocking ask_user + tool progress → channel status
+  // messages. Optional — auto-starts when ask_user is in tools.allowedTools.
+  "interaction": {
+    "bridge": { "host": "127.0.0.1", "port": 0 }, // 0 = ephemeral; tools get the URL via env
+    "askUser": { "timeoutMs": 600000 },           // max wait per question (10 min)
+    "progress": { "enabled": true }
   },
 
   // Sandbox for runtime commands. Omit for no sandboxing.

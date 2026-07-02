@@ -734,10 +734,23 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   // unconditionally — so the former `piReasoningSummary` runtime option was dead
   // plumbing and the `runtime.reasoningSummary` config field was removed.
   const piNative = config.providers?.piNative;
+  // MCP call timeouts ride the runtime's `settings` bag (the same channel the
+  // agent loop reads via resolveAgentCompactionPolicy) — only when configured, so
+  // the runtime defaults (120s inactivity / 45 min total) stay authoritative.
+  const { mcpCallTimeoutMs, mcpCallMaxTotalTimeoutMs } = config.tools;
+  const settings = mcpCallTimeoutMs === undefined && mcpCallMaxTotalTimeoutMs === undefined
+    ? undefined
+    : {
+        ...(mcpCallTimeoutMs === undefined ? {} : { agent_mcp_call_timeout_ms: mcpCallTimeoutMs }),
+        ...(mcpCallMaxTotalTimeoutMs === undefined
+          ? {}
+          : { agent_mcp_call_max_total_timeout_ms: mcpCallMaxTotalTimeoutMs }),
+      };
   if (
     permissionMode === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
+    && settings === undefined
   ) {
     return undefined;
   }
@@ -745,6 +758,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
+    ...(settings === undefined ? {} : { settings }),
   };
 }
 

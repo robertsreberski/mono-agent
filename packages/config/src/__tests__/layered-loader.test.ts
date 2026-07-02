@@ -35,7 +35,12 @@ describe("layerJsonOntoEnv", () => {
           mode: "journal",
           path: ".mono-agent/memory",
         },
-        tools: { allowedTools: ["Read"], disallowedTools: ["Bash"] },
+        tools: {
+          allowedTools: ["Read"],
+          disallowedTools: ["Bash"],
+          mcpCallTimeoutMs: 150000,
+          mcpCallMaxTotalTimeoutMs: 2700000,
+        },
         traceability: { registryDir: ".mono-agent/traces", sourceId: "json-source", staleAfterMs: 60000 },
         providers: {
           piAuthPath: ".pi/auth.json",
@@ -60,6 +65,8 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_PATH).toBe(".mono-agent/memory");
     expect(layered.MONO_AGENT_ALLOWED_TOOLS).toBe("Read");
     expect(layered.MONO_AGENT_DISALLOWED_TOOLS).toBe("Bash");
+    expect(layered.MONO_AGENT_MCP_CALL_TIMEOUT_MS).toBe("150000");
+    expect(layered.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS).toBe("2700000");
     expect(layered.MONO_AGENT_TRACE_REGISTRY_DIR).toBe(".mono-agent/traces");
     expect(layered.MONO_AGENT_TRACE_SOURCE_ID).toBe("json-source");
     expect(layered.MONO_AGENT_TRACE_STALE_AFTER_MS).toBe("60000");

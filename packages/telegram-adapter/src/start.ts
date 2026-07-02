@@ -13,11 +13,12 @@ import {
   type CreateTelegramBotOptions,
   type TelegramNotifyOptions,
   type TelegramNotifyResult,
+  type TelegramPendingAsks,
 } from "./bot.js";
 import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
 import type { TelegramChatId } from "./types.js";
 
-export type { TelegramNotifyOptions, TelegramNotifyResult } from "./bot.js";
+export type { TelegramNotifyOptions, TelegramNotifyResult, TelegramPendingAsks } from "./bot.js";
 
 export interface TelegramAdapterStartOptions {
   /** Bot API token used to construct the grammY {@link Bot}. */
@@ -48,6 +49,8 @@ export interface TelegramAdapterStartOptions {
   readonly reactions?: TelegramReactionsConfig;
   /** Subscribe to and handle inline-keyboard taps (telegram_ask callbacks). Default off. */
   readonly callbacksEnabled?: boolean;
+  /** Pending-ask interceptor for blocking ask_user round-trips (checked pre-admission). */
+  readonly pendingAsks?: TelegramPendingAsks;
   /** Delete any configured webhook before polling. Defaults to true. */
   readonly deleteWebhookOnStart?: boolean;
   /** Bound (ms) for the startup deleteWebhook call so a flaky network can't stall boot. Default 5000. */
@@ -79,6 +82,14 @@ export interface TelegramAdapterStartResult {
    * channel — owns the message.
    */
   notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
+  /** Post a plain message directly (no model turn, no history) — ask_user questions. */
+  post(chatId: TelegramChatId, text: string): Promise<void>;
+  /** Post or edit-in-place a keyed tool-progress status line (best-effort). */
+  postStatus(
+    chatId: TelegramChatId,
+    text: string,
+    options: { readonly key: string; readonly state: "working" | "done" | "failed" },
+  ): Promise<void>;
 }
 
 /**
@@ -98,6 +109,8 @@ export async function startTelegramAdapter(
   return {
     stop: () => controller.stop(),
     notify: (chatId, text, notifyOptions) => controller.notify(chatId, text, notifyOptions),
+    post: (chatId, text) => controller.post(chatId, text),
+    postStatus: (chatId, text, statusOptions) => controller.postStatus(chatId, text, statusOptions),
   };
 }
 
@@ -115,6 +128,7 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.commands === undefined ? {} : { commands: options.commands }),
     ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
     ...(options.callbacksEnabled === undefined ? {} : { callbacksEnabled: options.callbacksEnabled }),
+    ...(options.pendingAsks === undefined ? {} : { pendingAsks: options.pendingAsks }),
     ...(options.deleteWebhookOnStart === undefined
       ? {}
       : { deleteWebhookOnStart: options.deleteWebhookOnStart }),

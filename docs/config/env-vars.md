@@ -122,6 +122,19 @@ The standalone `memory-bujo` maintenance CLI reads `MONO_AGENT_MEMORY_EMBEDDINGS
 | `MONO_AGENT_ALLOWED_TOOLS` | `tools.allowedTools` | Allowlist. See [../tools/policy.md](/tools/policy/). |
 | `MONO_AGENT_DISALLOWED_TOOLS` | `tools.disallowedTools` | Denylist (deny wins; overlap rejected). |
 | `MONO_AGENT_MCP_CONFIG_PATH` | `tools.mcpConfigPath` | Path to `mcp.json`. See [../tools/mcp.md](/tools/mcp/). |
+| `MONO_AGENT_MCP_CALL_TIMEOUT_MS` | `tools.mcpCallTimeoutMs` | Inactivity timeout per MCP tool call; tool progress notifications reset it. Default 120000. |
+| `MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS` | `tools.mcpCallMaxTotalTimeoutMs` | Hard wall clock per MCP tool call that progress cannot extend. Default 2700000 (45 min). |
+
+## Interaction (ask_user + tool progress)
+
+The interaction bridge starts automatically when `ask_user` is in `tools.allowedTools` or the `interaction` block is present. It exports `MONO_AGENT_INTERACTION_BRIDGE_URL`/`MONO_AGENT_INTERACTION_BRIDGE_TOKEN` into the process environment for tool children (do not set those two yourself).
+
+| Env var | JSON key it overrides | Notes |
+| --- | --- | --- |
+| `MONO_AGENT_INTERACTION_BRIDGE_HOST` | `interaction.bridge.host` | Loopback bind host. Default `127.0.0.1`. |
+| `MONO_AGENT_INTERACTION_BRIDGE_PORT` | `interaction.bridge.port` | Bridge port. Default `0` (ephemeral — consumers get the URL via env). |
+| `MONO_AGENT_ASK_USER_TIMEOUT_MS` | `interaction.askUser.timeoutMs` | Max wait per `ask_user` question (also the per-ask ceiling). Default 600000 (10 min). |
+| `MONO_AGENT_PROGRESS_ENABLED` | `interaction.progress.enabled` | Route tool progress posts to channel status messages. Default true. |
 
 ## Sandbox
 

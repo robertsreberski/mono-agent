@@ -137,10 +137,17 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     ...(skillDisclosure === undefined ? {} : { skillDisclosure }),
   };
 
+  const mcpCallTimeoutMs = readOptionalTimeoutMs(input.env.MONO_AGENT_MCP_CALL_TIMEOUT_MS, "MONO_AGENT_MCP_CALL_TIMEOUT_MS");
+  const mcpCallMaxTotalTimeoutMs = readOptionalTimeoutMs(
+    input.env.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
+    "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
+  );
   const tools: MonoAgentConfig["tools"] = {
     allowedTools: readCsv(input.env.MONO_AGENT_ALLOWED_TOOLS),
     disallowedTools: readCsv(input.env.MONO_AGENT_DISALLOWED_TOOLS),
     ...(mcpConfigPath === undefined ? {} : { mcpConfigPath }),
+    ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
+    ...(mcpCallMaxTotalTimeoutMs === undefined ? {} : { mcpCallMaxTotalTimeoutMs }),
   };
 
   const config: MonoAgentConfig = {
@@ -247,6 +254,14 @@ function readFallbackModels(env: Record<string, string | undefined>): readonly M
       );
     }
   });
+}
+
+/** Optional per-MCP-call timeout override; unset defers to the runtime defaults (120s inactivity / 45 min total). */
+function readOptionalTimeoutMs(raw: string | undefined, name: string): number | undefined {
+  if (normalizeOptionalString(raw) === undefined) {
+    return undefined;
+  }
+  return readInteger(raw, name, 0, invalidEnv, { min: 1000, max: 86_400_000 });
 }
 
 function readMaxTurns(raw: string | undefined): number | undefined {

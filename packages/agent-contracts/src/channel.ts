@@ -116,6 +116,33 @@ export interface RunningChannel {
 }
 
 /**
+ * Channel-side surface for human-in-the-loop interaction: post a free-text
+ * question, or post/edit a short keyed status line. Registered by a channel
+ * driver with the host's {@link ChannelInteractionHub} at start.
+ */
+export interface ChannelInteractionSink {
+  postQuestion(conversationId: string, text: string): Promise<void>;
+  postStatus(
+    conversationId: string,
+    text: string,
+    options: { readonly key: string; readonly state: "working" | "done" | "failed" },
+  ): Promise<void>;
+}
+
+/**
+ * Host-owned hub connecting channels to blocking ask-the-user round-trips and
+ * tool progress. A driver registers its sink and routes the user's replies /
+ * cancellations back through the hub so a tool blocked on an ask can resume.
+ */
+export interface ChannelInteractionHub {
+  registerSink(channelId: string, sink: ChannelInteractionSink): void;
+  /** Resolve the conversation's pending ask with the user's reply; true when consumed. */
+  tryResolveAsk(conversationId: string, answer: string): boolean | Promise<boolean>;
+  /** Fail the conversation's pending ask (user cancelled). */
+  cancelAsks(conversationId: string): void;
+}
+
+/**
  * Everything a driver receives to start its transport. `TCore` is the host's
  * core config type; hosts bind it (the mono-agent app uses its `MonoAgentConfig`)
  * while the neutral contract stays dependency-free.
@@ -157,6 +184,12 @@ export interface ChannelStartInput<TConfig, TCore = unknown> {
    * it to resolve in-thread replies and to record top-level proactive posts.
    */
   readonly postedMessageIndexPath?: string;
+  /**
+   * Host interaction hub for blocking ask-the-user round-trips and tool
+   * progress. Present when the host runs an interaction bridge; a driver that
+   * supports it registers a sink and wires reply interception/cancellation.
+   */
+  readonly interaction?: ChannelInteractionHub;
 }
 
 /**

@@ -176,6 +176,17 @@ export class SerialQueue {
   }
 }
 
+/**
+ * Interceptor for blocking ask-the-user round-trips (the app's interaction
+ * bridge). While an ask is pending on a conversation, the user's next plain-text
+ * message RESOLVES it (consumed pre-admission, never queued as a turn) and
+ * `/cancel` fails it.
+ */
+export interface TelegramPendingAsks {
+  tryResolve(conversationId: string, answer: string): boolean | Promise<boolean>;
+  cancel(conversationId: string): void;
+}
+
 export interface CreateTelegramBotOptions {
   readonly botToken: string;
   readonly responder: AgentResponder;
@@ -252,6 +263,12 @@ export interface CreateTelegramBotOptions {
    * `request.attachments`; failures skip the attachment without failing the run.
    */
   readonly attachments?: DownloadTelegramAttachmentsOptions;
+  /**
+   * Pending-ask interceptor. Checked in `handleAgentMessage` BEFORE per-chat
+   * admission — a reply sent while a turn is blocked on `ask_user` would
+   * otherwise queue behind that very turn and deadlock until the ask times out.
+   */
+  readonly pendingAsks?: TelegramPendingAsks;
   /** Test seam: build the grammY Bot (e.g. with a fake botInfo + transformer). */
   readonly botFactory?: (token: string) => Bot;
   /**
@@ -277,6 +294,23 @@ export interface TelegramBotController {
    * call) and records it to history. Used by cron/webhook nudges.
    */
   notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
+  /**
+   * Post a plain message directly (no model turn, no history record). Used by the
+   * interaction bridge for ask_user questions — the question/answer pair reaches
+   * the model as the tool result, so recording it to history would duplicate it.
+   */
+  post(chatId: TelegramChatId, text: string): Promise<void>;
+  /**
+   * Post (or edit in place) a short tool-progress status line, keyed per
+   * `(chat, key)`. A terminal state (`done`/`failed`) writes the final text and
+   * clears the tracking so the next job with the same key starts a new message.
+   * Best-effort: a failed send/edit never throws.
+   */
+  postStatus(
+    chatId: TelegramChatId,
+    text: string,
+    options: { readonly key: string; readonly state: "working" | "done" | "failed" },
+  ): Promise<void>;
   /**
    * Test seam: total in-flight AbortControllers tracked across all chats. Used to
    * assert the over-cap busy path does not leak an eagerly-created controller.
@@ -381,6 +415,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
 
   const cancelChat = (chatId: TelegramChatId): void => {
     const conversationId = `telegram:${String(chatId)}`;
+    // Fail any pending ask first so a tool blocked on ask_user returns
+    // "cancelled by user" instead of waiting out its timeout.
+    options.pendingAsks?.cancel(conversationId);
     // Clear queued follow-ups (and signal the harness to abort the in-flight
     // turn) first, then abort every controller we are tracking for this chat.
     options.responder.cancel?.(conversationId);
@@ -673,6 +710,27 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (captionCommand !== undefined) {
       await handleControlCommand(ctx, captionCommand);
       return;
+    }
+
+    // A plain-text reply while an ask is pending is that ask's ANSWER. It must be
+    // consumed BEFORE admission: the asking turn holds this chat's queue slot, so
+    // queueing the reply as a turn would deadlock it behind the very tool call
+    // waiting for it. Media always passes through, and slash-prefixed text is
+    // left to the (unknown-)command path so an ask can never eat a command.
+    if (
+      options.pendingAsks !== undefined &&
+      typeof telegramMessage.text === "string" &&
+      telegramMessage.text.trim().length > 0 &&
+      !telegramMessage.text.trimStart().startsWith("/")
+    ) {
+      const consumed = await options.pendingAsks.tryResolve(
+        `telegram:${String(chatId)}`,
+        telegramMessage.text,
+      );
+      if (consumed) {
+        await applyReaction(chatId, telegramMessage.message_id, "👍");
+        return;
+      }
     }
 
     const input = normalizeTelegramMessageInput(telegramMessage);
@@ -1345,9 +1403,37 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     restartTimer.unref?.();
   }
 
+  // Tool-progress status messages, keyed `chat:key` → message_id for edit-in-place.
+  const statusMessages = new Map<string, number>();
+
   return {
     bot,
     notify,
+    async post(chatId: TelegramChatId, text: string): Promise<void> {
+      await sender.sendMessage({ chat_id: chatId, text });
+    },
+    async postStatus(chatId, text, statusOptions): Promise<void> {
+      const key = `${String(chatId)}:${statusOptions.key}`;
+      try {
+        const existing = statusMessages.get(key);
+        if (existing === undefined) {
+          const sent = await sender.sendMessage({ chat_id: chatId, text });
+          statusMessages.set(key, sent.message_id);
+        } else {
+          await sender.editMessageText({ chat_id: chatId, message_id: existing, text });
+        }
+      } catch (error) {
+        // Best-effort by contract: a lost progress edit must never fail the
+        // reporting tool (e.g. "message is not modified" on identical text).
+        logger?.debug?.("Telegram postStatus failed (best-effort).", {
+          error: errorMessage(error),
+        });
+      } finally {
+        if (statusOptions.state !== "working") {
+          statusMessages.delete(key);
+        }
+      }
+    },
     activeControllerCount(): number {
       let total = 0;
       for (const set of activeControllers.values()) {

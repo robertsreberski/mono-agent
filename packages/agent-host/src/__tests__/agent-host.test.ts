@@ -313,6 +313,45 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.piReasoningSummary).toBeUndefined();
   });
 
+  it("forwards tools.mcpCall*TimeoutMs to the runtime as agent settings, omitting settings when unset", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    const configured = await createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        mcpCallTimeoutMs: 60_000,
+        mcpCallMaxTotalTimeoutMs: 900_000,
+      }),
+      runtime: fake.runtime,
+    });
+    await configured.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+    expect(fake.calls[0]?.options.settings).toMatchObject({
+      agent_mcp_call_timeout_ms: 60_000,
+      agent_mcp_call_max_total_timeout_ms: 900_000,
+    });
+
+    // Unset timeouts must not materialize a settings object — the runtime's own
+    // defaults (120s inactivity / 45 min total) apply.
+    const plain = await createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: fake.runtime,
+    });
+    await plain.respond(
+      { conversationId: "c2", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+    expect(fake.calls[1]?.options.settings).toBeUndefined();
+  });
+
   it("bounds in-flight runs at concurrency.maxConcurrentRuns", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -1032,6 +1071,8 @@ function monoConfig(input: {
   readonly skillMaxBytes?: number;
   readonly artifactDir: string;
   readonly mcpConfigPath?: string;
+  readonly mcpCallTimeoutMs?: number;
+  readonly mcpCallMaxTotalTimeoutMs?: number;
   readonly permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
   readonly observability?: NonNullable<MonoAgentConfig["observability"]>;
 }): MonoAgentConfig {
@@ -1077,6 +1118,8 @@ function monoConfig(input: {
       allowedTools: ["Read"],
       disallowedTools: ["Write"],
       ...(input.mcpConfigPath === undefined ? {} : { mcpConfigPath: input.mcpConfigPath }),
+      ...(input.mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs: input.mcpCallTimeoutMs }),
+      ...(input.mcpCallMaxTotalTimeoutMs === undefined ? {} : { mcpCallMaxTotalTimeoutMs: input.mcpCallMaxTotalTimeoutMs }),
     },
     artifacts: {
       dir: input.artifactDir,

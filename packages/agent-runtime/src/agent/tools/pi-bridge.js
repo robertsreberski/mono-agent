@@ -49,6 +49,9 @@ function isImageToolResult(raw) {
 }
 
 const MCP_TEXT_RESULT_LIMIT = 12_000;
+// Fallback hard cap per MCP call when limits.mcpCallMaxTotalTimeoutMs is not
+// provided; mirrors DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS in agent/compaction.js.
+const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 2_700_000;
 const MCP_RAW_DETAIL_LIMIT = 4_000;
 const MCP_IMAGE_INLINE_MAX_BYTES = 250_000;
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
@@ -547,12 +550,20 @@ function mcpToolName(serverName, toolName, reservedNames) {
   return `mcp__${serverName}__${toolName}`;
 }
 
-function withTimeout(promise, timeoutMs, signal, label) {
+// Inactivity wall clock around an MCP call. `registerReset` (optional) hands the
+// caller a rearm function so tool progress notifications can keep a legitimately
+// long call alive; the SDK's maxTotalTimeout stays the hard cap.
+function withTimeout(promise, timeoutMs, signal, label, registerReset) {
   if (signal?.aborted) return Promise.reject(new Error("tool execution aborted"));
   const ms = Number(timeoutMs) || 120000;
   let timeout;
   const timer = new Promise((_, reject) => {
-    timeout = setTimeout(() => reject(new Error(`${label || "MCP tool"} timed out after ${ms}ms`)), ms);
+    const arm = () => setTimeout(() => reject(new Error(`${label || "MCP tool"} timed out after ${ms}ms`)), ms);
+    timeout = arm();
+    registerReset?.(() => {
+      clearTimeout(timeout);
+      timeout = arm();
+    });
   });
   return Promise.race([promise, timer]).finally(() => clearTimeout(timeout));
 }
@@ -566,6 +577,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   toolPayloadMaxBytes = MAX_TOOL_RESULT_BYTES,
   sandboxPolicy = null,
   sandboxEngine = null,
+  onToolProgress = null,
 } = {}) {
   const clients = [];
   const tools = [];
@@ -636,6 +648,30 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           // in-process tools that run a whole agent turn (e.g. notify_conversation delivery).
           // Pass it explicitly so the SDK request timeout matches our cap instead of pre-empting it.
           const mcpCallTimeoutMs = limits.mcpCallTimeoutMs || 120000;
+          // Inactivity vs total: mcpCallTimeoutMs is reset by every progress
+          // notification (keep-alive for long tools like transcription or an
+          // ask-the-user wait); mcpCallMaxTotalTimeoutMs is the unresettable cap.
+          const mcpCallMaxTotalTimeoutMs = Math.max(
+            limits.mcpCallMaxTotalTimeoutMs || DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
+            mcpCallTimeoutMs,
+          );
+          // The SDK only attaches a progressToken (and thus honors
+          // resetTimeoutOnProgress) when an onprogress callback is present, so one
+          // is always attached: it rearms the outer wall clock and optionally
+          // surfaces the notification to the host.
+          let resetInactivityTimeout = null;
+          const onprogress = (progress) => {
+            resetInactivityTimeout?.();
+            onToolProgress?.({
+              type: "tool_progress",
+              server: serverName,
+              tool: sourceTool.name,
+              toolCallId,
+              ...(progress?.progress === undefined ? {} : { progress: progress.progress }),
+              ...(progress?.total === undefined ? {} : { total: progress.total }),
+              ...(progress?.message === undefined ? {} : { message: progress.message }),
+            });
+          };
           const out = await withTimeout(
             connected.client.callTool(
               { name: sourceTool.name, arguments: normalizedParams || {} },
@@ -643,11 +679,20 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               // Forward the abort signal too, so a cancelled/timed-out call also cancels the
               // in-flight MCP request on the wire (otherwise the SDK keeps awaiting until its own
               // timeout, and an in-process loopback turn could post late after the bridge rejected).
-              { timeout: mcpCallTimeoutMs, resetTimeoutOnProgress: true, maxTotalTimeout: mcpCallTimeoutMs, signal },
+              {
+                timeout: mcpCallTimeoutMs,
+                resetTimeoutOnProgress: true,
+                maxTotalTimeout: mcpCallMaxTotalTimeoutMs,
+                signal,
+                onprogress,
+              },
             ),
             mcpCallTimeoutMs,
             signal,
             `${serverName}:${sourceTool.name}`,
+            (reset) => {
+              resetInactivityTimeout = reset;
+            },
           );
           const mcpCallDurationMs = Date.now() - mcpCallStartMs;
           const imageTruncations = [];
