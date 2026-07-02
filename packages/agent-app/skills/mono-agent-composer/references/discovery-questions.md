@@ -229,7 +229,7 @@ Do you need a browsable trace viewer or just local artifacts?
 2. JSONL artifacts only (the local fallback; no external viewer)
 ```
 
-Fills: `artifacts.dir`, `traceability.registryDir` / `sourceId` / `sourceLabel`, and — when Phoenix is wanted — an `observability.exporters` (phoenix) OTLP entry. Local JSONL artifacts are always written and are the fallback when no exporter is configured. Artifacts record runtime/tool/message events and summaries, not private chain-of-thought. For a local terminal chat, mention `mono-agent-tui --config ./mono-agent.config.json`. Config is JSON-first — edit `mono-agent.config.json` directly and run `mono-agent restart` to apply changes.
+Fills: `artifacts.dir`, `traceability.registryDir` / `sourceId` / `sourceLabel`, and — when Phoenix is wanted — an `observability.exporters` (phoenix) OTLP entry. Local JSONL artifacts are always written and are the fallback when no exporter is configured. Artifacts record runtime/tool/message events and summaries, not private chain-of-thought. For a terminal operator console, mention `mono-agent tui` (run from anywhere once the agent is started; live chat with thinking/tool insight, run replay, config view). Config is JSON-first — edit `mono-agent.config.json` directly and run `mono-agent restart` to apply changes.
 
 ## 9. Acceptance Smoke Test
 

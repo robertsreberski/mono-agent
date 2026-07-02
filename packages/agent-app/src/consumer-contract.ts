@@ -89,6 +89,8 @@ const expectedContracts = {
       "openai-api": "active",
       cron: "active",
       whatsapp: "disabled",
+      // Default-ON operator surface: active with no `tui` section in the fixture.
+      tui: "active",
     },
     enabledFlags: {
       telegram: true,
@@ -120,6 +122,8 @@ const expectedContracts = {
       "openai-api": "active",
       cron: "active",
       whatsapp: "disabled",
+      // Default-ON operator surface: active with no `tui` section in the fixture.
+      tui: "active",
     },
     enabledFlags: {
       telegram: false,

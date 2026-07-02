@@ -1,0 +1,123 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { discoverInstances, resolveInstanceApiKey, toInstance } from "../data/instances.js";
+
+let dir: string;
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "tui-instances-"));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+async function writeManifest(
+  sourceId: string,
+  overrides: Record<string, unknown> = {},
+): Promise<void> {
+  await writeFile(
+    join(dir, `${sourceId}.json`),
+    JSON.stringify({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId,
+      label: sourceId,
+      artifactDir: join(dir, "artifacts"),
+      pid: process.pid,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      transports: ["tui"],
+      configPath: join(dir, "mono-agent.config.json"),
+      metadata: {
+        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } },
+      },
+      ...overrides,
+    }),
+  );
+}
+
+describe("discoverInstances", () => {
+  it("lists running agents with their tui endpoint and agent dir", async () => {
+    await writeManifest("agent-a");
+
+    const result = await discoverInstances({ registryDir: dir });
+
+    expect(result.registryDir).toBe(dir);
+    expect(result.instances).toHaveLength(1);
+    expect(result.instances[0]?.tuiBaseUrl).toBe("http://127.0.0.1:5151/tui");
+    expect(result.instances[0]?.agentDir).toBe(dir);
+    expect(result.instances[0]?.source.health).toBe("running");
+  });
+
+  it("filters stopped agents but keeps stale ones (still connectable)", async () => {
+    await writeManifest("agent-stopped", { status: "stopped" });
+    await writeManifest("agent-stale", { updatedAt: new Date(Date.now() - 120_000).toISOString() });
+
+    const result = await discoverInstances({ registryDir: dir });
+
+    expect(result.instances.map((instance) => instance.source.sourceId)).toEqual(["agent-stale"]);
+    expect(result.instances[0]?.source.health).toBe("stale");
+  });
+
+  it("yields no tuiBaseUrl when the tui channel is absent or not running", async () => {
+    await writeManifest("agent-no-tui", { metadata: { channels: { tui: { kind: "disabled", reason: "off" } } } });
+
+    const result = await discoverInstances({ registryDir: dir });
+
+    expect(result.instances[0]?.tuiBaseUrl).toBeUndefined();
+  });
+
+  it("returns empty for a missing registry dir", async () => {
+    const result = await discoverInstances({ registryDir: join(dir, "does-not-exist") });
+
+    expect(result.instances).toEqual([]);
+  });
+});
+
+describe("resolveInstanceApiKey", () => {
+  it("reads tui.apiKey from the agent's config file", async () => {
+    await writeManifest("agent-a");
+    await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({ tui: { apiKey: "from-config" } }));
+    const { instances } = await discoverInstances({ registryDir: dir });
+
+    await expect(resolveInstanceApiKey(instances[0]!, {})).resolves.toBe("from-config");
+  });
+
+  it("trims the config key so it matches the adapter's own (trimming) loader", async () => {
+    await writeManifest("agent-a");
+    await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({ tui: { apiKey: "  padded-key  " } }));
+    const { instances } = await discoverInstances({ registryDir: dir });
+
+    await expect(resolveInstanceApiKey(instances[0]!, {})).resolves.toBe("padded-key");
+  });
+
+  it("prefers the MONO_AGENT_TUI_API_KEY env of this shell", async () => {
+    await writeManifest("agent-a");
+    const { instances } = await discoverInstances({ registryDir: dir });
+
+    await expect(
+      resolveInstanceApiKey(instances[0]!, { MONO_AGENT_TUI_API_KEY: "from-env" }),
+    ).resolves.toBe("from-env");
+  });
+
+  it("resolves undefined when nothing is configured (best-effort)", async () => {
+    await writeManifest("agent-a");
+    const { instances } = await discoverInstances({ registryDir: dir });
+
+    await expect(resolveInstanceApiKey(instances[0]!, {})).resolves.toBeUndefined();
+  });
+});
+
+describe("toInstance", () => {
+  it("derives agentDir from configPath", async () => {
+    await writeManifest("agent-a");
+    const { instances } = await discoverInstances({ registryDir: dir });
+
+    expect(toInstance(instances[0]!.source).agentDir).toBe(dir);
+  });
+});

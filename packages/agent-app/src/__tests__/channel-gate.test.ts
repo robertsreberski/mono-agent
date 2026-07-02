@@ -7,6 +7,7 @@ import { loadCronAdapterConfig } from "@mono-agent/cron-adapter";
 import { loadOpenAIApiAdapterConfig } from "@mono-agent/openai-api-adapter";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { loadTelegramAdapterConfig } from "@mono-agent/telegram-adapter";
+import { loadTuiAdapterConfig } from "@mono-agent/tui-adapter";
 import { loadWebhookAdapterConfig } from "@mono-agent/webhook-adapter";
 import { loadWhatsAppAdapterConfig } from "@mono-agent/whatsapp-adapter";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -73,6 +74,23 @@ describe("unconfigured drivers answer with the adapter loader's own empty-input 
     expect(await drivers.get("webhook")!.loadConfig(input)).toEqual(await loadWebhookAdapterConfig(empty));
     expect(await drivers.get("openai-api")!.loadConfig(input)).toEqual(await loadOpenAIApiAdapterConfig(empty));
     expect(await drivers.get("cron")!.loadConfig(input)).toEqual(await loadCronAdapterConfig(empty));
+  });
+
+  it("tui is the deliberate exception: ungated, and its empty-input default is ENABLED", async () => {
+    // The TUI stream endpoint is an operator surface (loopback-only, ephemeral
+    // port), so with no `tui` section it still starts — `mono-agent tui` must
+    // reach any running agent without a config edit.
+    const tui = defaultChannelDrivers().find((driver) => driver.id === "tui")!;
+
+    const config = await tui.loadConfig({ env: {}, cwd: dir, configPath });
+    expect(config).toEqual(await loadTuiAdapterConfig({ env: {} }));
+    expect((config as { enabled: boolean }).enabled).toBe(true);
+    expect(tui.disabledReason?.(config)).toBeUndefined();
+
+    // The opt-out still works through the same loader.
+    await writeFile(configPath, JSON.stringify({ tui: { enabled: false } }));
+    const disabled = await tui.loadConfig({ env: {}, cwd: dir, configPath });
+    expect(tui.disabledReason?.(disabled)).toBeDefined();
   });
 
   it("still runs the real loader for a present-but-disabled section (malformed sections keep erroring)", async () => {

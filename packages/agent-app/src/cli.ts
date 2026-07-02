@@ -58,7 +58,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "install-skill", "backfill", "audit-runs", "metrics"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "tui", "install-skill", "backfill", "audit-runs", "metrics"] as const;
 
 // `doctor` never reaches routing: parseCliArgs normalizes it to `validate`.
 type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor"> | "help";
@@ -100,6 +100,10 @@ interface ParsedCliArgs {
   readonly groupBy?: "model" | "channel" | "failureKind";
   /** validate/audit-runs: resolve config, env, artifacts, and checks relative to this consumer folder. */
   readonly consumerPath?: string;
+  /** tui: connect to this running agent (label or sourceId) directly. */
+  readonly agent?: string;
+  /** tui: conversation id to chat under. */
+  readonly conversation?: string;
   /** audit-runs: override the stale-running cutoff interval. */
   readonly staleAfterMs?: number;
   /** audit-runs: print the full machine-readable report. */
@@ -140,6 +144,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let artifactDir: string | undefined;
   let groupBy: "model" | "channel" | "failureKind" | undefined;
   let consumerPath: string | undefined;
+  let agent: string | undefined;
+  let conversation: string | undefined;
   let staleAfterMs: number | undefined;
   let json = false;
 
@@ -180,6 +186,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       }
       case "--consumer":
         consumerPath = requireValue(rest, ++i, flag);
+        break;
+      case "--agent":
+        agent = requireValue(rest, ++i, flag);
+        break;
+      case "--conversation":
+        conversation = requireValue(rest, ++i, flag);
         break;
       case "--stale-after-ms": {
         const raw = requireValue(rest, ++i, flag);
@@ -298,6 +310,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(consumerPath === undefined ? {} : { consumerPath }),
     ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
     ...(json ? { json } : {}),
+    ...(agent === undefined ? {} : { agent }),
+    ...(conversation === undefined ? {} : { conversation }),
   };
 }
 
@@ -417,6 +431,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     lines: ["Print (and optionally follow) the background instance's log files."],
   },
   {
+    signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]",
+    lines: [
+      "Open the operator console from any directory: live chat with full",
+      "thinking/tool/telemetry insight, recorded-run replay, and config view.",
+      "Discovers running agents via the trace-source registry; one running",
+      "agent connects directly, several open a picker.",
+    ],
+  },
+  {
     signature: "mono-agent install-skill [--target claude|codex|both] [--force]",
     lines: [
       "Copy the bundled mono-agent-composer skill into ~/.claude/skills and",
@@ -524,6 +547,17 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case "status":
     case "logs":
       return await runBackgroundCommand(args, args.command);
+    case "tui": {
+      // Lazy import: the operator console (and pi-tui) load only on demand.
+      const { runTui } = await import("./tui-command.js");
+      return await runTui({
+        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
+        cwd: process.cwd(),
+        env: process.env,
+        ...(args.agent === undefined ? {} : { agent: args.agent }),
+        ...(args.conversation === undefined ? {} : { conversationId: args.conversation }),
+      });
+    }
     case "install-skill":
       return await runInstallSkill(args);
     case "backfill":

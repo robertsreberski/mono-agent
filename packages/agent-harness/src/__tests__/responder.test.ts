@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import type { AgentMessageStream } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, AgentStreamEvent } from "@mono-agent/agent-contracts";
 
-import { bucketConversationId, createAgentResponder } from "../responder.js";
+import { bucketConversationId, createAgentResponder, streamEventFromRuntimeEvent } from "../responder.js";
 import type { AgentHarness, AgentHarnessRequest, AgentHarnessResponse } from "../types.js";
 
 function okResponse(conversationId: string): AgentHarnessResponse {
@@ -154,6 +154,217 @@ describe("createAgentResponder", () => {
     await responder.respond(baseRequest("cron:scan"), noopStream());
 
     expect(submitted).toBe("cron:scan");
+  });
+});
+
+describe("streamEventFromRuntimeEvent telemetry mapping", () => {
+  it("maps tool_update to tool_call_progress", () => {
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "tool_update",
+        tool_use_id: "t1",
+        name: "bash",
+        input: { command: "ls" },
+        partial_result: "file-a\n",
+      }),
+    ).toEqual({ type: "tool_call_progress", id: "t1", name: "bash", partialResult: "file-a\n" });
+  });
+
+  it("maps cost_accumulated to usage_update with renamed cache token fields", () => {
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "cost_accumulated",
+        sdk: "pi",
+        model: "claude-fable-5",
+        cumulativeUsd: 0.42,
+        tokens: { input: 10, output: 5, cacheReadTokens: 300, cacheCreationTokens: 7 },
+      }),
+    ).toEqual({
+      type: "usage_update",
+      model: "claude-fable-5",
+      cumulativeUsd: 0.42,
+      tokens: { input: 10, output: 5, cacheRead: 300, cacheCreation: 7 },
+    });
+  });
+
+  it("maps provider request lifecycle to provider_status", () => {
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "provider_request_started",
+        sdk: "pi",
+        model: "claude-fable-5",
+        runtime: "pi",
+        timestamp: 1,
+      }),
+    ).toEqual({ type: "provider_status", kind: "request_started", model: "claude-fable-5" });
+
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "provider_request_completed",
+        sdk: "pi",
+        model: "claude-fable-5",
+        runtime: "pi",
+        timestamp: 2,
+        durationMs: 1234,
+        cancelled: false,
+      }),
+    ).toEqual({
+      type: "provider_status",
+      kind: "request_completed",
+      model: "claude-fable-5",
+      durationMs: 1234,
+      cancelled: false,
+    });
+  });
+
+  it("maps provider failover to provider_status", () => {
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "provider_failover_started",
+        from: "gpt-5.5",
+        to: "kimi",
+        attemptIndex: 1,
+      }),
+    ).toEqual({ type: "provider_status", kind: "failover_started", from: "gpt-5.5", to: "kimi", attemptIndex: 1 });
+
+    expect(
+      streamEventFromRuntimeEvent({ type: "provider_failover_completed", attemptIndex: 1, model: "kimi" }),
+    ).toEqual({ type: "provider_status", kind: "failover_completed", model: "kimi", attemptIndex: 1 });
+  });
+
+  it("maps memory_recalled through with source and bytes", () => {
+    expect(streamEventFromRuntimeEvent({ type: "memory_recalled", source: "bujo", bytes: 512 }))
+      .toEqual({ type: "memory_recalled", source: "bujo", bytes: 512 });
+    expect(streamEventFromRuntimeEvent({ type: "memory_recalled", bytes: 16 }))
+      .toEqual({ type: "memory_recalled", bytes: 16 });
+  });
+
+  it("wraps allowlisted telemetry kinds as runtime_telemetry with the payload minus type", () => {
+    expect(
+      streamEventFromRuntimeEvent({ type: "cache_hit", sdk: "pi", model: "m", tokens: 400, source: "prompt_cache" }),
+    ).toEqual({
+      type: "runtime_telemetry",
+      kind: "cache_hit",
+      data: { sdk: "pi", model: "m", tokens: 400, source: "prompt_cache" },
+    });
+    expect(streamEventFromRuntimeEvent({ type: "cache_miss", tokens: 12 }))
+      .toEqual({ type: "runtime_telemetry", kind: "cache_miss", data: { tokens: 12 } });
+    expect(streamEventFromRuntimeEvent({ type: "capabilities_resolved", capabilitiesUsed: ["vision"] }))
+      .toEqual({ type: "runtime_telemetry", kind: "capabilities_resolved", data: { capabilitiesUsed: ["vision"] } });
+    expect(streamEventFromRuntimeEvent({ type: "provider_bridge_latency", durationMs: 88, timestamp: "t" }))
+      .toEqual({ type: "runtime_telemetry", kind: "provider_bridge_latency", data: { durationMs: 88, timestamp: "t" } });
+  });
+
+  it("still returns undefined for unknown event types (no accidental catch-all)", () => {
+    expect(streamEventFromRuntimeEvent({ type: "system", subtype: "init" })).toBeUndefined();
+    expect(streamEventFromRuntimeEvent({ type: "result", result: "big payload" })).toBeUndefined();
+    expect(streamEventFromRuntimeEvent("not an object")).toBeUndefined();
+  });
+
+  it("records tool_timing into the context map instead of emitting, then stamps executionMs onto tool_call_completed", () => {
+    const toolTimings = new Map<string, number>();
+
+    const timing = streamEventFromRuntimeEvent(
+      { type: "tool_timing", tool_use_id: "t9", name: "bash", execution_ms: 777, is_error: false },
+      { toolTimings },
+    );
+    expect(timing).toBeUndefined();
+    expect(toolTimings.get("t9")).toBe(777);
+
+    const completed = streamEventFromRuntimeEvent(
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "t9", content: "ok", is_error: false }] },
+      },
+      { toolTimings },
+    );
+    expect(completed).toEqual({
+      type: "tool_call_completed",
+      id: "t9",
+      content: "ok",
+      isError: false,
+      executionMs: 777,
+    });
+    // Consumed on use so the per-turn map stays bounded.
+    expect(toolTimings.has("t9")).toBe(false);
+  });
+
+  it("omits executionMs when no timing was recorded for the tool call", () => {
+    expect(
+      streamEventFromRuntimeEvent(
+        { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "x" }] } },
+        { toolTimings: new Map() },
+      ),
+    ).toEqual({ type: "tool_call_completed", id: "t1", content: "x" });
+  });
+});
+
+describe("respond() end-to-end event forwarding", () => {
+  it("forwards the full telemetry stream in order with executionMs merged onto tool completion", async () => {
+    const events: AgentStreamEvent[] = [];
+    const stream: AgentMessageStream = {
+      append: async () => {},
+      event: async (event) => {
+        events.push(event);
+      },
+    };
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => {
+        const emit = request.onEvent!;
+        emit({ type: "provider_request_started", sdk: "pi", model: "m1", runtime: "pi", timestamp: 1 });
+        emit({ type: "assistant", message: { content: [{ type: "thinking", text: "hmm" }] } });
+        emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "ls" } }] } });
+        emit({ type: "tool_update", tool_use_id: "t1", name: "bash", partial_result: "partial" });
+        emit({ type: "tool_timing", tool_use_id: "t1", name: "bash", execution_ms: 55, is_error: false });
+        emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "done", is_error: false }] } });
+        emit({ type: "cost_accumulated", cumulativeUsd: 0.01, tokens: { input: 1, output: 2, cacheReadTokens: 3, cacheCreationTokens: 4 } });
+        return okResponse(request.conversationId);
+      },
+    };
+    const responder = createAgentResponder({ harness });
+
+    await responder.respond(baseRequest(), stream);
+
+    expect(events).toEqual([
+      { type: "provider_status", kind: "request_started", model: "m1" },
+      { type: "assistant_thought", text: "hmm" },
+      { type: "tool_call_started", id: "t1", name: "bash", arguments: { command: "ls" } },
+      { type: "tool_call_progress", id: "t1", name: "bash", partialResult: "partial" },
+      { type: "tool_call_completed", id: "t1", content: "done", isError: false, executionMs: 55 },
+      { type: "usage_update", cumulativeUsd: 0.01, tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 } },
+    ]);
+  });
+
+  it("scopes tool timing state per respond() call (no bleed across turns)", async () => {
+    const completions: AgentStreamEvent[] = [];
+    const stream: AgentMessageStream = {
+      append: async () => {},
+      event: async (event) => {
+        if (event.type === "tool_call_completed") {
+          completions.push(event);
+        }
+      },
+    };
+    let turn = 0;
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => {
+        turn += 1;
+        if (turn === 1) {
+          // Timing recorded but the tool never completes this turn.
+          request.onEvent?.({ type: "tool_timing", tool_use_id: "tX", name: "bash", execution_ms: 999, is_error: false });
+        } else {
+          request.onEvent?.({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tX", content: "late" }] } });
+        }
+        return okResponse(request.conversationId);
+      },
+    };
+    const responder = createAgentResponder({ harness });
+
+    await responder.respond(baseRequest(), stream);
+    await responder.respond(baseRequest(), stream);
+
+    // The second turn must not inherit turn one's orphaned timing.
+    expect(completions).toEqual([{ type: "tool_call_completed", id: "tX", content: "late" }]);
   });
 });
 
