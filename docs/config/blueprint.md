@@ -116,7 +116,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   "tools": {
     "allowedTools": ["Read", "Grep"],      // built-ins: Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
     "disallowedTools": ["Bash"],
-    "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
+    "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
+    "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
+    "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
   },
 
   // Sandbox for runtime commands. Omit for no sandboxing.

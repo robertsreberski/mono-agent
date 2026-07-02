@@ -359,9 +359,116 @@ describe("pi MCP tool helpers", () => {
       expect(params).toMatchObject({ name: "do_thing" });
       // resultSchema is left at the SDK default so the third arg carries our timeout.
       expect(resultSchema).toBeUndefined();
-      expect(requestOptions).toMatchObject({ timeout: 90000, maxTotalTimeout: 90000 });
+      // maxTotalTimeout is the separate hard wall clock (default 45min), NOT the
+      // inactivity timeout — otherwise progress-based keep-alive could never
+      // extend a call past the inactivity cap.
+      expect(requestOptions).toMatchObject({ timeout: 90000, maxTotalTimeout: 2_700_000 });
       // The abort signal is forwarded so a cancelled/timed-out call also cancels the SDK request.
       expect(requestOptions.signal).toBe(ac.signal);
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+    }
+  });
+
+  it("attaches onprogress so the SDK resets its inactivity timeout, and forwards progress to onToolProgress", async () => {
+    // Without an onprogress callback the MCP SDK never attaches a progressToken,
+    // so resetTimeoutOnProgress is dead code and every long tool call dies at the
+    // inactivity cap. The bridge must attach one and surface progress events.
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "slow_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
+    });
+    const callSpy = vi
+      .spyOn(McpClient.prototype, "callTool")
+      .mockImplementation(async (_params, _schema, requestOptions) => {
+        requestOptions?.onprogress?.({ progress: 3, total: 8, message: "tick 3" });
+        return { content: [{ type: "text", text: "ok" }] };
+      });
+    try {
+      const progressEvents = [];
+      const { tools } = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        {
+          limits: { mcpCallTimeoutMs: 90000, mcpCallMaxTotalTimeoutMs: 500000 },
+          onToolProgress: (event) => progressEvents.push(event),
+        },
+      );
+      const tool = tools.find((entry) => entry.name === "slow_thing");
+      await tool.execute("call-1", {}, undefined);
+
+      const [, , requestOptions] = callSpy.mock.calls[0];
+      expect(typeof requestOptions.onprogress).toBe("function");
+      expect(requestOptions).toMatchObject({ timeout: 90000, resetTimeoutOnProgress: true, maxTotalTimeout: 500000 });
+      expect(progressEvents).toEqual([
+        {
+          type: "tool_progress",
+          server: "srv",
+          tool: "slow_thing",
+          toolCallId: "call-1",
+          progress: 3,
+          total: 8,
+          message: "tick 3",
+        },
+      ]);
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+    }
+  });
+
+  it("keeps a slow MCP call alive past the inactivity cap while it reports progress", async () => {
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "slow_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
+    });
+    // Resolves at 220ms — far past the 90ms inactivity cap — but reports progress
+    // every 25ms, which must reset BOTH the SDK timeout and the bridge's outer
+    // wall-clock race.
+    const callSpy = vi
+      .spyOn(McpClient.prototype, "callTool")
+      .mockImplementation((_params, _schema, requestOptions) => new Promise((resolvePromise) => {
+        const ticker = setInterval(() => requestOptions?.onprogress?.({ progress: 1 }), 25);
+        setTimeout(() => {
+          clearInterval(ticker);
+          resolvePromise({ content: [{ type: "text", text: "slow ok" }] });
+        }, 220);
+      }));
+    try {
+      const { tools } = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        { limits: { mcpCallTimeoutMs: 90, mcpCallMaxTotalTimeoutMs: 5000 } },
+      );
+      const tool = tools.find((entry) => entry.name === "slow_thing");
+      const out = await tool.execute("call-1", {}, undefined);
+      expect(out.content[0].text).toBe("slow ok");
+    } finally {
+      connectSpy.mockRestore();
+      listSpy.mockRestore();
+      callSpy.mockRestore();
+    }
+  });
+
+  it("still times out a stalled MCP call that reports no progress", async () => {
+    const connectSpy = vi.spyOn(McpClient.prototype, "connect").mockResolvedValue(undefined);
+    const listSpy = vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue({
+      tools: [{ name: "stalled_thing", description: "d", inputSchema: { type: "object", properties: {} } }],
+    });
+    const callSpy = vi
+      .spyOn(McpClient.prototype, "callTool")
+      .mockImplementation(() => new Promise(() => {}));
+    try {
+      const { tools } = await initPiMcpTools(
+        { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
+        new Set(),
+        { limits: { mcpCallTimeoutMs: 60, mcpCallMaxTotalTimeoutMs: 5000 } },
+      );
+      const tool = tools.find((entry) => entry.name === "stalled_thing");
+      await expect(tool.execute("call-1", {}, undefined)).rejects.toThrow(/timed out/);
     } finally {
       connectSpy.mockRestore();
       listSpy.mockRestore();

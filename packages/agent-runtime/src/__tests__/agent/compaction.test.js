@@ -6,7 +6,7 @@
 // user messages) the provider meters but the raw transcript estimate excludes.
 
 import { describe, expect, it } from "vitest";
-import { estimateFixedOverheadTokens } from "../../agent/compaction.js";
+import { estimateFixedOverheadTokens, resolveAgentCompactionPolicy } from "../../agent/compaction.js";
 
 // Mirrors pi-ai's chars/4 heuristic so the expected values are derived, not magic.
 const tokensForChars = (value) => Math.ceil(String(value ?? "").length / 4);
@@ -96,5 +96,20 @@ describe("estimateFixedOverheadTokens", () => {
     const content = [{ type: "text", text: "describe this" }, { type: "image", data: "B64" }];
     const out = estimateFixedOverheadTokens({ messages: [{ role: "user", content }] });
     expect(out.userMessageTokens).toBe(tokensForChars(JSON.stringify(content)));
+  });
+});
+
+describe("resolveAgentCompactionPolicy MCP call timeouts", () => {
+  it("defaults mcpCallMaxTotalTimeoutMs to 45 minutes, separate from the 120s inactivity cap", () => {
+    const policy = resolveAgentCompactionPolicy({}, null);
+    expect(policy.mcpCallTimeoutMs).toBe(120_000);
+    expect(policy.mcpCallMaxTotalTimeoutMs).toBe(2_700_000);
+  });
+
+  it("reads agent_mcp_call_max_total_timeout_ms from settings and falls back on junk", () => {
+    const policy = resolveAgentCompactionPolicy({ agent_mcp_call_max_total_timeout_ms: 300_000 }, null);
+    expect(policy.mcpCallMaxTotalTimeoutMs).toBe(300_000);
+    const junk = resolveAgentCompactionPolicy({ agent_mcp_call_max_total_timeout_ms: "soon" }, null);
+    expect(junk.mcpCallMaxTotalTimeoutMs).toBe(2_700_000);
   });
 });

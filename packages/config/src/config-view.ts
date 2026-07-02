@@ -115,6 +115,8 @@ export const CONFIG_ENV_KEYS = {
   "tools.allowedTools": "MONO_AGENT_ALLOWED_TOOLS",
   "tools.disallowedTools": "MONO_AGENT_DISALLOWED_TOOLS",
   "tools.mcpConfigPath": "MONO_AGENT_MCP_CONFIG_PATH",
+  "tools.mcpCallTimeoutMs": "MONO_AGENT_MCP_CALL_TIMEOUT_MS",
+  "tools.mcpCallMaxTotalTimeoutMs": "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
   "sandbox.mode": "MONO_AGENT_SANDBOX_MODE",
   "sandbox.network.mode": "MONO_AGENT_SANDBOX_NETWORK",
   "sandbox.network.allowlist": "MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST",
@@ -624,6 +626,20 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         label: "MCP config",
         value: tools.mcpConfigPath ?? PLACEHOLDER,
         jsonPresent: json.tools?.mcpConfigPath !== undefined,
+      }),
+      toField(env, {
+        id: "tools.mcpCallTimeoutMs",
+        label: "MCP call inactivity timeout",
+        value: tools.mcpCallTimeoutMs === undefined ? "runtime default (120s)" : `${tools.mcpCallTimeoutMs}ms`,
+        jsonPresent: json.tools?.mcpCallTimeoutMs !== undefined,
+      }),
+      toField(env, {
+        id: "tools.mcpCallMaxTotalTimeoutMs",
+        label: "MCP call max total timeout",
+        value: tools.mcpCallMaxTotalTimeoutMs === undefined
+          ? "runtime default (45 min)"
+          : `${tools.mcpCallMaxTotalTimeoutMs}ms`,
+        jsonPresent: json.tools?.mcpCallMaxTotalTimeoutMs !== undefined,
       }),
     ],
   };
