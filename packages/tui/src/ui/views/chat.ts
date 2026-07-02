@@ -30,8 +30,12 @@ export class ChatView extends Container {
   private readonly loader: Loader;
   private readonly options: ChatViewOptions;
   private responder: AgentResponder | undefined;
-  private activeController: AbortController | undefined;
-  private activePresenter: TurnPresenter | undefined;
+  /**
+   * Every not-yet-settled turn's controller — the in-flight one AND queued
+   * follow-ups (the harness queues per conversation). Esc aborts them all;
+   * tracking only the latest would orphan the turn that is actually running.
+   */
+  private readonly activeControllers = new Set<AbortController>();
   private turnCounter = 0;
   private thinkingExpandedFlag = false;
 
@@ -55,15 +59,17 @@ export class ChatView extends Container {
   }
 
   hasActiveTurn(): boolean {
-    return this.activeController !== undefined;
+    return this.activeControllers.size > 0;
   }
 
-  /** Esc: abort the in-flight turn. Returns true when there was one. */
+  /** Esc: abort every unsettled turn (in-flight + queued). Returns true when there was one. */
   cancelActiveTurn(): boolean {
-    if (this.activeController === undefined) {
+    if (this.activeControllers.size === 0) {
       return false;
     }
-    this.activeController.abort();
+    for (const controller of this.activeControllers) {
+      controller.abort();
+    }
     // Belt and braces for remote responders: socket teardown cancels the turn
     // server-side too, but an explicit cancel also clears queued follow-ups.
     this.responder?.cancel?.(this.options.conversationId, "tui_cancel");
@@ -114,7 +120,7 @@ export class ChatView extends Container {
       this.addNotice("Not connected to an agent — /agents to pick one.", "error");
       return;
     }
-    if (this.activeController !== undefined) {
+    if (this.activeControllers.size > 0) {
       // LiveSessionManager queues per conversation; let the user know.
       this.options.statusBar.setEphemeral("turn in flight — message queued after it");
     }
@@ -137,8 +143,7 @@ export class ChatView extends Container {
       thinkingExpanded: () => this.thinkingExpandedFlag,
       ...(this.options.flushIntervalMs === undefined ? {} : { flushIntervalMs: this.options.flushIntervalMs }),
     });
-    this.activeController = controller;
-    this.activePresenter = presenter;
+    this.activeControllers.add(controller);
     this.setLoading(true);
 
     let status: "ok" | "cancelled" | "error" = "ok";
@@ -166,9 +171,8 @@ export class ChatView extends Container {
         this.addNotice(message, "error");
       }
     } finally {
-      if (this.activeController === controller) {
-        this.activeController = undefined;
-        this.activePresenter = undefined;
+      this.activeControllers.delete(controller);
+      if (this.activeControllers.size === 0) {
         this.setLoading(false);
       }
       presenter.settle();

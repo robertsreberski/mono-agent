@@ -53,18 +53,25 @@ export class ConfigView extends Container {
   }
 
   async refresh(): Promise<void> {
-    if (this.configPath === undefined) {
+    // Snapshot both inputs: a rapid agent switch mid-load must not paint the
+    // previous agent's config under the new agent's header.
+    const requestedPath = this.configPath;
+    const requestedCwd = this.cwd;
+    if (requestedPath === undefined) {
       this.showMessage(styles.muted("No config path available for the selected agent."));
       this.options.tui.requestRender();
       return;
     }
     try {
-      const jsonResult = await readMonoAgentConfigJson(this.configPath);
+      const jsonResult = await readMonoAgentConfigJson(requestedPath);
       const config = await loadMonoAgentConfigWithSources({
         env: this.options.env,
-        cwd: this.cwd,
-        jsonPath: this.configPath,
+        cwd: requestedCwd,
+        jsonPath: requestedPath,
       });
+      if (this.configPath !== requestedPath) {
+        return; // Superseded by a newer agent selection.
+      }
       const sections = buildTuiConfigSummary({
         redacted: redactMonoAgentConfig(config),
         json: jsonResult.json,
@@ -73,7 +80,7 @@ export class ConfigView extends Container {
       this.clear();
       this.addChild(
         new Text(
-          `${styles.bold(styles.accent(this.configPath))}\n${styles.dim(
+          `${styles.bold(styles.accent(requestedPath))}\n${styles.dim(
             "read-only · r reload · env overrides shown are from this shell, not the agent process",
           )}`,
           1,
@@ -90,6 +97,9 @@ export class ConfigView extends Container {
         this.addChild(new Text(lines.join("\n"), 1, 0));
       }
     } catch (error) {
+      if (this.configPath !== requestedPath) {
+        return;
+      }
       this.showMessage(styles.error(`Failed to load config: ${error instanceof Error ? error.message : String(error)}`));
     }
     this.options.tui.requestRender();

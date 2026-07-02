@@ -100,5 +100,8 @@ function readBasePath(raw: string | undefined): string {
   if (!value.startsWith("/") || value.includes("?") || value.includes("#")) {
     throw invalidConfig("MONO_AGENT_TUI_BASE_PATH must be an absolute path without query or hash.");
   }
-  return value.length === 1 ? "/" : value.replace(/\/+$/u, "");
+  // An all-slashes value ("////") must collapse to "/" — stripping it to ""
+  // here would pass config loading and then fail startTuiAdapter at startup.
+  const stripped = value.replace(/\/+$/u, "");
+  return stripped.length === 0 ? "/" : stripped;
 }

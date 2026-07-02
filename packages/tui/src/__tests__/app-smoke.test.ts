@@ -116,6 +116,44 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
     await handle.stop();
   });
 
+  it("Esc aborts the in-flight turn even after a second message was queued", async () => {
+    const terminal = new TestTerminal(100, 30);
+    const abortedSignals: boolean[] = [];
+    const responder: AgentResponder = {
+      respond: async (request) => {
+        const index = abortedSignals.push(false) - 1;
+        await new Promise((resolve, reject) => {
+          request.abortSignal.addEventListener(
+            "abort",
+            () => {
+              abortedSignals[index] = true;
+              reject(Object.assign(new Error("cancelled"), { agentResponseCancelled: true }));
+            },
+            { once: true },
+          );
+          setTimeout(resolve, 5_000).unref();
+        });
+        return { text: "never" };
+      },
+    };
+    const handle = startMonoAgentTui({ terminal, responder, flushIntervalMs: 0 });
+    await frame();
+
+    terminal.feed("a");
+    terminal.feed("\r"); // turn 1 (in flight)
+    await frame();
+    terminal.feed("b");
+    terminal.feed("\r"); // turn 2 (concurrent respond call)
+    await frame();
+    terminal.feed("\u001b"); // Esc must abort BOTH, not just the latest
+    await frame();
+    await frame();
+
+    expect(abortedSignals).toEqual([true, true]);
+
+    await handle.stop();
+  });
+
   it("requires exactly one connection mode", () => {
     expect(() => startMonoAgentTui({ terminal: new TestTerminal() })).toThrow(/exactly one/u);
     expect(() =>

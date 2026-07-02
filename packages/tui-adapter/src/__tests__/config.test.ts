@@ -73,6 +73,13 @@ describe("loadTuiAdapterConfig", () => {
     await expect(loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "no-slash" } }))
       .rejects.toMatchObject({ code: "invalid_config" });
   });
+
+  it("collapses an all-slashes base path to root instead of an empty string", async () => {
+    // "" would pass loading and then fail startTuiAdapter at startup.
+    expect((await loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "////" } })).basePath).toBe("/");
+    expect((await loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "/" } })).basePath).toBe("/");
+    expect((await loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "/tui///" } })).basePath).toBe("/tui");
+  });
 });
 
 describe("redactTuiAdapterConfig", () => {

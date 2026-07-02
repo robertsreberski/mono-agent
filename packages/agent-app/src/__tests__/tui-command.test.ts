@@ -79,6 +79,12 @@ describe("tuiEndpointOf", () => {
     expect(tuiEndpointOf(source({ metadata: { channels: { tui: { kind: "disabled" } } } }))).toBeUndefined();
     expect(tuiEndpointOf(source({ metadata: {} }))).toBeUndefined();
   });
+
+  it("treats a malformed empty baseUrl as no endpoint (discovery fallback)", () => {
+    expect(
+      tuiEndpointOf(source({ metadata: { channels: { tui: { kind: "running", baseUrl: "" } } } })),
+    ).toBeUndefined();
+  });
 });
 
 describe("runTui", () => {

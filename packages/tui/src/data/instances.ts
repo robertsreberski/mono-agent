@@ -96,8 +96,10 @@ export async function resolveInstanceApiKey(
     const parsed = JSON.parse(await readFile(configPath, "utf8")) as {
       tui?: { apiKey?: unknown };
     };
-    const apiKey = parsed.tui?.apiKey;
-    return typeof apiKey === "string" && apiKey.length > 0 ? apiKey : undefined;
+    // Trim to match the adapter's own loader (normalizeOptionalString): the
+    // server compares against the trimmed key, so an untrimmed client 401s.
+    const apiKey = typeof parsed.tui?.apiKey === "string" ? parsed.tui.apiKey.trim() : undefined;
+    return apiKey !== undefined && apiKey.length > 0 ? apiKey : undefined;
   } catch {
     return undefined;
   }

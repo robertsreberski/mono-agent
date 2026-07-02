@@ -17,7 +17,8 @@ export function formatUsd(usd: number): string {
 export function formatDurationMs(ms: number): string {
   if (ms >= 60_000) {
     const minutes = Math.floor(ms / 60_000);
-    const seconds = Math.round((ms % 60_000) / 1000);
+    // Floor, not round: rounding 59.8s would render an impossible "1m 60s".
+    const seconds = Math.floor((ms % 60_000) / 1000);
     return `${minutes}m${seconds > 0 ? ` ${seconds}s` : ""}`;
   }
   if (ms >= 1_000) {

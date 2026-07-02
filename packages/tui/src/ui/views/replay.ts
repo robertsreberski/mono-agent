@@ -67,7 +67,10 @@ export class ReplayView extends Container {
   }
 
   async refresh(): Promise<void> {
-    if (this.artifactDir === undefined) {
+    // Snapshot: a rapid agent switch mid-read must not paint the previous
+    // agent's runs into the new agent's list.
+    const requestedDir = this.artifactDir;
+    if (requestedDir === undefined) {
       this.runs = [];
       this.header.setText(
         `${styles.bold("Run replay unavailable")}\n${styles.muted("The selected agent's manifest has no artifact dir.")}`,
@@ -78,13 +81,19 @@ export class ReplayView extends Container {
       return;
     }
     try {
-      const { runs, warnings } = await listReplayRuns(this.artifactDir);
+      const { runs, warnings } = await listReplayRuns(requestedDir);
+      if (this.artifactDir !== requestedDir) {
+        return; // Superseded by a newer agent selection.
+      }
       this.runs = runs;
       const warningText = warnings.length > 0 ? `\n${styles.warning(warnings[0] ?? "")}` : "";
       this.header.setText(
         `${styles.bold(`Recorded runs (${runs.length})`)} ${styles.dim("enter open · r refresh · esc back")}${warningText}`,
       );
     } catch (error) {
+      if (this.artifactDir !== requestedDir) {
+        return;
+      }
       this.runs = [];
       this.header.setText(styles.error(`Failed to read runs: ${error instanceof Error ? error.message : String(error)}`));
     }
@@ -125,10 +134,14 @@ export class ReplayView extends Container {
   }
 
   private async openRun(runId: string): Promise<void> {
-    if (this.artifactDir === undefined) {
+    const requestedDir = this.artifactDir;
+    if (requestedDir === undefined) {
       return;
     }
-    const replay = await readReplayRun(this.artifactDir, runId);
+    const replay = await readReplayRun(requestedDir, runId);
+    if (this.artifactDir !== requestedDir) {
+      return; // Superseded by a newer agent selection.
+    }
     if (replay === undefined) {
       this.header.setText(styles.error(`Run ${runId} not found.`));
       this.options.tui.requestRender();

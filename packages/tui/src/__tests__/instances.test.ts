@@ -88,6 +88,14 @@ describe("resolveInstanceApiKey", () => {
     await expect(resolveInstanceApiKey(instances[0]!, {})).resolves.toBe("from-config");
   });
 
+  it("trims the config key so it matches the adapter's own (trimming) loader", async () => {
+    await writeManifest("agent-a");
+    await writeFile(join(dir, "mono-agent.config.json"), JSON.stringify({ tui: { apiKey: "  padded-key  " } }));
+    const { instances } = await discoverInstances({ registryDir: dir });
+
+    await expect(resolveInstanceApiKey(instances[0]!, {})).resolves.toBe("padded-key");
+  });
+
   it("prefers the MONO_AGENT_TUI_API_KEY env of this shell", async () => {
     await writeManifest("agent-a");
     const { instances } = await discoverInstances({ registryDir: dir });

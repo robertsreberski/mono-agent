@@ -138,7 +138,12 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       next(error);
       return;
     }
-    sendJsonError(res, 400, error);
+    // 400 only for client mistakes (invalid_request, body-parse SyntaxError);
+    // anything else is a server-side failure and must read as one.
+    const isClientError =
+      codeOf(error) === "invalid_request" ||
+      (error instanceof SyntaxError && (error as { status?: unknown }).status === 400);
+    sendJsonError(res, isClientError ? 400 : 500, error);
   });
 
   const address = await listen(server, port, host, {

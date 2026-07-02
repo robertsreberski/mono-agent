@@ -215,7 +215,9 @@ export class MonoAgentTuiApp {
         .catch(() => undefined);
     }
     this.statusBar.setIdentity(instance.source.label);
-    this.replay.setArtifactDir(normalized.agentDir === undefined ? undefined : instance.source.artifactDir);
+    // artifactDir is a required manifest field and stands on its own — replay
+    // must not be gated on the optional configPath (agentDir derives from it).
+    this.replay.setArtifactDir(instance.source.artifactDir);
     this.config.setConfigPath(instance.source.configPath, normalized.agentDir);
     this.chat.addInfo(`connected to ${instance.source.label}`);
     this.showView("chat");

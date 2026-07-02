@@ -83,7 +83,11 @@ export function tuiEndpointOf(source: TraceSourceListItem): string | undefined {
     return undefined;
   }
   const record = tui as Record<string, unknown>;
-  return record.kind === "running" && typeof record.baseUrl === "string" ? record.baseUrl : undefined;
+  // Non-empty required: a malformed manifest with baseUrl "" must fall back to
+  // discovery mode rather than attempt a broken connection.
+  return record.kind === "running" && typeof record.baseUrl === "string" && record.baseUrl.length > 0
+    ? record.baseUrl
+    : undefined;
 }
 
 /**

@@ -134,6 +134,11 @@ export class TurnPresenter implements AgentMessageStream {
 
   async finish(finalText?: string): Promise<void> {
     this.finished = true;
+    // Deliberate: an EMPTY finalText keeps whatever streamed, same as absent.
+    // This is an operator console — the streamed deltas are real model output,
+    // and blanking them on an empty-normalized final answer would hide exactly
+    // what the operator came to see. Channels render a placeholder instead
+    // (DEFAULT_EMPTY_FINAL_TEXT); here the transcript already tells the story.
     if (finalText === undefined || finalText.length === 0) {
       this.flushText();
       return;

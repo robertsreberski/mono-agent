@@ -174,6 +174,34 @@ describe("startTuiAdapter", () => {
     expect((await postTurn(running.baseUrl, { conversationId: "c" })).status).toBe(400);
   });
 
+  it("reports server-side handler failures as 500, not 400", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(
+        async () => ({ text: "ok" }),
+        () => {
+          throw new Error("cancel backend exploded");
+        },
+      ),
+    });
+
+    const response = await fetch(`${running.baseUrl}/v1/conversations/c/cancel`, { method: "POST" });
+
+    expect(response.status).toBe(500);
+    expect(((await response.json()) as { error: { message: string } }).error.message).toContain("exploded");
+  });
+
+  it("keeps body-parse failures as 400", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+
+    const response = await fetch(`${running.baseUrl}/v1/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not json",
+    });
+
+    expect(response.status).toBe(400);
+  });
+
   it("enforces the bearer key on every route when configured", async () => {
     running = await startTuiAdapter({
       apiKey: "fixture-secret",
