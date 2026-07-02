@@ -305,11 +305,24 @@ const localOllamaPrivate: AgentRecipe = {
   ],
 };
 
-/** `local-lmstudio-private` — fully local agent (LM Studio provider + lite memory). */
+/**
+ * `local-lmstudio-private` — fully local agent (LM Studio provider + lite memory).
+ *
+ * Ships `lite` (FTS-only, no embeddings) rather than `journal`, even though LM
+ * Studio's own OpenAI-compatible /v1/embeddings endpoint works fine as a
+ * `memory.embeddings.provider: "openai"` target (see the playbook). Reason:
+ * `readMemoryEmbeddingsConfig` (packages/config/src/config.ts) treats a
+ * missing openai-embeddings API key as a FATAL core-config-load error, not a
+ * per-section `waiting` — unlike channel secrets, which fail independently
+ * per adapter. Every recipe here is tested to load with zero env vars set
+ * (recipes.test.ts), so a required-at-load secret can't be the shipped
+ * default. The playbook documents the journal-tier upgrade as an explicit
+ * opt-in step once `.env` is populated.
+ */
 const localLmStudioPrivate: AgentRecipe = {
   id: "local-lmstudio-private",
   title: "Local LM Studio private agent",
-  description: "Runs entirely on a local LM Studio provider with lite-tier (FTS-only) memory — no remote calls, no external embeddings dependency.",
+  description: "Runs entirely on a local LM Studio provider with lite-tier (FTS-only) memory — no remote calls, no external embeddings dependency. See the playbook to upgrade to journal-tier semantic recall using LM Studio's own embeddings endpoint.",
   tags: ["local", "lmstudio", "private", "memory"],
   riskLevel: "low",
   playbook: "local-only-lmstudio-agent.md",
