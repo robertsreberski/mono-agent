@@ -173,6 +173,8 @@ export type {
   ChannelConfigViewSection,
   ChannelDriver,
   ChannelId,
+  ChannelInteractionHub,
+  ChannelInteractionSink,
   ChannelLogger,
   ChannelStartInput,
   ChannelStatus,

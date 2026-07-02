@@ -61,9 +61,24 @@ export interface TelegramSendToolSettings {
   };
 }
 
+/**
+ * Blocking ask-the-user tool, backed by the app's interaction bridge. Channel
+ * agnostic: the tool only talks to the bridge; the bridge posts the question
+ * through whichever channel sink owns the conversation. `conversationId` is
+ * present only in the spawned child (from the per-request env) — without it the
+ * tool has no target and is not registered.
+ */
+export interface AskUserToolSettings {
+  readonly bridgeUrl: string;
+  readonly bridgeToken: string;
+  readonly timeoutMs: number;
+  readonly conversationId?: string;
+}
+
 export interface AdapterSendToolsSettings {
   readonly slack?: SlackSendToolSettings;
   readonly telegram?: TelegramSendToolSettings;
+  readonly askUser?: AskUserToolSettings;
 }
 
 export interface AdapterSendToolsClients {
@@ -124,12 +139,38 @@ export async function resolveAdapterSendToolsSettings(
         })
       : undefined,
   ]);
-  if (slack === undefined && telegram === undefined) {
+  const askUser = isAdapterToolAllowed("ask_user", options)
+    ? resolveAskUserToolSettings(input.env)
+    : undefined;
+  if (slack === undefined && telegram === undefined && askUser === undefined) {
     return undefined;
   }
   return {
     ...(slack === undefined ? {} : { slack }),
     ...(telegram === undefined ? {} : { telegram }),
+    ...(askUser === undefined ? {} : { askUser }),
+  };
+}
+
+/**
+ * ask_user is available only when the app exported a live interaction bridge
+ * into the environment (URL + bearer token). The producing conversation id is
+ * per-request env, present in the spawned child.
+ */
+function resolveAskUserToolSettings(env: Record<string, string | undefined>): AskUserToolSettings | undefined {
+  const bridgeUrl = optionalString(env.MONO_AGENT_INTERACTION_BRIDGE_URL);
+  const bridgeToken = optionalString(env.MONO_AGENT_INTERACTION_BRIDGE_TOKEN);
+  if (bridgeUrl === undefined || bridgeToken === undefined) {
+    return undefined;
+  }
+  const timeoutRaw = Number(optionalString(env.MONO_AGENT_ASK_USER_TIMEOUT_MS));
+  const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw >= 1000 ? timeoutRaw : 600_000;
+  const conversationId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID);
+  return {
+    bridgeUrl,
+    bridgeToken,
+    timeoutMs,
+    ...(conversationId === undefined ? {} : { conversationId }),
   };
 }
 
@@ -150,6 +191,9 @@ export function adapterSendToolNames(settings: AdapterSendToolsSettings): readon
   if (settings.telegram?.tools.photo === true) {
     names.push("telegram_send_photo");
   }
+  if (settings.askUser !== undefined) {
+    names.push("ask_user");
+  }
   return names;
 }
 
@@ -165,20 +209,30 @@ export function isAdapterSendToolAllowed(
   return isAdapterToolAllowed(name, policy);
 }
 
+/**
+ * Per-request context forwarded to the stdio child. `conversationId` alone
+ * targets ask_user at the producing conversation; `indexPath` additionally
+ * enables the posted-message index (Slack reply continuity).
+ */
+export interface AdapterSendToolsChildContext {
+  readonly conversationId?: string;
+  readonly indexPath?: string;
+}
+
 export function adapterSendToolsMcpEnv(
   configPath: string,
   allowedTools: readonly string[],
-  indexing?: AdapterSendToolsIndexing,
+  context?: AdapterSendToolsChildContext,
 ): Record<string, string> {
   return {
     MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH: configPath,
     MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(allowedTools),
-    ...(indexing === undefined
+    ...(context?.conversationId === undefined
       ? {}
-      : {
-          MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID: indexing.conversationId,
-          MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH: indexing.indexPath,
-        }),
+      : { MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID: context.conversationId }),
+    ...(context?.indexPath === undefined
+      ? {}
+      : { MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH: context.indexPath }),
   };
 }
 
@@ -208,14 +262,14 @@ export function adapterSendToolsMcpServerSpec(
   configPath: string,
   cwd: string,
   allowedTools: readonly string[],
-  indexing?: AdapterSendToolsIndexing,
+  context?: AdapterSendToolsChildContext,
 ): Record<string, unknown> {
   return {
     type: "stdio",
     command: process.execPath,
     args: [fileURLToPath(new URL("./adapter-send-tools-main.js", import.meta.url))],
     cwd,
-    env: adapterSendToolsMcpEnv(configPath, allowedTools, indexing),
+    env: adapterSendToolsMcpEnv(configPath, allowedTools, context),
   };
 }
 
@@ -233,14 +287,16 @@ export function createAdapterSendToolsRuntimeExtension(
 ): (input: AdapterSendToolsRequestInput) => Promise<AdapterSendToolsRuntimeExtension> {
   return async (input) => {
     const conversationId = input?.request?.conversationId;
-    const indexing =
-      indexPath !== undefined && typeof conversationId === "string" && conversationId.trim().length > 0
-        ? { conversationId, indexPath }
-        : undefined;
+    const hasConversation = typeof conversationId === "string" && conversationId.trim().length > 0;
+    // The conversation id is forwarded whenever known — ask_user targets it even
+    // without indexing; the index path additionally enables posted-message links.
+    const context: AdapterSendToolsChildContext | undefined = hasConversation
+      ? { conversationId, ...(indexPath === undefined ? {} : { indexPath }) }
+      : undefined;
     return {
       runtimeOptions: {
         mcpServers: {
-          [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(configPath, cwd, allowedTools, indexing),
+          [ADAPTER_SEND_TOOLS_MCP_SERVER_NAME]: adapterSendToolsMcpServerSpec(configPath, cwd, allowedTools, context),
         },
       },
       cleanup: async () => {},
@@ -289,8 +345,148 @@ export async function createAdapterSendToolsServer(
       registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "photo", adapter);
     }
   }
+  // ask_user needs a target conversation; the parent app process resolves the
+  // settings without one (for tool-name gating) and must not register the tool.
+  if (settings.askUser?.conversationId !== undefined) {
+    registerAskUserTool(server, { ...settings.askUser, conversationId: settings.askUser.conversationId });
+  }
 
   return server;
+}
+
+/** Long-poll wait per bridge request; the overall wait is bounded server-side by the ask's timeout. */
+const ASK_USER_POLL_WAIT_MS = 20_000;
+
+function registerAskUserTool(
+  server: McpServer,
+  settings: AskUserToolSettings & { readonly conversationId: string },
+): void {
+  server.registerTool(
+    "ask_user",
+    {
+      title: "Ask the user and wait",
+      description:
+        "Ask the user ONE consolidated free-text question on the current conversation and WAIT for their reply (blocking, up to the configured timeout — default 10 minutes). Returns the user's answer text. Consolidate everything you need into a single question — a second concurrent ask fails. If the wait times out, the tool returns without an answer and the user's late reply will arrive as their next message: finish the turn gracefully (proceed with sensible defaults and say what you assumed).",
+      inputSchema: {
+        question: z.string().min(1).describe("The full question to show the user (plain text, no markdown)."),
+      },
+    },
+    async (args, extra) => {
+      const created = await askBridgeRequest(settings, "POST", "/v1/asks", {
+        conversationId: settings.conversationId,
+        question: args.question,
+        timeoutMs: settings.timeoutMs,
+      });
+      if (created.status === 409) {
+        return askUserResult(
+          "A question is already pending for the user. Wait for its answer instead of asking again.",
+          { answered: false, reason: "already_pending" },
+        );
+      }
+      if (created.status === 501) {
+        return askUserResult(
+          "This conversation's channel does not support interactive asks. Ask your question in your final reply instead.",
+          { answered: false, reason: "unsupported_channel" },
+        );
+      }
+      if (created.status !== 201 || typeof created.body.askId !== "string") {
+        throw new Error(`ask_user: the interaction bridge rejected the ask (HTTP ${String(created.status)}).`);
+      }
+      const askId = created.body.askId;
+      const startedMs = Date.now();
+      for (;;) {
+        const poll = await askBridgeRequest(
+          settings,
+          "GET",
+          `/v1/asks/${encodeURIComponent(askId)}?waitMs=${String(ASK_USER_POLL_WAIT_MS)}`,
+        );
+        if (poll.status !== 200) {
+          throw new Error(`ask_user: lost the pending ask (HTTP ${String(poll.status)}).`);
+        }
+        // Keep-alive: progress notifications reset the runtime's MCP inactivity
+        // timeout so a long human wait cannot kill the tool call.
+        await sendAskProgress(extra, Math.round((Date.now() - startedMs) / 1000));
+        const status = poll.body.status;
+        if (status === "answered" && typeof poll.body.answer === "string") {
+          return askUserResult(`The user answered:\n${poll.body.answer}`, {
+            answered: true,
+            answer: poll.body.answer,
+          });
+        }
+        if (status === "expired") {
+          return askUserResult(
+            "The user did not answer within the wait window. Their reply will arrive as their next message — wrap up this turn gracefully (proceed with sensible defaults and say what you assumed).",
+            { answered: false, reason: "timeout" },
+          );
+        }
+        if (status === "cancelled") {
+          return askUserResult("The user cancelled the current run. Stop this task.", {
+            answered: false,
+            reason: "cancelled",
+          });
+        }
+      }
+    },
+  );
+}
+
+function askUserResult(
+  text: string,
+  structured: { answered: boolean; answer?: string; reason?: string },
+): { content: Array<{ type: "text"; text: string }>; structuredContent: Record<string, unknown> } {
+  return {
+    content: [{ type: "text", text }],
+    structuredContent: { ok: true, ...structured },
+  };
+}
+
+async function askBridgeRequest(
+  settings: AskUserToolSettings,
+  method: "GET" | "POST",
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const response = await fetch(new URL(path, settings.bridgeUrl), {
+    method,
+    headers: {
+      authorization: `Bearer ${settings.bridgeToken}`,
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  let parsed: unknown;
+  try {
+    parsed = await response.json();
+  } catch {
+    parsed = {};
+  }
+  return {
+    status: response.status,
+    body: typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {},
+  };
+}
+
+async function sendAskProgress(extra: unknown, elapsedSeconds: number): Promise<void> {
+  const handler = extra as {
+    _meta?: { progressToken?: string | number };
+    sendNotification?: (notification: unknown) => Promise<void>;
+  };
+  const progressToken = handler._meta?.progressToken;
+  if (progressToken === undefined || handler.sendNotification === undefined) {
+    return;
+  }
+  try {
+    await handler.sendNotification({
+      method: "notifications/progress",
+      params: {
+        progressToken,
+        progress: elapsedSeconds,
+        message: `waiting for the user's reply (${String(elapsedSeconds)}s)`,
+      },
+    });
+  } catch {
+    // Keep-alive only; a lost notification must never fail the ask.
+  }
 }
 
 function registerSlackSendTool(

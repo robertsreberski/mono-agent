@@ -28,11 +28,13 @@ import {
   adapterSendToolNames,
   adapterSendToolsMcpEnv,
   adapterSendToolsMcpServerSpec,
+  createAdapterSendToolsRuntimeExtension,
   createAdapterSendToolsServer,
   resolveAdapterSendToolsSettings,
 } from "../adapter-send-tools.js";
 import type { AdapterSendToolsSettings } from "../adapter-send-tools.js";
 import { lookupProducingConversation, resolvePostedMessageIndexPath } from "../posted-message-index.js";
+import { startInteractionBridge } from "../interaction-bridge.js";
 
 let dir: string;
 
@@ -196,6 +198,18 @@ describe("adapter send tools MCP spec/env", () => {
       MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH: indexing.indexPath,
     });
     expect(adapterSendToolsChildConfigFromEnv(env, "/agent").indexing).toEqual(indexing);
+  });
+
+  it("always forwards the producing conversation id so ask_user can target the conversation without indexing", async () => {
+    const extension = createAdapterSendToolsRuntimeExtension("/agent/mono-agent.config.json", "/agent", ["ask_user"]);
+
+    const result = await extension({ request: { conversationId: "telegram:42#2026-07-02" } });
+
+    const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as {
+      env: Record<string, string | undefined>;
+    };
+    expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID).toBe("telegram:42#2026-07-02");
+    expect(spec.env.MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH).toBeUndefined();
   });
 });
 
@@ -643,3 +657,167 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
   };
   return fake;
 }
+
+describe("ask_user tool", () => {
+  it("resolves askUser settings and the tool name when the policy allows ask_user and the bridge env is present", async () => {
+    const configPath = await writeConfig(baseConfig());
+
+    const settings = await resolveAdapterSendToolsSettings(
+      {
+        env: {
+          MONO_AGENT_INTERACTION_BRIDGE_URL: "http://127.0.0.1:9999",
+          MONO_AGENT_INTERACTION_BRIDGE_TOKEN: "bridge-token",
+          MONO_AGENT_ASK_USER_TIMEOUT_MS: "5000",
+        },
+        cwd: dir,
+        configPath,
+      },
+      { allowedTools: ["ask_user"] },
+    );
+
+    expect(settings?.askUser).toEqual({
+      bridgeUrl: "http://127.0.0.1:9999",
+      bridgeToken: "bridge-token",
+      timeoutMs: 5000,
+    });
+    expect(adapterSendToolNames(settings as AdapterSendToolsSettings)).toEqual(["ask_user"]);
+  });
+
+  it("omits askUser when the interaction bridge env is missing", async () => {
+    const configPath = await writeConfig(baseConfig());
+
+    const settings = await resolveAdapterSendToolsSettings(
+      { env: {}, cwd: dir, configPath },
+      { allowedTools: ["ask_user"] },
+    );
+
+    expect(settings).toBeUndefined();
+  });
+
+  it("is not registered without a producing conversation id (parent-process shape)", async () => {
+    const server = await createAdapterSendToolsServer(
+      {
+        telegram: {
+          botToken: "telegram-token",
+          allowedChatIds: ["42"],
+          allowAllChats: false,
+          tools: { send: true, ask: false, document: false, photo: false },
+        },
+        askUser: { bridgeUrl: "http://127.0.0.1:1", bridgeToken: "t", timeoutMs: 1_000 },
+      },
+      { telegram: { sendMessage: vi.fn() as never } },
+    );
+    await withMcpClient(server, async (client) => {
+      const tools = await client.listTools();
+      expect(tools.tools.map((tool) => tool.name)).toEqual(["telegram_send_message"]);
+    });
+  });
+
+  it("blocks on the bridge until the user's reply resolves the ask", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
+    const posts: string[] = [];
+    bridge.registerSink("telegram", {
+      postQuestion: async (_conversationId, text) => {
+        posts.push(text);
+      },
+      postStatus: async () => {},
+    });
+    try {
+      const server = await createAdapterSendToolsServer(
+        {
+          askUser: {
+            bridgeUrl: bridge.url,
+            bridgeToken: bridge.token,
+            timeoutMs: 5_000,
+            conversationId: "telegram:42#2026-07-02",
+          },
+        },
+        {},
+      );
+      await withMcpClient(server, async (client) => {
+        const pending = client.callTool({ name: "ask_user", arguments: { question: "Who is speaking?" } });
+        await vi.waitFor(() => {
+          expect(posts).toEqual(["Who is speaking?"]);
+        });
+        // The reply arrives on the BASE conversation id (bucket stripped by the bot).
+        expect(bridge.tryResolveAsk("telegram:42", "Alice and Bob, Polish")).toBe(true);
+        const result = await pending;
+        expect(result.structuredContent).toMatchObject({ answered: true, answer: "Alice and Bob, Polish" });
+        expect(JSON.stringify(result.content)).toContain("Alice and Bob, Polish");
+      });
+    } finally {
+      await bridge.stop();
+    }
+  });
+
+  it("reports an already-pending question instead of stacking a second ask", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
+    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
+    try {
+      const first = await fetch(new URL("/v1/asks", bridge.url), {
+        method: "POST",
+        headers: { authorization: `Bearer ${bridge.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ conversationId: "telegram:42", question: "first?" }),
+      });
+      expect(first.status).toBe(201);
+
+      const server = await createAdapterSendToolsServer(
+        {
+          askUser: {
+            bridgeUrl: bridge.url,
+            bridgeToken: bridge.token,
+            timeoutMs: 5_000,
+            conversationId: "telegram:42",
+          },
+        },
+        {},
+      );
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({ name: "ask_user", arguments: { question: "second?" } });
+        expect(result.structuredContent).toMatchObject({ answered: false, reason: "already_pending" });
+      });
+    } finally {
+      await bridge.stop();
+    }
+  });
+});
+
+describe("telegram_send_document path upload", () => {
+  it("uploads a workspace file by path, deriving the filename from the basename", async () => {
+    const filePath = join(dir, "transcript.md");
+    await writeFile(filePath, "# Transcript\n\nhello", "utf8");
+    const sendDocument = vi.fn(async (params: { chat_id: unknown; filename: string }) => ({
+      message_id: 90,
+      chat: { id: params.chat_id },
+    })) as never;
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: false, document: true, photo: false },
+      },
+    };
+    const server = await createAdapterSendToolsServer(settings, {
+      telegram: { sendMessage: vi.fn() as never, sendDocument },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "telegram_send_document",
+        arguments: { chat_id: 42, path: filePath, caption: "your transcript" },
+      });
+      expect(result.structuredContent).toMatchObject({ ok: true, filename: "transcript.md" });
+    });
+
+    expect(sendDocument).toHaveBeenCalledTimes(1);
+    const uploaded = (sendDocument as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      document: Uint8Array;
+      filename: string;
+      caption?: string;
+    };
+    expect(uploaded.filename).toBe("transcript.md");
+    expect(uploaded.caption).toBe("your transcript");
+    expect(Buffer.from(uploaded.document).toString("utf8")).toBe("# Transcript\n\nhello");
+  });
+});
