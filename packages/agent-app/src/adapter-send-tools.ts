@@ -4,21 +4,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  SlackWebApiClient,
-  loadSlackAdapterConfig,
-} from "@mono-agent/slack-adapter";
 import type {
   SlackChatPostMessageResult,
   SlackWebApi,
 } from "@mono-agent/slack-adapter";
-import {
-  createTelegramMessageSender,
-  DEFAULT_ATTACHMENT_MAX_BYTES,
-  loadTelegramAdapterConfig,
-  TELEGRAM_ASK_MAX_OPTIONS,
-  telegramAskCallbackData,
-} from "@mono-agent/telegram-adapter";
 import type {
   TelegramChatId,
   TelegramMessageSender,
@@ -28,6 +17,17 @@ import * as z from "zod/v4";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { appendPostedMessage } from "./posted-message-index.js";
+
+// Lazy per module (mirrors channels.ts): a config without slack/telegram
+// send-tool policy never pulls either SDK in.
+type SlackAdapterModule = typeof import("@mono-agent/slack-adapter");
+type TelegramAdapterModule = typeof import("@mono-agent/telegram-adapter");
+let slackModule: SlackAdapterModule | undefined;
+let telegramModule: TelegramAdapterModule | undefined;
+const loadSlackModule = async (): Promise<SlackAdapterModule> =>
+  (slackModule ??= await import("@mono-agent/slack-adapter"));
+const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
+  (telegramModule ??= await import("@mono-agent/telegram-adapter"));
 
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.
@@ -248,45 +248,45 @@ export function createAdapterSendToolsRuntimeExtension(
   };
 }
 
-export function createAdapterSendToolsClients(settings: AdapterSendToolsSettings): AdapterSendToolsClients {
+export async function createAdapterSendToolsClients(settings: AdapterSendToolsSettings): Promise<AdapterSendToolsClients> {
+  const slack =
+    settings.slack === undefined
+      ? undefined
+      : new (await loadSlackModule()).SlackWebApiClient({ botToken: settings.slack.botToken });
+  const telegram =
+    settings.telegram === undefined ? undefined : (await loadTelegramModule()).createTelegramMessageSender(settings.telegram.botToken);
   return {
-    ...(settings.slack === undefined
-      ? {}
-      : {
-          slack: new SlackWebApiClient({
-            botToken: settings.slack.botToken,
-          }),
-        }),
-    ...(settings.telegram === undefined
-      ? {}
-      : {
-          telegram: createTelegramMessageSender(settings.telegram.botToken),
-        }),
+    ...(slack === undefined ? {} : { slack }),
+    ...(telegram === undefined ? {} : { telegram }),
   };
 }
 
-export function createAdapterSendToolsServer(
+export async function createAdapterSendToolsServer(
   settings: AdapterSendToolsSettings,
   clients: AdapterSendToolsClients,
   indexing?: AdapterSendToolsIndexing,
-): McpServer {
+): Promise<McpServer> {
   const server = new McpServer({ name: "agent-adapter-send-tools", version: "0.3.0" });
 
   if (settings.slack !== undefined && clients.slack !== undefined) {
     registerSlackSendTool(server, settings.slack, clients.slack, indexing);
   }
   if (settings.telegram !== undefined && clients.telegram !== undefined) {
+    // Loaded once here (not per-register-call) because registerTelegramAskTool
+    // needs TELEGRAM_ASK_MAX_OPTIONS synchronously while building its zod
+    // schema, at registration time — not deferred into the request handler.
+    const adapter = await loadTelegramModule();
     if (settings.telegram.tools.send) {
       registerTelegramSendTool(server, settings.telegram, clients.telegram);
     }
     if (settings.telegram.tools.ask) {
-      registerTelegramAskTool(server, settings.telegram, clients.telegram);
+      registerTelegramAskTool(server, settings.telegram, clients.telegram, adapter);
     }
     if (settings.telegram.tools.document) {
-      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "document");
+      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "document", adapter);
     }
     if (settings.telegram.tools.photo) {
-      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "photo");
+      registerTelegramSendFileTool(server, settings.telegram, clients.telegram, "photo", adapter);
     }
   }
 
@@ -380,6 +380,7 @@ function registerTelegramAskTool(
   server: McpServer,
   settings: TelegramSendToolSettings,
   client: Pick<TelegramMessageSender, "sendMessage">,
+  adapter: TelegramAdapterModule,
 ): void {
   server.registerTool(
     "telegram_ask",
@@ -393,7 +394,7 @@ function registerTelegramAskTool(
         options: z
           .array(z.string().min(1).max(100))
           .min(2)
-          .max(TELEGRAM_ASK_MAX_OPTIONS)
+          .max(adapter.TELEGRAM_ASK_MAX_OPTIONS)
           .describe("Button labels (2–8). The label the user taps is echoed back as a new message."),
         note: z.string().min(1).optional().describe("Optional extra context shown beneath the question."),
       },
@@ -401,7 +402,7 @@ function registerTelegramAskTool(
     async (args) => {
       assertTelegramChatAllowed(settings, args.chat_id);
       const inlineKeyboard = args.options.map((label, index) => [
-        { text: label, callback_data: telegramAskCallbackData(index) },
+        { text: label, callback_data: adapter.telegramAskCallbackData(index) },
       ]);
       const text = args.note === undefined ? args.question : `${args.question}\n\n${args.note}`;
       const result: TelegramSentMessage = await client.sendMessage({
@@ -438,6 +439,7 @@ function registerTelegramSendFileTool(
   settings: TelegramSendToolSettings,
   client: Pick<TelegramMessageSender, "sendDocument" | "sendPhoto">,
   kind: "document" | "photo",
+  adapter: TelegramAdapterModule,
 ): void {
   const toolName = kind === "document" ? "telegram_send_document" : "telegram_send_photo";
   server.registerTool(
@@ -463,6 +465,7 @@ function registerTelegramSendFileTool(
         path: args.path,
         filename: args.filename,
         requireFilename: kind === "document",
+        maxBytes: adapter.DEFAULT_ATTACHMENT_MAX_BYTES,
       });
       const result: TelegramSentMessage =
         kind === "document"
@@ -492,6 +495,7 @@ async function resolveTelegramFileBytes(input: {
   path: string | undefined;
   filename: string | undefined;
   requireFilename: boolean;
+  maxBytes: number;
 }): Promise<{ bytes: Uint8Array; filename: string }> {
   const hasData = input.data !== undefined;
   const hasPath = input.path !== undefined;
@@ -518,8 +522,8 @@ async function resolveTelegramFileBytes(input: {
   if (bytes.byteLength === 0) {
     throw new Error("file is empty.");
   }
-  if (bytes.byteLength > DEFAULT_ATTACHMENT_MAX_BYTES) {
-    throw new Error(`file exceeds the ${String(DEFAULT_ATTACHMENT_MAX_BYTES)}-byte upload cap.`);
+  if (bytes.byteLength > input.maxBytes) {
+    throw new Error(`file exceeds the ${String(input.maxBytes)}-byte upload cap.`);
   }
   return { bytes, filename };
 }
@@ -529,7 +533,8 @@ async function resolveSlackSendToolSettings(
   options: AdapterSendToolsResolveOptions,
 ): Promise<SlackSendToolSettings | undefined> {
   try {
-    const config = await loadSlackAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    const adapter = await loadSlackModule();
+    const config = await adapter.loadSlackAdapterConfig({ env: input.env, jsonPath: input.configPath });
     if (!config.enabled) {
       return undefined;
     }
@@ -552,7 +557,8 @@ async function resolveTelegramSendToolSettings(
   tools: TelegramSendToolSettings["tools"],
 ): Promise<TelegramSendToolSettings | undefined> {
   try {
-    const config = await loadTelegramAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    const adapter = await loadTelegramModule();
+    const config = await adapter.loadTelegramAdapterConfig({ env: input.env, jsonPath: input.configPath });
     if (!config.enabled) {
       return undefined;
     }
