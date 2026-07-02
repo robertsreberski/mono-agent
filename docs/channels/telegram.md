@@ -153,7 +153,30 @@ The long-poll runner self-heals across transient network failures — a network 
 
 Inbound Telegram media (photos, documents, voice, video) is fetched via the Bot API and inlined into `request.attachments`, so the agent receives the bytes alongside the text. A multi-photo/video album arrives as several messages sharing a media group and is aggregated into one request. A download that fails is skipped without failing the run.
 
-Download tuning — byte cap, MIME allowlist, and timeout — is exposed on the adapter's `attachments` option and is **code-only** (`DownloadTelegramAttachmentsOptions`). See [Custom Channels](/programmatic/custom-channels/).
+Download tuning — byte cap and timeout — is configurable via `telegram.attachments.{maxBytes,downloadTimeoutMs}` (defaults: 20 MiB / 30 s); the MIME allowlist remains **code-only** (`DownloadTelegramAttachmentsOptions`). See [Custom Channels](/programmatic/custom-channels/).
+
+## Self-hosted Bot API server (large files)
+
+The hosted `api.telegram.org` caps bot downloads at 20 MB. Telegram's official self-hosted server ([tdlib/telegram-bot-api](https://github.com/tdlib/telegram-bot-api)) lifts that to 2 GB. Point the adapter at it:
+
+```json
+{
+  "telegram": {
+    "apiRoot": "http://127.0.0.1:8081",
+    "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 }
+  }
+}
+```
+
+`apiRoot` is applied to every Bot API call, to file downloads, and to the app send tools (`telegram_send_message`/`telegram_ask`/`telegram_send_document`/`telegram_send_photo`).
+
+How it behaves with a `--local` server:
+
+- `getFile` downloads the file into the daemon's `--dir` and returns an **absolute local path**; the adapter detects that shape and reads the bytes from disk (stat-checked against `attachments.maxBytes`), then deletes the daemon's copy — the harness has already persisted its own copy into the attachments dir. A missing file (the daemon expires downloads after ~1–25 h) is a clean skip, never a failed run. A non-`--local` self-hosted server (relative paths) is fetched from `<apiRoot>/file/bot<token>/…` instead.
+- `telegram_send_document` with a `path` input uploads by **`file://` URI** — the daemon reads the file from disk itself, so there is no size buffering in the agent process (the configured `maxUploadBytes` is enforced via stat). If the server rejects the URI, the tool falls back once to a buffered upload. The presented filename is the path's basename.
+- **Memory ceiling for inbound files**: attachment bytes still travel as base64 through the request, so keep `attachments.maxBytes` at or below ~256 MiB (peak transient memory is roughly 3.4× the file size; V8's max string length caps the mechanism near 384 MiB decoded).
+
+Operational notes for the daemon: it binds `0.0.0.0` **by default** — always pass `--http-ip-address=127.0.0.1` (it has no TLS/auth beyond the bot token in the path); it needs `api_id`/`api_hash` from [my.telegram.org](https://my.telegram.org); a bot must `logOut` of the hosted API before its first local login, and cannot log back into the hosted API for **10 minutes** after; long polling works unchanged, so no webhook or inbound exposure is needed.
 
 ## Sending without a prompt
 

@@ -51,6 +51,8 @@ export interface TelegramAdapterStartOptions {
   readonly callbacksEnabled?: boolean;
   /** Pending-ask interceptor for blocking ask_user round-trips (checked pre-admission). */
   readonly pendingAsks?: TelegramPendingAsks;
+  /** Base URL of a self-hosted Bot API server (API calls + file downloads). Omit for api.telegram.org. */
+  readonly apiRoot?: string;
   /** Delete any configured webhook before polling. Defaults to true. */
   readonly deleteWebhookOnStart?: boolean;
   /** Bound (ms) for the startup deleteWebhook call so a flaky network can't stall boot. Default 5000. */
@@ -129,6 +131,7 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
     ...(options.callbacksEnabled === undefined ? {} : { callbacksEnabled: options.callbacksEnabled }),
     ...(options.pendingAsks === undefined ? {} : { pendingAsks: options.pendingAsks }),
+    ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
     ...(options.deleteWebhookOnStart === undefined
       ? {}
       : { deleteWebhookOnStart: options.deleteWebhookOnStart }),

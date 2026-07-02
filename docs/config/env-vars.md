@@ -171,6 +171,10 @@ Every channel is opt-in via its `enabled` flag (default off) and every field has
 | `MONO_AGENT_TELEGRAM_REACTIONS` | `telegram.reactions` | All-on/all-off boolean override for the lifecycle status reactions (👀 working / 👍 done / 👎 error). Granular per-state control (`{ working, done, error }`) is JSON-only. |
 | `MONO_AGENT_TELEGRAM_IP_FAMILY` | `telegram.transport.ipFamily` | Pin the Bot API HTTP client to IPv4 (`4`) or IPv6 (`6`); omit for dual-stack. Workaround for a broken IPv6 route to `api.telegram.org`. |
 | `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS` | `telegram.pollWatchdogMs` | Poll-liveness watchdog window (ms); default `120000`, `0` disables. Force-restarts a runner that stops delivering updates without crashing. |
+| `MONO_AGENT_TELEGRAM_API_ROOT` | `telegram.apiRoot` | Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`). Omit for `api.telegram.org`. See [../channels/telegram.md](/channels/telegram/). |
+| `MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES` | `telegram.attachments.maxBytes` | Inbound attachment download cap (bytes). Default 20 MiB (the hosted API's hard limit); raise it only with a self-hosted server. |
+| `MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS` | `telegram.attachments.downloadTimeoutMs` | Per-file download timeout (ms) on the URL branch; default `30000`, `0` disables. |
+| `MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES` | `telegram.attachments.maxUploadBytes` | Upload cap (bytes) for `telegram_send_document`/`telegram_send_photo`; default 20 MiB. |
 
 ### Slack
 
