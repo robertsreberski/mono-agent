@@ -892,6 +892,9 @@ describe("createTelegramBot", () => {
         mimeType: "audio/ogg",
         data: Buffer.from("bytes:voice-file-id").toString("base64"),
         sizeBytes: Buffer.from("bytes:voice-file-id").length,
+        // Duration rides the transport-agnostic attachment so downstream tools
+        // (transcription ETA estimates) need no Telegram-specific metadata.
+        durationSeconds: 17,
       },
     ]);
     // …and the Telegram metadata is still forwarded.
