@@ -125,6 +125,7 @@ function buildTestBot(
 
   return {
     bot: controller.bot,
+    controller,
     calls,
     failures,
     downloads,
@@ -892,6 +893,9 @@ describe("createTelegramBot", () => {
         mimeType: "audio/ogg",
         data: Buffer.from("bytes:voice-file-id").toString("base64"),
         sizeBytes: Buffer.from("bytes:voice-file-id").length,
+        // Duration rides the transport-agnostic attachment so downstream tools
+        // (transcription ETA estimates) need no Telegram-specific metadata.
+        durationSeconds: 17,
       },
     ]);
     // …and the Telegram metadata is still forwarded.
@@ -1766,5 +1770,92 @@ describe("SerialQueue", () => {
     await expect(d).resolves.toBe("d");
     expect(dStarted).toBe(true);
     expect(queue.idle).toBe(true);
+  });
+});
+
+describe("createTelegramBot pending asks and status posts", () => {
+  it("consumes a plain text reply as the pending ask's answer instead of running a turn", async () => {
+    const requests: AgentRequest[] = [];
+    const tryResolve = vi.fn(async (_conversationId: string, _answer: string) => true);
+    const { bot, calls } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "turn" };
+      }),
+      pendingAsks: { tryResolve, cancel: vi.fn() },
+    });
+
+    await bot.handleUpdate(textUpdate("Alice and Bob, in Polish"));
+
+    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Alice and Bob, in Polish");
+    expect(requests).toHaveLength(0);
+    // Best-effort acknowledgment so the user sees their answer was consumed.
+    expect(reactionEmojis(calls)).toContain("👍");
+  });
+
+  it("runs a normal turn when the interceptor reports no pending ask", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "turn" };
+      }),
+      pendingAsks: { tryResolve: vi.fn(async () => false), cancel: vi.fn() },
+    });
+
+    await bot.handleUpdate(textUpdate("just a normal message"));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.text).toBe("just a normal message");
+  });
+
+  it("does not consume media messages or slash commands as ask answers", async () => {
+    const tryResolve = vi.fn(async () => true);
+    const { bot } = buildTestBot({
+      responder: responderFrom(async () => ({ text: "turn" })),
+      pendingAsks: { tryResolve, cancel: vi.fn() },
+    });
+
+    await bot.handleUpdate(voiceUpdate());
+    await bot.handleUpdate(textUpdate("/unknowncommand", { updateId: 2 }));
+
+    expect(tryResolve).not.toHaveBeenCalled();
+  });
+
+  it("cancels the pending ask on /cancel", async () => {
+    const cancel = vi.fn();
+    const { bot } = buildTestBot({
+      responder: responderFrom(async () => ({ text: "turn" })),
+      pendingAsks: { tryResolve: vi.fn(async () => false), cancel },
+    });
+
+    await bot.handleUpdate(commandUpdate("/cancel"));
+
+    expect(cancel).toHaveBeenCalledWith("telegram:42");
+  });
+
+  it("posts a free-text question via post()", async () => {
+    const { controller, calls } = buildTestBot({
+      responder: responderFrom(async () => ({ text: "turn" })),
+    });
+
+    await controller.post(42, "Who is speaking on the recording?");
+
+    expect(texts(calls, "sendMessage")).toEqual(["Who is speaking on the recording?"]);
+  });
+
+  it("edits a keyed status message in place and starts fresh after a terminal state", async () => {
+    const { controller, calls } = buildTestBot({
+      responder: responderFrom(async () => ({ text: "turn" })),
+    });
+
+    await controller.postStatus(42, "Transcribing… 10%", { key: "job", state: "working" });
+    await controller.postStatus(42, "Transcribing… 90%", { key: "job", state: "working" });
+    await controller.postStatus(42, "Transcript ready.", { key: "job", state: "done" });
+    // Terminal state cleared the tracking: the same key posts a NEW message.
+    await controller.postStatus(42, "Second run…", { key: "job", state: "working" });
+
+    expect(texts(calls, "sendMessage")).toEqual(["Transcribing… 10%", "Second run…"]);
+    expect(texts(calls, "editMessageText")).toEqual(["Transcribing… 90%", "Transcript ready."]);
   });
 });

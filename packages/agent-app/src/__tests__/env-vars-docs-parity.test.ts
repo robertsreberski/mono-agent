@@ -30,6 +30,9 @@ function codeEnvKeys(root: string): Set<string> {
     join(root, "packages/config/src/config.ts"),
     join(root, "packages/config/src/layered-loader.ts"),
     join(root, "packages/agent-evals/src/index.ts"),
+    // App-level loaders that read their own MONO_AGENT_* keys outside the core config.
+    join(root, "packages/agent-app/src/interaction-bridge.ts"),
+    join(root, "packages/agent-app/src/adapter-send-tools.ts"),
   ];
   const packagesDir = join(root, "packages");
   for (const entry of readdirSync(packagesDir)) {

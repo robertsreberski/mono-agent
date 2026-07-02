@@ -1211,6 +1211,18 @@ const MIME_EXTENSIONS: Record<string, string> = {
   "text/plain": ".txt",
   "text/markdown": ".md",
   "application/json": ".json",
+  // Audio/video: nameless media (Telegram voice notes) must still save with a
+  // usable suffix — ffmpeg and transcription tools sniff format by extension.
+  "audio/ogg": ".ogg",
+  "audio/mpeg": ".mp3",
+  "audio/mp4": ".m4a",
+  "audio/aac": ".aac",
+  "audio/wav": ".wav",
+  "audio/webm": ".webm",
+  "audio/flac": ".flac",
+  "video/mp4": ".mp4",
+  "video/quicktime": ".mov",
+  "video/webm": ".webm",
 };
 
 const ATTACHMENT_TEXT_MAX_CHARS = 8_000;
@@ -1253,6 +1265,9 @@ function describeAttachment(
   if (typeof attachment.sizeBytes === "number" && Number.isFinite(attachment.sizeBytes)) {
     parts.push(formatAttachmentBytes(attachment.sizeBytes));
   }
+  if (typeof attachment.durationSeconds === "number" && Number.isFinite(attachment.durationSeconds) && attachment.durationSeconds > 0) {
+    parts.push(formatAttachmentDuration(attachment.durationSeconds));
+  }
   let line = `- ${parts.join(" — ")}`;
   if (typeof attachment.name === "string" && attachment.name.length > 0) {
     line += ` (original: ${attachment.name})`;
@@ -1264,6 +1279,13 @@ function describeAttachment(
     line += `\n  --- extracted text ---\n${text}\n  --- end of extracted text ---`;
   }
   return line;
+}
+
+function formatAttachmentDuration(seconds: number): string {
+  const whole = Math.round(seconds);
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")} min`;
 }
 
 function formatAttachmentBytes(bytes: number): string {

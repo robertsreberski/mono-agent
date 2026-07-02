@@ -33,6 +33,10 @@ const DEFAULT_SEARCH_RESULT_LIMIT = 100;
 const DEFAULT_IMAGE_INLINE_MAX_BYTES = 5_000_000;
 const DEFAULT_TOOL_PAYLOAD_MAX_BYTES = 262144;
 const DEFAULT_MCP_CALL_TIMEOUT_MS = 120000;
+// Hard wall clock for a single MCP tool call. Progress notifications reset the
+// inactivity timeout above but must never extend a call past this cap (45 min) —
+// sized for legitimately long tools (audio transcription, ask-the-user waits).
+const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 2_700_000;
 
 function clampNumber(value, fallback, min, max) {
   const n = Number(value);
@@ -77,6 +81,12 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
     imageInlineMaxBytes: clampInteger(settings.agent_image_inline_max_bytes, DEFAULT_IMAGE_INLINE_MAX_BYTES, 0, 10 * 1024 * 1024),
     toolPayloadMaxBytes: clampInteger(settings.agent_tool_payload_max_bytes, DEFAULT_TOOL_PAYLOAD_MAX_BYTES, 0, 16 * 1024 * 1024),
     mcpCallTimeoutMs: clampInteger(settings.agent_mcp_call_timeout_ms, DEFAULT_MCP_CALL_TIMEOUT_MS, 1000, Number.MAX_SAFE_INTEGER),
+    mcpCallMaxTotalTimeoutMs: clampInteger(
+      settings.agent_mcp_call_max_total_timeout_ms,
+      DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
+      1000,
+      Number.MAX_SAFE_INTEGER,
+    ),
   };
 }
 

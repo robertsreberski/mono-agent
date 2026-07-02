@@ -31,8 +31,11 @@ import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import {
   adapterSendToolNames,
   createAdapterSendToolsRuntimeExtension,
+  isAdapterSendToolAllowed,
   resolveAdapterSendToolsSettings,
 } from "./adapter-send-tools.js";
+import { loadInteractionSettings, startInteractionBridge } from "./interaction-bridge.js";
+import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import { startMemoryRituals } from "./memory-rituals.js";
 import type { RunningRituals } from "./memory-rituals.js";
 import {
@@ -180,6 +183,11 @@ class MonoAgentAppController implements MonoAgentApp {
   private sharedMemoryBuilt = false;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
+  // Interaction bridge (ask_user + tool progress): lazily started once, shared
+  // by every channel; the exported env keys are tracked for cleanup on stop.
+  private interactionBridge: InteractionBridgeHandle | undefined;
+  private interactionBridgeStart: Promise<InteractionBridgeHandle | undefined> | undefined;
+  private interactionBridgeEnvKeys: readonly string[] = [];
 
   constructor(input: MonoAgentAppControllerInput) {
     this.cwd = input.cwd;
@@ -417,6 +425,62 @@ class MonoAgentAppController implements MonoAgentApp {
     }
   }
 
+  /**
+   * Start the interaction bridge once, when the ask_user tool is allowed by the
+   * tool policy or the operator configured the `interaction` block. Exports the
+   * bridge env into the app env AND process env so settings resolution and
+   * spawned stdio tool children (which inherit process.env) can reach it.
+   */
+  private ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined> {
+    this.interactionBridgeStart ??= (async () => {
+      const askUserAllowed = isAdapterSendToolAllowed("ask_user", {
+        allowedTools: coreConfig.tools.allowedTools,
+        disallowedTools: coreConfig.tools.disallowedTools,
+      });
+      const settings = await loadInteractionSettings({ env: this.env, configPath: this.configPath });
+      if (!askUserAllowed && !settings.configured) {
+        return undefined;
+      }
+      try {
+        const bridge = await startInteractionBridge({
+          host: settings.host,
+          port: settings.port,
+          askTimeoutMs: settings.askTimeoutMs,
+          ...(this.logger === undefined ? {} : { logger: this.logger }),
+        });
+        const bridgeEnv = bridge.env();
+        this.interactionBridgeEnvKeys = Object.keys(bridgeEnv);
+        Object.assign(this.env, bridgeEnv);
+        if ((this.env as unknown) !== process.env) {
+          Object.assign(process.env, bridgeEnv);
+        }
+        this.interactionBridge = bridge;
+        this.logger?.info?.("Interaction bridge started.", { url: bridge.url });
+        return bridge;
+      } catch (error) {
+        this.logger?.warn?.("Interaction bridge failed to start; ask_user and tool progress are unavailable.", {
+          reason: reasonOf(error),
+        });
+        return undefined;
+      }
+    })();
+    return this.interactionBridgeStart;
+  }
+
+  private async stopInteractionBridge(): Promise<void> {
+    const bridge = this.interactionBridge;
+    this.interactionBridge = undefined;
+    this.interactionBridgeStart = undefined;
+    for (const key of this.interactionBridgeEnvKeys) {
+      delete this.env[key];
+      if ((this.env as unknown) !== process.env) {
+        delete process.env[key];
+      }
+    }
+    this.interactionBridgeEnvKeys = [];
+    await bridge?.stop().catch(() => undefined);
+  }
+
   async stop(): Promise<void> {
     if (this.stopped) {
       return;
@@ -425,6 +489,7 @@ class MonoAgentAppController implements MonoAgentApp {
     for (const driver of this.drivers) {
       await this.stopChannel(driver.id, "stop");
     }
+    await this.stopInteractionBridge();
     this.stopMemoryRituals();
     await this.resetSharedMemory();
     await this.stopTraceSource("stop");
@@ -596,6 +661,11 @@ class MonoAgentAppController implements MonoAgentApp {
     // posted messages to their producing conversation (in-thread reply continuity).
     const postedMessageIndexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
 
+    // The bridge must exist BEFORE the responder is built (ask_user settings
+    // resolution reads the exported bridge env) and before driver.start (sink
+    // registration + pending-ask interception).
+    const interactionBridge = await this.ensureInteractionBridge(coreConfig);
+
     try {
       const responder = await this.buildResponder(coreConfig);
       // The AgentResponder contract has no dispose(), but the configured responder
@@ -616,6 +686,7 @@ class MonoAgentAppController implements MonoAgentApp {
         notifyDestination: (conversationId, text, options) => this.notifyDestination(conversationId, text, options),
         listNotifyDestinations: () => this.listNotifyDestinations(),
         postedMessageIndexPath,
+        ...(interactionBridge === undefined ? {} : { interaction: interactionBridge }),
         ...(this.logger === undefined ? {} : { logger: this.logger }),
         onFailure: (failureReason) => {
           this.running.delete(driver.id);

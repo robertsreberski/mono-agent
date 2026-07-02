@@ -55,6 +55,7 @@ mono-agent derives MCP **send tools** from already-enabled chat adapters so the 
 - `telegram_ask` — post an inline-keyboard question (2–8 option labels) through the Telegram adapter
 - `telegram_send_document` — upload and send a file through the Telegram adapter
 - `telegram_send_photo` — upload and send an image (shown inline) through the Telegram adapter
+- `ask_user` — ask ONE free-text question on the current conversation and **block until the user replies** (channel-agnostic; see below)
 
 Coverage: `config`. Two conditions must both hold for a send tool to work:
 
@@ -69,6 +70,16 @@ Coverage: `config`. Two conditions must both hold for a send tool to work:
 - **`telegram_send_document`** and **`telegram_send_photo`** upload and send a file/image to an allowed chat. Each accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
+
+### `ask_user` — blocking free-text ask (interaction bridge)
+
+`ask_user` is the blocking counterpart to `telegram_ask`: the tool call posts a free-text question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge** (a loopback HTTP registry started automatically when `ask_user` is in `tools.allowedTools`; tune it via the `interaction` config block).
+
+- While an ask is pending, the user's next **plain-text** message on that chat is consumed as the ANSWER (acknowledged with a 👍 reaction) and never runs as a turn; media and `/`-commands pass through normally, and `/cancel` fails the pending ask.
+- One pending ask per conversation: consolidate everything into a single question. A second concurrent ask returns an "already pending" result.
+- On timeout (default 10 min, `interaction.askUser.timeoutMs`) the tool returns without an answer and the user's late reply arrives as a normal next turn. On an app restart pending asks degrade the same way.
+- The wait keeps the MCP call alive via progress notifications (see `tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`).
+- Tool children can also POST `{conversationId, key, message, state}` to the bridge's `/v1/progress` (URL/token in `MONO_AGENT_INTERACTION_BRIDGE_URL`/`_TOKEN` env) to surface long-tool progress as a channel status message edited in place.
 
 ```json
 {

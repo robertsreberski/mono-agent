@@ -228,6 +228,18 @@ export function createTelegramChannelDriver(
       const adapter = await loadTelegramModule();
       const startAdapter = overrides.startAdapter ?? adapter.startTelegramAdapter;
       const result = await startAdapter(telegramStartOptions(input, overrides));
+      // Register this channel's interaction sink so the host bridge can post
+      // ask_user questions and tool-progress status lines into Telegram chats.
+      // The sink enforces the adapter allowlist: a tool-supplied conversation
+      // can never reach a chat the operator never allowlisted.
+      input.interaction?.registerSink("telegram", {
+        postQuestion: async (conversationId, text) => {
+          await result.post(requireAllowedTelegramChat(conversationId, input), text);
+        },
+        postStatus: async (conversationId, text, statusOptions) => {
+          await result.postStatus(requireAllowedTelegramChat(conversationId, input), text, statusOptions);
+        },
+      });
       return {
         summary: {},
         stop: () => result.stop(),
@@ -262,6 +274,21 @@ export function createTelegramChannelDriver(
       };
     },
   };
+}
+
+/** Resolve + allowlist-check a `telegram:<chat>` destination for interaction-sink posts. */
+function requireAllowedTelegramChat(
+  conversationId: string,
+  input: ChannelStartInput<TelegramAdapterConfig>,
+): TelegramChatId {
+  const chatId = telegramChatIdFromConversation(conversationId);
+  if (chatId === undefined) {
+    throw new Error(`unparseable telegram destination: ${conversationId}`);
+  }
+  if (!input.config.allowAllChats && !input.config.allowedChatIds.includes(String(chatId))) {
+    throw new Error("telegram chat is not in the adapter allowlist.");
+  }
+  return chatId;
 }
 
 /** Extract the Telegram chat id from a `telegram:<chat>` conversationId (numeric ids become numbers; a rollover #bucket suffix is stripped). */
@@ -1070,6 +1097,17 @@ function telegramStartOptions(
     onPollingError: (error) =>
       input.onDegraded?.(error instanceof Error ? error.message : String(error)),
     onPollingRecovered: () => input.onRecovered?.(),
+    ...(input.interaction === undefined
+      ? {}
+      : {
+          pendingAsks: {
+            tryResolve: (conversationId: string, answer: string) =>
+              input.interaction!.tryResolveAsk(conversationId, answer),
+            cancel: (conversationId: string) => {
+              input.interaction!.cancelAsks(conversationId);
+            },
+          },
+        }),
     ...(input.config.ipFamily === undefined ? {} : { transport: { ipFamily: input.config.ipFamily } }),
     ...(input.config.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: input.config.pollWatchdogMs }),
     ...(input.config.commands === undefined ? {} : { commands: [...input.config.commands] }),

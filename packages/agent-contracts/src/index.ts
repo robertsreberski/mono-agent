@@ -26,6 +26,8 @@ export interface AgentAttachment {
   readonly sizeBytes?: number;
   /** Extracted text for documents, when available. */
   readonly text?: string;
+  /** Media duration in seconds (audio/video), when the transport reports it. */
+  readonly durationSeconds?: number;
 }
 
 export interface AgentRequestBase {
@@ -171,6 +173,8 @@ export type {
   ChannelConfigViewSection,
   ChannelDriver,
   ChannelId,
+  ChannelInteractionHub,
+  ChannelInteractionSink,
   ChannelLogger,
   ChannelStartInput,
   ChannelStatus,

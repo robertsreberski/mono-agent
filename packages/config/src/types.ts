@@ -231,6 +231,10 @@ export interface MonoAgentConfig {
     readonly allowedTools: readonly string[];
     readonly disallowedTools: readonly string[];
     readonly mcpConfigPath?: string;
+    /** Inactivity timeout per MCP tool call; progress notifications reset it. Runtime default: 120s. */
+    readonly mcpCallTimeoutMs?: number;
+    /** Hard wall clock per MCP tool call that progress cannot extend. Runtime default: 45 min. */
+    readonly mcpCallMaxTotalTimeoutMs?: number;
   };
   readonly sandbox?: SandboxPolicy;
   readonly artifacts: {

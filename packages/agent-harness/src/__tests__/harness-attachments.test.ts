@@ -112,6 +112,32 @@ describe("AgentHarness attachments", () => {
     expect(content).toContain("image/png");
   });
 
+  it("saves a nameless voice note with its audio extension and surfaces the duration in the prompt", async () => {
+    // Telegram voice notes arrive without a fileName; the saved file must still
+    // carry a usable extension (ffmpeg/transcription tools sniff by suffix) and
+    // the prompt line should quote the duration so the agent can estimate ETAs.
+    const identityPath = await identityFixture();
+    const attachmentsDir = await attachmentsDirFixture();
+    const fake = createCapturingRuntime();
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", attachmentsDir });
+
+    const bytes = Buffer.from("OggS fake opus voice bytes");
+    await harness.run({
+      conversationId: "c1",
+      userMessage: "",
+      abortSignal: new AbortController().signal,
+      attachments: [{ kind: "document", mimeType: "audio/ogg", data: bytes.toString("base64"), sizeBytes: bytes.length, durationSeconds: 47 }],
+    });
+
+    const files = await readdir(attachmentsDir);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/\.ogg$/u);
+
+    const content = userContent(fake.calls[0] as { options: RuntimeRunOptions });
+    expect(content).toContain("audio/ogg");
+    expect(content).toContain("0:47");
+  });
+
   it("inlines extracted document text alongside the saved-path reference", async () => {
     const identityPath = await identityFixture();
     const attachmentsDir = await attachmentsDirFixture();

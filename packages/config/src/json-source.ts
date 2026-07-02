@@ -145,6 +145,8 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly allowedTools?: readonly string[];
     readonly disallowedTools?: readonly string[];
     readonly mcpConfigPath?: string;
+    readonly mcpCallTimeoutMs?: number;
+    readonly mcpCallMaxTotalTimeoutMs?: number;
   };
   readonly sandbox?: {
     readonly mode?: string;
