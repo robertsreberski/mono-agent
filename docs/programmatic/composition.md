@@ -61,7 +61,7 @@ For building the driver itself, see [custom channels](/programmatic/custom-chann
 
 ## The bare responder: `createConfiguredAgentResponder`
 
-When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/agent-host`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`.
+When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/agent-host`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): memory backends are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack and a Supermemory config never loads it either.
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
@@ -73,7 +73,7 @@ const config = await loadMonoAgentConfigWithSources({
   jsonPath: "./mono-agent.config.json",
 });
 
-const responder = createConfiguredAgentResponder({ config });
+const responder = await createConfiguredAgentResponder({ config });
 ```
 
 `ConfiguredAgentResponderOptions` (a superset of `ConfiguredAgentHarnessOptions`) lets you override the dependencies the config would otherwise build:
@@ -118,7 +118,7 @@ import type {
   AgentHarnessRuntimeOptionsExtension,
 } from "@mono-agent/agent-harness";
 
-const responder = createConfiguredAgentResponder({
+const responder = await createConfiguredAgentResponder({
   config,
   runtimeOptionsForRequest: async (
     input: AgentHarnessRuntimeOptionsInput,

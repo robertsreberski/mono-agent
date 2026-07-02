@@ -1,4 +1,5 @@
 import {
+  fieldSpecMappings,
   layerJsonOntoEnv,
   readBoolean,
   readInteger,
@@ -8,7 +9,7 @@ import {
   normalizeOptionalString,
   redactedSecret,
 } from "@mono-agent/settings";
-import type { RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
+import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
 
 import {
   DEFAULT_BASE_PATH,
@@ -74,20 +75,25 @@ export function redactOpenAIApiAdapterConfig(
   };
 }
 
+/**
+ * The `openaiApi` section's field registry: the single source of truth both
+ * the JSON→env layering below and the app's config provenance view derive from.
+ */
+export const OPENAI_API_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  { id: "openaiApi.enabled", env: "MONO_AGENT_OPENAI_API_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
+  { id: "openaiApi.host", env: "MONO_AGENT_OPENAI_API_HOST", fromJson: (s) => s.host },
+  { id: "openaiApi.port", env: "MONO_AGENT_OPENAI_API_PORT", kind: "integer", fromJson: (s) => s.port },
+  { id: "openaiApi.basePath", env: "MONO_AGENT_OPENAI_API_BASE_PATH", fromJson: (s) => s.basePath },
+  { id: "openaiApi.allowNonLoopback", env: "MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK", kind: "boolean", fromJson: (s) => s.allowNonLoopback },
+  { id: "openaiApi.apiKey", env: "MONO_AGENT_OPENAI_API_KEY", secret: true, fromJson: (s) => s.apiKey },
+  { id: "openaiApi.modelId", env: "MONO_AGENT_OPENAI_API_MODEL_ID", fromJson: (s) => s.modelId },
+];
+
 function layerOpenAIApiJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readJsonSection(json, "openaiApi");
-  return layerJsonOntoEnv(env, [
-    { env: "MONO_AGENT_OPENAI_API_ENABLED", value: section.enabled, kind: "boolean" },
-    { env: "MONO_AGENT_OPENAI_API_HOST", value: section.host },
-    { env: "MONO_AGENT_OPENAI_API_PORT", value: section.port, kind: "integer" },
-    { env: "MONO_AGENT_OPENAI_API_BASE_PATH", value: section.basePath },
-    { env: "MONO_AGENT_OPENAI_API_ALLOW_NON_LOOPBACK", value: section.allowNonLoopback, kind: "boolean" },
-    { env: "MONO_AGENT_OPENAI_API_KEY", value: section.apiKey },
-    { env: "MONO_AGENT_OPENAI_API_MODEL_ID", value: section.modelId },
-  ]);
+  return layerJsonOntoEnv(env, fieldSpecMappings(readJsonSection(json, "openaiApi"), OPENAI_API_CONFIG_FIELDS));
 }
 
 function readBasePath(raw: string | undefined): string {

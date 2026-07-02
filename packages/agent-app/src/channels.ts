@@ -1,16 +1,17 @@
 import { resolve } from "node:path";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type {
+  AgentResponder,
+  ChannelConfigViewSection,
+  ChannelDriver as ContractChannelDriver,
+  ChannelId as ContractChannelId,
+  ChannelLogger,
+  ChannelStartInput as ContractChannelStartInput,
+  RunningChannel,
+} from "@mono-agent/agent-contracts";
 import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import {
-  A2AConsumerError,
-  A2AProviderError,
-  startA2AProvider,
-} from "@mono-agent/a2a-adapter";
 import type { A2AAdapterConfig, A2AProviderOptions, A2AProviderStartResult } from "@mono-agent/a2a-adapter";
-import { loadA2AAdapterConfig } from "@mono-agent/a2a-adapter";
-import { CronAdapterError, loadCronAdapterConfig, startCronAdapter } from "@mono-agent/cron-adapter";
 import type {
   CronAdapterConfig,
   CronAdapterOptions,
@@ -19,32 +20,16 @@ import type {
   CronJobResult,
 } from "@mono-agent/cron-adapter";
 import { describeRunFailureKind } from "@mono-agent/observability";
-import {
-  loadOpenAIApiAdapterConfig,
-  OpenAIApiAdapterError,
-  startOpenAIApiAdapter,
-} from "@mono-agent/openai-api-adapter";
 import type {
   OpenAIApiAdapterConfig,
   OpenAIApiAdapterOptions,
   OpenAIApiAdapterStartResult,
 } from "@mono-agent/openai-api-adapter";
-import {
-  loadSlackAdapterConfig,
-  SlackAdapterConfigError,
-  startSlackAdapter,
-} from "@mono-agent/slack-adapter";
 import type {
   SlackAdapterConfig,
   SlackAdapterStartOptions,
   SlackAdapterStartResult,
 } from "@mono-agent/slack-adapter";
-import {
-  isWithinQuietHours,
-  loadTelegramAdapterConfig,
-  startTelegramAdapter,
-  TelegramAdapterConfigError,
-} from "@mono-agent/telegram-adapter";
 import type {
   TelegramAdapterConfig,
   TelegramAdapterErrorTextInput,
@@ -52,11 +37,6 @@ import type {
   TelegramAdapterStartResult,
   TelegramChatId,
 } from "@mono-agent/telegram-adapter";
-import {
-  loadWebhookAdapterConfig,
-  startWebhookAdapter,
-  WebhookAdapterError,
-} from "@mono-agent/webhook-adapter";
 import type {
   WebhookAdapterConfig,
   WebhookAdapterOptions,
@@ -65,11 +45,6 @@ import type {
   WebhookInvocationRequest,
   WebhookInvocationStatus,
 } from "@mono-agent/webhook-adapter";
-import {
-  loadWhatsAppAdapterConfig,
-  startWhatsAppAdapter,
-  WhatsAppAdapterConfigError,
-} from "@mono-agent/whatsapp-adapter";
 import type {
   StartWhatsAppAdapterOptions,
   WhatsAppAdapterConfig,
@@ -78,126 +53,141 @@ import type {
 } from "@mono-agent/whatsapp-adapter";
 
 import { isAdapterSendToolAllowed } from "./adapter-send-tools.js";
+import { isChannelConfigured } from "./channel-gate.js";
+import type { ChannelGateSpec } from "./channel-gate.js";
+import { buildChannelConfigView } from "./channel-config-view.js";
+import { findTriggerOverrideIssues } from "./trigger-overrides.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import { appendPostedMessage, lookupProducingConversation } from "./posted-message-index.js";
 
-export type ChannelId =
-  | "telegram"
-  | "slack"
-  | "a2a"
-  | "webhook"
-  | "openai-api"
-  | "cron"
-  | "whatsapp";
+/**
+ * The channel contract now lives in @mono-agent/agent-contracts (neutral,
+ * dependency-free) so third-party drivers depend on the contracts package, not
+ * this host. The aliases below bind the contract's core-config parameter to
+ * MonoAgentConfig and preserve every historical export from this module.
+ */
+export type ChannelId = ContractChannelId;
+export type MonoAgentAppLogger = ChannelLogger;
+export type { ChannelLogger, ChannelStatus, NotifyDeliveryResult, NotifyDestination, RunningChannel } from "@mono-agent/agent-contracts";
+export type ChannelStartInput<TConfig> = ContractChannelStartInput<TConfig, MonoAgentConfig>;
+export type ChannelDriver<TConfig = unknown> = ContractChannelDriver<TConfig, MonoAgentConfig>;
 
-export interface MonoAgentAppLogger {
-  debug?(message: string, metadata?: Record<string, unknown>): void;
-  info?(message: string, metadata?: Record<string, unknown>): void;
-  warn?(message: string, metadata?: Record<string, unknown>): void;
-  error?(message: string, metadata?: Record<string, unknown>): void;
-}
-
-export type ChannelStatus =
-  | { readonly kind: "disabled"; readonly reason: string }
-  | { readonly kind: "waiting_for_config"; readonly reason: string }
-  | { readonly kind: "running"; readonly summary: Record<string, unknown> }
-  // Transport is temporarily down but the channel owns its own recovery (e.g. the
-  // telegram poller crashed on a network blip and is restarting). The responder/
-  // harness stays alive and the channel keeps serving once polling resumes — a
-  // non-fatal state distinct from "failed".
-  | { readonly kind: "degraded"; readonly reason: string }
-  | { readonly kind: "failed"; readonly reason: string };
-
-export interface RunningChannel {
-  /** Channel-specific connection facts (invoke URL, agent card URL, job count). */
-  readonly summary: Record<string, unknown>;
-  stop(): Promise<void>;
-  /**
-   * Optional responder/harness teardown, set by the app (not the driver). Stopping
-   * the transport alone leaves the per-channel harness + live-session manager alive;
-   * on stop/reload the app disposes the responder so warm provider sessions and
-   * queued turns against stale config are retired. Transport stops first.
-   */
-  dispose?(): Promise<void>;
-  /**
-   * Deliver a proactive notification to a destination this channel owns: run it as
-   * a turn on the destination's own harness (shared session/history) and deliver
-   * through the channel's normal stream. Set only by push channels (telegram/slack);
-   * absent on request-driven channels. Used by the app's proactive-notify router.
-   *
-   * Enforces the channel's own adapter allowlist (so a payload-supplied destination
-   * cannot reach a non-allowlisted chat) and reports the outcome so the caller can
-   * surface it to the model and the run summary.
-   */
-  notify?(input: {
-    readonly conversationId: string;
-    readonly text: string;
-    /**
-     * Deliver `text` VERBATIM — post it unchanged with no model call, then record
-     * it to the destination's history (native cron/webhook notification). Without
-     * it, `text` is run as a turn on the destination's harness.
-     */
-    readonly verbatim?: boolean;
-  }): Promise<NotifyDeliveryResult>;
-}
-
-export interface ChannelStartInput<TConfig> {
-  readonly config: TConfig;
-  readonly coreConfig: MonoAgentConfig;
-  readonly responder: AgentResponder;
-  readonly cwd: string;
-  readonly logger?: MonoAgentAppLogger;
-  /**
-   * Reports a transport that died after a successful start with NO self-recovery
-   * (e.g. the webhook HTTP server crashed). The app disposes the responder/harness
-   * and marks the channel failed. For a transport that owns its own reconnect, use
-   * {@link onDegraded}/{@link onRecovered} instead so the responder is NOT disposed.
-   */
-  readonly onFailure: (reason: string) => void;
-  /**
-   * Reports a transport that is temporarily down but is self-recovering (e.g. a
-   * telegram poll crash on a network blip; the adapter restarts its own runner).
-   * The app marks the channel "degraded" and KEEPS the responder/harness alive so
-   * the self-restarted transport delivers into a live harness. Optional — drivers
-   * that have no self-recovery only wire {@link onFailure}.
-   */
-  readonly onDegraded?: (reason: string) => void;
-  /** Reports that a previously-degraded transport's self-recovery succeeded (back to running). */
-  readonly onRecovered?: () => void;
-  /** Native scheduled/webhook delivery hook owned by the app, used by proactive trigger channels. */
-  readonly notifyDestination?: (
-    conversationId: string,
-    text: string,
-    options?: { readonly verbatim?: boolean },
-  ) => Promise<NotifyDeliveryResult>;
-  /** Candidate destinations for native delivery inference. */
-  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
-  /**
-   * Path to the posted-message index (the artifact-dir JSONL linking a posted
-   * message back to its producing conversation). The Slack driver uses it to
-   * resolve in-thread replies and to record top-level proactive posts.
-   */
-  readonly postedMessageIndexPath?: string;
-}
+/** The channel ids this app can drive from config (third-party drivers add their own). */
+export const BUILTIN_CHANNEL_IDS = [
+  "telegram",
+  "slack",
+  "a2a",
+  "webhook",
+  "openai-api",
+  "cron",
+  "whatsapp",
+] as const;
+export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
 
 /**
- * One communication channel the app can run from config. Drivers stay thin:
- * they reuse the adapter package's config loader and start function and add
- * only the wiring an app host previously copied by hand.
+ * Built-in adapters load lazily: each module is imported only once its channel
+ * passes the {@link isChannelConfigured} gate (JSON section present, a prefixed
+ * env var set, or the jobs/endpoints folder existing). A webhook-only agent
+ * therefore never loads the chat SDKs. Type-only imports above are erased at
+ * compile time and cost nothing at runtime.
+ *
+ * For an unconfigured channel the driver answers with the adapter loader's own
+ * empty-input output (the UNCONFIGURED_* constants below) — a drift-guard test
+ * asserts each constant deep-equals the real loader's result on empty input.
  */
-export interface ChannelDriver<TConfig = unknown> {
-  readonly id: ChannelId;
-  readonly label: string;
-  loadConfig(input: MonoAgentAppConfigInput): Promise<TConfig>;
-  /** True for the adapter's own typed config errors (incomplete config → waiting). */
-  isConfigError(error: unknown): boolean;
-  /** Reason the channel is explicitly disabled by its loaded config. */
-  disabledReason?(config: TConfig): string | undefined;
-  /** Reason a loaded, enabled config still cannot start (missing sub-section). */
-  waitingReason?(config: TConfig): string | undefined;
-  start(input: ChannelStartInput<TConfig>): Promise<RunningChannel>;
+type TelegramAdapterModule = typeof import("@mono-agent/telegram-adapter");
+type SlackAdapterModule = typeof import("@mono-agent/slack-adapter");
+type A2AAdapterModule = typeof import("@mono-agent/a2a-adapter");
+type WebhookAdapterModule = typeof import("@mono-agent/webhook-adapter");
+type OpenAIApiAdapterModule = typeof import("@mono-agent/openai-api-adapter");
+type CronAdapterModule = typeof import("@mono-agent/cron-adapter");
+type WhatsAppAdapterModule = typeof import("@mono-agent/whatsapp-adapter");
+
+let telegramModule: TelegramAdapterModule | undefined;
+let slackModule: SlackAdapterModule | undefined;
+let a2aModule: A2AAdapterModule | undefined;
+let webhookModule: WebhookAdapterModule | undefined;
+let openaiApiModule: OpenAIApiAdapterModule | undefined;
+let cronModule: CronAdapterModule | undefined;
+let whatsappModule: WhatsAppAdapterModule | undefined;
+
+const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
+  (telegramModule ??= await import("@mono-agent/telegram-adapter"));
+const loadSlackModule = async (): Promise<SlackAdapterModule> =>
+  (slackModule ??= await import("@mono-agent/slack-adapter"));
+const loadA2AModule = async (): Promise<A2AAdapterModule> =>
+  (a2aModule ??= await import("@mono-agent/a2a-adapter"));
+const loadWebhookModule = async (): Promise<WebhookAdapterModule> =>
+  (webhookModule ??= await import("@mono-agent/webhook-adapter"));
+const loadOpenAIApiModule = async (): Promise<OpenAIApiAdapterModule> =>
+  (openaiApiModule ??= await import("@mono-agent/openai-api-adapter"));
+const loadCronModule = async (): Promise<CronAdapterModule> =>
+  (cronModule ??= await import("@mono-agent/cron-adapter"));
+const loadWhatsAppModule = async (): Promise<WhatsAppAdapterModule> =>
+  (whatsappModule ??= await import("@mono-agent/whatsapp-adapter"));
+
+const TELEGRAM_GATE: ChannelGateSpec = { jsonKey: "telegram", envPrefix: "MONO_AGENT_TELEGRAM_" };
+const SLACK_GATE: ChannelGateSpec = { jsonKey: "slack", envPrefix: "MONO_AGENT_SLACK_" };
+const A2A_GATE: ChannelGateSpec = { jsonKey: "a2a", envPrefix: "MONO_AGENT_A2A_" };
+const WEBHOOK_GATE: ChannelGateSpec = { jsonKey: "webhook", envPrefix: "MONO_AGENT_WEBHOOK_", dir: "webhook" };
+const OPENAI_API_GATE: ChannelGateSpec = { jsonKey: "openaiApi", envPrefix: "MONO_AGENT_OPENAI_API_" };
+const CRON_GATE: ChannelGateSpec = { jsonKey: "cron", envPrefix: "MONO_AGENT_CRON_", dir: "cron" };
+const WHATSAPP_GATE: ChannelGateSpec = { jsonKey: "whatsapp", envPrefix: "MONO_AGENT_WHATSAPP_" };
+
+const UNCONFIGURED_TELEGRAM_CONFIG: TelegramAdapterConfig = {
+  enabled: false,
+  botToken: "",
+  allowedChatIds: [],
+  allowAllChats: false,
+};
+const UNCONFIGURED_SLACK_CONFIG: SlackAdapterConfig = {
+  enabled: false,
+  botToken: "",
+  appToken: "",
+  allowedChannelIds: [],
+  allowAllChannels: false,
+  botUserIds: [],
+  mentionTextAliases: [],
+  stripMentionText: false,
+  shortcuts: [],
+  homeTab: { enabled: false, buttons: [] },
+};
+const UNCONFIGURED_A2A_CONFIG: A2AAdapterConfig = {
+  provider: { enabled: false, host: "127.0.0.1", port: 0, allowNonLoopback: false, requireBearer: false },
+  consumer: { remoteAgentUrls: [], timeoutMs: 30_000 },
+};
+const UNCONFIGURED_WEBHOOK_CONFIG: WebhookAdapterConfig = {
+  enabled: false,
+  host: "127.0.0.1",
+  port: 0,
+  allowNonLoopback: false,
+  retentionMs: 300_000,
+  maxStoredRequests: 100,
+  endpoints: [{ name: "default", path: "/webhook/invoke", mode: "sync", enabled: true }],
+  path: "/webhook/invoke",
+  defaultMode: "sync",
+};
+const UNCONFIGURED_OPENAI_API_CONFIG: OpenAIApiAdapterConfig = {
+  enabled: false,
+  host: "127.0.0.1",
+  port: 0,
+  basePath: "/v1",
+  allowNonLoopback: false,
+  modelId: "agent",
+};
+const UNCONFIGURED_CRON_CONFIG: CronAdapterConfig = { jobs: [] };
+const UNCONFIGURED_WHATSAPP_CONFIG: WhatsAppAdapterConfig = {
+  enabled: false,
+  allowedChatJids: [],
+  allowAllChats: false,
+  trigger: { groupMode: "mention", botJids: [], mentionTextAliases: [], stripMentionText: false },
+};
+
+/** Config-view section for a channel the gate found no intent for (no fields to annotate). */
+function unconfiguredChannelView(id: string, label: string): ChannelConfigViewSection {
+  return { id, label, status: "disabled", fields: [] };
 }
 
 export interface TelegramChannelOverrides {
@@ -214,17 +204,29 @@ export function createTelegramChannelDriver(
   return {
     id: "telegram",
     label: "Telegram",
+    async configView(input) {
+      if (!(await isChannelConfigured(input, TELEGRAM_GATE))) {
+        return unconfiguredChannelView("telegram", "Telegram");
+      }
+      const adapter = await loadTelegramModule();
+      return await buildChannelConfigView(this, adapter.TELEGRAM_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
-      return await loadTelegramAdapterConfig({ env: input.env, jsonPath: input.configPath });
+      if (!(await isChannelConfigured(input, TELEGRAM_GATE))) {
+        return UNCONFIGURED_TELEGRAM_CONFIG;
+      }
+      const adapter = await loadTelegramModule();
+      return await adapter.loadTelegramAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
     isConfigError(error) {
-      return error instanceof TelegramAdapterConfigError;
+      return telegramModule !== undefined && error instanceof telegramModule.TelegramAdapterConfigError;
     },
     disabledReason(config) {
       return config.enabled ? undefined : "Telegram is disabled.";
     },
     async start(input) {
-      const startAdapter = overrides.startAdapter ?? startTelegramAdapter;
+      const adapter = await loadTelegramModule();
+      const startAdapter = overrides.startAdapter ?? adapter.startTelegramAdapter;
       const result = await startAdapter(telegramStartOptions(input, overrides));
       return {
         summary: {},
@@ -247,7 +249,7 @@ export function createTelegramChannelDriver(
           // so an overnight cron/webhook result lands without a push sound.
           const silent =
             input.config.quietHours !== undefined &&
-            isWithinQuietHours(new Date(), input.config.quietHours);
+            adapter.isWithinQuietHours(new Date(), input.config.quietHours);
           const notifyOptions =
             verbatim === undefined && !silent
               ? undefined
@@ -287,17 +289,29 @@ export function createSlackChannelDriver(
   return {
     id: "slack",
     label: "Slack",
+    async configView(input) {
+      if (!(await isChannelConfigured(input, SLACK_GATE))) {
+        return unconfiguredChannelView("slack", "Slack");
+      }
+      const adapter = await loadSlackModule();
+      return await buildChannelConfigView(this, adapter.SLACK_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
-      return await loadSlackAdapterConfig({ env: input.env, jsonPath: input.configPath });
+      if (!(await isChannelConfigured(input, SLACK_GATE))) {
+        return UNCONFIGURED_SLACK_CONFIG;
+      }
+      const adapter = await loadSlackModule();
+      return await adapter.loadSlackAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
     isConfigError(error) {
-      return error instanceof SlackAdapterConfigError;
+      return slackModule !== undefined && error instanceof slackModule.SlackAdapterConfigError;
     },
     disabledReason(config) {
       return config.enabled ? undefined : "Slack is disabled.";
     },
     async start(input) {
-      const startAdapter = overrides.startAdapter ?? startSlackAdapter;
+      const adapter = await loadSlackModule();
+      const startAdapter = overrides.startAdapter ?? adapter.startSlackAdapter;
       // Link posted messages to their producing conversation so an in-thread reply
       // resumes that conversation instead of a fresh, history-less slack: thread.
       const indexPath = input.postedMessageIndexPath;
@@ -430,11 +444,25 @@ export function createA2AChannelDriver(
   return {
     id: "a2a",
     label: "A2A",
+    async configView(input) {
+      if (!(await isChannelConfigured(input, A2A_GATE))) {
+        return unconfiguredChannelView("a2a", "A2A");
+      }
+      const adapter = await loadA2AModule();
+      return await buildChannelConfigView(this, adapter.A2A_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
-      return await loadA2AAdapterConfig({ env: input.env, jsonPath: input.configPath });
+      if (!(await isChannelConfigured(input, A2A_GATE))) {
+        return UNCONFIGURED_A2A_CONFIG;
+      }
+      const adapter = await loadA2AModule();
+      return await adapter.loadA2AAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
     isConfigError(error) {
-      return error instanceof A2AProviderError || error instanceof A2AConsumerError;
+      return (
+        a2aModule !== undefined &&
+        (error instanceof a2aModule.A2AProviderError || error instanceof a2aModule.A2AConsumerError)
+      );
     },
     disabledReason(config) {
       return config.provider.enabled ? undefined : "A2A provider is disabled.";
@@ -446,11 +474,12 @@ export function createA2AChannelDriver(
       return undefined;
     },
     async start(input) {
+      const adapter = await loadA2AModule();
       const config = input.config;
       if (config.agent === undefined || config.skill === undefined) {
-        throw new A2AProviderError("missing_required_config", "A2A provider requires agent and skill configuration.");
+        throw new adapter.A2AProviderError("missing_required_config", "A2A provider requires agent and skill configuration.");
       }
-      const providerFactory = overrides.providerFactory ?? startA2AProvider;
+      const providerFactory = overrides.providerFactory ?? adapter.startA2AProvider;
       const provider = await providerFactory({
         host: config.provider.host,
         port: config.provider.port,
@@ -497,12 +526,34 @@ export function createWebhookChannelDriver(
   return {
     id: "webhook",
     label: "Webhook",
+    async configView(input) {
+      if (!(await isChannelConfigured(input, WEBHOOK_GATE))) {
+        return unconfiguredChannelView("webhook", "Webhook");
+      }
+      const adapter = await loadWebhookModule();
+      return await buildChannelConfigView(this, adapter.WEBHOOK_CONFIG_FIELDS, input);
+    },
+    configIssues(config) {
+      return findTriggerOverrideIssues(
+        config.endpoints
+          .filter((endpoint) => endpoint.enabled)
+          .map((endpoint) => ({
+            name: `webhook endpoint "${endpoint.name}"`,
+            ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
+            ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
+          })),
+      );
+    },
     async loadConfig(input) {
+      if (!(await isChannelConfigured(input, WEBHOOK_GATE))) {
+        return UNCONFIGURED_WEBHOOK_CONFIG;
+      }
+      const adapter = await loadWebhookModule();
       // cwd is required so `webhook/*.md` endpoint files are discovered.
-      return await loadWebhookAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
+      return await adapter.loadWebhookAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
     },
     isConfigError(error) {
-      return error instanceof WebhookAdapterError;
+      return webhookModule !== undefined && error instanceof webhookModule.WebhookAdapterError;
     },
     disabledReason(config) {
       return config.enabled ? undefined : "Webhook adapter is disabled.";
@@ -515,7 +566,8 @@ export function createWebhookChannelDriver(
     async start(input) {
       const endpoints = input.config.endpoints.filter((endpoint) => endpoint.enabled);
       const endpointByName = new Map(endpoints.map((endpoint) => [endpoint.name, endpoint]));
-      const adapterFactory = overrides.adapterFactory ?? startWebhookAdapter;
+      const adapterModule = await loadWebhookModule();
+      const adapterFactory = overrides.adapterFactory ?? adapterModule.startWebhookAdapter;
       const adapter = await adapterFactory({
         host: input.config.host,
         port: input.config.port,
@@ -572,17 +624,29 @@ export function createOpenAIApiChannelDriver(
   return {
     id: "openai-api",
     label: "OpenAI API",
+    async configView(input) {
+      if (!(await isChannelConfigured(input, OPENAI_API_GATE))) {
+        return unconfiguredChannelView("openai-api", "OpenAI API");
+      }
+      const adapter = await loadOpenAIApiModule();
+      return await buildChannelConfigView(this, adapter.OPENAI_API_CONFIG_FIELDS, input, { jsonKey: "openaiApi" });
+    },
     async loadConfig(input) {
-      return await loadOpenAIApiAdapterConfig({ env: input.env, jsonPath: input.configPath });
+      if (!(await isChannelConfigured(input, OPENAI_API_GATE))) {
+        return UNCONFIGURED_OPENAI_API_CONFIG;
+      }
+      const adapter = await loadOpenAIApiModule();
+      return await adapter.loadOpenAIApiAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
     isConfigError(error) {
-      return error instanceof OpenAIApiAdapterError;
+      return openaiApiModule !== undefined && error instanceof openaiApiModule.OpenAIApiAdapterError;
     },
     disabledReason(config) {
       return config.enabled ? undefined : "OpenAI API adapter is disabled.";
     },
     async start(input) {
-      const adapterFactory = overrides.adapterFactory ?? startOpenAIApiAdapter;
+      const adapterModule = await loadOpenAIApiModule();
+      const adapterFactory = overrides.adapterFactory ?? adapterModule.startOpenAIApiAdapter;
       const adapter = await adapterFactory({
         host: input.config.host,
         port: input.config.port,
@@ -641,11 +705,33 @@ export function createCronChannelDriver(
   return {
     id: "cron",
     label: "Cron",
+    async configView(input) {
+      if (!(await isChannelConfigured(input, CRON_GATE))) {
+        return unconfiguredChannelView("cron", "Cron");
+      }
+      const adapter = await loadCronModule();
+      return await buildChannelConfigView(this, adapter.CRON_CONFIG_FIELDS, input);
+    },
+    configIssues(config) {
+      return findTriggerOverrideIssues(
+        config.jobs
+          .filter((job) => job.enabled)
+          .map((job) => ({
+            name: `cron job "${job.id}"`,
+            ...(job.model === undefined ? {} : { model: job.model }),
+            ...(job.effort === undefined ? {} : { effort: job.effort }),
+          })),
+      );
+    },
     async loadConfig(input) {
-      return await loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
+      if (!(await isChannelConfigured(input, CRON_GATE))) {
+        return UNCONFIGURED_CRON_CONFIG;
+      }
+      const adapter = await loadCronModule();
+      return await adapter.loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
     },
     isConfigError(error) {
-      return error instanceof CronAdapterError;
+      return cronModule !== undefined && error instanceof cronModule.CronAdapterError;
     },
     disabledReason(config) {
       const enabledJobs = config.jobs.filter((job) => job.enabled);
@@ -654,7 +740,8 @@ export function createCronChannelDriver(
     async start(input) {
       const jobs = input.config.jobs.filter((job) => job.enabled);
       const jobById = new Map(jobs.map((job) => [job.id, job]));
-      const adapterFactory = overrides.adapterFactory ?? startCronAdapter;
+      const adapterModule = await loadCronModule();
+      const adapterFactory = overrides.adapterFactory ?? adapterModule.startCronAdapter;
       const adapter = adapterFactory({
         responder: input.responder,
         // Skip overlapping firings (a job still running when its next tick fires)
@@ -878,17 +965,29 @@ export function createWhatsAppChannelDriver(
   return {
     id: "whatsapp",
     label: "WhatsApp",
+    async configView(input) {
+      if (!(await isChannelConfigured(input, WHATSAPP_GATE))) {
+        return unconfiguredChannelView("whatsapp", "WhatsApp");
+      }
+      const adapter = await loadWhatsAppModule();
+      return await buildChannelConfigView(this, adapter.WHATSAPP_CONFIG_FIELDS, input);
+    },
     async loadConfig(input) {
-      return await loadWhatsAppAdapterConfig({ env: input.env, jsonPath: input.configPath });
+      if (!(await isChannelConfigured(input, WHATSAPP_GATE))) {
+        return UNCONFIGURED_WHATSAPP_CONFIG;
+      }
+      const adapter = await loadWhatsAppModule();
+      return await adapter.loadWhatsAppAdapterConfig({ env: input.env, jsonPath: input.configPath });
     },
     isConfigError(error) {
-      return error instanceof WhatsAppAdapterConfigError;
+      return whatsappModule !== undefined && error instanceof whatsappModule.WhatsAppAdapterConfigError;
     },
     disabledReason(config) {
       return config.enabled ? undefined : "WhatsApp is disabled.";
     },
     async start(input) {
-      const startAdapter = overrides.startAdapter ?? startWhatsAppAdapter;
+      const adapter = await loadWhatsAppModule();
+      const startAdapter = overrides.startAdapter ?? adapter.startWhatsAppAdapter;
       const result = await startAdapter({
         authDir: overrides.authDir ?? resolve(input.cwd, ".mono-agent", "whatsapp-auth"),
         config: input.config,

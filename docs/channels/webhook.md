@@ -117,7 +117,7 @@ curl -X POST "$URL/delegate" -H 'content-type: application/json' \
   -d '{"text": "Deep-research X and write a brief.", "model": "claude:claude-opus-4-8", "effort": "high"}'
 ```
 
-Precedence is **request body > endpoint config > agent default** (`runtime.model` / `runtime.effort`). The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved. An invalid `model`/`effort` is logged and ignored — the request still runs on the default model rather than failing. Model strings use the standard `sdk:model` / `sdk:provider:model` form; effort is one of `none`/`low`/`medium`/`high`/`xhigh`/`max`.
+Precedence is **request body > endpoint config > agent default** (`runtime.model` / `runtime.effort`). The override becomes that turn's **primary** model; any configured `runtime.fallbackModels` stay as backups, so failover is preserved. An invalid `model`/`effort` declared on an endpoint fails `mono-agent validate` (the webhook channel section reports `error`) and is warn-logged at `start`; a dynamic request-body value is logged and ignored at run time — the request still runs on the default model rather than failing. Model strings use the standard `sdk:model` / `sdk:provider:model` form; effort is one of `none`/`low`/`medium`/`high`/`xhigh`/`max`.
 
 The dynamic request-body override is always allowed — its safety rests on the webhook's loopback-only default (`allowNonLoopback: false`). If you expose the endpoint beyond loopback, gate it behind your own auth/reverse proxy.
 

@@ -29,8 +29,8 @@ The block below is a single `mono-agent.config.json` carrying **both** sides for
 ```json
 {
   "a2a": {
+    "enabled": true,
     "provider": {
-      "enabled": true,
       "host": "127.0.0.1",
       "port": 4201,
       "requireBearer": true,
@@ -57,7 +57,7 @@ The block below is a single `mono-agent.config.json` carrying **both** sides for
 }
 ```
 
-Keep the bearer token out of the file in production by supplying it via env var: `MONO_AGENT_A2A_BEARER_TOKEN=...` maps to `a2a.provider.bearerToken`, and `MONO_AGENT_A2A_PROVIDER_ENABLED=true` maps to `a2a.provider.enabled`. See [../config/env-vars.md](/config/env-vars/).
+Keep the bearer token out of the file in production by supplying it via env var: `MONO_AGENT_A2A_BEARER_TOKEN=...` maps to `a2a.provider.bearerToken`, and `MONO_AGENT_A2A_ENABLED=true` maps to `a2a.enabled` (the legacy `MONO_AGENT_A2A_PROVIDER_ENABLED` / `a2a.provider.enabled` form is still honored; the root flag wins when both are set). See [../config/env-vars.md](/config/env-vars/).
 
 :::caution
 When the provider sits behind a proxy or is reached from another host, set `a2a.provider.publicBaseUrl` so the Agent Card advertises the right URL, and `a2a.provider.allowNonLoopback: true` to bind beyond `127.0.0.1`. Always pair non-loopback exposure with `requireBearer: true`.
@@ -85,4 +85,4 @@ Send a message to the provider's Agent Card URL (with bearer) using `sendA2AMess
 - [Channels overview & opt-in flags](/channels/)
 - [Environment variables](/config/env-vars/)
 - [Config blueprint](/config/blueprint/)
-- [mono-agent-composer skill](https://github.com/example/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)
+- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md)

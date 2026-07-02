@@ -408,6 +408,50 @@ describe("A2A adapter contract", () => {
     expect(JSON.stringify(redactA2AAdapterConfig(config))).not.toContain("env-token");
   });
 
+  it("enables the provider from the canonical root `a2a.enabled` flag", async () => {
+    const config = await loadA2AAdapterConfig({
+      env: {},
+      json: {
+        a2a: {
+          enabled: true,
+          provider: { host: "127.0.0.1", port: 4300 },
+          agent: { name: "Root", description: "Root-enabled provider", version: "0.1.0" },
+          skill: { id: "root", name: "Root", description: "Root skill", tags: [] },
+        },
+      },
+    });
+    expect(config.provider.enabled).toBe(true);
+  });
+
+  it("keeps the legacy `a2a.provider.enabled` form working, with the root flag winning when both are set", async () => {
+    // Legacy form alone still enables.
+    const legacy = await loadA2AAdapterConfig({
+      env: {},
+      json: {
+        a2a: {
+          provider: { enabled: true, host: "127.0.0.1", port: 4300 },
+          agent: { name: "Legacy", description: "Legacy-enabled provider", version: "0.1.0" },
+          skill: { id: "legacy", name: "Legacy", description: "Legacy skill", tags: [] },
+        },
+      },
+    });
+    expect(legacy.provider.enabled).toBe(true);
+
+    // Root form wins over the legacy form when they disagree.
+    const both = await loadA2AAdapterConfig({
+      env: {},
+      json: { a2a: { enabled: false, provider: { enabled: true } } },
+    });
+    expect(both.provider.enabled).toBe(false);
+
+    // Env forms follow the same precedence.
+    const env = await loadA2AAdapterConfig({
+      env: { MONO_AGENT_A2A_ENABLED: "false", MONO_AGENT_A2A_PROVIDER_ENABLED: "true" },
+      json: {},
+    });
+    expect(env.provider.enabled).toBe(false);
+  });
+
   it("fails fast for unsafe provider exposure and invalid enabled config", async () => {
     await expect(loadA2AAdapterConfig({
       env: { MONO_AGENT_A2A_PROVIDER_ENABLED: "true" },

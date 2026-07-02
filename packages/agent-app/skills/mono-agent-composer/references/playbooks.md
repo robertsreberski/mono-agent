@@ -123,7 +123,8 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 ```json
 {
   "a2a": {
-    "provider": { "enabled": true, "host": "127.0.0.1", "port": 4201, "requireBearer": true, "bearerToken": "..." },
+    "enabled": true,
+    "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "bearerToken": "..." },
     "agent": { "name": "Research Agent", "description": "Does research.", "version": "0.1.0" },
     "skill": { "id": "research", "name": "Research", "description": "Web research", "tags": ["research"] },
     "consumer": { "remoteAgentUrls": ["http://127.0.0.1:4201"], "defaultRemoteAgentUrl": "http://127.0.0.1:4201", "bearerToken": "...", "timeoutMs": 30000 }

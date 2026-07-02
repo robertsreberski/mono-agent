@@ -201,8 +201,8 @@ my-agent/
   },
 
   "a2a": {
+    "enabled": true,                       // canonical channel-root flag (legacy a2a.provider.enabled still honored)
     "provider": {
-      "enabled": true,
       "host": "127.0.0.1",
       "port": 4201,
       "publicBaseUrl": "https://agent.example.com", // Agent Card URL when fronted by a proxy

@@ -60,7 +60,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Telegram (long polling, chat allowlist) | config | `telegram` section |
 | Slack (Socket Mode, channel allowlist, mention handling) | config | `slack` section |
 | WhatsApp (Baileys, QR login, group mention/any triggers) | config | `whatsapp` section |
-| A2A provider (Agent Card, JSON-RPC + REST, streaming, bearer) | config | `a2a.provider` + `a2a.agent` + `a2a.skill` |
+| A2A provider (Agent Card, JSON-RPC + REST, streaming, bearer) | config | `a2a.enabled` (canonical; legacy `a2a.provider.enabled` honored) + `a2a.provider` + `a2a.agent` + `a2a.skill` |
 | A2A consumer settings (remote agent URLs, timeouts) | config + code | `a2a.consumer` holds settings; calls via `createA2AConsumerResponder` |
 | Cron jobs (five-field expressions, timezones, overlap skip) | config | `cron.jobs[]`, single-job `MONO_AGENT_CRON_*`, or one markdown file per job in `cron.dir` / `MONO_AGENT_CRON_DIR` (default `cron/`) |
 | Channel message texts / stream tuning (welcome, debounce, ...) | code | channel driver overrides |

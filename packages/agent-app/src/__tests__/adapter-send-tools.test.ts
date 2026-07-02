@@ -204,7 +204,7 @@ describe("adapter send MCP tools", () => {
     const slackCalls: SlackChatPostMessageParams[] = [];
     const telegramCalls: TelegramSendMessageParams[] = [];
     const settings = bothAdaptersSettings();
-    const server = createAdapterSendToolsServer(settings, {
+    const server = await createAdapterSendToolsServer(settings, {
       slack: {
         async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
           slackCalls.push(params);
@@ -250,7 +250,7 @@ describe("adapter send MCP tools", () => {
         tools: { send: false, ask: true, document: false, photo: false },
       },
     };
-    const server = createAdapterSendToolsServer(settings, {
+    const server = await createAdapterSendToolsServer(settings, {
       telegram: {
         async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
           telegramCalls.push(params);
@@ -290,7 +290,7 @@ describe("adapter send MCP tools", () => {
         tools: { send: false, ask: false, document: true, photo: false },
       },
     };
-    const server = createAdapterSendToolsServer(settings, {
+    const server = await createAdapterSendToolsServer(settings, {
       telegram: {
         sendMessage: vi.fn(),
         async sendDocument(params): Promise<TelegramSentMessage> {
@@ -330,7 +330,7 @@ describe("adapter send MCP tools", () => {
       },
     };
     const sendDocument = vi.fn();
-    const server = createAdapterSendToolsServer(settings, { telegram: { sendMessage: vi.fn(), sendDocument } });
+    const server = await createAdapterSendToolsServer(settings, { telegram: { sendMessage: vi.fn(), sendDocument } });
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
@@ -353,7 +353,7 @@ describe("adapter send MCP tools", () => {
         tools: { send: false, ask: true, document: false, photo: false },
       },
     };
-    const server = createAdapterSendToolsServer(settings, { telegram });
+    const server = await createAdapterSendToolsServer(settings, { telegram });
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
@@ -369,7 +369,7 @@ describe("adapter send MCP tools", () => {
   it("rejects Slack and Telegram destinations outside the adapter allowlists before calling clients", async () => {
     const slack = { chatPostMessage: vi.fn() };
     const telegram = { sendMessage: vi.fn() };
-    const server = createAdapterSendToolsServer(bothAdaptersSettings(), { slack, telegram });
+    const server = await createAdapterSendToolsServer(bothAdaptersSettings(), { slack, telegram });
 
     await withMcpClient(server, async (client) => {
       const slackResult = await client.callTool({
@@ -399,7 +399,7 @@ describe("adapter send MCP tools", () => {
 describe("adapter send tool posted-message indexing", () => {
   it("records a successful slack_send_message as (channel, ts) → producing conversation, de-bucketed", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
-    const server = createAdapterSendToolsServer(
+    const server = await createAdapterSendToolsServer(
       bothAdaptersSettings(),
       {
         slack: {
@@ -424,7 +424,7 @@ describe("adapter send tool posted-message indexing", () => {
 
     // 1) Producer — the scheduled scan posts its summary via slack_send_message,
     //    running under the synthetic cron conversationId.
-    const producer = createAdapterSendToolsServer(
+    const producer = await createAdapterSendToolsServer(
       bothAdaptersSettings(),
       {
         slack: {
@@ -466,7 +466,7 @@ describe("adapter send tool posted-message indexing", () => {
 
   it("writes no index entry when indexing is not configured", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
-    const server = createAdapterSendToolsServer(bothAdaptersSettings(), {
+    const server = await createAdapterSendToolsServer(bothAdaptersSettings(), {
       slack: {
         async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
           return { ok: true, channel: params.channel, ts: "171.123" };
@@ -575,7 +575,7 @@ function bothAdaptersSettings(): AdapterSendToolsSettings {
 }
 
 async function withMcpClient<T>(
-  server: ReturnType<typeof createAdapterSendToolsServer>,
+  server: Awaited<ReturnType<typeof createAdapterSendToolsServer>>,
   fn: (client: Client) => Promise<T>,
 ): Promise<T> {
   const client = new Client({ name: "adapter-send-tools-test", version: "0.1.0" }, { capabilities: {} });

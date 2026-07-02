@@ -23,7 +23,7 @@ describe("downloads curator demo composition", () => {
     const calls: RuntimeRunOptions[] = [];
     await writeFile(identityPath, "You curate Downloads.", "utf8");
 
-    const responder = createDownloadsCuratorResponder({
+    const responder = await createDownloadsCuratorResponder({
       config: buildDownloadsCuratorConfig({
         cwd: root,
         downloadsRoot,

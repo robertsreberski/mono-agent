@@ -53,6 +53,14 @@ describe("parseCliArgs", () => {
     });
   });
 
+  it("treats doctor as an alias of validate", () => {
+    expect(parseCliArgs(["doctor"])).toMatchObject({ command: "validate" });
+    expect(parseCliArgs(["doctor", "--consumer", "../agent-folder"])).toMatchObject({
+      command: "validate",
+      consumerPath: "../agent-folder",
+    });
+  });
+
   it("parses start with config and env file", () => {
     expect(
       parseCliArgs(["start", "--config", "agent.json", "--env-file", ".env.local"]),

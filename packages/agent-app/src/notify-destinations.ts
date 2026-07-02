@@ -1,21 +1,24 @@
-import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
-import { loadTelegramAdapterConfig } from "@mono-agent/telegram-adapter";
+import type { NotifyDestination } from "@mono-agent/agent-contracts";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
 import { listSeenNotifyDestinations } from "./seen-conversations.js";
 
-/** A conversation a native cron/webhook notification can be delivered to. */
-export interface NotifyDestination {
-  /** Destination conversationId, e.g. `telegram:42` or `slack:C1:171.5`. */
-  readonly conversationId: string;
-  /** Owning channel id (telegram/slack). */
-  readonly channelId: string;
-  /** ISO timestamp of the most recent turn on this conversation, if known. */
-  readonly lastSeen?: string;
-  /** True when this is an allowlisted destination the agent has not yet conversed with. */
-  readonly fromAllowlist?: boolean;
-}
+// The destination contract moved to @mono-agent/agent-contracts; keep the
+// historical export from this module.
+export type { NotifyDestination } from "@mono-agent/agent-contracts";
+
+// Lazy per this module (mirrors channels.ts): the calls below are already
+// gated by `opts.isRunning(...)`, so the adapter package only loads when the
+// channel is actually up.
+type SlackAdapterModule = typeof import("@mono-agent/slack-adapter");
+type TelegramAdapterModule = typeof import("@mono-agent/telegram-adapter");
+let slackModule: SlackAdapterModule | undefined;
+let telegramModule: TelegramAdapterModule | undefined;
+const loadSlackModule = async (): Promise<SlackAdapterModule> =>
+  (slackModule ??= await import("@mono-agent/slack-adapter"));
+const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
+  (telegramModule ??= await import("@mono-agent/telegram-adapter"));
 
 /** Channels whose conversations can receive a proactive notification turn. */
 const NOTIFY_CAPABLE: ReadonlySet<ChannelId> = new Set<ChannelId>(["telegram", "slack"]);
@@ -87,7 +90,8 @@ function addAllowlisted(
 /** Allowlisted Telegram chat ids (empty when allow-all, disabled, or unavailable — no enumerable candidate). */
 async function telegramAllowlist(opts: ResolveNotifyDestinationsInput): Promise<readonly string[]> {
   try {
-    const config = await loadTelegramAdapterConfig({ env: opts.input.env, jsonPath: opts.input.configPath });
+    const adapter = await loadTelegramModule();
+    const config = await adapter.loadTelegramAdapterConfig({ env: opts.input.env, jsonPath: opts.input.configPath });
     return config.enabled && !config.allowAllChats ? config.allowedChatIds : [];
   } catch (error) {
     opts.logger?.warn?.("notify destinations: telegram allowlist unavailable.", { reason: reasonOf(error) });
@@ -98,7 +102,8 @@ async function telegramAllowlist(opts: ResolveNotifyDestinationsInput): Promise<
 /** Allowlisted Slack channel ids (empty when allow-all, disabled, or unavailable). */
 async function slackAllowlist(opts: ResolveNotifyDestinationsInput): Promise<readonly string[]> {
   try {
-    const config = await loadSlackAdapterConfig({ env: opts.input.env, jsonPath: opts.input.configPath });
+    const adapter = await loadSlackModule();
+    const config = await adapter.loadSlackAdapterConfig({ env: opts.input.env, jsonPath: opts.input.configPath });
     return config.enabled && !config.allowAllChannels ? config.allowedChannelIds : [];
   } catch (error) {
     opts.logger?.warn?.("notify destinations: slack allowlist unavailable.", { reason: reasonOf(error) });

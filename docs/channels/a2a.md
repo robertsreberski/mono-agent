@@ -12,7 +12,7 @@ Coverage: **config**. The provider is fully described by `a2a.provider` + `a2a.a
 
 ## What the provider serves
 
-When `a2a.provider.enabled` is `true`, `mono-agent start` binds an HTTP server that exposes three endpoints relative to the bound host (or `publicBaseUrl` when fronted by a proxy):
+When `a2a.enabled` is `true` (or the legacy `a2a.provider.enabled` — the root flag wins when both are set), `mono-agent start` binds an HTTP server that exposes three endpoints relative to the bound host (or `publicBaseUrl` when fronted by a proxy):
 
 | Path | Purpose |
 | --- | --- |
@@ -110,7 +110,8 @@ Every key has a `MONO_AGENT_*` override. Strings split on commas where the value
 
 | Env var | JSON key |
 | --- | --- |
-| `MONO_AGENT_A2A_PROVIDER_ENABLED` | `a2a.provider.enabled` |
+| `MONO_AGENT_A2A_ENABLED` | `a2a.enabled` (canonical; wins over the legacy form) |
+| `MONO_AGENT_A2A_PROVIDER_ENABLED` | `a2a.provider.enabled` (legacy; still honored) |
 | `MONO_AGENT_A2A_HOST` | `a2a.provider.host` |
 | `MONO_AGENT_A2A_PORT` | `a2a.provider.port` |
 | `MONO_AGENT_A2A_PUBLIC_BASE_URL` | `a2a.provider.publicBaseUrl` |
@@ -146,7 +147,7 @@ A2A speaks plaintext HTTP. Terminate **HTTPS** at a reverse proxy in front of th
 
 - `running` with the bound endpoint facts (Agent Card / JSON-RPC / REST URLs) when enabled and valid.
 - `waiting_for_config` naming the exact missing setting (e.g. a required `a2a.agent.name`).
-- `disabled` when `a2a.provider.enabled` is `false`.
+- `disabled` when `a2a.enabled` (or the legacy `a2a.provider.enabled`) is `false`.
 - `failed` with the reason (e.g. non-loopback bind without `allowNonLoopback`).
 
 Run `mono-agent validate` first for a per-section report. Config is JSON-first — edit `mono-agent.config.json` and run `mono-agent restart` to apply.

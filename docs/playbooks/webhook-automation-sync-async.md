@@ -116,4 +116,4 @@ The destination is bounded by the owning channel's allowlist, so a payload-suppl
 - [Cron](/channels/cron/) — scheduled turns; shares the `*.md` authoring pattern and the `prompt` concept.
 - [Delivery and send tools](/channels/delivery-and-send-tools/) — how answers are returned across channels.
 - [Config blueprint](/config/blueprint/) — the annotated `mono-agent.config.json`.
-- [mono-agent-composer skill](https://github.com/example/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config.
+- [mono-agent-composer skill](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-app/skills/mono-agent-composer/SKILL.md) — build this agent from one config.

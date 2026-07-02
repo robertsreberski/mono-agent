@@ -21,6 +21,7 @@ export type {
 export {
   loadWebhookAdapterConfig,
   redactWebhookAdapterConfig,
+  WEBHOOK_CONFIG_FIELDS,
 } from "./config.js";
 export type {
   LoadWebhookAdapterConfigInput,

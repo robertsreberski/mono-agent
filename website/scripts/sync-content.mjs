@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 const SRC = fileURLToPath(new URL('../../docs/', import.meta.url));
 const DEST = fileURLToPath(new URL('../src/content/docs/', import.meta.url));
 // Internal-only folders, excluded from the published site (as on the old site).
+// `skills` is intentional: docs/skills/README.md is a "skills moved" tombstone,
+// not publishable content. `superpowers` holds gitignored working docs.
 const EXCLUDE_TOP = new Set(['superpowers', 'skills']);
 
 rmSync(DEST, { recursive: true, force: true });

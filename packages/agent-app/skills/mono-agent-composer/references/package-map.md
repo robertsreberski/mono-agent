@@ -37,7 +37,7 @@ const config = await loadMonoAgentConfigWithSources({
   jsonPath: "./mono-agent.config.json",
 });
 
-const responder = createConfiguredAgentResponder({ config });
+const responder = await createConfiguredAgentResponder({ config });
 ```
 
 ## Context And Skill Join

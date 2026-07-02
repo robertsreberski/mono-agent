@@ -1,4 +1,5 @@
 import {
+  fieldSpecMappings,
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
@@ -11,6 +12,7 @@ import {
   redactedSecret,
 } from "@mono-agent/settings";
 import type {
+  JsonEnvFieldSpec,
   RedactedSecretValue,
   SettingsJson,
 } from "@mono-agent/settings";
@@ -429,18 +431,24 @@ export function redactTelegramAdapterConfig(
   };
 }
 
+/**
+ * The `telegram` section's field registry: the single source of truth both the
+ * JSON→env layering below and the app's config provenance view derive from.
+ * Covers every env-mappable field (JSON-only structures like `commands`,
+ * `quietHours`, and object-form `reactions` are read straight from JSON).
+ */
+export const TELEGRAM_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  { id: "telegram.enabled", env: "MONO_AGENT_TELEGRAM_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
+  { id: "telegram.botToken", env: "MONO_AGENT_TELEGRAM_BOT_TOKEN", secret: true, fromJson: (s) => s.botToken },
+  { id: "telegram.allowedChatIds", env: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS", kind: "csv", fromJson: (s) => s.allowedChatIds },
+  { id: "telegram.allowAllChats", env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS", kind: "boolean", fromJson: (s) => s.allowAllChats },
+  { id: "telegram.transport.ipFamily", env: "MONO_AGENT_TELEGRAM_IP_FAMILY", kind: "integer", fromJson: (s) => readRecord(s.transport).ipFamily },
+  { id: "telegram.pollWatchdogMs", env: "MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS", kind: "integer", fromJson: (s) => s.pollWatchdogMs },
+];
+
 function layerTelegramJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readJsonSection(json, "telegram");
-  const transport = readRecord(section.transport);
-  return layerJsonOntoEnv(env, [
-    { env: "MONO_AGENT_TELEGRAM_ENABLED", value: section.enabled, kind: "boolean" },
-    { env: "MONO_AGENT_TELEGRAM_BOT_TOKEN", value: section.botToken },
-    { env: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS", value: section.allowedChatIds, kind: "csv" },
-    { env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS", value: section.allowAllChats, kind: "boolean" },
-    { env: "MONO_AGENT_TELEGRAM_IP_FAMILY", value: transport.ipFamily, kind: "integer" },
-    { env: "MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS", value: section.pollWatchdogMs, kind: "integer" },
-  ]);
+  return layerJsonOntoEnv(env, fieldSpecMappings(readJsonSection(json, "telegram"), TELEGRAM_CONFIG_FIELDS));
 }

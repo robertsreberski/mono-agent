@@ -46,7 +46,7 @@ describe("createConfiguredMemory — bujo mode", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
 
     const fakeRuntime = { async run() { return { text: "ok" }; } };
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: bujoConfig({ dir, identityPath, memoryRoot: join(dir, "bujo-memory") }),
       runtime: fakeRuntime as never,
     });
@@ -94,7 +94,7 @@ describe("createConfiguredMemory — bujo mode", () => {
   it("keeps bujo tier when memory.llm uses an agent-host runtime model", async () => {
     const dir = await tempDir();
     const runtime = createRecordingRuntime();
-    const store = createConfiguredMemory(
+    const store = await createConfiguredMemory(
       bujoConfig({
         dir,
         identityPath: join(dir, "IDENTITY.md"),
@@ -116,7 +116,7 @@ describe("createConfiguredMemory — bujo mode", () => {
   it("runs agent-host memory LLM calls without tools or MCP servers", async () => {
     const dir = await tempDir();
     const runtime = createRecordingRuntime();
-    const store = createConfiguredMemory(
+    const store = await createConfiguredMemory(
       bujoConfig({
         dir,
         identityPath: join(dir, "IDENTITY.md"),
@@ -150,7 +150,7 @@ describe("createConfiguredMemory — bujo mode", () => {
 
   it("rejects CLI-backed agent-host memory LLM configs", async () => {
     const dir = await tempDir();
-    expect(() =>
+    await expect(
       createConfiguredMemory(
         bujoConfig({
           dir,
@@ -163,7 +163,7 @@ describe("createConfiguredMemory — bujo mode", () => {
         }),
         { memoryRuntime: createRecordingRuntime() },
       ),
-    ).toThrow(/SDK execution mode only/u);
+    ).rejects.toThrow(/SDK execution mode only/u);
   });
 });
 
@@ -176,7 +176,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
 
   it("records each memory LLM call as a mem-* run with a per-ritual conversation id", async () => {
     const dir = await tempDir();
-    const store = createConfiguredMemory(
+    const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
     ) as unknown as CapturableStore;
@@ -200,7 +200,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
   it("exports memory runs through the configured exporter", async () => {
     const dir = await tempDir();
     const spy = createSpyExporter();
-    const store = createConfiguredMemory(
+    const store = await createConfiguredMemory(
       bujoConfig({
         dir,
         identityPath: join(dir, "IDENTITY.md"),
@@ -233,7 +233,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     vi.useFakeTimers();
     try {
       const dir = await tempDir();
-      const store = createConfiguredMemory(
+      const store = await createConfiguredMemory(
         bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
         { memoryRuntime: createAbortAwareRuntime() },
       ) as unknown as CapturableStore;
@@ -251,7 +251,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
 
   it("records a failed run AND rethrows when the memory LLM fails", async () => {
     const dir = await tempDir();
-    const store = createConfiguredMemory(
+    const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: createFailingRuntime(), observability: { observabilityContext: { sourceId: "s1" } } },
     ) as unknown as CapturableStore;
@@ -267,7 +267,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
   it("stays a bare, unrecorded run when no observability deps are threaded", async () => {
     const dir = await tempDir();
     const runtime = createRecordingRuntime();
-    const store = createConfiguredMemory(
+    const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: runtime },
     ) as unknown as CapturableStore;
@@ -285,7 +285,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
   it("stays bare when memory.llm.trace is false even with observability threaded", async () => {
     const dir = await tempDir();
     const runtime = createRecordingRuntime();
-    const store = createConfiguredMemory(
+    const store = await createConfiguredMemory(
       bujoConfig({
         dir,
         identityPath: join(dir, "IDENTITY.md"),

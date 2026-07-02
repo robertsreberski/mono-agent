@@ -35,6 +35,18 @@ describe("initMonoAgentFolder", () => {
     expect(identity).toContain("# Identity");
   });
 
+  it("merges --with channels (including whatsapp) onto the default scaffold", async () => {
+    const result = await initMonoAgentFolder({
+      dir,
+      model: "pi:ollama:gemma4:31b",
+      withChannels: ["whatsapp", "slack"],
+    });
+
+    const config = JSON.parse(await readFile(result.configPath, "utf8"));
+    expect(config.whatsapp).toEqual({ enabled: true });
+    expect(config.slack).toEqual({ enabled: true });
+  });
+
   it("writes fallback models and memory when requested", async () => {
     const result = await initMonoAgentFolder({
       dir,

@@ -1,4 +1,5 @@
 import {
+  fieldSpecMappings,
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
@@ -10,6 +11,7 @@ import {
   redactedSecret,
 } from "@mono-agent/settings";
 import type {
+  JsonEnvFieldSpec,
   RedactedSecretValue,
   SettingsJson,
 } from "@mono-agent/settings";
@@ -415,26 +417,33 @@ export function redactSlackAdapterConfig(
   };
 }
 
+/**
+ * The `slack` section's field registry: the single source of truth both the
+ * JSON→env layering below and the app's config provenance view derive from.
+ * Covers every env-mappable field (JSON-only structures like `shortcuts` and
+ * `homeButtons` are read straight from JSON).
+ */
+export const SLACK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  { id: "slack.enabled", env: "MONO_AGENT_SLACK_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
+  { id: "slack.botToken", env: "MONO_AGENT_SLACK_BOT_TOKEN", secret: true, fromJson: (s) => s.botToken },
+  { id: "slack.appToken", env: "MONO_AGENT_SLACK_APP_TOKEN", secret: true, fromJson: (s) => s.appToken },
+  { id: "slack.allowedChannelIds", env: "MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS", kind: "csv", fromJson: (s) => s.allowedChannelIds },
+  { id: "slack.allowAllChannels", env: "MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS", kind: "boolean", fromJson: (s) => s.allowAllChannels },
+  { id: "slack.botUserIds", env: "MONO_AGENT_SLACK_BOT_USER_IDS", kind: "csv", fromJson: (s) => s.botUserIds },
+  { id: "slack.mentionTextAliases", env: "MONO_AGENT_SLACK_MENTION_TEXT_ALIASES", kind: "csv", fromJson: (s) => s.mentionTextAliases },
+  { id: "slack.stripMentionText", env: "MONO_AGENT_SLACK_STRIP_MENTION_TEXT", kind: "boolean", fromJson: (s) => s.stripMentionText },
+  { id: "slack.heartbeatIntervalMs", env: "MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS", kind: "integer", fromJson: (s) => s.heartbeatIntervalMs },
+  { id: "slack.heartbeatTimeoutMs", env: "MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS", kind: "integer", fromJson: (s) => s.heartbeatTimeoutMs },
+  { id: "slack.reconnectInitialBackoffMs", env: "MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS", kind: "integer", fromJson: (s) => s.reconnectInitialBackoffMs },
+  { id: "slack.reconnectMaxBackoffMs", env: "MONO_AGENT_SLACK_RECONNECT_MAX_BACKOFF_MS", kind: "integer", fromJson: (s) => s.reconnectMaxBackoffMs },
+  { id: "slack.reconnectStabilityMs", env: "MONO_AGENT_SLACK_RECONNECT_STABILITY_MS", kind: "integer", fromJson: (s) => s.reconnectStabilityMs },
+  { id: "slack.reconnectStartupGraceMs", env: "MONO_AGENT_SLACK_RECONNECT_STARTUP_GRACE_MS", kind: "integer", fromJson: (s) => s.reconnectStartupGraceMs },
+  { id: "slack.drainDeadlineMs", env: "MONO_AGENT_SLACK_DRAIN_DEADLINE_MS", kind: "integer", fromJson: (s) => s.drainDeadlineMs },
+];
+
 function layerSlackJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readJsonSection(json, "slack");
-  return layerJsonOntoEnv(env, [
-    { env: "MONO_AGENT_SLACK_ENABLED", value: section.enabled, kind: "boolean" },
-    { env: "MONO_AGENT_SLACK_BOT_TOKEN", value: section.botToken },
-    { env: "MONO_AGENT_SLACK_APP_TOKEN", value: section.appToken },
-    { env: "MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS", value: section.allowedChannelIds, kind: "csv" },
-    { env: "MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS", value: section.allowAllChannels, kind: "boolean" },
-    { env: "MONO_AGENT_SLACK_BOT_USER_IDS", value: section.botUserIds, kind: "csv" },
-    { env: "MONO_AGENT_SLACK_MENTION_TEXT_ALIASES", value: section.mentionTextAliases, kind: "csv" },
-    { env: "MONO_AGENT_SLACK_STRIP_MENTION_TEXT", value: section.stripMentionText, kind: "boolean" },
-    { env: "MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS", value: section.heartbeatIntervalMs, kind: "integer" },
-    { env: "MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS", value: section.heartbeatTimeoutMs, kind: "integer" },
-    { env: "MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS", value: section.reconnectInitialBackoffMs, kind: "integer" },
-    { env: "MONO_AGENT_SLACK_RECONNECT_MAX_BACKOFF_MS", value: section.reconnectMaxBackoffMs, kind: "integer" },
-    { env: "MONO_AGENT_SLACK_RECONNECT_STABILITY_MS", value: section.reconnectStabilityMs, kind: "integer" },
-    { env: "MONO_AGENT_SLACK_RECONNECT_STARTUP_GRACE_MS", value: section.reconnectStartupGraceMs, kind: "integer" },
-    { env: "MONO_AGENT_SLACK_DRAIN_DEADLINE_MS", value: section.drainDeadlineMs, kind: "integer" },
-  ]);
+  return layerJsonOntoEnv(env, fieldSpecMappings(readJsonSection(json, "slack"), SLACK_CONFIG_FIELDS));
 }

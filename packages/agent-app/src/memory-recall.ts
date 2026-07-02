@@ -4,10 +4,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
-import { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } from "@mono-agent/memory-search";
 import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory-search";
-import { createSupermemoryStore } from "@mono-agent/memory-supermemory";
 import * as z from "zod/v4";
 
 /**
@@ -347,8 +344,13 @@ export function createMemoryRecallRuntimeExtension(
  * {@link DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS}) keeps a slow backend from stalling recall, and a
  * circuit breaker fast-fails after repeated failures so a sustained outage stops blocking it.
  */
-export function createRecallStore(settings: MemoryRecallSettings): RecallCapableStore {
+export async function createRecallStore(settings: MemoryRecallSettings): Promise<RecallCapableStore> {
+  // The backend packages load lazily so importing this module (the app does, for
+  // the runtime extension + settings resolution) never pulls the SQLite/BuJo
+  // stack or the Supermemory client into the main process — only the spawned
+  // recall child pays for the backend it actually serves.
   if (isSupermemorySettings(settings)) {
+    const { createSupermemoryStore } = await import("@mono-agent/memory-supermemory");
     const sm = settings.supermemory;
     return createSupermemoryStore({
       baseUrl: sm.baseUrl,
@@ -357,6 +359,7 @@ export function createRecallStore(settings: MemoryRecallSettings): RecallCapable
       ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
     });
   }
+  const { createBujoMemoryStore } = await import("@mono-agent/memory-bujo");
   const { embeddings } = settings;
   if (embeddings === undefined) {
     // FTS-only recall: no embedding provider, no dim (mirrors the lite-tier store shape).
@@ -375,6 +378,7 @@ export function createRecallStore(settings: MemoryRecallSettings): RecallCapable
       : { failureThreshold: embeddings.circuitBreaker.failureThreshold }),
     ...(embeddings.circuitBreaker?.cooldownMs === undefined ? {} : { cooldownMs: embeddings.circuitBreaker.cooldownMs }),
   };
+  const { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } = await import("@mono-agent/memory-search");
   return createBujoMemoryStore({
     root: settings.root,
     embeddings: createCircuitBreakerEmbeddingProvider(createEmbeddingProvider(providerConfig), breakerOptions),

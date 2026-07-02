@@ -6,7 +6,7 @@ Category: `core`
 
 ## Responsibility
 
-Shared structural contracts for agent request/response boundaries. It defines the adapter-neutral agent request base, response, message stream, responder, and cancellation error used by harnesses, communication adapters, and operator surfaces.
+Shared structural contracts for agent request/response boundaries. It defines the adapter-neutral agent request base, response, message stream, responder, and cancellation error used by harnesses, communication adapters, and operator surfaces. It also owns the neutral channel-driver contract (`ChannelDriver`, `ChannelStartInput`, `RunningChannel`, `ChannelStatus`, config-view/notify shapes) that hosts run channels through and third-party channel authors implement without depending on a host package.
 
 ## Install / Usage
 
@@ -25,6 +25,7 @@ Adapter packages extend the base request with transport metadata while keeping t
 - `AgentRequestBase`, `AgentResponse`, `AgentMessageStream`, `AgentStreamEvent`, `AgentResponder`
 - `AgentResponseCancelledError`, `isAgentResponseCancelledError`
 - `AgentRequestMetadata`, `AgentResponseMetadata`, `AgentMessageStreamResult`
+- Channel contract: `ChannelDriver`, `ChannelStartInput`, `RunningChannel`, `ChannelStatus`, `ChannelId`, `ChannelLogger`, `ChannelConfigInput`, `ChannelConfigViewSection`/`ChannelConfigViewField`, `NotifyDeliveryResult`, `NotifyDestination`. The driver contract is generic over the host's core-config type (`TCore`), so this package stays dependency-free while hosts bind their own config type.
 
 ## Dependency Boundary
 

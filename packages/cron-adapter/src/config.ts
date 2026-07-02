@@ -1,13 +1,14 @@
 import { resolve } from "node:path";
 
 import {
+  fieldSpecMappings,
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
   readJsonSection,
   readSettingsJson,
 } from "@mono-agent/settings";
-import type { SettingsJson } from "@mono-agent/settings";
+import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/settings";
 
 import { loadCronJobsFromDirectory } from "./jobs-dir.js";
 import { CronAdapterError, type CronJob } from "./scheduler.js";
@@ -232,22 +233,29 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
   };
 }
 
+/**
+ * The `cron` section's field registry: the single source of truth both the
+ * JSON→env layering below and the app's config provenance view derive from.
+ * Covers the single-job env form (multi-job `jobs[]` and the `cron/` directory
+ * are read straight from JSON / the filesystem).
+ */
+export const CRON_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  { id: "cron.enabled", env: "MONO_AGENT_CRON_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
+  { id: "cron.expression", env: "MONO_AGENT_CRON_EXPRESSION", fromJson: (s) => s.expression },
+  { id: "cron.timezone", env: "MONO_AGENT_CRON_TIMEZONE", fromJson: (s) => s.timezone },
+  { id: "cron.prompt", env: "MONO_AGENT_CRON_PROMPT", fromJson: (s) => s.prompt },
+  { id: "cron.conversationId", env: "MONO_AGENT_CRON_CONVERSATION_ID", fromJson: (s) => s.conversationId },
+  { id: "cron.notify", env: "MONO_AGENT_CRON_NOTIFY", kind: "boolean", fromJson: (s) => s.notify },
+  { id: "cron.notifyConversationId", env: "MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID", fromJson: (s) => s.notifyConversationId },
+  { id: "cron.model", env: "MONO_AGENT_CRON_MODEL", fromJson: (s) => s.model },
+  { id: "cron.effort", env: "MONO_AGENT_CRON_EFFORT", fromJson: (s) => s.effort },
+];
+
 function layerCronJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readJsonSection(json, "cron");
-  return layerJsonOntoEnv(env, [
-    { env: "MONO_AGENT_CRON_ENABLED", value: section.enabled, kind: "boolean" },
-    { env: "MONO_AGENT_CRON_EXPRESSION", value: section.expression },
-    { env: "MONO_AGENT_CRON_TIMEZONE", value: section.timezone },
-    { env: "MONO_AGENT_CRON_PROMPT", value: section.prompt },
-    { env: "MONO_AGENT_CRON_CONVERSATION_ID", value: section.conversationId },
-    { env: "MONO_AGENT_CRON_NOTIFY", value: section.notify, kind: "boolean" },
-    { env: "MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID", value: section.notifyConversationId },
-    { env: "MONO_AGENT_CRON_MODEL", value: section.model },
-    { env: "MONO_AGENT_CRON_EFFORT", value: section.effort },
-  ]);
+  return layerJsonOntoEnv(env, fieldSpecMappings(readJsonSection(json, "cron"), CRON_CONFIG_FIELDS));
 }
 
 /** Trim a JSON value to a non-empty string, treating non-strings as absent. */
