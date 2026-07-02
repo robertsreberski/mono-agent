@@ -104,6 +104,7 @@ export type {
   TelegramAdapterConfig,
   TelegramAdapterConfigErrorCode,
   TelegramAdapterConfigErrorDetails,
+  TelegramAttachmentsConfig,
   TelegramCommandConfig,
   TelegramQuietHours,
   TelegramReactionsConfig,

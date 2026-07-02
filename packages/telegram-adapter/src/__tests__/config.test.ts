@@ -425,3 +425,100 @@ describe("redactTelegramAdapterConfig", () => {
     });
   });
 });
+
+describe("self-hosted Bot API server config", () => {
+  it("parses apiRoot and the attachments section from JSON", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        telegram: {
+          enabled: true,
+          botToken: "123456:json-token",
+          allowAllChats: true,
+          apiRoot: "http://127.0.0.1:8081/",
+          attachments: { maxBytes: 268435456, downloadTimeoutMs: 120000, maxUploadBytes: 268435456 },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const config = await loadTelegramAdapterConfig({ env: {}, jsonPath: path });
+    // Trailing slash is normalized away so URL building can always append /path.
+    expect(config.apiRoot).toBe("http://127.0.0.1:8081");
+    expect(config.attachments).toEqual({
+      maxBytes: 268_435_456,
+      downloadTimeoutMs: 120_000,
+      maxUploadBytes: 268_435_456,
+    });
+  });
+
+  it("lets env override apiRoot and attachment caps", async () => {
+    const config = await loadTelegramAdapterConfig({
+      env: {
+        MONO_AGENT_TELEGRAM_ENABLED: "true",
+        MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:env-token",
+        MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+        MONO_AGENT_TELEGRAM_API_ROOT: "http://127.0.0.1:9091",
+        MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES: "1048576",
+        MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS: "60000",
+        MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES: "2097152",
+      },
+    });
+    expect(config.apiRoot).toBe("http://127.0.0.1:9091");
+    expect(config.attachments).toEqual({ maxBytes: 1_048_576, downloadTimeoutMs: 60_000, maxUploadBytes: 2_097_152 });
+  });
+
+  it("omits apiRoot and attachments when unset (defaults preserved)", async () => {
+    const config = await loadTelegramAdapterConfig({
+      env: {
+        MONO_AGENT_TELEGRAM_ENABLED: "true",
+        MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:env-token",
+        MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+      },
+    });
+    expect(config.apiRoot).toBeUndefined();
+    expect(config.attachments).toBeUndefined();
+  });
+
+  it("rejects a non-http(s) apiRoot", async () => {
+    await expect(
+      loadTelegramAdapterConfig({
+        env: {
+          MONO_AGENT_TELEGRAM_ENABLED: "true",
+          MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:env-token",
+          MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+          MONO_AGENT_TELEGRAM_API_ROOT: "ftp://example.com",
+        },
+      }),
+    ).rejects.toThrow(/apiRoot|API_ROOT/u);
+  });
+
+  it("rejects out-of-bounds attachment caps", async () => {
+    await expect(
+      loadTelegramAdapterConfig({
+        env: {
+          MONO_AGENT_TELEGRAM_ENABLED: "true",
+          MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:env-token",
+          MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+          MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES: "3000000000",
+        },
+      }),
+    ).rejects.toThrow(/ATTACHMENT_MAX_BYTES/u);
+  });
+
+  it("passes apiRoot and attachments through redaction verbatim", async () => {
+    const config = await loadTelegramAdapterConfig({
+      env: {
+        MONO_AGENT_TELEGRAM_ENABLED: "true",
+        MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:env-token",
+        MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+        MONO_AGENT_TELEGRAM_API_ROOT: "http://127.0.0.1:8081",
+        MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES: "1048576",
+      },
+    });
+    const redacted = redactTelegramAdapterConfig(config);
+    expect(redacted.apiRoot).toBe("http://127.0.0.1:8081");
+    expect(redacted.attachments).toEqual({ maxBytes: 1_048_576 });
+  });
+});

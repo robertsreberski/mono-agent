@@ -795,4 +795,46 @@ describe("startTelegramAdapter onPollingRecovered", () => {
       vi.useRealTimers();
     }
   });
+
+  it("forwards apiRoot so file downloads hit the self-hosted server", async () => {
+    const { bot } = recordingBot();
+    bot.api.config.use(async (prev, method, payload, signal) => {
+      if (method === "getFile") {
+        const typed = payload as Record<string, unknown>;
+        return { ok: true, result: { file_id: typed.file_id, file_unique_id: "u", file_path: "docs/file.bin" } } as never;
+      }
+      return await prev(method, payload, signal);
+    });
+    const urls: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url: unknown) => {
+      urls.push(String(url));
+      return new Response(new Uint8Array([1, 2, 3]));
+    }) as unknown as typeof fetch;
+    const requests: Array<{ attachments: unknown }> = [];
+
+    try {
+      const result = await startTelegramAdapter({
+        botToken: "test-token",
+        allowAllChats: true,
+        responder: {
+          async respond(request) {
+            requests.push({ attachments: request.attachments });
+            return { text: "ok" };
+          },
+        },
+        stream: { editDebounceMs: 0 },
+        apiRoot: "http://127.0.0.1:8081",
+        botFactory: () => bot,
+        runnerFactory: () => new FakeRunner(),
+      });
+      await bot.handleUpdate(documentUpdate("audio/mp4"));
+      await result.stop();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    expect(urls).toEqual(["http://127.0.0.1:8081/file/bottest-token/docs/file.bin"]);
+    expect(requests[0]?.attachments).toBeDefined();
+  });
 });

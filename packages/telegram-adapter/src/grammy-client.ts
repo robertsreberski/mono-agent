@@ -128,9 +128,16 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
       options?: TelegramRequestOptions,
     ): Promise<TelegramSentMessage> {
       try {
+        // A string document (file_id, URL, or a file:// URI against a --local
+        // self-hosted server) is passed through untouched — grammY serializes it
+        // into the JSON payload with no multipart upload or buffering.
+        const document =
+          typeof params.document === "string"
+            ? params.document
+            : new InputFile(params.document, params.filename);
         const message = await api.sendDocument(
           params.chat_id,
-          new InputFile(params.document, params.filename),
+          document,
           params.caption === undefined ? {} : { caption: params.caption },
           asGrammySignal(options?.signal),
         );
@@ -163,12 +170,21 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
   };
 }
 
-export function createTelegramMessageSender(botToken: string): TelegramMessageSender {
+export function createTelegramMessageSender(
+  botToken: string,
+  options?: { readonly apiRoot?: string },
+): TelegramMessageSender {
   const token = botToken.trim();
   if (token.length === 0) {
     throw new TypeError("Telegram bot token is required.");
   }
-  return createGrammyTelegramApi(new Bot(token).api);
+  // apiRoot must reach EVERY Bot construction — this sender feeds the send tools,
+  // which would otherwise keep talking to the hosted API next to a self-hosted bot.
+  const bot =
+    options?.apiRoot === undefined
+      ? new Bot(token)
+      : new Bot(token, { client: { apiRoot: options.apiRoot } });
+  return createGrammyTelegramApi(bot.api);
 }
 
 function buildSendOther(params: TelegramSendMessageParams): SendOther {

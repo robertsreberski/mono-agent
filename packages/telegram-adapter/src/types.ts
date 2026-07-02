@@ -117,10 +117,14 @@ export interface TelegramSendChatActionParams {
 
 export interface TelegramSendDocumentParams {
   chat_id: TelegramChatId;
-  /** Raw file bytes to upload. */
-  document: Uint8Array;
-  /** Filename shown to the recipient. */
-  filename: string;
+  /**
+   * Raw file bytes to upload, OR a string passed through to the server
+   * untouched: a file_id, an HTTP URL, or a `file://` URI (accepted by a
+   * `--local` self-hosted Bot API server — no multipart upload, no buffering).
+   */
+  document: Uint8Array | string;
+  /** Filename shown to the recipient. Ignored for string documents (the server derives it). */
+  filename?: string;
   caption?: string;
 }
 

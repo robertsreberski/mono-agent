@@ -87,6 +87,7 @@ describe("resolveAdapterSendToolsSettings", () => {
         botToken: "telegram-token",
         allowedChatIds: ["42", "-100"],
         allowAllChats: false,
+        maxUploadBytes: 20 * 1024 * 1024,
         tools: { send: true, ask: false, document: false, photo: false },
       },
     });
@@ -310,8 +311,8 @@ describe("adapter send MCP tools", () => {
         async sendDocument(params): Promise<TelegramSentMessage> {
           docCalls.push({
             chat_id: params.chat_id,
-            filename: params.filename,
-            bytes: params.document.byteLength,
+            filename: params.filename ?? "(none)",
+            bytes: params.document instanceof Uint8Array ? params.document.byteLength : params.document.length,
             ...(params.caption === undefined ? {} : { caption: params.caption }),
           });
           return { message_id: 91, chat: { id: params.chat_id }, text: "" };
@@ -819,5 +820,136 @@ describe("telegram_send_document path upload", () => {
     expect(uploaded.filename).toBe("transcript.md");
     expect(uploaded.caption).toBe("your transcript");
     expect(Buffer.from(uploaded.document).toString("utf8")).toBe("# Transcript\n\nhello");
+  });
+});
+
+describe("self-hosted server send tools", () => {
+  it("resolves apiRoot and maxUploadBytes from the telegram config", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      telegram: {
+        enabled: true,
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        apiRoot: "http://127.0.0.1:8081",
+        attachments: { maxUploadBytes: 1_048_576 },
+      },
+    });
+
+    const settings = await resolveAdapterSendToolsSettings(
+      { env: {}, cwd: dir, configPath },
+      { allowedTools: ["telegram_send_document"] },
+    );
+
+    expect(settings?.telegram).toMatchObject({
+      apiRoot: "http://127.0.0.1:8081",
+      maxUploadBytes: 1_048_576,
+    });
+  });
+
+  it("defaults maxUploadBytes to the 20 MiB adapter cap when unset", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      telegram: { enabled: true, botToken: "telegram-token", allowedChatIds: ["42"] },
+    });
+
+    const settings = await resolveAdapterSendToolsSettings(
+      { env: {}, cwd: dir, configPath },
+      { allowedTools: ["telegram_send_document"] },
+    );
+
+    expect(settings?.telegram?.maxUploadBytes).toBe(20 * 1024 * 1024);
+    expect(settings?.telegram?.apiRoot).toBeUndefined();
+  });
+
+  it("sends a path upload as a file:// URI when an apiRoot is configured (zero buffering)", async () => {
+    const filePath = join(dir, "transcript.md");
+    await writeFile(filePath, "# Big transcript", "utf8");
+    const sendDocument = vi.fn(async (params: { chat_id: unknown }) => ({
+      message_id: 91,
+      chat: { id: params.chat_id },
+    })) as never;
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        apiRoot: "http://127.0.0.1:8081",
+        maxUploadBytes: 20 * 1024 * 1024,
+        tools: { send: false, ask: false, document: true, photo: false },
+      },
+    };
+    const server = await createAdapterSendToolsServer(settings, {
+      telegram: { sendMessage: vi.fn() as never, sendDocument },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "telegram_send_document",
+        arguments: { chat_id: 42, path: filePath, caption: "your transcript" },
+      });
+      expect(result.structuredContent).toMatchObject({ ok: true });
+    });
+
+    const uploaded = (sendDocument as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { document: unknown };
+    expect(uploaded.document).toBe(`file://${filePath}`);
+  });
+
+  it("falls back to a buffered upload when the server rejects the file:// URI", async () => {
+    const filePath = join(dir, "transcript.md");
+    await writeFile(filePath, "# Fallback transcript", "utf8");
+    const sendDocument = vi.fn() as ReturnType<typeof vi.fn>;
+    sendDocument.mockRejectedValueOnce(Object.assign(new Error("Bad Request: wrong file identifier"), { kind: "telegram" }));
+    sendDocument.mockResolvedValueOnce({ message_id: 92, chat: { id: 42 } });
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        apiRoot: "http://127.0.0.1:8081",
+        maxUploadBytes: 20 * 1024 * 1024,
+        tools: { send: false, ask: false, document: true, photo: false },
+      },
+    };
+    const server = await createAdapterSendToolsServer(settings, {
+      telegram: { sendMessage: vi.fn() as never, sendDocument: sendDocument as never },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "telegram_send_document",
+        arguments: { chat_id: 42, path: filePath },
+      });
+      expect(result.structuredContent).toMatchObject({ ok: true });
+    });
+
+    expect(sendDocument).toHaveBeenCalledTimes(2);
+    const retried = sendDocument.mock.calls[1]?.[0] as { document: unknown; filename?: string };
+    expect(Buffer.from(retried.document as Uint8Array).toString("utf8")).toBe("# Fallback transcript");
+    expect(retried.filename).toBe("transcript.md");
+  });
+
+  it("honors the configured maxUploadBytes for buffered uploads", async () => {
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        maxUploadBytes: 8,
+        tools: { send: false, ask: false, document: true, photo: false },
+      },
+    };
+    const server = await createAdapterSendToolsServer(settings, {
+      telegram: { sendMessage: vi.fn() as never, sendDocument: vi.fn() as never },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "telegram_send_document",
+        arguments: { chat_id: 42, data: Buffer.from("way more than eight bytes").toString("base64"), filename: "x.md" },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("upload cap");
+    });
   });
 });

@@ -1,7 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { basename, resolve as resolvePath } from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
@@ -52,6 +52,10 @@ export interface TelegramSendToolSettings {
   readonly botToken: string;
   readonly allowedChatIds: readonly string[];
   readonly allowAllChats: boolean;
+  /** Self-hosted Bot API server base URL (also unlocks file:// path uploads). */
+  readonly apiRoot?: string;
+  /** Upload cap for send_document/send_photo; the resolver fills the 20 MiB default. */
+  readonly maxUploadBytes?: number;
   /** Which telegram tools the policy permits (the adapter config gates the rest). */
   readonly tools: {
     readonly send: boolean;
@@ -310,7 +314,11 @@ export async function createAdapterSendToolsClients(settings: AdapterSendToolsSe
       ? undefined
       : new (await loadSlackModule()).SlackWebApiClient({ botToken: settings.slack.botToken });
   const telegram =
-    settings.telegram === undefined ? undefined : (await loadTelegramModule()).createTelegramMessageSender(settings.telegram.botToken);
+    settings.telegram === undefined
+      ? undefined
+      : (await loadTelegramModule()).createTelegramMessageSender(settings.telegram.botToken, {
+          ...(settings.telegram.apiRoot === undefined ? {} : { apiRoot: settings.telegram.apiRoot }),
+        });
   return {
     ...(slack === undefined ? {} : { slack }),
     ...(telegram === undefined ? {} : { telegram }),
@@ -644,7 +652,7 @@ function registerTelegramSendFileTool(
       title: kind === "document" ? "Send Telegram document" : "Send Telegram photo",
       description:
         kind === "document"
-          ? "Upload and send a file (document) to an allowed Telegram chat. Provide the bytes as base64 `data` with a `filename`, or a workspace `path`."
+          ? "Upload and send a file (document) to an allowed Telegram chat. Provide the bytes as base64 `data` with a `filename`, or a workspace `path` (preferred — with a self-hosted Bot API server a `path` upload streams from disk with no size buffering, up to the configured cap)."
           : "Upload and send an image (photo, shown inline) to an allowed Telegram chat. Provide the bytes as base64 `data`, or a workspace `path`.",
       inputSchema: {
         chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
@@ -656,12 +664,44 @@ function registerTelegramSendFileTool(
     },
     async (args) => {
       assertTelegramChatAllowed(settings, args.chat_id);
+      const maxUploadBytes = settings.maxUploadBytes ?? adapter.DEFAULT_ATTACHMENT_MAX_BYTES;
+      // file:// fast path: a --local self-hosted server reads the file straight
+      // from disk, so a path upload needs no buffering at any size — only a
+      // stat-level cap check. Falls back once to the buffered path when the
+      // server rejects the URI (e.g. a non---local self-hosted root).
+      if (kind === "document" && settings.apiRoot !== undefined && args.path !== undefined && args.data === undefined) {
+        const resolved = resolvePath(process.cwd(), args.path);
+        const info = await stat(resolved);
+        if (!info.isFile() || info.size === 0) {
+          throw new Error("file is empty or not a regular file.");
+        }
+        if (info.size > maxUploadBytes) {
+          throw new Error(`file exceeds the ${String(maxUploadBytes)}-byte upload cap.`);
+        }
+        try {
+          const sent: TelegramSentMessage = await client.sendDocument!({
+            chat_id: args.chat_id,
+            document: pathToFileURL(resolved).href,
+            ...(args.caption === undefined ? {} : { caption: args.caption }),
+          });
+          const name = basename(resolved);
+          return {
+            content: [{ type: "text", text: `Sent ${kind} ${sent.message_id} (${name}) to ${String(sent.chat.id)}.` }],
+            structuredContent: { ok: true, chat_id: sent.chat.id, message_id: sent.message_id, filename: name },
+          };
+        } catch (error) {
+          // Retry buffered exactly once; rethrow anything that isn't a server-side rejection.
+          if ((error as { kind?: string }).kind !== "telegram") {
+            throw error;
+          }
+        }
+      }
       const { bytes, filename } = await resolveTelegramFileBytes({
         data: args.data,
         path: args.path,
         filename: args.filename,
         requireFilename: kind === "document",
-        maxBytes: adapter.DEFAULT_ATTACHMENT_MAX_BYTES,
+        maxBytes: maxUploadBytes,
       });
       const result: TelegramSentMessage =
         kind === "document"
@@ -762,6 +802,8 @@ async function resolveTelegramSendToolSettings(
       botToken: config.botToken,
       allowedChatIds: config.allowedChatIds,
       allowAllChats: config.allowAllChats,
+      ...(config.apiRoot === undefined ? {} : { apiRoot: config.apiRoot }),
+      maxUploadBytes: config.attachments?.maxUploadBytes ?? adapter.DEFAULT_ATTACHMENT_MAX_BYTES,
       tools,
     };
   } catch (error) {

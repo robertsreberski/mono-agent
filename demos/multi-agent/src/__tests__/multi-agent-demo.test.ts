@@ -105,6 +105,12 @@ describe("multi-agent demo", () => {
         // No-op proactive delivery for the demo's fake Telegram adapter.
         return { delivered: true };
       },
+      async post() {
+        // No-op direct send (ask_user question) for the demo's fake adapter.
+      },
+      async postStatus() {
+        // No-op tool-progress status for the demo's fake adapter.
+      },
     };
 
     const demo = await startMultiAgentDemo({

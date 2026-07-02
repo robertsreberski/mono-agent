@@ -6,7 +6,7 @@ sidebar:
 
 # Playbooks
 
-This section collects 13 end-to-end recipes. Each one walks the same arc — **init → configure → validate → start → smoke** — using only real `mono-agent.config.json` keys and the `mono-agent` CLI, so you can copy a playbook, adapt the placeholders, and have a working agent in minutes.
+This section collects 14 end-to-end recipes. Each one walks the same arc — **init → configure → validate → start → smoke** — using only real `mono-agent.config.json` keys and the `mono-agent` CLI, so you can copy a playbook, adapt the placeholders, and have a working agent in minutes.
 
 Every recipe ends with a concrete smoke test (a Telegram message, a `curl`, a cron tick, a Phoenix span) so you can prove the agent works before you ship it.
 
@@ -79,6 +79,7 @@ Memory tiers, `writeMode`, embeddings, and rituals are covered in [Memory](/memo
 | [Backfill Historical Runs to Phoenix](/playbooks/backfill-historical-runs/) | Operations engineer onboarding observability after the fact | Retroactively export already-recorded JSONL run artifacts to Phoenix with original timestamps, idempotently. |
 | [Eval Suite with Trajectory + Cost Budgets](/playbooks/eval-suite-trajectory-cost/) | Agent product owner gating quality in CI | Run scenarios against the composed responder asserting required tool calls, trajectory, and per-run cost ceilings. |
 | [Multi-Model Fallback Chain with Transcript Resume](/playbooks/multi-model-fallback-chain/) | Reliability-minded builder who can't afford a single-provider outage | Primary cloud model with ordered backups the failover router tries on retryable failures, resuming from the transcript tail. |
+| [Interactive Agent with Long Jobs & Large Media](/playbooks/interactive-transcription-large-media/) | Builder whose agent must ask before acting, run multi-minute tools, and exchange large files | Telegram agent that blocks on `ask_user` for context, streams progress from a long transcription tool (keep-alive past 120s), accepts recordings over 20 MB via a self-hosted Bot API server, and returns a generated document. |
 
 :::tip
 Always run `mono-agent validate` before `start`. It is the single fastest way to catch a missing `botToken`, an un-pulled Ollama model, an unreachable Phoenix endpoint, or a duplicate webhook path before they bite you at runtime.

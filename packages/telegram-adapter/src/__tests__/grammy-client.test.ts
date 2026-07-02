@@ -171,3 +171,43 @@ describe("createGrammyTelegramApi", () => {
     expect((error as TelegramApiError).kind).toBe("aborted");
   });
 });
+
+describe("sendDocument document shapes", () => {
+  function documentApi(): { api: Api; calls: RecordedCall[] } {
+    const calls: RecordedCall[] = [];
+    const api = {
+      async sendDocument(...args: unknown[]) {
+        calls.push({ args });
+        return { message_id: 5, chat: { id: args[0] } };
+      },
+    } as unknown as Api;
+    return { api, calls };
+  }
+
+  it("passes a string document (file_id / URL / file:// URI) through untouched", async () => {
+    const { api, calls } = documentApi();
+    const sender = createGrammyTelegramApi(api);
+
+    await sender.sendDocument!({ chat_id: 42, document: "file:///tmp/transcript.md", caption: "done" });
+
+    expect(calls[0]?.args[1]).toBe("file:///tmp/transcript.md");
+  });
+
+  it("wraps raw bytes in an InputFile with the filename", async () => {
+    const { api, calls } = documentApi();
+    const sender = createGrammyTelegramApi(api);
+
+    await sender.sendDocument!({ chat_id: 42, document: new Uint8Array([1, 2]), filename: "t.md" });
+
+    const uploaded = calls[0]?.args[1] as { filename?: string };
+    expect(uploaded).not.toBeTypeOf("string");
+    expect(uploaded.filename).toBe("t.md");
+  });
+});
+
+describe("createTelegramMessageSender apiRoot", () => {
+  it("accepts an apiRoot option without throwing (self-hosted server)", () => {
+    const sender = createTelegramMessageSender("123456:token", { apiRoot: "http://127.0.0.1:8081" });
+    expect(typeof sender.sendMessage).toBe("function");
+  });
+});
