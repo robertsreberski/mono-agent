@@ -25,6 +25,7 @@ import {
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
+import { collectChannelConfigViews } from "./channel-config-view.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
@@ -88,13 +89,16 @@ export async function validateMonoAgentFolder(
 
   if (coreConfig !== undefined) {
     const jsonResult = await readMonoAgentConfigJson(options.configPath);
-    const secretWarnings = findJsonSecretConfigWarnings(
-      buildMonoAgentConfigView({
+    // Channel secrets (bot tokens, API keys) live outside the core view, so the
+    // placement check spans both: core sections + every channel's config view.
+    const secretWarnings = findJsonSecretConfigWarnings([
+      ...buildMonoAgentConfigView({
         redacted: redactMonoAgentConfig(coreConfig),
         json: jsonResult.json,
         env: options.env,
       }),
-    );
+      ...(await collectChannelConfigViews(drivers, options)),
+    ]);
     if (secretWarnings.length > 0) {
       sections.push({ id: "secret-placement", label: "Secret placement", status: "waiting", details: secretWarnings });
     }
@@ -682,6 +686,13 @@ async function channelSection(
     const waitingReason = driver.waitingReason?.(config);
     if (waitingReason !== undefined) {
       return { id, label: driver.label, status: "waiting", details: [waitingReason] };
+    }
+    // A structural issue (e.g. a typo'd per-trigger model override) fails
+    // validate loudly here; `start` still runs the channel and warn-ignores
+    // the bad value at run time.
+    const issues = driver.configIssues?.(config) ?? [];
+    if (issues.length > 0) {
+      return { id, label: driver.label, status: "error", details: [...issues] };
     }
     return { id, label: driver.label, status: "ok", details: ["Configured; will start with the app."] };
   } catch (error) {

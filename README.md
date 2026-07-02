@@ -8,20 +8,53 @@ Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.a
 
 ## Quickstart: An Agent Folder From One Config File
 
-Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a working agent with the `mono-agent` CLI from `@mono-agent/agent-app`:
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a working agent with the `mono-agent` CLI from `@mono-agent/agent-app`. Use Node.js 20 or newer, and install the CLI once:
 
-Use Node.js 20 or newer.
+```bash
+npm i -g @mono-agent/agent-app
+```
+
+(No install needed if you prefix each command with `npm exec --package @mono-agent/agent-app -- `; there is no standalone `mono-agent` npm package, so `npx mono-agent` would fail.)
+
+The easiest path on a terminal is the guided setup — it presents the recipe catalog, prompts for the model and channel add-ons, scaffolds, validates, and prints a secrets checklist:
 
 ```bash
 # in the agent folder
-npm exec --package @mono-agent/agent-app -- mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
-npm exec --package @mono-agent/agent-app -- mono-agent validate
-npm exec --package @mono-agent/agent-app -- mono-agent start
+mono-agent setup
 ```
 
-For repeated local use, install the CLI globally with `npm i -g @mono-agent/agent-app` and run the same commands as `mono-agent init`, `mono-agent validate`, and `mono-agent start`. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.
+Or drive it with flags (`setup` falls back to this form when stdin is not a TTY):
 
-`init` scaffolds `mono-agent.config.json` (webhook enabled as the zero-credential smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status.
+```bash
+mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
+export ANTHROPIC_API_KEY=sk-...   # key for whatever model you chose
+mono-agent validate               # per-section report; `mono-agent doctor` is an alias
+mono-agent start                  # backgrounds on macOS (launchd); use `start --foreground` elsewhere
+```
+
+Then smoke-test over the webhook channel that `init` enables by default — it needs no channel credentials (the model key above is the only secret involved):
+
+```bash
+curl -s http://127.0.0.1:<PORT>/webhook/invoke \
+  -H 'content-type: application/json' \
+  -d '{"text": "Say hello and tell me what you are."}'
+```
+
+`<PORT>` comes from the `start` output. A reply means runtime, model, identity, and channel wiring all work.
+
+`init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.
+
+### Recipes: executable example configs
+
+Twelve recipes cover the common shapes — personal Telegram assistant with tiered memory, Slack team bot, OpenAI-compatible gateway, cron digest, A2A provider, fully-local Ollama setup, sandboxed code agent, and more. Each generates a working config with secrets externalized to `.env.example`, and each mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
+
+```bash
+mono-agent recipes list
+mono-agent recipes show personal-telegram-bujo
+mono-agent init --recipe personal-telegram-bujo
+```
+
+See [`docs/reference/recipes.md`](./docs/reference/recipes.md) for the full catalog at a glance.
 
 ## Skill-Based Composition Guide
 
@@ -159,6 +192,10 @@ pnpm run deploy:multi -- \
 Stop the older final demo before enabling Telegram here so only one process owns the bot token. Telegram credentials stay outside git and are read from the orchestrator config or `MONO_AGENT_TELEGRAM_BOT_TOKEN` plus `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS`.
 
 See [`demos/multi-agent/README.md`](./demos/multi-agent/README.md) for topology, safe tool policies, Telegram ownership, and smoke checks.
+
+## Downloads Curator Demo
+
+The third demo lives at `demos/downloads-curator/`. It starts a TUI-connected agent scoped to the user's Downloads folder with a curated MCP server for listing, proposing, and applying cleanup actions — every move/trash action is approval-gated and nothing is ever permanently deleted. See [`demos/downloads-curator/README.md`](./demos/downloads-curator/README.md).
 
 ### A2A Inter-Agent Discovery
 

@@ -29,8 +29,8 @@ function baseConfig(memory: NonNullable<MonoAgentConfig["memory"]>): MonoAgentCo
 }
 
 describe("createConfiguredMemory — backend dispatch", () => {
-  it("returns a SupermemoryMemoryStore when backend is 'supermemory'", () => {
-    const store = createConfiguredMemory(
+  it("returns a SupermemoryMemoryStore when backend is 'supermemory'", async () => {
+    const store = await createConfiguredMemory(
       baseConfig({
         backend: "supermemory",
         mode: "lite",
@@ -43,9 +43,9 @@ describe("createConfiguredMemory — backend dispatch", () => {
     expect(store).toBeInstanceOf(SupermemoryMemoryStore);
   });
 
-  it("derives the container from the trace sourceId when not set", () => {
+  it("derives the container from the trace sourceId when not set", async () => {
     // Smoke check: the factory accepts a supermemory block without an explicit container.
-    const store = createConfiguredMemory(
+    const store = await createConfiguredMemory(
       baseConfig({
         backend: "supermemory",
         mode: "lite",
@@ -58,8 +58,8 @@ describe("createConfiguredMemory — backend dispatch", () => {
     expect(store).toBeInstanceOf(SupermemoryMemoryStore);
   });
 
-  it("defaults to the bujo backend (not supermemory) when backend is unset", () => {
-    const store = createConfiguredMemory(
+  it("defaults to the bujo backend (not supermemory) when backend is unset", async () => {
+    const store = await createConfiguredMemory(
       baseConfig({ mode: "lite", path: "/tmp/agent/memory", maxBytes: 8_000, writeMode: "disabled" }),
     );
     expect(store).toBeDefined();

@@ -64,7 +64,7 @@ describe("agent host composition helpers", () => {
       };
     });
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       createRunId: () => "run-host",
@@ -125,7 +125,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "Logged answer" }));
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({
         dir,
         identityPath,
@@ -201,9 +201,9 @@ describe("agent host composition helpers", () => {
       },
       artifactDir,
     });
-    const memory = createConfiguredMemory(config, { memoryRuntime: memoryRuntime.runtime });
+    const memory = await createConfiguredMemory(config, { memoryRuntime: memoryRuntime.runtime });
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config,
       runtime: channel.runtime,
       ...(memory === undefined ? {} : { memory }),
@@ -250,7 +250,7 @@ describe("agent host composition helpers", () => {
     );
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    const uncapped = createConfiguredAgentResponder({
+    const uncapped = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, skillsRoot, selectedSkills: ["big"], artifactDir }),
       runtime: fake.runtime,
     });
@@ -260,7 +260,7 @@ describe("agent host composition helpers", () => {
     );
     expect(fake.calls[0]?.prompt).toContain("SKILL_TAIL_MARKER");
 
-    const capped = createConfiguredAgentResponder({
+    const capped = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, skillsRoot, selectedSkills: ["big"], skillMaxBytes: 256, artifactDir }),
       runtime: fake.runtime,
     });
@@ -278,12 +278,12 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    expect(() =>
+    await expect(
       createConfiguredAgentHarness({
         config: monoConfig({ dir, identityPath, artifactDir, mcpConfigPath: join(dir, "missing.json") }),
         runtime: fake.runtime,
       }),
-    ).toThrowError(expect.objectContaining({ code: "tool_policy_read_failed" }));
+    ).rejects.toThrowError(expect.objectContaining({ code: "tool_policy_read_failed" }));
   });
 
   it("forwards runtime.permissionMode to the runtime and never sets a reasoning-summary option", async () => {
@@ -293,7 +293,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({
         dir,
         identityPath,
@@ -330,7 +330,7 @@ describe("agent host composition helpers", () => {
       return { text: "ok" };
     });
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: { ...monoConfig({ dir, identityPath, artifactDir }), concurrency: { maxConcurrentRuns: 1 } },
       runtime: fake.runtime,
     });
@@ -373,7 +373,7 @@ describe("agent host composition helpers", () => {
 
     // maxPendingRuns is config-only plumbing: if it were not threaded into the
     // harness, the third run would not fail fast.
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: { ...monoConfig({ dir, identityPath, artifactDir }), concurrency: { maxConcurrentRuns: 1, maxPendingRuns: 1 } },
       runtime: fake.runtime,
     });
@@ -410,7 +410,7 @@ describe("agent host composition helpers", () => {
     let requests = 0;
     const endpoint = await startFailingEmbeddingServer(() => { requests += 1; });
 
-    const memory = createConfiguredMemory({
+    const memory = await createConfiguredMemory({
       ...monoConfig({
         dir,
         identityPath,
@@ -450,7 +450,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, artifactDir, permissionMode: "acceptEdits" }),
       runtime: fake.runtime,
       runtimeOptions: { permissionMode: "bypassPermissions" },
@@ -470,7 +470,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "Harness answer" }));
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       createRunId: () => "run-harness",
@@ -495,7 +495,7 @@ describe("agent host composition helpers", () => {
     const config = monoConfig({ dir, identityPath, artifactDir });
     const { maxTurns: _maxTurns, ...runtime } = config.runtime;
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: { ...config, runtime } as MonoAgentConfig,
       runtime: fake.runtime,
     });
@@ -517,7 +517,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async (_prompt, options) => ({ text: "ok", model: options.model.model }));
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       model: { sdk: "claude", model: "claude-opus-4-7" },
@@ -541,7 +541,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async (_prompt, options) => ({ text: "ok", model: options.model.model }));
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
     });
@@ -576,7 +576,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: {
         ...monoConfig({ dir, identityPath, artifactDir }),
         sandbox: createSandboxPolicy({
@@ -608,7 +608,7 @@ describe("agent host composition helpers", () => {
     const fake = createFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-host-1" }));
 
     const config = monoConfig({ dir, identityPath, artifactDir });
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: {
         ...config,
         runtime: { ...config.runtime, session: { mode: "continuous", idleTimeoutMs: 60_000 } },
@@ -632,7 +632,7 @@ describe("agent host composition helpers", () => {
     await writeFile(identityPath, "You are Mono.", "utf8");
     const fake = createFakeRuntime(async () => ({ text: "ok", providerSessionId: "ps-host-1" }));
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
     });
@@ -677,7 +677,7 @@ describe("agent host phoenix exporter wiring", () => {
     };
     const warnings: Array<{ phase: string; message: string }> = [];
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
       runtime: fake.runtime,
       createRunId: () => "run-failing-exporter",
@@ -720,7 +720,7 @@ describe("agent host phoenix exporter wiring", () => {
     };
     const warnings: Array<{ phase: string; message: string }> = [];
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability({ timeoutMs: 25 }) }),
       runtime: fake.runtime,
       createRunId: () => "run-hanging-exporter",
@@ -756,7 +756,7 @@ describe("agent host phoenix exporter wiring", () => {
     };
     const warnings: Array<{ phase: string; message: string }> = [];
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability({ timeoutMs: 25 }) }),
       runtime: fake.runtime,
       createRunId: () => "run-hang-start",
@@ -788,7 +788,7 @@ describe("agent host phoenix exporter wiring", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const harness = createConfiguredAgentHarness({
+    const harness = await createConfiguredAgentHarness({
       config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
       runtime: fake.runtime,
       createRunId: () => "run-cancelled",
@@ -835,7 +835,7 @@ describe("agent host phoenix exporter wiring", () => {
       return new Response(null, { status: 200 });
     };
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({
         dir,
         identityPath,
@@ -871,7 +871,7 @@ describe("agent host phoenix exporter wiring", () => {
 
     let factoryCalls = 0;
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, artifactDir, observability: { exporters: [] } }),
       runtime: fake.runtime,
       createRunId: () => "run-no-exporter",
@@ -906,7 +906,7 @@ describe("agent host phoenix exporter wiring", () => {
       return new Response(null, { status: 200 });
     };
 
-    const responder = createConfiguredAgentResponder({
+    const responder = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, artifactDir, observability: phoenixObservability() }),
       runtime: fake.runtime,
       createRunId: () => "run-ctx",

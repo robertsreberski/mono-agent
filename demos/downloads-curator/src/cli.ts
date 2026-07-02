@@ -43,7 +43,7 @@ export async function startDownloadsCuratorCli(argv: readonly string[] = process
     artifactDir: files.artifactDir,
     ...(parsed.model === undefined ? {} : { model: parsed.model }),
   });
-  const responder = createDownloadsCuratorResponder({
+  const responder = await createDownloadsCuratorResponder({
     config,
   });
   const handle = startMonoAgentTui({

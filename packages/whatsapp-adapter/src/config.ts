@@ -1,4 +1,5 @@
 import {
+  fieldSpecMappings,
   layerJsonOntoEnv,
   readBoolean,
   readChoice,
@@ -6,7 +7,7 @@ import {
   readJsonSection,
   readSettingsJson,
 } from "@mono-agent/settings";
-import type { SettingsJson } from "@mono-agent/settings";
+import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/settings";
 
 import type { WhatsAppGroupTriggerMode } from "./adapter.js";
 import type { WhatsAppJid } from "./types.js";
@@ -158,18 +159,23 @@ export function redactWhatsAppAdapterConfig(
   };
 }
 
+/**
+ * The `whatsapp` section's field registry: the single source of truth both the
+ * JSON→env layering below and the app's config provenance view derive from.
+ */
+export const WHATSAPP_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  { id: "whatsapp.enabled", env: "MONO_AGENT_WHATSAPP_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
+  { id: "whatsapp.allowedChatJids", env: "MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS", kind: "csv", fromJson: (s) => s.allowedChatJids },
+  { id: "whatsapp.allowAllChats", env: "MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS", kind: "boolean", fromJson: (s) => s.allowAllChats },
+  { id: "whatsapp.groupMode", env: "MONO_AGENT_WHATSAPP_GROUP_MODE", fromJson: (s) => s.groupMode },
+  { id: "whatsapp.botJids", env: "MONO_AGENT_WHATSAPP_BOT_JIDS", kind: "csv", fromJson: (s) => s.botJids },
+  { id: "whatsapp.mentionTextAliases", env: "MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES", kind: "csv", fromJson: (s) => s.mentionTextAliases },
+  { id: "whatsapp.stripMentionText", env: "MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT", kind: "boolean", fromJson: (s) => s.stripMentionText },
+];
+
 function layerWhatsAppJsonOntoEnv(
   json: SettingsJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
-  const section = readJsonSection(json, "whatsapp");
-  return layerJsonOntoEnv(env, [
-    { env: "MONO_AGENT_WHATSAPP_ENABLED", value: section.enabled, kind: "boolean" },
-    { env: "MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS", value: section.allowedChatJids, kind: "csv" },
-    { env: "MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS", value: section.allowAllChats, kind: "boolean" },
-    { env: "MONO_AGENT_WHATSAPP_GROUP_MODE", value: section.groupMode },
-    { env: "MONO_AGENT_WHATSAPP_BOT_JIDS", value: section.botJids, kind: "csv" },
-    { env: "MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES", value: section.mentionTextAliases, kind: "csv" },
-    { env: "MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT", value: section.stripMentionText, kind: "boolean" },
-  ]);
+  return layerJsonOntoEnv(env, fieldSpecMappings(readJsonSection(json, "whatsapp"), WHATSAPP_CONFIG_FIELDS));
 }

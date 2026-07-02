@@ -164,3 +164,17 @@ export type {
   ResilientMessageStreamLogger,
   ResilientAgentMessageStream,
 } from "./resilient-message-stream.js";
+export type {
+  ChannelConfigInput,
+  ChannelConfigViewField,
+  ChannelConfigViewFieldSource,
+  ChannelConfigViewSection,
+  ChannelDriver,
+  ChannelId,
+  ChannelLogger,
+  ChannelStartInput,
+  ChannelStatus,
+  NotifyDeliveryResult,
+  NotifyDestination,
+  RunningChannel,
+} from "./channel.js";

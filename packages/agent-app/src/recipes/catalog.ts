@@ -262,7 +262,7 @@ const a2aProvider: AgentRecipe = {
     },
   ],
   config: (input) => withSections(input, {
-    a2a: { provider: { enabled: true } },
+    a2a: { enabled: true },
   }),
   envExample: () => "# Bearer token A2A consumers must present (when requireBearer is set)\nMONO_AGENT_A2A_BEARER_TOKEN=\n",
   validateExpectations: [
@@ -301,6 +301,50 @@ const localOllamaPrivate: AgentRecipe = {
   }),
   validateExpectations: [
     { sectionId: "runtime", mustBe: "ok", note: "Start ollama and pull the configured model." },
+    { sectionId: "memory", mustBe: "ok" },
+  ],
+};
+
+/**
+ * `local-lmstudio-private` — fully local agent (LM Studio provider + lite memory).
+ *
+ * Ships `lite` (FTS-only, no embeddings) rather than `journal`, even though LM
+ * Studio's own OpenAI-compatible /v1/embeddings endpoint works fine as a
+ * `memory.embeddings.provider: "openai"` target (see the playbook). Reason:
+ * `readMemoryEmbeddingsConfig` (packages/config/src/config.ts) treats a
+ * missing openai-embeddings API key as a FATAL core-config-load error, not a
+ * per-section `waiting` — unlike channel secrets, which fail independently
+ * per adapter. Every recipe here is tested to load with zero env vars set
+ * (recipes.test.ts), so a required-at-load secret can't be the shipped
+ * default. The playbook documents the journal-tier upgrade as an explicit
+ * opt-in step once `.env` is populated.
+ */
+const localLmStudioPrivate: AgentRecipe = {
+  id: "local-lmstudio-private",
+  title: "Local LM Studio private agent",
+  description: "Runs entirely on a local LM Studio provider with lite-tier (FTS-only) memory — no remote calls, no external embeddings dependency. See the playbook to upgrade to journal-tier semantic recall using LM Studio's own embeddings endpoint.",
+  tags: ["local", "lmstudio", "private", "memory"],
+  riskLevel: "low",
+  playbook: "local-only-lmstudio-agent.md",
+  inputs: [
+    { ...MODEL_INPUT, default: "pi:lmstudio:qwen3.6-32b" },
+  ],
+  config: (input) => withSections(input, {
+    providers: {
+      local: [
+        {
+          id: "lmstudio",
+          type: "lmstudio",
+          baseUrl: "http://localhost:1234",
+          enabled: true,
+        },
+      ],
+    },
+    memory: memoryBlock("lite"),
+    webhook: { enabled: true },
+  }),
+  validateExpectations: [
+    { sectionId: "runtime", mustBe: "ok", note: "Start LM Studio's local server and load the configured model." },
     { sectionId: "memory", mustBe: "ok" },
   ],
 };
@@ -354,7 +398,7 @@ const sandboxedCodeAgent: AgentRecipe = {
 const ALL_CHANNELS_SECTIONS = {
   telegram: { enabled: true },
   slack: { enabled: true },
-  a2a: { provider: { enabled: true } },
+  a2a: { enabled: true },
   webhook: { enabled: true },
   openaiApi: { enabled: true },
   cron: { enabled: true },
@@ -452,6 +496,7 @@ export const RECIPE_CATALOG: readonly AgentRecipe[] = [
   cronDigest,
   a2aProvider,
   localOllamaPrivate,
+  localLmStudioPrivate,
   phoenixObserved,
   sandboxedCodeAgent,
   fullSafe,

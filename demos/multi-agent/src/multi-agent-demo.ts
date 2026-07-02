@@ -254,7 +254,7 @@ class MultiAgentDemoController implements MultiAgentDemo {
         return;
       }
 
-      const collaborative = this.createCollaborativeOrchestratorResponder({
+      const collaborative = await this.createCollaborativeOrchestratorResponder({
         researcherAgentUrl: researcher.status.agentCardUrl,
         workerAgentUrl: worker.status.agentCardUrl,
       });
@@ -385,10 +385,10 @@ class MultiAgentDemoController implements MultiAgentDemo {
     };
   }
 
-  private createCollaborativeOrchestratorResponder(input: {
+  private async createCollaborativeOrchestratorResponder(input: {
     readonly researcherAgentUrl: string;
     readonly workerAgentUrl: string;
-  }): AgentResponder {
+  }): Promise<AgentResponder> {
     const timeoutMs = this.loaded.orchestrator.a2aConfig.consumer.timeoutMs;
     const collaborators: readonly OrchestratorCollaborator[] = [
       {
@@ -588,7 +588,7 @@ async function loadRoles(input: {
       coreConfig,
       a2aConfig,
       runtime,
-      responder: createConfiguredAgentResponder({ config: coreConfig, runtime }),
+      responder: await createConfiguredAgentResponder({ config: coreConfig, runtime }),
     };
     return [role, loaded] as const;
   }));

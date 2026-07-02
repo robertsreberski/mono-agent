@@ -55,7 +55,7 @@ type ValidationStatus = ValidationReport["sections"][number]["status"];
 type ConsumerSourceJson = MonoAgentConfigJson & {
   readonly telegram?: { readonly enabled?: boolean };
   readonly slack?: { readonly enabled?: boolean };
-  readonly a2a?: { readonly provider?: { readonly enabled?: boolean } };
+  readonly a2a?: { readonly enabled?: boolean; readonly provider?: { readonly enabled?: boolean } };
   readonly webhook?: { readonly enabled?: boolean };
   readonly openaiApi?: { readonly enabled?: boolean };
 };
@@ -273,7 +273,8 @@ function sourceEnabledFlag(sourceJson: ConsumerSourceJson, id: string): boolean 
     case "slack":
       return sourceJson.slack?.enabled === true;
     case "a2a":
-      return sourceJson.a2a?.provider?.enabled === true;
+      // Canonical root flag wins; the legacy provider.enabled form is honored.
+      return sourceJson.a2a?.enabled ?? sourceJson.a2a?.provider?.enabled === true;
     case "webhook":
       return sourceJson.webhook?.enabled === true;
     case "openai-api":

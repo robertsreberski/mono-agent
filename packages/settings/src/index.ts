@@ -1,4 +1,6 @@
 export {
+  encodeJsonEnvValue,
+  fieldSpecMappings,
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
@@ -14,6 +16,7 @@ export {
 export type {
   ConfigErrorFactory,
   EnvEncodeKind,
+  JsonEnvFieldSpec,
   JsonEnvMapping,
   RedactedSecretValue,
 } from "./config-loader.js";

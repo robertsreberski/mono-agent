@@ -8,7 +8,7 @@ import { resolveRecipeInputs } from "./recipes/index.js";
 import type { AgentRecipe, RecipeInputValues } from "./recipes/index.js";
 
 /** Channels `--with` can switch on, merged onto a recipe's config. */
-export const WITH_CHANNELS = ["telegram", "slack", "a2a", "webhook", "openaiApi", "cron"] as const;
+export const WITH_CHANNELS = ["telegram", "slack", "whatsapp", "a2a", "webhook", "openaiApi", "cron"] as const;
 export type WithChannel = (typeof WITH_CHANNELS)[number];
 
 export function isWithChannel(value: string): value is WithChannel {
@@ -168,7 +168,7 @@ function withChannels(
   }
   const extra: Record<string, unknown> = {};
   for (const channel of channels) {
-    extra[channel] = channel === "a2a" ? { provider: { enabled: true } } : { enabled: true };
+    extra[channel] = { enabled: true };
   }
   return { ...config, ...extra } as MonoAgentConfigJson;
 }
