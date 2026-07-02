@@ -1,9 +1,16 @@
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { Agent as HttpAgent } from "node:http";
+import { Agent as HttpsAgent } from "node:https";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
 import { Bot } from "grammy";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentRequest, AgentResponder, TelegramAdapterLogger } from "../adapter.js";
 import {
+  buildTelegramBotClientOptions,
   createTelegramBot,
   SerialQueue,
   SerialQueueFullError,
@@ -1857,5 +1864,158 @@ describe("createTelegramBot pending asks and status posts", () => {
 
     expect(texts(calls, "sendMessage")).toEqual(["Transcribing… 10%", "Second run…"]);
     expect(texts(calls, "editMessageText")).toEqual(["Transcribing… 90%", "Transcript ready."]);
+  });
+});
+
+describe("buildTelegramBotClientOptions", () => {
+  it("defaults to the api timeout only", () => {
+    const built = buildTelegramBotClientOptions({});
+    expect(built.client).toEqual({ timeoutSeconds: 50 });
+    expect(built.agent).toBeUndefined();
+  });
+
+  it("sets apiRoot for a self-hosted server", () => {
+    const built = buildTelegramBotClientOptions({ apiRoot: "http://127.0.0.1:8081" });
+    expect(built.client.apiRoot).toBe("http://127.0.0.1:8081");
+  });
+
+  it("keeps the family-locked agent https for the hosted API", () => {
+    const built = buildTelegramBotClientOptions({ ipFamily: 4 });
+    expect(built.agent).toBeInstanceOf(HttpsAgent);
+    expect((built.client.baseFetchConfig as { agent?: unknown } | undefined)?.agent).toBe(built.agent);
+  });
+
+  it("switches to an http agent when the apiRoot is plain http (node-fetch rejects protocol-mismatched agents)", () => {
+    const built = buildTelegramBotClientOptions({ ipFamily: 4, apiRoot: "http://127.0.0.1:8081" });
+    expect(built.agent).toBeInstanceOf(HttpAgent);
+    expect((built.client.baseFetchConfig as { agent?: unknown } | undefined)?.agent).toBe(built.agent);
+  });
+});
+
+describe("createTelegramBot default file downloader (self-hosted server)", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  function buildApiRootBot(options: {
+    responder: AgentResponder;
+    filePath: string;
+    apiRoot?: string;
+    attachments?: CreateTelegramBotOptions["attachments"];
+  }): { bot: Bot } {
+    const controller = createTelegramBot({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder: options.responder,
+      ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
+      ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
+      botFactory: () => {
+        const bot = new Bot("test-token", { botInfo: FAKE_BOT_INFO });
+        bot.api.config.use(async (_prev, method, payload) => {
+          const typed = payload as Record<string, unknown>;
+          if (method === "getFile") {
+            return ok({ file_id: typed.file_id, file_unique_id: "u", file_path: options.filePath });
+          }
+          if (method === "sendMessage") {
+            return ok({ message_id: 1, date: 0, chat: { id: typed.chat_id, type: "private" }, text: typed.text });
+          }
+          return ok(true);
+        });
+        return bot;
+      },
+    });
+    return { bot: controller.bot };
+  }
+
+  it("reads a --local absolute file_path from disk and deletes the daemon copy after the read", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tg-local-"));
+    const filePath = join(dir, "recording.m4a");
+    writeFileSync(filePath, "LOCALDAT");
+    // Any HTTP fetch would be a bug on this branch.
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("unexpected HTTP fetch in local mode");
+    }) as unknown as typeof fetch;
+    const requests: AgentRequest[] = [];
+
+    const { bot } = buildApiRootBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      filePath,
+      apiRoot: "http://127.0.0.1:8081",
+    });
+    await bot.handleUpdate(documentUpdate({ mimeType: "audio/mp4" }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.attachments?.[0]?.data).toBe(Buffer.from("LOCALDAT").toString("base64"));
+    // The daemon copy is a drained cache once the bytes are consumed.
+    expect(existsSync(filePath)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("skips an over-cap local file via stat (stale declared size) and leaves it on disk", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tg-local-"));
+    const filePath = join(dir, "big.m4a");
+    // Declared file_size in the update is 12,345 (under the cap); the REAL file is
+    // larger — the stat check must trip where the declared-size check cannot.
+    writeFileSync(filePath, Buffer.alloc(30_000));
+    const requests: AgentRequest[] = [];
+
+    const { bot } = buildApiRootBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      filePath,
+      apiRoot: "http://127.0.0.1:8081",
+      attachments: { maxBytes: 20_000 },
+    });
+    await bot.handleUpdate(documentUpdate({ mimeType: "audio/mp4" }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.attachments).toBeUndefined();
+    // Skips never delete: only a consumed read drains the daemon copy.
+    expect(existsSync(filePath)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("skips a missing (expired) local file and the run proceeds", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildApiRootBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      filePath: "/nonexistent/expired/recording.m4a",
+      apiRoot: "http://127.0.0.1:8081",
+    });
+    await bot.handleUpdate(documentUpdate({ mimeType: "audio/mp4" }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.attachments).toBeUndefined();
+  });
+
+  it("builds the file URL from apiRoot for a relative file_path (non-local self-hosted server)", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: unknown) => {
+      urls.push(String(url));
+      return new Response(new Uint8Array([1, 2, 3]));
+    }) as unknown as typeof fetch;
+    const requests: AgentRequest[] = [];
+
+    const { bot } = buildApiRootBot({
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      filePath: "docs/file.bin",
+      apiRoot: "http://127.0.0.1:8081",
+    });
+    await bot.handleUpdate(documentUpdate({ mimeType: "audio/mp4" }));
+
+    expect(urls).toEqual(["http://127.0.0.1:8081/file/bottest-token/docs/file.bin"]);
+    expect(requests[0]?.attachments).toHaveLength(1);
   });
 });

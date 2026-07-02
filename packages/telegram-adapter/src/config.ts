@@ -53,11 +53,29 @@ export interface TelegramReactionsConfig {
   readonly error: boolean;
 }
 
+/** Attachment sizing knobs; names mirror the adapter's DownloadTelegramAttachmentsOptions. */
+export interface TelegramAttachmentsConfig {
+  /** Inbound download cap (bytes). Omit for the adapter default (20 MiB — the hosted API's hard limit). */
+  readonly maxBytes?: number;
+  /** Per-file download timeout (ms) on the URL branch. Omit for the adapter default (30s). */
+  readonly downloadTimeoutMs?: number;
+  /** Upload cap (bytes) for the telegram_send_document/photo tools. Omit for 20 MiB. */
+  readonly maxUploadBytes?: number;
+}
+
 export interface TelegramAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
   readonly allowedChatIds: readonly string[];
   readonly allowAllChats: boolean;
+  /**
+   * Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`).
+   * Omit for the hosted `https://api.telegram.org`. A `--local` server returns
+   * absolute file paths from getFile, which the adapter reads from disk.
+   */
+  readonly apiRoot?: string;
+  /** Attachment sizing (raise the 20 MiB defaults when running a self-hosted server). */
+  readonly attachments?: TelegramAttachmentsConfig;
   /** Pin the Bot API HTTP client to IPv4 (`4`) or IPv6 (`6`). Omit for dual-stack. */
   readonly ipFamily?: 4 | 6;
   /** Poll-liveness watchdog window (ms). Omit to use the adapter default (120000). */
@@ -75,6 +93,8 @@ export interface RedactedTelegramAdapterConfig {
   readonly botToken: RedactedSecretValue;
   readonly allowedChatIds: { readonly count: number };
   readonly allowAllChats: boolean;
+  readonly apiRoot?: string;
+  readonly attachments?: TelegramAttachmentsConfig;
   readonly ipFamily?: 4 | 6;
   readonly pollWatchdogMs?: number;
   readonly quietHours?: TelegramQuietHours;
@@ -178,17 +198,80 @@ export async function loadTelegramAdapterConfig(
   const quietHours = readTelegramQuietHours(json);
   const commands = readTelegramCommands(json);
   const reactions = readTelegramReactions(json, env);
+  const apiRoot = readTelegramApiRoot(env.MONO_AGENT_TELEGRAM_API_ROOT);
+  const attachments = readTelegramAttachments(env);
 
   return {
     enabled: true,
     botToken,
     allowedChatIds,
     allowAllChats,
+    ...(apiRoot === undefined ? {} : { apiRoot }),
+    ...(attachments === undefined ? {} : { attachments }),
     ...(ipFamily === undefined ? {} : { ipFamily }),
     ...(pollWatchdogMs === undefined ? {} : { pollWatchdogMs }),
     ...(quietHours === undefined ? {} : { quietHours }),
     ...(commands.length === 0 ? {} : { commands }),
     ...(reactions === undefined ? {} : { reactions }),
+  };
+}
+
+/** Validate + normalize the self-hosted Bot API server base URL (trailing `/` stripped). */
+function readTelegramApiRoot(raw: string | undefined): string | undefined {
+  const value = normalizeOptionalString(raw);
+  if (value === undefined) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw invalidConfig("MONO_AGENT_TELEGRAM_API_ROOT (telegram.apiRoot) must be a valid http(s) URL.", {
+      env: "MONO_AGENT_TELEGRAM_API_ROOT",
+    });
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw invalidConfig("MONO_AGENT_TELEGRAM_API_ROOT (telegram.apiRoot) must use http or https.", {
+      env: "MONO_AGENT_TELEGRAM_API_ROOT",
+    });
+  }
+  return value.replace(/\/+$/u, "");
+}
+
+/** The local Bot API server's hard upload/download limit (2 GiB) bounds both caps. */
+const MAX_ATTACHMENT_CONFIG_BYTES = 2_147_483_648;
+
+function readTelegramAttachments(
+  env: Record<string, string | undefined>,
+): TelegramAttachmentsConfig | undefined {
+  const readOptional = (
+    raw: string | undefined,
+    name: string,
+    bounds: { readonly min: number; readonly max: number },
+  ): number | undefined => {
+    const value = normalizeOptionalString(raw);
+    return value === undefined ? undefined : readInteger(value, name, bounds.min, invalidConfig, bounds);
+  };
+  const maxBytes = readOptional(env.MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES, "MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES", {
+    min: 1,
+    max: MAX_ATTACHMENT_CONFIG_BYTES,
+  });
+  const downloadTimeoutMs = readOptional(
+    env.MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS,
+    "MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS",
+    { min: 0, max: 3_600_000 },
+  );
+  const maxUploadBytes = readOptional(env.MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES, "MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES", {
+    min: 1,
+    max: MAX_ATTACHMENT_CONFIG_BYTES,
+  });
+  if (maxBytes === undefined && downloadTimeoutMs === undefined && maxUploadBytes === undefined) {
+    return undefined;
+  }
+  return {
+    ...(maxBytes === undefined ? {} : { maxBytes }),
+    ...(downloadTimeoutMs === undefined ? {} : { downloadTimeoutMs }),
+    ...(maxUploadBytes === undefined ? {} : { maxUploadBytes }),
   };
 }
 
@@ -423,6 +506,8 @@ export function redactTelegramAdapterConfig(
     botToken: redactedSecret(config.botToken),
     allowedChatIds: { count: config.allowedChatIds.length },
     allowAllChats: config.allowAllChats,
+    ...(config.apiRoot === undefined ? {} : { apiRoot: config.apiRoot }),
+    ...(config.attachments === undefined ? {} : { attachments: config.attachments }),
     ...(config.ipFamily === undefined ? {} : { ipFamily: config.ipFamily }),
     ...(config.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: config.pollWatchdogMs }),
     ...(config.quietHours === undefined ? {} : { quietHours: config.quietHours }),
@@ -444,6 +529,10 @@ export const TELEGRAM_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "telegram.allowAllChats", env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS", kind: "boolean", fromJson: (s) => s.allowAllChats },
   { id: "telegram.transport.ipFamily", env: "MONO_AGENT_TELEGRAM_IP_FAMILY", kind: "integer", fromJson: (s) => readRecord(s.transport).ipFamily },
   { id: "telegram.pollWatchdogMs", env: "MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS", kind: "integer", fromJson: (s) => s.pollWatchdogMs },
+  { id: "telegram.apiRoot", env: "MONO_AGENT_TELEGRAM_API_ROOT", fromJson: (s) => s.apiRoot },
+  { id: "telegram.attachments.maxBytes", env: "MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES", kind: "integer", fromJson: (s) => readRecord(s.attachments).maxBytes },
+  { id: "telegram.attachments.downloadTimeoutMs", env: "MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS", kind: "integer", fromJson: (s) => readRecord(s.attachments).downloadTimeoutMs },
+  { id: "telegram.attachments.maxUploadBytes", env: "MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES", kind: "integer", fromJson: (s) => readRecord(s.attachments).maxUploadBytes },
 ];
 
 function layerTelegramJsonOntoEnv(

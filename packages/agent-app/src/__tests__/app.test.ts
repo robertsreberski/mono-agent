@@ -494,6 +494,41 @@ describe("startMonoAgentApp", () => {
     }
   });
 
+  it("forwards apiRoot and attachment sizing from telegram config into the adapter start options", async () => {
+    let captured: TelegramAdapterStartOptions | undefined;
+    const driver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+
+    const running = await driver.start({
+      config: {
+        enabled: true,
+        botToken: "test-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        apiRoot: "http://127.0.0.1:8081",
+        attachments: { maxBytes: 268_435_456, downloadTimeoutMs: 120_000, maxUploadBytes: 268_435_456 },
+      },
+      coreConfig: baseConfig() as never,
+      responder: { respond: async () => ({ text: "" }) },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+
+    expect(captured?.apiRoot).toBe("http://127.0.0.1:8081");
+    // maxUploadBytes is a send-tools concern; only the download knobs flow here.
+    expect(captured?.attachments).toEqual({ maxBytes: 268_435_456, downloadTimeoutMs: 120_000 });
+    await running.stop();
+  });
+
   it("wires the interaction hub into the Telegram adapter and registers an allowlist-enforcing sink", async () => {
     let captured: TelegramAdapterStartOptions | undefined;
     const post = vi.fn(async () => undefined);

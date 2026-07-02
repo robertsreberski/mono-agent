@@ -276,6 +276,23 @@ export function createTelegramChannelDriver(
   };
 }
 
+/**
+ * Download-path attachment options from config (`maxUploadBytes` stays with the
+ * send tools, which reload the config themselves).
+ */
+function telegramAttachmentOptions(
+  config: TelegramAdapterConfig,
+): { maxBytes?: number; downloadTimeoutMs?: number } | undefined {
+  const attachments = config.attachments;
+  if (attachments?.maxBytes === undefined && attachments?.downloadTimeoutMs === undefined) {
+    return undefined;
+  }
+  return {
+    ...(attachments.maxBytes === undefined ? {} : { maxBytes: attachments.maxBytes }),
+    ...(attachments.downloadTimeoutMs === undefined ? {} : { downloadTimeoutMs: attachments.downloadTimeoutMs }),
+  };
+}
+
 /** Resolve + allowlist-check a `telegram:<chat>` destination for interaction-sink posts. */
 function requireAllowedTelegramChat(
   conversationId: string,
@@ -1097,6 +1114,10 @@ function telegramStartOptions(
     onPollingError: (error) =>
       input.onDegraded?.(error instanceof Error ? error.message : String(error)),
     onPollingRecovered: () => input.onRecovered?.(),
+    ...(input.config.apiRoot === undefined ? {} : { apiRoot: input.config.apiRoot }),
+    ...(telegramAttachmentOptions(input.config) === undefined
+      ? {}
+      : { attachments: telegramAttachmentOptions(input.config)! }),
     ...(input.interaction === undefined
       ? {}
       : {

@@ -1,4 +1,7 @@
+import { stat, readFile, unlink } from "node:fs/promises";
+import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
+import { isAbsolute } from "node:path";
 
 import { isAgentResponseCancelledError } from "@mono-agent/agent-contracts";
 import { run, type RunnerHandle, type RunOptions } from "@grammyjs/runner";
@@ -269,6 +272,12 @@ export interface CreateTelegramBotOptions {
    * otherwise queue behind that very turn and deadlock until the ask times out.
    */
   readonly pendingAsks?: TelegramPendingAsks;
+  /**
+   * Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`).
+   * Applied to every API call and to file downloads; a `--local` server's
+   * absolute file paths are read straight from disk. Omit for api.telegram.org.
+   */
+  readonly apiRoot?: string;
   /** Test seam: build the grammY Bot (e.g. with a fake botInfo + transformer). */
   readonly botFactory?: (token: string) => Bot;
   /**
@@ -444,22 +453,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // Cap the Api client's overall HTTP timeout so a half-open getUpdates socket
   // fails in ~50s instead of grammY's 500s default — see DEFAULT_API_TIMEOUT_SECONDS.
   // The botFactory test seam owns full Bot construction, so the cap (and the
-  // optional IPv4/IPv6 transport pin) is applied only on the default path.
-  const clientOptions: BotClientOptions = { timeoutSeconds: DEFAULT_API_TIMEOUT_SECONDS };
-  // Retained so stop() can destroy it (closes any in-flight socket on teardown).
-  let transportAgent: HttpsAgent | undefined;
-  if (options.transport?.ipFamily !== undefined) {
-    // The Telegram Bot API is HTTPS-only, so one family-locked https.Agent covers
-    // every call. keepAlive:false so a network switch can't strand a pooled socket
-    // bound to the dead interface (it would ENETUNREACH for ~50s, the Api timeout,
-    // before the poller retries). A fresh socket per ~30s long-poll detects the live
-    // route immediately; pooling buys almost nothing at 1 request/30s.
-    transportAgent = new HttpsAgent({ family: options.transport.ipFamily, keepAlive: false });
-    clientOptions.baseFetchConfig = {
-      ...clientOptions.baseFetchConfig,
-      agent: transportAgent,
-    };
-  }
+  // optional IPv4/IPv6 transport pin + apiRoot) is applied only on the default path.
+  const { client: clientOptions, agent: transportAgent } = buildTelegramBotClientOptions({
+    ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
+    ...(options.transport?.ipFamily === undefined ? {} : { ipFamily: options.transport.ipFamily }),
+  });
   const bot =
     options.botFactory?.(options.botToken) ??
     new Bot(options.botToken, { client: clientOptions });
@@ -483,6 +481,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       ...(options.attachments?.downloadTimeoutMs !== undefined
         ? { downloadTimeoutMs: options.attachments.downloadTimeoutMs }
         : {}),
+      ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
       ...(logger !== undefined ? { logger } : {}),
     });
 
@@ -1584,9 +1583,41 @@ function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 
+/**
+ * Build the grammY client options for the default Bot construction. Extracted
+ * (and exported) so the apiRoot/agent interplay is unit-testable — the botFactory
+ * test seam otherwise owns the whole construction.
+ *
+ * grammY's node platform fetches with node-fetch, which rejects an agent whose
+ * protocol mismatches the URL — so the family-locked keep-alive-off agent (see
+ * the ipFamily rationale on {@link CreateTelegramBotOptions.transport}) must be
+ * an `http.Agent` when the apiRoot is plain http (a loopback self-hosted server)
+ * and an `https.Agent` otherwise.
+ */
+export function buildTelegramBotClientOptions(options: {
+  readonly apiRoot?: string;
+  readonly ipFamily?: 4 | 6;
+}): { client: BotClientOptions; agent?: HttpAgent | HttpsAgent } {
+  const client: BotClientOptions = { timeoutSeconds: DEFAULT_API_TIMEOUT_SECONDS };
+  if (options.apiRoot !== undefined) {
+    client.apiRoot = options.apiRoot;
+  }
+  if (options.ipFamily === undefined) {
+    return { client };
+  }
+  const agentOptions = { family: options.ipFamily, keepAlive: false };
+  const agent = options.apiRoot?.startsWith("http://") === true
+    ? new HttpAgent(agentOptions)
+    : new HttpsAgent(agentOptions);
+  client.baseFetchConfig = { ...client.baseFetchConfig, agent };
+  return { client, agent };
+}
+
 interface DefaultFileDownloaderOptions {
   /** Per-file download timeout (ms), composed with the run abort signal. Default 30000. */
   readonly downloadTimeoutMs?: number;
+  /** Self-hosted Bot API server base URL; replaces api.telegram.org in file URLs. */
+  readonly apiRoot?: string;
   readonly logger?: TelegramAdapterLogger;
 }
 
@@ -1615,7 +1646,14 @@ function createDefaultFileDownloader(
       return file.file_path;
     },
     async download(filePath, signal, maxBytes): Promise<Uint8Array> {
-      const url = `https://api.telegram.org/file/bot${token}/${filePath}`;
+      // A `--local` self-hosted server downloads the file itself during getFile
+      // and returns an ABSOLUTE path; the /file/ HTTP route is unavailable in
+      // that mode, so the bytes are read straight from disk. Hosted and
+      // non-local self-hosted servers return relative paths served over HTTP.
+      if (isAbsolute(filePath)) {
+        return await readLocalTelegramFile(filePath, signal, maxBytes, options?.logger);
+      }
+      const url = `${options?.apiRoot ?? "https://api.telegram.org"}/file/bot${token}/${filePath}`;
       const { signal: fetchSignal, cleanup } = composeDownloadSignal(signal, timeoutMs);
       try {
         const response = await fetch(url, fetchSignal === undefined ? {} : { signal: fetchSignal });
@@ -1636,6 +1674,42 @@ function createDefaultFileDownloader(
       }
     },
   };
+}
+
+/**
+ * Read a `--local` Bot API server file from disk. The stat-before-read is the
+ * local analog of the Content-Length early-skip (the declared file_size in the
+ * update can be stale). A consumed read deletes the daemon's copy: the daemon
+ * keeps downloads for up to ~25h, the harness persists its own copy into the
+ * attachments dir before the model sees it, and getFile re-downloads on demand —
+ * so the daemon file is a drained cache. Skip paths (over-cap, missing) never
+ * delete.
+ */
+async function readLocalTelegramFile(
+  filePath: string,
+  signal: AbortSignal | undefined,
+  maxBytes: number | undefined,
+  logger: TelegramAdapterLogger | undefined,
+): Promise<Uint8Array> {
+  let size: number;
+  try {
+    size = (await stat(filePath)).size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("Telegram local file is missing (expired from the Bot API server cache?).");
+    }
+    throw error;
+  }
+  if (maxBytes !== undefined && size > maxBytes) {
+    throw new Error("Telegram file exceeded the configured byte cap (local file size).");
+  }
+  const bytes = await readFile(filePath, signal === undefined ? {} : { signal });
+  await unlink(filePath).catch((error: unknown) => {
+    logger?.debug?.("Telegram local file cleanup failed (best-effort).", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  return new Uint8Array(bytes);
 }
 
 /**
