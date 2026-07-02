@@ -9,10 +9,23 @@ export interface ParsedArgs {
   readonly config?: string;
   readonly title?: string;
   readonly conversationId?: string;
+  readonly url?: string;
+  readonly apiKey?: string;
+  readonly registryDir?: string;
   readonly help: boolean;
 }
 
 export type ParseArgsResult = ParsedArgs | { readonly error: string };
+
+const VALUE_FLAGS: Record<string, keyof Omit<ParsedArgs, "help">> = {
+  "--responder": "responder",
+  "--config": "config",
+  "--title": "title",
+  "--conversation": "conversationId",
+  "--url": "url",
+  "--api-key": "apiKey",
+  "--registry-dir": "registryDir",
+};
 
 /**
  * Parse the `mono-agent-tui` argv (already stripped of `node` + script path).
@@ -20,10 +33,7 @@ export type ParseArgsResult = ParsedArgs | { readonly error: string };
  */
 export function parseArgs(argv: readonly string[]): ParseArgsResult {
   let help = false;
-  let responder: string | undefined;
-  let config: string | undefined;
-  let title: string | undefined;
-  let conversationId: string | undefined;
+  const values: Partial<Record<keyof Omit<ParsedArgs, "help">, string>> = {};
 
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
@@ -31,72 +41,50 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
       help = true;
       continue;
     }
-    if (flag === "--responder") {
+    const key = flag === undefined ? undefined : VALUE_FLAGS[flag];
+    if (key !== undefined) {
       const value = argv[i + 1];
       if (value === undefined) {
-        return { error: "--responder requires a path" };
+        return { error: `${flag} requires a value` };
       }
-      responder = value;
-      i++;
-      continue;
-    }
-    if (flag === "--config") {
-      const value = argv[i + 1];
-      if (value === undefined) {
-        return { error: "--config requires a path" };
-      }
-      config = value;
-      i++;
-      continue;
-    }
-    if (flag === "--title") {
-      const value = argv[i + 1];
-      if (value === undefined) {
-        return { error: "--title requires a value" };
-      }
-      title = value;
-      i++;
-      continue;
-    }
-    if (flag === "--conversation") {
-      const value = argv[i + 1];
-      if (value === undefined) {
-        return { error: "--conversation requires a value" };
-      }
-      conversationId = value;
+      values[key] = value;
       i++;
       continue;
     }
     return { error: `unknown argument: ${String(flag)}` };
   }
 
-  const result: ParsedArgs = {
-    help,
-    ...(responder === undefined ? {} : { responder }),
-    ...(config === undefined ? {} : { config }),
-    ...(title === undefined ? {} : { title }),
-    ...(conversationId === undefined ? {} : { conversationId }),
-  };
-  return result;
+  if (values.responder !== undefined && values.url !== undefined) {
+    return { error: "--responder and --url are mutually exclusive" };
+  }
+
+  return { help, ...values };
 }
 
 export const HELP_TEXT = `Usage: mono-agent-tui [options]
 
+Connection (exactly one):
   --responder <file>      Path to an ESM module that default-exports an
                           AgentResponderLike, or exports
-                          createResponder(env, cwd, configJson).
-  --config <path>         Path to mono-agent.config.json. When set, the
-                          Config pane is enabled and the file is forwarded
-                          to createResponder().
-  --conversation <id>     Conversation id passed to the responder
-                          (default: tui-local).
-  --title <text>          Header title (default: "Agent").
+                          createResponder(env, cwd, configJson). In-process mode.
+  --url <baseUrl>         Connect to a running agent's tui endpoint
+                          (e.g. http://127.0.0.1:52341/tui).
+  (neither)               Discover running agents from the trace-source
+                          registry and open on the picker.
+
+Options:
+  --api-key <key>         Bearer key for --url when the agent sets tui.apiKey.
+  --registry-dir <dir>    Trace-source registry directory (default:
+                          ~/.mono-agent/trace-sources).
+  --config <path>         Path to mono-agent.config.json. Enables the Config
+                          view and is forwarded to createResponder().
+  --conversation <id>     Conversation id (default: tui-local).
+  --title <text>          Header title (default: "mono-agent").
   -h, --help              Show this help and exit.
 
-The TUI is a communication adapter — it does not boot a harness on its
-own. Hosts that want a runnable TUI in their own demo should call
-startMonoAgentTui() from their own bin and pass an AgentResponderLike
-backed by createAgentResponder({ harness }).
+Prefer \`mono-agent tui\` (from @mono-agent/agent-app): it resolves running
+agents, endpoints, and keys automatically. This bin is the low-level surface
+for custom hosts.
 `;
 
 export function exitWithError(message: string): never {

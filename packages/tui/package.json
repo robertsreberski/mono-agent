@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/tui",
   "version": "0.4.0",
-  "description": "Ink-based React TUI console adapter for agent hosts: chat, history, redacted config view.",
+  "description": "pi-tui operator console for mono-agent: live chat with full stream-event insight, recorded-run replay, and read-only config view for running agents.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
@@ -26,18 +26,15 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@earendil-works/pi-tui": "^0.79.1",
     "@mono-agent/agent-contracts": "workspace:0.4.0",
     "@mono-agent/config": "workspace:0.4.0",
-    "ink": "^7.0.3",
-    "ink-spinner": "^5.0.0",
-    "ink-text-input": "^6.0.0",
-    "react": "^19.2.0"
-  },
-  "devDependencies": {
-    "@types/react": "^19.2.2",
-    "ink-testing-library": "^4.0.0"
+    "@mono-agent/observability": "workspace:0.4.0"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@mono-agent/tui-adapter": "workspace:0.4.0"
   }
 }
