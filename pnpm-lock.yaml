@@ -171,6 +171,9 @@ importers:
       '@mono-agent/telegram-adapter':
         specifier: workspace:0.4.0
         version: link:../telegram-adapter
+      '@mono-agent/tui':
+        specifier: workspace:0.4.0
+        version: link:../tui
       '@mono-agent/tui-adapter':
         specifier: workspace:0.4.0
         version: link:../tui-adapter
