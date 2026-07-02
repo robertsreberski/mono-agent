@@ -311,8 +311,8 @@ describe("adapter send MCP tools", () => {
         async sendDocument(params): Promise<TelegramSentMessage> {
           docCalls.push({
             chat_id: params.chat_id,
-            filename: params.filename,
-            bytes: params.document.byteLength,
+            filename: params.filename ?? "(none)",
+            bytes: params.document instanceof Uint8Array ? params.document.byteLength : params.document.length,
             ...(params.caption === undefined ? {} : { caption: params.caption }),
           });
           return { message_id: 91, chat: { id: params.chat_id }, text: "" };

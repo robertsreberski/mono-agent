@@ -385,7 +385,7 @@ describe("startMonoAgentApp", () => {
     const driver = createTelegramChannelDriver({
       startAdapter: async (options) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }), post: async () => undefined, postStatus: async () => undefined };
       },
     });
 
@@ -590,7 +590,7 @@ describe("startMonoAgentApp", () => {
     const driver = createTelegramChannelDriver({
       startAdapter: async (options: TelegramAdapterStartOptions) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }), post: async () => undefined, postStatus: async () => undefined };
       },
     });
 
@@ -746,7 +746,7 @@ describe("startMonoAgentApp", () => {
     const telegramDriver = createTelegramChannelDriver({
       startAdapter: async (options) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }), post: async () => undefined, postStatus: async () => undefined };
       },
     });
     const disposeSpy = vi.fn(async () => {});
@@ -783,7 +783,7 @@ describe("startMonoAgentApp", () => {
     const telegramDriver = createTelegramChannelDriver({
       startAdapter: async (options) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => ({ delivered: true }) };
+        return { stop: async () => undefined, notify: async () => ({ delivered: true }), post: async () => undefined, postStatus: async () => undefined };
       },
     });
     const disposeSpy = vi.fn(async () => {});

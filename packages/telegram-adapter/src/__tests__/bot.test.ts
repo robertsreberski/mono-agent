@@ -54,6 +54,7 @@ function buildTestBot(
   options: Partial<CreateTelegramBotOptions> & { responder: AgentResponder },
 ): {
   bot: Bot;
+  controller: ReturnType<typeof createTelegramBot>;
   calls: RecordedCall[];
   failures: Map<string, () => unknown>;
   downloads: Map<string, StubbedDownload>;
