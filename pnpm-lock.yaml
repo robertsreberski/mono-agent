@@ -80,6 +80,9 @@ importers:
       '@mono-agent/tui':
         specifier: workspace:0.4.0
         version: link:packages/tui
+      '@mono-agent/tui-adapter':
+        specifier: workspace:0.4.0
+        version: link:packages/tui-adapter
       '@mono-agent/webhook-adapter':
         specifier: workspace:0.4.0
         version: link:packages/webhook-adapter
@@ -479,6 +482,22 @@ importers:
       ink-testing-library:
         specifier: ^4.0.0
         version: 4.0.0(@types/react@19.2.14)
+
+  packages/tui-adapter:
+    dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.4.0
+        version: link:../agent-contracts
+      '@mono-agent/settings':
+        specifier: workspace:0.4.0
+        version: link:../settings
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
 
   packages/webhook-adapter:
     dependencies:
