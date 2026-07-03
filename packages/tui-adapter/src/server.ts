@@ -36,6 +36,12 @@ export interface TuiAdapterLogger {
 export interface TuiAdapterInfo {
   readonly label?: string;
   readonly model?: string;
+  /**
+   * The statically configured reasoning-effort level. Per-run overrides
+   * (e.g. a per-trigger effort override on a given turn) do NOT flow through
+   * here — those arrive via the `run_config` runtime_telemetry event instead.
+   */
+  readonly effort?: string;
 }
 
 export interface TuiAdapterOptions {
@@ -98,6 +104,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       pid: process.pid,
       ...(options.info?.label === undefined ? {} : { label: options.info.label }),
       ...(options.info?.model === undefined ? {} : { model: options.info.model }),
+      ...(options.info?.effort === undefined ? {} : { effort: options.info.effort }),
     });
   });
 

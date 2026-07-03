@@ -58,6 +58,34 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({ schema: 1, pid: process.pid, label: "test-agent", model: "claude-fable-5" });
   });
 
+  it("includes effort in /v1/info when configured", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { label: "test-agent", model: "claude-fable-5", effort: "high" },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json();
+
+    expect(info).toEqual({
+      schema: 1,
+      pid: process.pid,
+      label: "test-agent",
+      model: "claude-fable-5",
+      effort: "high",
+    });
+  });
+
+  it("omits effort from /v1/info when not configured", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { label: "test-agent", model: "claude-fable-5" },
+    });
+
+    const info = (await (await fetch(running.infoUrl)).json()) as Record<string, unknown>;
+
+    expect("effort" in info).toBe(false);
+  });
+
   it("streams the full callback sequence as NDJSON frames in order", async () => {
     running = await startTuiAdapter({
       responder: scriptedResponder(async (request, stream) => {

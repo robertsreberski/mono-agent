@@ -97,6 +97,31 @@ describe("RemoteAgentResponder", () => {
     );
   });
 
+  it("surfaces effort from /v1/info when the agent has one configured", async () => {
+    const adapter = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: { label: "fixture-agent", model: "claude-fable-5", effort: "high" },
+    });
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+      const info = await client.info();
+      expect(info).toMatchObject({ effort: "high" });
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it("tolerates the absence of effort from an older agent's /v1/info", async () => {
+    await withAdapter(
+      { respond: async () => ({ text: "ok" }) },
+      async (adapter) => {
+        const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+        const info = await client.info();
+        expect(info.effort).toBeUndefined();
+      },
+    );
+  });
+
   it("throws AgentResponseCancelledError for a cancelled remote turn", async () => {
     await withAdapter(
       {

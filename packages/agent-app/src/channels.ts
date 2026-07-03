@@ -763,7 +763,10 @@ export function createTuiChannelDriver(
         allowNonLoopback: input.config.allowNonLoopback,
         ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
         responder: input.responder,
-        info: { model: modelReferenceKey(input.coreConfig.runtime.model) },
+        info: {
+          model: modelReferenceKey(input.coreConfig.runtime.model),
+          ...(input.coreConfig.runtime.effort === undefined ? {} : { effort: input.coreConfig.runtime.effort }),
+        },
         // A dead endpoint must flip the channel to failed, not serve nothing
         // silently — the TUI's only discovery signal is this channel's status.
         onServerError: (reason) => input.onFailure(reason),
