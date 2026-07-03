@@ -21,8 +21,6 @@
 
 import {
   AgentHarness,
-  InMemorySessionRepo,
-  JsonlSessionRepo,
   calculateContextTokens,
   estimateTokens,
   getLastAssistantUsage,
@@ -35,7 +33,6 @@ import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
 import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
-import { createSessionRegistry } from "../runtime/sessions.js";
 import { formatLiveInputGuidance } from "../live-input-prompt.js";
 import {
   estimateFixedOverheadTokens,
@@ -78,6 +75,14 @@ import {
   emitUsageCostEvents,
   usageFromMessages,
 } from "./pi-native/result-builder.js";
+import {
+  cleanupSessionOnThrow,
+  commitSession,
+  discardUncommittedSession,
+  resolveDurableNativeSessionRepo,
+  resolveSession,
+  rollbackAbortedTurn,
+} from "./pi-native/session-lifecycle.js";
 
 function thinkingLevelForEffort(effort, capabilities) {
   if (!capabilities?.reasoning || capabilities.reasoning_mode === "none") return "off";
@@ -336,104 +341,6 @@ function splitUserContent(content) {
   return { text: texts.join("\n"), images };
 }
 
-// Live pi-native sessions, keyed by provider session id. Entries are
-// { session, metadata, repo, durable, busy } — identical shape and lifecycle
-// policy to the (now-retired) pi-sdk bridge: in-memory transcripts are freed
-// when the registry evicts them; durable (jsonl) transcripts survive eviction
-// so a later resume can reopen them from disk. Registering here gives
-// runtime.disposeSession / disposeProviderSession + idle-TTL eviction the same
-// reach over native pi sessions that the legacy bridge had.
-const nativeSessionRepo = new InMemorySessionRepo();
-const nativeSessions = createSessionRegistry({
-  isBusy: (entry) => entry.busy === true,
-  onEvict: async (entry) => {
-    if (entry.durable) return;
-    try {
-      await entry.repo.delete(entry.metadata);
-    } catch { /* best-effort */ }
-  },
-});
-
-const durableNativeSessionRepos = new Map();
-
-function resolveDurableNativeSessionRepo(piSessionsRoot) {
-  if (typeof piSessionsRoot !== "string" || !piSessionsRoot.trim()) return null;
-  const root = piSessionsRoot.trim();
-  let repo = durableNativeSessionRepos.get(root);
-  if (!repo) {
-    repo = new JsonlSessionRepo({
-      fs: new NodeExecutionEnv({ cwd: process.cwd() }),
-      sessionsRoot: root,
-    });
-    durableNativeSessionRepos.set(root, repo);
-  }
-  return repo;
-}
-
-// Defense in depth (R4): create-on-miss passes the caller-controlled session id
-// straight to durableRepo.create({ id }), and JsonlSessionRepo writes
-// `${createdAt}_${id}.jsonl` — so an id like "../../../../tmp/pwn" would escape
-// piSessionsRoot and name a file anywhere on disk. The harness-derived id is a
-// sha256 hex (always safe), but the public runtime API is caller-controlled.
-// Only an id that is a single safe filename component may CREATE a session;
-// anything else falls through to the existing session_not_found fast-fail, so a
-// malicious id can never name a file. (A genuinely on-disk session reopened by
-// reopenDurableNativeSession is matched by `.id`, never used to build a path, so
-// this gate is confined to the create path.)
-const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
-function isSafeSessionId(id) {
-  return typeof id === "string"
-    && SAFE_SESSION_ID.test(id)
-    && !id.includes("..")
-    && !id.includes("/")
-    && !id.includes("\\");
-}
-
-async function reopenDurableNativeSession(repo, sessionId) {
-  try {
-    const metadata = (await repo.list()).find((entry) => entry?.id === sessionId);
-    if (!metadata) return null;
-    const session = await repo.open(metadata);
-    return { session, metadata, repo, durable: true, busy: false };
-  } catch {
-    return null;
-  }
-}
-
-function sessionUnavailableResult({
-  resolved,
-  options,
-  events,
-  runtimeWarnings,
-  start,
-  sessionId,
-  errorMessage,
-  failureKind,
-  piErrorCode,
-}) {
-  return {
-    text: null,
-    events,
-    usage: {},
-    durationMs: Date.now() - start,
-    numTurns: 0,
-    model: resolved?.reference || resolved?.model || null,
-    effort: options.effort || null,
-    sdk: resolved?.sdk || "pi",
-    cancelled: false,
-    error: errorMessage,
-    failureKind,
-    providerSessionId: sessionId,
-    runtimeWarnings,
-    diagnostics: {
-      provider_session_id: sessionId,
-      pi_error_code: piErrorCode,
-      pi_engine: "native",
-    },
-  };
-}
-
 export async function generatePiNativeResponse(systemPrompt, options = {}) {
   const resolved = options.model;
   const start = Date.now();
@@ -445,10 +352,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   let harness = null;
   let removeAbortHandler = null;
   // Mutable run state the extracted modules read/write. Grows across the
-  // decomposition (session-lifecycle + compaction fields land here in later
-  // commits); today it carries the stream subscriber's counters, dedup keys,
-  // and tool timings. `toolStartTimes` maps toolCallId -> start timestamp so
-  // per-tool execution latency can be emitted.
+  // decomposition (compaction fields land here in the next commit); today it
+  // carries the stream subscriber's counters/dedup keys/tool timings and the
+  // session-lifecycle handles. `toolStartTimes` maps toolCallId -> start
+  // timestamp so per-tool execution latency can be emitted.
   const runState = {
     assistantTexts: [],
     assistantThinking: [],
@@ -459,6 +366,26 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     toolResultsSeen: 0,
     lastToolName: null,
     maxTurnsHit: false,
+    session: null,
+    sessionEntry: null,
+    // True when a requestedSessionId had no live entry AND no durable transcript,
+    // so a fresh durable session was created under that id (cross-restart resume,
+    // first turn for the conversation). Distinct from a true resume (sessionEntry
+    // set): the on-disk transcript is empty, so prior messages must still be
+    // seeded — unlike a resume, where the session already holds them.
+    createdOnMiss: false,
+    // The create-on-miss BUSY reservation handle (R8 concurrent-first-turn
+    // reservation) when the create path inserted its placeholder; null
+    // otherwise. Its release()/commit() clean the placeholder on the
+    // drop/error/abort/keep-alive paths, since createdOnMiss leaves sessionEntry
+    // null so the finally's busy-clear does not cover it.
+    reservation: null,
+    sessionBaselineCount: 0,
+    // Leaf captured before a resumed turn runs, so a failed resume can be rolled
+    // back to the last good transcript via moveTo. On runState so the OUTER catch
+    // (host/runtime-side throws after the session mutated) can roll back too, not
+    // just the success path.
+    baselineLeafId: null,
   };
 
   const providerSessionId = options.sessionId
@@ -499,142 +426,29 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   }
 
   const durableRepo = resolveDurableNativeSessionRepo(options.piSessionsRoot);
-  let session = null;
-  let sessionEntry = null;
-  // True when a requestedSessionId had no live entry AND no durable transcript,
-  // so a fresh durable session was created under that id (cross-restart resume,
-  // first turn for the conversation). Distinct from a true resume (sessionEntry
-  // set): the on-disk transcript is empty, so prior messages must still be
-  // seeded — unlike a resume, where the session already holds them.
-  let createdOnMiss = false;
-  // True once the create-on-miss path inserted its BUSY placeholder into the
-  // registry (R8 concurrent-first-turn reservation). Used to clean the
-  // placeholder up on the drop/error/abort paths, since createdOnMiss leaves
-  // sessionEntry null so the finally's busy-clear does not cover it.
-  let createdOnMissPlaceholder = false;
-  let sessionBaselineCount = 0;
-  // Leaf captured before a resumed turn runs, so a failed resume can be rolled
-  // back to the last good transcript via moveTo. Hoisted to function scope so
-  // the OUTER catch (host/runtime-side throws after the session mutated) can
-  // roll back too, not just the success path.
-  let baselineLeafId = null;
 
   try {
-    // Resume check first: a session miss must stay cheap (no tool/MCP/harness
-    // init). This mirrors the legacy bridge's fail-fast contract.
-    if (requestedSessionId) {
-      let entry = nativeSessions.get(requestedSessionId);
-      if (!entry && durableRepo) {
-        entry = await reopenDurableNativeSession(durableRepo, requestedSessionId);
-        if (entry) {
-          // TOCTOU guard: the reopen above is an AWAIT, so a second concurrent
-          // cold resume could have reopened+inserted its own entry in this
-          // window. Re-read the registry and adopt any entry already present so
-          // the busy-claim below collapses back to the warm path's synchronous
-          // semantics (the loser sees the winner's shared entry with busy===true
-          // and returns session_busy). The discarded reopen is just an in-memory
-          // jsonl handle (no subprocess/socket), so dropping it is safe.
-          const concurrent = nativeSessions.get(requestedSessionId);
-          if (concurrent) {
-            entry = concurrent;
-          } else {
-            nativeSessions.set(requestedSessionId, entry, { idleTimeoutMs: sessionTtlMs });
-          }
-        }
-      }
-      if (!entry) {
-        if (durableRepo && isSafeSessionId(providerSessionId)) {
-          // Create-on-miss (durable resume only): the requested id has no live
-          // registry entry AND no JSONL on disk under piSessionsRoot. This is
-          // the cross-restart resume case — the harness derives a stable id from
-          // the conversationId and passes it before any session exists on a
-          // fresh process. Rather than fail with session_not_found (which would
-          // make the harness re-send full history into yet another fresh,
-          // randomly-named session and orphan future resumes), create a durable
-          // session UNDER the requested id so this and every later turn for the
-          // conversation resolve to the same on-disk transcript. sessionEntry
-          // stays null so this proceeds exactly like a fresh run (prior messages
-          // are seeded, the keep-alive success path registers + persists it).
-          // The IN-MEMORY resume miss (no durableRepo) — and a create-on-miss
-          // with an UNSAFE id (R4) — keep fast-failing below, preserving the
-          // existing per-process session_not_found contract.
-          //
-          // Concurrent-first-turn race (R8): two concurrent first turns for the
-          // same durable id would BOTH miss here and BOTH create, producing two
-          // transcripts for one logical id (JsonlSessionRepo names files by
-          // `${createdAt}_${id}`, so there is no fs-level dedup). Mirror the
-          // cold-reopen-race defense: synchronously (NO await) re-check the
-          // registry, then reserve the id with a BUSY placeholder before the
-          // create await. The get→check→set span MUST stay await-free, so the
-          // loser observes the busy placeholder and returns session_busy via the
-          // same busy-claim path below — exactly one create per durable id.
-          const concurrent = nativeSessions.get(requestedSessionId);
-          if (concurrent) {
-            // A concurrent caller already reserved/created this id in the window
-            // since the miss above. Adopt its entry and fall into the busy-claim
-            // logic (session_busy if its turn is in flight, else resume).
-            entry = concurrent;
-          } else {
-            // Reserve the id with a busy placeholder BEFORE the create await so a
-            // second concurrent first turn observes busy and returns session_busy.
-            // The keep-alive success path (set(providerSessionId, ...) with
-            // busy:false) overwrites this placeholder on success; the drop/abort/
-            // catch paths delete it by requestedSessionId/providerSessionId (they
-            // are equal here). Keyed by requestedSessionId === providerSessionId.
-            nativeSessions.set(requestedSessionId, {
-              session: null,
-              metadata: null,
-              repo: durableRepo,
-              durable: true,
-              busy: true,
-            }, { idleTimeoutMs: sessionTtlMs });
-            createdOnMissPlaceholder = true;
-            session = await durableRepo.create({ id: providerSessionId, cwd: options.cwd || process.cwd() });
-            createdOnMiss = true;
-          }
-        } else {
-          return sessionUnavailableResult({
-            resolved,
-            options,
-            events,
-            runtimeWarnings,
-            start,
-            sessionId: requestedSessionId,
-            errorMessage: `Pi session ${requestedSessionId} is not live`,
-            failureKind: "session_not_found",
-            piErrorCode: "pi_session_not_found",
-          });
-        }
-      }
-      if (entry && !createdOnMiss) {
-        // The busy claim MUST stay await-free between the registry adoption
-        // above and `entry.busy = true` below: get/set + this check/claim are
-        // all synchronous, which is what makes the cold-resume race (F4) safe.
-        // Do not introduce any await in this span or the TOCTOU window reopens.
-        if (entry.busy) {
-          return sessionUnavailableResult({
-            resolved,
-            options,
-            events,
-            runtimeWarnings,
-            start,
-            sessionId: requestedSessionId,
-            errorMessage: `Pi session ${requestedSessionId} is busy with another turn`,
-            failureKind: "session_busy",
-            piErrorCode: "pi_session_busy",
-          });
-        }
-        entry.busy = true;
-        sessionEntry = entry;
-        session = entry.session;
-      }
-    } else {
-      // Fresh runs persist into the durable jsonl repo when piSessionsRoot is
-      // set, so a kept-alive session can be reopened from disk after the live
-      // entry is evicted; otherwise the in-memory repo is used.
-      session = await (durableRepo || nativeSessionRepo)
-        .create({ id: providerSessionId, cwd: options.cwd || process.cwd() });
-    }
+    // Resume the session (warm registry hit, durable cold reopen, or
+    // create-on-miss for a durable cross-restart first turn) or create a fresh
+    // one. resolveSession mutates runState.session / sessionEntry / createdOnMiss
+    // / reservation, and returns an early fast-fail result (session_not_found /
+    // session_busy) to return verbatim. Its liveness claims (I1 busy-claim, R8
+    // reservation, F4 cold-reopen re-read) are await-free by construction. A
+    // session miss stays cheap: no tool/MCP/harness init runs before this
+    // fast-fail.
+    const resolvedSession = await resolveSession(runState, {
+      requestedSessionId,
+      providerSessionId,
+      durableRepo,
+      sessionTtlMs,
+      cwd: options.cwd,
+      resolved,
+      options,
+      events,
+      runtimeWarnings,
+      start,
+    });
+    if (resolvedSession.done) return resolvedSession.result;
 
     // `piResolvedModel` is an advanced/test seam: when supplied it provides a
     // ready pi-ai Model (e.g. a registered faux provider model) plus optional
@@ -767,7 +581,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     harness = new AgentHarness({
       env: new NodeExecutionEnv({ cwd: options.cwd || process.cwd() }),
-      session,
+      session: runState.session,
       models: piModels,
       model: runtime.model,
       thinkingLevel: effectiveThinkingLevel,
@@ -795,11 +609,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // (requestedSessionId set but the durable session was just created empty)
     // both seed, since their on-disk transcript is empty.
     const { priorMessages, promptText, promptImages } = splitPromptMessages(options.messages, runtime.model);
-    sessionBaselineCount = (await session.buildContext()).messages.length;
-    if (!requestedSessionId || createdOnMiss) {
+    runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
+    if (!requestedSessionId || runState.createdOnMiss) {
       for (const message of priorMessages) {
         await harness.appendMessage(message);
-        sessionBaselineCount += 1;
+        runState.sessionBaselineCount += 1;
       }
     }
     // The harness persists each turn INLINE into the live session. To preserve
@@ -808,8 +622,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // the last good transcript via the session tree's moveTo primitive. Only a
     // TRUE resume needs this: a create-on-miss session is fresh, so a failure
     // drops it entirely via the fresh-run path (no leaf to roll back to).
-    if (requestedSessionId && !createdOnMiss) {
-      try { baselineLeafId = await session.getLeafId(); } catch { /* best-effort */ }
+    if (requestedSessionId && !runState.createdOnMiss) {
+      try { runState.baselineLeafId = await runState.session.getLeafId(); } catch { /* best-effort */ }
     }
 
     // Live steering: consume follow-up messages and steer the harness mid-run.
@@ -847,22 +661,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // target. Without this re-check a full provider/LLM request would be issued
     // for a run the caller already aborted (mirrors the entry pre-check at ~:356).
     if (options.abortSignal?.aborted) {
-      // Drop a freshly-created non-keep-alive session so an aborted-before-run
-      // turn does not leave an orphan jsonl on disk. Guarded `session &&
-      // !sessionEntry` so a resumed (user-owned) session is NEVER deleted —
-      // identical to the outer catch guard. The finally block clears
-      // sessionEntry.busy, removes the abort handler, and closes MCP clients.
-      // For a resume no transcript was appended yet (prompt never ran), so the
-      // live session is already at its pre-turn leaf and needs no rollback.
-      if (session && !sessionEntry) {
-        try { await (durableRepo || nativeSessionRepo).delete(await session.getMetadata()); } catch { /* best-effort */ }
-      }
-      // Drop the create-on-miss BUSY reservation too. The finally only clears
-      // sessionEntry.busy (null here), so without this the busy placeholder leaks
-      // and every future resume of this conversation's stable id returns
-      // session_busy forever (busy entries are never idle-evicted). Mirrors the
-      // lifecycle drop branch + outer catch cleanup.
-      if (createdOnMissPlaceholder) nativeSessions.delete(providerSessionId);
+      // Drop a freshly-created non-keep-alive session (and any create-on-miss
+      // reservation) so an aborted-before-run turn does not leave an orphan
+      // jsonl / leaked busy placeholder. discardUncommittedSession guards
+      // `session && !sessionEntry` so a resumed (user-owned) session is NEVER
+      // deleted; the finally clears sessionEntry.busy, removes the abort handler,
+      // and closes MCP clients. For a resume no transcript was appended yet
+      // (prompt never ran), so the live session needs no rollback.
+      await discardUncommittedSession(runState, { durableRepo });
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId });
     }
 
@@ -904,7 +710,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
           messages: [{ role: "user", content: perTurnContent }],
         })
         : { systemPromptTokens: 0, toolSchemaTokens: 0, userMessageTokens: 0, fixedOverheadTokens: 0 };
-      const est = await estimateCurrentContextTokens(session, fixedOverhead.fixedOverheadTokens);
+      const est = await estimateCurrentContextTokens(runState.session, fixedOverhead.fixedOverheadTokens);
       if (est.tokens >= compactionPolicy.triggerTokens) {
         await harness.waitForIdle();
         if (!options.abortSignal?.aborted) {
@@ -937,7 +743,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
             // Compaction collapses the transcript prefix, so the pre-run baseline
             // no longer aligns. Re-anchor it to the compacted length so the run's
             // own turns (issued next) slice out correctly in captureState.
-            sessionBaselineCount = (await session.buildContext()).messages.length;
+            runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
           }
         }
       }
@@ -981,9 +787,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     externalAbort ||= !!options.abortSignal?.aborted;
 
     const captureState = async () => {
-      const context = await session.buildContext();
+      const context = await runState.session.buildContext();
       const transcript = context.messages || [];
-      const runTranscript = transcript.slice(sessionBaselineCount);
+      const runTranscript = transcript.slice(runState.sessionBaselineCount);
       const assistantMessages = runTranscript.filter((message) => message?.role === "assistant");
       const lastAssistant = assistantMessages[assistantMessages.length - 1] || null;
       return {
@@ -1058,7 +864,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
             });
             // Re-anchor the transcript baseline to the compacted length so the
             // re-prompt's turn (and its stopReason/usage) slices out correctly.
-            sessionBaselineCount = (await session.buildContext()).messages.length;
+            runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
             // Re-prompt ONCE in the now-compacted session. The trailing user turn
             // is already persisted, so a fresh prompt continues against it.
             runError = null;
@@ -1156,85 +962,33 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     // Session lifecycle parity with the legacy bridge. The harness already
     // durably persisted the transcript into its session object (in-memory for
-    // the default repo, jsonl on disk when piSessionsRoot is set); the registry
+    // the default repo, jsonl on disk when piSessionsRoot is set); commitSession
     // tracks LIVENESS so disposeProviderSession / idle-TTL eviction can reach
-    // native sessions, and a resume miss reports session_not_found.
-    if (options.sessionKeepAlive === true && !externalAbort && !errorMessage) {
-      try {
-        if (sessionEntry) {
-          // Resumed run: the harness appended this run's turns onto the live
-          // session; just re-arm the idle window.
-          nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
-          // Surface a write failure the harness swallowed: a session that can
-          // no longer persist must not pretend to be resumable.
-          await session.buildContext();
-        } else {
-          const metadata = await session.getMetadata();
-          nativeSessions.set(providerSessionId, {
-            session,
-            metadata,
-            repo: durableRepo || nativeSessionRepo,
-            durable: !!durableRepo,
-            busy: false,
-          }, { idleTimeoutMs: sessionTtlMs });
-        }
-      } catch (err) {
-        // Session persistence must never fail the run; drop the (now
-        // inconsistent) session instead of resuming from a broken transcript.
-        onEvent({
-          type: "runtime_warning",
-          warning_kind: "pi_session_persist_failed",
-          message: err?.message || String(err),
-        });
-        nativeSessions.delete(providerSessionId);
-        if (requestedSessionId) nativeSessions.delete(requestedSessionId);
-        const broken = sessionEntry;
-        if (broken) {
-          try { await broken.repo.delete(broken.metadata); } catch { /* best-effort */ }
-        }
-      }
-    } else if (sessionEntry) {
-      // Resumed run that errored (or was aborted): roll the live session back to
-      // the leaf captured before this turn so the failed turn never leaks into a
-      // later resume. The next resume then sees the last good transcript. The
-      // entry stays live (busy is cleared in finally) and its idle TTL re-arms.
-      if (baselineLeafId && (errorMessage || externalAbort)) {
-        try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
-      }
-      nativeSessions.touch(requestedSessionId, { idleTimeoutMs: sessionTtlMs });
-    } else {
-      // Fresh, non-keep-alive (or failed first) run: never leave a live session
-      // behind. A durable jsonl transcript on disk is dropped too, matching the
-      // legacy default contract that a non-keep-alive run is not resumable.
-      // A create-on-miss BUSY placeholder (R8) is keyed under
-      // requestedSessionId === providerSessionId; drop it here too so a
-      // non-keep-alive / errored / aborted first turn never leaks a busy entry
-      // (the success keep-alive path overwrites it with the finalized entry, so
-      // it is only this drop branch that must clean it up).
-      if (createdOnMissPlaceholder) nativeSessions.delete(providerSessionId);
-      try {
-        await (durableRepo || nativeSessionRepo).delete(await session.getMetadata());
-      } catch { /* best-effort */ }
-    }
+    // native sessions, keep-alive registers the session, and a failed/aborted
+    // resumed turn rolls back to its pre-turn leaf.
+    await commitSession(runState, {
+      options,
+      requestedSessionId,
+      providerSessionId,
+      durableRepo,
+      sessionTtlMs,
+      externalAbort,
+      errorMessage,
+      onEvent,
+    });
 
     // Final abort guard (durable cancel TOCTOU): if a cancel raced the lifecycle
     // commit above — landing AFTER the keep-alive/!externalAbort decision but
     // before this return — the cancelled turn is still in the durable transcript
     // and (for keep-alive) the live registry. Roll it back so the next resume sees
-    // the pre-turn state: a resumed session moves to its baseline leaf and drops
-    // its live entry; a fresh durable session deletes its jsonl. There is no await
-    // between here and the return, so an external cancel cannot newly fire past it.
+    // the pre-turn state (rollbackAbortedTurn: a resumed session moves to its
+    // baseline leaf and drops its live entry; a fresh durable session deletes its
+    // jsonl). The abort re-check + return stay inline with NO await between the
+    // false-branch check and the return, so an external cancel cannot newly fire
+    // past it (I10).
     if (!externalAbort && options.abortSignal?.aborted) {
       externalAbort = true;
-      if (sessionEntry) {
-        if (baselineLeafId) {
-          try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
-        }
-        nativeSessions.delete(requestedSessionId);
-      } else {
-        nativeSessions.delete(providerSessionId);
-        try { await (durableRepo || nativeSessionRepo).delete(await session.getMetadata()); } catch { /* best-effort */ }
-      }
+      await rollbackAbortedTurn(runState, { requestedSessionId, providerSessionId, durableRepo });
     }
 
     return buildSuccessResult({
@@ -1260,30 +1014,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     });
   } catch (err) {
     externalAbort ||= !!options.abortSignal?.aborted;
-    // Drop a just-created FRESH durable session so a setup/run failure does not
-    // leave a resumable orphan jsonl on disk (the success path drops it at ~905;
-    // the catch must mirror that). Guarded: `session && !sessionEntry` fires only
-    // for fresh runs that actually created a session — NEVER for resumes
-    // (sessionEntry is non-null only on resume; deleting a resumed user session
-    // here would be data loss) and never when the throw preceded session create.
-    if (session && !sessionEntry) {
-      try { await (durableRepo || nativeSessionRepo).delete(await session.getMetadata()); } catch { /* best-effort */ }
-    }
-    // Drop a create-on-miss BUSY placeholder (R8) left in the registry by a throw
-    // during/after the reservation — including a throw inside the create await
-    // itself, where `session` is still null so the jsonl-delete above is skipped.
-    // Keyed under requestedSessionId === providerSessionId; never set on a resume
-    // (sessionEntry would be non-null), so this never deletes a live user session.
-    if (createdOnMissPlaceholder && !sessionEntry) nativeSessions.delete(providerSessionId);
-    // Resumed-session rollback for host/runtime-side throws (e.g. a throwing
-    // custom pricing resolver / bridge event callback) that land here AFTER the
-    // harness already mutated the live session. Mirrors the success-path
-    // rollback at ~:925-932: move the live session back to the pre-turn leaf so
-    // the failed turn never leaks into a later resume. Gated on `sessionEntry &&
-    // baselineLeafId` so it only fires for resumes that captured a baseline.
-    if (sessionEntry && baselineLeafId) {
-      try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
-    }
+    // Drop a just-created fresh durable session, release a create-on-miss
+    // reservation placeholder, and roll a resumed session back to its pre-turn
+    // leaf for host/runtime-side throws that landed after the harness already
+    // mutated the live session (guards preserved in cleanupSessionOnThrow).
+    await cleanupSessionOnThrow(runState, { durableRepo });
     const errorMessage = normalizePiErrorMessage(err?.message || String(err));
     const isRetryable = retryableProviderFailureInfo({
       errorText: errorMessage,
@@ -1306,7 +1041,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       isRetryable,
     });
   } finally {
-    if (sessionEntry) sessionEntry.busy = false;
+    if (runState.sessionEntry) runState.sessionEntry.busy = false;
     removeAbortHandler?.();
     await closePiMcpClients(mcpClients);
   }

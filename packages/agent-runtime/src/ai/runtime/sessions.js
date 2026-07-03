@@ -25,6 +25,13 @@ function normalizeTtl(value, fallback) {
   return n;
 }
 
+/**
+ * @param {object} [options]
+ * @param {number} [options.idleTimeoutMs]
+ * @param {(value: any, reason: string) => (void | Promise<void>)} [options.onEvict]
+ * @param {() => number} [options.now]
+ * @param {(value: any) => boolean} [options.isBusy]
+ */
 export function createSessionRegistry({ idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, onEvict, now = Date.now, isBusy } = {}) {
   const entries = new Map();
   const defaultTtlMs = normalizeTtl(idleTimeoutMs, DEFAULT_IDLE_TIMEOUT_MS);

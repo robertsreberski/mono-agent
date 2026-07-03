@@ -8,6 +8,7 @@ import { codexModelSupportsFastMode, normalizeFastMode } from "../runtime/fast-m
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 import { buildCapabilitiesUsed } from "../runtime/capabilities-used.js";
 import { createSessionRegistry } from "../runtime/sessions.js";
+import { createSessionLiveness } from "../runtime/session-liveness.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_THREAD_START_ATTEMPTS = 2;
@@ -440,6 +441,11 @@ const codexSessions = createSessionRegistry({
     try { entry.client.close(); } catch {}
   },
 });
+// Synchronous liveness primitives over the registry. Codex only needs the
+// await-free busy claim (its resume handling is simpler than pi's — no durable
+// reopen / create-on-miss reservation), so it consumes claim(); its keep-alive
+// register + deletes stay direct registry ops.
+const codexLiveness = createSessionLiveness(codexSessions);
 
 export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const start = Date.now();
@@ -730,25 +736,25 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   }
 
   if (resumeSessionId) {
-    const entry = codexSessions.get(resumeSessionId);
-    if (!entry) {
-      // The host sent no conversation history for a resume, so silently
-      // starting a fresh thread would lose context. Fail fast instead.
-      return sessionUnavailableResult(
-        "session_not_found",
-        `Codex session ${resumeSessionId} is not live; cannot resume`,
-        "codex_session_not_found",
-      );
+    // Await-free busy claim (get -> busy check -> set-busy in one span). A miss
+    // fails fast: the host sent no conversation history for a resume, so silently
+    // starting a fresh thread would lose context. A busy entry is executing a
+    // turn already.
+    const claimed = codexLiveness.claim(resumeSessionId);
+    if (!claimed.ok) {
+      return claimed.reason === "missing"
+        ? sessionUnavailableResult(
+          "session_not_found",
+          `Codex session ${resumeSessionId} is not live; cannot resume`,
+          "codex_session_not_found",
+        )
+        : sessionUnavailableResult(
+          "session_busy",
+          `Codex session ${resumeSessionId} is already executing a turn`,
+          "codex_session_busy",
+        );
     }
-    if (entry.busy) {
-      return sessionUnavailableResult(
-        "session_busy",
-        `Codex session ${resumeSessionId} is already executing a turn`,
-        "codex_session_busy",
-      );
-    }
-    entry.busy = true;
-    resumeEntry = entry;
+    resumeEntry = claimed.entry;
   }
 
   try {
