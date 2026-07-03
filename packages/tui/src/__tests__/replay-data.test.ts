@@ -372,6 +372,28 @@ describe("replay data", () => {
     expect(result.totalRuns).toBe(3);
   });
 
+  it("accepts the legacy plain-number form of the second argument as maxRuns (back-compat)", async () => {
+    for (const [runId, epochMs] of [
+      ["run-a", 1_000],
+      ["run-b", 2_000],
+      ["run-c", 3_000],
+    ] as const) {
+      const recorder = createJsonlRunRecorder({
+        runId,
+        conversationId: "telegram:1",
+        artifactDir: dir,
+        clock: () => epochMs,
+      });
+      await recorder.finish({ text: "ok" });
+    }
+
+    const result = await listReplayRuns(dir, 2);
+    expect(result.runs).toHaveLength(2);
+    // Newest-first, same behavior as passing { maxRuns: 2 }.
+    expect(result.runs.map((run) => run.runId)).toEqual(["run-c", "run-b"]);
+    expect(result.totalRuns).toBe(3);
+  });
+
   it("passes a larger maxStringBytes to readRecordedRun so large payloads aren't gutted", async () => {
     const recorder = createJsonlRunRecorder({
       runId: "run-large-payload",

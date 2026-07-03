@@ -172,6 +172,17 @@ async function writeFailedFixture(runId: string): Promise<void> {
   await recorder.finish({ text: "", failureKind: "provider_unavailable" });
 }
 
+/** cancelled run (status "cancelled", neither succeeded nor failed) for status-filter coverage. */
+async function writeCancelledFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({
+    runId,
+    conversationId: "webhook:2",
+    artifactDir: dir,
+    clock: () => 0,
+  });
+  await recorder.finish({ text: "", cancelled: true });
+}
+
 describe("ReplayView list mode", () => {
   it("leads the label with sourceDetail (job id) over conversationId for a cron-sourced run", async () => {
     await writeCronFixture("run-cron");
@@ -242,30 +253,33 @@ describe("ReplayView list mode", () => {
     expect(text).toContain("daily-digest");
   });
 
-  it("`x` cycles the status filter to failed-only, then succeeded, then back to all", async () => {
+  it("`x` cycles the status filter to failed-only, then succeeded, then back to all; a cancelled run is strictly excluded from both buckets", async () => {
     await writeCronFixture("run-cron"); // succeeded
     await writeFailedFixture("run-failed");
+    await writeCancelledFixture("run-cancelled");
     const view = setup();
     view.setArtifactDir(dir);
     await flush();
-    expect(renderText(view)).toContain("(2/2)");
+    expect(renderText(view)).toContain("(3/3)");
 
     view.handleInput("x"); // all -> failed
     let text = renderText(view);
     expect(text).toContain("status: failed");
-    expect(text).toContain("(1/2)");
+    // Strict "failed" bucket: only the genuinely failed run, NOT the
+    // cancelled one -- a naive "!== succeeded" filter would have swept it in.
+    expect(text).toContain("(1/3)");
     expect(text).not.toContain("daily-digest");
 
     view.handleInput("x"); // failed -> succeeded
     text = renderText(view);
     expect(text).toContain("status: succeeded");
-    expect(text).toContain("(1/2)");
+    expect(text).toContain("(1/3)");
     expect(text).toContain("daily-digest");
 
     view.handleInput("x"); // succeeded -> all
     text = renderText(view);
     expect(text).not.toContain("status:");
-    expect(text).toContain("(2/2)");
+    expect(text).toContain("(3/3)");
   });
 });
 
@@ -301,6 +315,36 @@ describe("ReplayView detail mode", () => {
     expect(text).not.toMatch(/\+\d+(ms|s)/u);
   });
 
+  it("shows the override marker even when model/effort are persisted directly on the summary (not via run_config fallback)", async () => {
+    // A newer artifact: `run_config` fires with overridden:true, but the
+    // FINAL summary also carries model/effort directly (no fallback needed
+    // to display them). The marker must key off runConfig.overridden alone.
+    const recorder = createJsonlRunRecorder({
+      runId: "run-overridden-summary",
+      conversationId: "telegram:1",
+      artifactDir: dir,
+    });
+    recorder.onEvent({
+      type: "run_config",
+      model: "model-b",
+      effort: "high",
+      executionMode: "agentic",
+      overridden: true,
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    await recorder.finish({ text: "hi", model: "model-b", effort: "high" });
+
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-overridden-summary");
+
+    const text = renderText(view);
+    expect(text).toContain("model-b");
+    expect(text).toContain("effort:high");
+    expect(text).toContain("(override)");
+  });
+
   it("`t` filters to thinking-only rows and `a` restores; status line reflects the active filter", async () => {
     await writeMultiTurnFixture("run-a");
     const view = setup();
@@ -317,6 +361,44 @@ describe("ReplayView detail mode", () => {
     text = renderText(view);
     expect(text).not.toContain("filters:");
     expect(text).toContain("Tool:");
+  });
+
+  it("hides the payload pane when the category filter matches zero rows (filtered-out selection)", async () => {
+    await writeMultiTurnFixture("run-a"); // thinking/tool/message only -- no "error" category items.
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-a");
+
+    // Sanity: something is selected and its payload shows before filtering.
+    expect(renderText(view)).toContain("let me think");
+
+    view.handleInput("e"); // filter to error-only -- zero matches in this fixture.
+    const text = renderText(view);
+    expect(text).toContain("no events match");
+    // No stale payload body (header index markers or prior content) should
+    // survive into a pane that's supposed to be empty when nothing is
+    // selected/visible.
+    expect(text).not.toMatch(/#\d+ /u);
+    expect(text).not.toContain("let me think");
+  });
+
+  it("hides the payload pane for a run with an entirely empty timeline (empty selection)", async () => {
+    const recorder = createJsonlRunRecorder({
+      runId: "run-empty-timeline",
+      conversationId: "telegram:1",
+      artifactDir: dir,
+    });
+    await recorder.finish({ text: "" }); // No onEvent calls at all -- zero timeline items.
+
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-empty-timeline");
+
+    const text = renderText(view);
+    expect(text).toContain("no events");
+    expect(text).not.toMatch(/#\d+ /u);
   });
 
   it("`]` jumps the selection to the next turn (status line reflects it)", async () => {

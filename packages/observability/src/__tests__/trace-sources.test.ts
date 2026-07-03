@@ -87,6 +87,39 @@ describe("trace source registry", () => {
     expect(stopped.sources.find((source) => source.sourceId === "agent-a")).toMatchObject({ health: "stopped" });
   });
 
+  it("preserves a run's persisted channel `source` alongside its `traceSource` on TraceRunListItem", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const artifactDir = join(dir, "artifacts");
+
+    await registerTraceSource({
+      registryDir,
+      sourceId: "agent-cron",
+      label: "Agent Cron",
+      artifactDir,
+      transports: ["cron"],
+    });
+
+    const run = createJsonlRunRecorder({
+      runId: "cron-run",
+      conversationId: "cron:1",
+      artifactDir,
+      source: "cron",
+      sourceDetail: "nightly-report",
+    });
+    await run.finish({});
+
+    const runs = await listTraceRuns({ registryDir, maxRuns: 10 });
+    const item = runs.runs.find((entry) => entry.runId === "cron-run");
+    // The run's OWN persisted channel `source` ("cron", the trigger kind)
+    // must survive alongside `traceSource` (the process/agent instance it was
+    // read from) -- they are distinct fields (see TraceRunListItem's doc
+    // comment) and composition must not drop or clobber either.
+    expect(item?.source).toBe("cron");
+    expect(item?.sourceDetail).toBe("nightly-report");
+    expect(item?.traceSource.sourceId).toBe("agent-cron");
+  });
+
   it("keeps malformed manifests as warnings and rejects path-like ids", async () => {
     const dir = await tempDir();
     const registryDir = join(dir, "registry");

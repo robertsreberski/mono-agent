@@ -273,8 +273,10 @@ export class ReplayView extends Container {
     if (this.statusFilter === "all") {
       return this.runs;
     }
-    const wantFailed = this.statusFilter === "failed";
-    return this.runs.filter((run) => (run.status !== "succeeded") === wantFailed);
+    // Strict match on the bucket's own status -- NOT "everything that isn't
+    // succeeded" -- so a `running`/`cancelled` run lands in neither bucket
+    // rather than being swept into "failed".
+    return this.runs.filter((run) => run.status === this.statusFilter);
   }
 
   private updateHeader(): void {
@@ -452,6 +454,11 @@ export class ReplayView extends Container {
         matchCount: this.eventList.matchCount(),
       }),
     );
-    this.detailPayload.setText(buildPayloadPane(this.selectedItem, this.payloadExpanded));
+    // A category filter can leave zero rows visible while `this.selectedItem`
+    // still holds the last (now hidden) selection -- eventList remembers that
+    // index so widening the filter again snaps back to it, but the payload
+    // pane must not show a stale item's content while nothing is visible.
+    const visibleSelection = this.eventList.visibleCount() === 0 ? undefined : this.selectedItem;
+    this.detailPayload.setText(buildPayloadPane(visibleSelection, this.payloadExpanded));
   }
 }

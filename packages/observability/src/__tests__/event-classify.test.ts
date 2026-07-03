@@ -54,6 +54,28 @@ describe("nested tool blocks classify as category \"tool\"", () => {
     expect(descriptors.summary).toBe('{"path":"/etc/hosts"}');
   });
 
+  it("labels an assistant tool_use block with no `name` field as the bare 'Tool call' fallback", () => {
+    const descriptors = buildEventDescriptors({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "toolu_1", input: { path: "/etc/hosts" } }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool call");
+  });
+
+  it("labels a tool_result block that itself carries a `name` field as 'Tool result: <name>'", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", name: "Read", content: "file contents here" }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool result: Read");
+  });
+
   it("classifies a user tool_result block as tool, labelled Tool result, summarized from content", () => {
     const descriptors = buildEventDescriptors({
       type: "user",

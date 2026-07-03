@@ -50,16 +50,23 @@ export interface ListReplayRunsResult {
   readonly totalRuns: number;
 }
 
-/** Newest-first recorded runs read straight from the agent's artifact dir. */
+/**
+ * Newest-first recorded runs read straight from the agent's artifact dir.
+ *
+ * @param options - Either a {@link ListReplayRunsOptions} object, or (legacy
+ * back-compat form, kept for published-API callers predating `sourceFilter`)
+ * a bare `number` treated as `{ maxRuns: number }`.
+ */
 export async function listReplayRuns(
   artifactDir: string,
-  options: ListReplayRunsOptions = {},
+  options: number | ListReplayRunsOptions = {},
 ): Promise<ListReplayRunsResult> {
-  const maxRuns = options.maxRuns ?? DEFAULT_MAX_RUNS;
+  const normalized = typeof options === "number" ? { maxRuns: options } : options;
+  const maxRuns = normalized.maxRuns ?? DEFAULT_MAX_RUNS;
   // Fast path (no filter): read exactly what we'll show, same as before.
   // Filtering path: read the wider ceiling so filtering doesn't get starved
   // by a cap applied before we even know what matches.
-  const readCeiling = options.sourceFilter === undefined ? maxRuns : Math.max(maxRuns, FILTERED_READ_CEILING);
+  const readCeiling = normalized.sourceFilter === undefined ? maxRuns : Math.max(maxRuns, FILTERED_READ_CEILING);
   const result = await listRecordedRuns({ artifactDir, maxRuns: readCeiling });
   const resolved = result.runs.map(
     (run): ReplayRunListItem => ({
@@ -68,7 +75,9 @@ export async function listReplayRuns(
     }),
   );
   const filtered =
-    options.sourceFilter === undefined ? resolved : resolved.filter((run) => run.resolvedSource === options.sourceFilter);
+    normalized.sourceFilter === undefined
+      ? resolved
+      : resolved.filter((run) => run.resolvedSource === normalized.sourceFilter);
   return {
     runs: filtered.slice(0, maxRuns),
     warnings: result.warnings,

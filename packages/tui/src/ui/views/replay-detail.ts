@@ -18,7 +18,7 @@ export const CATEGORY_KEYS: Readonly<Record<string, string>> = {
 };
 
 export const KEY_HINT =
-  "↑↓ pgup/pgdn step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter expand · esc back";
+  "↑↓/pgup/pgdn/g/G step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter expand · esc back";
 
 const PAYLOAD_MAX_LINES_COLLAPSED = 12;
 const PAYLOAD_MAX_LINES_EXPANDED = 40;
@@ -34,9 +34,12 @@ export function buildHeadline(replay: ReplayRunDetail): string {
   ];
 
   const model = summary.model ?? replay.runConfig?.model;
-  const modelFromRunConfig = summary.model === undefined && replay.runConfig?.model !== undefined;
   const effort = replay.effort;
-  const effortFromRunConfig = summary.effort === undefined && replay.runConfig?.effort !== undefined;
+  // Gate the "(override)" marker on the run_config's own `overridden` flag
+  // alone -- NOT on whether the displayed model/effort happened to come from
+  // the run_config fallback. A newer artifact carries model/effort directly
+  // on `summary` (no fallback needed) but can still be an overridden run, and
+  // should still show the marker.
   const overridden = replay.runConfig?.overridden === true;
 
   const line3: string[] = [];
@@ -46,10 +49,10 @@ export function buildHeadline(replay: ReplayRunDetail): string {
   }
   line3.push(formatDurationMs(summary.durationMs), `${summary.eventCount} events`);
   if (model !== undefined) {
-    line3.push(`${model}${modelFromRunConfig && overridden ? " (override)" : ""}`);
+    line3.push(`${model}${overridden ? " (override)" : ""}`);
   }
   if (effort !== undefined) {
-    line3.push(`effort:${effort}${effortFromRunConfig && overridden ? " (override)" : ""}`);
+    line3.push(`effort:${effort}${overridden ? " (override)" : ""}`);
   }
   lines.push(styles.muted(line3.join(" · ")));
 

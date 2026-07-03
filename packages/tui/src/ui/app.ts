@@ -374,7 +374,7 @@ export class MonoAgentTuiApp {
         `${styles.accent("ctrl+c ×2")}   quit`,
         "",
         `${styles.accent("replay list")}    s source filter · x status filter · r refresh`,
-        `${styles.accent("replay detail")}  ↑↓/pgup/pgdn step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter expand · esc layers back`,
+        `${styles.accent("replay detail")}  ↑↓/pgup/pgdn/g/G step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter expand · esc layers back`,
         "",
         `${styles.accent("/help /agents /replay /config /cancel /thinking /quit")}`,
         "",
