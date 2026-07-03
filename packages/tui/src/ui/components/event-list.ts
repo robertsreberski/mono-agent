@@ -27,6 +27,36 @@ export function categoryStyle(category: string): (text: string) => string {
 }
 
 /**
+ * Additive glyph prefixed onto a row's label, drawn from live chat's own
+ * vocabulary (∴ thinking, ✓/✗ tool results, ⚠ errors, green "you" for user
+ * messages) so the replay timeline and the live transcript read as one
+ * interface. Tool rows distinguish CALL vs RESULT via `item.type` (`"assistant"`
+ * carries the `tool_use` block, `"user"` carries `tool_result` -- see
+ * event-classify.ts's `firstToolUseBlock`/`firstToolResultBlock`): calls get a
+ * neutral `→`, results get `✓`/`✗` keyed off the `"error: "` summary prefix
+ * `nestedToolBlockSummary` stamps on an errored tool_result. Assistant text
+ * rows (category "message", type "assistant") get no glyph -- only the four
+ * categories above are additive. Returns "" for rows with no glyph.
+ */
+function rowGlyph(item: ReplayTimelineItem): string {
+  switch (item.category) {
+    case "thinking":
+      return styles.thinking("∴");
+    case "error":
+      return styles.error("⚠");
+    case "tool":
+      if (item.type === "user") {
+        return item.summary.startsWith("error: ") ? styles.error("✗") : styles.success("✓");
+      }
+      return styles.accent("→");
+    case "message":
+      return item.type === "user" ? styles.bold(styles.user("you")) : "";
+    default:
+      return "";
+  }
+}
+
+/**
  * Debugger-style scrollable/filterable event timeline against the stable
  * pi-tui `Component` contract (no `SelectList`, no private-field casts).
  * Selection is an index into the FULL (unfiltered) items array passed to
@@ -316,6 +346,8 @@ export class EventTimelineList implements Component {
     if (selected) {
       labelPart = styles.bold(labelPart);
     }
+    const glyph = rowGlyph(item);
+    const glyphPart = glyph.length > 0 ? `${glyph} ` : "";
 
     const thinkingSuffix =
       item.category === "thinking" && item.contentChars !== undefined
@@ -325,7 +357,7 @@ export class EventTimelineList implements Component {
       item.summary.length > 0 ? ` — ${styles.muted(highlightMatches(item.summary, this.searchQuery))}` : "";
 
     const prefix = selected ? styles.accent("❯ ") : "  ";
-    return `${prefix}${segments.join(" ")} ${labelPart}${thinkingSuffix}${summaryPart}`;
+    return `${prefix}${segments.join(" ")} ${glyphPart}${labelPart}${thinkingSuffix}${summaryPart}`;
   }
 
   private renderMarker(turn: TimelineTurn): string {

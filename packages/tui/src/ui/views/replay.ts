@@ -11,7 +11,14 @@ import {
 import { extractUsage, formatDateClock, formatDurationMs, formatTokens, formatUsd, previewValue } from "../format.js";
 import { selectListTheme, styles } from "../theme.js";
 import { EventTimelineList } from "../components/event-list.js";
-import { buildHeadline, buildPayloadPane, buildStatusLine, CATEGORY_KEYS } from "./replay-detail.js";
+import {
+  buildDetailCell,
+  buildHeadline,
+  buildPayloadHeader,
+  buildRawPayloadBody,
+  buildStatusLine,
+  CATEGORY_KEYS,
+} from "./replay-detail.js";
 
 export interface ReplayViewOptions {
   readonly tui: TUI;
@@ -124,7 +131,8 @@ export class ReplayView extends Container {
   private readonly detailHeadline = new Text("", 1, 0);
   private readonly detailStatus = new Text("", 1, 0);
   private readonly eventList = new EventTimelineList({ maxVisible: 16 });
-  private readonly detailPayload = new Text("", 1, 0);
+  /** Selected-event pane: header + chat-style cell (+ raw JSON strip when expanded), rebuilt by {@link rebuildDetailPane}. */
+  private readonly detailPane = new Container();
   private mode: "list" | "detail" = "list";
   private artifactDir: string | undefined;
   private runs: readonly ReplayRunListItem[] = [];
@@ -157,7 +165,7 @@ export class ReplayView extends Container {
     this.detail.addChild(this.detailHeadline);
     this.detail.addChild(this.detailStatus);
     this.detail.addChild(this.eventList);
-    this.detail.addChild(this.detailPayload);
+    this.detail.addChild(this.detailPane);
     this.eventList.onSelectionChange = (item) => {
       this.selectedItem = item;
       this.refreshPanes();
@@ -459,6 +467,32 @@ export class ReplayView extends Container {
     // index so widening the filter again snaps back to it, but the payload
     // pane must not show a stale item's content while nothing is visible.
     const visibleSelection = this.eventList.visibleCount() === 0 ? undefined : this.selectedItem;
-    this.detailPayload.setText(buildPayloadPane(visibleSelection, this.payloadExpanded));
+    this.rebuildDetailPane(visibleSelection);
+  }
+
+  /**
+   * Rebuild the selected-event pane from scratch: header, then EITHER a
+   * chat-style cell (thinking/tool/message/error/notice -- reusing live
+   * chat's own components, see buildDetailCell) OR, for runtime/telemetry
+   * items and tool-shaped-but-blockless items, the unchanged raw-JSON body.
+   * Expanding (`enter`) appends the raw JSON below a chat-style cell too, so
+   * the underlying event is always one keystroke away.
+   */
+  private rebuildDetailPane(item: ReplayTimelineItem | undefined): void {
+    this.detailPane.clear();
+    if (item === undefined) {
+      return;
+    }
+    this.detailPane.addChild(new Text(buildPayloadHeader(item), 1, 0));
+    this.detailPane.addChild(new Text("", 1, 0));
+    const cell = buildDetailCell(item, this.currentReplay?.timeline ?? [], this.currentReplay?.detail.events ?? []);
+    if (cell === undefined) {
+      this.detailPane.addChild(new Text(buildRawPayloadBody(item, this.payloadExpanded), 1, 0));
+      return;
+    }
+    this.detailPane.addChild(cell);
+    if (this.payloadExpanded) {
+      this.detailPane.addChild(new Text(buildRawPayloadBody(item, true), 1, 0));
+    }
   }
 }

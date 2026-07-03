@@ -349,4 +349,82 @@ describe("EventTimelineList", () => {
       expect(rendered).toContain(`${category}-label`);
     }
   });
+
+  describe("row glyphs (chat's visual vocabulary, additive at the start of the label)", () => {
+    it("prefixes a thinking row with the live thinking marker (∴)", () => {
+      const list = new EventTimelineList();
+      list.setItems([item({ index: 0, category: "thinking", label: "Assistant thoughts", summary: "", turnIndex: 0 })], []);
+      expect(render(list)).toContain("∴");
+    });
+
+    it("prefixes an error-category row with a warning glyph (⚠)", () => {
+      const list = new EventTimelineList();
+      list.setItems([item({ index: 0, category: "error", label: "Error", summary: "boom", turnIndex: 0 })], []);
+      expect(render(list)).toContain("⚠");
+    });
+
+    it("prefixes a tool CALL row (assistant-typed) with →", () => {
+      const list = new EventTimelineList();
+      list.setItems(
+        [item({ index: 0, category: "tool", label: "Tool: bash", summary: "ls", turnIndex: 0, type: "assistant" })],
+        [],
+      );
+      const rendered = render(list);
+      expect(rendered).toContain("→");
+      expect(rendered).not.toContain("✓");
+      expect(rendered).not.toContain("✗");
+    });
+
+    it("prefixes a successful tool RESULT row (user-typed) with ✓", () => {
+      const list = new EventTimelineList();
+      list.setItems(
+        [item({ index: 0, category: "tool", label: "Tool result: bash", summary: "a.txt", turnIndex: 0, type: "user" })],
+        [],
+      );
+      const rendered = render(list);
+      expect(rendered).toContain("✓");
+      expect(rendered).not.toContain("✗");
+    });
+
+    it("prefixes an errored tool RESULT row with ✗ (summary carries the 'error: ' prefix)", () => {
+      const list = new EventTimelineList();
+      list.setItems(
+        [
+          item({
+            index: 0,
+            category: "tool",
+            label: "Tool result: bash",
+            summary: "error: boom",
+            turnIndex: 0,
+            type: "user",
+          }),
+        ],
+        [],
+      );
+      const rendered = render(list);
+      expect(rendered).toContain("✗");
+      expect(rendered).not.toContain("✓");
+    });
+
+    it("prefixes a user message row with green 'you' styling, matching live chat's UserCell", () => {
+      const list = new EventTimelineList();
+      list.setItems(
+        [item({ index: 0, category: "message", label: "user", summary: "hi", turnIndex: 0, type: "user" })],
+        [],
+      );
+      const raw = list.render(80).join("\n");
+      expect(raw).toContain(styles.user("you"));
+    });
+
+    it("does not glyph-prefix an assistant message row", () => {
+      const list = new EventTimelineList();
+      list.setItems(
+        [item({ index: 0, category: "message", label: "Assistant message", summary: "hi", turnIndex: 0, type: "assistant" })],
+        [],
+      );
+      const raw = list.render(80).join("\n");
+      expect(raw).not.toContain(styles.user("you"));
+      expect(stripAnsi(raw)).not.toMatch(/[∴⚠→✓✗]/u);
+    });
+  });
 });

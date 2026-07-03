@@ -62,6 +62,16 @@ export class ChatView extends Container {
     this.responder = responder;
   }
 
+  /**
+   * Whether the editor's buffer is empty. Drives app.ts's chat exception to
+   * global tab/`?`: with nothing to lose, both act as global shortcuts (view
+   * cycling, help); with unsubmitted text, they pass through to the editor
+   * (autocomplete completion / literal `?`) unchanged.
+   */
+  isEditorEmpty(): boolean {
+    return this.editor.getText().length === 0;
+  }
+
   hasActiveTurn(): boolean {
     return this.activeControllers.size > 0;
   }

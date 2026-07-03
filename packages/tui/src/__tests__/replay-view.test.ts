@@ -33,6 +33,16 @@ function renderText(view: ReplayView): string {
   return stripAnsi(view.render(100).join("\n"));
 }
 
+/**
+ * Rendered lines, ANSI-stripped and trimmed of the Text component's own
+ * left/right margin padding -- lets a "bare `{`/`}` line" check (the raw JSON
+ * body's own opening/closing brace) ignore that padding rather than requiring
+ * an exact zero-padding match.
+ */
+function trimmedLines(view: ReplayView): string[] {
+  return view.render(100).map((line) => stripAnsi(line).trim());
+}
+
 async function openRun(view: ReplayView, runId: string): Promise<void> {
   view.list.onSelect?.({ value: runId, label: "", description: "" });
   await flush();
@@ -83,6 +93,56 @@ async function writeMultiTurnFixture(runId: string): Promise<void> {
   await recorder.finish({ text: "bash finished, final answer", model: "claude-fable-5", effort: "high" });
 }
 
+/** A single tool call whose result is an error (`is_error: true`) -- exercises the unified call+result ToolPanel's failure path. */
+async function writeFailedToolCallFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({ runId, conversationId: "telegram:1", artifactDir: dir });
+  recorder.onEvent({
+    type: "assistant",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    message: { content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "rm -rf /nope" } }] },
+  });
+  recorder.onEvent({
+    type: "user",
+    timestamp: "2026-01-01T00:00:01.000Z",
+    message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "permission denied", is_error: true }] },
+  });
+  await recorder.finish({ text: "couldn't do that" });
+}
+
+/**
+ * A parallel tool batch: two separate `tool_use` events (t1 then t2 -- a real
+ * pi-runtime parallel batch streams each call as its own event, per
+ * TimelineTurn's own doc comment), then ONE `user` event carrying BOTH
+ * tool_result blocks together (`countToolResultBlocks` documents "a single
+ * `user` event CAN carry more than one `tool_result` block"). t2's result is
+ * NOT the first block in that batched event, so matching it exercises
+ * scanning every block in a candidate item rather than stopping at the first.
+ */
+async function writeParallelToolBatchFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({ runId, conversationId: "telegram:1", artifactDir: dir });
+  recorder.onEvent({
+    type: "assistant",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    message: { content: [{ type: "tool_use", id: "t1", name: "bash", input: { command: "ls" } }] },
+  });
+  recorder.onEvent({
+    type: "assistant",
+    timestamp: "2026-01-01T00:00:00.500Z",
+    message: { content: [{ type: "tool_use", id: "t2", name: "read_file", input: { path: "x.txt" } }] },
+  });
+  recorder.onEvent({
+    type: "user",
+    timestamp: "2026-01-01T00:00:01.000Z",
+    message: {
+      content: [
+        { type: "tool_result", tool_use_id: "t1", content: "a.txt" },
+        { type: "tool_result", tool_use_id: "t2", content: "file contents here" },
+      ],
+    },
+  });
+  await recorder.finish({ text: "done" });
+}
+
 /**
  * Pre-timestamp-stamping artifact: no ISO timestamps anywhere, no
  * summary.model/effort/source, but a `run_config` event with overridden:true
@@ -117,6 +177,54 @@ async function writeBigPayloadFixture(runId: string): Promise<void> {
     message: { content: [{ type: "tool_use", id: "t1", name: "bash", input: bigInput }] },
   });
   await recorder.finish({ text: "done" });
+}
+
+/**
+ * Two coalesced thinking chunks whose joined text (300 chars) exceeds
+ * SUMMARY_MAX_CHARS (220) -- proves the pane reconstructs the FULL text from
+ * the raw events rather than showing the compacted (truncated) `summary`.
+ * ISO timestamps 2s apart so `setDurationMs` has a span to compute.
+ */
+async function writeLongThinkingFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({ runId, conversationId: "telegram:1", artifactDir: dir });
+  recorder.onEvent({
+    type: "assistant",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    message: { content: [{ type: "thinking", text: "a".repeat(150) }] },
+  });
+  recorder.onEvent({
+    type: "assistant",
+    timestamp: "2026-01-01T00:00:02.000Z",
+    message: { content: [{ type: "thinking", text: "b".repeat(150) }] },
+  });
+  await recorder.finish({ text: "done" });
+}
+
+/**
+ * A plain (non-tool) user message, a runtime/telemetry event that is NOT
+ * `runtime_warning` (provider_request_started), and a `runtime_warning` event
+ * -- covers the three pane branches Part B splits out of the old
+ * blanket-raw-JSON rendering: user message -> UserCell, generic runtime ->
+ * kept as raw JSON, `runtime_warning` -> NoticeCell.
+ */
+async function writeCellShowcaseFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({ runId, conversationId: "telegram:1", artifactDir: dir });
+  recorder.onEvent({
+    type: "user",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    message: { content: [{ type: "text", text: "hi from user" }] },
+  });
+  recorder.onEvent({
+    type: "provider_request_started",
+    timestamp: "2026-01-01T00:00:00.500Z",
+    model: "gpt-5.5",
+  });
+  recorder.onEvent({
+    type: "runtime_warning",
+    timestamp: "2026-01-01T00:00:00.700Z",
+    message: "provider degraded",
+  });
+  await recorder.finish({ text: "hello back" });
 }
 
 /** cron run identified by sourceDetail (job id); no userInput. Fixed clock => deterministic 0ms duration. */
@@ -463,22 +571,116 @@ describe("ReplayView detail mode", () => {
     expect(view.back()).toBe(false);
   });
 
-  it("`enter` expands the payload pane, growing the rendered line count and dropping the truncation note", async () => {
+  it("`enter` reveals the raw JSON payload below the chat-style cell; `enter` again collapses it", async () => {
     await writeBigPayloadFixture("run-big");
     const view = setup();
     view.setArtifactDir(dir);
     await flush();
     await openRun(view, "run-big");
 
-    const collapsed = view.render(100);
-    const collapsedText = stripAnsi(collapsed.join("\n"));
-    expect(collapsedText).toContain("more lines)");
+    // Collapsed: the chat-style ToolPanel cell only -- no pretty-printed JSON
+    // strip below it. A bare "{" LINE (the raw JSON's opening brace on its
+    // own line, ignoring the Text component's own left/right margin padding)
+    // is the tell; the panel's own single-line args preview also contains
+    // braces, just never isolated on their own (trimmed) line.
+    const collapsedLines = trimmedLines(view);
+    expect(collapsedLines).not.toContain("{");
+    expect(collapsedLines.join("\n")).toContain("bash");
 
-    view.handleInput("\r");
-    const expanded = view.render(100);
-    const expandedText = stripAnsi(expanded.join("\n"));
-    expect(expandedText).not.toContain("more lines)");
-    expect(expanded.length).toBeGreaterThan(collapsed.length);
+    view.handleInput("\r"); // expand
+    const expandedLines = trimmedLines(view);
+    expect(expandedLines).toContain("{");
+    expect(expandedLines.length).toBeGreaterThan(collapsedLines.length);
+
+    view.handleInput("\r"); // collapse again
+    expect(trimmedLines(view)).not.toContain("{");
+  });
+
+  it("shows a coalesced thinking item as chat's ∴ thought cell, reconstructing the FULL text (not the truncated summary) and its own duration span", async () => {
+    await writeLongThinkingFixture("run-long-thinking");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-long-thinking");
+
+    const text = stripAnsi(view.render(100).join("\n"));
+    expect(text).toContain("∴ thought"); // active: false -- a recorded run is never "still thinking"
+    expect(text).not.toContain("∴ thinking…");
+    // All 150 "b"s must be present -- word-wrap wraps the contiguous run
+    // across several rendered lines, so count occurrences rather than look
+    // for one unbroken substring. The row-list preview (`item.summary`,
+    // truncated at 220 chars) contributes at most 70 "b"s on its own, so
+    // reaching 150 proves the pane reconstructed the FULL text, not the
+    // compacted summary.
+    const bCount = (text.match(/b/gu) ?? []).length;
+    expect(bCount).toBeGreaterThanOrEqual(150);
+    expect(text).toContain("2.0s"); // the item's own (endTimestamp - timestamp) span
+  });
+
+  it("shows a tool_use item as chat's ToolPanel, unified with its matching tool_result", async () => {
+    await writeMultiTurnFixture("run-a");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-a");
+
+    view.handleInput("o"); // filter to tool-category rows -- snaps selection to the tool_use item
+    const text = stripAnsi(view.render(100).join("\n"));
+    expect(text).toContain("✓ bash");
+    expect(text).toContain("a.txt"); // the matched tool_result's content, unified into the same panel
+    expect(text).not.toContain("◐"); // never a misleading "still pending" glyph for a recorded run
+  });
+
+  it("marks the unified tool_use+tool_result panel as an error when the matched result's `is_error` is true", async () => {
+    await writeFailedToolCallFixture("run-failed-tool");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-failed-tool");
+
+    // Item 0 (default selection) is the tool_use call; it must reflect the
+    // matched result's error state, not render a false ✓ success.
+    const text = stripAnsi(view.render(100).join("\n"));
+    expect(text).toContain("✗ bash");
+    expect(text).not.toContain("✓ bash");
+    expect(text).toContain("permission denied");
+  });
+
+  it("matches a tool_use to its tool_result even when the result isn't the FIRST tool_result block in a batched (parallel-calls) event", async () => {
+    await writeParallelToolBatchFixture("run-parallel-tools");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-parallel-tools");
+
+    view.handleInput("\x1b[B"); // down -- item 1 is the SECOND tool_use call (t2/read_file)
+    const text = stripAnsi(view.render(100).join("\n"));
+    expect(text).toContain("✓ read_file");
+    expect(text).toContain("file contents here"); // t2's result, the SECOND block in the batched event
+  });
+
+  it("shows a plain user message as chat's UserCell and keeps runtime/telemetry items as raw JSON, except runtime_warning (NoticeCell)", async () => {
+    await writeCellShowcaseFixture("run-showcase");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-showcase");
+
+    // Item 0 (default selection): plain user message -> UserCell.
+    let text = stripAnsi(view.render(100).join("\n"));
+    expect(text).toContain("you hi from user");
+
+    // Item 1: generic runtime/telemetry event -> still raw JSON (untouched).
+    view.handleInput("\x1b[B"); // down
+    expect(trimmedLines(view)).toContain("{");
+    text = stripAnsi(view.render(100).join("\n"));
+    expect(text).toContain("provider_request_started");
+
+    // Item 2: runtime_warning -> NoticeCell, not raw JSON.
+    view.handleInput("\x1b[B"); // down
+    expect(trimmedLines(view)).not.toContain("{");
+    text = stripAnsi(view.render(100).join("\n"));
+    expect(text).toContain("⚠ provider degraded");
   });
 
   it("esc from plain detail (no search, no expansion) returns to the list (regression)", async () => {

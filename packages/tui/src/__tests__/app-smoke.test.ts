@@ -102,6 +102,71 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
     await handle.stop();
   });
 
+  it("tab cycles views from chat only when the editor is empty; typed text keeps tab in the editor", async () => {
+    const terminal = new TestTerminal(100, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      responder: echoResponder(),
+      flushIntervalMs: 0,
+    });
+    await frame();
+
+    // Empty editor: tab cycles chat -> replay.
+    terminal.feed("\t");
+    await frame();
+    expect(stripAnsi(terminal.output())).toContain("Run replay unavailable");
+
+    terminal.feed("OQ"); // F2 -> back to chat
+    await frame();
+
+    // Typed (unsubmitted) text: tab must stay in the editor, not cycle views.
+    // `terminal.output()` is cumulative (it already contains the replay
+    // render from above), so isolate what is written from here on.
+    const sinceIndex = terminal.writes.length;
+    for (const char of "abc") {
+      terminal.feed(char);
+    }
+    terminal.feed("\t");
+    await frame();
+    const output = stripAnsi(terminal.writes.slice(sinceIndex).join(""));
+    expect(output).not.toContain("Run replay unavailable");
+    expect(output).toContain("abc");
+
+    await handle.stop();
+  });
+
+  it("? opens help from chat only when the editor is empty; typed text keeps ? in the editor", async () => {
+    const terminal = new TestTerminal(100, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      responder: echoResponder(),
+      flushIntervalMs: 0,
+    });
+    await frame();
+
+    // Empty editor: ? opens the help overlay.
+    terminal.feed("?");
+    await frame();
+    expect(stripAnsi(terminal.output())).toContain("mono-agent tui");
+
+    terminal.feed("z"); // any key closes the overlay
+    await frame();
+
+    // Typed (unsubmitted) text: ? must stay in the editor, not open help.
+    // Isolate writes from here on (see the tab test above for why).
+    const sinceIndex = terminal.writes.length;
+    for (const char of "abc") {
+      terminal.feed(char);
+    }
+    terminal.feed("?");
+    await frame();
+    const output = stripAnsi(terminal.writes.slice(sinceIndex).join(""));
+    expect(output).not.toContain("mono-agent tui");
+    expect(output).toContain("abc?");
+
+    await handle.stop();
+  });
+
   it("records a cancelled turn when Esc aborts it", async () => {
     const terminal = new TestTerminal(100, 30);
     const history = createInMemoryTuiHistory();

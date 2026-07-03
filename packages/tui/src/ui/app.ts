@@ -283,8 +283,10 @@ export class MonoAgentTuiApp {
       }
       return undefined; // Editor may use Esc (autocomplete dismiss).
     }
-    if (matchesKey(data, "tab") && this.view !== "chat") {
-      // In chat, Tab belongs to the editor (autocomplete); use F-keys there.
+    if (matchesKey(data, "tab") && this.globalShortcutsAllowedInChat()) {
+      // In chat with unsubmitted text, Tab belongs to the editor
+      // (autocomplete); an empty buffer has nothing to lose, so Tab cycles
+      // views there too.
       this.cycleView(1);
       return { consume: true };
     }
@@ -312,11 +314,21 @@ export class MonoAgentTuiApp {
       this.chat.toggleThinkingExpanded();
       return { consume: true };
     }
-    if (data === "?" && this.view !== "chat") {
+    if (data === "?" && this.globalShortcutsAllowedInChat()) {
       this.showHelp();
       return { consume: true };
     }
     return undefined;
+  }
+
+  /**
+   * Tab/`?` act as global shortcuts (view cycling, help) everywhere except
+   * chat with unsubmitted editor text -- there they pass through to the
+   * editor instead (autocomplete completion / literal `?`). Shared by both
+   * keys so the "empty editor" exception can't drift out of sync between them.
+   */
+  private globalShortcutsAllowedInChat(): boolean {
+    return this.view !== "chat" || this.chat.isEditorEmpty();
   }
 
   private cycleView(direction: 1 | -1): void {
@@ -368,13 +380,13 @@ export class MonoAgentTuiApp {
         styles.bold("mono-agent tui"),
         "",
         `${styles.accent("f2/f3/f4/f5")}  chat / replay / config / agents`,
-        `${styles.accent("tab")}         next view (outside chat) · ${styles.accent("shift+tab")} previous`,
+        `${styles.accent("tab")}         next view (chat: only when the editor is empty) · ${styles.accent("shift+tab")} previous`,
         `${styles.accent("esc")}         cancel in-flight turn · back`,
         `${styles.accent("ctrl+t")}      expand/collapse thinking`,
         `${styles.accent("ctrl+c ×2")}   quit`,
         "",
         `${styles.accent("replay list")}    s source filter · x status filter · r refresh`,
-        `${styles.accent("replay detail")}  ↑↓/pgup/pgdn/g/G step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter expand · esc layers back`,
+        `${styles.accent("replay detail")}  ↑↓/pgup/pgdn/g/G step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter raw json · esc layers back`,
         "",
         `${styles.accent("/help /agents /replay /config /cancel /thinking /quit")}`,
         "",

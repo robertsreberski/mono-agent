@@ -1,7 +1,10 @@
-import { deriveRunSource } from "@mono-agent/observability";
+import type { Component } from "@earendil-works/pi-tui";
+import { deriveRunSource, type RecordedRunEvent } from "@mono-agent/observability";
 
 import type { ReplayRunDetail, ReplayTimelineItem } from "../../data/replay.js";
 import { categoryStyle } from "../components/event-list.js";
+import { AssistantCell, NoticeCell, ThinkingCell, UserCell } from "../components/transcript-cells.js";
+import { ToolPanel } from "../components/tool-panel.js";
 import { extractUsage, formatClock, formatDurationMs, formatTokens, formatUsd } from "../format.js";
 import { styles } from "../theme.js";
 
@@ -18,7 +21,7 @@ export const CATEGORY_KEYS: Readonly<Record<string, string>> = {
 };
 
 export const KEY_HINT =
-  "↑↓/pgup/pgdn/g/G step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter expand · esc back";
+  "↑↓/pgup/pgdn/g/G step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter raw json · esc back";
 
 const PAYLOAD_MAX_LINES_COLLAPSED = 12;
 const PAYLOAD_MAX_LINES_EXPANDED = 40;
@@ -108,11 +111,12 @@ export function buildStatusLine(state: StatusLineState): string {
   return `${styles.muted(segments.join(" · "))}\n${styles.dim(KEY_HINT)}`;
 }
 
-/** Selected-event payload pane: header (index/label/timing/group span) + pretty-printed payload body. Empty string hides the pane. */
-export function buildPayloadPane(item: ReplayTimelineItem | undefined, expanded: boolean): string {
-  if (item === undefined) {
-    return "";
-  }
+/**
+ * Header line for the selected-event pane (index/label/timing/group span,
+ * plus a thinking item's own char/duration stats). Unchanged by the Part B
+ * cell redesign below -- only the BODY under it now varies by category.
+ */
+export function buildPayloadHeader(item: ReplayTimelineItem): string {
   let header = `#${item.index} ${item.label}`;
   const timing: string[] = [];
   if (item.timestamp !== undefined) {
@@ -130,26 +134,234 @@ export function buildPayloadPane(item: ReplayTimelineItem | undefined, expanded:
   if (item.category === "thinking" && item.contentChars !== undefined) {
     header += ` ${thinkingStatsSuffix(item.contentChars, item.timestamp, item.endTimestamp)}`;
   }
+  return header;
+}
 
+/**
+ * Pretty-printed raw JSON body for the selected event, capped at today's
+ * established line counts (12 collapsed / 40 expanded) with a
+ * `… (+N more lines)` trailer when truncated. Used both as the WHOLE body for
+ * runtime/telemetry items (no chat-style cell exists for those) and as the
+ * optional strip appended below a chat-style cell once the pane is expanded.
+ */
+export function buildRawPayloadBody(item: ReplayTimelineItem, expanded: boolean): string {
   const maxLines = expanded ? PAYLOAD_MAX_LINES_EXPANDED : PAYLOAD_MAX_LINES_COLLAPSED;
   const allLines = formatPayloadRaw(item.payload).split("\n");
   const shown = allLines.slice(0, maxLines);
   const remaining = allLines.length - shown.length;
-  const body = remaining > 0 ? [...shown, styles.dim(`… (+${remaining} more lines)`)] : shown;
-  return [header, "", ...body].join("\n");
+  return (remaining > 0 ? [...shown, styles.dim(`… (+${remaining} more lines)`)] : shown).join("\n");
 }
 
-function thinkingStatsSuffix(contentChars: number, timestamp: string | undefined, endTimestamp: string | undefined): string {
-  const chars = formatTokens(contentChars);
+/**
+ * The chat-style transcript cell for the selected event, reusing live chat's
+ * OWN components (ThinkingCell/AssistantCell/UserCell/NoticeCell/ToolPanel) so
+ * replay and live chat read as one interface. Returns `undefined` for
+ * runtime/telemetry items (provider_request_*, run_config, cost,
+ * capabilities…) and for a "tool" category item that -- despite the category
+ * -- carries neither a `tool_use` nor a `tool_result` content block (e.g. a
+ * `tool_update`/`tool_timing` progress event, classified "tool" purely by its
+ * `type` string containing "tool"): callers fall back to
+ * {@link buildRawPayloadBody} for both cases, exactly as before Part B.
+ *
+ * `timeline` (the run's full coalesced item list) is used to look AHEAD from
+ * a `tool_use` item for its matching `tool_result` (by `tool_use_id`) so a
+ * call+result pair renders as ONE unified panel, like a live tool call
+ * settling. `rawEvents` (the run's raw, uncoalesced events) is used to
+ * reconstruct a coalesced thinking/text group's FULL joined text -- the
+ * combiner's own synthetic payload for a multi-event group carries only the
+ * compacted (220-char) `summary`, not the full text (see
+ * `combinedEventItem` in event-timeline.ts).
+ */
+export function buildDetailCell(
+  item: ReplayTimelineItem,
+  timeline: readonly ReplayTimelineItem[],
+  rawEvents: readonly RecordedRunEvent[],
+): Component | undefined {
+  if (item.category === "thinking") {
+    const cell = new ThinkingCell();
+    cell.append(extractFullText(item, rawEvents, "thinking"));
+    cell.setExpanded(true);
+    cell.active = false;
+    const durationMs = parseSpanMs(item.timestamp, item.endTimestamp);
+    if (durationMs !== undefined) {
+      cell.setDurationMs(durationMs);
+    }
+    return cell;
+  }
+  if (item.category === "error") {
+    return new NoticeCell(item.summary, "error");
+  }
+  if (item.category === "runtime") {
+    return item.type === "runtime_warning" ? new NoticeCell(item.summary, "warning") : undefined;
+  }
+  if (item.category === "tool") {
+    return buildToolCell(item, timeline);
+  }
+  if (item.category === "message") {
+    if (item.type === "user") {
+      return new UserCell(extractFullText(item, rawEvents, "text"));
+    }
+    const cell = new AssistantCell();
+    cell.setText(extractFullText(item, rawEvents, "text"));
+    return cell;
+  }
+  return undefined;
+}
+
+/** `tool_use` -> a fresh ToolPanel, completed with its matching `tool_result` when one is found later in the timeline (header-only otherwise). `tool_result` (selected directly, without its call) -> a standalone ToolPanel labeled "tool result" when the name isn't known. Neither block present -> undefined (raw JSON fallback). */
+function buildToolCell(item: ReplayTimelineItem, timeline: readonly ReplayTimelineItem[]): Component | undefined {
+  const toolUse = firstBlock(item.payload, "tool_use");
+  if (toolUse !== undefined) {
+    const id = stringOrUndefined(toolUse.id) ?? `item-${item.index}`;
+    const name = stringOrUndefined(toolUse.name) ?? "tool";
+    const panel = new ToolPanel(id, name, toolUse.input);
+    const result = findToolResult(timeline, id, item.index);
+    panel.complete(
+      result === undefined
+        ? { content: undefined }
+        : { isError: result.is_error === true, content: result.content },
+    );
+    return panel;
+  }
+  const toolResult = firstBlock(item.payload, "tool_result");
+  if (toolResult !== undefined) {
+    const id = stringOrUndefined(toolResult.tool_use_id) ?? `item-${item.index}`;
+    const name = stringOrUndefined(toolResult.name) ?? "tool result";
+    const panel = new ToolPanel(id, name);
+    panel.complete({ isError: toolResult.is_error === true, content: toolResult.content });
+    return panel;
+  }
+  return undefined;
+}
+
+/**
+ * First `tool_result` content block at or after `afterIndex` (exclusive)
+ * whose `tool_use_id` matches, or undefined. Scans EVERY `tool_result` block
+ * in a candidate item, not just the first -- a real pi-runtime parallel tool
+ * batch can deliver several results on one `user` event (see
+ * `countToolResultBlocks`'s doc comment in event-classify.ts), and the call
+ * we're matching may not be the first one.
+ */
+function findToolResult(
+  timeline: readonly ReplayTimelineItem[],
+  toolUseId: string,
+  afterIndex: number,
+): Record<string, unknown> | undefined {
+  for (const candidate of timeline) {
+    if (candidate.index <= afterIndex || candidate.category !== "tool") {
+      continue;
+    }
+    const match = blocksOfType(candidate.payload, "tool_result").find(
+      (block) => stringOrUndefined(block.tool_use_id) === toolUseId,
+    );
+    if (match !== undefined) {
+      return match;
+    }
+  }
+  return undefined;
+}
+
+/** First content block of `blockType` on a redacted raw event's `message.content` array, if any. */
+function firstBlock(payload: unknown, blockType: "tool_use" | "tool_result"): Record<string, unknown> | undefined {
+  return blocksOfType(payload, blockType)[0];
+}
+
+/** Every content block of `blockType` on a redacted raw event's `message.content` array. */
+function blocksOfType(payload: unknown, blockType: "tool_use" | "tool_result"): readonly Record<string, unknown>[] {
+  if (!isRecord(payload)) {
+    return [];
+  }
+  const message = payload.message;
+  if (!isRecord(message) || !Array.isArray(message.content)) {
+    return [];
+  }
+  return message.content.filter(
+    (block): block is Record<string, unknown> => isRecord(block) && block.type === blockType,
+  );
+}
+
+/**
+ * Full (untruncated) joined thinking/text block content for a timeline item.
+ * A single-event item's `payload` IS the raw redacted event (walk it
+ * directly); a coalesced group's synthetic payload carries only the
+ * compacted `summary`, so walk the group's own raw events (via
+ * `sourceEventStartIndex`/`sourceEventEndIndex`, which index into
+ * `rawEvents` 1:1 -- see `toRecordedEvent`'s `index` in recorded-runs.ts)
+ * instead. Falls back to `item.summary` when no block of `kind` is found
+ * anywhere (defensive -- shouldn't happen for a well-formed thinking/message
+ * item).
+ */
+function extractFullText(
+  item: ReplayTimelineItem,
+  rawEvents: readonly RecordedRunEvent[],
+  kind: "thinking" | "text",
+): string {
+  if (item.sourceEventCount <= 1) {
+    return extractEventText(item.payload, kind) ?? item.summary;
+  }
+  const texts: string[] = [];
+  for (let index = item.sourceEventStartIndex; index <= item.sourceEventEndIndex; index += 1) {
+    const text = extractEventText(rawEvents[index]?.payload, kind);
+    if (text !== undefined) {
+      texts.push(text);
+    }
+  }
+  return texts.length > 0 ? texts.join("") : item.summary;
+}
+
+/** Joined `kind`-typed block text from a single raw event's payload, or undefined when the shape doesn't match. */
+function extractEventText(payload: unknown, kind: "thinking" | "text"): string | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+  const message = payload.message;
+  if (typeof message === "string") {
+    return kind === "text" ? message : undefined;
+  }
+  if (!isRecord(message) || !Array.isArray(message.content)) {
+    return undefined;
+  }
+  const texts: string[] = [];
+  for (const block of message.content) {
+    if (!isRecord(block) || block.type !== kind) {
+      continue;
+    }
+    const text =
+      kind === "thinking"
+        ? (stringOrUndefined(block.thinking) ?? stringOrUndefined(block.text) ?? stringOrUndefined(block.content))
+        : (stringOrUndefined(block.text) ?? stringOrUndefined(block.content));
+    if (text !== undefined) {
+      texts.push(text);
+    }
+  }
+  return texts.length > 0 ? texts.join("") : undefined;
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `endTimestamp - timestamp` in ms when both parse as dates, else undefined. Clamped to >= 0 (clock skew). */
+function parseSpanMs(timestamp: string | undefined, endTimestamp: string | undefined): number | undefined {
   if (timestamp === undefined || endTimestamp === undefined) {
-    return `(${chars})`;
+    return undefined;
   }
   const start = Date.parse(timestamp);
   const end = Date.parse(endTimestamp);
   if (!Number.isFinite(start) || !Number.isFinite(end)) {
-    return `(${chars})`;
+    return undefined;
   }
-  return `(${chars} · ${formatDurationMs(Math.max(0, end - start))})`;
+  return Math.max(0, end - start);
+}
+
+function thinkingStatsSuffix(contentChars: number, timestamp: string | undefined, endTimestamp: string | undefined): string {
+  const chars = formatTokens(contentChars);
+  const span = parseSpanMs(timestamp, endTimestamp);
+  return span === undefined ? `(${chars})` : `(${chars} · ${formatDurationMs(span)})`;
 }
 
 function formatPayloadRaw(payload: unknown): string {
