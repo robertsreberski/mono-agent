@@ -153,6 +153,55 @@ describe("combineRecordedRunEvents", () => {
     expect(timeline[2]?.payload).toBe(mixedPayload);
   });
 
+  it("does not merge tool_use/tool_result events into adjacent thinking/text groups", () => {
+    const events: readonly RecordedRunEvent[] = [
+      event({
+        index: 0,
+        type: "assistant",
+        category: "thinking",
+        label: "assistant",
+        summary: "considering",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: "considering" }] } },
+      }),
+      event({
+        index: 1,
+        type: "assistant",
+        category: "tool",
+        label: "Tool: Read",
+        summary: '{"path":"/etc/hosts"}',
+        payload: {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { path: "/etc/hosts" } }] },
+        },
+      }),
+      event({
+        index: 2,
+        type: "user",
+        category: "tool",
+        label: "Tool result",
+        summary: "file contents",
+        payload: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "file contents" }] },
+        },
+      }),
+      event({
+        index: 3,
+        type: "assistant",
+        category: "message",
+        label: "assistant",
+        summary: "done",
+        payload: { type: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+      }),
+    ];
+
+    const timeline = combineRecordedRunEvents(events);
+
+    expect(timeline).toHaveLength(4);
+    expect(timeline.map((item) => item.category)).toEqual(["thinking", "tool", "tool", "message"]);
+    expect(timeline.map((item) => item.sourceEventCount)).toEqual([1, 1, 1, 1]);
+  });
+
   it("bounds combined summaries and synthesized payload previews", () => {
     const events: readonly RecordedRunEvent[] = [
       event({

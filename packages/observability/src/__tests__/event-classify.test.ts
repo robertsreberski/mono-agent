@@ -41,6 +41,79 @@ describe("event-classify exported helpers", () => {
   });
 });
 
+describe("nested tool blocks classify as category \"tool\"", () => {
+  it("classifies an assistant tool_use block as tool, labelled Tool: <name>, summarized from input", () => {
+    const descriptors = buildEventDescriptors({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { path: "/etc/hosts" } }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool: Read");
+    expect(descriptors.summary).toBe('{"path":"/etc/hosts"}');
+  });
+
+  it("classifies a user tool_result block as tool, labelled Tool result, summarized from content", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "file contents here" }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool result");
+    expect(descriptors.summary).toBe("file contents here");
+  });
+
+  it("prefixes an errored tool_result summary with 'error: ' while the category stays tool", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "boom", is_error: true }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool result");
+    expect(descriptors.summary).toBe("error: boom");
+  });
+
+  it("classifies mixed text+tool_use assistant content as tool (the tool call is salient)", () => {
+    const descriptors = buildEventDescriptors({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "Let me check that file." },
+          { type: "tool_use", id: "toolu_2", name: "Grep", input: { pattern: "foo" } },
+        ],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool: Grep");
+  });
+
+  it("regression: a plain thinking block is still classified as thinking", () => {
+    expect(
+      classifyRecordedRunEvent({
+        type: "assistant",
+        message: { content: [{ type: "thinking", thinking: "hmm" }] },
+      }),
+    ).toBe("thinking");
+  });
+
+  it("regression: a plain assistant text message (no nested tool blocks) is still classified as message", () => {
+    expect(
+      classifyRecordedRunEvent({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } }),
+    ).toBe("message");
+  });
+
+  it("regression: a plain user text message (no nested tool blocks) is still classified as message", () => {
+    expect(
+      classifyRecordedRunEvent({ type: "user", message: { content: [{ type: "text", text: "hi" }] } }),
+    ).toBe("message");
+  });
+});
+
 describe("buildEventDescriptors (raw RuntimeEventLike -> descriptors)", () => {
   it("bridges a raw tool event to category/label/summary", () => {
     const descriptors = buildEventDescriptors({ type: "tool.call", toolName: "Read", status: "started" });
