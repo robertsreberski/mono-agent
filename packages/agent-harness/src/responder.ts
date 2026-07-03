@@ -139,6 +139,7 @@ const RUNTIME_TELEMETRY_KINDS = new Set([
   "cache_miss",
   "capabilities_resolved",
   "provider_bridge_latency",
+  "run_config",
 ]);
 
 export function streamEventFromRuntimeEvent(

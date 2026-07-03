@@ -255,6 +255,29 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
       .toEqual({ type: "runtime_telemetry", kind: "provider_bridge_latency", data: { durationMs: 88, timestamp: "t" } });
   });
 
+  it("wraps run_config as runtime_telemetry with effort/model intact", () => {
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "run_config",
+        model: "pi:openai-codex:gpt-5.5",
+        effort: "high",
+        executionMode: "sdk",
+        overridden: true,
+        timestamp: "t",
+      }),
+    ).toEqual({
+      type: "runtime_telemetry",
+      kind: "run_config",
+      data: {
+        model: "pi:openai-codex:gpt-5.5",
+        effort: "high",
+        executionMode: "sdk",
+        overridden: true,
+        timestamp: "t",
+      },
+    });
+  });
+
   it("still returns undefined for unknown event types (no accidental catch-all)", () => {
     expect(streamEventFromRuntimeEvent({ type: "system", subtype: "init" })).toBeUndefined();
     expect(streamEventFromRuntimeEvent({ type: "result", result: "big payload" })).toBeUndefined();
