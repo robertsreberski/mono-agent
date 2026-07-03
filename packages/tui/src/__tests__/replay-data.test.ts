@@ -116,8 +116,10 @@ describe("replay data", () => {
     expect(thinking1?.deltaMs).toBeUndefined();
     expect(thinking1?.timestampMs).toBe(Date.parse("2026-01-01T00:00:00.000Z"));
 
-    // tool_use is 5s after the coalesced thinking item's (first-event) timestamp.
-    expect(toolUse?.deltaMs).toBe(5_000);
+    // deltaMs anchors on the PREVIOUS item's END, not its start: the coalesced
+    // thinking item's last raw event is at t0+1s (its `endTimestamp`), so
+    // tool_use (t0+5s) is 4s after that -- NOT 5s after the group's t0 start.
+    expect(toolUse?.deltaMs).toBe(4_000);
 
     // tool_result's own timestamp (t0+3s) is BEFORE tool_use's (t0+5s) --
     // the raw delta would be -2000ms; clamp negatives to 0.
@@ -128,6 +130,46 @@ describe("replay data", () => {
 
     expect(turns[0]?.turnIndex).toBe(0);
     expect(turns[1]?.turnIndex).toBe(1);
+  });
+
+  it("anchors deltaMs on a coalesced group's END timestamp, not its start", async () => {
+    const recorder = createJsonlRunRecorder({
+      runId: "run-end-anchored-delta",
+      conversationId: "telegram:1",
+      artifactDir: dir,
+    });
+    // A coalesced thinking group spanning t0 -> t0+2s (timestamp != endTimestamp),
+    // followed by a single item at t0+3s.
+    recorder.onEvent({
+      type: "assistant",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      message: { content: [{ type: "thinking", text: "first chunk " }] },
+    });
+    recorder.onEvent({
+      type: "assistant",
+      timestamp: "2026-01-01T00:00:02.000Z",
+      message: { content: [{ type: "thinking", text: "second chunk" }] },
+    });
+    recorder.onEvent({
+      type: "assistant",
+      timestamp: "2026-01-01T00:00:03.000Z",
+      message: { content: [{ type: "text", text: "answer" }] },
+    });
+    await recorder.finish({ text: "answer" });
+
+    const replay = await readReplayRun(dir, "run-end-anchored-delta");
+    expect(replay).toBeDefined();
+    const { timeline } = replay!;
+    expect(timeline).toHaveLength(2); // coalesced thinking group + text
+
+    const [thinkingGroup, text] = timeline;
+    expect(thinkingGroup?.sourceEventCount).toBe(2);
+    expect(thinkingGroup?.timestamp).toBe("2026-01-01T00:00:00.000Z");
+    expect(thinkingGroup?.endTimestamp).toBe("2026-01-01T00:00:02.000Z");
+
+    // If anchored on the group's START (t0), the delta would be 3000ms.
+    // Anchored on its END (t0+2s) instead, it's 1000ms.
+    expect(text?.deltaMs).toBe(1_000);
   });
 
   it("clamps a negative turn durationMs to 0 instead of leaving it negative", async () => {

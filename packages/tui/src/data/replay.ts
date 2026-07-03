@@ -81,9 +81,12 @@ export interface ReplayTimelineItem extends RecordedRunTimelineItem {
   /** `item.timestamp` parsed to epoch ms; undefined when absent/unparseable. */
   readonly timestampMs?: number;
   /**
-   * `timestampMs` minus the PREVIOUS timeline item's `timestampMs`. Undefined
-   * for the first item, or when either item lacks a timestamp. Negative
-   * values (clock skew) are clamped to 0.
+   * `timestampMs` minus the PREVIOUS timeline item's END (its `endTimestampMs`
+   * when parseable, else its own `timestampMs`) — anchoring on the previous
+   * item's end rather than its start matters for a coalesced group (e.g. a
+   * multi-chunk thinking block), whose start can be well before the moment it
+   * actually finished. Undefined for the first item, or when either side
+   * lacks a timestamp. Negative values (clock skew) are clamped to 0.
    */
   readonly deltaMs?: number;
   /** Which {@link TimelineTurn.turnIndex} (from segmentTimelineTurns) this item belongs to. */
@@ -152,11 +155,15 @@ function annotateTimeline(
   turns: readonly TimelineTurn[],
 ): readonly ReplayTimelineItem[] {
   const turnIndexByItem = buildTurnIndexLookup(turns, items.length);
-  let previousMs: number | undefined;
+  // Anchored on the previous item's END (its own endTimestamp when parseable,
+  // else its timestamp) rather than its START — see the deltaMs doc comment.
+  let previousEndMs: number | undefined;
   return items.map((item, index) => {
     const timestampMs = parseTimestampMs(item.timestamp);
-    const deltaMs = previousMs === undefined || timestampMs === undefined ? undefined : Math.max(0, timestampMs - previousMs);
-    previousMs = timestampMs;
+    const endTimestampMs = parseTimestampMs(item.endTimestamp) ?? timestampMs;
+    const deltaMs =
+      previousEndMs === undefined || timestampMs === undefined ? undefined : Math.max(0, timestampMs - previousEndMs);
+    previousEndMs = endTimestampMs;
     return {
       ...item,
       ...(timestampMs === undefined ? {} : { timestampMs }),

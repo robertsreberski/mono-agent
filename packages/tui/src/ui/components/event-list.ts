@@ -202,7 +202,9 @@ export class EventTimelineList implements Component {
     const lines: string[] = [];
     for (let position = startPos; position <= endPos; position += 1) {
       const turn = showMarkers ? this.turnByStartPosition.get(position) : undefined;
-      if (turn !== undefined) {
+      // A turn whose items are ALL filtered out is an orphan marker -- skip it
+      // rather than printing a "── turn N/M ──" separator with nothing under it.
+      if (turn !== undefined && this.firstVisiblePositionInRange(turn.startItemIndex, turn.endItemIndex) !== undefined) {
         lines.push(truncateToWidth(this.renderMarker(turn), width));
       }
       if (this.isVisible(position)) {

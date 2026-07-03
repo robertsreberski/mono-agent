@@ -172,6 +172,26 @@ describe("EventTimelineList", () => {
     expect(list.selectedItem()?.index).toBe(2);
   });
 
+  it("hides a turn's marker row when every item in that turn is filtered out (no orphan marker)", () => {
+    const list = new EventTimelineList({ maxVisible: 20 });
+    const items = [
+      item({ index: 0, category: "tool", label: "tool-call", summary: "", turnIndex: 0 }),
+      item({ index: 1, category: "message", label: "answer", summary: "", turnIndex: 1 }),
+    ];
+    const turns = [
+      turn({ turnIndex: 0, startItemIndex: 0, endItemIndex: 0 }),
+      turn({ turnIndex: 1, startItemIndex: 1, endItemIndex: 1 }),
+    ];
+    list.setItems(items, turns);
+
+    list.setCategoryFilter(new Set(["message"])); // turn 0's only item ("tool") is hidden entirely
+
+    const rendered = render(list);
+    expect(rendered).not.toContain("turn 1/2");
+    expect(rendered).toContain("turn 2/2");
+    expect(rendered).toContain("answer");
+  });
+
   it("omits turn markers entirely for a single-turn run", () => {
     const list = new EventTimelineList();
     list.setItems(
