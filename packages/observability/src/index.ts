@@ -63,6 +63,9 @@ export {
   readRecordedRun,
   reconcileStaleRunArtifacts,
 } from "./recorded-runs.js";
+export {
+  deriveRunSource,
+} from "./run-source.js";
 export type {
   ObservabilityReadErrorCode,
   ObservabilityReadErrorDetails,

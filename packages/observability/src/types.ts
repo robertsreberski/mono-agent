@@ -129,6 +129,12 @@ export interface RunSummary {
    * redacted+truncated so the trace shows what the model was instructed to do.
    */
   readonly systemPrompt?: string;
+  /** Resolved reasoning-effort level the run executed with (e.g. "low", "high"). */
+  readonly effort?: string;
+  /** Originating channel/trigger kind, e.g. "tui" | "telegram" | "slack" | "cron" | "webhook" | "memory". */
+  readonly source?: string;
+  /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
+  readonly sourceDetail?: string;
 }
 
 export interface RunRecorder {
@@ -205,6 +211,18 @@ export interface JsonlRunRecorderOptions {
    * the memory path, which supplies its constant prompt at recorder-creation time.
    */
   readonly systemPrompt?: string;
+  /**
+   * Originating channel/trigger kind for this run, e.g. "tui" | "telegram" |
+   * "slack" | "cron" | "webhook" | "memory". Persisted verbatim into the summary
+   * as `source`. See {@link deriveRunSource} for the conversationId-based fallback
+   * consumers use when a summary predates this field.
+   */
+  readonly source?: string;
+  /**
+   * Trigger name for `source`, e.g. the cron job id or webhook endpoint name.
+   * Persisted verbatim into the summary as `sourceDetail`.
+   */
+  readonly sourceDetail?: string;
 }
 
 export type RecordedRunEventCategory = "tool" | "thinking" | "message" | "runtime" | "error";
@@ -230,6 +248,14 @@ export interface RecordedRunListItem {
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
+  /** Resolved reasoning-effort level the run executed with (e.g. "low", "high"). */
+  readonly effort?: string;
+  /** Originating channel/trigger kind, e.g. "tui" | "telegram" | "slack" | "cron" | "webhook" | "memory". */
+  readonly source?: string;
+  /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
+  readonly sourceDetail?: string;
+  /** The user's prompt for this run, persisted so backfill/replay can show it as input. */
+  readonly userInput?: string;
 }
 
 export interface RecordedRunEvent {
@@ -289,7 +315,11 @@ export interface TraceSourceListItem extends TraceSourceManifest {
   readonly warnings: readonly string[];
 }
 
-export interface TraceRunListItem extends RecordedRunListItem {
+// `RecordedRunListItem.source` (the run's originating channel/trigger kind, e.g.
+// "telegram") and this `source` (the trace-source PROCESS the run was read from)
+// are different concepts that happen to share a name; `Omit` keeps the trace
+// source's object override instead of conflicting with the inherited string field.
+export interface TraceRunListItem extends Omit<RecordedRunListItem, "source"> {
   readonly source: TraceSourceListItem;
 }
 
