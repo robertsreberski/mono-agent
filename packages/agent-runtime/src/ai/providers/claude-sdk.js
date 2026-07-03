@@ -299,6 +299,10 @@ function fileEditStateKey(input, toolUseID, path) {
   return toolUseID || input?.tool_use_id || input?.toolUseID || `${input?.tool_name || "file_edit"}:${path}`;
 }
 
+/**
+ * @param {any} change
+ * @param {{status?: any, before?: any, after?: any, error?: any}} [options]
+ */
 function fileEditPayload(change, { status, before, after, error } = {}) {
   const lineStats = statsForCompletedChange(change, before, after);
   const completedChange = lineStats ? { ...change, line_stats: lineStats } : change;
@@ -341,6 +345,11 @@ function createClaudeFileEditHooks({ cwd, emitEvent }) {
     state.started = true;
   }
 
+  /**
+   * @param {any} input
+   * @param {any} toolUseID
+   * @param {{status?: any, error?: any}} [options]
+   */
   function complete(input, toolUseID, { status, error } = {}) {
     const directKey = toolUseID || input?.tool_use_id || input?.toolUseID;
     const fallback = createState(input, toolUseID, { readBefore: false });
@@ -572,6 +581,9 @@ export async function generateClaudeResponse(systemPrompt, options) {
     ? "default"
     : permissionMode;
   const nativeAgents = claudeNativeAgentDefinitions(options.nativeSubagents);
+  // Assembled incrementally, then handed across the SDK `query` boundary
+  // (outputFormat/resume/maxTurns are attached conditionally below).
+  /** @type {any} */
   const queryOptions = {
     systemPrompt,
     model: modelWithContextWindow(model.model, options.contextWindow),
@@ -618,7 +630,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
     runtime: "sdk",
     timestamp: providerRequestStartedAt,
   });
-  const stream = query({ prompt, options: queryOptions });
+  const stream = query({ prompt: /** @type {any} */ (prompt), options: queryOptions });
 
   let text = "";
   let usage = {};
@@ -692,8 +704,12 @@ export async function generateClaudeResponse(systemPrompt, options) {
         text += delta;
         for (const toolName of assistantToolNames(event)) noteToolUse(toolName);
       }
-      else if (event.type === "error") {
-        const message = event.error?.message || event.error || "sdk stream error";
+      // The SDK's message union does not declare a runtime `error` event, but
+      // the runtime can emit one; keep this defensive branch and cast past the
+      // narrowed union.
+      else if (/** @type {any} */ (event).type === "error") {
+        const errorEvent = /** @type {any} */ (event);
+        const message = errorEvent.error?.message || errorEvent.error || "sdk stream error";
         if (hasPreservableFinalOutput()) {
           preservePostSuccessError(`Claude SDK emitted an error after final output; preserved final result. ${message}`);
         } else {

@@ -21,6 +21,19 @@ export function ripgrepMissingMessage(ctx) {
 
 // Mutable cache of the resolved ripgrep binary path. Stored on an object so
 // callers can read the latest value without re-importing the module.
+//
+// KNOWN cross-runtime sharing (pre-existing, out of scope for the per-instance
+// ToolContext work): this cache is MODULE-LEVEL, not per-ToolContext. The first
+// resolveRgPath call to resolve a non-undefined value wins process-wide, so two
+// createRuntime instances configured with DIFFERENT ripgrepPath values share
+// whichever binary was resolved first (a later instance's ripgrepPath is
+// ignored unless it passes `{refresh: true}`). Unlike workspace/repoRoot/
+// sandbox/brand — which are fully isolated per instance via ToolContext — the
+// ripgrep binary path is effectively global. In practice every runtime in a
+// process resolves the same vendored/PATH binary, so this is benign; it is
+// documented (and asserted as a known-shared cache in the two-runtimes
+// isolation test) rather than fixed, since a per-instance rg cache would be a
+// larger change with no real-world payoff today.
 export const cachedRgPath = { value: undefined };
 
 function vendoredRgPath() {
@@ -51,6 +64,9 @@ function rgFromPath() {
   return null;
 }
 
+/**
+ * @param {{refresh?: boolean, ctx?: any}} [options]
+ */
 export function resolveRgPath({ refresh = false, ctx } = {}) {
   if (!refresh && cachedRgPath.value !== undefined) return cachedRgPath.value;
   const { ripgrepPath } = ctx ?? readToolRuntime();
@@ -76,6 +92,10 @@ export function normalizeGlobPattern(pattern) {
   return raw || "**/*";
 }
 
+/**
+ * @param {any} rawLines
+ * @param {{label?: string, noMatches?: string, maxLines?: number, maxChars?: number, offset?: number, ctx?: any}} [options]
+ */
 export function formatSearchLines(rawLines, {
   label,
   noMatches,
@@ -110,6 +130,10 @@ export function formatSearchLines(rawLines, {
   return `${kept.join("\n")}\n\n${suffix}`;
 }
 
+/**
+ * @param {string} text
+ * @param {{label?: string, noMatches?: string, maxLines?: number, maxChars?: number, offset?: number, ctx?: any}} [options]
+ */
 export function capLines(text, {
   label,
   noMatches,

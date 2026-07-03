@@ -77,6 +77,11 @@ export function createSessionRegistry({ idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
       }
       return entry.value;
     },
+    /**
+     * @param {any} id
+     * @param {any} value
+     * @param {{idleTimeoutMs?: number}} [options]
+     */
     set(id, value, { idleTimeoutMs: entryTtl } = {}) {
       const previous = entries.get(id);
       if (previous) clearTimeout(previous.timer);
@@ -84,6 +89,10 @@ export function createSessionRegistry({ idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
       entries.set(id, entry);
       armTimer(id, entry);
     },
+    /**
+     * @param {any} id
+     * @param {{idleTimeoutMs?: number}} [options]
+     */
     touch(id, { idleTimeoutMs: entryTtl } = {}) {
       const entry = entries.get(id);
       if (!entry) return;

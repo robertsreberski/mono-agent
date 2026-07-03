@@ -234,6 +234,16 @@ export async function resolveSession(runState, {
       // await-free step; a busy entry loses and returns session_busy.
       const claimed = liveness.claim(requestedSessionId);
       if (!claimed.ok) {
+        // claim() can lose two ways: "busy" (the entry adopted above is
+        // mid-turn) or "missing" (no live entry). "missing" is UNREACHABLE on
+        // this path today — the entry was adopted/reserved synchronously in the
+        // await-free span just above, so it is always present here — but branch
+        // on it anyway so a future refactor that could drop the entry in this
+        // window self-defends with session_not_found instead of a misleading
+        // "busy" message. The busy branch is byte-identical to before. Cast:
+        // @ts-check does not narrow the ClaimResult union on `!claimed.ok`,
+        // though the loser branch always carries `reason`.
+        const missing = /** @type {{reason: string}} */ (claimed).reason === "missing";
         return {
           done: true,
           result: sessionUnavailableResult({
@@ -243,9 +253,11 @@ export async function resolveSession(runState, {
             runtimeWarnings,
             start,
             sessionId: requestedSessionId,
-            errorMessage: `Pi session ${requestedSessionId} is busy with another turn`,
-            failureKind: "session_busy",
-            piErrorCode: "pi_session_busy",
+            errorMessage: missing
+              ? `Pi session ${requestedSessionId} is not live`
+              : `Pi session ${requestedSessionId} is busy with another turn`,
+            failureKind: missing ? "session_not_found" : "session_busy",
+            piErrorCode: missing ? "pi_session_not_found" : "pi_session_busy",
           }),
         };
       }

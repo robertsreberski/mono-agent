@@ -33,6 +33,10 @@ export function truncationSuffix({ label, shown, total, artifact, hint }) {
   ].filter(Boolean).join("\n");
 }
 
+/**
+ * @param {string} text
+ * @param {{label?: string, maxChars?: number, strategy?: string, hint?: string, ctx?: any}} [options]
+ */
 export function capChars(text, {
   label = "tool",
   maxChars = DEFAULT_MAX_TOOL_OUTPUT_CHARS,

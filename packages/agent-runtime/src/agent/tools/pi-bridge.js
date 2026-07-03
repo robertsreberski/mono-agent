@@ -90,6 +90,12 @@ function artifactFilename(filename, outputDir) {
   return target;
 }
 
+/**
+ * @param {any} _serverName
+ * @param {any} toolName
+ * @param {any} params
+ * @param {{qaOutputDir?: any, ctx?: any}} [options]
+ */
 export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutputDir, ctx } = {}) {
   if (!params || typeof params !== "object" || Array.isArray(params)) return params;
   if (!PLAYWRIGHT_FILENAME_TOOLS.has(toolName) || !params.filename || isAbsolute(String(params.filename))) return params;
@@ -159,6 +165,10 @@ function compactRawMcpResult(out) {
   };
 }
 
+/**
+ * @param {any} change
+ * @param {{status?: any, before?: any, after?: any, error?: any}} [options]
+ */
 function fileEditPayload(change, { status, before, after, error } = {}) {
   const lineStats = statsForCompletedChange(change, before, after);
   const completedChange = lineStats ? { ...change, line_stats: lineStats } : change;
@@ -198,6 +208,11 @@ function withToolLimits(name, params, limits = {}) {
   return next;
 }
 
+/**
+ * @param {any} name
+ * @param {any} params
+ * @param {{cwd?: any, toolLimits?: any, ctx?: any}} [options]
+ */
 export function normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx } = {}) {
   return withToolLimits(name, withAbsolutePaths(name, params, cwd, ctx), toolLimits);
 }
@@ -226,6 +241,14 @@ function isReadOnlyShellCommand(command) {
   ].some((pattern) => pattern.test(text));
 }
 
+/**
+ * @param {any} name
+ * @param {any} label
+ * @param {any} description
+ * @param {any} parameters
+ * @param {any} execute
+ * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ */
 function createBuiltinTool(name, label, description, parameters, execute, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine, ctx } = {}) {
   return {
     name,
@@ -304,6 +327,10 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
  * fixed at build time and the model can only pick an enum value, so there is no
  * name-driven traversal surface.
  */
+/**
+ * @param {any[]} [skillNames]
+ * @param {{skillsRoot?: any, dataDir?: any, skills?: any[]}} [options]
+ */
 function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {}) {
   const sharedRoot = skillsRoot
     ? resolve(skillsRoot)
@@ -379,6 +406,10 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
   };
 }
 
+/**
+ * @param {any} allowedTools
+ * @param {{skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, ctx?: any}} [options]
+ */
 export function getPiBuiltinTools(allowedTools, {
   skillNames = [],
   skills = [],
@@ -501,6 +532,11 @@ export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPoli
   });
 }
 
+/**
+ * @param {any} name
+ * @param {any} cfg
+ * @param {{cwd?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ */
 async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx } = {}) {
   const brand = (ctx ?? readToolRuntime()).runtimeBrand;
   const client = new McpClient(
@@ -512,7 +548,9 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
     transport = new StreamableHTTPClientTransport(new URL(cfg.url), { requestInit: { headers: cfg.headers || {} } });
   } else if (cfg.type === "sse") {
     transport = new SSEClientTransport(new URL(cfg.url), {
-      eventSourceInit: { headers: cfg.headers || {} },
+      // SSE EventSourceInit's typed shape omits `headers`, but the transport
+      // forwards them to the underlying EventSource — keep the header pass-through.
+      eventSourceInit: /** @type {any} */ ({ headers: cfg.headers || {} }),
       requestInit: { headers: cfg.headers || {} },
     });
   } else {
@@ -523,14 +561,15 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
       cwd: prepared.cwd,
       env: { ...process.env, ...(prepared.env || {}) },
     });
-    transport.__monoSandboxCleanup = prepared.cleanup;
+    // Monkey-patched cleanup handle: not part of the MCP transport's typed shape.
+    /** @type {any} */ (transport).__monoSandboxCleanup = prepared.cleanup;
   }
   try {
     await client.connect(transport);
     return { name, client, transport };
   } catch (error) {
     try { await transport?.close?.(); } catch { /* best-effort */ }
-    try { await transport?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+    try { await /** @type {any} */ (transport)?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
     throw error;
   }
 }
@@ -616,6 +655,11 @@ function withTimeout(promise, timeoutMs, signal, label, registerReset) {
   return Promise.race([promise, timer]).finally(() => clearTimeout(timeout));
 }
 
+/**
+ * @param {any} mcpConfig
+ * @param {Set<any>} [reservedNames]
+ * @param {{limits?: any, cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any}} [options]
+ */
 export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   limits = {},
   cwd = null,
@@ -683,7 +727,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
         name,
         label: sourceTool.title || sourceTool.name,
         description: sourceTool.description || `${serverName}:${sourceTool.name}`,
-        parameters: sourceTool.inputSchema || sourceTool.input_schema || objectSchema({}),
+        parameters: sourceTool.inputSchema || /** @type {any} */ (sourceTool).input_schema || objectSchema({}),
         async execute(toolCallId, params, signal) {
           if (signal?.aborted) throw new Error("tool execution aborted");
           const textLimit = limits.mcpTextLimitChars || MCP_TEXT_RESULT_LIMIT;

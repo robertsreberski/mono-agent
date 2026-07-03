@@ -164,10 +164,10 @@ async function generateOpencodeAppResponse(systemPrompt, options = {}) {
   };
 
   try {
-    const opencode = await createOpencode({
+    const opencode = await createOpencode(/** @type {any} */ ({
       ...(Object.keys(mcp).length ? { config: { mcp } } : { config: {} }),
       ...(options.abortSignal ? { signal: options.abortSignal } : {}),
-    });
+    }));
     client = opencode.client;
     server = opencode.server;
     options.abortSignal?.addEventListener?.("abort", abortHandler, { once: true });

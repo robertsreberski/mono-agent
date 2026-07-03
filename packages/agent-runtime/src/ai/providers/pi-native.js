@@ -106,7 +106,10 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
     const key = await resolveApiKey(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
     return typeof key === "string" && key.length > 0 ? { type: "api_key", key } : undefined;
   };
-  return {
+  // Cast at the pi boundary: `read` resolves a `{type: "api_key", key}` literal
+  // but TS widens `type` to `string`, so the shape is not structurally assignable
+  // to pi's opaque `CredentialStore` type. The runtime shape is correct.
+  return /** @type {any} */ ({
     read,
     // api-key providers only ever `read`; pi drives `modify` for OAuth refresh
     // (unused here). Implemented faithfully so the store honors the interface:
@@ -117,7 +120,7 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
       return (await fn(current)) ?? current;
     },
     async delete() {},
-  };
+  });
 }
 
 // Assemble the pi 0.80 `Models` collection serving this run. Builtin models

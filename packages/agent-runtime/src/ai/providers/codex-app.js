@@ -224,6 +224,9 @@ function codexCollaborationModePayload(nativeSubagents, { model, effort, systemP
   };
 }
 
+/**
+ * @param {{command?: string, args?: string[], cwd?: any, env?: any, onNotification?: (msg: any) => void}} [options]
+ */
 export function createCodexAppServerClient({
   command = "codex",
   // project_doc_max_bytes=0 keeps codex from injecting its own project docs;
@@ -742,7 +745,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     // turn already.
     const claimed = codexLiveness.claim(resumeSessionId);
     if (!claimed.ok) {
-      return claimed.reason === "missing"
+      // @ts-check does not narrow the ClaimResult union on `!claimed.ok`,
+      // though the loser branch always carries `reason`.
+      return /** @type {{reason: string}} */ (claimed).reason === "missing"
         ? sessionUnavailableResult(
           "session_not_found",
           `Codex session ${resumeSessionId} is not live; cannot resume`,
@@ -792,11 +797,13 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     const fastMode = codexModelSupportsFastMode(resolved.model) && normalizeFastMode(options.fastMode, true);
     if (!resumeEntry) {
       const mcpServers = codexMcpConfig(options.mcpServers);
-      const config = {
+      // Incrementally assembled config handed across the codex app-server
+      // boundary; the reasoning fields below are attached conditionally.
+      const config = /** @type {any} */ ({
         ...(fastMode ? { service_tier: "fast" } : {}),
         features: { fast_mode: fastMode },
         ...(Object.keys(mcpServers).length ? { mcp_servers: mcpServers } : {}),
-      };
+      });
       if (normalizedEffort) {
         config.model_reasoning_effort = normalizedEffort;
         if (normalizedEffort !== "none") config.model_reasoning_summary = "auto";

@@ -13,10 +13,10 @@
 // gate) and under vitest (scripts/__tests__/verify-deep-imports.test.mjs), which
 // injects a fake `importFn` to exercise the failure path deterministically.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 const PACKAGE_NAME = "@mono-agent/agent-runtime";
 
@@ -51,19 +51,46 @@ function specifierForExportKey(key) {
   return `${PACKAGE_NAME}${key.slice(1)}`;
 }
 
+function packageDir(repoRoot) {
+  return join(repoRoot, "packages", "agent-runtime");
+}
+
 /**
- * Read the mapped subpath specifiers from agent-runtime's package.json exports.
- * Wildcard keys (should be none after Phase 6) are skipped defensively.
+ * Read the mapped subpath entries from agent-runtime's package.json exports —
+ * each carries the bare specifier a consumer imports (the `default`/`.js`
+ * condition Node resolves) AND the absolute path of the `types` condition
+ * target (the generated `.d.ts` a TS consumer resolves). Wildcard keys (should
+ * be none after Phase 6) are skipped defensively; a conditionless string entry
+ * (no `types`) yields `typesTarget: null` so it is reported but never fails the
+ * types check.
  * @param {string} repoRoot
- * @returns {string[]}
+ * @returns {Array<{key: string, specifier: string, typesTarget: string|null}>}
  */
-export function mappedSpecifiers(repoRoot) {
-  const manifestPath = join(repoRoot, "packages", "agent-runtime", "package.json");
+export function mappedEntries(repoRoot) {
+  const manifestPath = join(packageDir(repoRoot), "package.json");
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   const exportsMap = manifest.exports || {};
   return Object.keys(exportsMap)
     .filter((key) => !key.includes("*"))
-    .map(specifierForExportKey);
+    .map((key) => {
+      const condition = exportsMap[key];
+      const typesRel = condition && typeof condition === "object" ? condition.types : null;
+      const typesTarget = typeof typesRel === "string"
+        ? (isAbsolute(typesRel) ? typesRel : resolve(packageDir(repoRoot), typesRel))
+        : null;
+      return { key, specifier: specifierForExportKey(key), typesTarget };
+    });
+}
+
+/**
+ * Read the mapped subpath specifiers from agent-runtime's package.json exports.
+ * Kept for back-compat (callers/tests that only need the specifier list);
+ * `mappedEntries` is the fuller shape used to also verify the `types` condition.
+ * @param {string} repoRoot
+ * @returns {string[]}
+ */
+export function mappedSpecifiers(repoRoot) {
+  return mappedEntries(repoRoot).map((entry) => entry.specifier);
 }
 
 function sink() {
@@ -75,6 +102,7 @@ function sink() {
  * @param {Object} [options]
  * @param {string} [options.repoRoot] Repo root holding packages/agent-runtime.
  * @param {(specifier: string) => Promise<unknown>} [options.importFn] Injectable for tests.
+ * @param {(path: string) => boolean} [options.fileExists] Injectable for tests (types-target existence).
  * @param {{write: (text: string) => void}} [options.stdout]
  * @param {{write: (text: string) => void}} [options.stderr]
  * @returns {Promise<{exitCode: number, results: Array<{specifier: string, ok: boolean, error?: string}>}>}
@@ -82,28 +110,53 @@ function sink() {
 export async function runVerifyDeepImports({
   repoRoot = defaultRepoRoot(),
   importFn = realImporter(repoRoot),
+  fileExists = existsSync,
   stdout = process.stdout,
   stderr = process.stderr,
 } = {}) {
-  let specifiers;
+  let entries;
   try {
-    specifiers = mappedSpecifiers(repoRoot);
+    entries = mappedEntries(repoRoot);
   } catch (err) {
     stderr.write(`FAIL could not read agent-runtime exports map: ${err?.message || String(err)}\n`);
     return { exitCode: 1, results: [] };
   }
 
   const results = [];
-  for (const specifier of specifiers) {
+  for (const { specifier, typesTarget } of entries) {
+    // (1) `default` condition: resolve + actually load the module.
+    let ok = true;
+    let error;
     try {
       await importFn(specifier);
-      results.push({ specifier, ok: true });
       stdout.write(`PASS ${specifier}\n`);
     } catch (err) {
-      const message = err?.message || String(err);
-      results.push({ specifier, ok: false, error: message });
-      stdout.write(`FAIL ${specifier}: ${message}\n`);
+      ok = false;
+      error = err?.message || String(err);
+      stdout.write(`FAIL ${specifier}: ${error}\n`);
     }
+    // (2) `types` condition: the generated .d.ts a TS consumer resolves must
+    // exist on disk. A wildcard-free exports map with a `types` condition that
+    // points at a missing/renamed .d.ts would silently break TS consumers with
+    // no other signal — this is that signal. (A conditionless string entry has
+    // no `types` target and is skipped.)
+    let typesOk = true;
+    let typesError;
+    if (typesTarget !== null) {
+      if (fileExists(typesTarget)) {
+        stdout.write(`PASS ${specifier} (types)\n`);
+      } else {
+        typesOk = false;
+        typesError = `types condition target missing on disk: ${typesTarget}`;
+        stdout.write(`FAIL ${specifier} (types): ${typesError}\n`);
+      }
+    }
+    results.push({
+      specifier,
+      ok: ok && typesOk,
+      ...(ok ? {} : { error }),
+      ...(typesOk ? {} : { typesError }),
+    });
   }
 
   const failures = results.filter((result) => !result.ok);
@@ -111,7 +164,7 @@ export async function runVerifyDeepImports({
     stdout.write(`deep-imports fail (${failures.length}/${results.length} unresolved)\n`);
     return { exitCode: 1, results };
   }
-  stdout.write(`deep-imports ok (${results.length} mapped subpaths resolve)\n`);
+  stdout.write(`deep-imports ok (${results.length} mapped subpaths resolve, default + types)\n`);
   return { exitCode: 0, results };
 }
 

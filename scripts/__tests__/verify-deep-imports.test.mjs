@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mappedSpecifiers, runVerifyDeepImports } from "../verify-deep-imports.mjs";
+import { mappedEntries, mappedSpecifiers, runVerifyDeepImports } from "../verify-deep-imports.mjs";
 
 function sink() {
   const lines = [];
@@ -24,7 +24,20 @@ describe("verify-deep-imports", () => {
     expect(specifiers).not.toContain("@mono-agent/agent-runtime/ai/providers/pi-sdk.js");
   });
 
-  it("resolves every mapped subpath through real package resolution (exit 0)", async () => {
+  it("maps each non-wildcard export key to its types condition target", () => {
+    const entries = mappedEntries(repoRoot);
+    // Every mapped key in the Phase-6 explicit map is a conditions object with a
+    // `types` target, so none should be null.
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((entry) => typeof entry.typesTarget === "string")).toBe(true);
+    const root = entries.find((entry) => entry.specifier === "@mono-agent/agent-runtime");
+    expect(root?.typesTarget?.endsWith("packages/agent-runtime/types/index.d.ts")).toBe(true);
+  });
+
+  it("resolves every mapped subpath (default + types conditions) through real resolution (exit 0)", async () => {
+    // Real `default` import resolution + real on-disk `types` (.d.ts) existence.
+    // The types/ outDir is a build artifact (gitignored); this runs after the
+    // package is built (worktree has types/ present, phase gate builds first).
     const stdout = sink();
     const { exitCode, results } = await runVerifyDeepImports({ repoRoot, stdout, stderr: sink() });
     if (exitCode !== 0) {
@@ -35,6 +48,25 @@ describe("verify-deep-imports", () => {
     expect(results.length).toBeGreaterThan(0);
     expect(results.every((result) => result.ok)).toBe(true);
     expect(stdout.text).toContain("deep-imports ok");
+    expect(stdout.text).toContain("(types)");
+  });
+
+  it("exits non-zero when a mapped types condition target is missing on disk", async () => {
+    // Default imports all succeed; a single types target is forced missing via
+    // the injectable fileExists, so the run fails on the broken `types` condition.
+    const stdout = sink();
+    const missing = "@mono-agent/agent-runtime/ai/cost.js";
+    const { exitCode, results } = await runVerifyDeepImports({
+      repoRoot,
+      stdout,
+      stderr: sink(),
+      importFn: () => Promise.resolve({}),
+      fileExists: (path) => !path.includes(`${"types"}/ai/cost.d.ts`),
+    });
+    expect(exitCode).toBe(1);
+    expect(stdout.text).toContain(`FAIL ${missing} (types): types condition target missing on disk`);
+    expect(stdout.text).toContain("deep-imports fail");
+    expect(results.find((r) => r.specifier === missing)?.ok).toBe(false);
   });
 
   it("exits non-zero and reports the offending specifier when a mapped subpath fails to load", async () => {

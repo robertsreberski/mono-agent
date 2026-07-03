@@ -113,6 +113,10 @@ function runCommand(commandSpec, { timeoutMs, signal, maxBufferBytes = BASH_MAX_
   });
 }
 
+/**
+ * @param {{command: string, timeout?: number, max_output_chars?: number, workdir?: string}} params
+ * @param {{signal?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ */
 export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS, max_output_chars, workdir }, { signal, sandboxPolicy, sandboxEngine, ctx } = {}) {
   const resolvedCtx = ctx ?? readToolRuntime();
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;

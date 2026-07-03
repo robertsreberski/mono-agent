@@ -24,6 +24,10 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * @param {{pattern: string, path?: string, limit?: number, offset?: number, max_matches?: number, max_output_chars?: number, workdir?: string}} params
+ * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ */
 export async function globToolImpl({ pattern, path, limit, offset = 0, max_matches, max_output_chars, workdir }, { sandboxPolicy, ctx } = {}) {
   const cwd = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
   if (!isPathAllowed(cwd, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${cwd}`;

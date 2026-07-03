@@ -20,6 +20,10 @@ const IMAGE_MIME_BY_EXT = {
   ".bmp": "image/bmp",
 };
 
+/**
+ * @param {{file_path: string, offset?: number, start_line?: number, limit?: number, max_output_chars?: number, workdir?: string}} params
+ * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ */
 export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy, ctx } = {}) {
   const target = resolveToolPath(file_path, workdir, ctx);
   if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${file_path}`;

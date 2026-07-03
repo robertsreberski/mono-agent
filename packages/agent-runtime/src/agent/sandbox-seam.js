@@ -74,6 +74,10 @@
  * `SandboxPolicy` (a structural superset of this shape).
  * @property {string} [mode]
  * @property {SandboxNetworkPolicyLike} [network]
+ * @property {ReadonlyArray<string>} [readableRoots]
+ * @property {ReadonlyArray<string>} [writableRoots]
+ * @property {ReadonlyArray<string>} [denyWrite]
+ * @property {string} [root]
  */
 
 /**

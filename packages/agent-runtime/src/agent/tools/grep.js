@@ -22,6 +22,10 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * @param {{pattern: string, path?: string, glob?: string, type?: string, output_mode?: string, context?: number, case_insensitive?: boolean, multiline?: boolean, head_limit?: number, offset?: number, max_matches?: number, max_output_chars?: number, workdir?: string}} params
+ * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ */
 export async function grepToolImpl({
   pattern,
   path,

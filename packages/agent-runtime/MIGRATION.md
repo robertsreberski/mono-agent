@@ -134,6 +134,95 @@ mono-agent hosts — no action needed if you build your runtime through
   `@mono-agent/runtime-adapter`, also pass a `sandbox` implementation, or drop
   the policy.
 
+## 8. Typed run options replace the `settings` bag (`toolLimits` / `compaction` / `prompts`)
+
+The flat `options.settings` bag is **deprecated** as the way to configure
+tool-output clamps and context compaction. The supported replacements are typed,
+per-run objects on `RuntimeRunOptions`:
+
+- **`options.toolLimits`** (`RuntimeToolLimits`) — `toolTextLimitChars`,
+  `bashOutputLimitChars`, `mcpTextLimitChars`, `searchResultLimit`,
+  `imageInlineMaxBytes`, `toolPayloadMaxBytes`, `mcpCallTimeoutMs`,
+  `mcpCallMaxTotalTimeoutMs`, `bashTimeoutMs`.
+- **`options.compaction`** (`RuntimeCompactionPolicy`) — `enabled`,
+  `triggerRatio`, `keepRecentTokens`, `summaryMaxTokens`, `minSavingsTokens`,
+  `fixedOverheadEnabled`, `contextWindowOverride`.
+
+Precedence is **per-group**: a present typed object wins wholesale for its group
+and that group's legacy `settings` keys are ignored; an absent typed object lets
+its group's `settings` keys through as a fallback. Consuming **any** legacy
+`settings` key emits exactly one `runtime_warning` with
+**`warning_kind: "deprecated_settings_option"`** per run (listing the consumed
+keys). Passing no `settings` — or an empty/irrelevant bag — never warns, so a host
+that never passed `settings` is byte-for-byte unchanged (mono-agent hosts do not
+pass it, so this is a no-op there).
+
+`resolveAgentCompactionPolicy(settings, model)` stays exported (the canonical
+clamp/mapper both paths route through), and `@mono-agent/runtime-adapter` exposes
+`resolveRuntimePolicies(settings)` to map a legacy bag to the typed objects.
+**Action:** migrate `settings` → `toolLimits` / `compaction`; until then the shim
+keeps working with one deprecation warning per run.
+
+## 9. New per-run overrides: `sandbox`, `sandboxPolicy`, `prompts`
+
+Beyond `toolLimits` / `compaction`, `RuntimeRunOptions` gained:
+
+- **`sandbox`** — a per-run `RuntimeSandbox` implementation override. Precedence
+  is run > host > passthrough; it overrides only the *enforcing code*, while the
+  policy **data** still merges monotonically (I13, section 7).
+- **`sandboxPolicy`** — per-run policy data, merged monotonically with the host
+  policy (it can **tighten**, never weaken or disable).
+- **`prompts`** (`RuntimePromptOverrides`) — per-run overrides of the kernel's
+  built-in prompt fragments: `structuredOutputInstruction(systemPrompt)`,
+  `structuredOutputFinalization()`, `liveInputGuidance(body)`. Run wins over the
+  host-level `prompts` default; an absent field keeps the built-in string
+  (byte-identical default). These are also accepted on `AgentRuntimeHostOptions`
+  as the host-level default.
+
+## 10. Pi 0.80 auth: `Models` credential store (`resolvePiApiKey` semantics preserved)
+
+Pi 0.80 removed the harness `getApiKeyAndHeaders` hook; request auth now resolves
+through a `Models` collection's `CredentialStore`. The bridge's **per-run
+key-resolution contract is unchanged**: an `apiKeys` map entry wins, else the host
+`resolvePiApiKey(provider)` callback is consulted; a callback failure emits a
+`pi_auth_failed` runtime warning and proceeds keyless (a builtin provider then
+falls back to its own env vars, exactly as returning `undefined` from the old hook
+did). **No host action needed** — `resolvePiApiKey` behaves as before.
+
+Dependency bump: **`@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` are
+now `^0.80.x`** (were `^0.79.1`). Compaction is driven natively (section 3).
+
+## 11. Exports map: wildcards removed (explicit deep-path map)
+
+The package's `./ai/*` and `./agent/*` **wildcard exports were replaced by an
+explicit `exports` map**: 3 barrels (`.`, `./ai`, `./agent`) plus **17 named deep
+`.js` subpaths**, each carrying its own generated `types` condition. A deep import
+that is not on the map **no longer resolves** — a wildcard used to silently
+resolve anything under `src/`, so a moved/renamed/mistyped subpath is now a loud
+failure (guarded by `scripts/verify-deep-imports.mjs`).
+
+The 17 supported deep paths:
+
+```
+./ai/failure.js                         ./agent/tools/index.js
+./ai/cost.js                            ./agent/tools/shared/runtime-context.js
+./ai/backend.js                         ./agent/prompt/skill-index.js
+./ai/runtime/model-refs.js              ./agent/allowlists.js
+./ai/runtime/registry.js                ./agent/transcript.js
+./ai/runtime/context-windows.js         ./agent/compaction.js
+./ai/runtime/fast-mode.js
+./ai/streaming/codex-events.js
+./ai/live-input-prompt.js
+./ai/file-change-stats.js
+./ai/providers/opencode-discovery.js
+```
+
+**Action:** if you deep-import a subpath not in this list, switch to the closest
+supported one, a barrel (`./ai` / `./agent`), or the public runtime registry.
+`pi-sdk.js` is gone (section 1); the provider bridges (`claude-sdk.js`,
+`claude-cli.js`, `codex-app.js`, …) are intentionally **not** exported — reach
+them through `createRuntime` / the runtime registry.
+
 ---
 
 ## Version
@@ -142,3 +231,59 @@ These changes ship in the first `agent-runtime` release after `0.3.0` on the
 `feat/runtime-live-sessions` line (a minor/major bump; see the release tag). The
 paired `@mono-agent/runtime-adapter` drops the `piReasoningSummary` field from its
 run-options type in lockstep.
+
+---
+
+## Appendix — Porting this kernel to a new scope/host (worklab port-readiness)
+
+This kernel is designed to be vendored into a differently-scoped host (the
+concrete target is **worklab**, `@worklab-ai/agent-runtime`, GPL-3.0-only, npm
+workspaces, pure-JS no-build, consuming this package's raw `src/`). The port
+itself is a follow-up; this is the executable checklist, with the port-readiness
+dry-run results recorded inline (verified against the worklab tree read-only).
+
+Run these before/at the port:
+
+1. **Scope rename `@mono-agent/` → `@worklab-ai/`.** Touches `package.json`
+   (`name` + the package-name prefix inside each `exports` key's consumer
+   specifier) only — the kernel's own source uses **relative** imports, so no
+   source import references the scope. *(Verified: zero `@mono-agent/*` specifiers
+   in `src/`.)*
+2. **Dependencies.** Post-decoupling the kernel has **zero workspace-package
+   deps**; only the third-party pins need aligning: `@earendil-works/pi-ai` +
+   `@earendil-works/pi-agent-core` (`^0.80.x`), `@modelcontextprotocol/sdk`,
+   `@opencode-ai/sdk`, `@anthropic-ai/claude-agent-sdk`, `zod`.
+3. **Pi bump `^0.74.0` → `^0.80.x` in lockstep.** worklab tests that use old pi
+   APIs (and its test-only deep imports of `pi-sdk.js` / `codex-app.js` /
+   `claude-sdk.js` / `claude-cli.js` — see step 6) are rewritten at the port.
+4. **Sandbox.** worklab passes **no** `sandbox` implementation → `passthroughSandbox`,
+   and **never sets `sandboxPolicy`** *(verified: zero `sandboxPolicy` /
+   `sandbox:` in worklab `src/`)*, so with no policy every tool runs unsandboxed
+   exactly as today — behavior is byte-identical. (If worklab later adds a policy,
+   it must also inject a `RuntimeSandbox` impl — section 7's fail-closed rule.)
+5. **License / packaging.** GPL-3.0-only stays; `files` includes `types/`
+   (additive — worklab consumes raw `src/`, `.d.ts` generation is optional).
+6. **Deep imports resolve.** `node scripts/verify-deep-imports.mjs` (default +
+   types conditions) is green, and every worklab **non-test** deep import (17
+   specifiers) resolves in the explicit exports map *(verified — no gap)*. The
+   only worklab deep imports NOT in the map are **test-only** (`pi-sdk.js`,
+   `codex-app.js`, `claude-sdk.js`, `claude-cli.js`); those tests are rewritten at
+   the port (step 3), so no exports entry is added for them.
+7. **Contract supersets.** `HOST_KEYS` ⊇ worklab's host bag *(verified:
+   worklab passes `resolveCustomPricing`, `onCompactionRecorded`, `persistArtifact`,
+   `resolvePiApiKey`, `observers` — all covered)*; the deep-import
+   `configureToolRuntime` accepts worklab's keys *(verified: `workspace`,
+   `repoRoot`, `runId`, `toolArtifactDir`, `ripgrepPath`, `qaOutputDir` ⊂
+   `TOOL_CONTEXT_KEYS`)*; and every `RuntimeResult` field worklab's
+   `worker/agent-turn.js` reads exists on the result *(verified: `cancelled`,
+   `providerSessionId`, `error`, `failureKind`, `errorDetails`, `diagnostics`,
+   `runtimeWarnings`, plus `text`/`usage`/`model`/`effort`/`numTurns`/
+   `structuredResult`/`capabilitiesUsed`/`durationMs`/`failoverHistory`;
+   `observerSnapshot` is worklab-side, folded from its own metrics observer)*.
+8. **`options.settings` day one.** Works via the deprecated shim (section 8) with
+   one `deprecated_settings_option` warning per run; worklab later maps
+   `settings` → the typed policy objects in its `core/ai.js`.
+9. **Test layout + no-build consumption.** `src/__tests__` + vitest already match;
+   the package is fully consumable from raw `src/` with **no build**
+   *(verified: a smoke import of `createRuntime` / `createRouterRuntime` from
+   `src/index.js` constructs a runtime with no model call)*.

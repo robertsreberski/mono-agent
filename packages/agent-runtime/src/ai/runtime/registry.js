@@ -3,7 +3,10 @@
 import { COMMON_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";
 
 /**
- * @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef
+ * `RuntimeModelRef` is referenced inline (not aliased with a top-level
+ * `@typedef`) so this barrel does not re-export a second `RuntimeModelRef`
+ * type alongside model-refs.js's — that duplicate `export *` re-export is a
+ * TS2308 ambiguity. The canonical export stays in model-refs.js/types.js.
  * @typedef {import('../types.js').RuntimeBridge} RuntimeBridge
  * @typedef {import('../types.js').RuntimeBridgeDescriptor} RuntimeBridgeDescriptor
  * @typedef {import('../types.js').RuntimeBridgeId} RuntimeBridgeId
@@ -12,8 +15,8 @@ import { COMMON_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";
 /**
  * @typedef {Object} BridgeSpec
  * @property {RuntimeBridgeId} id
- * @property {(ref: (RuntimeModelRef|undefined), options?: Object) => boolean} supports
- * @property {(ref?: RuntimeModelRef) => Object} capabilities
+ * @property {(ref: (import('../types.js').RuntimeModelRef|undefined), options?: Object) => boolean} supports
+ * @property {(ref?: import('../types.js').RuntimeModelRef) => Object} capabilities
  * @property {(options?: Object) => Promise<RuntimeBridge>} load
  */
 
@@ -71,7 +74,7 @@ export function listRuntimeBridges() {
 }
 
 /**
- * @param {RuntimeModelRef} modelRef
+ * @param {import('../types.js').RuntimeModelRef} modelRef
  * @param {Object} [options]
  * @returns {Promise<RuntimeBridge>}
  */

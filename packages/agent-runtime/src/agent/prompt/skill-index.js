@@ -23,6 +23,9 @@ export function getSkillAccessDirs(skills = []) {
   return [...new Set(skills.map(skillDir).filter(Boolean))];
 }
 
+/**
+ * @param {{assetsPath?: string, skillsRoot?: any}} [options]
+ */
 export function buildSkillPathNote({ assetsPath, skillsRoot } = {}) {
   const lines = [];
   if (skillsRoot) lines.push(`Configured skills root: ${resolve(skillsRoot)}`);
@@ -31,6 +34,9 @@ export function buildSkillPathNote({ assetsPath, skillsRoot } = {}) {
   return lines.join("\n");
 }
 
+/**
+ * @param {{body?: string, assetsPath?: string, skillsRoot?: any, maxChars?: number}} [options]
+ */
 export function formatSkillBodyWithPathNote({ body, assetsPath, skillsRoot, maxChars = 12000 } = {}) {
   const text = [
     buildSkillPathNote({ assetsPath, skillsRoot }),

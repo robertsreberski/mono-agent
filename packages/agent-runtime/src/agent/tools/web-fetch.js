@@ -22,6 +22,10 @@ function fetchRetryDelay(ms) {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
+/**
+ * @param {{url: string, headers?: Record<string, string>, max_output_chars?: number}} params
+ * @param {{sandboxPolicy?: any, ctx?: any, retryDelaysMs?: number[]}} [options]
+ */
 export async function webFetchToolImpl(
   { url, headers = {}, max_output_chars },
   { sandboxPolicy, ctx, retryDelaysMs = DEFAULT_FETCH_RETRY_DELAYS_MS } = {},

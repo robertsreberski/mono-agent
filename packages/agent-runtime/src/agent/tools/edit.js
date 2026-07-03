@@ -1,6 +1,10 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isPathAllowed, isWritablePathAllowed, resolveToolPath } from "./shared/path-resolver.js";
 
+/**
+ * @param {{file_path: string, old_string: string, new_string: string, replace_all?: boolean, workdir?: string}} params
+ * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ */
 export async function editToolImpl({ file_path, old_string, new_string, replace_all = false, workdir }, { sandboxPolicy, ctx } = {}) {
   const target = resolveToolPath(file_path, workdir, ctx);
   const pathOptions = { sandboxPolicy, ctx };

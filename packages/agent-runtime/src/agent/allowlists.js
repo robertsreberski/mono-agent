@@ -24,6 +24,9 @@ export function parseStoredAllowlist(value) {
   }
 }
 
+/**
+ * @param {{mode?: string, list?: any, fallback?: string}} [options]
+ */
 export function inferAllowlistMode({ mode, list, fallback = ALLOWLIST_MODE_ALL } = {}) {
   if (mode !== undefined) return normalizeAllowlistMode(mode);
   return normalizeList(list).length > 0

@@ -2,6 +2,10 @@ import { passthroughSandbox } from "../sandbox-seam.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 
+/**
+ * @param {{query: string, limit?: number}} params
+ * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ */
 export async function webSearchToolImpl({ query, limit = 5 }, { sandboxPolicy, ctx } = {}) {
   const max = Math.min(Math.max(Number(limit) || 5, 1), 10);
   const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
