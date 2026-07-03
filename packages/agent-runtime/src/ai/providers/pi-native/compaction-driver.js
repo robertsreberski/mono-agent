@@ -3,10 +3,18 @@
 //
 // AUTO-COMPACTION. pi-agent-core performs NO automatic in-loop compaction
 // (shouldCompact/compact are exported helpers its loop never calls), so this
-// bridge drives it: proactively before a turn when the running model's context
+// bridge DRIVES it: proactively before a turn when the running model's context
 // is near the window, and reactively (compact + single re-prompt) if a turn
 // still overflows. The window auto-tracks the model actually serving the request
 // and self-corrects from any real ceiling stated in an overflow error.
+//
+// DELEGATED to pi where pi provides the primitive: the proactive trigger
+// DECISION runs through pi's shouldCompact() (via piCompactionSettings) and the
+// context-size ESTIMATE runs through pi's estimateContextTokens(). Only the
+// pieces pi does not model stay hand-rolled here: the DRIVING (pi never invokes
+// compaction itself), the discovered-window ceiling learning, and the fixed
+// per-request overhead (system prompt + tool schemas) that estimateContextTokens
+// omits.
 //
 // Pure moves out of pi-native.js: the discovered-window cache (kept at MODULE
 // scope, matching its bridge-level scope before the split), context estimation,
@@ -17,8 +25,9 @@
 
 import {
   calculateContextTokens,
-  estimateTokens,
+  estimateContextTokens,
   getLastAssistantUsage,
+  shouldCompact,
 } from "@earendil-works/pi-agent-core";
 import {
   estimateFixedOverheadTokens,
@@ -72,29 +81,38 @@ function recordDiscoveredContextWindow(harness, runtime, resolved, limit) {
 // Best-effort estimate of the current session's context size. The last assistant
 // usage is authoritative (it reflects what the provider actually counted,
 // including cache reads), but it can be stale/zero (e.g. seeded history), so we
-// take the MAX of the usage-based count and a raw per-message estimate. Either
-// being large is a reason to compact; overcounting only compacts slightly early.
+// take the MAX of the usage-based count and pi's estimateContextTokens() over the
+// transcript. Either being large is a reason to compact; overcounting only
+// compacts slightly early.
+//
+// The transcript branch is DELEGATED to pi's estimateContextTokens(): it sums
+// pi's own per-message estimateTokens across session.buildContext().messages,
+// and when a message carries a VALID last-assistant usage it uses usage +
+// trailing-message estimate instead of re-summing the whole transcript. Seeded /
+// faux histories carry no valid usage (faux usage totals 0 tokens, which pi
+// rejects), so it reduces to the pure per-message sum the bridge summed by hand
+// before — a behaviour-neutral swap there, and a more provider-accurate estimate
+// once real usage is present.
 //
 // `fixedOverheadTokens` is the system-prompt + tool-schema + per-turn user
-// message overhead the provider meters but the raw per-message estimate (which
-// sums only the transcript via session.buildContext().messages) excludes. It is
-// added to the RAW branch ONLY: the usage-based count already includes that
-// overhead (it is what the provider actually counted), so adding it there would
-// double-count. With a stale/0 usage and a seeded session the raw branch wins,
-// and without this the trigger under-counts and the real request overflows.
+// message overhead the provider meters but the transcript estimate (which covers
+// only session.buildContext().messages) excludes. It is added to the ESTIMATE
+// branch ONLY: the usage-based count already includes that overhead (it is what
+// the provider actually counted), so adding it there would double-count. With a
+// stale/0 usage and a seeded session the estimate branch wins, and without this
+// the trigger under-counts and the real request overflows.
 export async function estimateCurrentContextTokens(session, fixedOverheadTokens = 0) {
   let usageTokens = 0;
   let rawTokens = 0;
   try {
     const usage = getLastAssistantUsage(await session.getEntries());
     if (usage) usageTokens = Number(calculateContextTokens(usage)) || 0;
-  } catch { /* ignore — fall back to the raw estimate */ }
+  } catch { /* ignore — fall back to the transcript estimate */ }
   try {
     const context = await session.buildContext();
-    for (const message of context?.messages || []) rawTokens += Number(estimateTokens(message)) || 0;
+    rawTokens = Number(estimateContextTokens(context?.messages || []).tokens) || 0;
   } catch { /* ignore — usage-based estimate stands */ }
-  // Apply the fixed overhead to the raw estimate only (see note above). Done
-  // after the loop so it lands once, not per message.
+  // Apply the fixed overhead to the transcript estimate only (see note above).
   rawTokens += Number(fixedOverheadTokens) || 0;
   if (usageTokens === 0 && rawTokens === 0) return { tokens: 0, source: "unavailable" };
   return usageTokens >= rawTokens
@@ -161,6 +179,35 @@ function isReactiveCompactionCandidate(errorMessage, diagnostics) {
 }
 
 /**
+ * Express the kernel's compaction policy as a pi `CompactionSettings` so the
+ * proactive trigger runs through pi's own `shouldCompact()`.
+ *
+ * EQUIVALENCE (exact, proven by pi-native-compaction-parity.test.js): pi fires
+ * when `contextTokens > contextWindow - reserveTokens` (STRICT `>`), while the
+ * kernel policy fires when `estimate >= triggerTokens` (`>=`). Both `estimate`
+ * and `triggerTokens` are non-negative INTEGERS — pi's `estimateTokens` /
+ * `calculateContextTokens` return `Math.ceil(...)`/summed provider counts, and
+ * `resolveAgentCompactionPolicy` builds `triggerTokens` with `Math.floor` — so
+ * for integers `x >= t` iff `x > t - 1`. Setting
+ *   `reserveTokens = contextWindow - triggerTokens + 1`
+ * gives `contextWindow - reserveTokens = triggerTokens - 1`, hence
+ *   `shouldCompact(x, window, s)` == `x > triggerTokens - 1` == `x >= triggerTokens`.
+ * `triggerTokens < contextWindow` always (it is `min(floor(window*ratio),
+ * window - reserve)` with `ratio <= 0.95`), so `reserveTokens >= 2` — never
+ * degenerate. `keepRecentTokens` is carried through for a faithful settings
+ * object even though `shouldCompact` ignores it.
+ * @param {{enabled: boolean, contextWindow: number, triggerTokens: number, keepRecentTokens: number}} policy
+ * @returns {{enabled: boolean, reserveTokens: number, keepRecentTokens: number}}
+ */
+export function piCompactionSettings(policy) {
+  return {
+    enabled: !!policy.enabled,
+    reserveTokens: policy.contextWindow - policy.triggerTokens + 1,
+    keepRecentTokens: policy.keepRecentTokens,
+  };
+}
+
+/**
  * Resolve the compaction policy against the LIVE model's context window
  * (auto-recognized from the model actually serving the request, lowered by any
  * ceiling learned from a prior overflow). Drives the proactive trigger +
@@ -223,7 +270,10 @@ export async function runProactiveCompaction(runState, {
     })
     : { systemPromptTokens: 0, toolSchemaTokens: 0, userMessageTokens: 0, fixedOverheadTokens: 0 };
   const est = await estimateCurrentContextTokens(runState.session, fixedOverhead.fixedOverheadTokens);
-  if (est.tokens >= policy.triggerTokens) {
+  // DELEGATED trigger decision: pi's shouldCompact() with the policy mapped to
+  // pi CompactionSettings (see piCompactionSettings — exact `>=`-preserving
+  // mapping). Equivalent to the prior `est.tokens >= policy.triggerTokens`.
+  if (shouldCompact(est.tokens, policy.contextWindow, piCompactionSettings(policy))) {
     await harness.waitForIdle();
     if (!options.abortSignal?.aborted) {
       const res = await tryCompact(harness, {

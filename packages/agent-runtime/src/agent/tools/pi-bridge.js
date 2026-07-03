@@ -289,32 +289,73 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
  * Progressive skill disclosure: exposes a `read_skill` tool so the agent can pull
  * a named skill's FULL body on demand (skills are otherwise injected index-only).
  *
- * `skillsRoot` is the directory that directly contains `<name>/SKILL.md` (what the
- * harness/context loader calls `skillsRoot`). The legacy `dataDir` form is still
- * accepted for back-compat — there the skills live under `<dataDir>/skills` — and
- * is resolved to the same root. The path-traversal guard (resolved file must stay
- * under the skills root) is preserved on both paths.
+ * Two input shapes are accepted, matching what hosts pass:
+ *  - Minimal / legacy (mono-agent's agent-harness): bare `skillNames` + a shared
+ *    `skillsRoot` (the directory that directly contains `<name>/SKILL.md`), or the
+ *    back-compat `dataDir` (skills under `<dataDir>/skills`). This path is UNCHANGED.
+ *  - pi's neutral `Skill` shape (`{name, description, content, filePath, ...}`,
+ *    what worklab passes): each skill carries an absolute `filePath`. When NO shared
+ *    `skillsRoot`/`dataDir` is configured, read_skill derives each skill's root from
+ *    its own `filePath` — pi has no lazy-body equivalent, so the body is still read
+ *    from disk on demand rather than injected up front.
+ *
+ * The path-traversal guard (resolved file must stay under the shared root) is
+ * preserved on the shared-root path; on the filePath path the name→file binding is
+ * fixed at build time and the model can only pick an enum value, so there is no
+ * name-driven traversal surface.
  */
-function readSkillTool(skillNames = [], { skillsRoot, dataDir } = {}) {
-  const root = skillsRoot
+function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {}) {
+  const sharedRoot = skillsRoot
     ? resolve(skillsRoot)
     : (dataDir ? resolve(dataDir, "skills") : null);
-  const safe = skillNames.filter((name) => /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name));
-  if (!safe.length || !root) return null;
+  const isSafeName = (name) => typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name);
+
+  // name -> {path, assetsPath, skillsRoot} derived from the pi Skill filePath.
+  // filePath is the skill file itself (nested `<root>/<name>/SKILL.md` or a flat
+  // `<root>/<name>.md`): assetsPath is its directory; the note-only skills root is
+  // one level up for the nested layout, else the directory itself.
+  const filePathEntries = new Map();
+  for (const skill of Array.isArray(skills) ? skills : []) {
+    if (!skill || typeof skill !== "object") continue;
+    if (!isSafeName(skill.name) || typeof skill.filePath !== "string" || !skill.filePath) continue;
+    if (filePathEntries.has(skill.name)) continue;
+    const path = resolve(skill.filePath);
+    const assetsPath = dirname(path);
+    const root = basename(path) === "SKILL.md" ? dirname(assetsPath) : assetsPath;
+    filePathEntries.set(skill.name, { path, assetsPath, skillsRoot: root });
+  }
+
+  // A shared root (minimal/legacy form) drives the tool exactly as before;
+  // filePath is consulted ONLY when it is absent — "derive root from
+  // skill.filePath when skillsRoot is absent".
+  const enumNames = sharedRoot
+    ? skillNames.filter(isSafeName)
+    : [...filePathEntries.keys()];
+  if (!enumNames.length) return null;
+
   return {
     name: "read_skill",
     label: "Read Skill",
     description: "Load the full instructions for a named skill.",
-    parameters: objectSchema({ name: { type: "string", enum: safe } }, ["name"]),
+    parameters: objectSchema({ name: { type: "string", enum: enumNames } }, ["name"]),
     async execute(_toolCallId, { name }) {
-      const path = resolve(root, name, "SKILL.md");
-      if (!path.startsWith(root + "/")) throw new Error(`invalid skill path: ${name}`);
-      if (!existsSync(path)) throw new Error(`SKILL.md not found for ${name}`);
+      if (sharedRoot) {
+        const path = resolve(sharedRoot, name, "SKILL.md");
+        if (!path.startsWith(sharedRoot + "/")) throw new Error(`invalid skill path: ${name}`);
+        if (!existsSync(path)) throw new Error(`SKILL.md not found for ${name}`);
+        return textResult(formatSkillBodyWithPathNote({
+          body: stripFrontmatter(readFileSync(path, "utf8")),
+          assetsPath: resolve(sharedRoot, name),
+          skillsRoot: sharedRoot,
+        }), { skill: name, path });
+      }
+      const entry = filePathEntries.get(name);
+      if (!entry || !existsSync(entry.path)) throw new Error(`SKILL.md not found for ${name}`);
       return textResult(formatSkillBodyWithPathNote({
-        body: stripFrontmatter(readFileSync(path, "utf8")),
-        assetsPath: resolve(root, name),
-        skillsRoot: root,
-      }), { skill: name, path });
+        body: stripFrontmatter(readFileSync(entry.path, "utf8")),
+        assetsPath: entry.assetsPath,
+        skillsRoot: entry.skillsRoot,
+      }), { skill: name, path: entry.path });
     },
   };
 }
@@ -340,6 +381,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 export function getPiBuiltinTools(allowedTools, {
   skillNames = [],
+  skills = [],
   skillsRoot,
   dataDir,
   cwd,
@@ -424,7 +466,7 @@ export function getPiBuiltinTools(allowedTools, {
   };
   const names = Array.isArray(allowedTools) ? allowedTools : Object.keys(all);
   const tools = names.map((name) => all[name]).filter(Boolean);
-  const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir });
+  const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir, skills });
   if (skillTool) tools.push(skillTool);
   const gated = approvalManager
     ? wrapToolsWithApprovalGate(tools, approvalManager, { model: approvalModel })

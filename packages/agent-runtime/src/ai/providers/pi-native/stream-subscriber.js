@@ -122,10 +122,20 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       });
     } else if (event.type === "turn_end") {
       runState.turnCount += 1;
-      // DELEGATE-TO-PI-WHEN-AVAILABLE: pi-agent-core owns the agent loop and
-      // exposes no native max-turns stop, so the ceiling is enforced here by
-      // aborting on the turn_end that crosses it (only when the turn ended to
-      // run more tools). Replace with a harness-native option if pi grows one.
+      // NON-DELEGABLE (verified against @earendil-works/pi-agent-core 0.80.3).
+      // pi's only after-turn stop hook is `shouldStopAfterTurn` on the LOW-LEVEL
+      // `AgentLoopConfig` (dist/types.d.ts) — the config passed to the raw
+      // `agentLoop`. It is NOT surfaced on `AgentHarnessOptions`
+      // (dist/harness/types.d.ts) and `AgentHarness` (dist/harness/agent-harness.d.ts)
+      // exposes no maxTurns / maxSteps / loop-config passthrough. This bridge is
+      // built on AgentHarness (for its session tree, compaction, steering, and
+      // event stream); reaching `shouldStopAfterTurn` would mean abandoning the
+      // harness for the low-level loop and reimplementing all of that. So the
+      // maxTurns ceiling stays enforced HERE: we count `turn_end`s and abort on
+      // the one that crosses the ceiling, but only when the turn ended to run
+      // MORE tools (stopReason "toolUse") — a turn that already produced a final
+      // answer must not be clipped. Delegate to a harness-native option only if
+      // pi lifts shouldStopAfterTurn (or an equivalent) onto AgentHarnessOptions.
       if (Number.isFinite(Number(options.maxTurns))
         && Number(options.maxTurns) > 0
         && runState.turnCount >= Number(options.maxTurns)
