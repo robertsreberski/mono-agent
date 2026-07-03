@@ -37,7 +37,11 @@ export async function webFetchToolImpl(
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   if (!sandbox.networkAllowsUrl(policy, parsed.href)) return "Error: Network access denied by sandbox policy.";
   const requestHeaders = { "User-Agent": "AgentRuntime/0.1", ...headers };
-  const restricted = policy !== undefined && policy.network.mode !== "all";
+  // `policy.network` can be absent (a hand-built, non-real-mode policy — the
+  // networkAllowsUrl gate above already denied any real-mode policy missing
+  // it); treat that as unrestricted rather than dereferencing `.mode` on
+  // undefined.
+  const restricted = policy !== undefined && policy.network !== undefined && policy.network.mode !== "all";
   const maxRetries = Array.isArray(retryDelaysMs) ? retryDelaysMs.length : 0;
 
   let lastErrorMessage = "request failed";

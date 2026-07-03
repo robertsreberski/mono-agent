@@ -84,11 +84,54 @@ describe("passthroughSandbox (zero-dependency default)", () => {
     expect(result).toContain("RuntimeSandbox implementation is configured");
   });
 
-  it("networkAllowsUrl: no policy or no network sub-policy allows; a restrictive policy denies; only network.mode \"all\" allows", () => {
+  it("networkAllowsUrl: no policy allows; a non-real-mode policy still allows with no network sub-policy; a real-mode policy fails closed on missing/non-\"all\" network", () => {
     expect(passthroughSandbox.networkAllowsUrl(undefined, "https://example.com")).toBe(true);
-    expect(passthroughSandbox.networkAllowsUrl({ mode: "native" }, "https://example.com")).toBe(true);
+    // Non-real mode ("off", or no mode at all): a missing `network` sub-field
+    // is treated as unsandboxed, matching pre-seam / no-sandbox-package
+    // behavior.
+    expect(passthroughSandbox.networkAllowsUrl({ mode: "off" }, "https://example.com")).toBe(true);
     expect(passthroughSandbox.networkAllowsUrl({ network: { mode: "none" } }, "https://example.com")).toBe(false);
     expect(passthroughSandbox.networkAllowsUrl({ network: { mode: "all" } }, "https://example.com")).toBe(true);
+    // Real mode ("native") demands enforcement: a missing `network` field is
+    // NOT "all" and must fail closed. Regression test for the fail-open
+    // finding — a hand-built {mode:"native"} policy with no `network`
+    // sub-field used to pass this check and let webFetch/webSearch reach
+    // fetch() unsandboxed.
+    expect(passthroughSandbox.networkAllowsUrl({ mode: "native" }, "https://example.com")).toBe(false);
+    expect(passthroughSandbox.networkAllowsUrl({ mode: "native", network: { mode: "none" } }, "https://example.com")).toBe(false);
+    expect(passthroughSandbox.networkAllowsUrl({ mode: "native", network: { mode: "all" } }, "https://example.com")).toBe(true);
+  });
+
+  it("WebSearch: denies cleanly and never calls fetch() under a real-mode policy with no network sub-field (fail-open regression)", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => { calls += 1; throw new Error("fetch should not have been called"); };
+    try {
+      const ctx = createToolContext({ sandboxPolicy: { mode: "native" } });
+
+      const result = await webSearchToolImpl({ query: "mono agent" }, { ctx });
+
+      expect(result).toBe("Error: Network access denied by sandbox policy.");
+      expect(calls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("WebFetch: denies cleanly (no TypeError, no fetch() call) under a real-mode policy with no network sub-field (fail-open regression)", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => { calls += 1; throw new Error("fetch should not have been called"); };
+    try {
+      const ctx = createToolContext({ sandboxPolicy: { mode: "native" } });
+
+      const result = await webFetchToolImpl({ url: "https://example.com" }, { ctx });
+
+      expect(result).toBe("Error: Network access denied by sandbox policy.");
+      expect(calls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("mergePolicies keeps the monotonic guarantee (I13): a request cannot weaken a native host policy", () => {

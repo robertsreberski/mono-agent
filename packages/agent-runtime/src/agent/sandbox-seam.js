@@ -202,8 +202,15 @@ async function prepareCommand({ policy, command }) {
  * @returns {boolean}
  */
 function networkAllowsUrl(policy, _url) {
-  if (policy === undefined || policy.network === undefined) return true;
-  return policy.network.mode === "all";
+  if (policy === undefined) return true;
+  // A policy whose mode demands real enforcement must fail closed on network
+  // access too when no `network` sub-field was given — an absent `network`
+  // is not "all", and this is the passthrough's safety net for hand-built
+  // policies from hosts with no real RuntimeSandbox wired in (see module
+  // doc's fail-closed rationale, and prepareCommand above for the analogous
+  // command-side check this mirrors via isRealSandboxMode).
+  if (isRealSandboxMode(policy.mode)) return policy.network?.mode === "all";
+  return policy.network === undefined || policy.network.mode === "all";
 }
 
 /** @type {RuntimeSandbox} */
