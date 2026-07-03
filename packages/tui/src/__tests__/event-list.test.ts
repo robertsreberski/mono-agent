@@ -311,7 +311,7 @@ describe("EventTimelineList", () => {
     expect(list.turnOfSelection()).toBe(1);
   });
 
-  it("handles up/down/pageUp/pageDown/home/end via handleInput", () => {
+  it("handles up/down, pageUp/pageDown, and home/end via handleInput", () => {
     const list = new EventTimelineList({ maxVisible: 3 });
     list.setItems(makeItems(10), []);
 
