@@ -43,7 +43,15 @@ export type {
 } from "./data/instances.js";
 
 export { listReplayRuns, readReplayRun } from "./data/replay.js";
-export type { ReplayRunDetail } from "./data/replay.js";
+export type {
+  ListReplayRunsOptions,
+  ListReplayRunsResult,
+  ReplayRunConfig,
+  ReplayRunDetail,
+  ReplayRunListItem,
+  ReplayTimelineItem,
+  TimelineTurn,
+} from "./data/replay.js";
 
 export { TurnPresenter } from "./ui/turn-presenter.js";
 export type { TurnPresenterOptions } from "./ui/turn-presenter.js";
