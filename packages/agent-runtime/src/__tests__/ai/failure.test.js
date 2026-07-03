@@ -182,4 +182,30 @@ describe("retryableProviderFailureInfo", () => {
       errorText: "invalid_request_error: Unknown parameter: prompt_cache_retention",
     })).toMatchObject({ retryable: false, subkind: "non_retryable" });
   });
+
+  // pi 0.80's openai-client-style bridge surfaces a down/unreachable provider as
+  // this terse string with no cause text (no ECONNREFUSED, no "fetch failed").
+  // Before this fix it matched neither RETRYABLE_PROVIDER_RE nor any
+  // retryableProviderSubkind pattern, so createRouterRuntime never failed over
+  // on the most basic "provider is down" scenario.
+  it("treats pi 0.80's terse 'Connection error.' as a retryable network failure", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_unavailable",
+      errorText: "Connection error.",
+    })).toMatchObject({ retryable: true, subkind: "network" });
+  });
+
+  it("treats a connection refused message as a retryable network failure", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_unavailable",
+      errorText: "connection refused while contacting upstream provider",
+    })).toMatchObject({ retryable: true, subkind: "network" });
+  });
+
+  it("keeps an auth error mentioning 'connection' non-retryable (NON_RETRYABLE precedence)", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_unavailable",
+      errorText: "invalid api key for connection",
+    })).toMatchObject({ retryable: false, subkind: "non_retryable" });
+  });
 });

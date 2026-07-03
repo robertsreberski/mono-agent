@@ -70,7 +70,12 @@ const USAGE_LIMIT_RE = /(rate limit|usage limit|max tokens|max turns|context len
 const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket)/i;
 const TOOL_FAILURE_RE = /(tool .* failed|mcp tool|permission denied|EACCES|read-only file system)/i;
 const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|invalid api key|incorrect api key|authentication|authorization|not authorized|forbidden|billing|insufficient[_ ]quota|quota exceeded|model[_ ]not[_ ]found|unsupported model|permission denied|bad request|401|403|404)/i;
-const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?overloaded|try again later|retry your request|request id|service unavailable|temporar(?:y|ily)|timed? ?out|stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|etimedout|network|429|too many requests|500|502|503|504|gateway|internal server error)/i;
+// pi 0.80's openai-client-style bridge collapses a connection-refused/unreachable
+// provider down to a terse "Connection error." with no cause text (no ECONNREFUSED,
+// no fetch failed) — the `\bconnection (?:error|refused|failed)\b|\bcould not connect\b`
+// alternation below is the motivating fix so that case still fails over instead of
+// being classified as non-retryable.
+const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?overloaded|try again later|retry your request|request id|service unavailable|temporar(?:y|ily)|timed? ?out|stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|etimedout|network|429|too many requests|500|502|503|504|gateway|internal server error|\bconnection (?:error|refused|failed)\b|\bcould not connect\b)/i;
 export const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|socket hang up|und_err_socket|econnreset|premature close)\b/i;
 
 function requestIdFromText(text) {
@@ -82,7 +87,9 @@ function retryableProviderSubkind(text) {
   if (/overloaded/i.test(text)) return "overloaded";
   if (/429|too many requests|rate limit/i.test(text)) return "rate_limited";
   if (/timed? ?out|etimedout/i.test(text)) return "timeout";
-  if (/stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|network/i.test(text)) return "network";
+  // pi 0.80's terse "Connection error." (no ECONNREFUSED/fetch-failed detail) still
+  // needs to land in the "network" subkind so a down provider fails over.
+  if (/stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|network|\bconnection (?:error|refused|failed)\b|\bcould not connect\b/i.test(text)) return "network";
   if (/500|502|503|504|service unavailable|gateway|internal server error/i.test(text)) return "server_error";
   if (/retry your request|try again later|request id|processing your request/i.test(text)) return "retryable_request";
   return null;
