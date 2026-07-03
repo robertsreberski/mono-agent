@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { failClosedSandboxPolicy, mergeSandboxPolicies } from "@mono-agent/sandbox";
+import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   createToolContext,
   updateToolContext,
@@ -87,17 +87,42 @@ describe("resetToolContext", () => {
 
 describe("resolveSandboxPolicy (I13 monotonic merge)", () => {
   it("returns the context policy when no request policy tightens it", () => {
-    const ctx = createToolContext({ sandboxPolicy: failClosedSandboxPolicy({ root: "/tmp/host" }) });
+    const ctx = createToolContext({
+      sandbox: createFakeSandbox(),
+      sandboxPolicy: failClosedSandboxPolicy({ root: "/tmp/host" }),
+    });
     const resolved = resolveSandboxPolicy(ctx, undefined);
     expect(resolved?.mode).toBe("native");
   });
 
-  it("merges request policy exactly like mergeSandboxPolicies (never weakens host policy)", () => {
+  it("delegates the merge to ctx.sandbox.mergePolicies, passing both policies through untouched", () => {
+    const calls = [];
     const hostPolicy = failClosedSandboxPolicy({ root: "/tmp/host" });
     const requestPolicy = failClosedSandboxPolicy({ root: "/tmp/host/sub" });
-    const ctx = createToolContext({ sandboxPolicy: hostPolicy });
+    const fake = createFakeSandbox();
+    const ctx = createToolContext({
+      sandboxPolicy: hostPolicy,
+      sandbox: {
+        ...fake,
+        mergePolicies(configured, request) {
+          calls.push([configured, request]);
+          return fake.mergePolicies(configured, request);
+        },
+      },
+    });
     const resolved = resolveSandboxPolicy(ctx, requestPolicy);
-    expect(resolved).toEqual(mergeSandboxPolicies(hostPolicy, requestPolicy));
+    expect(calls).toEqual([[hostPolicy, requestPolicy]]);
+    // The delegated merge tightens readableRoots to the more specific request
+    // root rather than weakening back to the host root (I13).
+    expect(resolved?.readableRoots).toEqual([requestPolicy.root]);
+  });
+
+  it("falls back to passthroughSandbox's own monotonic merge when ctx carries no sandbox impl", () => {
+    // A bare ToolContext-shaped object built without createToolContext (e.g. a
+    // hand-rolled host object) still gets a safe default merge.
+    const hostPolicy = { mode: "native", network: { mode: "none" } };
+    const resolved = resolveSandboxPolicy({ sandboxPolicy: hostPolicy }, undefined);
+    expect(resolved).toEqual(hostPolicy);
   });
 
   it("returns undefined when neither context nor request supplies a policy", () => {

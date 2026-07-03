@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
+import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   coerceMcpContent,
   getPiBuiltinTools,
@@ -34,6 +34,14 @@ function tempWorkspace() {
   tempDirs.push(dir);
   return dir;
 }
+
+beforeEach(() => {
+  // The fake sandbox fixture gives tests that supply their own `sandboxEngine`
+  // realistic engine-delegated command preparation — see helpers/fake-sandbox.js.
+  // (passthroughSandbox, the kernel's zero-dependency default, fails closed on
+  // any native-mode policy instead — see sandbox-seam.test.js.)
+  configureToolRuntime({ sandbox: createFakeSandbox() });
+});
 
 afterEach(() => {
   resetToolRuntime();

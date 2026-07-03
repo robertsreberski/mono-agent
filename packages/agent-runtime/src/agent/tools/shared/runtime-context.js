@@ -57,8 +57,8 @@ export function readToolRuntime() {
 // `ctx ?? readToolRuntime()`; this wrapper preserves the historical
 // single-argument signature for the default path.
 /**
- * @param {import('@mono-agent/sandbox').SandboxPolicy} [requestPolicy]
- * @returns {import('@mono-agent/sandbox').SandboxPolicy|undefined}
+ * @param {import('../../sandbox-seam.js').SandboxPolicy} [requestPolicy]
+ * @returns {import('../../sandbox-seam.js').SandboxPolicy|undefined}
  */
 export function resolveSandboxPolicy(requestPolicy = undefined) {
   return resolveContextSandboxPolicy(defaultContext, requestPolicy);

@@ -1,11 +1,13 @@
-import { networkPolicyAllowsUrl } from "@mono-agent/sandbox";
+import { passthroughSandbox } from "../sandbox-seam.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 
 export async function webSearchToolImpl({ query, limit = 5 }, { sandboxPolicy, ctx } = {}) {
   const max = Math.min(Math.max(Number(limit) || 5, 1), 10);
   const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  if (!networkPolicyAllowsUrl(resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy), url)) return "Error: Network access denied by sandbox policy.";
+  const resolvedCtx = ctx ?? readToolRuntime();
+  const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
+  if (!sandbox.networkAllowsUrl(resolveSandboxPolicy(resolvedCtx, sandboxPolicy), url)) return "Error: Network access denied by sandbox policy.";
   const resp = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 AgentRuntime/0.1" },
     signal: AbortSignal.timeout(15000),

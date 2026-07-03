@@ -2,7 +2,7 @@
 //
 // `pi-sdk.js` was replaced by the unified pi-native bridge (pi is native-only).
 // The package still exports the `./ai/*` subpath, so deep imports of
-// `@mono-agent/agent-runtime/ai/providers/pi-sdk.js` must keep resolving instead
+// `agent-runtime/ai/providers/pi-sdk.js` must keep resolving instead
 // of failing with ERR_MODULE_NOT_FOUND. This module re-exports the equivalent
 // pi-native symbols under their legacy names. Prefer importing from
 // `./pi-native.js` (or the public runtime registry) directly.

@@ -1,6 +1,6 @@
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
 import { capChars } from "./shared/output-truncation.js";
-import { networkPolicyAllowsUrl } from "@mono-agent/sandbox";
+import { passthroughSandbox } from "../sandbox-seam.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 
@@ -32,8 +32,10 @@ export async function webFetchToolImpl(
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return "Error: WebFetch only supports http(s) URLs.";
   }
-  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy);
-  if (!networkPolicyAllowsUrl(policy, parsed.href)) return "Error: Network access denied by sandbox policy.";
+  const resolvedCtx = ctx ?? readToolRuntime();
+  const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
+  const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
+  if (!sandbox.networkAllowsUrl(policy, parsed.href)) return "Error: Network access denied by sandbox policy.";
   const requestHeaders = { "User-Agent": "AgentRuntime/0.1", ...headers };
   const restricted = policy !== undefined && policy.network.mode !== "all";
   const maxRetries = Array.isArray(retryDelaysMs) ? retryDelaysMs.length : 0;
@@ -42,7 +44,7 @@ export async function webFetchToolImpl(
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     try {
       const resp = restricted
-        ? await fetchCheckingRedirects(parsed, requestHeaders, policy)
+        ? await fetchCheckingRedirects(parsed, requestHeaders, policy, sandbox)
         : await fetch(url, { headers: requestHeaders, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
       if (typeof resp === "string") return resp; // policy/redirect error — not retryable
       // Transient server errors (5xx) are worth one more attempt.
@@ -70,7 +72,7 @@ export async function webFetchToolImpl(
 // fetch() follows redirects transparently, which would let an allowed host
 // bounce the request to a denied one — follow them manually and re-check the
 // policy on every hop. Custom headers only travel to the original origin.
-async function fetchCheckingRedirects(initialUrl, headers, policy) {
+async function fetchCheckingRedirects(initialUrl, headers, policy, sandbox) {
   let current = initialUrl;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const sameOrigin = current.origin === initialUrl.origin;
@@ -86,7 +88,7 @@ async function fetchCheckingRedirects(initialUrl, headers, policy) {
     if (next.protocol !== "http:" && next.protocol !== "https:") {
       return "Error: WebFetch only supports http(s) URLs.";
     }
-    if (!networkPolicyAllowsUrl(policy, next.href)) {
+    if (!sandbox.networkAllowsUrl(policy, next.href)) {
       return "Error: Network access denied by sandbox policy (redirect).";
     }
     try { await resp.body?.cancel(); } catch { /* best-effort */ }

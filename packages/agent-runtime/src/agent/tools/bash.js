@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { prepareSandboxedCommand } from "@mono-agent/sandbox";
+import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_BASH_OUTPUT_CHARS } from "./shared/constants.js";
 import { capChars } from "./shared/output-truncation.js";
 import {
@@ -114,7 +114,9 @@ function runCommand(commandSpec, { timeoutMs, signal, maxBufferBytes = BASH_MAX_
 }
 
 export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS, max_output_chars, workdir }, { signal, sandboxPolicy, sandboxEngine, ctx } = {}) {
-  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy);
+  const resolvedCtx = ctx ?? readToolRuntime();
+  const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
+  const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   const pathOptions = { sandboxPolicy: policy, ctx };
   if (workdir && !isWorkdirAllowed(workdir, pathOptions)) return `Error: Working directory not allowed: ${workdir}`;
   const cwd = workspaceRoot(workdir, ctx);
@@ -124,7 +126,7 @@ export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS,
   const timeoutMs = normalizeBashTimeoutMs(timeout);
   let prepared;
   try {
-    prepared = await prepareSandboxedCommand({
+    prepared = await sandbox.prepareCommand({
       policy,
       engine: sandboxEngine ?? undefined,
       command: { command: "/bin/bash", args: ["-lc", command], cwd },

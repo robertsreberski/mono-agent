@@ -3,7 +3,7 @@ import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { prepareSandboxedCommand } from "@mono-agent/sandbox";
+import { passthroughSandbox } from "../sandbox-seam.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import {
@@ -445,8 +445,10 @@ export function resolveMcpStdioCwd(cfg = {}, cwd = null) {
 }
 
 export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null, ctx = null } = {}) {
-  return prepareSandboxedCommand({
-    policy: resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy),
+  const resolvedCtx = ctx ?? readToolRuntime();
+  const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
+  return sandbox.prepareCommand({
+    policy: resolveSandboxPolicy(resolvedCtx, sandboxPolicy),
     engine: sandboxEngine ?? undefined,
     command: {
       command: cfg.command,

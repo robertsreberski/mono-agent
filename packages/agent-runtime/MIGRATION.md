@@ -105,6 +105,34 @@ run reports exhausted instead of degrading silently.
   resumed sessions roll back to their pre-turn leaf on host-side (outer-catch)
   failures. These are correctness fixes with no API surface change.
 
+## 7. Sandbox enforcement is now an injectable seam (agent-runtime has zero workspace-package dependencies)
+
+`@mono-agent/agent-runtime` no longer depends on `@mono-agent/sandbox`. Sandbox
+enforcement (command sandboxing, network-policy checks, and monotonic policy
+merging) is now driven through an injectable `RuntimeSandbox` seam
+(`agent/sandbox-seam.js`): `createRuntime({sandbox})` / `createRouterRuntime({host: {sandbox}})`
+accept an implementation. `@mono-agent/runtime-adapter` injects the real
+`@mono-agent/sandbox` implementation automatically for every
+`createMonoRuntime(...)` call, so behavior is **byte-identical** for existing
+mono-agent hosts — no action needed if you build your runtime through
+`@mono-agent/runtime-adapter`.
+
+- **No sandbox policy configured, no implementation injected:** unchanged —
+  every tool runs unsandboxed, exactly as before.
+- **A sandbox policy IS configured, but no `RuntimeSandbox` implementation is
+  injected** (only possible if you call `@mono-agent/agent-runtime`'s
+  `createRuntime` directly, bypassing `@mono-agent/runtime-adapter`): **this
+  now fails closed** with a `sandbox_unavailable` error instead of silently
+  running the command unsandboxed. Previously `@mono-agent/agent-runtime`
+  always bundled the real sandbox package and always enforced the policy; a
+  host that built on `createRuntime` directly and relied on that implicit
+  availability must now also inject a `RuntimeSandbox` implementation (the
+  real one from `@mono-agent/sandbox`, or a custom one) to keep policies
+  enforced. **Action:** if you configure `sandboxPolicy` and call
+  `createRuntime`/`createRouterRuntime` directly instead of going through
+  `@mono-agent/runtime-adapter`, also pass a `sandbox` implementation, or drop
+  the policy.
+
 ---
 
 ## Version

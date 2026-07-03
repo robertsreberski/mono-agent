@@ -4,7 +4,7 @@
 //
 // `tsc -p tsconfig.types.json` (allowJs + declaration + emitDeclarationOnly)
 // compiles these typedefs into packages/agent-runtime/types/ai/types.d.ts;
-// downstream TS consumers (currently @mono-agent/runtime-adapter) import them
+// downstream TS consumers (currently the runtime-adapter package) import them
 // via `import('./types.js').X` JSDoc syntax from the other seam files, or
 // transitively through the package root's generated declarations.
 //
@@ -74,7 +74,7 @@
  * @property {Object} [outputSchema]
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
- * @property {import('@mono-agent/sandbox').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, runtime-context.js).
+ * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, runtime-context.js).
  * @property {Object} [settings]
  * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
@@ -207,7 +207,8 @@
  * @property {string} [repoRoot]
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
- * @property {import('@mono-agent/sandbox').SandboxPolicy} [sandboxPolicy]
+ * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
+ * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject the workspace's sandbox package via the runtime-adapter package.
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
  * @property {(parsed: {sdk: (string|null), provider?: string, model: string}) => (Object|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
@@ -229,7 +230,8 @@
  * @property {string} [repoRoot]
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
- * @property {import('@mono-agent/sandbox').SandboxPolicy} [sandboxPolicy]
+ * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
+ * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox]
  */
 
 /**

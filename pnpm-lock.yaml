@@ -299,9 +299,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
       '@opencode-ai/sdk':
         specifier: ^1.15.13
         version: 1.17.0

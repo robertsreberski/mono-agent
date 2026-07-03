@@ -9,13 +9,18 @@ agent turn:
 
 - pick the right backend from a model reference and execution mode
 - expose built-in tools, MCP tools, approvals, structured output, and live input
-- enforce optional sandbox policy for built-in tool execution and stdio MCP startup
+- enforce an optional sandbox policy for built-in tool execution and stdio MCP
+  startup, through an injectable seam (see `agent/sandbox-seam.js`) rather than
+  a bundled sandboxing implementation
 - normalize provider events into one runtime event stream
 - classify runtime failures and retryable provider errors
 - collect usage, cost, cache, capability, and warning telemetry
 - return raw text plus raw structured output to the host
 
-Hosts consume the package through `src/runtime.js`.
+Hosts consume the package through `src/runtime.js`. The package has **zero
+workspace-package dependencies**: everything a host-side integration would
+otherwise need to inject (sandboxing, in this package's case) is expressed as
+a plain-data/plain-function seam the host wires up, not an import.
 
 ## Package Boundary
 
@@ -166,6 +171,12 @@ Key responsibilities by subsystem:
 - `agent/tools/*`: implements built-in tools, path/workdir guards, sandbox
   policy checks, MCP tool adaptation, Playwright artifact routing, and output
   limits.
+- `agent/sandbox-seam.js`: the injectable `RuntimeSandbox` interface (policy
+  merge, command preparation, network-allow checks) and its zero-dependency
+  `passthroughSandbox` default (no policy configured → unsandboxed, exactly as
+  before; a policy configured with no implementation injected → fails closed).
+  Real hosts inject `@mono-agent/sandbox`'s implementation via
+  `@mono-agent/runtime-adapter`.
 - `agent/compaction.js`: two pure helpers consumed by the pi bridge —
   `resolveAgentCompactionPolicy` (derives the context-window compaction trigger +
   tool-output payload limits from `agent_compaction_*` settings and the running

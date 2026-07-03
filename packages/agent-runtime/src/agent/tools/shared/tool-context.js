@@ -26,16 +26,22 @@
 //   qaOutputDir      — fallback for normalizeMcpToolParams when the per-call
 //                      runArtifactDir isn't supplied.
 //   sandboxPolicy    — optional strict filesystem/process/network sandbox policy.
+//   sandbox          — RuntimeSandbox implementation the policy is enforced
+//                      through (see ../../sandbox-seam.js). Always resolved,
+//                      like runtimeBrand: defaults to passthroughSandbox when
+//                      a host doesn't inject a real one.
 //   runtimeBrand     — resolved RuntimeBrand object (see runtime-brand.js).
 //                      Internal helpers read it to stamp host-specific names
 //                      (MCP client name, transcript schema id, doctor command).
 
 // @ts-check
 
-import { mergeSandboxPolicies } from "@mono-agent/sandbox";
+import { passthroughSandbox } from "../../sandbox-seam.js";
 import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-brand.js";
 
 /** @typedef {import('../../../runtime-brand.js').RuntimeBrand} RuntimeBrand */
+/** @typedef {import('../../sandbox-seam.js').SandboxPolicy} SandboxPolicy */
+/** @typedef {import('../../sandbox-seam.js').RuntimeSandbox} RuntimeSandbox */
 
 /**
  * @typedef {Object} ToolContext
@@ -45,7 +51,8 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-bra
  * @property {string} [toolArtifactDir]
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
- * @property {import('@mono-agent/sandbox').SandboxPolicy} [sandboxPolicy]
+ * @property {SandboxPolicy} [sandboxPolicy]
+ * @property {RuntimeSandbox} sandbox
  * @property {RuntimeBrand} runtimeBrand
  */
 
@@ -79,6 +86,7 @@ export function createToolContext(input = {}) {
     ripgrepPath: undefined,
     qaOutputDir: undefined,
     sandboxPolicy: undefined,
+    sandbox: passthroughSandbox,
     runtimeBrand: { ...DEFAULT_RUNTIME_BRAND },
   };
   return updateToolContext(ctx, input);
@@ -102,6 +110,9 @@ export function updateToolContext(ctx, next = {}) {
     // (a known structural limitation, not a real type hazard here).
     if (key in next) ctx[key] = /** @type {any} */ (next)[key];
   }
+  if (next.sandbox !== undefined) {
+    ctx.sandbox = next.sandbox;
+  }
   if (next.runtimeBrand !== undefined) {
     ctx.runtimeBrand = resolveRuntimeBrand(next.runtimeBrand);
   }
@@ -117,6 +128,7 @@ export function resetToolContext(ctx) {
   for (const key of TOOL_CONTEXT_KEYS) {
     ctx[key] = /** @type {any} */ (undefined);
   }
+  ctx.sandbox = passthroughSandbox;
   ctx.runtimeBrand = { ...DEFAULT_RUNTIME_BRAND };
   return ctx;
 }
@@ -124,13 +136,16 @@ export function resetToolContext(ctx) {
 // Single source of truth for the sandbox policy a tool call runs under.
 // Merging (rather than letting the per-call option shadow the context policy)
 // keeps the guarantee monotonic (I13): a request-scoped policy can tighten the
-// host-configured policy but never weaken or disable it.
+// host-configured policy but never weaken or disable it. The merge itself is
+// delegated to `ctx.sandbox.mergePolicies` (defaulting to passthroughSandbox)
+// so the actual algorithm is host-injected, not hard-coded here.
 /**
  * @param {ToolContext|undefined} ctx
- * @param {import('@mono-agent/sandbox').SandboxPolicy} [requestPolicy]
- * @returns {import('@mono-agent/sandbox').SandboxPolicy|undefined}
+ * @param {SandboxPolicy} [requestPolicy]
+ * @returns {SandboxPolicy|undefined}
  */
 export function resolveSandboxPolicy(ctx, requestPolicy = undefined) {
-  const merged = mergeSandboxPolicies(ctx?.sandboxPolicy ?? undefined, requestPolicy ?? undefined);
+  const sandbox = ctx?.sandbox ?? passthroughSandbox;
+  const merged = sandbox.mergePolicies(ctx?.sandboxPolicy ?? undefined, requestPolicy ?? undefined);
   return merged && merged.mode !== "off" ? merged : undefined;
 }
