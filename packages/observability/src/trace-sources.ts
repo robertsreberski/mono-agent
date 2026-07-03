@@ -143,7 +143,7 @@ export async function listTraceRuns(options: TraceRunListOptions): Promise<Trace
     const result = await listRecordedRuns(readerOptionsForSource(source.artifactDir, normalized));
     warnings.push(...result.warnings.map((warning) => `Source ${source.sourceId}: ${warning}`));
     for (const run of result.runs) {
-      runs.push({ ...run, source });
+      runs.push({ ...run, traceSource: source });
     }
   }
 
@@ -171,7 +171,7 @@ export async function readTraceRun(
     return undefined;
   }
   const run = await readRecordedRun(readerOptionsForSource(source.artifactDir, normalized), runId);
-  return run === undefined ? undefined : { source, run };
+  return run === undefined ? undefined : { traceSource: source, run };
 }
 
 function buildManifest(input: {
@@ -408,7 +408,7 @@ function compareTraceRuns(a: TraceRunListItem, b: TraceRunListItem): number {
   if (byUpdated !== 0) {
     return byUpdated;
   }
-  const bySource = b.source.sourceId.localeCompare(a.source.sourceId);
+  const bySource = b.traceSource.sourceId.localeCompare(a.traceSource.sourceId);
   if (bySource !== 0) {
     return bySource;
   }

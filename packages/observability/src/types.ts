@@ -315,16 +315,18 @@ export interface TraceSourceListItem extends TraceSourceManifest {
   readonly warnings: readonly string[];
 }
 
-// `RecordedRunListItem.source` (the run's originating channel/trigger kind, e.g.
-// "telegram") and this `source` (the trace-source PROCESS the run was read from)
-// are different concepts that happen to share a name; `Omit` keeps the trace
-// source's object override instead of conflicting with the inherited string field.
-export interface TraceRunListItem extends Omit<RecordedRunListItem, "source"> {
-  readonly source: TraceSourceListItem;
+export interface TraceRunListItem extends RecordedRunListItem {
+  /**
+   * The trace-source PROCESS this run was read from (which agent instance).
+   * Distinct from the inherited `source`, the run's originating channel/trigger
+   * kind (e.g. "telegram") — a run can carry both.
+   */
+  readonly traceSource: TraceSourceListItem;
 }
 
 export interface TraceRunDetail {
-  readonly source: TraceSourceListItem;
+  /** The trace-source PROCESS this run was read from (which agent instance). */
+  readonly traceSource: TraceSourceListItem;
   readonly run: RecordedRunDetail;
 }
 

@@ -72,13 +72,13 @@ describe("trace source registry", () => {
 
     const runs = await listTraceRuns({ registryDir, staleAfterMs: 10_000, clock, maxRuns: 10 });
 
-    expect(runs.runs.map((run) => [run.source.sourceId, run.runId, run.conversationId])).toEqual([
+    expect(runs.runs.map((run) => [run.traceSource.sourceId, run.runId, run.conversationId])).toEqual([
       ["agent-b", "same-run", "chat-b"],
       ["agent-a", "same-run", "chat-a"],
     ]);
 
     const detail = await readTraceRun({ registryDir, clock }, "agent-a", "same-run");
-    expect(detail?.source.sourceId).toBe("agent-a");
+    expect(detail?.traceSource.sourceId).toBe("agent-a");
     expect(detail?.run.summary.conversationId).toBe("chat-a");
     expect(JSON.stringify(detail)).not.toContain("event-secret");
 
