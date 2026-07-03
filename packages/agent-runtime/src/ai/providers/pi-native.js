@@ -28,6 +28,9 @@ import {
   getLastAssistantUsage,
 } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { createModels, createProvider, envApiKeyAuth } from "@earendil-works/pi-ai";
+import { builtinModels } from "@earendil-works/pi-ai/providers/all";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
 import { retryableProviderFailureInfo } from "../failure.js";
@@ -295,6 +298,59 @@ async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnin
     });
     return undefined;
   }
+}
+
+// pi 0.80 removed the harness `getApiKeyAndHeaders` hook: request auth now
+// resolves through a `Models` collection's `CredentialStore`. This store keeps
+// the bridge's per-run key-resolution contract intact — an `apiKeys` map entry
+// wins, else the host `resolvePiApiKey(provider)` callback is consulted, and a
+// callback failure emits a `pi_auth_failed` runtime warning and proceeds
+// keyless. Returning no credential lets a builtin provider fall back to its own
+// env vars, exactly as returning `undefined` from the old hook did. `read`
+// never throws, so pi never escalates a soft auth miss into a hard
+// `ModelsError` stream failure.
+export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWarnings) {
+  const read = async (providerId) => {
+    const key = await resolveApiKey(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
+    return typeof key === "string" && key.length > 0 ? { type: "api_key", key } : undefined;
+  };
+  return {
+    read,
+    // api-key providers only ever `read`; pi drives `modify` for OAuth refresh
+    // (unused here). Implemented faithfully so the store honors the interface:
+    // return the post-write credential, or the current one when `fn` leaves it
+    // unchanged (resolves undefined).
+    async modify(providerId, fn) {
+      const current = await read(providerId);
+      return (await fn(current)) ?? current;
+    },
+    async delete() {},
+  };
+}
+
+// Assemble the pi 0.80 `Models` collection serving this run. Builtin models
+// reuse pi's own provider factories (correct per-provider baseUrl/headers and
+// env-var fallback); a custom OpenAI-completions provider is registered from the
+// resolved model. `piResolvedModels` is an advanced/test seam mirroring
+// `piResolvedModel`: when supplied it is used verbatim (the model dispatched via
+// `piResolvedModel` may live outside pi's builtin catalog, e.g. a faux model).
+function buildRunModels(runtime, options, runtimeWarnings) {
+  if (options.piResolvedModels) return options.piResolvedModels;
+  const credentials = createDynamicCredentialStore(runtime.apiKeys, options.resolvePiApiKey, runtimeWarnings);
+  if (options.customProvider) {
+    const model = runtime.model;
+    const models = createModels({ credentials });
+    models.setProvider(createProvider({
+      id: model.provider,
+      name: model.name || model.provider,
+      baseUrl: model.baseUrl,
+      auth: { apiKey: envApiKeyAuth(model.name || model.provider, []) },
+      models: [model],
+      api: openAICompletionsApi(),
+    }));
+    return models;
+  }
+  return builtinModels({ credentials });
 }
 
 // Normalize the incoming runtime messages into AgentMessages the harness can
@@ -786,22 +842,17 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // (QueueMode). Only enable when tools in a step are independent.
     const toolSteeringMode = options.piToolParallelismMode === "all" ? "all" : "one-at-a-time";
 
+    const piModels = buildRunModels(runtime, options, runtimeWarnings);
+
     harness = new AgentHarness({
       env: new NodeExecutionEnv({ cwd: options.cwd || process.cwd() }),
       session,
+      models: piModels,
       model: runtime.model,
       thinkingLevel: effectiveThinkingLevel,
       systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema),
       tools,
       streamOptions: { maxRetries, maxRetryDelayMs },
-      getApiKeyAndHeaders: async (model) => {
-        const apiKey = await resolveApiKey(model.provider, {
-          apiKeys: runtime.apiKeys,
-          resolvePiApiKey: options.resolvePiApiKey,
-          runtimeWarnings,
-        });
-        return apiKey ? { apiKey } : undefined;
-      },
       steeringMode: toolSteeringMode,
       followUpMode: toolSteeringMode,
     });

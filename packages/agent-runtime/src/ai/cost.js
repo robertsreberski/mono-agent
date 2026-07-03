@@ -1,4 +1,8 @@
-import { getModel as getPiModel } from "@earendil-works/pi-ai";
+// pi 0.80 moved the static catalog reads off the pi-ai root (`getModel` is now
+// deprecated/compat-only). `getBuiltinModel(provider, id)` from `providers/all`
+// is the non-deprecated replacement with the same signature and the same
+// undefined-on-miss behavior the pricing lookup below relies on.
+import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
 
 const CLAUDE_PRICING = {
   "claude-haiku-4-5-20251001": { input: 1.0, cacheRead: 0.1, cacheWrite: 1.25, output: 5.0 },

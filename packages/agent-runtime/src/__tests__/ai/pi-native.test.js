@@ -1,14 +1,15 @@
 // Pi-native AgentHarness bridge integration.
 //
-// Drives generatePiNativeResponse end-to-end through pi-ai's own
-// `registerFauxProvider`: a real provider is registered into pi-ai's API
-// registry, so the REAL AgentHarness + REAL `streamSimple` dispatch run with
-// scripted assistant responses and no network/API key. This exercises the
-// production harness path while keeping the provider deterministic.
+// Drives generatePiNativeResponse end-to-end through pi-ai's own `fauxProvider`:
+// a real provider is added to a `Models` collection, so the REAL AgentHarness +
+// REAL `streamSimple` dispatch run with scripted assistant responses and no
+// network/API key. This exercises the production harness path while keeping the
+// provider deterministic.
 //
-// The bridge's `piResolvedModel` seam hands the harness the faux Model
-// directly (the faux model is only reachable via the registration handle, not
-// the static model registry).
+// pi 0.80 drives model requests through `Models`, so the bridge is handed both
+// the faux Model (via the `piResolvedModel` seam) and the faux `Models`
+// collection (via `piResolvedModels`) — the faux provider is not in pi's
+// builtin catalog, so it can only be reached through an explicit collection.
 //
 // The native bridge must return the SAME unified result shape and emit the
 // SAME normalized runtime events as the legacy pi-sdk bridge.
@@ -17,14 +18,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createModels,
   fauxAssistantMessage,
+  fauxProvider,
   fauxText,
   fauxThinking,
   fauxToolCall,
-  registerFauxProvider,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { generatePiNativeResponse, splitPromptMessages } from "../../ai/providers/pi-native.js";
+import {
+  createDynamicCredentialStore,
+  generatePiNativeResponse,
+  splitPromptMessages,
+} from "../../ai/providers/pi-native.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 
@@ -82,30 +88,85 @@ describe("pi-sdk.js compatibility shim", () => {
   });
 });
 
-let faux = null;
+// pi 0.80 resolves request auth through a Models CredentialStore instead of the
+// removed harness getApiKeyAndHeaders hook. These assert the bridge's per-run
+// key-resolution contract survived the migration: apiKeys map wins, else the
+// host resolvePiApiKey callback, and a callback failure emits a pi_auth_failed
+// runtime warning and proceeds keyless (never throwing a hard auth error).
+describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
+  it("returns the apiKeys map entry as an api_key credential without consulting the callback", async () => {
+    let called = false;
+    const store = createDynamicCredentialStore(
+      new Map([["anthropic", "map-key"]]),
+      async () => { called = true; return "callback-key"; },
+      [],
+    );
+    expect(await store.read("anthropic")).toEqual({ type: "api_key", key: "map-key" });
+    expect(called).toBe(false);
+  });
 
-function setup({ reasoning = false } = {}) {
-  faux = registerFauxProvider({
+  it("falls back to resolvePiApiKey when the map has no entry", async () => {
+    const store = createDynamicCredentialStore(new Map(), async (provider) => `key-for-${provider}`, []);
+    expect(await store.read("openai")).toEqual({ type: "api_key", key: "key-for-openai" });
+  });
+
+  it("emits a pi_auth_failed warning and proceeds keyless when resolvePiApiKey throws", async () => {
+    const warnings = [];
+    const store = createDynamicCredentialStore(
+      new Map(),
+      async () => { throw new Error("boom"); },
+      warnings,
+    );
+    // Resolves to no credential rather than rejecting: a keyless read lets a
+    // builtin provider fall back to its own env vars, exactly as the removed
+    // getApiKeyAndHeaders hook did when it returned undefined.
+    await expect(store.read("anthropic")).resolves.toBeUndefined();
+    expect(warnings).toContainEqual({ warning_kind: "pi_auth_failed", provider: "anthropic", message: "boom" });
+  });
+
+  it("returns no credential (env fallback) when no key source is available, never throwing", async () => {
+    const store = createDynamicCredentialStore(new Map(), undefined, []);
+    await expect(store.read("google")).resolves.toBeUndefined();
+  });
+
+  it("treats an empty-string key as no credential", async () => {
+    const store = createDynamicCredentialStore(new Map(), async () => "", []);
+    expect(await store.read("openai")).toBeUndefined();
+  });
+});
+
+let faux = null;
+let fauxModels = null;
+
+// Register a faux provider into a fresh `Models` collection and hand its model
+// back. `modelDef` overrides merge onto the base faux model (e.g. `reasoning`,
+// `input`). The collection is stashed so `runOptions` can inject it.
+function setup(modelDef = {}) {
+  faux = fauxProvider({
     provider: "faux",
-    models: [{ id: "faux-model", reasoning }],
+    models: [{ id: "faux-model", ...modelDef }],
     tokensPerSecond: undefined,
   });
+  fauxModels = createModels();
+  fauxModels.setProvider(faux.provider);
   return faux.getModel();
 }
 
 beforeEach(() => {
   faux = null;
+  fauxModels = null;
 });
 
 afterEach(() => {
-  faux?.unregister();
   faux = null;
+  fauxModels = null;
 });
 
 function runOptions(model, overrides = {}) {
   return {
     model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:faux-model" },
     piResolvedModel: model,
+    piResolvedModels: fauxModels,
     effort: "none",
     allowedTools: [],
     ...overrides,
@@ -156,12 +217,7 @@ describe("pi-native AgentHarness bridge", () => {
     // (`{ images }`). Passing a bare ImageContent[] as the second positional arg
     // makes `options?.images` undefined, so the image is silently dropped and
     // never reaches the model. Assert the image block survives to the provider.
-    faux = registerFauxProvider({
-      provider: "faux",
-      models: [{ id: "faux-model", input: ["text", "image"] }],
-      tokensPerSecond: undefined,
-    });
-    const model = faux.getModel();
+    const model = setup({ input: ["text", "image"] });
 
     let capturedMessages = null;
     faux.setResponses([

@@ -1,4 +1,8 @@
-import { getModel as getPiModel } from "@earendil-works/pi-ai";
+// pi 0.80 moved the static catalog reads off the pi-ai root: `getModel` is now
+// deprecated/compat-only. `getBuiltinModel(provider, id)` from `providers/all`
+// is the non-deprecated replacement — same 2-arg signature, and it returns
+// `undefined` on an unknown provider/model exactly like the old `getModel`.
+import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 
 export const EMPTY_USAGE = {
