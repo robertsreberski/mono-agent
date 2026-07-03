@@ -119,6 +119,156 @@ async function writeBigPayloadFixture(runId: string): Promise<void> {
   await recorder.finish({ text: "done" });
 }
 
+/** cron run identified by sourceDetail (job id); no userInput. Fixed clock => deterministic 0ms duration. */
+async function writeCronFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({
+    runId,
+    conversationId: "cron:1",
+    artifactDir: dir,
+    source: "cron",
+    sourceDetail: "daily-digest",
+    clock: () => 0,
+  });
+  await recorder.finish({ text: "ok" });
+}
+
+/** telegram run with no sourceDetail, identified by its userInput. Fixed clock => deterministic 0ms duration. */
+async function writeUserInputFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({
+    runId,
+    conversationId: "telegram:1",
+    artifactDir: dir,
+    userInput: "summarize my inbox",
+    clock: () => 0,
+  });
+  await recorder.finish({
+    text: "ok",
+    model: "pi:openai:gpt-5.5",
+    effort: "high",
+    usage: { input: 1_200, output: 340 },
+    cost: { totalUsd: 0.045 },
+  });
+}
+
+/** slack run with neither sourceDetail nor userInput -- falls back to conversationId. */
+async function writeBareFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({
+    runId,
+    conversationId: "slack:7",
+    artifactDir: dir,
+    clock: () => 0,
+  });
+  await recorder.finish({ text: "ok" });
+}
+
+/** failed run (failureKind set, no error string) for status-filter coverage. */
+async function writeFailedFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({
+    runId,
+    conversationId: "webhook:1",
+    artifactDir: dir,
+    clock: () => 0,
+  });
+  await recorder.finish({ text: "", failureKind: "provider_unavailable" });
+}
+
+describe("ReplayView list mode", () => {
+  it("leads the label with sourceDetail (job id) over conversationId for a cron-sourced run", async () => {
+    await writeCronFixture("run-cron");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+
+    const text = renderText(view);
+    expect(text).toContain("[cron] daily-digest");
+    expect(text).not.toContain("cron:1");
+  });
+
+  it("falls back to a quoted, compacted userInput preview when sourceDetail is absent", async () => {
+    await writeUserInputFixture("run-input");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+
+    const text = renderText(view);
+    expect(text).toContain('[telegram] "summarize my inbox"');
+  });
+
+  it("falls back to conversationId when neither sourceDetail nor userInput is present", async () => {
+    await writeBareFixture("run-bare");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+
+    const text = renderText(view);
+    expect(text).toContain("[slack] slack:7");
+  });
+
+  it("description carries duration, event count, model@effort, and token usage", async () => {
+    await writeUserInputFixture("run-input");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+
+    const text = renderText(view);
+    expect(text).toContain("0ms");
+    expect(text).toContain("0 ev");
+    expect(text).toContain("gpt-5.5@high");
+    expect(text).toContain("↑1.2k ↓340");
+    expect(text).toContain("$0.045");
+  });
+
+  it("`s` cycles the source filter (refetching, showing zero matches for an empty source, header reflects it) and back to all", async () => {
+    await writeCronFixture("run-cron");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    expect(renderText(view)).toContain("[cron] daily-digest");
+
+    // all -> tui (no tui runs recorded in this fixture dir).
+    view.handleInput("s");
+    await flush();
+    let text = renderText(view);
+    expect(text).toContain("source: tui");
+    expect(text).not.toContain("daily-digest");
+
+    // tui -> telegram -> slack -> cron -> webhook -> memory -> other -> all.
+    for (let i = 0; i < 7; i += 1) {
+      view.handleInput("s");
+      await flush();
+    }
+    text = renderText(view);
+    expect(text).not.toContain("source:");
+    expect(text).toContain("daily-digest");
+  });
+
+  it("`x` cycles the status filter to failed-only, then succeeded, then back to all", async () => {
+    await writeCronFixture("run-cron"); // succeeded
+    await writeFailedFixture("run-failed");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    expect(renderText(view)).toContain("(2/2)");
+
+    view.handleInput("x"); // all -> failed
+    let text = renderText(view);
+    expect(text).toContain("status: failed");
+    expect(text).toContain("(1/2)");
+    expect(text).not.toContain("daily-digest");
+
+    view.handleInput("x"); // failed -> succeeded
+    text = renderText(view);
+    expect(text).toContain("status: succeeded");
+    expect(text).toContain("(1/2)");
+    expect(text).toContain("daily-digest");
+
+    view.handleInput("x"); // succeeded -> all
+    text = renderText(view);
+    expect(text).not.toContain("status:");
+    expect(text).toContain("(2/2)");
+  });
+});
+
 describe("ReplayView detail mode", () => {
   it("shows the headline with a source badge, model, and effort (no override marker) after opening a run", async () => {
     await writeMultiTurnFixture("run-a");

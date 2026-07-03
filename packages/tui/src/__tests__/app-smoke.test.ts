@@ -81,6 +81,24 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
     await frame();
     expect(stripAnsi(terminal.output())).toContain("No config path available");
 
+    terminal.feed("OQ"); // F2 -> back to chat, where /help is handled
+    await frame();
+    for (const char of "/help") {
+      terminal.feed(char);
+    }
+    terminal.feed("\r");
+    await frame();
+    // Collapse whitespace (including the overlay's own word-wrap line breaks)
+    // so a phrase split across wrapped rows still reads as one contiguous
+    // string -- the overlay wraps at word boundaries, so this is safe.
+    const helpText = stripAnsi(terminal.output()).replace(/\s+/gu, " ");
+    expect(helpText).toContain("f2/f3/f4/f5");
+    // Replay list + detail keybindings (D5): new-keys check for the run-list
+    // filters and the detail hint's "esc layers back" wording.
+    expect(helpText).toContain("s source filter · x status filter · r refresh");
+    expect(helpText).toContain("t/o/m/y/e/a filter");
+    expect(helpText).toContain("esc layers back");
+
     await handle.stop();
   });
 

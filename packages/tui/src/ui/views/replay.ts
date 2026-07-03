@@ -1,15 +1,113 @@
 import { Container, matchesKey, SelectList, Text } from "@earendil-works/pi-tui";
 import type { SelectItem, TUI } from "@earendil-works/pi-tui";
-import type { RecordedRunListItem } from "@mono-agent/observability";
 
-import { listReplayRuns, readReplayRun, type ReplayRunDetail, type ReplayTimelineItem } from "../../data/replay.js";
-import { formatClock, formatDurationMs } from "../format.js";
+import {
+  listReplayRuns,
+  readReplayRun,
+  type ReplayRunDetail,
+  type ReplayRunListItem,
+  type ReplayTimelineItem,
+} from "../../data/replay.js";
+import { extractUsage, formatDateClock, formatDurationMs, formatTokens, formatUsd, previewValue } from "../format.js";
 import { selectListTheme, styles } from "../theme.js";
 import { EventTimelineList } from "../components/event-list.js";
 import { buildHeadline, buildPayloadPane, buildStatusLine, CATEGORY_KEYS } from "./replay-detail.js";
 
 export interface ReplayViewOptions {
   readonly tui: TUI;
+}
+
+/** `all` means "no source filter" -- see the `s` key cycle in `handleInput`. */
+const ALL_SOURCE_FILTER = "all";
+const SOURCE_FILTER_CYCLE: readonly string[] = [
+  ALL_SOURCE_FILTER,
+  "tui",
+  "telegram",
+  "slack",
+  "cron",
+  "webhook",
+  "memory",
+  "other",
+];
+
+type StatusFilter = "all" | "failed" | "succeeded";
+const STATUS_FILTER_CYCLE: readonly StatusFilter[] = ["all", "failed", "succeeded"];
+
+const LIST_HINT = "enter open · r refresh · s source · x status · esc back";
+
+/** Preview length for a compacted `userInput` label (see {@link runLabelText}). */
+const USER_INPUT_PREVIEW_MAX_CHARS = 40;
+
+// Content-first labels (source-detail/userInput previews) run longer than the
+// old `<conversationId>`-only label this column was originally tuned for (a
+// fixed 46). Give SelectList a floor/ceiling instead of a fixed width so it
+// shrinks to fit short labels (leaving the description room) and only grows
+// toward the ceiling for genuinely long ones.
+const LIST_PRIMARY_COLUMN_MIN_WIDTH = 20;
+const LIST_PRIMARY_COLUMN_MAX_WIDTH = 72;
+
+function nextInCycle<T>(cycle: readonly T[], current: T): T {
+  const index = cycle.indexOf(current);
+  return cycle[(index + 1) % cycle.length] ?? cycle[0]!;
+}
+
+function statusGlyph(status: ReplayRunListItem["status"]): string {
+  if (status === "succeeded") {
+    return styles.success("✓");
+  }
+  if (status === "cancelled" || status === "running") {
+    return styles.warning("◌");
+  }
+  return styles.error("✗");
+}
+
+/**
+ * Content-first label text (precedence: `sourceDetail` -- cron job id /
+ * webhook endpoint name -- then a compacted `userInput` preview, then
+ * `conversationId` as a last resort for old, pre-`source` artifacts).
+ */
+function runLabelText(run: ReplayRunListItem): string {
+  if (run.sourceDetail !== undefined && run.sourceDetail.trim().length > 0) {
+    return run.sourceDetail;
+  }
+  if (run.userInput !== undefined && run.userInput.trim().length > 0) {
+    const compacted = previewValue(run.userInput.replace(/\s+/gu, " ").trim(), USER_INPUT_PREVIEW_MAX_CHARS);
+    return `"${compacted}"`;
+  }
+  return run.conversationId;
+}
+
+/** Model shortened to its last path/colon segment, e.g. `pi:openai:gpt-5.5` -> `gpt-5.5`. */
+function shortenModel(model: string): string {
+  const segments = model.split(/[/:]/u).filter((segment) => segment.length > 0);
+  return segments.at(-1) ?? model;
+}
+
+function modelEffortSegment(run: ReplayRunListItem): string | undefined {
+  const model = run.model === undefined ? undefined : shortenModel(run.model);
+  if (model === undefined) {
+    return run.effort === undefined ? undefined : `@${run.effort}`;
+  }
+  return run.effort === undefined ? model : `${model}@${run.effort}`;
+}
+
+function buildRunDescription(run: ReplayRunListItem): string {
+  const segments: string[] = [formatDurationMs(run.durationMs), `${run.eventCount} ev`];
+  const modelEffort = modelEffortSegment(run);
+  if (modelEffort !== undefined) {
+    segments.push(modelEffort);
+  }
+  const usage = extractUsage(run.usage, run.cost);
+  if (usage !== undefined) {
+    segments.push(`↑${formatTokens(usage.input ?? 0)} ↓${formatTokens(usage.output ?? 0)}`);
+    if (usage.usd !== undefined) {
+      segments.push(formatUsd(usage.usd));
+    }
+  }
+  if (run.failureKind !== undefined) {
+    segments.push(run.failureKind);
+  }
+  return segments.join(" · ");
 }
 
 /**
@@ -29,7 +127,11 @@ export class ReplayView extends Container {
   private readonly detailPayload = new Text("", 1, 0);
   private mode: "list" | "detail" = "list";
   private artifactDir: string | undefined;
-  private runs: readonly RecordedRunListItem[] = [];
+  private runs: readonly ReplayRunListItem[] = [];
+  private totalRuns = 0;
+  private warnings: readonly string[] = [];
+  private sourceFilter: string = ALL_SOURCE_FILTER;
+  private statusFilter: StatusFilter = "all";
 
   // Detail-mode state. `categoryFilter` empty means "no filter" (all visible)
   // -- see setCategoryFilter/toggleCategory below for how that maps onto the
@@ -45,7 +147,10 @@ export class ReplayView extends Container {
   constructor(options: ReplayViewOptions) {
     super();
     this.options = options;
-    this.list = new SelectList([], 14, selectListTheme, { maxPrimaryColumnWidth: 46 });
+    this.list = new SelectList([], 14, selectListTheme, {
+      minPrimaryColumnWidth: LIST_PRIMARY_COLUMN_MIN_WIDTH,
+      maxPrimaryColumnWidth: LIST_PRIMARY_COLUMN_MAX_WIDTH,
+    });
     this.list.onSelect = (item: SelectItem) => {
       void this.openRun(item.value);
     };
@@ -101,6 +206,14 @@ export class ReplayView extends Container {
         void this.refresh();
         return;
       }
+      if (data === "s") {
+        this.cycleSourceFilter();
+        return;
+      }
+      if (data === "x") {
+        this.cycleStatusFilter();
+        return;
+      }
       this.list.handleInput(data);
       return;
     }
@@ -118,6 +231,8 @@ export class ReplayView extends Container {
     const requestedDir = this.artifactDir;
     if (requestedDir === undefined) {
       this.runs = [];
+      this.totalRuns = 0;
+      this.warnings = [];
       this.header.setText(
         `${styles.bold("Run replay unavailable")}\n${styles.muted("The selected agent's manifest has no artifact dir.")}`,
       );
@@ -127,20 +242,23 @@ export class ReplayView extends Container {
       return;
     }
     try {
-      const { runs, warnings } = await listReplayRuns(requestedDir);
+      const { runs, warnings, totalRuns } = await listReplayRuns(requestedDir, {
+        ...(this.sourceFilter === ALL_SOURCE_FILTER ? {} : { sourceFilter: this.sourceFilter }),
+      });
       if (this.artifactDir !== requestedDir) {
         return; // Superseded by a newer agent selection.
       }
       this.runs = runs;
-      const warningText = warnings.length > 0 ? `\n${styles.warning(warnings[0] ?? "")}` : "";
-      this.header.setText(
-        `${styles.bold(`Recorded runs (${runs.length})`)} ${styles.dim("enter open · r refresh · esc back")}${warningText}`,
-      );
+      this.totalRuns = totalRuns;
+      this.warnings = warnings;
+      this.updateHeader();
     } catch (error) {
       if (this.artifactDir !== requestedDir) {
         return;
       }
       this.runs = [];
+      this.totalRuns = 0;
+      this.warnings = [];
       this.header.setText(styles.error(`Failed to read runs: ${error instanceof Error ? error.message : String(error)}`));
     }
     this.syncListItems();
@@ -150,20 +268,50 @@ export class ReplayView extends Container {
     this.options.tui.requestRender();
   }
 
+  /** Runs after the client-side status filter (source filtering already happened server-side, see `refresh`). */
+  private filteredRuns(): readonly ReplayRunListItem[] {
+    if (this.statusFilter === "all") {
+      return this.runs;
+    }
+    const wantFailed = this.statusFilter === "failed";
+    return this.runs.filter((run) => (run.status !== "succeeded") === wantFailed);
+  }
+
+  private updateHeader(): void {
+    const shown = this.filteredRuns().length;
+    const filterParts: string[] = [];
+    if (this.sourceFilter !== ALL_SOURCE_FILTER) {
+      filterParts.push(`source: ${this.sourceFilter}`);
+    }
+    if (this.statusFilter !== "all") {
+      filterParts.push(`status: ${this.statusFilter}`);
+    }
+    const filterText = filterParts.length > 0 ? ` ${styles.dim(`· ${filterParts.join(" · ")}`)}` : "";
+    const warningText = this.warnings.length > 0 ? `\n${styles.warning(this.warnings[0] ?? "")}` : "";
+    this.header.setText(
+      `${styles.bold(`Recorded runs (${shown}/${this.totalRuns})`)}${filterText} ${styles.dim(LIST_HINT)}${warningText}`,
+    );
+  }
+
+  private cycleSourceFilter(): void {
+    this.sourceFilter = nextInCycle(SOURCE_FILTER_CYCLE, this.sourceFilter);
+    void this.refresh();
+  }
+
+  private cycleStatusFilter(): void {
+    this.statusFilter = nextInCycle(STATUS_FILTER_CYCLE, this.statusFilter);
+    this.updateHeader();
+    this.syncListItems();
+    this.options.tui.requestRender();
+  }
+
   private syncListItems(): void {
-    const items = this.runs.map((run): SelectItem => {
-      const status =
-        run.status === "succeeded"
-          ? styles.success("✓")
-          : run.status === "cancelled" || run.status === "running"
-            ? styles.warning("◌")
-            : styles.error("✗");
+    const items = this.filteredRuns().map((run): SelectItem => {
+      const labelParts = [statusGlyph(run.status), formatDateClock(run.startedAt), `[${run.resolvedSource}]`, runLabelText(run)];
       return {
         value: run.runId,
-        label: `${status} ${formatClock(run.startedAt)} ${run.conversationId}`,
-        description: `${formatDurationMs(run.durationMs)} · ${run.eventCount} events${
-          run.failureKind === undefined ? "" : ` · ${run.failureKind}`
-        }`,
+        label: labelParts.filter((part) => part.length > 0).join(" "),
+        description: buildRunDescription(run),
       };
     });
     (this.list as unknown as { items: SelectItem[] }).items = items;
@@ -267,10 +415,10 @@ export class ReplayView extends Container {
       this.commitSearch(this.searchInputBuffer);
     } else if (matchesKey(data, "backspace")) {
       this.searchInputBuffer = this.searchInputBuffer.slice(0, -1);
-    } else if (matchesKey(data, "escape")) {
-      this.searchInputOpen = false;
-      this.searchInputBuffer = "";
     } else {
+      // Esc never reaches here: app.ts's global input listener intercepts it
+      // first and calls back() (which closes the search input as its first
+      // layer) before the key would otherwise be forwarded to this view.
       const printable = data.length === 1 && data.charCodeAt(0) >= 32 ? data : undefined;
       if (printable !== undefined) {
         this.searchInputBuffer += printable;

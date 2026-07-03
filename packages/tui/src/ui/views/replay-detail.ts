@@ -2,7 +2,7 @@ import { deriveRunSource } from "@mono-agent/observability";
 
 import type { ReplayRunDetail, ReplayTimelineItem } from "../../data/replay.js";
 import { categoryStyle } from "../components/event-list.js";
-import { formatClock, formatDurationMs, formatTokens, formatUsd } from "../format.js";
+import { extractUsage, formatClock, formatDurationMs, formatTokens, formatUsd } from "../format.js";
 import { styles } from "../theme.js";
 
 /** Canonical (not alphabetical) filter-category order matching the t/o/m/y/e keymap. */
@@ -18,7 +18,7 @@ export const CATEGORY_KEYS: Readonly<Record<string, string>> = {
 };
 
 export const KEY_HINT =
-  "↑↓ pgup/pgdn step · [ ] turn · t/o/m/y/e filter · / search · n/N match · enter expand · esc back";
+  "↑↓ pgup/pgdn step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter expand · esc back";
 
 const PAYLOAD_MAX_LINES_COLLAPSED = 12;
 const PAYLOAD_MAX_LINES_EXPANDED = 40;
@@ -162,21 +162,11 @@ function formatPayloadRaw(payload: unknown): string {
 }
 
 function usageLine(usage: unknown, cost: unknown): string | undefined {
-  if (typeof usage !== "object" || usage === null) {
+  const extracted = extractUsage(usage, cost);
+  if (extracted === undefined) {
     return undefined;
   }
-  const record = usage as Record<string, unknown>;
-  const input = numberOrUndefined(record.input ?? record.inputTokens ?? record.input_tokens);
-  const output = numberOrUndefined(record.output ?? record.outputTokens ?? record.output_tokens);
-  if (input === undefined && output === undefined) {
-    return undefined;
-  }
-  const usd = numberOrUndefined(
-    typeof cost === "object" && cost !== null ? (cost as Record<string, unknown>).totalUsd ?? (cost as Record<string, unknown>).usd : cost,
-  );
-  return `tokens ↑${formatTokens(input ?? 0)} ↓${formatTokens(output ?? 0)}${usd === undefined ? "" : ` · ${formatUsd(usd)}`}`;
-}
-
-function numberOrUndefined(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return `tokens ↑${formatTokens(extracted.input ?? 0)} ↓${formatTokens(extracted.output ?? 0)}${
+    extracted.usd === undefined ? "" : ` · ${formatUsd(extracted.usd)}`
+  }`;
 }
