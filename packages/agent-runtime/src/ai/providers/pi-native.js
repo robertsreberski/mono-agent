@@ -19,13 +19,6 @@
 // The result/event contract is the package's unified runtime-result shape, so
 // callers and the test suite see the same artifact the retired bridge produced.
 
-import {
-  AgentHarness,
-  calculateContextTokens,
-  estimateTokens,
-  getLastAssistantUsage,
-} from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { createModels, createProvider, envApiKeyAuth } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -33,18 +26,8 @@ import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
 import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
-import { formatLiveInputGuidance } from "../live-input-prompt.js";
-import {
-  estimateFixedOverheadTokens,
-  isLikelyContextTermination,
-  resolveAgentCompactionPolicy,
-} from "../../agent/compaction.js";
-import {
-  closePiMcpClients,
-  createStructuredOutputTool,
-  getPiBuiltinTools,
-  initPiMcpTools,
-} from "../../agent/tools/pi-bridge.js";
+import { resolveAgentCompactionPolicy } from "../../agent/compaction.js";
+import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { resolvePiRuntimeModel } from "./pi-models.js";
@@ -54,17 +37,11 @@ import {
   toAgentMessages,
 } from "./pi-messages.js";
 import { emitCaptured } from "./pi-events.js";
+import { normalizePiErrorMessage } from "./pi-errors.js";
 import {
-  isContextLimitError,
-  normalizePiErrorMessage,
-  parseContextLimitFromError,
-} from "./pi-errors.js";
-import {
-  appendStructuredOutputInstruction,
   runStructuredOutputFinalizationRetry,
   shouldRetryStructuredOutputFinalization,
 } from "./pi-native/structured-output.js";
-import { createStreamSubscriber } from "./pi-native/stream-subscriber.js";
 import {
   abortedResult,
   buildDiagnostics,
@@ -83,150 +60,18 @@ import {
   resolveSession,
   rollbackAbortedTurn,
 } from "./pi-native/session-lifecycle.js";
-
-function thinkingLevelForEffort(effort, capabilities) {
-  if (!capabilities?.reasoning || capabilities.reasoning_mode === "none") return "off";
-  if (effort === "none") return "off";
-  if (effort === "max") return "xhigh";
-  if (effort === "xhigh") return "xhigh";
-  if (effort === "high") return "high";
-  if (effort === "medium") return "medium";
-  return "low";
-}
-
-// AUTO-COMPACTION. pi-agent-core performs NO automatic in-loop compaction
-// (shouldCompact/compact are exported helpers its loop never calls), so this
-// bridge drives it: proactively before a turn when the running model's context
-// is near the window, and reactively (compact + single re-prompt) if a turn
-// still overflows. The window auto-tracks the model actually serving the request
-// and self-corrects from any real ceiling stated in an overflow error.
-
-// Per-process cache of real context-window ceilings discovered from overflow
-// errors, keyed by model reference/id. The long-running host re-learns quickly
-// after a restart; this just spares repeated first-overflow round-trips.
-const discoveredContextWindows = new Map();
-
-function modelWindowKey(harness, runtime, resolved) {
-  const live = typeof harness?.getModel === "function" ? harness.getModel() : null;
-  return resolved?.reference || runtime?.model?.id || live?.id || "unknown";
-}
-
-// The window of the model that ACTUALLY serves this request: prefer the harness's
-// live model (authoritative for native pi models), fall back to the resolved
-// runtime model. Returns 0 when unknown so callers can skip the proactive trigger.
-function liveModelContextWindow(harness, runtime) {
-  const live = typeof harness?.getModel === "function" ? harness.getModel() : null;
-  const win = Number(live?.contextWindow) || Number(runtime?.model?.contextWindow) || 0;
-  return win > 0 ? win : 0;
-}
-
-function effectiveContextWindow(harness, runtime, resolved) {
-  const declared = liveModelContextWindow(harness, runtime);
-  const discovered = discoveredContextWindows.get(modelWindowKey(harness, runtime, resolved));
-  if (Number.isFinite(discovered) && discovered > 0) {
-    return declared > 0 ? Math.min(declared, discovered) : discovered;
-  }
-  return declared;
-}
-
-function recordDiscoveredContextWindow(harness, runtime, resolved, limit) {
-  const n = Number(limit);
-  if (!Number.isFinite(n) || n <= 0) return;
-  const key = modelWindowKey(harness, runtime, resolved);
-  const existing = discoveredContextWindows.get(key);
-  discoveredContextWindows.set(key, Number.isFinite(existing) && existing > 0 ? Math.min(existing, n) : n);
-}
-
-// Best-effort estimate of the current session's context size. The last assistant
-// usage is authoritative (it reflects what the provider actually counted,
-// including cache reads), but it can be stale/zero (e.g. seeded history), so we
-// take the MAX of the usage-based count and a raw per-message estimate. Either
-// being large is a reason to compact; overcounting only compacts slightly early.
-//
-// `fixedOverheadTokens` is the system-prompt + tool-schema + per-turn user
-// message overhead the provider meters but the raw per-message estimate (which
-// sums only the transcript via session.buildContext().messages) excludes. It is
-// added to the RAW branch ONLY: the usage-based count already includes that
-// overhead (it is what the provider actually counted), so adding it there would
-// double-count. With a stale/0 usage and a seeded session the raw branch wins,
-// and without this the trigger under-counts and the real request overflows.
-async function estimateCurrentContextTokens(session, fixedOverheadTokens = 0) {
-  let usageTokens = 0;
-  let rawTokens = 0;
-  try {
-    const usage = getLastAssistantUsage(await session.getEntries());
-    if (usage) usageTokens = Number(calculateContextTokens(usage)) || 0;
-  } catch { /* ignore — fall back to the raw estimate */ }
-  try {
-    const context = await session.buildContext();
-    for (const message of context?.messages || []) rawTokens += Number(estimateTokens(message)) || 0;
-  } catch { /* ignore — usage-based estimate stands */ }
-  // Apply the fixed overhead to the raw estimate only (see note above). Done
-  // after the loop so it lands once, not per message.
-  rawTokens += Number(fixedOverheadTokens) || 0;
-  if (usageTokens === 0 && rawTokens === 0) return { tokens: 0, source: "unavailable" };
-  return usageTokens >= rawTokens
-    ? { tokens: usageTokens, source: "usage" }
-    : { tokens: rawTokens, source: "estimate" };
-}
-
-// Run a single guarded compaction. Requires the harness idle (callers
-// waitForIdle first). Never throws — classifies AgentHarnessError into a warning
-// and reports back whether anything was compacted. Fires onCompactionRecorded on
-// success so a host can persist the compaction row.
-async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, onCompactionRecorded, runId, model }) {
-  try {
-    const result = await harness.compact();
-    const tokensBefore = Number(result?.tokensBefore) || null;
-    onEvent?.({
-      type: "runtime_warning",
-      warning_kind: "context_compaction_applied",
-      source: "pi",
-      trigger,
-      tokens_before: tokensBefore,
-    });
-    if (typeof onCompactionRecorded === "function") {
-      try {
-        onCompactionRecorded({
-          task_run_id: runId || null,
-          trigger,
-          provider_kind: "pi",
-          model: model || null,
-          tokens_before: tokensBefore,
-          summary: result?.summary || "",
-          first_kept_entry_id: result?.firstKeptEntryId || null,
-          status: "succeeded",
-          created_at: Date.now(),
-        });
-      } catch (err) {
-        runtimeWarnings.push({
-          warning_kind: "context_compaction_record_failed",
-          source: "pi",
-          message: err?.message || String(err),
-        });
-      }
-    }
-    return { applied: true, tokensBefore, nothingToCompact: false };
-  } catch (err) {
-    const message = err?.message || String(err);
-    const code = err?.code;
-    const nothingToCompact = code === "compaction" && /nothing to compact/i.test(message);
-    const warningKind = nothingToCompact
-      ? "context_compaction_nothing_to_compact"
-      : code === "auth"
-        ? "context_compaction_auth_failed"
-        : code === "busy"
-          ? "context_compaction_busy"
-          : "context_compaction_failed";
-    runtimeWarnings.push({ warning_kind: warningKind, source: "pi", trigger, message });
-    return { applied: false, tokensBefore: null, nothingToCompact };
-  }
-}
-
-function isReactiveCompactionCandidate(errorMessage, diagnostics) {
-  if (!errorMessage) return false;
-  return isContextLimitError(errorMessage) || isLikelyContextTermination(errorMessage, diagnostics);
-}
+import {
+  resolveLiveCompactionPolicy,
+  runProactiveCompaction,
+  runReactiveCompaction,
+} from "./pi-native/compaction-driver.js";
+import {
+  buildTurnHarness,
+  buildTurnTools,
+  runHarnessPrompt,
+  startLiveInput,
+  thinkingLevelForEffort,
+} from "./pi-native/turn-runner.js";
 
 async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnings }) {
   if (apiKeys?.has(provider)) return apiKeys.get(provider);
@@ -346,16 +191,14 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   const start = Date.now();
   const events = [];
   const runtimeWarnings = [];
-  let structuredResult = null;
   let mcpClients = [];
-  let externalAbort = false;
   let harness = null;
-  let removeAbortHandler = null;
-  // Mutable run state the extracted modules read/write. Grows across the
-  // decomposition (compaction fields land here in the next commit); today it
-  // carries the stream subscriber's counters/dedup keys/tool timings and the
-  // session-lifecycle handles. `toolStartTimes` maps toolCallId -> start
-  // timestamp so per-tool execution latency can be emitted.
+  // The ONE explicit runState the extracted modules (stream subscriber, session
+  // lifecycle, compaction driver, turn runner, result builder) read/write.
+  // Reassignable scalars/refs live here so a module can rebind them (an
+  // orchestrator local cannot be reassigned from a module). `events` /
+  // `runtimeWarnings` stay as consts shared by reference. `toolStartTimes` maps
+  // toolCallId -> start timestamp so per-tool execution latency can be emitted.
   const runState = {
     assistantTexts: [],
     assistantThinking: [],
@@ -366,6 +209,27 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     toolResultsSeen: 0,
     lastToolName: null,
     maxTurnsHit: false,
+    // Populated by the StructuredOutput tool callback (built in the turn runner);
+    // read by the finalization retry predicate and the result assembly.
+    structuredResult: null,
+    // Set by the turn-runner abort handler; the OUTER catch and lifecycle
+    // decisions re-check it (`externalAbort ||= aborted`). removeAbortHandler is
+    // installed by the turn runner and cleared in finally; harness is set there
+    // too.
+    externalAbort: false,
+    removeAbortHandler: null,
+    harness: null,
+    // Auto-compaction sub-state. The policy is (re)computed at the decision
+    // point against the model actually serving the request; these flags track
+    // whether a compaction fired so the run reports context_compaction_applied
+    // honestly and never double-compacts.
+    compaction: {
+      applied: false,
+      reactiveAttempted: false,
+      compactedThisRun: false,
+      policy: null,
+      diagnostics: {},
+    },
     session: null,
     sessionEntry: null,
     // True when a requestedSessionId had no live entry AND no durable transcript,
@@ -479,90 +343,20 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // agent_search_result_limit, ...) on top of the 256KB hard ceiling.
     const toolLimits = resolveAgentCompactionPolicy(options.settings || {}, runtime.model);
 
-    // Auto-compaction state. The compaction policy is (re)computed at the
-    // decision point (Hook B) against the model actually serving the request, so
-    // it is declared there; these flags track whether a compaction fired so the
-    // run reports context_compaction_applied honestly and never double-compacts.
-    let contextCompactionApplied = false;
-    let contextCompactionReactiveAttempted = false;
-    let contextCompactedThisRun = false;
-    let compactionPolicy = null;
-    const contextCompactionDiagnostics = {};
-
-    const onTruncate = (info) => {
-      try {
-        onEvent({
-          type: "runtime_warning",
-          warning_kind: "tool_payload_truncated",
-          source: "tool_bloat_guard",
-          ...info,
-        });
-      } catch { /* best-effort */ }
-    };
-    const persistArtifact = options.persistArtifact || null;
-    const qaOutputDir = options.qaOutputDir || options.runArtifactDir || null;
-
-    // REUSED custom pieces: built-in tool sandboxing + allowlist/bloat filter +
-    // approval gates. These are identical to the legacy bridge.
-    const builtIns = capabilities.tool_use === false
-      ? []
-      : getPiBuiltinTools(options.allowedTools, {
-        skillNames: (options.skills || []).map((skill) => skill.name),
-        // Progressive skill disclosure: when the harness threads the skills root
-        // (the directory holding `<name>/SKILL.md`) the read_skill tool resolves
-        // bodies directly from there. `dataDir` (skills under `<dataDir>/skills`)
-        // remains the back-compat fallback.
-        skillsRoot: options.skillsRoot,
-        dataDir: options.dataDir,
-        cwd: options.cwd,
-        onEvent,
-        persistArtifact,
-        onTruncate,
-        toolLimits,
-        toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
-        imageInlineMaxBytes: toolLimits.imageInlineMaxBytes,
-        toolPolicy: options.toolPolicy,
-        sandboxPolicy: options.sandboxPolicy,
-        sandboxEngine: options.sandboxEngine,
-        approvalManager,
-        approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
-        ctx: options.toolContext,
-      });
-
-    const structuredTool = createStructuredOutputTool(options.outputSchema, (value) => {
-      structuredResult = value;
+    // Build the turn's tools (builtins + MCP bridge + StructuredOutput). The
+    // StructuredOutput callback writes runState.structuredResult; the MCP clients
+    // are closed in the finally.
+    const { tools, structuredTool, mcpClients: builtMcpClients } = await buildTurnTools(runState, {
+      options,
+      capabilities,
+      toolLimits,
+      approvalManager,
+      runtime,
+      resolved,
+      onEvent,
+      runtimeWarnings,
     });
-    const reservedNames = new Set(builtIns.map((toolDef) => toolDef.name));
-    if (structuredTool) reservedNames.add(structuredTool.name);
-
-    // REUSED MCP tool bridge: same initPiMcpTools sandboxing path.
-    const mcpInit = capabilities.tool_use === false
-      ? { clients: [], tools: [], warnings: [] }
-      : await initPiMcpTools(options.mcpServers || {}, reservedNames, {
-        cwd: options.cwd,
-        persistArtifact,
-        qaOutputDir,
-        onTruncate,
-        limits: toolLimits,
-        toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
-        sandboxPolicy: options.sandboxPolicy,
-        sandboxEngine: options.sandboxEngine,
-        ctx: options.toolContext,
-      });
-    mcpClients = mcpInit.clients;
-    // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
-    // failed server (e.g. an stdio adapter-send child that closed on startup) lands in the run
-    // summary's runtimeWarnings instead of being buried as a transient event the summary drops.
-    for (const warning of mcpInit.warnings || []) {
-      onEvent(warning);
-      runtimeWarnings.push(warning);
-    }
-
-    const tools = [
-      ...builtIns,
-      ...mcpInit.tools,
-      ...(structuredTool ? [structuredTool] : []),
-    ];
+    mcpClients = builtMcpClients;
 
     // Provider retry/backoff is delegated to pi-ai via streamOptions, replacing
     // the legacy hand-rolled stream-retry loop.
@@ -579,29 +373,25 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     const piModels = buildRunModels(runtime, options, runtimeWarnings);
 
-    harness = new AgentHarness({
-      env: new NodeExecutionEnv({ cwd: options.cwd || process.cwd() }),
+    // Construct the harness, subscribe the stream normalizer, and wire the
+    // external abort handler (which sets runState.externalAbort and aborts the
+    // harness). Sets runState.harness + runState.removeAbortHandler.
+    harness = buildTurnHarness(runState, {
+      cwd: options.cwd,
       session: runState.session,
-      models: piModels,
+      piModels,
       model: runtime.model,
       thinkingLevel: effectiveThinkingLevel,
-      systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema),
+      systemPrompt,
+      outputSchema: options.outputSchema,
       tools,
-      streamOptions: { maxRetries, maxRetryDelayMs },
+      maxRetries,
+      maxRetryDelayMs,
       steeringMode: toolSteeringMode,
-      followUpMode: toolSteeringMode,
+      onEvent,
+      options,
+      toolLimits,
     });
-
-    harness.subscribe(createStreamSubscriber(runState, { onEvent, options, toolLimits, harness }));
-
-    const abortHandler = () => {
-      externalAbort = true;
-      harness.abort();
-    };
-    if (options.abortSignal) {
-      options.abortSignal.addEventListener("abort", abortHandler, { once: true });
-      removeAbortHandler = () => options.abortSignal.removeEventListener?.("abort", abortHandler);
-    }
 
     // Seed prior transcript (everything before the trailing user turn) into the
     // harness-owned session. On a true resume the session already holds the
@@ -627,31 +417,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     }
 
     // Live steering: consume follow-up messages and steer the harness mid-run.
-    // The consumer is tied to run completion (runComplete) so it stops steering
-    // once the run finishes and does not swallow messages meant for a later turn.
-    let liveInputIterator = null;
-    let liveInputTask = null;
-    let runComplete = false;
-    if (options.liveInput) {
-      liveInputIterator = typeof options.liveInput[Symbol.asyncIterator] === "function"
-        ? options.liveInput[Symbol.asyncIterator]()
-        : options.liveInput;
-      liveInputTask = (async () => {
-        try {
-          while (!runComplete && !options.abortSignal?.aborted) {
-            const next = await liveInputIterator.next();
-            if (next.done || runComplete || options.abortSignal?.aborted) break;
-            await harness.steer(formatLiveInputGuidance(next.value.body));
-          }
-        } catch (err) {
-          onEvent({
-            type: "runtime_warning",
-            warning_kind: "live_input_failed",
-            message: err?.message || String(err),
-          });
-        }
-      })();
-    }
+    // The consumer is tied to run completion so it stops steering once the run
+    // finishes and does not swallow messages meant for a later turn.
+    const liveInput = startLiveInput({ harness, options, onEvent });
 
     // Re-check abort right before issuing the provider request. The abort
     // handler is only installed at ~:639, AFTER a long stretch of awaited setup
@@ -672,82 +440,26 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       return abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId });
     }
 
-    // Compaction policy against the LIVE model's context window (auto-recognized
-    // from the model actually serving the request, lowered by any ceiling learned
-    // from a prior overflow). Drives the proactive trigger + reactive recovery.
-    compactionPolicy = resolveAgentCompactionPolicy(
-      options.settings || {},
-      { contextWindow: effectiveContextWindow(harness, runtime, resolved) },
-    );
-
-    // Proactive compaction: if the session is already near the window, compact
-    // BEFORE issuing the request so a long-lived session never overflows.
-    if (compactionPolicy.enabled && compactionPolicy.contextWindow > 0 && !options.abortSignal?.aborted) {
-      // Fixed per-request overhead the provider meters but the raw transcript
-      // estimate excludes (system prompt + tool/MCP schemas + per-turn user
-      // message + memory). Computed ONCE here from the same inputs the harness
-      // sends to the provider, then folded into the raw estimate so the trigger
-      // reflects the real request size. ON by default (this corrects a real
-      // undercount that lets seeded sessions overflow); set
-      // agent_compaction_fixed_overhead_enabled:false to restore the prior
-      // transcript-only trigger (overhead = 0). See estimateFixedOverheadTokens.
-      //
-      // Only the TRAILING per-turn user message is passed here, NOT
-      // options.messages. The prior transcript is already summed by the raw
-      // branch via session.buildContext().messages (priorMessages were seeded
-      // into the session above), so passing the whole history would double-count
-      // it. promptText/promptImages (from splitPromptMessages at the run head)
-      // ARE the per-turn turn, so reconstruct that single message for the
-      // estimate — matching estimateFixedOverheadTokens' "per-turn user
-      // message(s)" contract.
-      const perTurnContent = Array.isArray(promptImages) && promptImages.length > 0
-        ? [{ type: "text", text: promptText }, ...promptImages]
-        : promptText;
-      const fixedOverhead = options.settings?.agent_compaction_fixed_overhead_enabled !== false
-        ? estimateFixedOverheadTokens({
-          systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema),
-          tools,
-          messages: [{ role: "user", content: perTurnContent }],
-        })
-        : { systemPromptTokens: 0, toolSchemaTokens: 0, userMessageTokens: 0, fixedOverheadTokens: 0 };
-      const est = await estimateCurrentContextTokens(runState.session, fixedOverhead.fixedOverheadTokens);
-      if (est.tokens >= compactionPolicy.triggerTokens) {
-        await harness.waitForIdle();
-        if (!options.abortSignal?.aborted) {
-          const res = await tryCompact(harness, {
-            trigger: "proactive",
-            onEvent,
-            runtimeWarnings,
-            onCompactionRecorded: options.onCompactionRecorded,
-            runId: options.runId,
-            model: reference,
-          });
-          if (res.applied) {
-            contextCompactionApplied = true;
-            contextCompactedThisRun = true;
-            Object.assign(contextCompactionDiagnostics, {
-              context_compaction_proactive: true,
-              context_compaction_tokens_before: res.tokensBefore,
-              context_compaction_estimate_source: est.source,
-              context_window: compactionPolicy.contextWindow,
-              // Additive observability (A4): the overhead components folded into
-              // the trigger comparison, the trigger itself (read back by
-              // isLikelyContextTermination but otherwise never set), and the
-              // transcript-plus-overhead estimate that fired this compaction.
-              context_fixed_overhead_tokens: fixedOverhead.fixedOverheadTokens,
-              context_system_prompt_tokens: fixedOverhead.systemPromptTokens,
-              context_tool_schema_tokens: fixedOverhead.toolSchemaTokens,
-              context_compaction_trigger_tokens: compactionPolicy.triggerTokens,
-              context_transcript_estimate: est.tokens,
-            });
-            // Compaction collapses the transcript prefix, so the pre-run baseline
-            // no longer aligns. Re-anchor it to the compacted length so the run's
-            // own turns (issued next) slice out correctly in captureState.
-            runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
-          }
-        }
-      }
-    }
+    // Compaction policy against the LIVE model's context window, then proactive
+    // compaction: if the session is already near the window, compact BEFORE
+    // issuing the request so a long-lived session never overflows.
+    runState.compaction.policy = resolveLiveCompactionPolicy({
+      harness,
+      runtime,
+      resolved,
+      settings: options.settings,
+    });
+    await runProactiveCompaction(runState, {
+      harness,
+      systemPrompt,
+      options,
+      tools,
+      promptText,
+      promptImages,
+      reference,
+      onEvent,
+      runtimeWarnings,
+    });
 
     onEvent({
       type: "provider_request_started",
@@ -757,34 +469,13 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       timestamp: Date.now(),
     });
 
-    let runError = null;
-    try {
-      // Pass structured images (when present) so multimodal input reaches the
-      // model as image blocks rather than stringified text. AgentHarness.prompt
-      // takes them under an options object (`{ images }`); a bare array would be
-      // read as `options` and silently dropped (options?.images === undefined).
-      if (Array.isArray(promptImages) && promptImages.length > 0) {
-        await harness.prompt(promptText, { images: promptImages });
-      } else {
-        await harness.prompt(promptText);
-      }
-    } catch (err) {
-      runError = err;
-    }
-    await harness.waitForIdle();
+    let { runError } = await runHarnessPrompt(harness, promptText, promptImages);
 
     // The run is done: stop the live-steering consumer so it cannot steer a
-    // finished harness or swallow a follow-up meant for the next turn. We signal
-    // completion, then best-effort return() the iterator to unblock a pending
-    // next(). We do NOT await the task (it could block on next() if the source
-    // has no return()), but the runComplete guard prevents any further steering.
-    runComplete = true;
-    if (liveInputIterator && typeof liveInputIterator.return === "function") {
-      try { await liveInputIterator.return(); } catch { /* best-effort */ }
-    }
-    void liveInputTask;
+    // finished harness or swallow a follow-up meant for the next turn.
+    await liveInput.stop();
 
-    externalAbort ||= !!options.abortSignal?.aborted;
+    runState.externalAbort ||= !!options.abortSignal?.aborted;
 
     const captureState = async () => {
       const context = await runState.session.buildContext();
@@ -812,77 +503,36 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // followUp + setActiveTools instead of the low-level agent.continue() loop.
     if (!runError && shouldRetryStructuredOutputFinalization({
       outputSchema: options.outputSchema,
-      structuredResult,
+      structuredResult: runState.structuredResult,
       finalText: state.finalText,
       stopReason: state.stopReason,
-      externalAbort,
+      externalAbort: runState.externalAbort,
       maxTurnsHit: runState.maxTurnsHit,
     })) {
       const retry = await runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings });
       structuredOutputFinalizationRetryAttempts = retry.attempts;
       structuredOutputFinalizationRetryReason = retry.reason;
-      structuredOutputFinalizationRetryFailed = structuredResult === null || structuredResult === undefined;
+      structuredOutputFinalizationRetryFailed = runState.structuredResult === null || runState.structuredResult === undefined;
       state = await captureState();
     }
 
     // Reactive recovery: if the turn ended in a context overflow and we have not
-    // already compacted-and-retried this run, compact once and re-prompt once.
-    if (
-      compactionPolicy?.enabled
-      && !contextCompactionReactiveAttempted
-      && !externalAbort
-      && !runState.maxTurnsHit
-      && !options.abortSignal?.aborted
-    ) {
-      const provisionalRaw = state.stopReason === "error" || state.stopReason === "aborted"
-        ? state.lastAssistant?.errorMessage || runError?.message || null
-        : (runError ? runError.message || String(runError) : null);
-      const provisionalError = normalizePiErrorMessage(provisionalRaw);
-      if (provisionalError && isReactiveCompactionCandidate(provisionalError, contextCompactionDiagnostics)) {
-        contextCompactionReactiveAttempted = true;
-        // Learn the real ceiling from the error so future runs trigger
-        // proactively at it even when the configured contextWindow was wrong.
-        recordDiscoveredContextWindow(harness, runtime, resolved, parseContextLimitFromError(provisionalError));
-        // A second compaction immediately after a fresh proactive one is almost
-        // always "nothing to compact"; skip it and surface the original error.
-        if (!contextCompactedThisRun) {
-          await harness.waitForIdle();
-          const res = await tryCompact(harness, {
-            trigger: "reactive_overflow",
-            onEvent,
-            runtimeWarnings,
-            onCompactionRecorded: options.onCompactionRecorded,
-            runId: options.runId,
-            model: reference,
-          });
-          if (res.applied) {
-            contextCompactionApplied = true;
-            contextCompactedThisRun = true;
-            Object.assign(contextCompactionDiagnostics, {
-              context_compaction_reactive: true,
-              context_compaction_tokens_before: res.tokensBefore,
-            });
-            // Re-anchor the transcript baseline to the compacted length so the
-            // re-prompt's turn (and its stopReason/usage) slices out correctly.
-            runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
-            // Re-prompt ONCE in the now-compacted session. The trailing user turn
-            // is already persisted, so a fresh prompt continues against it.
-            runError = null;
-            try {
-              if (Array.isArray(promptImages) && promptImages.length > 0) {
-                await harness.prompt(promptText, { images: promptImages });
-              } else {
-                await harness.prompt(promptText);
-              }
-            } catch (err) {
-              runError = err;
-            }
-            await harness.waitForIdle();
-            state = await captureState();
-          }
-        }
-      }
-    }
+    // already compacted-and-retried this run, compact once and re-prompt once
+    // (and re-capture state). Learns the real window ceiling from the error.
+    ({ state, runError } = await runReactiveCompaction(runState, {
+      harness,
+      runtime,
+      resolved,
+      options,
+      promptText,
+      promptImages,
+      reference,
+      onEvent,
+      runtimeWarnings,
+      state,
+      runError,
+      captureState,
+    }));
 
     const { runTranscript, lastAssistant, stopReason, finalText, finalThinking } = state;
     const runAssistantCount = state.assistantMessages.length;
@@ -896,9 +546,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       cachedTokens: usage.cacheRead,
       cacheWriteTokens: usage.cacheWrite,
     });
-    emitUsageCostEvents({ onEvent, resolved, reference, usage, estimatedCost, start, externalAbort });
+    emitUsageCostEvents({ onEvent, resolved, reference, usage, estimatedCost, start, externalAbort: runState.externalAbort });
 
-    const rawErrorMessage = externalAbort
+    const rawErrorMessage = runState.externalAbort
       ? null
       : runState.maxTurnsHit
         ? "Pi agent stopped before final output: max turns reached"
@@ -919,11 +569,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       maxTurns: options.maxTurns,
       turnCount: runState.turnCount,
       runAssistantCount,
-      externalAbort,
+      externalAbort: runState.externalAbort,
       maxRetries,
       lastToolName: runState.lastToolName,
       structuredRetry,
-      contextCompactionDiagnostics,
+      contextCompactionDiagnostics: runState.compaction.diagnostics,
     });
     const errorDetails = buildErrorDetails({
       errorMessage,
@@ -935,7 +585,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       maxTurnsHit: runState.maxTurnsHit,
       providerSessionId,
       structuredRetry,
-      contextCompactionDiagnostics,
+      contextCompactionDiagnostics: runState.compaction.diagnostics,
     });
 
     const capabilitiesUsed = buildCapabilitiesUsed({
@@ -949,7 +599,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // Tristate: true = a compaction fired this run (proactive or reactive),
       // false = the path is enabled but did not need to fire, null = disabled via
       // agent_compaction_enabled. See docs/reference/feature-registry.md runtime.context-compaction.
-      contextCompactionApplied: compactionPolicy?.enabled ? contextCompactionApplied : null,
+      contextCompactionApplied: runState.compaction.policy?.enabled ? runState.compaction.applied : null,
     });
     emitCapabilitiesResolved(onEvent, { sdk: resolved.sdk, model: reference, capabilitiesUsed });
 
@@ -958,7 +608,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // ~780 check. Pick it up here so the lifecycle decision below rolls back the
     // cancelled turn instead of committing it into a durable transcript a later
     // resume would replay.
-    externalAbort ||= !!options.abortSignal?.aborted;
+    runState.externalAbort ||= !!options.abortSignal?.aborted;
 
     // Session lifecycle parity with the legacy bridge. The harness already
     // durably persisted the transcript into its session object (in-memory for
@@ -972,7 +622,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       providerSessionId,
       durableRepo,
       sessionTtlMs,
-      externalAbort,
+      externalAbort: runState.externalAbort,
       errorMessage,
       onEvent,
     });
@@ -986,8 +636,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // jsonl). The abort re-check + return stay inline with NO await between the
     // false-branch check and the return, so an external cancel cannot newly fire
     // past it (I10).
-    if (!externalAbort && options.abortSignal?.aborted) {
-      externalAbort = true;
+    if (!runState.externalAbort && options.abortSignal?.aborted) {
+      runState.externalAbort = true;
       await rollbackAbortedTurn(runState, { requestedSessionId, providerSessionId, durableRepo });
     }
 
@@ -1002,7 +652,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runAssistantCount,
       resolved,
       options,
-      externalAbort,
+      externalAbort: runState.externalAbort,
       errorMessage,
       errorDetails,
       diagnostics,
@@ -1010,10 +660,10 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       providerSessionId,
       runtimeWarnings,
       capabilitiesUsed,
-      structuredResult,
+      structuredResult: runState.structuredResult,
     });
   } catch (err) {
-    externalAbort ||= !!options.abortSignal?.aborted;
+    runState.externalAbort ||= !!options.abortSignal?.aborted;
     // Drop a just-created fresh durable session, release a create-on-miss
     // reservation placeholder, and roll a resumed session back to its pre-turn
     // leaf for host/runtime-side throws that landed after the harness already
@@ -1031,7 +681,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       turnCount: runState.turnCount,
       resolved,
       options,
-      externalAbort,
+      externalAbort: runState.externalAbort,
       errorMessage,
       lastToolName: runState.lastToolName,
       toolResultsSeen: runState.toolResultsSeen,
@@ -1042,7 +692,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     });
   } finally {
     if (runState.sessionEntry) runState.sessionEntry.busy = false;
-    removeAbortHandler?.();
+    runState.removeAbortHandler?.();
     await closePiMcpClients(mcpClients);
   }
 }
