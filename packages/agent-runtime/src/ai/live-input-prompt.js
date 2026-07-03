@@ -3,7 +3,17 @@
 // consumers; the queue/normalize/supports helpers stay in core/live-input.js
 // for the API + coordinator + worker callers that don't need this string.
 
-export function formatLiveInputGuidance(text) {
+// A host or run `prompts.liveInputGuidance(body)` override, when supplied,
+// replaces the default guidance wrapper below; otherwise the default is used.
+/**
+ * @param {string} text
+ * @param {import('./types.js').RuntimePromptOverrides} [prompts]
+ * @returns {string}
+ */
+export function formatLiveInputGuidance(text, prompts) {
+  if (typeof prompts?.liveInputGuidance === "function") {
+    return prompts.liveInputGuidance(String(text || ""));
+  }
   return [
     "Live guidance from the user:",
     String(text || ""),

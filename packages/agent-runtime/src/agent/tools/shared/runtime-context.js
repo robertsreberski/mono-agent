@@ -1,69 +1,79 @@
-// Process-level configuration for the agent kernel's internal tool helpers.
-// The host configures this once at worker boot; internal
-// modules (output-truncation, ripgrep, path-resolver, pi-bridge) read from
-// it instead of reaching into process.env.
+// Module-level DEFAULT tool context — the back-compat layer over tool-context.js.
 //
-// Single shared object is acceptable because the worker is one-task-per-process.
+// Historically this file held the one-per-process tool-runtime singleton. That
+// assumed one task per process, which is false in a long-lived multi-channel
+// host: two `createRuntime` instances clobbered each other's workspace /
+// repoRoot / sandboxPolicy / brand. The per-instance ToolContext (tool-context.js)
+// fixes that — `createRuntime` now builds its own context and threads it to
+// bridges as `options.toolContext`.
 //
-// Recognized keys:
-//   workspace        — fallback for tool workdir resolution. Default: process.cwd().
-//   repoRoot         — secondary allowed root (the host's installation root).
-//                      Tool path-allowlist checks accept this in addition to workspace.
-//   runId            — used as the subdirectory under toolArtifactDir for tool output.
-//   toolArtifactDir  — root for {dir}/tool-output/{runId}/{file} artifact writes
-//                      from capChars/formatSearchLines. Null = no persistence.
-//   ripgrepPath      — absolute path to the ripgrep binary. When unset, falls
-//                      back to vendored binary, then PATH lookup.
-//   qaOutputDir      — fallback for normalizeMcpToolParams when the per-call
-//                      runArtifactDir isn't supplied.
-//   sandboxPolicy    — optional strict filesystem/process/network sandbox policy.
-//   runtimeBrand     — resolved RuntimeBrand object (see runtime-brand.js).
-//                      Internal helpers read it to stamp host-specific names
-//                      (MCP client name, transcript schema id, doctor command).
+// This module survives as the DEFAULT context every internal read site falls
+// back to when no per-instance context was threaded (`ctx ?? readToolRuntime()`).
+// Hosts that only call the deep-path `configureToolRuntime` (e.g. worklab's
+// worker.js / doctor.js) get byte-for-byte identical behavior to before: they
+// configure this default context and the tools read it.
+//
+// The public exports are unchanged: configureToolRuntime / readToolRuntime /
+// readRuntimeBrand / resetToolRuntime (plus the internal resolveSandboxPolicy
+// default-context convenience). See tool-context.js for the recognized keys.
 
-import { mergeSandboxPolicies } from "@mono-agent/sandbox";
-import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-brand.js";
+// @ts-check
 
-const context = {
-  workspace: undefined,
-  repoRoot: undefined,
-  runId: undefined,
-  toolArtifactDir: undefined,
-  ripgrepPath: undefined,
-  qaOutputDir: undefined,
-  sandboxPolicy: undefined,
-  runtimeBrand: { ...DEFAULT_RUNTIME_BRAND },
-};
+import {
+  createToolContext,
+  resetToolContext,
+  updateToolContext,
+  resolveSandboxPolicy as resolveContextSandboxPolicy,
+} from "./tool-context.js";
+import { DEFAULT_RUNTIME_BRAND } from "../../../runtime-brand.js";
 
+/** @typedef {import('./tool-context.js').ToolContext} ToolContext */
+/**
+ * @typedef {ToolContext} ToolRuntimeContext
+ * Back-compat alias for the historical name.
+ */
+
+/** @type {ToolContext} */
+const defaultContext = createToolContext({});
+
+/**
+ * @param {Partial<ToolContext>} [next]
+ * @returns {void}
+ */
 export function configureToolRuntime(next = {}) {
-  for (const key of Object.keys(context)) {
-    if (key === "runtimeBrand") continue;
-    if (key in next) context[key] = next[key];
-  }
-  if (next.runtimeBrand !== undefined) {
-    context.runtimeBrand = resolveRuntimeBrand(next.runtimeBrand);
-  }
+  updateToolContext(defaultContext, next);
 }
 
+/**
+ * @returns {ToolContext}
+ */
 export function readToolRuntime() {
-  return context;
+  return defaultContext;
 }
 
-// Single source of truth for the sandbox policy a tool call runs under.
-// Merging (rather than letting the per-call option shadow the context policy)
-// keeps the guarantee monotonic: a request-scoped policy can tighten the
-// host-configured policy but never weaken or disable it.
+// Default-context convenience: resolves a request policy against the module
+// default context. Internal read sites that carry a per-instance context call
+// tool-context.js's `resolveSandboxPolicy(ctx, requestPolicy)` directly with
+// `ctx ?? readToolRuntime()`; this wrapper preserves the historical
+// single-argument signature for the default path.
+/**
+ * @param {import('../../sandbox-seam.js').SandboxPolicy} [requestPolicy]
+ * @returns {import('../../sandbox-seam.js').SandboxPolicy|undefined}
+ */
 export function resolveSandboxPolicy(requestPolicy = undefined) {
-  const merged = mergeSandboxPolicies(context.sandboxPolicy ?? undefined, requestPolicy ?? undefined);
-  return merged && merged.mode !== "off" ? merged : undefined;
+  return resolveContextSandboxPolicy(defaultContext, requestPolicy);
 }
 
+/**
+ * @returns {import('../../../runtime-brand.js').RuntimeBrand}
+ */
 export function readRuntimeBrand() {
-  return context.runtimeBrand || { ...DEFAULT_RUNTIME_BRAND };
+  return defaultContext.runtimeBrand || { ...DEFAULT_RUNTIME_BRAND };
 }
 
+/**
+ * @returns {void}
+ */
 export function resetToolRuntime() {
-  for (const key of Object.keys(context)) {
-    context[key] = key === "runtimeBrand" ? { ...DEFAULT_RUNTIME_BRAND } : undefined;
-  }
+  resetToolContext(defaultContext);
 }

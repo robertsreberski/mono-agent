@@ -1,4 +1,8 @@
-import { getModel as getPiModel } from "@earendil-works/pi-ai";
+// pi 0.80 moved the static catalog reads off the pi-ai root: `getModel` is now
+// deprecated/compat-only. `getBuiltinModel(provider, id)` from `providers/all`
+// is the non-deprecated replacement — same 2-arg signature, and it returns
+// `undefined` on an unknown provider/model exactly like the old `getModel`.
+import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 
 export const EMPTY_USAGE = {
@@ -20,8 +24,8 @@ function openAiCompatBaseUrl(provider) {
   return /\/v\d+$/.test(baseUrl) ? baseUrl : `${baseUrl}/v1`;
 }
 
-function customProviderName(provider) {
-  return `${readRuntimeBrand().providerModelPrefix}-${provider.id}`;
+function customProviderName(provider, brand) {
+  return `${(brand ?? readRuntimeBrand()).providerModelPrefix}-${provider.id}`;
 }
 
 function customProviderKey(provider, isPrivate) {
@@ -64,7 +68,7 @@ function resolveCustomPiModel(resolved, options) {
   const isPrivate = typeof options.isPrivateProvider === "boolean"
     ? options.isPrivateProvider
     : false;
-  const providerName = customProviderName(provider);
+  const providerName = customProviderName(provider, options.toolContext?.runtimeBrand);
   const pricing = modelRow?.pricing || {};
   return {
     model: {
@@ -90,11 +94,24 @@ function resolveCustomPiModel(resolved, options) {
   };
 }
 
+// `options.customProvider`, when present, takes UNCONDITIONAL precedence for
+// ANY pi model ref resolved in this run — it is not scoped to the specific
+// model reference passed in. A fallback-router chain that mixes a custom-pi
+// entry with a builtin-pi entry therefore routes ALL pi entries in that chain
+// through the same custom provider once options.customProvider is set for the
+// run (the router does not re-derive customProvider per chain entry).
 export function resolvePiRuntimeModel(resolved, options) {
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
   if (resolved.sdk !== "pi") throw new Error(`unsupported pi sdk: ${resolved.sdk}`);
   const provider = resolved.provider;
   const model = getPiModel(provider, resolved.model);
+  if (!model) {
+    // Phrasing matters: this must match ai/failure.js's NON_RETRYABLE_PROVIDER_RE
+    // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss
+    // as non-retryable and bails cleanly instead of retrying/misclassifying it as
+    // a transient provider_unavailable failure.
+    throw new Error(`pi model not found: ${provider}:${resolved.model}`);
+  }
   return {
     model,
     capabilities: {

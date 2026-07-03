@@ -83,6 +83,36 @@ describe("createRouterRuntime — fallback on retryable", () => {
     ]);
   });
 
+  it("falls back on pi 0.80's terse 'Connection error.' (live-smoke regression)", async () => {
+    // pi 0.80's bridge collapses a connection-refused/unreachable provider down
+    // to this bare string with no cause text — see ai/failure.js's
+    // retryableProviderSubkind "network" branch.
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Connection error.",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({
+        text: "recovered",
+        events: [],
+        failureKind: null,
+      });
+
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "claude-opus-4-7" },
+        { sdk: "claude", model: "claude-sonnet-4-6" },
+      ],
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("recovered");
+    expect(result.failoverHistory).toHaveLength(1);
+    expect(executeMock).toHaveBeenCalledTimes(2);
+  });
+
   it("returns the last failure with provider_unavailable_exhausted when every entry fails", async () => {
     executeMock.mockResolvedValue({
       text: null,

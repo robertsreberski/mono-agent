@@ -1,5 +1,52 @@
-import { getModel as getPiModel } from "@earendil-works/pi-ai";
+// @ts-check
 
+// pi 0.80 moved the static catalog reads off the pi-ai root (`getModel` is now
+// deprecated/compat-only). `getBuiltinModel(provider, id)` from `providers/all`
+// is the non-deprecated replacement with the same signature and the same
+// undefined-on-miss behavior the pricing lookup below relies on.
+import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
+
+/**
+ * @typedef {Object} ParsedModelReference
+ * @property {string|null} sdk
+ * @property {string} [provider]
+ * @property {string} model
+ */
+
+/**
+ * @typedef {Object} NormalizedPricing
+ * @property {number|null} input
+ * @property {number|null} cacheRead
+ * @property {number|null} cacheWrite
+ * @property {number|null} output
+ * @property {string} source
+ * @property {boolean} priced
+ */
+
+/**
+ * @typedef {Object} PricingInputRow
+ * Duck-typed pricing row a host (or the pi catalog) supplies: either
+ * camelCase or the provider's `*_per_million` snake_case spelling.
+ * @property {number|string} [input]
+ * @property {number|string} [input_per_million]
+ * @property {number|string} [cacheRead]
+ * @property {number|string} [cachedInput]
+ * @property {number|string} [cached_input_per_million]
+ * @property {number|string} [cacheWrite]
+ * @property {number|string} [cache_write_per_million]
+ * @property {number|string} [cache_creation_per_million]
+ * @property {number|string} [output]
+ * @property {number|string} [output_per_million]
+ */
+
+// STATIC FALLBACK, consulted only AFTER pi's live catalog (piCatalogPricing via
+// getBuiltinModel("anthropic", ...)). pi's anthropic catalog already carries the
+// same per-million rates for the currently-shipping models, so this table only
+// wins for Claude ids pi's catalog does not (yet) know — newer/renamed models
+// added here before they land in a pinned pi-ai release. STALENESS: these are
+// hand-maintained USD/1M-token rates and can drift from Anthropic's published
+// pricing; treat them as a best-effort backstop for cost DIAGNOSTICS only (never
+// control flow), and refresh when bumping pi-ai or when Anthropic reprices.
 const CLAUDE_PRICING = {
   "claude-haiku-4-5-20251001": { input: 1.0, cacheRead: 0.1, cacheWrite: 1.25, output: 5.0 },
   "claude-haiku-4-5": { input: 1.0, cacheRead: 0.1, cacheWrite: 1.25, output: 5.0 },
@@ -11,17 +58,34 @@ const CLAUDE_PRICING = {
   "claude-opus-4-5": { input: 5.0, cacheRead: 0.5, cacheWrite: 6.25, output: 25.0 },
 };
 
+/**
+ * @param {*} value
+ * @returns {number|null}
+ */
 function finiteOrNull(value) {
   if (value == null || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+/**
+ * @param {*} value
+ * @param {number} [fallback]
+ * @returns {number}
+ */
 function rate(value, fallback = 0) {
   const n = finiteOrNull(value);
   return n == null ? fallback : n;
 }
 
+/**
+ * @param {PricingInputRow|null|undefined} pricing
+ * @param {Object} [options]
+ * @param {string} [options.source]
+ * @param {boolean} [options.priced]
+ * @param {number} [options.missing]
+ * @returns {NormalizedPricing|null}
+ */
 function normalizePricing(pricing, { source, priced = true, missing = 0 } = {}) {
   if (!pricing || typeof pricing !== "object") return null;
   const input = rate(pricing.input ?? pricing.input_per_million, missing);
@@ -41,14 +105,25 @@ function normalizePricing(pricing, { source, priced = true, missing = 0 } = {}) 
   return { input, cacheRead, cacheWrite, output, source, priced };
 }
 
+/**
+ * @param {string} source
+ * @returns {NormalizedPricing}
+ */
 function zeroPricing(source) {
   return { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, source, priced: true };
 }
 
+/**
+ * @returns {NormalizedPricing}
+ */
 function unknownPricing() {
   return { input: null, cacheRead: null, cacheWrite: null, output: null, source: "unknown", priced: false };
 }
 
+/**
+ * @param {string} reference
+ * @returns {ParsedModelReference|null}
+ */
 function parseReference(reference) {
   if (typeof reference !== "string" || !reference.trim()) return null;
   if (reference.startsWith("vercel:")) {
@@ -72,6 +147,10 @@ function parseReference(reference) {
   return { sdk: reference.slice(0, i), model: reference.slice(i + 1) };
 }
 
+/**
+ * @param {string} baseUrl
+ * @returns {boolean}
+ */
 function isPrivateHost(baseUrl) {
   try {
     const host = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -88,6 +167,10 @@ function isPrivateHost(baseUrl) {
   }
 }
 
+/**
+ * @param {PricingInputRow} [pricing]
+ * @returns {boolean}
+ */
 function pricingHasRates(pricing = {}) {
   return [
     pricing.input_per_million,
@@ -97,16 +180,41 @@ function pricingHasRates(pricing = {}) {
   ].some((value) => finiteOrNull(value) != null);
 }
 
+/**
+ * Live pricing from pi-ai's builtin catalog (getBuiltinModel). Handles two
+ * shapes:
+ *   - sdk "pi": `parsed.provider` is the pi provider id (openai, openai-codex,
+ *     github-copilot, custom, ...). Codex/openai references route here via
+ *     parseReference (codex:* -> openai-codex, openai:* -> openai), so they get
+ *     the SAME catalog treatment — priced when pi's catalog has that model
+ *     (openai gpt-* do), unpriced (-> falls through to unknown) when it does not
+ *     (e.g. openai-codex `gpt-5-codex` is not in the pinned catalog).
+ *   - sdk "claude": looked up under pi's "anthropic" provider (its models carry
+ *     `cost`), so pi's live rates win over the static CLAUDE_PRICING fallback.
+ * @param {ParsedModelReference|null|undefined} parsed
+ * @returns {NormalizedPricing|null}
+ */
 function piCatalogPricing(parsed) {
-  if (parsed?.sdk !== "pi" || !parsed.provider || !parsed.model) return null;
+  if (!parsed?.model) return null;
+  let provider;
+  if (parsed.sdk === "pi" && parsed.provider) provider = parsed.provider;
+  else if (parsed.sdk === "claude") provider = "anthropic";
+  else return null;
   try {
-    const model = getPiModel(parsed.provider, parsed.model);
+    // `provider` may be a caller-supplied id (custom providers included), wider
+    // than pi-ai's built-in KnownProvider catalog union; the catalog lookup
+    // itself is the runtime check, guarded by the catch below.
+    const model = getPiModel(/** @type {*} */ (provider), parsed.model);
     return model?.cost ? normalizePricing(model.cost, { source: "pi-catalog" }) : null;
   } catch {
     return null;
   }
 }
 
+/**
+ * @param {ParsedModelReference|null|undefined} parsed
+ * @returns {NormalizedPricing|null}
+ */
 function claudePricing(parsed) {
   if (parsed?.sdk !== "claude") return null;
   return normalizePricing(CLAUDE_PRICING[parsed.model], { source: "claude-table" });
@@ -118,6 +226,12 @@ function claudePricing(parsed) {
 // The pricing helpers below (`normalizePricing`, `zeroPricing`, `unknownPricing`,
 // `pricingHasRates`, `isPrivateHost`, `parseReference`) are exported so hosts
 // can build their own resolvers without re-implementing the row-shape conversion.
+/**
+ * @param {Object} [options]
+ * @param {(parsed: ParsedModelReference) => (NormalizedPricing|null)} [options.resolveCustomPricing]
+ * @param {string} [options.model]
+ * @returns {NormalizedPricing}
+ */
 export function resolvePricing({ resolveCustomPricing, model } = {}) {
   const parsed = parseReference(model);
   if (!parsed) return unknownPricing();
@@ -132,6 +246,17 @@ export function resolvePricing({ resolveCustomPricing, model } = {}) {
 
 export { normalizePricing, zeroPricing, unknownPricing, pricingHasRates, isPrivateHost, parseReference };
 
+/**
+ * @param {Object} [options]
+ * @param {(parsed: ParsedModelReference) => (NormalizedPricing|null)} [options.resolveCustomPricing]
+ * @param {string} [options.model]
+ * @param {number} [options.inputTokens]
+ * @param {number} [options.outputTokens]
+ * @param {number} [options.cachedTokens]
+ * @param {number} [options.cacheWriteTokens]
+ * @param {number} [options.cacheCreationTokens]
+ * @returns {number|null}
+ */
 export function estimateCost({
   resolveCustomPricing,
   model,

@@ -51,6 +51,11 @@ export function compactToolRawResult(result, resultContent) {
   };
 }
 
+/**
+ * @param {any} toolName
+ * @param {any} args
+ * @param {{cwd?: any, toolLimits?: any}} [options]
+ */
 export function eventToolArgs(toolName, args, { cwd, toolLimits } = {}) {
   return normalizePiBuiltinToolParams(toolName, args || {}, { cwd, toolLimits });
 }

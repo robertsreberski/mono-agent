@@ -84,6 +84,17 @@ function summarizeTurn(turn, { maxChars = DEFAULT_TURN_SUMMARY_CHARS } = {}) {
 // is nothing usable to resume from. Older turns beyond `verbatimTurns` are
 // summarized into a one-paragraph snippet; only the trailing `verbatimTurns`
 // keep their full assistant text + tool detail.
+/**
+ * @param {Array<*>} events
+ * @param {Object} [options]
+ * @param {number} [options.maxTurns]
+ * @param {number} [options.verbatimTurns]
+ * @param {number} [options.maxChars]
+ * @param {number} [options.toolResultChars]
+ * @param {number} [options.assistantTextChars]
+ * @param {number} [options.turnSummaryChars]
+ * @param {import('../runtime-brand.js').RuntimeBrand} [options.runtimeBrand]
+ */
 export function buildTranscriptTailSnapshot(events, {
   maxTurns = DEFAULT_MAX_TURNS,
   verbatimTurns = DEFAULT_VERBATIM_TURNS,
@@ -91,6 +102,10 @@ export function buildTranscriptTailSnapshot(events, {
   toolResultChars = DEFAULT_TOOL_RESULT_CHARS,
   assistantTextChars = DEFAULT_ASSISTANT_TEXT_CHARS,
   turnSummaryChars = DEFAULT_TURN_SUMMARY_CHARS,
+  // The resolved RuntimeBrand for the schema id. The router (the only caller)
+  // threads the instance brand; absent (deep/default callers) it falls back to
+  // the module-default context brand.
+  runtimeBrand,
 } = {}) {
   if (!Array.isArray(events) || events.length === 0) return null;
   const turns = [];
@@ -154,7 +169,7 @@ export function buildTranscriptTailSnapshot(events, {
     turn_index: turns.length - tailWindow.length + idx + 1,
     summary: summarizeTurn(turn, { maxChars: turnSummaryChars }),
   }));
-  const brand = readRuntimeBrand();
+  const brand = runtimeBrand ?? readRuntimeBrand();
   const snapshot = {
     schema: `${brand.schemaPrefix}.transcript-tail.v1`,
     captured_at: Date.now(),

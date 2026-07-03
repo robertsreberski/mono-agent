@@ -3,7 +3,7 @@ import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { prepareSandboxedCommand } from "@mono-agent/sandbox";
+import { passthroughSandbox } from "../sandbox-seam.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import {
@@ -28,7 +28,8 @@ import { formatSkillBodyWithPathNote } from "../prompt/skill-index.js";
 import { MAX_TOOL_RESULT_BYTES, summarisePayload, wrapToolsWithBloatGuard } from "../tool-bloat.js";
 import { wrapToolsWithApprovalGate } from "../approval.js";
 import { isInsidePath } from "./shared/path-resolver.js";
-import { readRuntimeBrand, readToolRuntime, resolveSandboxPolicy } from "./shared/runtime-context.js";
+import { readToolRuntime } from "./shared/runtime-context.js";
+import { resolveSandboxPolicy } from "./shared/tool-context.js";
 
 function textResult(text, details = {}) {
   return {
@@ -89,28 +90,34 @@ function artifactFilename(filename, outputDir) {
   return target;
 }
 
-export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutputDir } = {}) {
+/**
+ * @param {any} _serverName
+ * @param {any} toolName
+ * @param {any} params
+ * @param {{qaOutputDir?: any, ctx?: any}} [options]
+ */
+export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutputDir, ctx } = {}) {
   if (!params || typeof params !== "object" || Array.isArray(params)) return params;
   if (!PLAYWRIGHT_FILENAME_TOOLS.has(toolName) || !params.filename || isAbsolute(String(params.filename))) return params;
-  const dir = qaOutputDir ?? readToolRuntime().qaOutputDir;
+  const dir = qaOutputDir ?? (ctx ?? readToolRuntime()).qaOutputDir;
   return {
     ...params,
     filename: artifactFilename(params.filename, dir),
   };
 }
 
-function normalizeWorkdir(value, cwd) {
-  const base = resolve(cwd || readToolRuntime().workspace || process.cwd());
+function normalizeWorkdir(value, cwd, ctx) {
+  const base = resolve(cwd || (ctx ?? readToolRuntime()).workspace || process.cwd());
   const resolved = value ? resolve(absolutizePath(value, base)) : base;
   return isInsidePath(base, resolved) ? resolved : base;
 }
 
-function withAbsolutePaths(name, params, cwd) {
+function withAbsolutePaths(name, params, cwd, ctx) {
   const next = { ...(params || {}) };
   if (["Read", "Write", "Edit"].includes(name)) next.file_path = absolutizePath(next.file_path, cwd);
   if (["Glob", "Grep"].includes(name)) next.path = absolutizePath(next.path, cwd);
   if (["Read", "Write", "Edit", "Glob", "Grep", "Bash"].includes(name)) {
-    next.workdir = normalizeWorkdir(next.workdir, cwd);
+    next.workdir = normalizeWorkdir(next.workdir, cwd, ctx);
   }
   return next;
 }
@@ -158,6 +165,10 @@ function compactRawMcpResult(out) {
   };
 }
 
+/**
+ * @param {any} change
+ * @param {{status?: any, before?: any, after?: any, error?: any}} [options]
+ */
 function fileEditPayload(change, { status, before, after, error } = {}) {
   const lineStats = statsForCompletedChange(change, before, after);
   const completedChange = lineStats ? { ...change, line_stats: lineStats } : change;
@@ -197,8 +208,13 @@ function withToolLimits(name, params, limits = {}) {
   return next;
 }
 
-export function normalizePiBuiltinToolParams(name, params, { cwd, toolLimits } = {}) {
-  return withToolLimits(name, withAbsolutePaths(name, params, cwd), toolLimits);
+/**
+ * @param {any} name
+ * @param {any} params
+ * @param {{cwd?: any, toolLimits?: any, ctx?: any}} [options]
+ */
+export function normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx } = {}) {
+  return withToolLimits(name, withAbsolutePaths(name, params, cwd, ctx), toolLimits);
 }
 
 function integerSchema() {
@@ -225,7 +241,15 @@ function isReadOnlyShellCommand(command) {
   ].some((pattern) => pattern.test(text));
 }
 
-function createBuiltinTool(name, label, description, parameters, execute, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine } = {}) {
+/**
+ * @param {any} name
+ * @param {any} label
+ * @param {any} description
+ * @param {any} parameters
+ * @param {any} execute
+ * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ */
+function createBuiltinTool(name, label, description, parameters, execute, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine, ctx } = {}) {
   return {
     name,
     label,
@@ -234,7 +258,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
     executionMode: name === "Write" || name === "Edit" || name === "Bash" ? "sequential" : undefined,
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
-      const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits });
+      const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx });
       if (name === "Bash" && toolPolicy?.bashReadOnly && !isReadOnlyShellCommand(normalized.command)) {
         throw new Error("Error: Planning shell policy allows only read-only inspection commands.");
       }
@@ -256,7 +280,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
         }));
       }
 
-      const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine });
+      const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine, ctx });
       // Image reads (e.g. Read on a .png) come back as a structured image
       // result so vision models see pixels; emit an image content block and let
       // the shared bloat guard cap oversize payloads.
@@ -288,32 +312,77 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
  * Progressive skill disclosure: exposes a `read_skill` tool so the agent can pull
  * a named skill's FULL body on demand (skills are otherwise injected index-only).
  *
- * `skillsRoot` is the directory that directly contains `<name>/SKILL.md` (what the
- * harness/context loader calls `skillsRoot`). The legacy `dataDir` form is still
- * accepted for back-compat — there the skills live under `<dataDir>/skills` — and
- * is resolved to the same root. The path-traversal guard (resolved file must stay
- * under the skills root) is preserved on both paths.
+ * Two input shapes are accepted, matching what hosts pass:
+ *  - Minimal / legacy (mono-agent's agent-harness): bare `skillNames` + a shared
+ *    `skillsRoot` (the directory that directly contains `<name>/SKILL.md`), or the
+ *    back-compat `dataDir` (skills under `<dataDir>/skills`). This path is UNCHANGED.
+ *  - pi's neutral `Skill` shape (`{name, description, content, filePath, ...}`,
+ *    what worklab passes): each skill carries an absolute `filePath`. When NO shared
+ *    `skillsRoot`/`dataDir` is configured, read_skill derives each skill's root from
+ *    its own `filePath` — pi has no lazy-body equivalent, so the body is still read
+ *    from disk on demand rather than injected up front.
+ *
+ * The path-traversal guard (resolved file must stay under the shared root) is
+ * preserved on the shared-root path; on the filePath path the name→file binding is
+ * fixed at build time and the model can only pick an enum value, so there is no
+ * name-driven traversal surface.
  */
-function readSkillTool(skillNames = [], { skillsRoot, dataDir } = {}) {
-  const root = skillsRoot
+/**
+ * @param {any[]} [skillNames]
+ * @param {{skillsRoot?: any, dataDir?: any, skills?: any[]}} [options]
+ */
+function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {}) {
+  const sharedRoot = skillsRoot
     ? resolve(skillsRoot)
     : (dataDir ? resolve(dataDir, "skills") : null);
-  const safe = skillNames.filter((name) => /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name));
-  if (!safe.length || !root) return null;
+  const isSafeName = (name) => typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name);
+
+  // name -> {path, assetsPath, skillsRoot} derived from the pi Skill filePath.
+  // filePath is the skill file itself (nested `<root>/<name>/SKILL.md` or a flat
+  // `<root>/<name>.md`): assetsPath is its directory; the note-only skills root is
+  // one level up for the nested layout, else the directory itself.
+  const filePathEntries = new Map();
+  for (const skill of Array.isArray(skills) ? skills : []) {
+    if (!skill || typeof skill !== "object") continue;
+    if (!isSafeName(skill.name) || typeof skill.filePath !== "string" || !skill.filePath) continue;
+    if (filePathEntries.has(skill.name)) continue;
+    const path = resolve(skill.filePath);
+    const assetsPath = dirname(path);
+    const root = basename(path) === "SKILL.md" ? dirname(assetsPath) : assetsPath;
+    filePathEntries.set(skill.name, { path, assetsPath, skillsRoot: root });
+  }
+
+  // A shared root (minimal/legacy form) drives the tool exactly as before;
+  // filePath is consulted ONLY when it is absent — "derive root from
+  // skill.filePath when skillsRoot is absent".
+  const enumNames = sharedRoot
+    ? skillNames.filter(isSafeName)
+    : [...filePathEntries.keys()];
+  if (!enumNames.length) return null;
+
   return {
     name: "read_skill",
     label: "Read Skill",
     description: "Load the full instructions for a named skill.",
-    parameters: objectSchema({ name: { type: "string", enum: safe } }, ["name"]),
+    parameters: objectSchema({ name: { type: "string", enum: enumNames } }, ["name"]),
     async execute(_toolCallId, { name }) {
-      const path = resolve(root, name, "SKILL.md");
-      if (!path.startsWith(root + "/")) throw new Error(`invalid skill path: ${name}`);
-      if (!existsSync(path)) throw new Error(`SKILL.md not found for ${name}`);
+      if (sharedRoot) {
+        const path = resolve(sharedRoot, name, "SKILL.md");
+        if (!path.startsWith(sharedRoot + "/")) throw new Error(`invalid skill path: ${name}`);
+        if (!existsSync(path)) throw new Error(`SKILL.md not found for ${name}`);
+        return textResult(formatSkillBodyWithPathNote({
+          body: stripFrontmatter(readFileSync(path, "utf8")),
+          assetsPath: resolve(sharedRoot, name),
+          skillsRoot: sharedRoot,
+        }), { skill: name, path });
+      }
+      const entry = filePathEntries.get(name);
+      if (!entry || !existsSync(entry.path)) throw new Error(`SKILL.md not found for ${name}`);
       return textResult(formatSkillBodyWithPathNote({
-        body: stripFrontmatter(readFileSync(path, "utf8")),
-        assetsPath: resolve(root, name),
-        skillsRoot: root,
-      }), { skill: name, path });
+        body: stripFrontmatter(readFileSync(entry.path, "utf8")),
+        assetsPath: entry.assetsPath,
+        skillsRoot: entry.skillsRoot,
+      }), { skill: name, path: entry.path });
     },
   };
 }
@@ -337,8 +406,13 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
   };
 }
 
+/**
+ * @param {any} allowedTools
+ * @param {{skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, ctx?: any}} [options]
+ */
 export function getPiBuiltinTools(allowedTools, {
   skillNames = [],
+  skills = [],
   skillsRoot,
   dataDir,
   cwd,
@@ -353,6 +427,7 @@ export function getPiBuiltinTools(allowedTools, {
   sandboxEngine = null,
   approvalManager = null,
   approvalModel = null,
+  ctx = null,
 } = {}) {
   const textLimitSchema = integerSchema();
   const bashLimitSchema = integerSchema();
@@ -360,7 +435,9 @@ export function getPiBuiltinTools(allowedTools, {
     type: "integer",
     description: "Timeout in milliseconds. Use 30000 for 30 seconds; small values like 30 are treated as seconds for compatibility.",
   };
-  const toolContext = { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine };
+  // Per-tool closure config (cwd/event sink/limits/policy) plus the per-instance
+  // ToolContext `ctx` that the tool impls and shared helpers read from.
+  const toolContext = { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine, ctx };
   const all = {
     Read: createBuiltinTool("Read", "Read", "Read a local file. Text files return line-numbered content; image files (PNG, JPEG, GIF, WebP, BMP) are returned as a viewable image you can see directly — use this to look at image attachments.", objectSchema({
       file_path: { type: "string" },
@@ -420,7 +497,7 @@ export function getPiBuiltinTools(allowedTools, {
   };
   const names = Array.isArray(allowedTools) ? allowedTools : Object.keys(all);
   const tools = names.map((name) => all[name]).filter(Boolean);
-  const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir });
+  const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir, skills });
   if (skillTool) tools.push(skillTool);
   const gated = approvalManager
     ? wrapToolsWithApprovalGate(tools, approvalManager, { model: approvalModel })
@@ -440,9 +517,11 @@ export function resolveMcpStdioCwd(cfg = {}, cwd = null) {
   return cwd || process.cwd();
 }
 
-export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null } = {}) {
-  return prepareSandboxedCommand({
-    policy: resolveSandboxPolicy(sandboxPolicy),
+export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null, ctx = null } = {}) {
+  const resolvedCtx = ctx ?? readToolRuntime();
+  const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
+  return sandbox.prepareCommand({
+    policy: resolveSandboxPolicy(resolvedCtx, sandboxPolicy),
     engine: sandboxEngine ?? undefined,
     command: {
       command: cfg.command,
@@ -453,8 +532,13 @@ export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPoli
   });
 }
 
-async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine } = {}) {
-  const brand = readRuntimeBrand();
+/**
+ * @param {any} name
+ * @param {any} cfg
+ * @param {{cwd?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ */
+async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx } = {}) {
+  const brand = (ctx ?? readToolRuntime()).runtimeBrand;
   const client = new McpClient(
     { name: `${brand.mcpClientName}/${name}`, version: brand.mcpClientVersion },
     { capabilities: {} },
@@ -464,25 +548,28 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine }
     transport = new StreamableHTTPClientTransport(new URL(cfg.url), { requestInit: { headers: cfg.headers || {} } });
   } else if (cfg.type === "sse") {
     transport = new SSEClientTransport(new URL(cfg.url), {
-      eventSourceInit: { headers: cfg.headers || {} },
+      // SSE EventSourceInit's typed shape omits `headers`, but the transport
+      // forwards them to the underlying EventSource — keep the header pass-through.
+      eventSourceInit: /** @type {any} */ ({ headers: cfg.headers || {} }),
       requestInit: { headers: cfg.headers || {} },
     });
   } else {
-    const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine });
+    const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine, ctx });
     transport = new StdioClientTransport({
       command: prepared.command,
       args: prepared.args || [],
       cwd: prepared.cwd,
       env: { ...process.env, ...(prepared.env || {}) },
     });
-    transport.__monoSandboxCleanup = prepared.cleanup;
+    // Monkey-patched cleanup handle: not part of the MCP transport's typed shape.
+    /** @type {any} */ (transport).__monoSandboxCleanup = prepared.cleanup;
   }
   try {
     await client.connect(transport);
     return { name, client, transport };
   } catch (error) {
     try { await transport?.close?.(); } catch { /* best-effort */ }
-    try { await transport?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
+    try { await /** @type {any} */ (transport)?.__monoSandboxCleanup?.(); } catch { /* best-effort */ }
     throw error;
   }
 }
@@ -568,6 +655,11 @@ function withTimeout(promise, timeoutMs, signal, label, registerReset) {
   return Promise.race([promise, timer]).finally(() => clearTimeout(timeout));
 }
 
+/**
+ * @param {any} mcpConfig
+ * @param {Set<any>} [reservedNames]
+ * @param {{limits?: any, cwd?: any, persistArtifact?: any, qaOutputDir?: any, onTruncate?: any, toolPayloadMaxBytes?: number, sandboxPolicy?: any, sandboxEngine?: any, onToolProgress?: any, ctx?: any}} [options]
+ */
 export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   limits = {},
   cwd = null,
@@ -578,11 +670,12 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   sandboxPolicy = null,
   sandboxEngine = null,
   onToolProgress = null,
+  ctx = null,
 } = {}) {
   const clients = [];
   const tools = [];
   const entries = Object.entries(mcpConfig || {});
-  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine })));
+  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx })));
   const warnings = [];
   const seen = new Set(reservedNames);
 
@@ -634,12 +727,12 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
         name,
         label: sourceTool.title || sourceTool.name,
         description: sourceTool.description || `${serverName}:${sourceTool.name}`,
-        parameters: sourceTool.inputSchema || sourceTool.input_schema || objectSchema({}),
+        parameters: sourceTool.inputSchema || /** @type {any} */ (sourceTool).input_schema || objectSchema({}),
         async execute(toolCallId, params, signal) {
           if (signal?.aborted) throw new Error("tool execution aborted");
           const textLimit = limits.mcpTextLimitChars || MCP_TEXT_RESULT_LIMIT;
           const imageInlineMaxBytes = limits.imageInlineMaxBytes ?? MCP_IMAGE_INLINE_MAX_BYTES;
-          const normalizedParams = normalizeMcpToolParams(serverName, sourceTool.name, params || {}, { qaOutputDir });
+          const normalizedParams = normalizeMcpToolParams(serverName, sourceTool.name, params || {}, { qaOutputDir, ctx });
           // Measure the MCP round-trip so observability can separate slow MCP
           // servers (e.g. context-example over a SOCKS proxy) from model latency.
           const mcpCallStartMs = Date.now();

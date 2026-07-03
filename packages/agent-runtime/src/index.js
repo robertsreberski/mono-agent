@@ -1,4 +1,4 @@
-// Public entry for @mono-agent/agent-runtime.
+// Public entry for the agent-runtime package.
 //
 // Most consumers should reach for `createRuntime` (see runtime.js) — it
 // binds the host integration callbacks once and returns a `.run()` method.

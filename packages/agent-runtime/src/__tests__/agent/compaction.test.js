@@ -6,7 +6,13 @@
 // user messages) the provider meters but the raw transcript estimate excludes.
 
 import { describe, expect, it } from "vitest";
-import { estimateFixedOverheadTokens, resolveAgentCompactionPolicy } from "../../agent/compaction.js";
+import {
+  DEPRECATED_SETTINGS_WARNING_KIND,
+  deprecatedSettingsWarning,
+  estimateFixedOverheadTokens,
+  resolveAgentCompactionPolicy,
+  resolveRuntimePolicyInputs,
+} from "../../agent/compaction.js";
 
 // Mirrors pi-ai's chars/4 heuristic so the expected values are derived, not magic.
 const tokensForChars = (value) => Math.ceil(String(value ?? "").length / 4);
@@ -111,5 +117,106 @@ describe("resolveAgentCompactionPolicy MCP call timeouts", () => {
     expect(policy.mcpCallMaxTotalTimeoutMs).toBe(300_000);
     const junk = resolveAgentCompactionPolicy({ agent_mcp_call_max_total_timeout_ms: "soon" }, null);
     expect(junk.mcpCallMaxTotalTimeoutMs).toBe(2_700_000);
+  });
+
+  it("resolves fixedOverheadEnabled (default true, false only when explicitly disabled)", () => {
+    expect(resolveAgentCompactionPolicy({}, null).fixedOverheadEnabled).toBe(true);
+    expect(resolveAgentCompactionPolicy({ agent_compaction_fixed_overhead_enabled: false }, null).fixedOverheadEnabled).toBe(false);
+    // Any non-false value keeps the default-on behavior.
+    expect(resolveAgentCompactionPolicy({ agent_compaction_fixed_overhead_enabled: true }, null).fixedOverheadEnabled).toBe(true);
+  });
+});
+
+describe("resolveRuntimePolicyInputs (typed policy objects <-> deprecated settings shim)", () => {
+  it("consumes no settings when typed objects are supplied (per-group precedence)", () => {
+    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
+      toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
+      compaction: { triggerRatio: 0.9, enabled: false, fixedOverheadEnabled: false },
+    });
+    expect(consumedSettingsKeys).toEqual([]);
+    expect(settingsLike).toMatchObject({
+      agent_tool_text_limit_chars: 1000,
+      agent_search_result_limit: 25,
+      agent_compaction_trigger_ratio: 0.9,
+      agent_compaction_enabled: false,
+      agent_compaction_fixed_overhead_enabled: false,
+    });
+  });
+
+  it("falls back to settings per-group and reports the consumed keys", () => {
+    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
+      settings: {
+        agent_tool_text_limit_chars: 2000,
+        agent_compaction_trigger_ratio: 0.7,
+        unrelated_key: "ignored",
+      },
+    });
+    expect(settingsLike).toMatchObject({
+      agent_tool_text_limit_chars: 2000,
+      agent_compaction_trigger_ratio: 0.7,
+    });
+    expect(settingsLike.unrelated_key).toBeUndefined();
+    expect(consumedSettingsKeys).toEqual(
+      expect.arrayContaining(["agent_tool_text_limit_chars", "agent_compaction_trigger_ratio"]),
+    );
+  });
+
+  it("mixes a typed group with a settings fallback for the OTHER group", () => {
+    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
+      toolLimits: { toolTextLimitChars: 1000 },
+      // compaction absent -> its settings keys are consumed; toolLimits present ->
+      // its settings key is ignored.
+      settings: { agent_tool_text_limit_chars: 9999, agent_compaction_trigger_ratio: 0.6 },
+    });
+    expect(settingsLike.agent_tool_text_limit_chars).toBe(1000); // typed wins for its group
+    expect(settingsLike.agent_compaction_trigger_ratio).toBe(0.6); // settings fallback for compaction
+    // Only the compaction key was consumed from settings.
+    expect(consumedSettingsKeys).toEqual(["agent_compaction_trigger_ratio"]);
+  });
+
+  it("reports no consumed keys when neither typed objects nor settings are passed", () => {
+    expect(resolveRuntimePolicyInputs()).toEqual({ settingsLike: {}, consumedSettingsKeys: [] });
+    expect(resolveRuntimePolicyInputs({ settings: {} })).toEqual({ settingsLike: {}, consumedSettingsKeys: [] });
+  });
+
+  it("PARITY: settings and equivalent typed objects resolve to identical policies", () => {
+    const settings = {
+      agent_tool_text_limit_chars: 1500,
+      agent_search_result_limit: 40,
+      agent_mcp_call_timeout_ms: 90_000,
+      agent_compaction_trigger_ratio: 0.8,
+      agent_compaction_keep_recent_tokens: 12_000,
+      agent_compaction_summary_max_tokens: 8000,
+      agent_compaction_min_savings_tokens: 15_000,
+      agent_compaction_enabled: true,
+      agent_compaction_fixed_overhead_enabled: false,
+    };
+    const viaSettings = resolveRuntimePolicyInputs({ settings });
+    const viaTyped = resolveRuntimePolicyInputs({
+      toolLimits: { toolTextLimitChars: 1500, searchResultLimit: 40, mcpCallTimeoutMs: 90_000 },
+      compaction: {
+        triggerRatio: 0.8,
+        keepRecentTokens: 12_000,
+        summaryMaxTokens: 8000,
+        minSavingsTokens: 15_000,
+        enabled: true,
+        fixedOverheadEnabled: false,
+      },
+    });
+    const model = { contextWindow: 200_000 };
+    expect(resolveAgentCompactionPolicy(viaTyped.settingsLike, model))
+      .toEqual(resolveAgentCompactionPolicy(viaSettings.settingsLike, model));
+  });
+});
+
+describe("deprecatedSettingsWarning", () => {
+  it("builds the one-per-run deprecation warning with the consumed keys", () => {
+    const warning = deprecatedSettingsWarning(["agent_tool_text_limit_chars", "agent_compaction_trigger_ratio"]);
+    expect(warning.warning_kind).toBe(DEPRECATED_SETTINGS_WARNING_KIND);
+    expect(warning.warning_kind).toBe("deprecated_settings_option");
+    expect(warning.source).toBe("runtime");
+    expect(warning.settings_keys).toEqual(["agent_tool_text_limit_chars", "agent_compaction_trigger_ratio"]);
+    expect(warning.message).toContain("deprecated");
+    expect(warning.message).toContain("agent_tool_text_limit_chars");
   });
 });

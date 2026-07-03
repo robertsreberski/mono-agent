@@ -15,10 +15,10 @@ export async function discoverOpencodeProviders({ createServer = createOpencode 
     if (result?.error) {
       const message = typeof result.error === "string"
         ? result.error
-        : (result.error?.message || JSON.stringify(result.error));
+        : (/** @type {any} */ (result.error)?.message || JSON.stringify(result.error));
       throw new Error(message);
     }
-    const providers = result?.data?.providers || result?.providers || [];
+    const providers = result?.data?.providers || /** @type {any} */ (result)?.providers || [];
     return providers.map((provider) => ({
       providerID: provider.id,
       name: provider.name || provider.id,

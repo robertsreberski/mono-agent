@@ -1,3 +1,5 @@
+// @ts-check
+
 // Host-customisable identity strings used by the runtime when it has to
 // stamp a name onto something that leaves the process: MCP client name,
 // transcript-snapshot schema id, temp-directory prefix, the doctor command
@@ -7,6 +9,20 @@
 // to `createRuntime` to make the package look like theirs without forking
 // string-by-string.
 
+/**
+ * @typedef {Object} RuntimeBrand
+ * @property {string} schemaPrefix
+ * @property {string} mcpClientName
+ * @property {string} mcpClientVersion
+ * @property {string} tempdirPrefix
+ * @property {string} providerModelPrefix
+ * @property {string} doctorCommand
+ * @property {string} serviceName
+ * @property {string} clientInfoName
+ * @property {string} clientInfoTitle
+ */
+
+/** @type {RuntimeBrand} */
 export const DEFAULT_RUNTIME_BRAND = Object.freeze({
   schemaPrefix: "agent_runtime",
   mcpClientName: "agent-runtime",
@@ -21,10 +37,14 @@ export const DEFAULT_RUNTIME_BRAND = Object.freeze({
   clientInfoTitle: "Agent Runtime",
 });
 
+/**
+ * @param {Partial<RuntimeBrand>} [input]
+ * @returns {RuntimeBrand}
+ */
 export function resolveRuntimeBrand(input) {
   if (!input || typeof input !== "object") return { ...DEFAULT_RUNTIME_BRAND };
   const out = { ...DEFAULT_RUNTIME_BRAND };
-  for (const key of Object.keys(DEFAULT_RUNTIME_BRAND)) {
+  for (const key of /** @type {Array<keyof RuntimeBrand>} */ (Object.keys(DEFAULT_RUNTIME_BRAND))) {
     const value = input[key];
     if (typeof value === "string" && value.trim()) out[key] = value.trim();
   }

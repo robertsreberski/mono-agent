@@ -22,7 +22,8 @@ afterEach(() => {
 });
 
 describe("createRuntime", () => {
-  it("exposes run() and configureTools() and configures the tool runtime from host options", () => {
+  it("exposes run() and configureTools() and threads a per-instance tool context to bridge.execute", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime({
       workspace: "/tmp/work",
       repoRoot: "/tmp/repo",
@@ -31,22 +32,29 @@ describe("createRuntime", () => {
     });
     expect(typeof runtime.run).toBe("function");
     expect(typeof runtime.configureTools).toBe("function");
-    expect(readToolRuntime()).toMatchObject({
+    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    // The host tool config lives on the per-instance context threaded to the
+    // bridge — NOT published to the process-global default context.
+    expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
       workspace: "/tmp/work",
       repoRoot: "/tmp/repo",
       ripgrepPath: "/usr/bin/rg",
       qaOutputDir: "/tmp/qa",
     });
+    expect(readToolRuntime().workspace).toBeUndefined();
   });
 
-  it("ignores host keys it does not recognize when configuring the tool runtime", () => {
-    createRuntime({ workspace: "/tmp/work", unrelated: "ignored" });
-    expect(readToolRuntime().workspace).toBe("/tmp/work");
-    expect(readToolRuntime().unrelated).toBeUndefined();
+  it("ignores host keys it does not recognize when building the tool context", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const runtime = createRuntime({ workspace: "/tmp/work", unrelated: "ignored" });
+    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    const { toolContext } = executeMock.mock.calls[0][1];
+    expect(toolContext.workspace).toBe("/tmp/work");
+    expect(toolContext.unrelated).toBeUndefined();
   });
 
-  it("does not touch the tool runtime when no tool keys are provided", () => {
-    createRuntime({ resolveCustomPricing: () => null });
+  it("does not touch the global default tool runtime, regardless of host tool keys", () => {
+    createRuntime({ workspace: "/tmp/work", ripgrepPath: "/usr/bin/rg" });
     expect(readToolRuntime().workspace).toBeUndefined();
     expect(readToolRuntime().ripgrepPath).toBeUndefined();
   });
@@ -118,19 +126,78 @@ describe("createRuntime", () => {
     expect(executeMock.mock.calls[0][1].resolveCustomPricing).toBe(callResolver);
   });
 
-  it("configureTools() updates the tool runtime after construction", () => {
+  it("configureTools() updates the instance context observed by the next run", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime({ workspace: "/tmp/initial" });
     runtime.configureTools({ workspace: "/tmp/updated", ripgrepPath: "/opt/rg" });
-    expect(readToolRuntime()).toMatchObject({
+    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({
       workspace: "/tmp/updated",
       ripgrepPath: "/opt/rg",
     });
   });
 
-  it("configureTools() ignores unknown keys", () => {
+  it("configureTools() ignores unknown keys", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
     const runtime = createRuntime();
     runtime.configureTools({ workspace: "/w", bogus: "nope" });
-    expect(readToolRuntime().workspace).toBe("/w");
-    expect(readToolRuntime().bogus).toBeUndefined();
+    await runtime.run("sys", { model: { sdk: "claude", model: "x" } });
+    const { toolContext } = executeMock.mock.calls[0][1];
+    expect(toolContext.workspace).toBe("/w");
+    expect(toolContext.bogus).toBeUndefined();
+  });
+
+  it("merges prompt overrides with run-over-host per-field precedence", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const hostInstruction = () => "host-instruction";
+    const hostFinalization = () => "host-finalization";
+    const runInstruction = () => "run-instruction";
+    const runtime = createRuntime({
+      prompts: { structuredOutputInstruction: hostInstruction, structuredOutputFinalization: hostFinalization },
+    });
+    await runtime.run("sys", {
+      model: { sdk: "pi", model: "x" },
+      // Run overrides ONE field; the host's other prompt default must survive.
+      prompts: { structuredOutputInstruction: runInstruction },
+    });
+    const { prompts } = executeMock.mock.calls[0][1];
+    expect(prompts.structuredOutputInstruction).toBe(runInstruction); // run wins
+    expect(prompts.structuredOutputFinalization).toBe(hostFinalization); // host fills the rest
+  });
+
+  it("passes host-only prompt overrides through when the run supplies none", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const hostGuidance = () => "g";
+    const runtime = createRuntime({ prompts: { liveInputGuidance: hostGuidance } });
+    await runtime.run("sys", { model: { sdk: "pi", model: "x" } });
+    expect(executeMock.mock.calls[0][1].prompts).toEqual({ liveInputGuidance: hostGuidance });
+  });
+
+  it("omits prompts entirely when neither host nor run supply any", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const runtime = createRuntime();
+    await runtime.run("sys", { model: { sdk: "pi", model: "x" } });
+    expect(executeMock.mock.calls[0][1].prompts).toBeUndefined();
+  });
+
+  it("two runtime instances keep independent tool contexts (no cross-instance clobber)", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const a = createRuntime({ workspace: "/tmp/a", runtimeBrand: { schemaPrefix: "aa" } });
+    const b = createRuntime({ workspace: "/tmp/b", runtimeBrand: { schemaPrefix: "bb" } });
+    // Mutate a AFTER b exists — the old global singleton would have leaked this
+    // across both instances.
+    a.configureTools({ workspace: "/tmp/a-updated" });
+    await a.run("sys", { model: { sdk: "claude", model: "x" } });
+    await b.run("sys", { model: { sdk: "claude", model: "x" } });
+    const ctxA = executeMock.mock.calls[0][1].toolContext;
+    const ctxB = executeMock.mock.calls[1][1].toolContext;
+    expect(ctxA).not.toBe(ctxB);
+    expect(ctxA.workspace).toBe("/tmp/a-updated");
+    expect(ctxB.workspace).toBe("/tmp/b");
+    expect(ctxA.runtimeBrand.schemaPrefix).toBe("aa");
+    expect(ctxB.runtimeBrand.schemaPrefix).toBe("bb");
+    // Neither instance published anything to the process-global default context.
+    expect(readToolRuntime().workspace).toBeUndefined();
+    expect(readToolRuntime().runtimeBrand.schemaPrefix).toBe("agent_runtime");
   });
 });

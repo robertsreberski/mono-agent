@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
+import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   bashToolImpl,
   editToolImpl,
@@ -27,7 +27,9 @@ let previousPath = process.env.PATH;
 function tempWorkspace() {
   const dir = mkdtempSync(resolve("/tmp", "agent-runtime-tools-"));
   tempDirs.push(dir);
-  configureToolRuntime({ workspace: dir });
+  // The fake sandbox fixture gives these tests realistic root/write/network
+  // enforcement without a workspace dependency — see helpers/fake-sandbox.js.
+  configureToolRuntime({ workspace: dir, sandbox: createFakeSandbox() });
   return dir;
 }
 

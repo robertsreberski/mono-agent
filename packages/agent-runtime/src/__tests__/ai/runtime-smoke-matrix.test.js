@@ -1,7 +1,7 @@
 // Smoke matrix for the built-in provider bridges.
 //
 // The plan's Phase 7 verification calls for confirming that the runtime path
-// goes through the package for each of: claude-sdk, claude-cli, pi-sdk, codex-app,
+// goes through the package for each of: claude-sdk, claude-cli, pi-native, codex-app,
 // opencode-app.
 // We don't spin up the real providers (no API keys, no subprocess); we just
 // resolve each bridge through the public API and assert it loads and exposes

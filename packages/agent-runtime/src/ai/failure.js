@@ -1,3 +1,41 @@
+// @ts-check
+
+/**
+ * @typedef {Object} RetryableProviderFailureInfo
+ * @property {boolean} retryable
+ * @property {string|null} subkind
+ * @property {string|null} requestId
+ */
+
+/**
+ * @typedef {"spawn" | "timeout" | "stall" | "usage_limit" | "invalid_result"
+ *   | "invalid_delegation" | "tool_failure" | "provider_unavailable"
+ *   | "provider_unavailable_exhausted" | "cancelled" | "cancelled_user"
+ *   | "cancelled_shutdown" | "cancelled_signal" | "abandoned"
+ *   | "session_not_found" | "session_busy" | (string & {})} FailureKind
+ * OPEN string union. The literals above are the CORE taxonomy the kernel itself
+ * derives from provider/runtime signals in `classifyFailure` /
+ * `retryableProviderFailureInfo` (and `provider_unavailable_exhausted`, produced
+ * by the router on chain exhaustion). The union is intentionally open
+ * (`string & {}`) because `FAILURE_KINDS` also transports HOST-TAXONOMY kinds
+ * the kernel never originates on its own:
+ *   - `child_failed`, `budget_exceeded` — `classifyFailure` only returns these
+ *     when the HOST passes the matching `childFailed` / `budgetExceeded` (or a
+ *     `cancelInitiator: "budget"`) input; the kernel never infers them from a
+ *     provider signal.
+ *   - `delegation_agent_not_in_team`, `delegation_team_roster_empty`,
+ *     `invalid_delegation`, `cancelled_stale` (`stale_reconcile`) — set by a
+ *     host coordinator (planner/roster/reconcile logic) and merely carried
+ *     through `FAILURE_KINDS` / the `hint` passthrough; the kernel transports
+ *     them in the result contract but never emits them from its own paths.
+ * Hosts (e.g. worklab's coordinator) validate against `FAILURE_KINDS` and may
+ * define additional kinds — accepting them at the type level is deliberate.
+ */
+
+// FAILURE_KINDS is the runtime vocabulary: `classifyFailure`'s `hint`
+// passthrough accepts any member, and hosts validate `task_runs.failure_kind`
+// against it. See the `FailureKind` typedef above for which members the kernel
+// derives itself vs. which are host-taxonomy kinds it only transports.
 export const FAILURE_KINDS = [
   "spawn",
   "timeout",
@@ -29,10 +67,21 @@ export const FAILURE_KINDS = [
 ];
 
 const USAGE_LIMIT_RE = /(rate limit|usage limit|max tokens|max turns|context length|too many tokens)/i;
-const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket)/i;
+// Mirrors the conservative connection-error/refused/failed alternation added to
+// RETRYABLE_PROVIDER_RE / retryableProviderSubkind below for pi 0.80's terse
+// "Connection error." — without it, classifyFailure (used directly by hosts
+// like worklab's coordinator, independent of retryableProviderFailureInfo) maps
+// that same terse text to the generic "spawn" kind instead of
+// "provider_unavailable".
+const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket|\bconnection (?:error|refused|failed)\b|\bcould not connect\b)/i;
 const TOOL_FAILURE_RE = /(tool .* failed|mcp tool|permission denied|EACCES|read-only file system)/i;
 const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|invalid api key|incorrect api key|authentication|authorization|not authorized|forbidden|billing|insufficient[_ ]quota|quota exceeded|model[_ ]not[_ ]found|unsupported model|permission denied|bad request|401|403|404)/i;
-const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?overloaded|try again later|retry your request|request id|service unavailable|temporar(?:y|ily)|timed? ?out|stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|etimedout|network|429|too many requests|500|502|503|504|gateway|internal server error)/i;
+// pi 0.80's openai-client-style bridge collapses a connection-refused/unreachable
+// provider down to a terse "Connection error." with no cause text (no ECONNREFUSED,
+// no fetch failed) — the `\bconnection (?:error|refused|failed)\b|\bcould not connect\b`
+// alternation below is the motivating fix so that case still fails over instead of
+// being classified as non-retryable.
+const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?overloaded|try again later|retry your request|request id|service unavailable|temporar(?:y|ily)|timed? ?out|stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|etimedout|network|429|too many requests|500|502|503|504|gateway|internal server error|\bconnection (?:error|refused|failed)\b|\bcould not connect\b)/i;
 export const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|socket hang up|und_err_socket|econnreset|premature close)\b/i;
 
 function requestIdFromText(text) {
@@ -44,12 +93,21 @@ function retryableProviderSubkind(text) {
   if (/overloaded/i.test(text)) return "overloaded";
   if (/429|too many requests|rate limit/i.test(text)) return "rate_limited";
   if (/timed? ?out|etimedout/i.test(text)) return "timeout";
-  if (/stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|network/i.test(text)) return "network";
+  // pi 0.80's terse "Connection error." (no ECONNREFUSED/fetch-failed detail) still
+  // needs to land in the "network" subkind so a down provider fails over.
+  if (/stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|network|\bconnection (?:error|refused|failed)\b|\bcould not connect\b/i.test(text)) return "network";
   if (/500|502|503|504|service unavailable|gateway|internal server error/i.test(text)) return "server_error";
   if (/retry your request|try again later|request id|processing your request/i.test(text)) return "retryable_request";
   return null;
 }
 
+/**
+ * @param {Object} [options]
+ * @param {string} [options.errorText]
+ * @param {string} [options.stderrTail]
+ * @param {string|null} [options.failureKind]
+ * @returns {RetryableProviderFailureInfo}
+ */
 export function retryableProviderFailureInfo({
   errorText = "",
   stderrTail = "",
@@ -80,6 +138,22 @@ export function retryableProviderFailureInfo({
 // errors) into one of FAILURE_KINDS. Every adapter / spawn-worker / watcher
 // path should funnel through this so the values in `task_runs.failure_kind`
 // stay coherent.
+/**
+ * @param {Object} [options]
+ * @param {number|null} [options.exitCode]
+ * @param {string|null} [options.signal]
+ * @param {string} [options.errorText]
+ * @param {string} [options.stderrTail]
+ * @param {boolean} [options.timedOut]
+ * @param {boolean} [options.cancelRequested]
+ * @param {string|null} [options.cancelInitiator]
+ * @param {boolean} [options.resultParseError]
+ * @param {boolean} [options.mcpInitFailed]
+ * @param {boolean} [options.budgetExceeded]
+ * @param {boolean} [options.childFailed]
+ * @param {string|null} [options.hint]
+ * @returns {FailureKind|null} One of FAILURE_KINDS, or null for a clean exit.
+ */
 export function classifyFailure({
   exitCode = null,
   signal = null,
@@ -133,6 +207,11 @@ export function classifyFailure({
 // of stderr; we only want the last few KB for diagnostics. Returns a string
 // guaranteed to be ≤ `limit` bytes, with a `[truncated …]` marker if anything
 // was dropped.
+/**
+ * @param {Object} [options]
+ * @param {number} [options.limit]
+ * @returns {{push: (chunk: (string|Buffer|null|undefined)) => void, toString: () => string, readonly bytesDropped: number}}
+ */
 export function createStderrTail({ limit = 8 * 1024 } = {}) {
   let buffer = "";
   let dropped = 0;

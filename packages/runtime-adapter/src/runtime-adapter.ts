@@ -1,6 +1,7 @@
 import { createPiOAuthApiKeyResolver, createRouterRuntime, createRuntime } from "@mono-agent/agent-runtime";
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
+import { monoSandboxImpl } from "./sandbox-impl.js";
 
 import type {
   MonoRuntimeBackendCapabilities,
@@ -169,9 +170,14 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
   const { fallbackChain, ...hostOptions } = options;
   const chain = normalizeFallbackChain(fallbackChain);
+  // agent-runtime's kernel ships only a fail-closed passthrough sandbox (see
+  // agent/sandbox-seam.js) — this is the ONE place the real @mono-agent/sandbox
+  // implementation gets injected, so every mono-agent host's sandbox policy is
+  // actually enforced without the kernel depending on that package itself.
+  const hostWithSandbox = { sandbox: monoSandboxImpl, ...hostOptions };
   const runtime = chain === undefined
-    ? createRuntime({ ...hostOptions })
-    : createRouterRuntime({ host: { ...hostOptions }, chain });
+    ? createRuntime(hostWithSandbox)
+    : createRouterRuntime({ host: hostWithSandbox, chain });
 
   return {
     async run(systemPrompt: string, runOptions: RuntimeRunOptions): Promise<RuntimeResult> {

@@ -6,7 +6,7 @@ Category: `runtime`
 
 ## Responsibility
 
-Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts, and it enforces optional `@mono-agent/sandbox` policy for runtime-owned tools.
+Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts, and it enforces an optional sandbox policy for runtime-owned tools through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real `@mono-agent/sandbox` implementation for mono-agent hosts).
 
 ## Public API
 
@@ -15,11 +15,11 @@ Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, C
 - `ai/runtime/registry.js` — `listRuntimeBridges`
 - Provider bridges for `claude` (SDK + CLI), `codex` (app-server), `pi` (Pi SDK), and `opencode`
 - Provider session support: bridges accept `sessionId` in run options and report `provider_session_id`; the runtime exposes `disposeSession` / `disposeAllSessions`
-- Sandbox-aware built-in tools and stdio MCP startup through `@mono-agent/sandbox`
+- Sandbox-aware built-in tools and stdio MCP startup through an injectable `RuntimeSandbox` seam (`agent/sandbox-seam.js`) — no direct dependency on `@mono-agent/sandbox`
 
 ## Dependency Boundary
 
-Depends on external provider SDKs (`@anthropic-ai/claude-agent-sdk`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `zod`) plus `@mono-agent/sandbox` for runtime-owned command preparation and network/path policy checks.
+Depends on external provider SDKs only (`@anthropic-ai/claude-agent-sdk`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `zod`) — **zero `@mono-agent/*` workspace-package dependencies**. Sandbox enforcement for runtime-owned command preparation and network/path policy checks is an injectable `RuntimeSandbox` seam; `@mono-agent/runtime-adapter` wires in the real `@mono-agent/sandbox` implementation automatically for mono-agent hosts.
 
 ## What This Package Does Not Own
 
@@ -42,7 +42,7 @@ Generic agent runtime that supports four backends out of the box:
 - **Pi SDK** (`@earendil-works/pi-agent-core`, used for OpenAI / Codex / Gemini / OpenRouter / Ollama / etc. via Pi providers)
 - **Codex CLI** (the `codex` app-server)
 
-Hosts wire in their own pricing, persistence, and credential callbacks (plus a legacy compaction-recording hook that is inert on the current pi bridge — see "Context compaction"). The runtime returns raw text + raw structured output; hosts that want a domain-specific contract parse it on their end.
+Hosts wire in their own pricing, persistence, and credential callbacks (plus an `onCompactionRecorded` hook that fires on every automatic compaction — proactive or reactive — the pi bridge drives; see "Context compaction"). The runtime returns raw text + raw structured output; hosts that want a domain-specific contract parse it on their end.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the package boundary, runtime
 selection flow, lifecycle diagrams, and host responsibilities. Upgrading from
@@ -153,7 +153,11 @@ createRuntime({
   repoRoot,                // secondary allowed root
   ripgrepPath,             // explicit path to `rg`; falls back to vendored binary, then PATH
   qaOutputDir,             // fallback dir for Playwright MCP filename routing
-  sandboxPolicy,           // optional @mono-agent/sandbox policy for tools and stdio MCP
+  sandboxPolicy,           // optional SandboxPolicy for tools and stdio MCP (enforced
+                           // through the injectable RuntimeSandbox seam, not a bundled dep)
+  sandbox,                 // optional RuntimeSandbox implementation override (defaults to
+                           // the zero-dependency passthroughSandbox; runtime-adapter injects
+                           // the real @mono-agent/sandbox implementation for mono-agent hosts)
 
   // -- observers (multi-subscriber telemetry) --
   // Optional. Each observer receives every event the runtime emits.
@@ -398,7 +402,7 @@ Approval lifecycle is observable via `onEvent`:
 
 ## Tool-result bloat handling
 
-`@mono-agent/agent-runtime/agent/tool-bloat.js` enforces a 256 KB default cap per `tool_result`. When a payload exceeds the cap, the kernel:
+The kernel's tool-bloat guard (`agent/tool-bloat.js`, internal) enforces a 256 KB default cap per `tool_result`. When a payload exceeds the cap, the kernel:
 
 1. Calls your `persistArtifact({ filename, buffer, toolName, toolUseId })` callback (if you supplied one).
 2. Substitutes a compact text reference in the agent's transcript.
@@ -425,14 +429,19 @@ on each automatic compaction) are exported from
 
 ## Advanced exports
 
-The package exposes its inner pieces via subpath imports:
+The package exposes a fixed set of inner pieces via subpath imports. The
+`exports` map is explicit (no `./ai/*` / `./agent/*` wildcards): only the mapped
+subpaths resolve, each carrying generated `.d.ts` types. `node
+scripts/verify-deep-imports.mjs` asserts every mapped subpath still loads.
 
 ```js
-import { resolveRuntimeBridge, listRuntimeBridges, runtimeCapabilities } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
-import { generateClaudeResponse } from "@mono-agent/agent-runtime/ai/providers/claude-sdk.js";
+import { resolveRuntimeBridge, listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
+import { parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
+import { classifyFailure, FAILURE_KINDS } from "@mono-agent/agent-runtime/ai/failure.js";
+import { resolvePricing, estimateCost } from "@mono-agent/agent-runtime/ai/cost.js";
 import { resolveAgentCompactionPolicy, isLikelyContextTermination } from "@mono-agent/agent-runtime/agent/compaction.js";
 import { configureToolRuntime, readToolRuntime } from "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js";
-// ...
+// see package.json "exports" for the full mapped set
 ```
 
 These are stable but treated as advanced API. Most consumers should reach for `createRuntime` first.

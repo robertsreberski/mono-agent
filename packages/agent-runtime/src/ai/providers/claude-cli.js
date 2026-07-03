@@ -443,7 +443,7 @@ export async function generateCliResponse(systemPrompt, options = {}) {
   const start = Date.now();
   const resolved = options.model;
   const prompt = promptFromMessages(options.messages);
-  const dir = mkdtempSync(join(tmpdir(), readRuntimeBrand().tempdirPrefix));
+  const dir = mkdtempSync(join(tmpdir(), (options.toolContext?.runtimeBrand ?? readRuntimeBrand()).tempdirPrefix));
   const schemaPath = options.outputSchema ? join(dir, "output-schema.json") : null;
   if (schemaPath) writeFileSync(schemaPath, JSON.stringify(options.outputSchema));
   const mcpServers = options.mcpServers || {};

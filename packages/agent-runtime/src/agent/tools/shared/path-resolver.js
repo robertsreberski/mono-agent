@@ -1,20 +1,24 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { readToolRuntime, resolveSandboxPolicy } from "./runtime-context.js";
+import { readToolRuntime } from "./runtime-context.js";
+import { resolveSandboxPolicy } from "./tool-context.js";
 
-function configured() {
-  const { workspace, repoRoot } = readToolRuntime();
+// Every read here falls back to the module-default context when no per-instance
+// ToolContext is threaded (`ctx ?? readToolRuntime()`), so hosts that only call
+// the deep-path configureToolRuntime keep their historical behavior.
+function configured(ctx) {
+  const { workspace, repoRoot } = ctx ?? readToolRuntime();
   return { workspace, repoRoot };
 }
 
-export function workspaceRoot(workdir) {
-  const { workspace, repoRoot } = configured();
+export function workspaceRoot(workdir, ctx) {
+  const { workspace, repoRoot } = configured(ctx);
   return resolve(workdir || workspace || repoRoot || process.cwd());
 }
 
-export function resolveToolPath(path, workdir) {
+export function resolveToolPath(path, workdir, ctx) {
   if (!path || typeof path !== "string") return path;
-  return resolve(isAbsolute(path) ? path : resolve(workspaceRoot(workdir), path));
+  return resolve(isAbsolute(path) ? path : resolve(workspaceRoot(workdir, ctx), path));
 }
 
 export function isPathAllowed(path, workdir, options = {}) {
@@ -26,25 +30,27 @@ export function isWritablePathAllowed(path, workdir, options = {}) {
 }
 
 function isPathAllowedFor(path, workdir, access, options) {
-  const r = resolveToolPath(path, workdir);
-  const policy = resolveSandboxPolicy(options.sandboxPolicy);
+  const ctx = options.ctx;
+  const r = resolveToolPath(path, workdir, ctx);
+  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
   if (policy) {
     const field = access === "write" ? policy.writableRoots : policy.readableRoots;
     return insideSandboxRoots(Array.isArray(field) ? field : [], r)
-      && (access !== "write" || !sandboxDeniesWrite(policy, r));
+      && (access !== "write" || !sandboxDeniesWrite(policy, r, ctx));
   }
-  const { workspace, repoRoot } = configured();
+  const { workspace, repoRoot } = configured(ctx);
   return insideLegacyRoots([workdir, workspace, repoRoot, process.cwd(), "/tmp"], r);
 }
 
 export function isWorkdirAllowed(workdir, options = {}) {
   if (!workdir) return true;
+  const ctx = options.ctx;
   const r = resolve(workdir);
-  const policy = resolveSandboxPolicy(options.sandboxPolicy);
+  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
   if (policy) {
     return insideSandboxRoots(Array.isArray(policy.readableRoots) ? policy.readableRoots : [], r);
   }
-  const { workspace, repoRoot } = configured();
+  const { workspace, repoRoot } = configured(ctx);
   return insideLegacyRoots([workspace, repoRoot, process.cwd(), "/tmp"], r);
 }
 
@@ -95,21 +101,21 @@ function realTargetPath(target) {
   return resolved;
 }
 
-function sandboxDeniesWrite(policy, target) {
+function sandboxDeniesWrite(policy, target, ctx) {
   const patterns = Array.isArray(policy.denyWrite) ? policy.denyWrite : [];
   if (patterns.length === 0) return false;
   const candidates = [...new Set([resolve(target), realTargetPath(target)])];
   return candidates.some((candidate) =>
-    patterns.some((pattern) => denyWritePatternMatches(policy, pattern, candidate)));
+    patterns.some((pattern) => denyWritePatternMatches(policy, pattern, candidate, ctx)));
 }
 
-function denyWritePatternMatches(policy, pattern, target) {
+function denyWritePatternMatches(policy, pattern, target, ctx) {
   if (!pattern || typeof pattern !== "string") return false;
   const normalizedPattern = normalizeMatchPath(pattern);
   if (isAbsolute(pattern)) {
     return globPatternMatches(normalizedPattern, normalizeMatchPath(target));
   }
-  const root = resolve(policy.root || workspaceRoot());
+  const root = resolve(policy.root || workspaceRoot(undefined, ctx));
   const rel = relative(root, resolve(target));
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return false;
   return globPatternMatches(stripDotSlash(normalizedPattern), normalizeMatchPath(rel));

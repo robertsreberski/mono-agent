@@ -7,49 +7,56 @@
 // pi-native AgentHarness bridge — the sole pi runtime path.
 //
 // The harness has no streamFn injection seam, so the provider is driven through
-// pi-ai's own `registerFauxProvider`: a real provider is registered into pi-ai's
-// API registry, the REAL harness + REAL streamSimple dispatch run with scripted
-// responses, and the faux Model is handed to the bridge via the `piResolvedModel`
-// seam (the faux model is reachable only through the registration handle).
+// pi-ai's own `fauxProvider`: a real provider is added to a `Models` collection,
+// the REAL harness + REAL streamSimple dispatch run with scripted responses, and
+// the faux Model + `Models` are handed to the bridge via the `piResolvedModel`
+// and `piResolvedModels` seams (the faux provider is not in pi's builtin
+// catalog, so it is reachable only through an explicit collection).
 
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createModels,
   fauxAssistantMessage,
+  fauxProvider,
   fauxText,
   fauxThinking,
   fauxToolCall,
-  registerFauxProvider,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { disposeProviderSession } from "../../ai/runtime/sessions.js";
 
 let faux = null;
+let fauxModels = null;
 
 function setup({ reasoning = false } = {}) {
-  faux = registerFauxProvider({
+  faux = fauxProvider({
     provider: "faux",
     models: [{ id: "faux-model", reasoning }],
     tokensPerSecond: undefined,
   });
+  fauxModels = createModels();
+  fauxModels.setProvider(faux.provider);
   return faux.getModel();
 }
 
 beforeEach(() => {
   faux = null;
+  fauxModels = null;
 });
 
 afterEach(() => {
-  faux?.unregister();
   faux = null;
+  fauxModels = null;
 });
 
 function runOptions(model, overrides = {}) {
   return {
     model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:faux-model" },
     piResolvedModel: model,
+    piResolvedModels: fauxModels,
     effort: "none",
     allowedTools: [],
     ...overrides,

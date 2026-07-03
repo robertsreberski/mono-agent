@@ -71,6 +71,16 @@ describe("classifyFailure", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "Codex SSE response headers timed out after 10000ms" })).toBe("provider_unavailable");
   });
 
+  // I14: classifyFailure is a separate code path from retryableProviderFailureInfo
+  // (hosts like worklab's coordinator call it directly), so the terse-connection-error
+  // fix landed on RETRYABLE_PROVIDER_RE/retryableProviderSubkind needs the same
+  // conservative alternation mirrored onto PROVIDER_UNAVAILABLE_RE, or a host
+  // classifying this exact text without a `hint` falls through to "spawn" instead
+  // of "provider_unavailable". No signature changes.
+  it("classifies pi 0.80's terse 'Connection error.' as provider_unavailable (no hint)", () => {
+    expect(classifyFailure({ exitCode: 1, errorText: "Connection error." })).toBe("provider_unavailable");
+  });
+
   it("matches tool failure messages", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "tool Edit failed" })).toBe("tool_failure");
   });
@@ -180,6 +190,32 @@ describe("retryableProviderFailureInfo", () => {
     expect(retryableProviderFailureInfo({
       failureKind: "provider_unavailable",
       errorText: "invalid_request_error: Unknown parameter: prompt_cache_retention",
+    })).toMatchObject({ retryable: false, subkind: "non_retryable" });
+  });
+
+  // pi 0.80's openai-client-style bridge surfaces a down/unreachable provider as
+  // this terse string with no cause text (no ECONNREFUSED, no "fetch failed").
+  // Before this fix it matched neither RETRYABLE_PROVIDER_RE nor any
+  // retryableProviderSubkind pattern, so createRouterRuntime never failed over
+  // on the most basic "provider is down" scenario.
+  it("treats pi 0.80's terse 'Connection error.' as a retryable network failure", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_unavailable",
+      errorText: "Connection error.",
+    })).toMatchObject({ retryable: true, subkind: "network" });
+  });
+
+  it("treats a connection refused message as a retryable network failure", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_unavailable",
+      errorText: "connection refused while contacting upstream provider",
+    })).toMatchObject({ retryable: true, subkind: "network" });
+  });
+
+  it("keeps an auth error mentioning 'connection' non-retryable (NON_RETRYABLE precedence)", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_unavailable",
+      errorText: "invalid api key for connection",
     })).toMatchObject({ retryable: false, subkind: "non_retryable" });
   });
 });
