@@ -39,6 +39,14 @@ import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/a
  * @property {number|string} [output_per_million]
  */
 
+// STATIC FALLBACK, consulted only AFTER pi's live catalog (piCatalogPricing via
+// getBuiltinModel("anthropic", ...)). pi's anthropic catalog already carries the
+// same per-million rates for the currently-shipping models, so this table only
+// wins for Claude ids pi's catalog does not (yet) know — newer/renamed models
+// added here before they land in a pinned pi-ai release. STALENESS: these are
+// hand-maintained USD/1M-token rates and can drift from Anthropic's published
+// pricing; treat them as a best-effort backstop for cost DIAGNOSTICS only (never
+// control flow), and refresh when bumping pi-ai or when Anthropic reprices.
 const CLAUDE_PRICING = {
   "claude-haiku-4-5-20251001": { input: 1.0, cacheRead: 0.1, cacheWrite: 1.25, output: 5.0 },
   "claude-haiku-4-5": { input: 1.0, cacheRead: 0.1, cacheWrite: 1.25, output: 5.0 },
@@ -173,16 +181,30 @@ function pricingHasRates(pricing = {}) {
 }
 
 /**
+ * Live pricing from pi-ai's builtin catalog (getBuiltinModel). Handles two
+ * shapes:
+ *   - sdk "pi": `parsed.provider` is the pi provider id (openai, openai-codex,
+ *     github-copilot, custom, ...). Codex/openai references route here via
+ *     parseReference (codex:* -> openai-codex, openai:* -> openai), so they get
+ *     the SAME catalog treatment — priced when pi's catalog has that model
+ *     (openai gpt-* do), unpriced (-> falls through to unknown) when it does not
+ *     (e.g. openai-codex `gpt-5-codex` is not in the pinned catalog).
+ *   - sdk "claude": looked up under pi's "anthropic" provider (its models carry
+ *     `cost`), so pi's live rates win over the static CLAUDE_PRICING fallback.
  * @param {ParsedModelReference|null|undefined} parsed
  * @returns {NormalizedPricing|null}
  */
 function piCatalogPricing(parsed) {
-  if (parsed?.sdk !== "pi" || !parsed.provider || !parsed.model) return null;
+  if (!parsed?.model) return null;
+  let provider;
+  if (parsed.sdk === "pi" && parsed.provider) provider = parsed.provider;
+  else if (parsed.sdk === "claude") provider = "anthropic";
+  else return null;
   try {
-    // parsed.provider is a caller-supplied provider id (custom providers included),
-    // wider than pi-ai's built-in KnownProvider catalog union; the catalog lookup
+    // `provider` may be a caller-supplied id (custom providers included), wider
+    // than pi-ai's built-in KnownProvider catalog union; the catalog lookup
     // itself is the runtime check, guarded by the catch below.
-    const model = getPiModel(/** @type {*} */ (parsed.provider), parsed.model);
+    const model = getPiModel(/** @type {*} */ (provider), parsed.model);
     return model?.cost ? normalizePricing(model.cost, { source: "pi-catalog" }) : null;
   } catch {
     return null;

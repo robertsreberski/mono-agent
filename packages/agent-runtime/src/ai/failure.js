@@ -7,6 +7,35 @@
  * @property {string|null} requestId
  */
 
+/**
+ * @typedef {"spawn" | "timeout" | "stall" | "usage_limit" | "invalid_result"
+ *   | "invalid_delegation" | "tool_failure" | "provider_unavailable"
+ *   | "provider_unavailable_exhausted" | "cancelled" | "cancelled_user"
+ *   | "cancelled_shutdown" | "cancelled_signal" | "abandoned"
+ *   | "session_not_found" | "session_busy" | (string & {})} FailureKind
+ * OPEN string union. The literals above are the CORE taxonomy the kernel itself
+ * derives from provider/runtime signals in `classifyFailure` /
+ * `retryableProviderFailureInfo` (and `provider_unavailable_exhausted`, produced
+ * by the router on chain exhaustion). The union is intentionally open
+ * (`string & {}`) because `FAILURE_KINDS` also transports HOST-TAXONOMY kinds
+ * the kernel never originates on its own:
+ *   - `child_failed`, `budget_exceeded` — `classifyFailure` only returns these
+ *     when the HOST passes the matching `childFailed` / `budgetExceeded` (or a
+ *     `cancelInitiator: "budget"`) input; the kernel never infers them from a
+ *     provider signal.
+ *   - `delegation_agent_not_in_team`, `delegation_team_roster_empty`,
+ *     `invalid_delegation`, `cancelled_stale` (`stale_reconcile`) — set by a
+ *     host coordinator (planner/roster/reconcile logic) and merely carried
+ *     through `FAILURE_KINDS` / the `hint` passthrough; the kernel transports
+ *     them in the result contract but never emits them from its own paths.
+ * Hosts (e.g. worklab's coordinator) validate against `FAILURE_KINDS` and may
+ * define additional kinds — accepting them at the type level is deliberate.
+ */
+
+// FAILURE_KINDS is the runtime vocabulary: `classifyFailure`'s `hint`
+// passthrough accepts any member, and hosts validate `task_runs.failure_kind`
+// against it. See the `FailureKind` typedef above for which members the kernel
+// derives itself vs. which are host-taxonomy kinds it only transports.
 export const FAILURE_KINDS = [
   "spawn",
   "timeout",
@@ -110,7 +139,7 @@ export function retryableProviderFailureInfo({
  * @param {boolean} [options.budgetExceeded]
  * @param {boolean} [options.childFailed]
  * @param {string|null} [options.hint]
- * @returns {string|null} One of FAILURE_KINDS, or null for a clean exit.
+ * @returns {FailureKind|null} One of FAILURE_KINDS, or null for a clean exit.
  */
 export function classifyFailure({
   exitCode = null,
