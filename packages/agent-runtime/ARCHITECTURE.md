@@ -140,7 +140,7 @@ flowchart TB
 
   Providers --> Claude["claude-sdk.js"]
   Providers --> ClaudeCode["claude-cli.js"]
-  Providers --> Pi["pi-sdk.js<br/>pi-models/messages/events"]
+  Providers --> Pi["pi-native.js<br/>pi-models/messages/events"]
   Providers --> Codex["codex-app.js"]
 
   AgentExports --> Tools["agent/tools/*"]

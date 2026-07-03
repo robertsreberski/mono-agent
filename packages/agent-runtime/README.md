@@ -398,7 +398,7 @@ Approval lifecycle is observable via `onEvent`:
 
 ## Tool-result bloat handling
 
-`@mono-agent/agent-runtime/agent/tool-bloat.js` enforces a 256 KB default cap per `tool_result`. When a payload exceeds the cap, the kernel:
+The kernel's tool-bloat guard (`agent/tool-bloat.js`, internal) enforces a 256 KB default cap per `tool_result`. When a payload exceeds the cap, the kernel:
 
 1. Calls your `persistArtifact({ filename, buffer, toolName, toolUseId })` callback (if you supplied one).
 2. Substitutes a compact text reference in the agent's transcript.
@@ -425,14 +425,19 @@ on each automatic compaction) are exported from
 
 ## Advanced exports
 
-The package exposes its inner pieces via subpath imports:
+The package exposes a fixed set of inner pieces via subpath imports. The
+`exports` map is explicit (no `./ai/*` / `./agent/*` wildcards): only the mapped
+subpaths resolve, each carrying generated `.d.ts` types. `node
+scripts/verify-deep-imports.mjs` asserts every mapped subpath still loads.
 
 ```js
-import { resolveRuntimeBridge, listRuntimeBridges, runtimeCapabilities } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
-import { generateClaudeResponse } from "@mono-agent/agent-runtime/ai/providers/claude-sdk.js";
+import { resolveRuntimeBridge, listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
+import { parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
+import { classifyFailure, FAILURE_KINDS } from "@mono-agent/agent-runtime/ai/failure.js";
+import { resolvePricing, estimateCost } from "@mono-agent/agent-runtime/ai/cost.js";
 import { resolveAgentCompactionPolicy, isLikelyContextTermination } from "@mono-agent/agent-runtime/agent/compaction.js";
 import { configureToolRuntime, readToolRuntime } from "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js";
-// ...
+// see package.json "exports" for the full mapped set
 ```
 
 These are stable but treated as advanced API. Most consumers should reach for `createRuntime` first.

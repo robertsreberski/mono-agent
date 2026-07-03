@@ -22,13 +22,14 @@ registry resolves `pi` → the native bridge unconditionally; there is no
 
 - **Public runtime API** (`createRuntime`, model reference `"pi:<provider>:<model>"`)
   is unchanged — `pi:openai:gpt-5.5` etc. still work.
-- **Deep imports** of `@mono-agent/agent-runtime/ai/providers/pi-sdk.js` still
-  resolve via a **deprecated compatibility shim** that re-exports the native
-  equivalents (`generatePiResponse` → `generatePiNativeResponse`,
-  `piRuntimeBridge` → `piNativeRuntimeBridge`, `isContextLimitError`,
-  `normalizePiErrorMessage`, and the `pi*Backend` symbols). **Action:** migrate
-  deep imports to `./ai/providers/pi-native.js`; the shim may be removed in a
-  future major.
+- **Deep imports** of `@mono-agent/agent-runtime/ai/providers/pi-sdk.js` **no
+  longer resolve**: the deprecated compatibility shim was removed and, with the
+  Phase-6 explicit `exports` map (no `./ai/*` / `./agent/*` wildcards), that
+  subpath is not exported. **Action:** import `generatePiNativeResponse` /
+  `piNativeRuntimeBridge` from `./ai/providers/pi-native.js`, and
+  `isContextLimitError` / `normalizePiErrorMessage` from `./ai/providers/pi-errors.js`
+  (or reach for the public runtime registry). The `pi*Backend` aliases are gone —
+  all Pi routes through the one native bridge.
 
 ## 2. Removed run options: `piReasoningSummary`, `piCodexTransport`
 
