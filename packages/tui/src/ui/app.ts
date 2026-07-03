@@ -148,9 +148,7 @@ export class MonoAgentTuiApp {
       void remote
         .info()
         .then((info) => {
-          if (info.model !== undefined) {
-            this.statusBar.setModel(info.model);
-          }
+          this.applyAgentInfo(info);
           this.tui.requestRender();
         })
         .catch((error: unknown) => {
@@ -207,9 +205,7 @@ export class MonoAgentTuiApp {
       void remote
         .info()
         .then((info) => {
-          if (info.model !== undefined) {
-            this.statusBar.setModel(info.model);
-          }
+          this.applyAgentInfo(info);
           this.tui.requestRender();
         })
         .catch(() => undefined);
@@ -221,6 +217,21 @@ export class MonoAgentTuiApp {
     this.config.setConfigPath(instance.source.configPath, normalized.agentDir);
     this.chat.addInfo(`connected to ${instance.source.label}`);
     this.showView("chat");
+  }
+
+  /**
+   * Apply a `/v1/info` snapshot's model/effort to the status bar. Unlike the
+   * per-turn finish-metadata correction in ChatView (a delta that never
+   * clears), `info` is a full snapshot of the *newly selected agent* — an
+   * absent `effort` here means this agent genuinely has none configured, so
+   * clearing is correct: otherwise a stale effort from a previously
+   * connected agent would misattribute to this one.
+   */
+  private applyAgentInfo(info: { readonly model?: string; readonly effort?: string }): void {
+    this.statusBar.setEffort(info.effort);
+    if (info.model !== undefined) {
+      this.statusBar.setModel(info.model);
+    }
   }
 
   private applyStaticIdentity(): void {

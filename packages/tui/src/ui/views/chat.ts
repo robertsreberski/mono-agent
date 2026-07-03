@@ -1,6 +1,10 @@
 import { CombinedAutocompleteProvider, Container, Editor, Loader, Text } from "@earendil-works/pi-tui";
 import type { Component, SlashCommand, TUI } from "@earendil-works/pi-tui";
-import { isAgentResponseCancelledError, type AgentResponder } from "@mono-agent/agent-contracts";
+import {
+  isAgentResponseCancelledError,
+  type AgentResponder,
+  type AgentResponseMetadata,
+} from "@mono-agent/agent-contracts";
 
 import type { TuiHistoryStore } from "../../agent/history.js";
 import { editorTheme, styles } from "../theme.js";
@@ -160,6 +164,7 @@ export class ChatView extends Container {
       if (response.text !== undefined) {
         await presenter.finish(response.text);
       }
+      this.applyFinishMetadata(response.metadata);
     } catch (error) {
       if (isAgentResponseCancelledError(error) || controller.signal.aborted) {
         status = "cancelled";
@@ -189,6 +194,31 @@ export class ChatView extends Container {
         });
       }
       this.options.tui.requestRender();
+    }
+  }
+
+  /**
+   * The authoritative post-turn correction: `metadata.runtime` is set by the
+   * harness from the actual run (not the requested config), so it wins over
+   * whatever the mid-stream `run_config` event (or nothing, for agents that
+   * predate it) already showed. Guarded defensively — `metadata` is
+   * `unknown`-shaped wire data. Absence of either field is NOT a signal to
+   * clear; only a present string value ever updates the status bar.
+   */
+  private applyFinishMetadata(metadata: AgentResponseMetadata | undefined): void {
+    if (typeof metadata !== "object" || metadata === null) {
+      return;
+    }
+    const runtime = (metadata as Record<string, unknown>).runtime;
+    if (typeof runtime !== "object" || runtime === null) {
+      return;
+    }
+    const record = runtime as Record<string, unknown>;
+    if (typeof record.effort === "string") {
+      this.options.statusBar.setEffort(record.effort);
+    }
+    if (typeof record.model === "string") {
+      this.options.statusBar.setModel(record.model);
     }
   }
 

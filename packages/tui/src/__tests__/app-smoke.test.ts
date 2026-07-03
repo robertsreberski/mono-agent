@@ -1,6 +1,11 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { startTuiAdapter } from "@mono-agent/tui-adapter";
 
 import { createInMemoryTuiHistory } from "../agent/history.js";
 import { startMonoAgentTui } from "../runtime/start.js";
@@ -163,5 +168,87 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
         connection: { baseUrl: "http://x" },
       }),
     ).toThrow(/exactly one/u);
+  });
+});
+
+async function writeTraceSourceManifest(
+  dir: string,
+  sourceId: string,
+  baseUrl: string,
+  updatedAt: string,
+): Promise<void> {
+  await writeFile(
+    join(dir, `${sourceId}.json`),
+    JSON.stringify({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId,
+      label: sourceId,
+      artifactDir: join(dir, `${sourceId}-artifacts`),
+      pid: process.pid,
+      status: "running",
+      startedAt: updatedAt,
+      updatedAt,
+      transports: ["tui"],
+      metadata: { channels: { tui: { kind: "running", baseUrl } } },
+    }),
+  );
+}
+
+describe("MonoAgentTuiApp applies /v1/info effort (C4)", () => {
+  it("shows the connected agent's effort on connect, and clears it when switching to an agent with none", async () => {
+    const withEffort = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: { label: "agent-with-effort", model: "claude-fable-5", effort: "high" },
+    });
+    const withoutEffort = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: { label: "agent-no-effort", model: "claude-fable-mini" },
+    });
+    const dir = await mkdtemp(join(tmpdir(), "tui-effort-switch-"));
+    try {
+      // Same updatedAt so listTraceSources' tie-break (sourceId ascending) makes
+      // the ordering deterministic: agent-1 first, agent-2 second.
+      const updatedAt = new Date().toISOString();
+      await writeTraceSourceManifest(dir, "agent-1-with-effort", withEffort.baseUrl, updatedAt);
+      await writeTraceSourceManifest(dir, "agent-2-no-effort", withoutEffort.baseUrl, updatedAt);
+
+      const terminal = new TestTerminal(100, 30);
+      const handle = startMonoAgentTui({ terminal, discovery: { registryDir: dir }, flushIntervalMs: 0 });
+      await frame();
+      await frame(); // discovery's refreshInstances() is async; give it time to populate
+
+      // Discovery opens on the picker with the first instance selected; enter connects.
+      terminal.feed("\r");
+      await frame();
+      await frame();
+      expect(stripAnsi(terminal.output())).toContain("effort:high");
+
+      // Switch to the second (no-effort) agent. `connectTo` sets identity
+      // synchronously but applies model/effort only once `info()` resolves, so
+      // there's a legitimate transient render with the new identity but the
+      // PREVIOUS agent's model/effort still showing. Asserting on the whole
+      // (cumulative) write log would catch that transient, not the final
+      // state — so isolate the last full status-bar line instead.
+      terminal.feed("\x1b[15~"); // F5 -> back to the picker (already-populated list)
+      await frame();
+      terminal.feed("\x1b[B"); // down arrow -> second instance
+      await frame();
+      terminal.feed("\r"); // connect
+      await frame();
+      await frame();
+
+      const statusBarRenders = terminal.writes
+        .map(stripAnsi)
+        .filter((write) => write.includes("agent-2-no-effort") && write.includes("tab views"));
+      const finalStatusBarRender = statusBarRenders.at(-1) ?? "";
+      expect(finalStatusBarRender).toContain("claude-fable-mini");
+      expect(finalStatusBarRender).not.toContain("effort:");
+
+      await handle.stop();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+      await withEffort.stop();
+      await withoutEffort.stop();
+    }
   });
 });
