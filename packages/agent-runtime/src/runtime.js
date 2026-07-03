@@ -1,8 +1,10 @@
 // Top-level runtime factory.
 //
 // `createRuntime(host)` is the ergonomic entry point for hosts. It binds the
-// host integration callbacks (pricing, persistence, credentials), configures
-// the module-level tool runtime, and returns a `.run(systemPrompt, options)`
+// host integration callbacks (pricing, persistence, credentials), builds a
+// per-instance `ToolContext` (agent/tools/shared/tool-context.js) that this
+// runtime instance threads to every bridge call via `options.toolContext`
+// instead of a process-global, and returns a `.run(systemPrompt, options)`
 // method that resolves the right provider bridge based on `options.model` +
 // `options.executionMode`.
 //

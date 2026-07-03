@@ -114,10 +114,6 @@ export async function runStructuredOutputFinalizationRetry({ harness, structured
   });
   const previousActive = harness.getActiveTools().map((/** @type {{name: string}} */ toolDef) => toolDef.name);
   try {
-    // The harness is idle after waitForIdle(), so re-prompt (not followUp,
-    // which only queues onto an active run) with only StructuredOutput
-    // active. This re-prompts ONCE in the same session, matching the legacy
-    // single agent.continue() finalization re-prompt.
     await harness.setActiveTools(structuredTool ? [structuredTool.name] : []);
     await harness.prompt(structuredOutputFinalizationPrompt(prompts));
     await harness.waitForIdle();

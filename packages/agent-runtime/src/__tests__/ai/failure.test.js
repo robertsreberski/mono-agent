@@ -71,6 +71,16 @@ describe("classifyFailure", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "Codex SSE response headers timed out after 10000ms" })).toBe("provider_unavailable");
   });
 
+  // I14: classifyFailure is a separate code path from retryableProviderFailureInfo
+  // (hosts like worklab's coordinator call it directly), so the terse-connection-error
+  // fix landed on RETRYABLE_PROVIDER_RE/retryableProviderSubkind needs the same
+  // conservative alternation mirrored onto PROVIDER_UNAVAILABLE_RE, or a host
+  // classifying this exact text without a `hint` falls through to "spawn" instead
+  // of "provider_unavailable". No signature changes.
+  it("classifies pi 0.80's terse 'Connection error.' as provider_unavailable (no hint)", () => {
+    expect(classifyFailure({ exitCode: 1, errorText: "Connection error." })).toBe("provider_unavailable");
+  });
+
   it("matches tool failure messages", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "tool Edit failed" })).toBe("tool_failure");
   });

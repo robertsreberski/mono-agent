@@ -94,11 +94,24 @@ function resolveCustomPiModel(resolved, options) {
   };
 }
 
+// `options.customProvider`, when present, takes UNCONDITIONAL precedence for
+// ANY pi model ref resolved in this run — it is not scoped to the specific
+// model reference passed in. A fallback-router chain that mixes a custom-pi
+// entry with a builtin-pi entry therefore routes ALL pi entries in that chain
+// through the same custom provider once options.customProvider is set for the
+// run (the router does not re-derive customProvider per chain entry).
 export function resolvePiRuntimeModel(resolved, options) {
   if (options.customProvider) return resolveCustomPiModel(resolved, options);
   if (resolved.sdk !== "pi") throw new Error(`unsupported pi sdk: ${resolved.sdk}`);
   const provider = resolved.provider;
   const model = getPiModel(provider, resolved.model);
+  if (!model) {
+    // Phrasing matters: this must match ai/failure.js's NON_RETRYABLE_PROVIDER_RE
+    // `model[_ ]not[_ ]found` alternation so the router classifies a catalog miss
+    // as non-retryable and bails cleanly instead of retrying/misclassifying it as
+    // a transient provider_unavailable failure.
+    throw new Error(`pi model not found: ${provider}:${resolved.model}`);
+  }
   return {
     model,
     capabilities: {

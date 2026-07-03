@@ -593,9 +593,10 @@ describe("pi MCP tool helpers", () => {
     const result = await readSkill.execute("read_skill:pi", { name: "research" });
     expect(result.content[0].text).toContain("pi-shape body.");
     expect(result.content[0].text).not.toContain("name: research");
-    // The note points at the skill's own directory and the derived (one-up) root.
+    // The note points at the skill's own directory (the derived one-up root is
+    // a prefix of this path, so asserting on it separately would be a weaker
+    // duplicate of this check).
     expect(result.content[0].text).toContain(join(root, "skills", "research"));
-    expect(result.content[0].text).toContain(join(root, "skills"));
   });
 
   it("read_skill accepts a flat <root>/<name>.md filePath (pi loadSkills flat form)", async () => {

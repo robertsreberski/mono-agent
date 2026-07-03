@@ -99,6 +99,7 @@
   "types": "./types/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.types.json",
+    "prepack": "pnpm run build",
     "test": "vitest run --passWithNoTests"
   },
   "files": [

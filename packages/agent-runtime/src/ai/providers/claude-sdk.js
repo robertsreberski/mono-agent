@@ -267,18 +267,25 @@ function claudeToolResponseBlocks(toolResponse) {
   }
 }
 
-// Resolve the tool_result byte cap, precedence:
+// Resolve the tool_result byte cap. Precedence is PER-GROUP (MIGRATION.md §8):
 //   explicit options.toolPayloadMaxBytes
-//   -> typed options.toolLimits.toolPayloadMaxBytes
-//   -> DEPRECATED options.settings.agent_tool_payload_max_bytes (usedSettings)
+//   -> typed options.toolLimits — when this group is PRESENT it wins wholesale:
+//      its toolPayloadMaxBytes is used if valid, otherwise the default; the
+//      DEPRECATED settings fallback below is never consulted for this group,
+//      even if toolLimits.toolPayloadMaxBytes itself is absent/invalid.
+//   -> DEPRECATED options.settings.agent_tool_payload_max_bytes (usedSettings),
+//      only consulted when options.toolLimits is entirely absent.
 //   -> MAX_TOOL_RESULT_BYTES default.
 // `usedSettings` lets the caller emit one deprecation warning per run when the
 // legacy settings fallback was actually consumed.
 export function toolPayloadLimit(options) {
   const explicit = Number(options.toolPayloadMaxBytes);
   if (Number.isFinite(explicit) && explicit > 0) return { bytes: Math.floor(explicit), usedSettings: false };
-  const typed = Number(options.toolLimits?.toolPayloadMaxBytes);
-  if (Number.isFinite(typed) && typed > 0) return { bytes: Math.floor(typed), usedSettings: false };
+  if (options.toolLimits) {
+    const typed = Number(options.toolLimits.toolPayloadMaxBytes);
+    if (Number.isFinite(typed) && typed > 0) return { bytes: Math.floor(typed), usedSettings: false };
+    return { bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false };
+  }
   const configured = Number(options.settings?.agent_tool_payload_max_bytes);
   if (Number.isFinite(configured) && configured > 0) return { bytes: Math.floor(configured), usedSettings: true };
   return { bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false };

@@ -21,7 +21,7 @@
 //   AP7  harness.appendMessage() loop            (seeding)              → guard
 //   AP8  session.getLeafId()                     (resume baseline)      → guard
 //   AP9  discardUncommittedSession()             (pre-run abort guard)  → THE guard funnel
-//   AP10 runProactiveCompaction()                (proactive)            → guard
+//   AP10 runProactiveCompaction()                (proactive)            → commitSession rollback/drop
 //   AP11 harness.prompt()/waitForIdle()          (the provider request) → commitSession rollback/drop
 //   AP12 liveInput.stop()                        (teardown)             → commitSession rollback/drop
 //   AP13 captureState → session.buildContext()   (state capture)        → commitSession rollback/drop
@@ -32,13 +32,17 @@
 //   AP18 closePiMcpClients() (finally)           (MCP teardown)         → always runs
 //
 // The abort HANDLER is installed only at buildTurnHarness (after AP1-AP5), so an
-// abort dispatched during any PRE-prompt await (AP1-AP10) is not observed until
-// the pre-run guard (AP9) — that guard is the single funnel for the whole
-// pre-prompt region, which is why the sweep drives it via a read-tripped signal
-// rather than trying to land inside each internal pi await (those repos/harness
-// awaits are pi-owned; instrumenting them would require a production hook, which
-// this sweep deliberately avoids — it uses only the abort signal + faux provider
-// + onEvent, the same test-side seams the acceptance suite uses).
+// abort dispatched during any PRE-prompt await up through AP8 is not observed
+// until the pre-run guard (AP9) — that guard is the single funnel for AP1-AP8,
+// which is why the sweep drives it via a read-tripped signal rather than trying
+// to land inside each internal pi await (those repos/harness awaits are
+// pi-owned; instrumenting them would require a production hook, which this
+// sweep deliberately avoids — it uses only the abort signal + faux provider +
+// onEvent, the same test-side seams the acceptance suite uses). AP10 runs
+// AFTER that guard checkpoint has already passed, with the abort handler
+// already live, so an abort landing there is handled the same way as AP11
+// (real handler-driven abort) and collapses into the commitSession
+// rollback/drop funnel, not the AP9 guard.
 
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -245,7 +249,7 @@ describe("pi-native abort sweep — entry (OP0, before any session work)", () =>
   });
 });
 
-describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP10)", () => {
+describe("pi-native abort sweep — pre-run guard (AP9, funnels AP1-AP8)", () => {
   // The signal reads false at the entry check (OP0, read #1) and true at the
   // pre-run guard (read #2) — modeling an abort that fired during any pre-prompt
   // await, observed at the single guard funnel.

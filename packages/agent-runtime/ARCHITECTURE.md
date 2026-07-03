@@ -144,7 +144,8 @@ flowchart TB
   Providers --> Codex["codex-app.js"]
 
   AgentExports --> Tools["agent/tools/*"]
-  Tools --> ToolRuntime["shared/runtime-context.js<br/>workspace, repoRoot, rg, brand"]
+  Tools --> ToolContext["shared/tool-context.js<br/>per-instance ToolContext<br/>workspace, repoRoot, rg, sandbox, brand"]
+  ToolContext --> ToolRuntime["shared/runtime-context.js<br/>back-compat DEFAULT context<br/>(module-level singleton wrapping tool-context.js)"]
   Tools --> PiBridge["tools/pi-bridge.js<br/>built-ins + MCP adaptation"]
 
   AgentExports --> Compaction["agent/compaction.js"]
@@ -160,8 +161,9 @@ flowchart TB
 
 Key responsibilities by subsystem:
 
-- `runtime.js`: binds host callbacks once, configures tool runtime context, and
-  routes each call to the resolved bridge.
+- `runtime.js`: binds host callbacks once, builds a per-instance `ToolContext`
+  (`agent/tools/shared/tool-context.js`) threaded to every bridge call via
+  `options.toolContext`, and routes each call to the resolved bridge.
 - `ai/runtime/registry.js`: maps model reference plus execution mode to one of
   the built-in provider bridges.
 - `ai/runtime/router.js`: retries across an ordered fallback chain on retryable
@@ -177,12 +179,17 @@ Key responsibilities by subsystem:
   before; a policy configured with no implementation injected → fails closed).
   Real hosts inject `@mono-agent/sandbox`'s implementation via
   `@mono-agent/runtime-adapter`.
-- `agent/compaction.js`: two pure helpers consumed by the pi bridge —
+- `agent/compaction.js`: pure helpers consumed by the pi bridge —
   `resolveAgentCompactionPolicy` (derives the context-window compaction trigger +
   tool-output payload limits from `agent_compaction_*` settings and the running
-  model) and `isLikelyContextTermination` (classifies a context-pressure error).
-  The bridge drives compaction itself via `AgentHarness.compact()` (proactive +
-  reactive recovery); the legacy in-loop `transformContext` manager was removed.
+  model), `estimateFixedOverheadTokens` (the proactive fixed-overhead correction:
+  system prompt + tool schemas + per-turn message), `isLikelyContextTermination`
+  (classifies a context-pressure error), and the typed-policy/`settings`-bag shim
+  helpers (`resolveRuntimePolicyInputs`, `deprecatedSettingsWarning`) that let a
+  present `toolLimits`/`compaction` object win wholesale per-group over the
+  deprecated flat `settings` bag (MIGRATION.md §8). The bridge drives compaction
+  itself via `AgentHarness.compact()` (proactive + reactive recovery); the legacy
+  in-loop `transformContext` manager was removed.
 - `agent/transcript.js`: builds bounded resume snapshots from prior provider
   events so a fallback or continuation can keep context.
 - `agent/approval.js`: provides host-driven human-in-the-loop tool approval
@@ -219,8 +226,9 @@ The host is responsible for:
 - resolving credentials and custom provider/model rows before provider calls
 - choosing model references, execution mode, effort, fallback chains, and
   runtime settings
-- persisting artifacts, raw logs, run rows, and UI-facing state (the legacy
-  compaction-row hook is inert on the current pi bridge)
+- persisting artifacts, raw logs, run rows, and UI-facing state (via the
+  `onCompactionRecorded` hook, which fires on every automatic compaction —
+  proactive or reactive — the pi bridge drives)
 - validating structured output against the host's domain contract
 - converting runtime failures into product workflow behavior
 - deciding when to retry, recover, continue, cancel, or ask for user input
@@ -247,10 +255,13 @@ provider exposes queue-after-turn), not durability/cost:
 
 The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
 bridge was removed once native reached parity); it owns the session and
-pi-ai-managed retry, and context/window handling is delegated to the harness.
-There is **no** automatic in-loop summarization pass driven by this package, so
-runs report `context_compaction_applied: null` (unknown/unsupported) rather than
-asserting compaction ran.
+pi-ai-managed retry. `AgentHarness` itself has **no** automatic compaction, so
+the pi bridge drives it directly: before each turn it estimates the running
+model's context usage and calls `AgentHarness.compact()` when near the window
+(proactive), and if a turn still overflows it compacts once and re-prompts
+(reactive recovery). Runs report `context_compaction_applied` as `true` (a
+compaction fired), `false` (enabled but not needed), or `null` (disabled via
+`agent_compaction_enabled: false`).
 
 | Provider | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|

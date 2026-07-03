@@ -122,7 +122,7 @@
  * @property {Object} [outputSchema]
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
- * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, runtime-context.js).
+ * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
  * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
@@ -264,7 +264,7 @@
  * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
- * @property {(parsed: {sdk: (string|null), provider?: string, model: string}) => (Object|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
+ * @property {(parsed: {sdk: (string|null), provider?: string, model: string}) => (import('./cost.js').NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
  * @property {(provider: string) => Promise<string|undefined>} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact]
  * @property {(record: CompactionRecordedPayload) => void} [onCompactionRecorded]

@@ -67,7 +67,13 @@ export const FAILURE_KINDS = [
 ];
 
 const USAGE_LIMIT_RE = /(rate limit|usage limit|max tokens|max turns|context length|too many tokens)/i;
-const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket)/i;
+// Mirrors the conservative connection-error/refused/failed alternation added to
+// RETRYABLE_PROVIDER_RE / retryableProviderSubkind below for pi 0.80's terse
+// "Connection error." — without it, classifyFailure (used directly by hosts
+// like worklab's coordinator, independent of retryableProviderFailureInfo) maps
+// that same terse text to the generic "spawn" kind instead of
+// "provider_unavailable".
+const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket|\bconnection (?:error|refused|failed)\b|\bcould not connect\b)/i;
 const TOOL_FAILURE_RE = /(tool .* failed|mcp tool|permission denied|EACCES|read-only file system)/i;
 const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|invalid api key|incorrect api key|authentication|authorization|not authorized|forbidden|billing|insufficient[_ ]quota|quota exceeded|model[_ ]not[_ ]found|unsupported model|permission denied|bad request|401|403|404)/i;
 // pi 0.80's openai-client-style bridge collapses a connection-refused/unreachable

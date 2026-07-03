@@ -1,6 +1,9 @@
-// Precedence for the Claude SDK tool_result byte cap:
+// Precedence for the Claude SDK tool_result byte cap is PER-GROUP
+// (MIGRATION.md §8): a present typed `toolLimits` object wins wholesale for
+// its group, so the legacy `settings.agent_tool_payload_max_bytes` key is
+// only ever consulted when `toolLimits` is entirely absent.
 //   explicit options.toolPayloadMaxBytes
-//   -> typed options.toolLimits.toolPayloadMaxBytes
+//   -> typed options.toolLimits (present -> group wins wholesale, settings ignored)
 //   -> DEPRECATED options.settings.agent_tool_payload_max_bytes (usedSettings)
 //   -> MAX_TOOL_RESULT_BYTES default.
 
@@ -28,8 +31,16 @@ describe("claude-sdk toolPayloadLimit precedence", () => {
     expect(toolPayloadLimit({})).toEqual({ bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false });
   });
 
-  it("ignores non-positive / non-finite values and continues down the chain", () => {
+  it("ignores a non-positive/non-finite typed value but does NOT fall through to settings (per-group precedence)", () => {
     expect(toolPayloadLimit({ toolPayloadMaxBytes: 0, toolLimits: { toolPayloadMaxBytes: -5 }, settings: { agent_tool_payload_max_bytes: 1024 } }))
-      .toEqual({ bytes: 1024, usedSettings: true });
+      .toEqual({ bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false });
+  });
+
+  // A present toolLimits group wins WHOLESALE even when it doesn't carry
+  // toolPayloadMaxBytes at all: the settings fallback (and its deprecation
+  // warning, gated on usedSettings in claude-sdk.js) must never fire.
+  it("ignores settings.agent_tool_payload_max_bytes when toolLimits is present but lacks toolPayloadMaxBytes (no deprecated_settings_option warning)", () => {
+    expect(toolPayloadLimit({ toolLimits: { toolTextLimitChars: 500 }, settings: { agent_tool_payload_max_bytes: 999 } }))
+      .toEqual({ bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false });
   });
 });
