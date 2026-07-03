@@ -88,14 +88,15 @@
 /**
  * @typedef {RuntimeRunOptions
  *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "persistArtifact" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
- *   & {runtimeBrand: import('../runtime-brand.js').RuntimeBrand, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
+ *   & {runtimeBrand: import('../runtime-brand.js').RuntimeBrand, toolContext?: import('../agent/tools/shared/tool-context.js').ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
  * } RuntimeRequest
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
  * second (options) argument: the host-supplied RuntimeRunOptions, merged by
  * createRuntime (runtime.js) with the bound HOST_KEYS host-integration
- * callbacks, the resolved runtimeBrand, and the per-run observerHub
- * (onEvent is overridden to the hub's emit). `systemPrompt` is passed
- * positionally, not folded into this object.
+ * callbacks, the resolved runtimeBrand, the per-instance toolContext (read by
+ * internal tool helpers; absent when a host drives a bridge directly without
+ * createRuntime), and the per-run observerHub (onEvent is overridden to the
+ * hub's emit). `systemPrompt` is passed positionally, not folded into this object.
  */
 
 /**

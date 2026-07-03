@@ -29,7 +29,7 @@
 import { resolveRuntimeBridge } from "./ai/runtime/registry.js";
 import { createObserverHub } from "./ai/observer.js";
 import { disposeAllProviderSessions, disposeProviderSession } from "./ai/runtime/sessions.js";
-import { configureToolRuntime } from "./agent/tools/shared/runtime-context.js";
+import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
 
 /**
@@ -82,10 +82,12 @@ export function createRuntime(host = {}) {
   const toolRuntime = pickDefined(host, TOOL_RUNTIME_KEYS);
   const runtimeBrand = resolveRuntimeBrand(host.runtimeBrand);
   const hostObservers = Array.isArray(host.observers) ? host.observers.slice() : [];
-  // Always configure: even when no tool keys are supplied, we must publish
-  // the resolved brand so internal modules (transcript, pi-bridge, ripgrep
-  // error message) pick it up.
-  configureToolRuntime({ ...toolRuntime, runtimeBrand });
+  // Per-instance tool context, built once and threaded to every bridge via
+  // `options.toolContext` (below). It replaces the former global side effect:
+  // two runtimes in one process now keep independent workspace/brand/sandbox
+  // config instead of clobbering a shared singleton. `configureTools` mutates
+  // THIS object so later runs of this instance observe the update.
+  const toolContext = createToolContext({ ...toolRuntime, runtimeBrand });
 
   return {
     /**
@@ -116,6 +118,7 @@ export function createRuntime(host = {}) {
         model: options.model,
         executionMode,
         runtimeBrand,
+        toolContext,
         observerHub: hub,
         onEvent: hub.emit,
       });
@@ -123,7 +126,7 @@ export function createRuntime(host = {}) {
       return result;
     },
     configureTools(next = {}) {
-      configureToolRuntime(pickDefined(next, TOOL_RUNTIME_KEYS));
+      updateToolContext(toolContext, pickDefined(next, TOOL_RUNTIME_KEYS));
     },
     async disposeSession(providerSessionId) {
       return disposeProviderSession(providerSessionId);

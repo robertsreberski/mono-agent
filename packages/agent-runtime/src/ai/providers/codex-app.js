@@ -579,7 +579,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   }
 
   async function initializeClient(nextClient) {
-    const brand = readRuntimeBrand();
+    const brand = options.toolContext?.runtimeBrand ?? readRuntimeBrand();
     await nextClient.request("initialize", {
       clientInfo: { name: brand.clientInfoName, title: brand.clientInfoTitle, version: "0" },
       capabilities: { experimentalApi: true },
@@ -807,7 +807,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         approvalPolicy: approvalPolicyForPermissionMode(options.permissionMode),
         sandbox: sandboxForPermissionMode(options.permissionMode),
         config,
-        serviceName: readRuntimeBrand().serviceName,
+        serviceName: (options.toolContext?.runtimeBrand ?? readRuntimeBrand()).serviceName,
         developerInstructions: systemPrompt,
         ephemeral: true,
         sessionStartSource: "startup",

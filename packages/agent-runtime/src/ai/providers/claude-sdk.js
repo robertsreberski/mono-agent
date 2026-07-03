@@ -711,7 +711,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
             if (failureKind === "invalid_result") {
               runtimeWarnings.push(makeRuntimeWarning(
                 resultError.message,
-                `${readRuntimeBrand().schemaPrefix}_result_validation`,
+                `${(options.toolContext?.runtimeBrand ?? readRuntimeBrand()).schemaPrefix}_result_validation`,
               ));
             }
             errorDetails = buildClaudeErrorDetails({

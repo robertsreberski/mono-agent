@@ -36,9 +36,9 @@ export async function grepToolImpl({
   max_matches,
   max_output_chars,
   workdir,
-}, { sandboxPolicy } = {}) {
-  const target = resolveToolPath(path || workspaceRoot(workdir), workdir);
-  if (!isPathAllowed(target, workdir, { sandboxPolicy })) return `Error: Path not allowed: ${target}`;
+}, { sandboxPolicy, ctx } = {}) {
+  const target = resolveToolPath(path || workspaceRoot(workdir, ctx), workdir, ctx);
+  if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${target}`;
   const stat = safeStat(target);
   if (!stat) return `Error: Path not found: ${target}`;
   const cwd = stat.isDirectory() ? target : dirname(target);
@@ -55,8 +55,8 @@ export async function grepToolImpl({
   if (type) args.push("--type", type);
   args.push(...excludedGlobArgs(), "--", pattern, searchTarget);
   const resultLimit = boundedInt(head_limit ?? max_matches, DEFAULT_MAX_SEARCH_LINES, { min: 1, max: 1000 });
-  const rgPath = resolveRgPath();
-  if (!rgPath) return ripgrepMissingMessage();
+  const rgPath = resolveRgPath({ ctx });
+  if (!rgPath) return ripgrepMissingMessage(ctx);
   try {
     const { stdout } = await execFileAsync(rgPath, args, { cwd, timeout: 15000, maxBuffer: SEARCH_MAX_BUFFER });
     const normalized = stdout.trim().split("\n").filter(Boolean).map((line) => line.replace(/^\.\//, ""));
@@ -66,6 +66,7 @@ export async function grepToolImpl({
       maxLines: resultLimit,
       maxChars: Number(max_output_chars) || DEFAULT_MAX_SEARCH_CHARS,
       offset,
+      ctx,
     });
     return formatted === "No matches found." ? formatted : `${formatted}\n\n${excludedPathSummary()}`;
   } catch (err) {
@@ -77,6 +78,7 @@ export async function grepToolImpl({
         maxLines: resultLimit,
         maxChars: Number(max_output_chars) || DEFAULT_MAX_SEARCH_CHARS,
         offset,
+        ctx,
       })}\n\n${excludedPathSummary()}`;
     }
     return `Error: ${err.message}`;

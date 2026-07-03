@@ -33,6 +33,7 @@ import { createRuntime } from "../../runtime.js";
 import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "./capabilities.js";
 import { buildTranscriptTailSnapshot, renderResumeSnapshot } from "../../agent/transcript.js";
+import { resolveRuntimeBrand } from "../../runtime-brand.js";
 
 /**
  * @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef
@@ -70,6 +71,11 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
     throw new Error("createRouterRuntime requires a non-empty chain");
   }
   const inner = createRuntime(host);
+  // The router builds transcript-tail snapshots outside the inner runtime's
+  // bridge call (which is where the per-instance toolContext lives), so resolve
+  // the host brand here to stamp the snapshot schema id with the same brand the
+  // inner runtime uses — createRuntime no longer publishes it to a process global.
+  const runtimeBrand = resolveRuntimeBrand(host.runtimeBrand);
 
   return {
     /**
@@ -179,7 +185,7 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
         // Build a transcript-tail snapshot from this run's events so the
         // next provider can continue. If the run produced no usable events,
         // skip the snapshot (the next attempt starts fresh).
-        const snapshot = buildTranscriptTailSnapshot(result.events);
+        const snapshot = buildTranscriptTailSnapshot(result.events, { runtimeBrand });
         if (snapshot) resumeSnapshot = snapshot;
       }
 

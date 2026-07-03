@@ -1,7 +1,8 @@
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./shared/constants.js";
 import { capChars } from "./shared/output-truncation.js";
 import { networkPolicyAllowsUrl } from "@mono-agent/sandbox";
-import { resolveSandboxPolicy } from "./shared/runtime-context.js";
+import { readToolRuntime } from "./shared/runtime-context.js";
+import { resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_REDIRECTS = 5;
@@ -23,7 +24,7 @@ function fetchRetryDelay(ms) {
 
 export async function webFetchToolImpl(
   { url, headers = {}, max_output_chars },
-  { sandboxPolicy, retryDelaysMs = DEFAULT_FETCH_RETRY_DELAYS_MS } = {},
+  { sandboxPolicy, ctx, retryDelaysMs = DEFAULT_FETCH_RETRY_DELAYS_MS } = {},
 ) {
   const maxChars = Number(max_output_chars) || DEFAULT_MAX_TOOL_OUTPUT_CHARS;
   let parsed;
@@ -31,7 +32,7 @@ export async function webFetchToolImpl(
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return "Error: WebFetch only supports http(s) URLs.";
   }
-  const policy = resolveSandboxPolicy(sandboxPolicy);
+  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy);
   if (!networkPolicyAllowsUrl(policy, parsed.href)) return "Error: Network access denied by sandbox policy.";
   const requestHeaders = { "User-Agent": "AgentRuntime/0.1", ...headers };
   const restricted = policy !== undefined && policy.network.mode !== "all";
@@ -53,7 +54,7 @@ export async function webFetchToolImpl(
       }
       const text = await resp.text();
       if (!resp.ok) return `HTTP ${resp.status}: ${text.slice(0, 500)}`;
-      return capChars(text, { label: "WebFetch", maxChars });
+      return capChars(text, { label: "WebFetch", maxChars, ctx });
     } catch (err) {
       lastErrorMessage = err.message;
       if (isTransientFetchError(err) && attempt < maxRetries) {

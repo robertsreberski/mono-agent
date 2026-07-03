@@ -28,7 +28,8 @@ import { formatSkillBodyWithPathNote } from "../prompt/skill-index.js";
 import { MAX_TOOL_RESULT_BYTES, summarisePayload, wrapToolsWithBloatGuard } from "../tool-bloat.js";
 import { wrapToolsWithApprovalGate } from "../approval.js";
 import { isInsidePath } from "./shared/path-resolver.js";
-import { readRuntimeBrand, readToolRuntime, resolveSandboxPolicy } from "./shared/runtime-context.js";
+import { readToolRuntime } from "./shared/runtime-context.js";
+import { resolveSandboxPolicy } from "./shared/tool-context.js";
 
 function textResult(text, details = {}) {
   return {
@@ -89,28 +90,28 @@ function artifactFilename(filename, outputDir) {
   return target;
 }
 
-export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutputDir } = {}) {
+export function normalizeMcpToolParams(_serverName, toolName, params, { qaOutputDir, ctx } = {}) {
   if (!params || typeof params !== "object" || Array.isArray(params)) return params;
   if (!PLAYWRIGHT_FILENAME_TOOLS.has(toolName) || !params.filename || isAbsolute(String(params.filename))) return params;
-  const dir = qaOutputDir ?? readToolRuntime().qaOutputDir;
+  const dir = qaOutputDir ?? (ctx ?? readToolRuntime()).qaOutputDir;
   return {
     ...params,
     filename: artifactFilename(params.filename, dir),
   };
 }
 
-function normalizeWorkdir(value, cwd) {
-  const base = resolve(cwd || readToolRuntime().workspace || process.cwd());
+function normalizeWorkdir(value, cwd, ctx) {
+  const base = resolve(cwd || (ctx ?? readToolRuntime()).workspace || process.cwd());
   const resolved = value ? resolve(absolutizePath(value, base)) : base;
   return isInsidePath(base, resolved) ? resolved : base;
 }
 
-function withAbsolutePaths(name, params, cwd) {
+function withAbsolutePaths(name, params, cwd, ctx) {
   const next = { ...(params || {}) };
   if (["Read", "Write", "Edit"].includes(name)) next.file_path = absolutizePath(next.file_path, cwd);
   if (["Glob", "Grep"].includes(name)) next.path = absolutizePath(next.path, cwd);
   if (["Read", "Write", "Edit", "Glob", "Grep", "Bash"].includes(name)) {
-    next.workdir = normalizeWorkdir(next.workdir, cwd);
+    next.workdir = normalizeWorkdir(next.workdir, cwd, ctx);
   }
   return next;
 }
@@ -197,8 +198,8 @@ function withToolLimits(name, params, limits = {}) {
   return next;
 }
 
-export function normalizePiBuiltinToolParams(name, params, { cwd, toolLimits } = {}) {
-  return withToolLimits(name, withAbsolutePaths(name, params, cwd), toolLimits);
+export function normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx } = {}) {
+  return withToolLimits(name, withAbsolutePaths(name, params, cwd, ctx), toolLimits);
 }
 
 function integerSchema() {
@@ -225,7 +226,7 @@ function isReadOnlyShellCommand(command) {
   ].some((pattern) => pattern.test(text));
 }
 
-function createBuiltinTool(name, label, description, parameters, execute, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine } = {}) {
+function createBuiltinTool(name, label, description, parameters, execute, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine, ctx } = {}) {
   return {
     name,
     label,
@@ -234,7 +235,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
     executionMode: name === "Write" || name === "Edit" || name === "Bash" ? "sequential" : undefined,
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
-      const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits });
+      const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx });
       if (name === "Bash" && toolPolicy?.bashReadOnly && !isReadOnlyShellCommand(normalized.command)) {
         throw new Error("Error: Planning shell policy allows only read-only inspection commands.");
       }
@@ -256,7 +257,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
         }));
       }
 
-      const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine });
+      const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine, ctx });
       // Image reads (e.g. Read on a .png) come back as a structured image
       // result so vision models see pixels; emit an image content block and let
       // the shared bloat guard cap oversize payloads.
@@ -353,6 +354,7 @@ export function getPiBuiltinTools(allowedTools, {
   sandboxEngine = null,
   approvalManager = null,
   approvalModel = null,
+  ctx = null,
 } = {}) {
   const textLimitSchema = integerSchema();
   const bashLimitSchema = integerSchema();
@@ -360,7 +362,9 @@ export function getPiBuiltinTools(allowedTools, {
     type: "integer",
     description: "Timeout in milliseconds. Use 30000 for 30 seconds; small values like 30 are treated as seconds for compatibility.",
   };
-  const toolContext = { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine };
+  // Per-tool closure config (cwd/event sink/limits/policy) plus the per-instance
+  // ToolContext `ctx` that the tool impls and shared helpers read from.
+  const toolContext = { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine, ctx };
   const all = {
     Read: createBuiltinTool("Read", "Read", "Read a local file. Text files return line-numbered content; image files (PNG, JPEG, GIF, WebP, BMP) are returned as a viewable image you can see directly — use this to look at image attachments.", objectSchema({
       file_path: { type: "string" },
@@ -440,9 +444,9 @@ export function resolveMcpStdioCwd(cfg = {}, cwd = null) {
   return cwd || process.cwd();
 }
 
-export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null } = {}) {
+export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPolicy = null, sandboxEngine = null, ctx = null } = {}) {
   return prepareSandboxedCommand({
-    policy: resolveSandboxPolicy(sandboxPolicy),
+    policy: resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy),
     engine: sandboxEngine ?? undefined,
     command: {
       command: cfg.command,
@@ -453,8 +457,8 @@ export async function prepareMcpStdioCommand(cfg = {}, { cwd = null, sandboxPoli
   });
 }
 
-async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine } = {}) {
-  const brand = readRuntimeBrand();
+async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx } = {}) {
+  const brand = (ctx ?? readToolRuntime()).runtimeBrand;
   const client = new McpClient(
     { name: `${brand.mcpClientName}/${name}`, version: brand.mcpClientVersion },
     { capabilities: {} },
@@ -468,7 +472,7 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine }
       requestInit: { headers: cfg.headers || {} },
     });
   } else {
-    const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine });
+    const prepared = await prepareMcpStdioCommand(cfg, { cwd, sandboxPolicy, sandboxEngine, ctx });
     transport = new StdioClientTransport({
       command: prepared.command,
       args: prepared.args || [],
@@ -578,11 +582,12 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
   sandboxPolicy = null,
   sandboxEngine = null,
   onToolProgress = null,
+  ctx = null,
 } = {}) {
   const clients = [];
   const tools = [];
   const entries = Object.entries(mcpConfig || {});
-  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine })));
+  const settled = await Promise.allSettled(entries.map(([name, cfg]) => connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, ctx })));
   const warnings = [];
   const seen = new Set(reservedNames);
 
@@ -639,7 +644,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           if (signal?.aborted) throw new Error("tool execution aborted");
           const textLimit = limits.mcpTextLimitChars || MCP_TEXT_RESULT_LIMIT;
           const imageInlineMaxBytes = limits.imageInlineMaxBytes ?? MCP_IMAGE_INLINE_MAX_BYTES;
-          const normalizedParams = normalizeMcpToolParams(serverName, sourceTool.name, params || {}, { qaOutputDir });
+          const normalizedParams = normalizeMcpToolParams(serverName, sourceTool.name, params || {}, { qaOutputDir, ctx });
           // Measure the MCP round-trip so observability can separate slow MCP
           // servers (e.g. context-example over a SOCKS proxy) from model latency.
           const mcpCallStartMs = Date.now();

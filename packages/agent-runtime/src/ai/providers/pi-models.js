@@ -24,8 +24,8 @@ function openAiCompatBaseUrl(provider) {
   return /\/v\d+$/.test(baseUrl) ? baseUrl : `${baseUrl}/v1`;
 }
 
-function customProviderName(provider) {
-  return `${readRuntimeBrand().providerModelPrefix}-${provider.id}`;
+function customProviderName(provider, brand) {
+  return `${(brand ?? readRuntimeBrand()).providerModelPrefix}-${provider.id}`;
 }
 
 function customProviderKey(provider, isPrivate) {
@@ -68,7 +68,7 @@ function resolveCustomPiModel(resolved, options) {
   const isPrivate = typeof options.isPrivateProvider === "boolean"
     ? options.isPrivateProvider
     : false;
-  const providerName = customProviderName(provider);
+  const providerName = customProviderName(provider, options.toolContext?.runtimeBrand);
   const pricing = modelRow?.pricing || {};
   return {
     model: {

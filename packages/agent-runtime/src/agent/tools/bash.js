@@ -8,7 +8,8 @@ import {
   isWorkdirAllowed,
   workspaceRoot,
 } from "./shared/path-resolver.js";
-import { resolveSandboxPolicy } from "./shared/runtime-context.js";
+import { readToolRuntime } from "./shared/runtime-context.js";
+import { resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_BASH_TIMEOUT_MS = 120000;
 const BASH_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
@@ -112,11 +113,11 @@ function runCommand(commandSpec, { timeoutMs, signal, maxBufferBytes = BASH_MAX_
   });
 }
 
-export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS, max_output_chars, workdir }, { signal, sandboxPolicy, sandboxEngine } = {}) {
-  const policy = resolveSandboxPolicy(sandboxPolicy);
-  const pathOptions = { sandboxPolicy: policy };
+export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS, max_output_chars, workdir }, { signal, sandboxPolicy, sandboxEngine, ctx } = {}) {
+  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), sandboxPolicy);
+  const pathOptions = { sandboxPolicy: policy, ctx };
   if (workdir && !isWorkdirAllowed(workdir, pathOptions)) return `Error: Working directory not allowed: ${workdir}`;
-  const cwd = workspaceRoot(workdir);
+  const cwd = workspaceRoot(workdir, ctx);
   if (!isPathAllowed(cwd, workdir, pathOptions)) return `Error: Working directory not allowed: ${cwd}`;
   if (!existsSync(cwd)) return `Error: Working directory not found: ${cwd}`;
   const maxChars = Number(max_output_chars) || DEFAULT_MAX_BASH_OUTPUT_CHARS;
@@ -146,11 +147,12 @@ export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS,
       label: "Bash",
       maxChars,
       strategy: "head_tail",
+      ctx,
     });
   }
   if (result.signal) return `Exit code 1:\nCommand terminated by ${result.signal}`;
   const output = result.stdout && result.stderr
     ? `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`
     : (result.stdout || result.stderr || "(no output)");
-  return capChars(output, { label: "Bash", maxChars, strategy: "head_tail" });
+  return capChars(output, { label: "Bash", maxChars, strategy: "head_tail", ctx });
 }

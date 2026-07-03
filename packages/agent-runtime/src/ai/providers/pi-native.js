@@ -793,6 +793,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         sandboxEngine: options.sandboxEngine,
         approvalManager,
         approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
+        ctx: options.toolContext,
       });
 
     const structuredTool = createStructuredOutputTool(options.outputSchema, (value) => {
@@ -813,6 +814,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
         sandboxPolicy: options.sandboxPolicy,
         sandboxEngine: options.sandboxEngine,
+        ctx: options.toolContext,
       });
     mcpClients = mcpInit.clients;
     // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
