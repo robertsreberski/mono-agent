@@ -272,6 +272,46 @@ export interface RecordedRunTimelineItem extends RecordedRunEvent {
   readonly sourceEventCount: number;
   readonly sourceEventStartIndex: number;
   readonly sourceEventEndIndex: number;
+  /**
+   * Total character count of the coalesced group's joined thinking/text block
+   * text, captured BEFORE {@link SUMMARY_MAX_CHARS} summary compaction — so
+   * consumers that need the real content volume (e.g. turn thinking stats)
+   * aren't limited by the display-oriented summary cap. Set for coalesced
+   * thinking/text groups (`sourceEventCount > 1`); left undefined for
+   * single-event items and for groups without a joinable text (e.g. tool
+   * events, which are never coalesced).
+   */
+  readonly contentChars?: number;
+  /**
+   * The group's last source event's (normalized ISO) timestamp. Single-event
+   * items reuse their own `timestamp`. Undefined when no source event in the
+   * group carried a timestamp (e.g. artifacts recorded before the recorder
+   * began stamping events).
+   */
+  readonly endTimestamp?: string;
+}
+
+/**
+ * One agent-loop turn within a single recorded run's timeline: one recorded
+ * run corresponds to one user request, and each turn is the work the agent
+ * did before/after a round-trip through a tool. Turn 0 starts at the first
+ * timeline item; a new turn starts at the item immediately AFTER each
+ * user `tool_result` item (see {@link segmentTimelineTurns}).
+ */
+export interface TimelineTurn {
+  readonly turnIndex: number;
+  /** Inclusive start index into the `items` array passed to `segmentTimelineTurns`. */
+  readonly startItemIndex: number;
+  /** Inclusive end index into the `items` array passed to `segmentTimelineTurns`. */
+  readonly endItemIndex: number;
+  /** First item-with-timestamp's timestamp in the turn; undefined when none carried one. */
+  readonly startedAt?: string;
+  /** `durationMs` = last item's `endTimestamp`/`timestamp` minus `startedAt`, when both parse. */
+  readonly durationMs?: number;
+  /** Sum of `contentChars` over the turn's `"thinking"`-category items. */
+  readonly thinkingChars: number;
+  /** Count of the turn's assistant `tool_use` items (category `"tool"`, type `"assistant"`). */
+  readonly toolCalls: number;
 }
 
 export interface RecordedRunDetail {

@@ -12,6 +12,7 @@ function event(input: {
   readonly summary: string;
   readonly payload: unknown;
   readonly type?: string;
+  readonly timestamp?: string;
 }): RecordedRunEvent {
   return {
     index: input.index,
@@ -20,6 +21,7 @@ function event(input: {
     summary: input.summary,
     payload: input.payload,
     ...(input.type === undefined ? {} : { type: input.type }),
+    ...(input.timestamp === undefined ? {} : { timestamp: input.timestamp }),
   };
 }
 
@@ -234,5 +236,89 @@ describe("combineRecordedRunEvents", () => {
       sourceEventEndIndex: 1,
     });
     expect(JSON.stringify(combined?.payload)).not.toContain("rawEvents");
+  });
+
+  it("captures contentChars (pre-compaction joined text length) and endTimestamp for a coalesced thinking group", () => {
+    const chunkTexts = ["I should", " inspect", " files."];
+    const events: readonly RecordedRunEvent[] = chunkTexts.map((text, index) =>
+      event({
+        index,
+        type: "assistant",
+        category: "thinking",
+        label: "assistant",
+        summary: text,
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: text }] } },
+        timestamp: `2026-07-01T00:00:0${index}.000Z`,
+      }),
+    );
+
+    const [combined] = combineRecordedRunEvents(events);
+
+    expect(combined?.contentChars).toBe(chunkTexts.join("").length);
+    expect(combined?.timestamp).toBe("2026-07-01T00:00:00.000Z");
+    expect(combined?.endTimestamp).toBe("2026-07-01T00:00:02.000Z");
+  });
+
+  it("leaves contentChars/endTimestamp computed but timestamp-free when source events carry no timestamps", () => {
+    const events: readonly RecordedRunEvent[] = [
+      event({
+        index: 0,
+        type: "assistant",
+        category: "thinking",
+        label: "assistant",
+        summary: "a",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: "a" }] } },
+      }),
+      event({
+        index: 1,
+        type: "assistant",
+        category: "thinking",
+        label: "assistant",
+        summary: "b",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: "b" }] } },
+      }),
+    ];
+
+    const [combined] = combineRecordedRunEvents(events);
+
+    expect(combined?.contentChars).toBe(2);
+    expect(combined?.timestamp).toBeUndefined();
+    expect(combined?.endTimestamp).toBeUndefined();
+  });
+
+  it("leaves contentChars undefined for single-event items but reuses their own timestamp as endTimestamp", () => {
+    const events: readonly RecordedRunEvent[] = [
+      event({
+        index: 0,
+        type: "tool.call",
+        category: "tool",
+        label: "Tool: Read",
+        summary: "Read - started",
+        payload: { type: "tool.call", toolName: "Read", status: "started" },
+        timestamp: "2026-07-01T00:00:00.000Z",
+      }),
+    ];
+
+    const [item] = combineRecordedRunEvents(events);
+
+    expect(item?.contentChars).toBeUndefined();
+    expect(item?.endTimestamp).toBe("2026-07-01T00:00:00.000Z");
+  });
+
+  it("leaves endTimestamp undefined for a single-event item with no source timestamp", () => {
+    const events: readonly RecordedRunEvent[] = [
+      event({
+        index: 0,
+        type: "tool.call",
+        category: "tool",
+        label: "Tool: Read",
+        summary: "Read - started",
+        payload: { type: "tool.call", toolName: "Read", status: "started" },
+      }),
+    ];
+
+    const [item] = combineRecordedRunEvents(events);
+
+    expect(item?.endTimestamp).toBeUndefined();
   });
 });

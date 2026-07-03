@@ -112,6 +112,47 @@ describe("nested tool blocks classify as category \"tool\"", () => {
       classifyRecordedRunEvent({ type: "user", message: { content: [{ type: "text", text: "hi" }] } }),
     ).toBe("message");
   });
+
+  it("extracts joined readable text from an array-of-text tool_result content (real Pi-runtime shape)", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            content: [
+              { type: "text", text: "line one\n" },
+              { type: "text", text: "line two" },
+            ],
+          },
+        ],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool result");
+    expect(descriptors.summary).toBe("line one line two");
+  });
+
+  it("falls back to JSON when array tool_result content mixes text with non-text blocks", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            content: [
+              { type: "text", text: "line one" },
+              { type: "image", source: { data: "abc" } },
+            ],
+          },
+        ],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.summary).toContain('"type":"image"');
+  });
 });
 
 describe("buildEventDescriptors (raw RuntimeEventLike -> descriptors)", () => {

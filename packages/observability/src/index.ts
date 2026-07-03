@@ -17,6 +17,9 @@ export {
   combineRecordedRunEvents,
 } from "./event-timeline.js";
 export {
+  segmentTimelineTurns,
+} from "./turn-segmentation.js";
+export {
   buildEventSpanAttributes,
   buildRootSpanAttributes,
   countRuntimeWarnings,
@@ -106,6 +109,7 @@ export type {
   RuntimeEventLike,
   RuntimeResultLike,
   RegisterTraceSourceOptions,
+  TimelineTurn,
   TraceRunDetail,
   TraceRunListItem,
   TraceRunListOptions,

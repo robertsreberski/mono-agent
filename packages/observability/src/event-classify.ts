@@ -152,8 +152,12 @@ function firstToolUseBlock(event: Record<string, unknown>): Record<string, unkno
   return stringField(event, "type") === "assistant" ? findContentBlock(event.message, "tool_use") : undefined;
 }
 
-/** First `tool_result` content block on a `user` event's message, if any. */
-function firstToolResultBlock(event: Record<string, unknown>): Record<string, unknown> | undefined {
+/**
+ * First `tool_result` content block on a `user` event's message, if any.
+ * Exported so other modules (e.g. turn segmentation) can detect tool_result
+ * boundaries without re-implementing this block walk.
+ */
+export function firstToolResultBlock(event: Record<string, unknown>): Record<string, unknown> | undefined {
   return stringField(event, "type") === "user" ? findContentBlock(event.message, "tool_result") : undefined;
 }
 
@@ -170,10 +174,33 @@ function nestedToolBlockSummary(record: Record<string, unknown>): string | undef
   const toolResultBlock = firstToolResultBlock(record);
   if (toolResultBlock !== undefined) {
     const content = toolResultBlock.content;
-    const preview = typeof content === "string" ? content : JSON.stringify(content ?? "");
+    const preview = typeof content === "string"
+      ? content
+      : joinedTextIfAllTextBlocks(content) ?? JSON.stringify(content ?? "");
     return compactString(toolResultBlock.is_error === true ? `error: ${preview}` : preview);
   }
   return undefined;
+}
+
+/**
+ * The real Pi-runtime `tool_result.content` shape for text-only results is
+ * `[{type:"text",text:"..."}]` (possibly multiple blocks). Join their text when
+ * EVERY entry is a text block; return undefined (falling back to the flat JSON
+ * preview) when any entry isn't, since a partial join would silently drop
+ * non-text content instead of surfacing it.
+ */
+function joinedTextIfAllTextBlocks(content: unknown): string | undefined {
+  if (!Array.isArray(content) || content.length === 0) {
+    return undefined;
+  }
+  const texts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") {
+      return undefined;
+    }
+    texts.push(block.text);
+  }
+  return texts.join("");
 }
 
 export function textFromMessage(value: unknown): string | undefined {
