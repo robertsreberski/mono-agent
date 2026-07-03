@@ -1,3 +1,12 @@
+// @ts-check
+
+/**
+ * @typedef {Object} RetryableProviderFailureInfo
+ * @property {boolean} retryable
+ * @property {string|null} subkind
+ * @property {string|null} requestId
+ */
+
 export const FAILURE_KINDS = [
   "spawn",
   "timeout",
@@ -50,6 +59,13 @@ function retryableProviderSubkind(text) {
   return null;
 }
 
+/**
+ * @param {Object} [options]
+ * @param {string} [options.errorText]
+ * @param {string} [options.stderrTail]
+ * @param {string|null} [options.failureKind]
+ * @returns {RetryableProviderFailureInfo}
+ */
 export function retryableProviderFailureInfo({
   errorText = "",
   stderrTail = "",
@@ -80,6 +96,22 @@ export function retryableProviderFailureInfo({
 // errors) into one of FAILURE_KINDS. Every adapter / spawn-worker / watcher
 // path should funnel through this so the values in `task_runs.failure_kind`
 // stay coherent.
+/**
+ * @param {Object} [options]
+ * @param {number|null} [options.exitCode]
+ * @param {string|null} [options.signal]
+ * @param {string} [options.errorText]
+ * @param {string} [options.stderrTail]
+ * @param {boolean} [options.timedOut]
+ * @param {boolean} [options.cancelRequested]
+ * @param {string|null} [options.cancelInitiator]
+ * @param {boolean} [options.resultParseError]
+ * @param {boolean} [options.mcpInitFailed]
+ * @param {boolean} [options.budgetExceeded]
+ * @param {boolean} [options.childFailed]
+ * @param {string|null} [options.hint]
+ * @returns {string|null} One of FAILURE_KINDS, or null for a clean exit.
+ */
 export function classifyFailure({
   exitCode = null,
   signal = null,
@@ -133,6 +165,11 @@ export function classifyFailure({
 // of stderr; we only want the last few KB for diagnostics. Returns a string
 // guaranteed to be ≤ `limit` bytes, with a `[truncated …]` marker if anything
 // was dropped.
+/**
+ * @param {Object} [options]
+ * @param {number} [options.limit]
+ * @returns {{push: (chunk: (string|Buffer|null|undefined)) => void, toString: () => string, readonly bytesDropped: number}}
+ */
 export function createStderrTail({ limit = 8 * 1024 } = {}) {
   let buffer = "";
   let dropped = 0;

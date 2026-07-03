@@ -1,8 +1,15 @@
+// @ts-check
+
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import { getOAuthApiKey } from "@earendil-works/pi-ai/oauth";
 
+/**
+ * @param {Object} [options]
+ * @param {string} [options.path] Path to the pi auth.json credentials file.
+ * @returns {(provider: string) => Promise<string|undefined>}
+ */
 export function createPiOAuthApiKeyResolver(options = {}) {
   const authPath = typeof options.path === "string" && options.path.trim().length > 0
     ? options.path
@@ -32,6 +39,10 @@ export function createPiOAuthApiKeyResolver(options = {}) {
   };
 }
 
+/**
+ * @param {Object<string, *>} auth
+ * @returns {Object<string, *>}
+ */
 function cloneAuth(auth) {
   return Object.fromEntries(
     Object.entries(auth).map(([provider, credentials]) => [
@@ -43,6 +54,10 @@ function cloneAuth(auth) {
   );
 }
 
+/**
+ * @param {string} path
+ * @returns {Promise<Object<string, *>|undefined>}
+ */
 async function readAuthFile(path) {
   let raw;
   try {
@@ -69,6 +84,11 @@ async function readAuthFile(path) {
 // writers in the same millisecond never collide on the temp path.
 let atomicWriteSequence = 0;
 
+/**
+ * @param {string} path
+ * @param {Object<string, *>} auth
+ * @returns {Promise<void>}
+ */
 async function writeAuthFile(path, auth) {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });

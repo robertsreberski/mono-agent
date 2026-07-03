@@ -141,17 +141,68 @@ export interface RuntimeToolOptions {
   readonly [key: string]: unknown;
 }
 
+/** A parsed model reference as agent-runtime's pricing resolvers receive it (see ai/cost.js's ParsedModelReference). */
+export interface MonoRuntimeParsedPricingModel {
+  readonly sdk: string | null;
+  readonly provider?: string;
+  readonly model: string;
+}
+
+/** agent-runtime's normalized per-token pricing row (see ai/cost.js's NormalizedPricing). */
+export interface MonoRuntimePricing {
+  readonly input: number | null;
+  readonly cacheRead: number | null;
+  readonly cacheWrite: number | null;
+  readonly output: number | null;
+  readonly source: string;
+  readonly priced: boolean;
+}
+
+/** Payload passed to `onToolApprovalRequest` (see agent/approval.js's ApprovalRequestPayload). */
+export interface MonoRuntimeApprovalRequest {
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly toolUseId: string | null;
+  readonly argumentsSummary: string;
+  readonly riskTier: "low" | "medium" | "high";
+  readonly model: string | null;
+}
+
+/** A host's response to a MonoRuntimeApprovalRequest. */
+export interface MonoRuntimeApprovalDecision {
+  readonly decision: "approve" | "deny" | "always";
+  readonly reason?: string;
+}
+
+/** Payload passed to `onCompactionRecorded` after a successful context compaction (see ai/providers/pi-native.js). */
+export interface MonoRuntimeCompactionRecord {
+  readonly task_run_id: string | null;
+  readonly trigger: string;
+  readonly provider_kind: string;
+  readonly model: string | null;
+  readonly tokens_before: number | null;
+  readonly summary: string;
+  readonly first_kept_entry_id: string | null;
+  readonly status: "succeeded";
+  readonly created_at: number;
+}
+
 export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly observers?: readonly unknown[];
   readonly runtimeBrand?: unknown;
-  readonly resolveCustomPricing?: unknown;
-  readonly resolvePiApiKey?: unknown;
-  readonly persistArtifact?: unknown;
-  readonly onCompactionRecorded?: unknown;
-  readonly onToolApprovalRequest?: unknown;
-  readonly toolRiskTiers?: unknown;
-  readonly approvalDefaultRiskTier?: unknown;
-  readonly approvalTimeoutMs?: unknown;
-  readonly approvalAlwaysAllowTools?: unknown;
+  readonly resolveCustomPricing?: (parsed: MonoRuntimeParsedPricingModel) => MonoRuntimePricing | null;
+  readonly resolvePiApiKey?: (provider: string) => Promise<string | undefined>;
+  readonly persistArtifact?: (artifact: {
+    readonly filename: string;
+    readonly buffer: Buffer;
+    readonly toolName: string;
+    readonly toolUseId: string | null;
+  }) => string | null;
+  readonly onCompactionRecorded?: (record: MonoRuntimeCompactionRecord) => void;
+  readonly onToolApprovalRequest?: (payload: MonoRuntimeApprovalRequest) => Promise<MonoRuntimeApprovalDecision>;
+  readonly toolRiskTiers?: Readonly<Record<string, "low" | "medium" | "high">>;
+  readonly approvalDefaultRiskTier?: "low" | "medium" | "high";
+  readonly approvalTimeoutMs?: number;
+  readonly approvalAlwaysAllowTools?: readonly string[];
   readonly [key: string]: unknown;
 }

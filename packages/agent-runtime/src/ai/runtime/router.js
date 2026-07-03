@@ -27,11 +27,43 @@
 //   If every entry in the chain fails, returns the last result with
 //   `failureKind: "provider_unavailable_exhausted"`.
 
+// @ts-check
+
 import { createRuntime } from "../../runtime.js";
 import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "./capabilities.js";
 import { buildTranscriptTailSnapshot, renderResumeSnapshot } from "../../agent/transcript.js";
 
+/**
+ * @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef
+ * @typedef {import('../types.js').AgentRuntimeHostOptions} AgentRuntimeHostOptions
+ * @typedef {import('../types.js').AgentRuntimeInstance} AgentRuntimeInstance
+ * @typedef {import('../types.js').RuntimeRunOptions} RuntimeRunOptions
+ * @typedef {import('../types.js').RuntimeResult} RuntimeResult
+ */
+
+/**
+ * @typedef {Object} RouterChainEntryInput
+ * A chain entry as accepted by createRouterRuntime: either the shorthand bare
+ * RuntimeModelRef, or the full `{model, executionMode?, requires?}` form.
+ * @property {RuntimeModelRef} model
+ * @property {string} [executionMode]
+ * @property {Object<string, *>} [requires]
+ */
+
+/**
+ * @typedef {Object} RouterChainEntry
+ * @property {RuntimeModelRef} model
+ * @property {string|null} executionMode
+ * @property {Object<string, *>|null} requires
+ */
+
+/**
+ * @param {Object} [options]
+ * @param {AgentRuntimeHostOptions} [options.host]
+ * @param {ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>} [options.chain]
+ * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
+ */
 export function createRouterRuntime({ host = {}, chain = [] } = {}) {
   const entries = normaliseChain(chain);
   if (entries.length === 0) {
@@ -40,9 +72,19 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
   const inner = createRuntime(host);
 
   return {
+    /**
+     * @param {string} systemPrompt
+     * @param {Partial<RuntimeRunOptions>} [options] Optional so a bare `{}` call
+     *   is legal; the router always overrides `model`/`executionMode` per chain
+     *   entry (see AgentRuntimeInstance.run for the public, model-required contract).
+     * @returns {Promise<RuntimeResult>}
+     */
     async run(systemPrompt, options = {}) {
+      /** @type {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null|undefined), retryableSubkind?: (string|null|undefined), requirements?: (Object<string,*>|null)}>} */
       const failoverHistory = [];
+      /** @type {RuntimeResult|null} */
       let lastResult = null;
+      /** @type {*} */
       let resumeSnapshot = null;
 
       for (let i = 0; i < entries.length; i += 1) {
@@ -168,9 +210,15 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
   };
 }
 
+/**
+ * @param {ReadonlyArray<*>} chain ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>, loosened
+ *   here because distinguishing the two shapes is a runtime duck-type check
+ *   (`entry.sdk && entry.model`), not something a union type narrows cleanly.
+ * @returns {Array<RouterChainEntry>}
+ */
 function normaliseChain(chain) {
   if (!Array.isArray(chain)) return [];
-  return chain
+  return /** @type {Array<RouterChainEntry>} */ (chain
     .map((entry) => {
       if (!entry) return null;
       if (entry.sdk && entry.model) {
@@ -186,9 +234,14 @@ function normaliseChain(chain) {
       }
       return null;
     })
-    .filter(Boolean);
+    .filter(Boolean));
 }
 
+/**
+ * @param {RouterChainEntry} entry
+ * @param {Partial<RuntimeRunOptions>} options
+ * @returns {boolean}
+ */
 function entrySatisfiesRequirements(entry, options) {
   const requires = entry.requires;
   // Synthesize effective requirements: merge the entry's own `requires` with
@@ -225,6 +278,11 @@ function entrySatisfiesRequirements(entry, options) {
   return true;
 }
 
+/**
+ * @param {Partial<RuntimeRunOptions>} callOptions
+ * @param {import('../types.js').RuntimeEvent} event
+ * @returns {void}
+ */
 function emit(callOptions, event) {
   try { callOptions.onEvent?.(event); } catch { /* swallow */ }
 }

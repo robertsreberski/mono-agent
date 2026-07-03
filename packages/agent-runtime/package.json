@@ -14,19 +14,33 @@
     "access": "public"
   },
   "exports": {
-    ".": "./src/index.js",
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
     "./ai": "./src/ai/index.js",
     "./agent": "./src/agent/index.js",
+    "./ai/runtime/model-refs.js": {
+      "types": "./types/ai/runtime/model-refs.d.ts",
+      "default": "./src/ai/runtime/model-refs.js"
+    },
+    "./ai/runtime/registry.js": {
+      "types": "./types/ai/runtime/registry.d.ts",
+      "default": "./src/ai/runtime/registry.js"
+    },
     "./ai/*": "./src/ai/*",
     "./agent/*": "./src/agent/*"
   },
   "main": "./src/index.js",
+  "types": "./types/index.d.ts",
   "scripts": {
+    "build": "pnpm --filter @mono-agent/sandbox run build && tsc -p tsconfig.types.json",
     "test": "pnpm --filter @mono-agent/sandbox run build && vitest run --passWithNoTests"
   },
   "files": [
     "src/**/*.js",
     "!src/__tests__/**",
+    "types/**/*.d.ts",
     "ARCHITECTURE.md",
     "MIGRATION.md",
     "README.md",

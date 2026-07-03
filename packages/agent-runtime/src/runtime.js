@@ -24,11 +24,21 @@
 // a product-specific result object,
 // task envelopes, etc.) parse it themselves.
 
+// @ts-check
+
 import { resolveRuntimeBridge } from "./ai/runtime/registry.js";
 import { createObserverHub } from "./ai/observer.js";
 import { disposeAllProviderSessions, disposeProviderSession } from "./ai/runtime/sessions.js";
 import { configureToolRuntime } from "./agent/tools/shared/runtime-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
+
+/**
+ * @typedef {import('./ai/types.js').AgentRuntimeHostOptions} AgentRuntimeHostOptions
+ * @typedef {import('./ai/types.js').AgentRuntimeToolOptions} AgentRuntimeToolOptions
+ * @typedef {import('./ai/types.js').AgentRuntimeInstance} AgentRuntimeInstance
+ * @typedef {import('./ai/types.js').RuntimeRunOptions} RuntimeRunOptions
+ * @typedef {import('./ai/types.js').RuntimeResult} RuntimeResult
+ */
 
 const HOST_KEYS = [
   "resolveCustomPricing",
@@ -50,6 +60,11 @@ const TOOL_RUNTIME_KEYS = [
   "sandboxPolicy",
 ];
 
+/**
+ * @param {Object<string, *>} source
+ * @param {Array<string>} keys
+ * @returns {Object<string, *>}
+ */
 function pickDefined(source, keys) {
   const out = {};
   for (const key of keys) {
@@ -58,6 +73,10 @@ function pickDefined(source, keys) {
   return out;
 }
 
+/**
+ * @param {AgentRuntimeHostOptions} [host]
+ * @returns {AgentRuntimeInstance}
+ */
 export function createRuntime(host = {}) {
   const hostDefaults = pickDefined(host, HOST_KEYS);
   const toolRuntime = pickDefined(host, TOOL_RUNTIME_KEYS);
@@ -69,6 +88,13 @@ export function createRuntime(host = {}) {
   configureToolRuntime({ ...toolRuntime, runtimeBrand });
 
   return {
+    /**
+     * @param {string} systemPrompt
+     * @param {Partial<RuntimeRunOptions>} [options] Optional only so the
+     *   `options.model` guard below can throw a descriptive error; every
+     *   real caller must supply a model (see AgentRuntimeInstance.run).
+     * @returns {Promise<RuntimeResult>}
+     */
     async run(systemPrompt, options = {}) {
       if (!options.model) throw new Error("createRuntime.run requires options.model");
       const executionMode = typeof options.executionMode === "string" ? options.executionMode : "sdk";
@@ -84,6 +110,10 @@ export function createRuntime(host = {}) {
       const result = await bridge.execute(systemPrompt, {
         ...hostDefaults,
         ...options,
+        // `...options` alone doesn't carry the `options.model` narrowing above
+        // (spread reads the parameter's declared — Partial — type); re-assert
+        // the already-validated model so the request satisfies RuntimeRequest.
+        model: options.model,
         executionMode,
         runtimeBrand,
         observerHub: hub,

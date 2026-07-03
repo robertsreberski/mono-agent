@@ -51,12 +51,17 @@ export type {
   LocalProviderType,
 } from "./local-providers.js";
 export type {
+  MonoRuntimeApprovalDecision,
+  MonoRuntimeApprovalRequest,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeBackendDescriptor,
   MonoRuntimeBackendId,
   MonoRuntimeBackendTransport,
+  MonoRuntimeCompactionRecord,
   MonoRuntimeHostOptions,
   MonoRuntimeLike,
+  MonoRuntimeParsedPricingModel,
+  MonoRuntimePricing,
   MonoRuntimeSelectionEntry,
   MonoRuntimeSupportDescription,
   RuntimeEventLike,

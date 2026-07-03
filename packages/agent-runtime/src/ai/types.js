@@ -1,40 +1,101 @@
 // Runtime contracts. These are JSDoc-only; the codebase is JS
 // (no TypeScript), so the types document the bridge surface that active
 // runtimes implement through src/ai/runtime/registry.js.
+//
+// `tsc -p tsconfig.types.json` (allowJs + declaration + emitDeclarationOnly)
+// compiles these typedefs into packages/agent-runtime/types/ai/types.d.ts;
+// downstream TS consumers (currently @mono-agent/runtime-adapter) import them
+// via `import('./types.js').X` JSDoc syntax from the other seam files, or
+// transitively through the package root's generated declarations.
+//
+// A few fields below use the `"literal" | (string & {})` shape (a "branded
+// string union"). This keeps the known literal values available for
+// IDE/editor autocomplete while still accepting any plain `string`, since
+// hosts validate the real vocabulary at runtime (parseRuntimeModelReference,
+// resolveRuntimeBridge) rather than at the type level — the type only
+// documents the values active runtimes currently produce.
 
 /**
- * @typedef {Object} RuntimeModelRef
- * @property {"claude" | "pi" | "codex"} sdk Canonical active runtime id.
- * @property {string} model              Provider model id.
- * @property {string} reference          Original canonical model reference.
- * @property {string} [provider]         Pi provider id when sdk === "pi".
+ * @typedef {"claude" | "pi" | "codex" | "opencode" | (string & {})} RuntimeSdkId
+ * Canonical active runtime id. See ACTIVE_RUNTIME_KINDS (model-refs.js) for
+ * the enforced-at-runtime vocabulary.
  */
 
 /**
- * @typedef {Object} RuntimeRequest
- * @property {string} systemPrompt
- * @property {Array<Object>} messages
- * @property {RuntimeModelRef} model
+ * @typedef {"claude" | "claude-code" | "codex-app" | "opencode-app" | "pi" | (string & {})} RuntimeBridgeId
+ * Registry bridge id (distinct from RuntimeSdkId: a single sdk can be served
+ * by more than one bridge, e.g. sdk "claude" is served by both the "claude"
+ * SDK bridge and the "claude-code" CLI bridge). See
+ * src/ai/runtime/registry.js's builtinBridgeSpecs.
+ */
+
+/**
+ * @typedef {Object} RuntimeModelRef
+ * @property {RuntimeSdkId} sdk           Canonical active runtime id.
+ * @property {string} model               Provider model id.
+ * @property {string} [reference]         Original canonical model reference; always set by
+ *                                         parseRuntimeModelReference, but router.js's chain
+ *                                         shorthand accepts bare {sdk, model} refs without one.
+ * @property {string} [provider]          Pi/OpenCode provider id when sdk === "pi" | "opencode".
+ */
+
+/**
+ * @typedef {{type: string, [key: string]: *}} RuntimeEvent
+ * Structured runtime/telemetry event. `type` is the only required field;
+ * every event kind (tool_approval_pending, provider_failover_started,
+ * context_compaction_applied, ...) adds its own extra fields.
+ */
+
+/**
+ * @typedef {Object} RuntimeObserver
+ * Per-call or host-level observer merged by createObserverHub (ai/observer.js).
+ * Loose on purpose: observer.js is not a kernel seam file.
+ * @property {(event: RuntimeEvent) => (void|Promise<void>)} [onEvent]
+ * @property {() => (void|Promise<void>)} [flush]
+ */
+
+/**
+ * @typedef {Object} RuntimeRunOptions
+ * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
+ * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
+ * @property {string} [executionMode]                     "sdk" (default) or "cli"; selects which bridge variant handles the model.
+ * @property {boolean} [liveInput]                        Whether this run expects a live/streaming input channel.
+ * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
+ * @property {(event: RuntimeEvent) => void} [onEvent]
+ * @property {ReadonlyArray<Object>} [messages]
  * @property {string} [effort]
  * @property {boolean} [fastMode]
  * @property {string} [cwd]
  * @property {Object<string, Object>} [mcpServers]
- * @property {Array<string>} [allowedTools]
- * @property {Array<string>} [disallowedTools]
+ * @property {ReadonlyArray<string>} [allowedTools]
+ * @property {ReadonlyArray<string>} [disallowedTools]
  * @property {string} [permissionMode]
  * @property {number} [maxTurns]
  * @property {Object} [outputSchema]
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
- * @property {Object} [liveInput]
+ * @property {import('@mono-agent/sandbox').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, runtime-context.js).
  * @property {Object} [settings]
  * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
- * @property {(event: RuntimeEvent) => void} [onEvent]
+ * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
+ *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
+ *   bridge in this package today.
+ * @property {string} [systemPromptPrefix] Set by createRouterRuntime alongside diagnosticsSeed; the router also
+ *   prepends the same text to the systemPrompt argument directly, so bridges that ignore this field still continue
+ *   correctly.
  */
 
 /**
- * @typedef {Object} RuntimeEvent
- * @property {string} type
+ * @typedef {RuntimeRunOptions
+ *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "persistArtifact" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
+ *   & {runtimeBrand: import('../runtime-brand.js').RuntimeBrand, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
+ * } RuntimeRequest
+ * The request shape a bridge's `execute(systemPrompt, req)` receives as its
+ * second (options) argument: the host-supplied RuntimeRunOptions, merged by
+ * createRuntime (runtime.js) with the bound HOST_KEYS host-integration
+ * callbacks, the resolved runtimeBrand, and the per-run observerHub
+ * (onEvent is overridden to the hub's emit). `systemPrompt` is passed
+ * positionally, not folded into this object.
  */
 
 /**
@@ -48,22 +109,135 @@
  * @property {number} [numTurns]
  * @property {string} [model]
  * @property {string} [effort]
- * @property {"claude" | "pi" | "codex"} [sdk]
+ * @property {RuntimeSdkId} [sdk]
  * @property {boolean} [cancelled]
  * @property {string|null} [error]
  * @property {Object|null} [errorDetails]
  * @property {string|null} [failureKind]
  * @property {string|null} [providerSessionId]
+ * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (ai/failure.js).
  * @property {Array<Object>} [runtimeWarnings]
  * @property {Object} [diagnostics]
+ * @property {Object} [capabilitiesUsed]
+ * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), requirements?: Object}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every attempt after the first.
+ */
+
+/**
+ * @typedef {Object} RuntimeCapabilities
+ * Capability flags a bridge reports for a given model reference. Structural,
+ * not sealed: bridges may report extra provider-specific flags (e.g.
+ * supports_fast_mode) alongside the common ones from COMMON_CAPABILITIES
+ * (ai/runtime/capabilities.js).
+ * @property {string} [kind]
+ * @property {string} [runtime]
+ * @property {boolean} [streaming]
+ * @property {boolean} [structured_output]
+ * @property {boolean} [supports_session_resume]
+ * @property {*} [native_runtime_config]
+ * @property {boolean} [supports_mcp]
+ * @property {boolean} [supports_skills]
+ * @property {boolean} [supports_builtin_tools]
+ * @property {boolean} [supports_live_input]
+ * @property {boolean} [supports_native_subagents]
+ * @property {boolean} [supports_fast_mode]
  */
 
 /**
  * @typedef {Object} RuntimeBridge
- * @property {"claude" | "pi" | "codex"} id
- * @property {(ref: RuntimeModelRef) => boolean} supports
- * @property {(ref?: RuntimeModelRef) => Object} capabilities
+ * A fully loaded bridge (registry.js's resolveRuntimeBridge result): the
+ * executable provider implementation. Unlike RuntimeBridgeDescriptor,
+ * `capabilities` here is the bridge module's own static value (computed once
+ * at module load, e.g. `runtimeCapabilities("pi")`), not a callable.
+ * @property {RuntimeBridgeId} id
+ * @property {(ref: RuntimeModelRef, options?: Object) => boolean} supports
+ * @property {RuntimeCapabilities} capabilities
  * @property {(systemPrompt: string, req: RuntimeRequest) => Promise<RuntimeResult>} execute
+ */
+
+/**
+ * @typedef {Object} RuntimeBridgeDescriptor
+ * The introspection-only projection of a RuntimeBridge (registry.js's
+ * listRuntimeBridges result): id/supports/capabilities without execute, so
+ * hosts can describe backend support without loading provider modules.
+ * @property {RuntimeBridgeId} id
+ * @property {(ref: RuntimeModelRef, options?: Object) => boolean} supports
+ * @property {(ref?: RuntimeModelRef) => RuntimeCapabilities} capabilities
+ */
+
+/**
+ * @typedef {Object} ApprovalRequestPayload
+ * Payload passed to a host's `onToolApprovalRequest` callback (agent/approval.js).
+ * @property {string} requestId
+ * @property {string} toolName
+ * @property {string|null} toolUseId
+ * @property {string} argumentsSummary Secret-redacted, length-capped JSON summary of the tool call arguments.
+ * @property {"low"|"medium"|"high"} riskTier
+ * @property {string|null} model
+ */
+
+/**
+ * @typedef {Object} ApprovalDecision
+ * A host's response to an ApprovalRequestPayload.
+ * @property {"approve"|"deny"|"always"} decision
+ * @property {string} [reason]
+ */
+
+/**
+ * @typedef {Object} CompactionRecordedPayload
+ * Payload passed to a host's `onCompactionRecorded` callback (ai/providers/pi-native.js)
+ * after a successful context compaction, so the host can persist the row.
+ * @property {string|null} task_run_id
+ * @property {string} trigger
+ * @property {string} provider_kind
+ * @property {string|null} model
+ * @property {number|null} tokens_before
+ * @property {string} summary
+ * @property {string|null} first_kept_entry_id
+ * @property {"succeeded"} status
+ * @property {number} created_at
+ */
+
+/**
+ * @typedef {Object} AgentRuntimeHostOptions
+ * The `host` object passed to `createRuntime(host)` / `createRouterRuntime({host, chain})`.
+ * Combines the tool-runtime keys (forwarded to configureToolRuntime) and the
+ * host-integration callbacks (bound once, applied to every run via hostDefaults).
+ * @property {string} [workspace]
+ * @property {string} [repoRoot]
+ * @property {string} [ripgrepPath]
+ * @property {string} [qaOutputDir]
+ * @property {import('@mono-agent/sandbox').SandboxPolicy} [sandboxPolicy]
+ * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
+ * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
+ * @property {(parsed: {sdk: (string|null), provider?: string, model: string}) => (Object|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
+ * @property {(provider: string) => Promise<string|undefined>} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
+ * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact]
+ * @property {(record: CompactionRecordedPayload) => void} [onCompactionRecorded]
+ * @property {(payload: ApprovalRequestPayload) => Promise<ApprovalDecision>} [onToolApprovalRequest]
+ * @property {Object<string, ("low"|"medium"|"high")>} [toolRiskTiers]
+ * @property {"low"|"medium"|"high"} [approvalDefaultRiskTier]
+ * @property {number} [approvalTimeoutMs]
+ * @property {ReadonlyArray<string>} [approvalAlwaysAllowTools]
+ */
+
+/**
+ * @typedef {Object} AgentRuntimeToolOptions
+ * The subset of AgentRuntimeHostOptions accepted by `runtime.configureTools(next)`
+ * (createRuntime's TOOL_RUNTIME_KEYS pick).
+ * @property {string} [workspace]
+ * @property {string} [repoRoot]
+ * @property {string} [ripgrepPath]
+ * @property {string} [qaOutputDir]
+ * @property {import('@mono-agent/sandbox').SandboxPolicy} [sandboxPolicy]
+ */
+
+/**
+ * @typedef {Object} AgentRuntimeInstance
+ * The object `createRuntime`/`createRouterRuntime` return.
+ * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
+ * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
+ * @property {(providerSessionId: string) => Promise<boolean|void>} disposeSession
+ * @property {() => Promise<void>} disposeAllSessions
  */
 
 export const PROVIDER_KIND_VALUES = ["claude", "pi", "codex"];

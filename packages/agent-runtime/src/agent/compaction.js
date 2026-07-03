@@ -1,3 +1,5 @@
+// @ts-check
+
 // Context-compaction policy + heuristics for the pi-native bridge.
 //
 // The hand-rolled in-loop compaction manager (transformContext/afterToolCall)
@@ -9,6 +11,27 @@
 //     model. Pure (no Agent loop), so the bridge computes it directly.
 //   - isLikelyContextTermination: classifies a provider error/termination as a
 //     context-pressure event.
+
+/**
+ * @typedef {Object} AgentCompactionPolicy
+ * @property {boolean} enabled
+ * @property {number} contextWindow
+ * @property {number} triggerRatio
+ * @property {number} triggerTokens
+ * @property {number} keepRecentTokens
+ * @property {number} summaryMaxTokens
+ * @property {number} compactionMinSavingsTokens
+ * @property {number} toolPayloadCompactionTriggerChars
+ * @property {number} toolPruneTriggerTokens
+ * @property {number} toolTextLimitChars
+ * @property {number} bashOutputLimitChars
+ * @property {number} mcpTextLimitChars
+ * @property {number} searchResultLimit
+ * @property {number} imageInlineMaxBytes
+ * @property {number} toolPayloadMaxBytes
+ * @property {number} mcpCallTimeoutMs
+ * @property {number} mcpCallMaxTotalTimeoutMs
+ */
 
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_TRIGGER_RATIO = 0.85;
@@ -38,16 +61,36 @@ const DEFAULT_MCP_CALL_TIMEOUT_MS = 120000;
 // sized for legitimately long tools (audio transcription, ask-the-user waits).
 const DEFAULT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = 2_700_000;
 
+/**
+ * @param {*} value
+ * @param {number} fallback
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
 function clampNumber(value, fallback, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
 }
 
+/**
+ * @param {*} value
+ * @param {number} fallback
+ * @param {number} min
+ * @param {number} max
+ * @returns {number}
+ */
 function clampInteger(value, fallback, min, max) {
   return Math.floor(clampNumber(value, fallback, min, max));
 }
 
+/**
+ * @param {Object<string, *>} [settings]
+ * @param {Object} [model]
+ * @param {number} [model.contextWindow]
+ * @returns {AgentCompactionPolicy}
+ */
 export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
   const contextWindow = clampInteger(model?.contextWindow, DEFAULT_CONTEXT_WINDOW, 32000, 10_000_000);
   const triggerRatio = clampNumber(
@@ -100,6 +143,13 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
 //
 // Uses Math.ceil(len/4) to mirror pi-ai's chars/4 heuristic — consistency with
 // the transcript estimate matters more than precision. Pure + dependency-free.
+/**
+ * @param {Object} [options]
+ * @param {string} [options.systemPrompt]
+ * @param {Array<Object>} [options.tools]
+ * @param {Array<Object>} [options.messages]
+ * @returns {{systemPromptTokens: number, toolSchemaTokens: number, userMessageTokens: number, fixedOverheadTokens: number}}
+ */
 export function estimateFixedOverheadTokens({ systemPrompt, tools, messages } = {}) {
   const tokensForChars = (value) => Math.ceil(String(value ?? "").length / 4);
 
@@ -136,6 +186,11 @@ export function estimateFixedOverheadTokens({ systemPrompt, tools, messages } = 
   };
 }
 
+/**
+ * @param {string} message
+ * @param {Object<string, *>} [diagnostics]
+ * @returns {boolean}
+ */
 export function isLikelyContextTermination(message, diagnostics = {}) {
   const text = String(message || "");
   if (!/terminated|aborted before final output|aborted before final|stream.*aborted|context window|context budget/i.test(text)) return false;
