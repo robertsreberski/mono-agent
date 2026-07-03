@@ -224,4 +224,150 @@ describe("segmentTimelineTurns", () => {
     expect(() => segmentTimelineTurns(items)).not.toThrow();
     expect(segmentTimelineTurns(items)).toHaveLength(1);
   });
+
+  it("keeps a parallel tool batch (all tool_use streamed, then timing+result pairs) as ONE turn instead of fragmenting on each tool_result", () => {
+    // Real pi-runtime shape for a 2-call parallel batch: both tool_use blocks
+    // stream first, then tool_timing+tool_result pairs arrive one at a time.
+    // A naive "boundary right after every tool_result" rule would fragment
+    // this into 3 pseudo-turns (the last two being bare timing+result debris
+    // with toolCalls=0); the fix keeps it as one turn until the next
+    // `assistant`-typed item.
+    const items: readonly RecordedRunTimelineItem[] = [
+      item({
+        index: 0,
+        type: "assistant",
+        category: "thinking",
+        label: "Assistant thoughts",
+        summary: "deciding",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: "deciding" }] } },
+        contentChars: 8,
+      }),
+      item({
+        index: 1,
+        type: "assistant",
+        category: "tool",
+        label: "Tool: Read",
+        summary: "a",
+        payload: {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "toolu_A", name: "Read", input: { path: "/a" } }] },
+        },
+      }),
+      item({
+        index: 2,
+        type: "assistant",
+        category: "tool",
+        label: "Tool: Read",
+        summary: "b",
+        payload: {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "toolu_B", name: "Read", input: { path: "/b" } }] },
+        },
+      }),
+      item({
+        index: 3,
+        type: "tool_timing",
+        category: "tool",
+        label: "Tool timing",
+        summary: "toolu_A",
+        payload: { type: "tool_timing", tool_use_id: "toolu_A", name: "Read", execution_ms: 5 },
+      }),
+      item({
+        index: 4,
+        type: "user",
+        category: "tool",
+        label: "Tool result",
+        summary: "a contents",
+        payload: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "toolu_A", content: "a contents" }] },
+        },
+      }),
+      item({
+        index: 5,
+        type: "tool_timing",
+        category: "tool",
+        label: "Tool timing",
+        summary: "toolu_B",
+        payload: { type: "tool_timing", tool_use_id: "toolu_B", name: "Read", execution_ms: 7 },
+      }),
+      item({
+        index: 6,
+        type: "user",
+        category: "tool",
+        label: "Tool result",
+        summary: "b contents",
+        payload: {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "toolu_B", content: "b contents" }] },
+        },
+      }),
+      item({
+        index: 7,
+        type: "assistant",
+        category: "thinking",
+        label: "Assistant thoughts",
+        summary: "done reading",
+        payload: { type: "assistant", message: { content: [{ type: "thinking", thinking: "done reading" }] } },
+        contentChars: 12,
+      }),
+      item({
+        index: 8,
+        type: "assistant",
+        category: "message",
+        label: "Assistant message",
+        summary: "Here are both files.",
+        payload: { type: "assistant", message: { content: [{ type: "text", text: "Here are both files." }] } },
+      }),
+    ];
+
+    const turns = segmentTimelineTurns(items);
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toMatchObject({ turnIndex: 0, startItemIndex: 0, endItemIndex: 6, toolCalls: 2, thinkingChars: 8 });
+    expect(turns[1]).toMatchObject({ turnIndex: 1, startItemIndex: 7, endItemIndex: 8, toolCalls: 0, thinkingChars: 12 });
+  });
+
+  it("counts toolCalls as 2 when a single user tool_result event carries two tool_result blocks", () => {
+    const items: readonly RecordedRunTimelineItem[] = [
+      item({
+        index: 0,
+        type: "assistant",
+        category: "tool",
+        label: "Tool: Read",
+        summary: "a+b",
+        payload: {
+          type: "assistant",
+          message: {
+            content: [
+              { type: "tool_use", id: "toolu_A", name: "Read", input: { path: "/a" } },
+              { type: "tool_use", id: "toolu_B", name: "Read", input: { path: "/b" } },
+            ],
+          },
+        },
+      }),
+      item({
+        index: 1,
+        type: "user",
+        category: "tool",
+        label: "Tool result",
+        summary: "a+b contents",
+        payload: {
+          type: "user",
+          message: {
+            content: [
+              { type: "tool_result", tool_use_id: "toolu_A", content: "a contents" },
+              { type: "tool_result", tool_use_id: "toolu_B", content: "b contents" },
+            ],
+          },
+        },
+      }),
+    ];
+
+    const turns = segmentTimelineTurns(items);
+
+    // tool_result is the final item, so it doesn't open a new (empty) turn.
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ startItemIndex: 0, endItemIndex: 1, toolCalls: 2 });
+  });
 });

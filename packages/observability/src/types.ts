@@ -294,9 +294,14 @@ export interface RecordedRunTimelineItem extends RecordedRunEvent {
 /**
  * One agent-loop turn within a single recorded run's timeline: one recorded
  * run corresponds to one user request, and each turn is the work the agent
- * did before/after a round-trip through a tool. Turn 0 starts at the first
- * timeline item; a new turn starts at the item immediately AFTER each
- * user `tool_result` item (see {@link segmentTimelineTurns}).
+ * did before/after a round-trip through one or more tools. Turn 0 starts at
+ * the first timeline item; once a `user` `tool_result` item has been seen in
+ * the current turn, the turn ends immediately BEFORE the next `assistant`-
+ * typed item (a PARALLEL tool batch streams all its `tool_use` items before
+ * any `tool_timing`/`tool_result` pairs arrive, so non-assistant items after
+ * the first tool_result — more tool_results, tool_timing, runtime events —
+ * stay in the current turn rather than each starting a new one; see
+ * {@link segmentTimelineTurns}).
  */
 export interface TimelineTurn {
   readonly turnIndex: number;
@@ -310,7 +315,12 @@ export interface TimelineTurn {
   readonly durationMs?: number;
   /** Sum of `contentChars` over the turn's `"thinking"`-category items. */
   readonly thinkingChars: number;
-  /** Count of the turn's assistant `tool_use` items (category `"tool"`, type `"assistant"`). */
+  /**
+   * Completed tool calls in the turn: the number of `tool_result` content
+   * blocks across the turn's `user`-typed tool items (category `"tool"`), not
+   * a flat 1-per-item count — a single `user` event can carry more than one
+   * `tool_result` block.
+   */
   readonly toolCalls: number;
 }
 

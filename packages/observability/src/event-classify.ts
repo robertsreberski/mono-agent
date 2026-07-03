@@ -135,8 +135,13 @@ export function eventSummary(
   return compactString(JSON.stringify(redactJsonValue(payload, maxStringBytes)));
 }
 
-/** First content block of `blockType` on a message's `content` array, if any. */
-function findContentBlock(message: unknown, blockType: string): Record<string, unknown> | undefined {
+/**
+ * A message's `content` array, filtered down to record-shaped blocks, or
+ * undefined when `message`/`content` isn't record/array-shaped. Single
+ * source of truth for the array walk shared by {@link findContentBlock} and
+ * {@link countToolResultBlocks}.
+ */
+function contentBlocks(message: unknown): readonly Record<string, unknown>[] | undefined {
   if (!isRecord(message)) {
     return undefined;
   }
@@ -144,7 +149,12 @@ function findContentBlock(message: unknown, blockType: string): Record<string, u
   if (!Array.isArray(content)) {
     return undefined;
   }
-  return content.find((block): block is Record<string, unknown> => isRecord(block) && block.type === blockType);
+  return content.filter((block): block is Record<string, unknown> => isRecord(block));
+}
+
+/** First content block of `blockType` on a message's `content` array, if any. */
+function findContentBlock(message: unknown, blockType: string): Record<string, unknown> | undefined {
+  return contentBlocks(message)?.find((block) => block.type === blockType);
 }
 
 /** First `tool_use` content block on an `assistant` event's message, if any. */
@@ -159,6 +169,27 @@ function firstToolUseBlock(event: Record<string, unknown>): Record<string, unkno
  */
 export function firstToolResultBlock(event: Record<string, unknown>): Record<string, unknown> | undefined {
   return stringField(event, "type") === "user" ? findContentBlock(event.message, "tool_result") : undefined;
+}
+
+/**
+ * Count of `tool_result` content blocks on a `user` event's message. A real
+ * pi-runtime parallel tool batch delivers one `user` event per completed
+ * call, but a single `user` event CAN carry more than one `tool_result`
+ * block; turn-segmentation's `toolCalls` count sums this across a turn's
+ * user-typed tool items rather than counting items 1-for-1. Falls back to 1
+ * when the event's `type` isn't "user" or its message/content isn't
+ * array-shaped (foreign/malformed payload) -- the item still represents one
+ * completed call, just with a shape this helper can't decompose.
+ */
+export function countToolResultBlocks(event: Record<string, unknown>): number {
+  if (stringField(event, "type") !== "user") {
+    return 1;
+  }
+  const blocks = contentBlocks(event.message);
+  if (blocks === undefined) {
+    return 1;
+  }
+  return blocks.filter((block) => block.type === "tool_result").length;
 }
 
 /**

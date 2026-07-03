@@ -4,6 +4,7 @@ import {
   assistantMessageContentKind,
   buildEventDescriptors,
   classifyRecordedRunEvent,
+  countToolResultBlocks,
   eventLabel,
   eventSummary,
   textFromMessage,
@@ -38,6 +39,43 @@ describe("event-classify exported helpers", () => {
   it("extracts message text and assistant content kind", () => {
     expect(textFromMessage({ content: [{ type: "text", text: "answer" }] })).toBe("answer");
     expect(assistantMessageContentKind({ type: "assistant", message: { content: [{ type: "thinking", thinking: "x" }] } })).toBe("thinking");
+  });
+});
+
+describe("countToolResultBlocks", () => {
+  it("counts multiple tool_result blocks on a single user event", () => {
+    expect(
+      countToolResultBlocks({
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "a", content: "1" },
+            { type: "tool_result", tool_use_id: "b", content: "2" },
+          ],
+        },
+      }),
+    ).toBe(2);
+  });
+
+  it("counts exactly one tool_result block", () => {
+    expect(
+      countToolResultBlocks({
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "a", content: "1" }] },
+      }),
+    ).toBe(1);
+  });
+
+  it("returns 0 when a user event's content array has no tool_result block", () => {
+    expect(countToolResultBlocks({ type: "user", message: { content: [{ type: "text", text: "hi" }] } })).toBe(0);
+  });
+
+  it("falls back to 1 when content isn't an array", () => {
+    expect(countToolResultBlocks({ type: "user", message: { content: "not-an-array" } })).toBe(1);
+  });
+
+  it("falls back to 1 when type isn't \"user\"", () => {
+    expect(countToolResultBlocks({ type: "assistant", message: { content: [] } })).toBe(1);
   });
 });
 
