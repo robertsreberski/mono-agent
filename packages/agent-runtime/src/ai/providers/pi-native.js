@@ -26,7 +26,11 @@ import { randomUUID } from "node:crypto";
 import { estimateCost } from "../cost.js";
 import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
-import { resolveAgentCompactionPolicy } from "../../agent/compaction.js";
+import {
+  deprecatedSettingsWarning,
+  resolveAgentCompactionPolicy,
+  resolveRuntimePolicyInputs,
+} from "../../agent/compaction.js";
 import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
@@ -335,13 +339,30 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const reference = resolved.reference
       || (resolved.sdk === "pi" ? `pi:${resolved.provider}:${resolved.model}` : `${resolved.sdk}:${resolved.model}`);
 
-    // Tool-output limits (settings-driven clamps for tool/MCP payloads). The
-    // legacy pi-sdk bridge wired these via the compaction manager's `.policy`;
-    // resolveAgentCompactionPolicy is pure (no manager/Agent), so we compute the
-    // same policy directly and pass it into the tool builders + display
-    // normalization. Restores configurable clamping (agent_tool_text_limit_chars,
-    // agent_search_result_limit, ...) on top of the 256KB hard ceiling.
-    const toolLimits = resolveAgentCompactionPolicy(options.settings || {}, runtime.model);
+    // Resolve the typed `toolLimits` / `compaction` policy objects against the
+    // deprecated `settings` fallback (per-group precedence: a present typed
+    // object wins and its group's legacy keys are ignored; an absent object
+    // falls back to `settings`). Consuming any legacy key emits exactly one
+    // deprecation warning per run. mono-agent never passes `settings`, so this
+    // is a no-op there; the shim exists for worklab's day-one port.
+    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
+      toolLimits: options.toolLimits,
+      compaction: options.compaction,
+      settings: options.settings,
+    });
+    if (consumedSettingsKeys.length > 0) {
+      const warning = deprecatedSettingsWarning(consumedSettingsKeys);
+      runtimeWarnings.push(warning);
+      onEvent({ type: "runtime_warning", ...warning });
+    }
+
+    // Tool-output limits (clamps for tool/MCP payloads). The legacy pi-sdk bridge
+    // wired these via the compaction manager's `.policy`; resolveAgentCompactionPolicy
+    // is pure (no manager/Agent), so we compute the same policy directly from the
+    // resolved settings-like inputs and pass it into the tool builders + display
+    // normalization. Restores configurable clamping (toolTextLimitChars,
+    // searchResultLimit, ...) on top of the 256KB hard ceiling.
+    const toolLimits = resolveAgentCompactionPolicy(settingsLike, runtime.model);
 
     // Build the turn's tools (builtins + MCP bridge + StructuredOutput). The
     // StructuredOutput callback writes runState.structuredResult; the MCP clients
@@ -447,7 +468,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       harness,
       runtime,
       resolved,
-      settings: options.settings,
+      settings: settingsLike,
+      contextWindowOverride: options.compaction?.contextWindowOverride,
     });
     await runProactiveCompaction(runState, {
       harness,
@@ -509,7 +531,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       externalAbort: runState.externalAbort,
       maxTurnsHit: runState.maxTurnsHit,
     })) {
-      const retry = await runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings });
+      const retry = await runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings, prompts: options.prompts });
       structuredOutputFinalizationRetryAttempts = retry.attempts;
       structuredOutputFinalizationRetryReason = retry.reason;
       structuredOutputFinalizationRetryFailed = runState.structuredResult === null || runState.structuredResult === undefined;

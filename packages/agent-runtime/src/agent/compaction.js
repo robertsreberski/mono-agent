@@ -20,6 +20,7 @@
  * @property {number} triggerTokens
  * @property {number} keepRecentTokens
  * @property {number} summaryMaxTokens
+ * @property {boolean} fixedOverheadEnabled
  * @property {number} compactionMinSavingsTokens
  * @property {number} toolPayloadCompactionTriggerChars
  * @property {number} toolPruneTriggerTokens
@@ -109,6 +110,11 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
     triggerTokens: Math.min(ratioTrigger, reserveTrigger),
     keepRecentTokens: clampInteger(settings.agent_compaction_keep_recent_tokens, DEFAULT_KEEP_RECENT_TOKENS, 4000, 200000),
     summaryMaxTokens: clampInteger(settings.agent_compaction_summary_max_tokens, DEFAULT_SUMMARY_MAX_TOKENS, 1000, 64000),
+    // ON by default; the proactive fixed-overhead correction (system prompt +
+    // tool schemas + per-turn message) is disabled only when explicitly false.
+    // Read by the compaction driver off the resolved policy so it never has to
+    // re-sniff the raw settings/policy inputs.
+    fixedOverheadEnabled: settings.agent_compaction_fixed_overhead_enabled !== false,
     compactionMinSavingsTokens: clampInteger(settings.agent_compaction_min_savings_tokens, DEFAULT_MIN_SAVINGS_TOKENS, 0, 500000),
     toolPayloadCompactionTriggerChars: clampInteger(
       settings.agent_tool_payload_compaction_trigger_chars,
@@ -130,6 +136,127 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
       1000,
       Number.MAX_SAFE_INTEGER,
     ),
+  };
+}
+
+// --- Typed policy objects <-> deprecated `settings` shim -------------------
+//
+// RuntimeRunOptions now carries typed `toolLimits` / `compaction` policy
+// objects. The DEPRECATED `settings` bag remains a per-group fallback: it is
+// consumed only when the corresponding typed object is ABSENT, and consuming it
+// surfaces one `deprecated_settings_option` runtime_warning per run.
+//
+// resolveAgentCompactionPolicy stays the canonical settings->policy clamp/mapper
+// (its signature is unchanged — worklab deep-imports it). The helpers below
+// project the typed objects back onto the same snake_case settings keys so the
+// resolution goes through that one clamp path unchanged, whether the values came
+// from a typed object or the legacy settings bag.
+
+// Typed toolLimits field -> settings key. `bashTimeoutMs` is intentionally
+// ABSENT: no `agent_bash_*_timeout` setting exists today and this phase does not
+// invent new timeout behavior, so the field is documented on the RuntimeToolLimits
+// typedef but not wired through the settings shim or any tool.
+const TOOL_LIMIT_SETTINGS_KEYS = /** @type {const} */ ({
+  toolTextLimitChars: "agent_tool_text_limit_chars",
+  bashOutputLimitChars: "agent_bash_output_limit_chars",
+  mcpTextLimitChars: "agent_mcp_text_limit_chars",
+  searchResultLimit: "agent_search_result_limit",
+  imageInlineMaxBytes: "agent_image_inline_max_bytes",
+  toolPayloadMaxBytes: "agent_tool_payload_max_bytes",
+  mcpCallTimeoutMs: "agent_mcp_call_timeout_ms",
+  mcpCallMaxTotalTimeoutMs: "agent_mcp_call_max_total_timeout_ms",
+});
+
+// Typed compaction field -> settings key. `contextWindowOverride` is ABSENT: it
+// has no legacy settings equivalent and is applied directly at the live-window
+// resolution site (resolveLiveCompactionPolicy), not through this shim.
+const COMPACTION_SETTINGS_KEYS = /** @type {const} */ ({
+  enabled: "agent_compaction_enabled",
+  triggerRatio: "agent_compaction_trigger_ratio",
+  keepRecentTokens: "agent_compaction_keep_recent_tokens",
+  summaryMaxTokens: "agent_compaction_summary_max_tokens",
+  minSavingsTokens: "agent_compaction_min_savings_tokens",
+  fixedOverheadEnabled: "agent_compaction_fixed_overhead_enabled",
+});
+
+export const DEPRECATED_SETTINGS_WARNING_KIND = "deprecated_settings_option";
+
+/**
+ * @param {Object<string, *>|null|undefined} group
+ * @param {Record<string, string>} keyMap
+ * @param {Object<string, *>} out
+ */
+function copyTypedGroup(group, keyMap, out) {
+  for (const [field, settingKey] of Object.entries(keyMap)) {
+    if (group && group[field] !== undefined) out[settingKey] = group[field];
+  }
+}
+
+/**
+ * @param {Object<string, *>|null|undefined} settings
+ * @param {Record<string, string>} keyMap
+ * @param {Object<string, *>} out
+ * @param {Array<string>} consumed
+ */
+function copySettingsGroup(settings, keyMap, out, consumed) {
+  if (!settings || typeof settings !== "object") return;
+  for (const settingKey of Object.values(keyMap)) {
+    if (settings[settingKey] !== undefined) {
+      out[settingKey] = settings[settingKey];
+      consumed.push(settingKey);
+    }
+  }
+}
+
+/**
+ * Fold the typed `toolLimits` / `compaction` policy objects and the deprecated
+ * `settings` bag into ONE settings-like object resolveAgentCompactionPolicy
+ * consumes, honoring PER-GROUP precedence: when a typed object is present its
+ * fields win and the legacy settings keys for that group are ignored entirely;
+ * when the typed object is absent, that group's settings keys are consumed (and
+ * reported in `consumedSettingsKeys` so the caller can emit exactly one
+ * deprecation warning per run).
+ * @param {{toolLimits?: Object<string, *>, compaction?: Object<string, *>, settings?: Object<string, *>}} [options]
+ * @returns {{settingsLike: Object<string, *>, consumedSettingsKeys: Array<string>}}
+ */
+export function resolveRuntimePolicyInputs({ toolLimits, compaction, settings } = {}) {
+  /** @type {Object<string, *>} */
+  const settingsLike = {};
+  /** @type {Array<string>} */
+  const consumedSettingsKeys = [];
+
+  if (toolLimits && typeof toolLimits === "object") {
+    copyTypedGroup(toolLimits, TOOL_LIMIT_SETTINGS_KEYS, settingsLike);
+  } else {
+    copySettingsGroup(settings, TOOL_LIMIT_SETTINGS_KEYS, settingsLike, consumedSettingsKeys);
+  }
+
+  if (compaction && typeof compaction === "object") {
+    copyTypedGroup(compaction, COMPACTION_SETTINGS_KEYS, settingsLike);
+  } else {
+    copySettingsGroup(settings, COMPACTION_SETTINGS_KEYS, settingsLike, consumedSettingsKeys);
+  }
+
+  return { settingsLike, consumedSettingsKeys };
+}
+
+/**
+ * Build the one-per-run deprecation warning fired when the legacy `settings`
+ * bag was consumed as a policy fallback. Shape matches the other pi/claude
+ * bridge runtime warnings ({warning_kind, source, message}).
+ * @param {ReadonlyArray<string>} consumedKeys
+ * @returns {{warning_kind: string, source: string, message: string, settings_keys: Array<string>}}
+ */
+export function deprecatedSettingsWarning(consumedKeys) {
+  const keys = Array.from(consumedKeys || []);
+  return {
+    warning_kind: DEPRECATED_SETTINGS_WARNING_KIND,
+    source: "runtime",
+    message:
+      "runOptions.settings is deprecated; pass the typed `toolLimits` / `compaction` policy objects instead "
+      + "(host migration helper: resolveRuntimePolicies in @mono-agent/runtime-adapter). Consumed settings keys: "
+      + `${keys.join(", ")}.`,
+    settings_keys: keys,
   };
 }
 

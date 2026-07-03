@@ -9,13 +9,20 @@
 
 /**
  * Append the StructuredOutput usage instruction to the system prompt when an
- * output schema is active. No schema → the prompt is returned unchanged.
+ * output schema is active. No schema → the prompt is returned unchanged. A host
+ * or run `prompts.structuredOutputInstruction(systemPrompt)` override, when
+ * supplied, replaces the default instruction text (it receives the raw system
+ * prompt and returns the augmented one); otherwise the default below is used.
  * @param {string} systemPrompt
  * @param {unknown} outputSchema
+ * @param {import('../../types.js').RuntimePromptOverrides} [prompts]
  * @returns {string}
  */
-export function appendStructuredOutputInstruction(systemPrompt, outputSchema) {
+export function appendStructuredOutputInstruction(systemPrompt, outputSchema, prompts) {
   if (!outputSchema) return systemPrompt;
+  if (typeof prompts?.structuredOutputInstruction === "function") {
+    return prompts.structuredOutputInstruction(systemPrompt);
+  }
   return [
     systemPrompt,
     "",
@@ -27,10 +34,15 @@ export function appendStructuredOutputInstruction(systemPrompt, outputSchema) {
 
 /**
  * The finalization re-prompt issued when a turn ended without submitting the
- * required structured result.
+ * required structured result. A `prompts.structuredOutputFinalization()`
+ * override, when supplied, replaces the default text.
+ * @param {import('../../types.js').RuntimePromptOverrides} [prompts]
  * @returns {string}
  */
-export function structuredOutputFinalizationPrompt() {
+export function structuredOutputFinalizationPrompt(prompts) {
+  if (typeof prompts?.structuredOutputFinalization === "function") {
+    return prompts.structuredOutputFinalization();
+  }
   return [
     "The previous assistant turn ended without submitting the required structured result.",
     "Do not run tools, inspect files, or redo work.",
@@ -89,10 +101,10 @@ export function structuredOutputRetryDiagnostics(attempts, reason, failed) {
  *
  * Returns the retry bookkeeping ({attempts, reason}); the caller computes
  * `failed` from the (closure-owned) structuredResult after re-capturing state.
- * @param {{harness: any, structuredTool: {name: string}|null, runtimeWarnings: Array<Record<string, unknown>>}} deps
+ * @param {{harness: any, structuredTool: {name: string}|null, runtimeWarnings: Array<Record<string, unknown>>, prompts?: import('../../types.js').RuntimePromptOverrides}} deps
  * @returns {Promise<{attempts: number, reason: string}>}
  */
-export async function runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings }) {
+export async function runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings, prompts }) {
   const reason = "empty_final_output";
   runtimeWarnings.push({
     warning_kind: "structured_output_finalization_retry",
@@ -107,7 +119,7 @@ export async function runStructuredOutputFinalizationRetry({ harness, structured
     // active. This re-prompts ONCE in the same session, matching the legacy
     // single agent.continue() finalization re-prompt.
     await harness.setActiveTools(structuredTool ? [structuredTool.name] : []);
-    await harness.prompt(structuredOutputFinalizationPrompt());
+    await harness.prompt(structuredOutputFinalizationPrompt(prompts));
     await harness.waitForIdle();
   } catch (err) {
     runtimeWarnings.push({

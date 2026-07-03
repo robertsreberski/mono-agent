@@ -210,15 +210,19 @@ export function piCompactionSettings(policy) {
 /**
  * Resolve the compaction policy against the LIVE model's context window
  * (auto-recognized from the model actually serving the request, lowered by any
- * ceiling learned from a prior overflow). Drives the proactive trigger +
+ * ceiling learned from a prior overflow). A positive `contextWindowOverride`
+ * (from the typed `compaction` policy object) replaces the auto-recognized
+ * window — it is not a legacy `settings` key, so it is applied here directly
+ * rather than through the settings shim. Drives the proactive trigger +
  * reactive recovery.
- * @param {{harness: any, runtime: any, resolved: any, settings: any}} params
+ * @param {{harness: any, runtime: any, resolved: any, settings: any, contextWindowOverride?: number}} params
  */
-export function resolveLiveCompactionPolicy({ harness, runtime, resolved, settings }) {
-  return resolveAgentCompactionPolicy(
-    settings || {},
-    { contextWindow: effectiveContextWindow(harness, runtime, resolved) },
-  );
+export function resolveLiveCompactionPolicy({ harness, runtime, resolved, settings, contextWindowOverride }) {
+  const overrideWindow = Number(contextWindowOverride);
+  const contextWindow = Number.isFinite(overrideWindow) && overrideWindow > 0
+    ? overrideWindow
+    : effectiveContextWindow(harness, runtime, resolved);
+  return resolveAgentCompactionPolicy(settings || {}, { contextWindow });
 }
 
 /**
@@ -248,8 +252,11 @@ export async function runProactiveCompaction(runState, {
   // sends to the provider, then folded into the raw estimate so the trigger
   // reflects the real request size. ON by default (this corrects a real
   // undercount that lets seeded sessions overflow); set
-  // agent_compaction_fixed_overhead_enabled:false to restore the prior
-  // transcript-only trigger (overhead = 0). See estimateFixedOverheadTokens.
+  // compaction.fixedOverheadEnabled:false (or the deprecated
+  // agent_compaction_fixed_overhead_enabled:false) restores the prior
+  // transcript-only trigger (overhead = 0). The flag is already resolved onto
+  // policy.fixedOverheadEnabled, so read it there rather than re-sniffing the
+  // raw settings bag. See estimateFixedOverheadTokens.
   //
   // Only the TRAILING per-turn user message is passed here, NOT
   // options.messages. The prior transcript is already summed by the raw
@@ -262,9 +269,9 @@ export async function runProactiveCompaction(runState, {
   const perTurnContent = Array.isArray(promptImages) && promptImages.length > 0
     ? [{ type: "text", text: promptText }, ...promptImages]
     : promptText;
-  const fixedOverhead = options.settings?.agent_compaction_fixed_overhead_enabled !== false
+  const fixedOverhead = policy.fixedOverheadEnabled !== false
     ? estimateFixedOverheadTokens({
-      systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema),
+      systemPrompt: appendStructuredOutputInstruction(systemPrompt, options.outputSchema, options.prompts),
       tools,
       messages: [{ role: "user", content: perTurnContent }],
     })

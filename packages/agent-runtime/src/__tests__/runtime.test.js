@@ -147,6 +147,39 @@ describe("createRuntime", () => {
     expect(toolContext.bogus).toBeUndefined();
   });
 
+  it("merges prompt overrides with run-over-host per-field precedence", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const hostInstruction = () => "host-instruction";
+    const hostFinalization = () => "host-finalization";
+    const runInstruction = () => "run-instruction";
+    const runtime = createRuntime({
+      prompts: { structuredOutputInstruction: hostInstruction, structuredOutputFinalization: hostFinalization },
+    });
+    await runtime.run("sys", {
+      model: { sdk: "pi", model: "x" },
+      // Run overrides ONE field; the host's other prompt default must survive.
+      prompts: { structuredOutputInstruction: runInstruction },
+    });
+    const { prompts } = executeMock.mock.calls[0][1];
+    expect(prompts.structuredOutputInstruction).toBe(runInstruction); // run wins
+    expect(prompts.structuredOutputFinalization).toBe(hostFinalization); // host fills the rest
+  });
+
+  it("passes host-only prompt overrides through when the run supplies none", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const hostGuidance = () => "g";
+    const runtime = createRuntime({ prompts: { liveInputGuidance: hostGuidance } });
+    await runtime.run("sys", { model: { sdk: "pi", model: "x" } });
+    expect(executeMock.mock.calls[0][1].prompts).toEqual({ liveInputGuidance: hostGuidance });
+  });
+
+  it("omits prompts entirely when neither host nor run supply any", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const runtime = createRuntime();
+    await runtime.run("sys", { model: { sdk: "pi", model: "x" } });
+    expect(executeMock.mock.calls[0][1].prompts).toBeUndefined();
+  });
+
   it("two runtime instances keep independent tool contexts (no cross-instance clobber)", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const a = createRuntime({ workspace: "/tmp/a", runtimeBrand: { schemaPrefix: "aa" } });

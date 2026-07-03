@@ -55,6 +55,54 @@
  */
 
 /**
+ * @typedef {Object} RuntimeToolLimits
+ * Typed per-run tool-output limits (the supported replacement for the
+ * `agent_tool_*` / `agent_mcp_*` keys of the deprecated `settings` bag). Every
+ * field is optional; an omitted field falls back to the kernel default (see
+ * resolveAgentCompactionPolicy, agent/compaction.js).
+ * @property {number} [toolTextLimitChars]        Max chars of a builtin tool's text result.
+ * @property {number} [bashOutputLimitChars]      Max chars of bash stdout/stderr.
+ * @property {number} [mcpTextLimitChars]         Max chars of an MCP tool's text result.
+ * @property {number} [searchResultLimit]         Max Grep/search hits returned.
+ * @property {number} [imageInlineMaxBytes]       Max bytes of an inlined image result.
+ * @property {number} [toolPayloadMaxBytes]       Hard cap on a single tool_result payload.
+ * @property {number} [mcpCallTimeoutMs]          Per-MCP-call inactivity timeout.
+ * @property {number} [mcpCallMaxTotalTimeoutMs]  Hard wall-clock cap for one MCP call.
+ * @property {number} [bashTimeoutMs]             Documented for forward-compat; NOT wired to
+ *   any tool today (no `agent_bash_*_timeout` mechanism exists — bash reads its per-call
+ *   `timeout` argument), so setting it has no effect until a run-level default is introduced.
+ */
+
+/**
+ * @typedef {Object} RuntimeCompactionPolicy
+ * Typed per-run context-compaction policy (the supported replacement for the
+ * `agent_compaction_*` keys of the deprecated `settings` bag). Every field is
+ * optional; an omitted field falls back to the kernel default.
+ * @property {boolean} [enabled]              Whether auto-compaction runs at all.
+ * @property {number} [triggerRatio]          Fraction of the context window that arms the proactive trigger.
+ * @property {number} [keepRecentTokens]      Recent-token budget preserved across a compaction.
+ * @property {number} [summaryMaxTokens]      Max tokens of the generated summary.
+ * @property {number} [minSavingsTokens]      Minimum token savings required to keep a compaction.
+ * @property {boolean} [fixedOverheadEnabled] Whether the system-prompt + tool-schema overhead correction is folded into the trigger.
+ * @property {number} [contextWindowOverride] Forces the compaction window instead of the live-model-recognized one (applied at resolveLiveCompactionPolicy; has no legacy settings equivalent).
+ */
+
+/**
+ * @typedef {Object} RuntimePromptOverrides
+ * Optional overrides for the kernel's built-in prompt fragments. Precedence is
+ * run over host over the kernel default: an absent field leaves the built-in
+ * string in place. Supplied on both AgentRuntimeHostOptions (host default) and
+ * RuntimeRunOptions (per-run).
+ * @property {(systemPrompt: string) => string} [structuredOutputInstruction]
+ *   Replaces the StructuredOutput system-prompt instruction (receives the raw
+ *   system prompt, returns the augmented one). Only applied when an outputSchema is active.
+ * @property {() => string} [structuredOutputFinalization]
+ *   Replaces the structured-output finalization re-prompt.
+ * @property {(body: string) => string} [liveInputGuidance]
+ *   Replaces the live-input steering wrapper (receives the raw guidance body).
+ */
+
+/**
  * @typedef {Object} RuntimeRunOptions
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
@@ -75,7 +123,11 @@
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, runtime-context.js).
- * @property {Object} [settings]
+ * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
+ * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
+ * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
+ * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
+ * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
  * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
@@ -209,6 +261,7 @@
  * @property {string} [qaOutputDir]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject the workspace's sandbox package via the runtime-adapter package.
+ * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
  * @property {(parsed: {sdk: (string|null), provider?: string, model: string}) => (Object|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).

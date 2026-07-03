@@ -14,6 +14,7 @@ import {
   getPiBuiltinTools,
   initPiMcpTools,
 } from "../../../agent/tools/pi-bridge.js";
+import { readToolRuntime } from "../../../agent/tools/shared/runtime-context.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
 import { createStreamSubscriber } from "./stream-subscriber.js";
@@ -51,6 +52,16 @@ export async function buildTurnTools(runState, {
   const persistArtifact = options.persistArtifact || null;
   const qaOutputDir = options.qaOutputDir || options.runArtifactDir || null;
 
+  // Per-run sandbox override (item 7): precedence run impl > host impl >
+  // passthrough. When the run supplies its own RuntimeSandbox, thread a ctx copy
+  // whose `.sandbox` is that impl so this run's tools/MCP-stdio launcher enforce
+  // through it; otherwise the host/default ToolContext is used unchanged. The
+  // per-run policy DATA (sandboxPolicy) still merges monotonically inside
+  // resolveSandboxPolicy (I13) regardless of which impl is chosen.
+  const runCtx = options.sandbox
+    ? { ...(options.toolContext ?? readToolRuntime()), sandbox: options.sandbox }
+    : options.toolContext;
+
   // REUSED custom pieces: built-in tool sandboxing + allowlist/bloat filter +
   // approval gates. These are identical to the legacy bridge.
   // Cast: pi-bridge's tool-builder option bags are not precisely typed (their
@@ -83,7 +94,7 @@ export async function buildTurnTools(runState, {
       sandboxEngine: options.sandboxEngine,
       approvalManager,
       approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
-      ctx: options.toolContext,
+      ctx: runCtx,
     }));
 
   const structuredTool = createStructuredOutputTool(options.outputSchema, (value) => {
@@ -105,7 +116,7 @@ export async function buildTurnTools(runState, {
       toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
       sandboxPolicy: options.sandboxPolicy,
       sandboxEngine: options.sandboxEngine,
-      ctx: options.toolContext,
+      ctx: runCtx,
     }));
   // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
   // failed server (e.g. an stdio adapter-send child that closed on startup) lands in the run
@@ -171,7 +182,7 @@ export function buildTurnHarness(runState, {
     models: piModels,
     model,
     thinkingLevel,
-    systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema),
+    systemPrompt: appendStructuredOutputInstruction(systemPrompt, outputSchema, options.prompts),
     tools,
     streamOptions: { maxRetries, maxRetryDelayMs },
     steeringMode,
@@ -211,7 +222,7 @@ export function startLiveInput({ harness, options, onEvent }) {
       while (!runComplete && !options.abortSignal?.aborted) {
         const next = await iterator.next();
         if (next.done || runComplete || options.abortSignal?.aborted) break;
-        await harness.steer(formatLiveInputGuidance(next.value.body));
+        await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts));
       }
     } catch (err) {
       onEvent({

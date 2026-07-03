@@ -15,6 +15,7 @@ import { runtimeCapabilities } from "../runtime/capabilities.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { MAX_TOOL_RESULT_BYTES, summarisePayload } from "../../agent/tool-bloat.js";
 import { normalizeMcpToolParams } from "../../agent/tools/pi-bridge.js";
+import { deprecatedSettingsWarning } from "../../agent/compaction.js";
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import {
@@ -266,12 +267,21 @@ function claudeToolResponseBlocks(toolResponse) {
   }
 }
 
-function toolPayloadLimit(options) {
+// Resolve the tool_result byte cap, precedence:
+//   explicit options.toolPayloadMaxBytes
+//   -> typed options.toolLimits.toolPayloadMaxBytes
+//   -> DEPRECATED options.settings.agent_tool_payload_max_bytes (usedSettings)
+//   -> MAX_TOOL_RESULT_BYTES default.
+// `usedSettings` lets the caller emit one deprecation warning per run when the
+// legacy settings fallback was actually consumed.
+export function toolPayloadLimit(options) {
   const explicit = Number(options.toolPayloadMaxBytes);
-  if (Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+  if (Number.isFinite(explicit) && explicit > 0) return { bytes: Math.floor(explicit), usedSettings: false };
+  const typed = Number(options.toolLimits?.toolPayloadMaxBytes);
+  if (Number.isFinite(typed) && typed > 0) return { bytes: Math.floor(typed), usedSettings: false };
   const configured = Number(options.settings?.agent_tool_payload_max_bytes);
-  if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
-  return MAX_TOOL_RESULT_BYTES;
+  if (Number.isFinite(configured) && configured > 0) return { bytes: Math.floor(configured), usedSettings: true };
+  return { bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false };
 }
 
 function claudeEditPath(toolName, toolInput) {
@@ -483,10 +493,10 @@ function createClaudeCanUseTool(approvalManager, modelName) {
   };
 }
 
-async function* livePromptMessages({ initialPrompt, liveInput, sessionId }) {
+async function* livePromptMessages({ initialPrompt, liveInput, sessionId, prompts }) {
   yield makeSdkUserMessage(initialPrompt, sessionId);
   for await (const message of liveInput) {
-    yield makeSdkUserMessage(formatLiveInputGuidance(message.body), sessionId, message.id || randomUUID());
+    yield makeSdkUserMessage(formatLiveInputGuidance(message.body, prompts), sessionId, message.id || randomUUID());
   }
 }
 
@@ -515,7 +525,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
   const reusableProviderSessionId = pickSessionId(options.sessionId, options.providerSessionId);
   const persistArtifact = options.persistArtifact || null;
   const qaOutputDir = options.qaOutputDir || options.runArtifactDir || null;
-  const toolPayloadMaxBytes = toolPayloadLimit(options);
+  const { bytes: toolPayloadMaxBytes, usedSettings: toolPayloadFromSettings } = toolPayloadLimit(options);
   let providerSessionId = reusableProviderSessionId;
   let lastToolName = null;
   let toolResultsSeen = 0;
@@ -524,6 +534,16 @@ export async function generateClaudeResponse(systemPrompt, options) {
     if (!event) return;
     capturedEvents.push(event);
     onEvent(event);
+  }
+
+  // Deprecated `settings` fallback for the tool_result byte cap was consumed;
+  // surface the one-per-run deprecation warning (the typed `toolLimits` object
+  // is the supported path). mono-agent never passes `settings`, so this never
+  // fires there.
+  if (toolPayloadFromSettings) {
+    const warning = deprecatedSettingsWarning(["agent_tool_payload_max_bytes"]);
+    runtimeWarnings.push(warning);
+    emitEvent({ type: "runtime_warning", ...warning });
   }
 
   function noteToolUse(toolName) {
@@ -588,7 +608,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
   }
 
   const prompt = options.liveInput
-    ? livePromptMessages({ initialPrompt: promptString, liveInput: options.liveInput, sessionId: reusableProviderSessionId || randomUUID() })
+    ? livePromptMessages({ initialPrompt: promptString, liveInput: options.liveInput, sessionId: reusableProviderSessionId || randomUUID(), prompts: options.prompts })
     : promptString;
   const providerRequestStartedAt = Date.now();
   emitEvent({

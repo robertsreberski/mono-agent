@@ -660,7 +660,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         ]);
         if (turnCompleted || !turnReadyResolved) break;
       }
-      const input = userTextInput(formatLiveInputGuidance(message.body));
+      const input = userTextInput(formatLiveInputGuidance(message.body, options.prompts));
       try {
         const response = await client.request("turn/steer", {
           threadId,

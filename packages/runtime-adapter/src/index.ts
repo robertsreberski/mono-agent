@@ -35,6 +35,7 @@ export {
 export type { RuntimeErrorFactory, RuntimeResultParts } from "./runtime-helpers.js";
 export { parseMcpServers } from "./mcp-servers.js";
 export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
+export { resolveRuntimePolicies } from "./runtime-policies.js";
 export {
   isPrivateBaseUrl,
   runtimeOptionsForLocalProvider,
@@ -64,11 +65,15 @@ export type {
   MonoRuntimePricing,
   MonoRuntimeSelectionEntry,
   MonoRuntimeSupportDescription,
+  RuntimeCompactionPolicy,
   RuntimeEventLike,
   RuntimeExecutionMode,
   RuntimeMessage,
   RuntimeModelReference,
+  RuntimePolicies,
+  RuntimePromptOverrides,
   RuntimeResult,
   RuntimeRunOptions,
+  RuntimeToolLimits,
   RuntimeToolOptions,
 } from "./types.js";

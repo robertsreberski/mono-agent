@@ -74,6 +74,29 @@ function pickDefined(source, keys) {
   return out;
 }
 
+const PROMPT_OVERRIDE_KEYS = ["structuredOutputInstruction", "structuredOutputFinalization", "liveInputGuidance"];
+
+/**
+ * Per-field merge of the prompt overrides: a run-level override wins over the
+ * host-level default wins over the bridge's built-in default (an absent field
+ * leaves the bridge on its built-in string). Kept out of the `...hostDefaults,
+ * ...options` spread so a run that overrides ONE prompt does not drop the host's
+ * other prompt defaults (an object-replacing spread would).
+ * @param {import('./ai/types.js').RuntimePromptOverrides} [hostPrompts]
+ * @param {import('./ai/types.js').RuntimePromptOverrides} [runPrompts]
+ * @returns {import('./ai/types.js').RuntimePromptOverrides|undefined}
+ */
+function resolvePrompts(hostPrompts, runPrompts) {
+  if (!hostPrompts && !runPrompts) return undefined;
+  /** @type {Record<string, *>} */
+  const merged = {};
+  for (const key of PROMPT_OVERRIDE_KEYS) {
+    const value = /** @type {any} */ (runPrompts)?.[key] ?? /** @type {any} */ (hostPrompts)?.[key];
+    if (value !== undefined) merged[key] = value;
+  }
+  return merged;
+}
+
 /**
  * @param {AgentRuntimeHostOptions} [host]
  * @returns {AgentRuntimeInstance}
@@ -110,6 +133,7 @@ export function createRuntime(host = {}) {
         observers: [...hostObservers, ...callObservers],
         onEvent: options.onEvent,
       });
+      const prompts = resolvePrompts(host.prompts, options.prompts);
       const result = await bridge.execute(systemPrompt, {
         ...hostDefaults,
         ...options,
@@ -122,6 +146,9 @@ export function createRuntime(host = {}) {
         toolContext,
         observerHub: hub,
         onEvent: hub.emit,
+        // Merged AFTER the spreads so the per-field run>host>default precedence
+        // wins over either bag's whole-object `prompts`.
+        ...(prompts === undefined ? {} : { prompts }),
       });
       await hub.flush();
       return result;

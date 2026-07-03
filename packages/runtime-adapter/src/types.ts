@@ -102,6 +102,55 @@ export interface RuntimeResult {
   readonly [key: string]: unknown;
 }
 
+/**
+ * Typed per-run tool-output limits (mirrors agent-runtime's RuntimeToolLimits,
+ * ai/types.js). The supported replacement for the deprecated `settings` tool
+ * keys; build one with {@link resolveRuntimePolicies}.
+ */
+export interface RuntimeToolLimits {
+  readonly toolTextLimitChars?: number;
+  readonly bashOutputLimitChars?: number;
+  readonly mcpTextLimitChars?: number;
+  readonly searchResultLimit?: number;
+  readonly imageInlineMaxBytes?: number;
+  readonly toolPayloadMaxBytes?: number;
+  readonly mcpCallTimeoutMs?: number;
+  readonly mcpCallMaxTotalTimeoutMs?: number;
+  /** Documented for forward-compat; NOT wired to any tool today. */
+  readonly bashTimeoutMs?: number;
+}
+
+/**
+ * Typed per-run context-compaction policy (mirrors agent-runtime's
+ * RuntimeCompactionPolicy). The supported replacement for the deprecated
+ * `settings` compaction keys.
+ */
+export interface RuntimeCompactionPolicy {
+  readonly enabled?: boolean;
+  readonly triggerRatio?: number;
+  readonly keepRecentTokens?: number;
+  readonly summaryMaxTokens?: number;
+  readonly minSavingsTokens?: number;
+  readonly fixedOverheadEnabled?: boolean;
+  readonly contextWindowOverride?: number;
+}
+
+/** The pair {@link resolveRuntimePolicies} returns from a legacy settings bag. */
+export interface RuntimePolicies {
+  readonly toolLimits: RuntimeToolLimits;
+  readonly compaction: RuntimeCompactionPolicy;
+}
+
+/**
+ * Per-run prompt-fragment overrides (mirrors agent-runtime's
+ * RuntimePromptOverrides). Precedence run over host over the kernel default.
+ */
+export interface RuntimePromptOverrides {
+  readonly structuredOutputInstruction?: (systemPrompt: string) => string;
+  readonly structuredOutputFinalization?: () => string;
+  readonly liveInputGuidance?: (body: string) => string;
+}
+
 export interface RuntimeRunOptions {
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
@@ -116,6 +165,12 @@ export interface RuntimeRunOptions {
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
   readonly sandboxPolicy?: SandboxPolicy;
+  /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
+  readonly toolLimits?: RuntimeToolLimits;
+  /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
+  readonly compaction?: RuntimeCompactionPolicy;
+  /** Per-run prompt-fragment overrides. */
+  readonly prompts?: RuntimePromptOverrides;
   // Pi-native provider knobs (optional; ignored by other bridges).
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
@@ -190,6 +245,8 @@ export interface MonoRuntimeCompactionRecord {
 export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly observers?: readonly unknown[];
   readonly runtimeBrand?: unknown;
+  /** Host-level prompt-fragment override defaults; a per-run `prompts` wins over these. */
+  readonly prompts?: RuntimePromptOverrides;
   readonly resolveCustomPricing?: (parsed: MonoRuntimeParsedPricingModel) => MonoRuntimePricing | null;
   readonly resolvePiApiKey?: (provider: string) => Promise<string | undefined>;
   readonly persistArtifact?: (artifact: {
