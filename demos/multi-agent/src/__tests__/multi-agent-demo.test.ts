@@ -74,7 +74,7 @@ describe("multi-agent demo", () => {
         "multi-agent-researcher",
         "multi-agent-worker",
       ]);
-      expect(traceability.runs.map((run) => run.source.sourceId).sort()).toEqual([
+      expect(traceability.runs.map((run) => run.traceSource.sourceId).sort()).toEqual([
         "multi-agent-orchestrator",
         "multi-agent-researcher",
         "multi-agent-worker",
