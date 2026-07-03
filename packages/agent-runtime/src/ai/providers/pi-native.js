@@ -55,34 +55,29 @@ import {
   textFromContent,
   thinkingFromContent,
   toAgentMessages,
-  toolResultContent,
 } from "./pi-messages.js";
-import {
-  compactToolRawResult,
-  emitCaptured,
-  eventToolArgs,
-  jsonSerializable,
-  streamContentKey,
-} from "./pi-events.js";
+import { emitCaptured } from "./pi-events.js";
 import {
   isContextLimitError,
   normalizePiErrorMessage,
   parseContextLimitFromError,
 } from "./pi-errors.js";
-
-function usageFromMessages(messages = []) {
-  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-  for (const message of messages) {
-    if (message?.role !== "assistant") continue;
-    const next = message.usage || {};
-    usage.input += Number(next.input) || 0;
-    usage.output += Number(next.output) || 0;
-    usage.cacheRead += Number(next.cacheRead) || 0;
-    usage.cacheWrite += Number(next.cacheWrite) || 0;
-    usage.cost += Number(next.cost?.total) || 0;
-  }
-  return usage;
-}
+import {
+  appendStructuredOutputInstruction,
+  runStructuredOutputFinalizationRetry,
+  shouldRetryStructuredOutputFinalization,
+} from "./pi-native/structured-output.js";
+import { createStreamSubscriber } from "./pi-native/stream-subscriber.js";
+import {
+  abortedResult,
+  buildDiagnostics,
+  buildErrorDetails,
+  buildErrorResult,
+  buildSuccessResult,
+  emitCapabilitiesResolved,
+  emitUsageCostEvents,
+  usageFromMessages,
+} from "./pi-native/result-builder.js";
 
 function thinkingLevelForEffort(effort, capabilities) {
   if (!capabilities?.reasoning || capabilities.reasoning_mode === "none") return "off";
@@ -92,63 +87,6 @@ function thinkingLevelForEffort(effort, capabilities) {
   if (effort === "high") return "high";
   if (effort === "medium") return "medium";
   return "low";
-}
-
-function appendStructuredOutputInstruction(systemPrompt, outputSchema) {
-  if (!outputSchema) return systemPrompt;
-  return [
-    systemPrompt,
-    "",
-    "Structured output is available through the `StructuredOutput` tool.",
-    "When the final result is ready, call `StructuredOutput` with the complete JSON object matching the requested schema.",
-    "Do not also print the same JSON as prose unless tool calling is unavailable.",
-  ].join("\n");
-}
-
-function toolStartProgressText(toolName) {
-  if (typeof toolName !== "string" || toolName.trim().length === 0) return null;
-  return `Running ${toolName}...`;
-}
-
-function structuredOutputFinalizationPrompt() {
-  return [
-    "The previous assistant turn ended without submitting the required structured result.",
-    "Do not run tools, inspect files, or redo work.",
-    "Call only `StructuredOutput` once with the final object matching the requested schema, based on the completed transcript above.",
-    "Do not print prose before or after the tool call.",
-  ].join("\n");
-}
-
-function shouldRetryStructuredOutputFinalization({
-  outputSchema,
-  structuredResult,
-  finalText,
-  stopReason,
-  externalAbort,
-  maxTurnsHit,
-}) {
-  if (!outputSchema) return false;
-  if (structuredResult !== null && structuredResult !== undefined) return false;
-  if (String(finalText || "").trim()) return false;
-  if (externalAbort || maxTurnsHit) return false;
-  return stopReason !== "error" && stopReason !== "aborted";
-}
-
-function structuredOutputRetryDiagnostics(attempts, reason, failed) {
-  if (!attempts) return {};
-  return {
-    structured_output_finalization_retry_attempts: attempts,
-    structured_output_finalization_retry_reason: reason,
-    structured_output_finalization_retry_failed: !!failed,
-  };
-}
-
-function failureKindForPiError(message, diagnostics, { maxTurnsHit = false } = {}) {
-  if (!message) return null;
-  if (maxTurnsHit || isContextLimitError(message) || isLikelyContextTermination(message, diagnostics)) {
-    return "usage_limit";
-  }
-  return "provider_unavailable";
 }
 
 // AUTO-COMPACTION. pi-agent-core performs NO automatic in-loop compaction
@@ -496,51 +434,32 @@ function sessionUnavailableResult({
   };
 }
 
-function abortedResult({ resolved, options, events, runtimeWarnings, start, providerSessionId }) {
-  return {
-    text: null,
-    thinking: "",
-    events,
-    usage: {},
-    durationMs: Date.now() - start,
-    numTurns: 0,
-    model: resolved?.reference || resolved?.model || null,
-    effort: options.effort || null,
-    sdk: resolved?.sdk || "pi",
-    cancelled: true,
-    error: null,
-    failureKind: null,
-    providerSessionId,
-    runtimeWarnings,
-    diagnostics: {
-      provider_session_id: providerSessionId,
-      pi_stop_reason: "aborted",
-      pi_engine: "native",
-      external_abort: true,
-    },
-  };
-}
-
 export async function generatePiNativeResponse(systemPrompt, options = {}) {
   const resolved = options.model;
   const start = Date.now();
   const events = [];
   const runtimeWarnings = [];
-  const assistantTexts = [];
-  const assistantThinking = [];
-  const textDeltaIndexes = new Set();
-  const thinkingDeltaIndexes = new Set();
   let structuredResult = null;
   let mcpClients = [];
   let externalAbort = false;
-  let maxTurnsHit = false;
-  let turnCount = 0;
-  let toolResultsSeen = 0;
-  let lastToolName = null;
-  // toolCallId -> start timestamp, so we can emit per-tool execution latency.
-  const toolStartTimes = new Map();
   let harness = null;
   let removeAbortHandler = null;
+  // Mutable run state the extracted modules read/write. Grows across the
+  // decomposition (session-lifecycle + compaction fields land here in later
+  // commits); today it carries the stream subscriber's counters, dedup keys,
+  // and tool timings. `toolStartTimes` maps toolCallId -> start timestamp so
+  // per-tool execution latency can be emitted.
+  const runState = {
+    assistantTexts: [],
+    assistantThinking: [],
+    textDeltaIndexes: new Set(),
+    thinkingDeltaIndexes: new Set(),
+    toolStartTimes: new Map(),
+    turnCount: 0,
+    toolResultsSeen: 0,
+    lastToolName: null,
+    maxTurnsHit: false,
+  };
 
   const providerSessionId = options.sessionId
     || options.providerSessionId
@@ -859,88 +778,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       followUpMode: toolSteeringMode,
     });
 
-    harness.subscribe((event) => {
-      if (event.type === "message_update") {
-        const streamEvent = event.assistantMessageEvent;
-        if (streamEvent?.type === "text_delta" && streamEvent.delta) {
-          textDeltaIndexes.add(streamContentKey(streamEvent, "text"));
-          assistantTexts.push(streamEvent.delta);
-          onEvent({ type: "assistant", message: { content: [{ type: "text", text: streamEvent.delta }] } });
-        } else if (streamEvent?.type === "text_end" && streamEvent.content) {
-          const key = streamContentKey(streamEvent, "text");
-          if (!textDeltaIndexes.has(key)) {
-            assistantTexts.push(streamEvent.content);
-            onEvent({ type: "assistant", message: { content: [{ type: "text", text: streamEvent.content }] } });
-          }
-        } else if (streamEvent?.type === "thinking_delta" && streamEvent.delta) {
-          thinkingDeltaIndexes.add(streamContentKey(streamEvent, "thinking"));
-          assistantThinking.push(streamEvent.delta);
-          onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.delta }] } });
-        } else if (streamEvent?.type === "thinking_end" && streamEvent.content) {
-          const key = streamContentKey(streamEvent, "thinking");
-          if (!thinkingDeltaIndexes.has(key)) {
-            assistantThinking.push(streamEvent.content);
-            onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.content }] } });
-          }
-        }
-      } else if (event.type === "tool_execution_start") {
-        if (event.toolName) lastToolName = event.toolName;
-        if (event.toolCallId) toolStartTimes.set(event.toolCallId, Date.now());
-        const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
-        const progressText = toolStartProgressText(event.toolName);
-        if (progressText) {
-          onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: progressText }] } });
-        }
-        onEvent({
-          type: "assistant",
-          message: { content: [{ type: "tool_use", id: event.toolCallId, name: event.toolName, input }] },
-        });
-      } else if (event.type === "tool_execution_update") {
-        const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
-        onEvent({
-          type: "tool_update",
-          tool_use_id: event.toolCallId,
-          name: event.toolName,
-          input,
-          partial_result: jsonSerializable(event.partialResult, String(event.partialResult ?? "")),
-        });
-      } else if (event.type === "tool_execution_end") {
-        const resultContent = toolResultContent(event.result);
-        if (!event.isError) toolResultsSeen += 1;
-        const startedAt = toolStartTimes.get(event.toolCallId);
-        if (startedAt !== undefined) {
-          toolStartTimes.delete(event.toolCallId);
-          onEvent({
-            type: "tool_timing",
-            tool_use_id: event.toolCallId,
-            name: event.toolName,
-            execution_ms: Date.now() - startedAt,
-            is_error: !!event.isError,
-          });
-        }
-        onEvent({
-          type: "user",
-          message: {
-            content: [{
-              type: "tool_result",
-              tool_use_id: event.toolCallId,
-              content: resultContent,
-              raw_result: compactToolRawResult(jsonSerializable(event.result, resultContent), resultContent),
-              is_error: !!event.isError,
-            }],
-          },
-        });
-      } else if (event.type === "turn_end") {
-        turnCount += 1;
-        if (Number.isFinite(Number(options.maxTurns))
-          && Number(options.maxTurns) > 0
-          && turnCount >= Number(options.maxTurns)
-          && event.message?.stopReason === "toolUse") {
-          maxTurnsHit = true;
-          harness.abort();
-        }
-      }
-    });
+    harness.subscribe(createStreamSubscriber(runState, { onEvent, options, toolLimits, harness }));
 
     const abortHandler = () => {
       externalAbort = true;
@@ -1154,8 +992,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         assistantMessages,
         lastAssistant,
         stopReason: lastAssistant?.stopReason || null,
-        finalText: textFromContent(lastAssistant?.content) || assistantTexts.join(""),
-        finalThinking: thinkingFromContent(lastAssistant?.content) || assistantThinking.join(""),
+        finalText: textFromContent(lastAssistant?.content) || runState.assistantTexts.join(""),
+        finalThinking: thinkingFromContent(lastAssistant?.content) || runState.assistantThinking.join(""),
       };
     };
 
@@ -1172,34 +1010,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       finalText: state.finalText,
       stopReason: state.stopReason,
       externalAbort,
-      maxTurnsHit,
+      maxTurnsHit: runState.maxTurnsHit,
     })) {
-      structuredOutputFinalizationRetryAttempts = 1;
-      structuredOutputFinalizationRetryReason = "empty_final_output";
-      runtimeWarnings.push({
-        warning_kind: "structured_output_finalization_retry",
-        source: "pi",
-        reason: structuredOutputFinalizationRetryReason,
-        message: "Pi stopped without text or structured output; retrying once in the same session with only StructuredOutput enabled.",
-      });
-      const previousActive = harness.getActiveTools().map((toolDef) => toolDef.name);
-      try {
-        // The harness is idle after waitForIdle(), so re-prompt (not followUp,
-        // which only queues onto an active run) with only StructuredOutput
-        // active. This re-prompts ONCE in the same session, matching the legacy
-        // single agent.continue() finalization re-prompt.
-        await harness.setActiveTools(structuredTool ? [structuredTool.name] : []);
-        await harness.prompt(structuredOutputFinalizationPrompt());
-        await harness.waitForIdle();
-      } catch (err) {
-        runtimeWarnings.push({
-          warning_kind: "structured_output_finalization_retry_failed",
-          source: "pi",
-          message: err?.message || String(err),
-        });
-      } finally {
-        try { await harness.setActiveTools(previousActive); } catch { /* best-effort */ }
-      }
+      const retry = await runStructuredOutputFinalizationRetry({ harness, structuredTool, runtimeWarnings });
+      structuredOutputFinalizationRetryAttempts = retry.attempts;
+      structuredOutputFinalizationRetryReason = retry.reason;
       structuredOutputFinalizationRetryFailed = structuredResult === null || structuredResult === undefined;
       state = await captureState();
     }
@@ -1210,7 +1025,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       compactionPolicy?.enabled
       && !contextCompactionReactiveAttempted
       && !externalAbort
-      && !maxTurnsHit
+      && !runState.maxTurnsHit
       && !options.abortSignal?.aborted
     ) {
       const provisionalRaw = state.stopReason === "error" || state.stopReason === "aborted"
@@ -1275,75 +1090,47 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       cachedTokens: usage.cacheRead,
       cacheWriteTokens: usage.cacheWrite,
     });
-    if (usage.cacheRead > 0) {
-      onEvent({ type: "cache_hit", sdk: resolved.sdk, model: reference, tokens: usage.cacheRead, source: "prompt_cache" });
-    }
-    if (usage.cacheWrite > 0) {
-      onEvent({ type: "cache_miss", sdk: resolved.sdk, model: reference, tokens: usage.cacheWrite, source: "prompt_cache" });
-    }
-    onEvent({
-      type: "cost_accumulated",
-      sdk: resolved.sdk,
-      model: reference,
-      cumulativeUsd: Number(usage.cost) || Number(estimatedCost) || 0,
-      tokens: {
-        input: Number(usage.input) || 0,
-        output: Number(usage.output) || 0,
-        cacheReadTokens: Number(usage.cacheRead) || 0,
-        cacheCreationTokens: Number(usage.cacheWrite) || 0,
-      },
-    });
-    onEvent({
-      type: "provider_request_completed",
-      sdk: resolved.sdk,
-      model: reference,
-      runtime: "pi",
-      timestamp: Date.now(),
-      durationMs: Date.now() - start,
-      cancelled: externalAbort,
-    });
+    emitUsageCostEvents({ onEvent, resolved, reference, usage, estimatedCost, start, externalAbort });
 
     const rawErrorMessage = externalAbort
       ? null
-      : maxTurnsHit
+      : runState.maxTurnsHit
         ? "Pi agent stopped before final output: max turns reached"
         : (stopReason === "error" || stopReason === "aborted"
           ? lastAssistant?.errorMessage || runError?.message || "Pi agent aborted before final output"
           : (runError ? runError.message || String(runError) : null));
     const errorMessage = normalizePiErrorMessage(rawErrorMessage);
 
-    const diagnostics = {
-      provider_session_id: providerSessionId,
-      pi_stop_reason: stopReason,
-      pi_engine: "native",
-      max_turns_hit: maxTurnsHit,
-      max_turns: Number.isFinite(Number(options.maxTurns)) ? Number(options.maxTurns) : null,
-      turn_count: turnCount || runAssistantCount,
-      external_abort: externalAbort,
-      pi_max_retries: maxRetries,
-      ...(lastToolName ? { last_tool_name: lastToolName } : {}),
-      ...structuredOutputRetryDiagnostics(
-        structuredOutputFinalizationRetryAttempts,
-        structuredOutputFinalizationRetryReason,
-        structuredOutputFinalizationRetryFailed,
-      ),
-      ...contextCompactionDiagnostics,
+    const structuredRetry = {
+      attempts: structuredOutputFinalizationRetryAttempts,
+      reason: structuredOutputFinalizationRetryReason,
+      failed: structuredOutputFinalizationRetryFailed,
     };
-    const errorDetails = errorMessage ? {
-      pi_stop_reason: stopReason || "error",
-      last_tool_name: lastToolName,
-      tool_results_seen: toolResultsSeen,
-      turn_count: turnCount || runAssistantCount,
-      max_turns_hit: maxTurnsHit,
-      provider_session_id: providerSessionId,
-      pi_engine: "native",
-      ...structuredOutputRetryDiagnostics(
-        structuredOutputFinalizationRetryAttempts,
-        structuredOutputFinalizationRetryReason,
-        structuredOutputFinalizationRetryFailed,
-      ),
-      ...contextCompactionDiagnostics,
-    } : null;
+    const diagnostics = buildDiagnostics({
+      providerSessionId,
+      stopReason,
+      maxTurnsHit: runState.maxTurnsHit,
+      maxTurns: options.maxTurns,
+      turnCount: runState.turnCount,
+      runAssistantCount,
+      externalAbort,
+      maxRetries,
+      lastToolName: runState.lastToolName,
+      structuredRetry,
+      contextCompactionDiagnostics,
+    });
+    const errorDetails = buildErrorDetails({
+      errorMessage,
+      stopReason,
+      lastToolName: runState.lastToolName,
+      toolResultsSeen: runState.toolResultsSeen,
+      turnCount: runState.turnCount,
+      runAssistantCount,
+      maxTurnsHit: runState.maxTurnsHit,
+      providerSessionId,
+      structuredRetry,
+      contextCompactionDiagnostics,
+    });
 
     const capabilitiesUsed = buildCapabilitiesUsed({
       promptCacheActive: usage.cacheRead > 0 || usage.cacheWrite > 0,
@@ -1358,7 +1145,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // agent_compaction_enabled. See docs/reference/feature-registry.md runtime.context-compaction.
       contextCompactionApplied: compactionPolicy?.enabled ? contextCompactionApplied : null,
     });
-    onEvent({ type: "capabilities_resolved", sdk: resolved.sdk, model: reference, capabilitiesUsed });
+    emitCapabilitiesResolved(onEvent, { sdk: resolved.sdk, model: reference, capabilitiesUsed });
 
     // Re-check the abort signal: a cancel can land during the post-run work above
     // (live-input teardown, structured-output finalization retry) after the line
@@ -1450,37 +1237,27 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       }
     }
 
-    return {
-      text: finalText,
-      thinking: finalThinking,
+    return buildSuccessResult({
+      finalText,
+      finalThinking,
       events,
-      usage: {
-        input_tokens: usage.input || null,
-        output_tokens: usage.output || null,
-        cache_read_tokens: usage.cacheRead || null,
-        cache_creation_tokens: usage.cacheWrite || null,
-        cache_write_tokens: usage.cacheWrite || null,
-        cost_usd: usage.cost || estimatedCost,
-      },
-      durationMs: Date.now() - start,
-      numTurns: turnCount || runAssistantCount,
-      model: resolved.reference || `pi:${resolved.provider}:${resolved.model}`,
-      effort: options.effort || null,
-      sdk: resolved.sdk,
-      cancelled: externalAbort,
-      error: errorMessage,
+      usage,
+      estimatedCost,
+      start,
+      turnCount: runState.turnCount,
+      runAssistantCount,
+      resolved,
+      options,
+      externalAbort,
+      errorMessage,
       errorDetails,
-      failureKind: errorMessage
-        ? failureKindForPiError(errorMessage, diagnostics, { maxTurnsHit })
-        : null,
+      diagnostics,
+      maxTurnsHit: runState.maxTurnsHit,
       providerSessionId,
       runtimeWarnings,
-      diagnostics,
       capabilitiesUsed,
-      ...(structuredResult !== null && structuredResult !== undefined
-        ? { structuredResult, structuredResultSource: "StructuredOutput" }
-        : { structuredResult: undefined, structuredResultSource: null }),
-    };
+      structuredResult,
+    });
   } catch (err) {
     externalAbort ||= !!options.abortSignal?.aborted;
     // Drop a just-created FRESH durable session so a setup/run failure does not
@@ -1512,39 +1289,22 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       errorText: errorMessage,
       failureKind: "provider_unavailable",
     }).retryable;
-    return {
-      text: assistantTexts.join("") || null,
+    return buildErrorResult({
+      assistantTexts: runState.assistantTexts,
       events,
-      usage: {},
-      durationMs: Date.now() - start,
-      numTurns: turnCount,
-      model: resolved?.reference || resolved?.model || null,
-      effort: options.effort || null,
-      sdk: resolved?.sdk || "pi",
-      cancelled: externalAbort,
-      error: externalAbort ? null : errorMessage,
-      errorDetails: externalAbort ? null : {
-        pi_stop_reason: "error",
-        last_tool_name: lastToolName,
-        tool_results_seen: toolResultsSeen,
-        turn_count: turnCount,
-        max_turns_hit: maxTurnsHit,
-        provider_session_id: providerSessionId,
-        pi_engine: "native",
-        pi_error_retryable: isRetryable,
-      },
-      failureKind: externalAbort ? null : failureKindForPiError(errorMessage, {}, { maxTurnsHit }),
+      start,
+      turnCount: runState.turnCount,
+      resolved,
+      options,
+      externalAbort,
+      errorMessage,
+      lastToolName: runState.lastToolName,
+      toolResultsSeen: runState.toolResultsSeen,
+      maxTurnsHit: runState.maxTurnsHit,
       providerSessionId,
       runtimeWarnings,
-      diagnostics: {
-        provider_session_id: providerSessionId,
-        pi_stop_reason: externalAbort ? "aborted" : "error",
-        pi_engine: "native",
-        max_turns_hit: maxTurnsHit,
-        turn_count: turnCount,
-        external_abort: externalAbort,
-      },
-    };
+      isRetryable,
+    });
   } finally {
     if (sessionEntry) sessionEntry.busy = false;
     removeAbortHandler?.();
