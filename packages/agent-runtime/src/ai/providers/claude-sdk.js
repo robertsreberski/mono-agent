@@ -15,6 +15,7 @@ import { runtimeCapabilities } from "../runtime/capabilities.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { MAX_TOOL_RESULT_BYTES, summarisePayload } from "../../agent/tool-bloat.js";
 import { normalizeMcpToolParams } from "../../agent/tools/pi-bridge.js";
+import { deprecatedSettingsWarning } from "../../agent/compaction.js";
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import {
@@ -266,12 +267,28 @@ function claudeToolResponseBlocks(toolResponse) {
   }
 }
 
-function toolPayloadLimit(options) {
+// Resolve the tool_result byte cap. Precedence is PER-GROUP (MIGRATION.md §8):
+//   explicit options.toolPayloadMaxBytes
+//   -> typed options.toolLimits — when this group is PRESENT it wins wholesale:
+//      its toolPayloadMaxBytes is used if valid, otherwise the default; the
+//      DEPRECATED settings fallback below is never consulted for this group,
+//      even if toolLimits.toolPayloadMaxBytes itself is absent/invalid.
+//   -> DEPRECATED options.settings.agent_tool_payload_max_bytes (usedSettings),
+//      only consulted when options.toolLimits is entirely absent.
+//   -> MAX_TOOL_RESULT_BYTES default.
+// `usedSettings` lets the caller emit one deprecation warning per run when the
+// legacy settings fallback was actually consumed.
+export function toolPayloadLimit(options) {
   const explicit = Number(options.toolPayloadMaxBytes);
-  if (Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+  if (Number.isFinite(explicit) && explicit > 0) return { bytes: Math.floor(explicit), usedSettings: false };
+  if (options.toolLimits) {
+    const typed = Number(options.toolLimits.toolPayloadMaxBytes);
+    if (Number.isFinite(typed) && typed > 0) return { bytes: Math.floor(typed), usedSettings: false };
+    return { bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false };
+  }
   const configured = Number(options.settings?.agent_tool_payload_max_bytes);
-  if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
-  return MAX_TOOL_RESULT_BYTES;
+  if (Number.isFinite(configured) && configured > 0) return { bytes: Math.floor(configured), usedSettings: true };
+  return { bytes: MAX_TOOL_RESULT_BYTES, usedSettings: false };
 }
 
 function claudeEditPath(toolName, toolInput) {
@@ -289,6 +306,10 @@ function fileEditStateKey(input, toolUseID, path) {
   return toolUseID || input?.tool_use_id || input?.toolUseID || `${input?.tool_name || "file_edit"}:${path}`;
 }
 
+/**
+ * @param {any} change
+ * @param {{status?: any, before?: any, after?: any, error?: any}} [options]
+ */
 function fileEditPayload(change, { status, before, after, error } = {}) {
   const lineStats = statsForCompletedChange(change, before, after);
   const completedChange = lineStats ? { ...change, line_stats: lineStats } : change;
@@ -331,6 +352,11 @@ function createClaudeFileEditHooks({ cwd, emitEvent }) {
     state.started = true;
   }
 
+  /**
+   * @param {any} input
+   * @param {any} toolUseID
+   * @param {{status?: any, error?: any}} [options]
+   */
   function complete(input, toolUseID, { status, error } = {}) {
     const directKey = toolUseID || input?.tool_use_id || input?.toolUseID;
     const fallback = createState(input, toolUseID, { readBefore: false });
@@ -483,10 +509,10 @@ function createClaudeCanUseTool(approvalManager, modelName) {
   };
 }
 
-async function* livePromptMessages({ initialPrompt, liveInput, sessionId }) {
+async function* livePromptMessages({ initialPrompt, liveInput, sessionId, prompts }) {
   yield makeSdkUserMessage(initialPrompt, sessionId);
   for await (const message of liveInput) {
-    yield makeSdkUserMessage(formatLiveInputGuidance(message.body), sessionId, message.id || randomUUID());
+    yield makeSdkUserMessage(formatLiveInputGuidance(message.body, prompts), sessionId, message.id || randomUUID());
   }
 }
 
@@ -515,7 +541,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
   const reusableProviderSessionId = pickSessionId(options.sessionId, options.providerSessionId);
   const persistArtifact = options.persistArtifact || null;
   const qaOutputDir = options.qaOutputDir || options.runArtifactDir || null;
-  const toolPayloadMaxBytes = toolPayloadLimit(options);
+  const { bytes: toolPayloadMaxBytes, usedSettings: toolPayloadFromSettings } = toolPayloadLimit(options);
   let providerSessionId = reusableProviderSessionId;
   let lastToolName = null;
   let toolResultsSeen = 0;
@@ -524,6 +550,16 @@ export async function generateClaudeResponse(systemPrompt, options) {
     if (!event) return;
     capturedEvents.push(event);
     onEvent(event);
+  }
+
+  // Deprecated `settings` fallback for the tool_result byte cap was consumed;
+  // surface the one-per-run deprecation warning (the typed `toolLimits` object
+  // is the supported path). mono-agent never passes `settings`, so this never
+  // fires there.
+  if (toolPayloadFromSettings) {
+    const warning = deprecatedSettingsWarning(["agent_tool_payload_max_bytes"]);
+    runtimeWarnings.push(warning);
+    emitEvent({ type: "runtime_warning", ...warning });
   }
 
   function noteToolUse(toolName) {
@@ -552,6 +588,9 @@ export async function generateClaudeResponse(systemPrompt, options) {
     ? "default"
     : permissionMode;
   const nativeAgents = claudeNativeAgentDefinitions(options.nativeSubagents);
+  // Assembled incrementally, then handed across the SDK `query` boundary
+  // (outputFormat/resume/maxTurns are attached conditionally below).
+  /** @type {any} */
   const queryOptions = {
     systemPrompt,
     model: modelWithContextWindow(model.model, options.contextWindow),
@@ -588,7 +627,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
   }
 
   const prompt = options.liveInput
-    ? livePromptMessages({ initialPrompt: promptString, liveInput: options.liveInput, sessionId: reusableProviderSessionId || randomUUID() })
+    ? livePromptMessages({ initialPrompt: promptString, liveInput: options.liveInput, sessionId: reusableProviderSessionId || randomUUID(), prompts: options.prompts })
     : promptString;
   const providerRequestStartedAt = Date.now();
   emitEvent({
@@ -598,7 +637,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
     runtime: "sdk",
     timestamp: providerRequestStartedAt,
   });
-  const stream = query({ prompt, options: queryOptions });
+  const stream = query({ prompt: /** @type {any} */ (prompt), options: queryOptions });
 
   let text = "";
   let usage = {};
@@ -672,8 +711,12 @@ export async function generateClaudeResponse(systemPrompt, options) {
         text += delta;
         for (const toolName of assistantToolNames(event)) noteToolUse(toolName);
       }
-      else if (event.type === "error") {
-        const message = event.error?.message || event.error || "sdk stream error";
+      // The SDK's message union does not declare a runtime `error` event, but
+      // the runtime can emit one; keep this defensive branch and cast past the
+      // narrowed union.
+      else if (/** @type {any} */ (event).type === "error") {
+        const errorEvent = /** @type {any} */ (event);
+        const message = errorEvent.error?.message || errorEvent.error || "sdk stream error";
         if (hasPreservableFinalOutput()) {
           preservePostSuccessError(`Claude SDK emitted an error after final output; preserved final result. ${message}`);
         } else {
@@ -711,7 +754,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
             if (failureKind === "invalid_result") {
               runtimeWarnings.push(makeRuntimeWarning(
                 resultError.message,
-                `${readRuntimeBrand().schemaPrefix}_result_validation`,
+                `${(options.toolContext?.runtimeBrand ?? readRuntimeBrand()).schemaPrefix}_result_validation`,
               ));
             }
             errorDetails = buildClaudeErrorDetails({

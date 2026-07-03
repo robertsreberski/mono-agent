@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { failClosedSandboxPolicy } from "@mono-agent/sandbox";
+import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   coerceMcpContent,
   getPiBuiltinTools,
@@ -34,6 +34,14 @@ function tempWorkspace() {
   tempDirs.push(dir);
   return dir;
 }
+
+beforeEach(() => {
+  // The fake sandbox fixture gives tests that supply their own `sandboxEngine`
+  // realistic engine-delegated command preparation — see helpers/fake-sandbox.js.
+  // (passthroughSandbox, the kernel's zero-dependency default, fails closed on
+  // any native-mode policy instead — see sandbox-seam.test.js.)
+  configureToolRuntime({ sandbox: createFakeSandbox() });
+});
 
 afterEach(() => {
   resetToolRuntime();
@@ -563,6 +571,96 @@ describe("pi MCP tool helpers", () => {
 
   it("does not create read_skill when neither skillsRoot nor dataDir is supplied", () => {
     const tools = getPiBuiltinTools([], { skillNames: ["research"] });
+    expect(tools.find((tool) => tool.name === "read_skill")).toBeUndefined();
+  });
+
+  // Phase 5: read_skill accepts pi's neutral Skill shape ({name, description,
+  // content, filePath, ...}) and derives each skill's root from its own filePath
+  // when no shared skillsRoot/dataDir is threaded.
+  it("read_skill accepts pi's Skill shape and derives root from a nested filePath", async () => {
+    const root = tempWorkspace();
+    const filePath = join(root, "skills", "research", "SKILL.md");
+    mkdirSync(join(root, "skills", "research"), { recursive: true });
+    writeFileSync(filePath, "---\nname: research\n---\n# Research\n\npi-shape body.\n");
+
+    const tools = getPiBuiltinTools([], {
+      skills: [{ name: "research", description: "when researching", content: "ignored — read lazily", filePath }],
+    });
+    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    expect(readSkill).toBeTruthy();
+    expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
+
+    const result = await readSkill.execute("read_skill:pi", { name: "research" });
+    expect(result.content[0].text).toContain("pi-shape body.");
+    expect(result.content[0].text).not.toContain("name: research");
+    // The note points at the skill's own directory (the derived one-up root is
+    // a prefix of this path, so asserting on it separately would be a weaker
+    // duplicate of this check).
+    expect(result.content[0].text).toContain(join(root, "skills", "research"));
+  });
+
+  it("read_skill accepts a flat <root>/<name>.md filePath (pi loadSkills flat form)", async () => {
+    const root = tempWorkspace();
+    const filePath = join(root, "writing.md");
+    writeFileSync(filePath, "# Writing\n\nflat skill body.\n");
+
+    const tools = getPiBuiltinTools([], {
+      skills: [{ name: "writing", description: "d", content: "c", filePath }],
+    });
+    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    const result = await readSkill.execute("read_skill:flat", { name: "writing" });
+    expect(result.content[0].text).toContain("flat skill body.");
+  });
+
+  it("prefers a shared skillsRoot over per-skill filePath (filePath used only when skillsRoot absent)", async () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nshared-root body.\n");
+    // A DIFFERENT file the skill's filePath points at — must be ignored while a
+    // shared root is present.
+    const strayPath = join(root, "elsewhere", "research", "SKILL.md");
+    mkdirSync(join(root, "elsewhere", "research"), { recursive: true });
+    writeFileSync(strayPath, "# Research\n\nstray body — should not be read.\n");
+
+    const tools = getPiBuiltinTools([], {
+      skillsRoot,
+      skillNames: ["research"],
+      skills: [{ name: "research", description: "d", content: "c", filePath: strayPath }],
+    });
+    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    const result = await readSkill.execute("read_skill:shared", { name: "research" });
+    expect(result.content[0].text).toContain("shared-root body.");
+    expect(result.content[0].text).not.toContain("stray body");
+  });
+
+  it("read_skill supports the minimal {name}+skillsRoot form via the skills param", async () => {
+    // agent-harness passes minimal {name} objects plus a shared skillsRoot; the
+    // bridge maps them to skillNames AND forwards the objects. With a shared root
+    // the objects lack filePath, so resolution stays on the shared-root path.
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nminimal-form body.\n");
+
+    const tools = getPiBuiltinTools([], {
+      skillsRoot,
+      skillNames: ["research"],
+      skills: [{ name: "research" }],
+    });
+    const readSkill = tools.find((tool) => tool.name === "read_skill");
+    expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
+    const result = await readSkill.execute("read_skill:min", { name: "research" });
+    expect(result.content[0].text).toContain("minimal-form body.");
+  });
+
+  it("does not create read_skill for pi-shape skills whose name is unsafe or filePath is missing", () => {
+    const tools = getPiBuiltinTools([], {
+      skills: [
+        { name: "../escape", description: "d", content: "c", filePath: "/tmp/escape/SKILL.md" },
+        { name: "nofile", description: "d", content: "c" },
+      ],
+    });
     expect(tools.find((tool) => tool.name === "read_skill")).toBeUndefined();
   });
 

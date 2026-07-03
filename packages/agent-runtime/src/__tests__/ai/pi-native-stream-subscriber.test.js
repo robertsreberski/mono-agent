@@ -1,0 +1,147 @@
+import { describe, expect, it } from "vitest";
+import { createStreamSubscriber, toolStartProgressText } from "../../ai/providers/pi-native/stream-subscriber.js";
+
+function freshRunState() {
+  return {
+    assistantTexts: [],
+    assistantThinking: [],
+    textDeltaIndexes: new Set(),
+    thinkingDeltaIndexes: new Set(),
+    toolStartTimes: new Map(),
+    turnCount: 0,
+    toolResultsSeen: 0,
+    lastToolName: null,
+    maxTurnsHit: false,
+  };
+}
+
+function harnessDouble() {
+  const calls = { aborts: 0 };
+  return { calls, abort: () => { calls.aborts += 1; } };
+}
+
+function driver(overrides = {}) {
+  const runState = freshRunState();
+  const emitted = [];
+  const harness = harnessDouble();
+  const handler = createStreamSubscriber(runState, {
+    onEvent: (event) => emitted.push(event),
+    options: { cwd: "/repo", maxTurns: overrides.maxTurns },
+    toolLimits: {},
+    harness,
+  });
+  return { runState, emitted, harness, handler };
+}
+
+const msgUpdate = (assistantMessageEvent) => ({ type: "message_update", assistantMessageEvent });
+
+describe("createStreamSubscriber — text/thinking dedup", () => {
+  it("streams a text delta and suppresses the matching text_end (same content index)", () => {
+    const { runState, emitted, handler } = driver();
+    handler(msgUpdate({ type: "text_delta", delta: "hel", contentIndex: 0 }));
+    handler(msgUpdate({ type: "text_delta", delta: "lo", contentIndex: 0 }));
+    handler(msgUpdate({ type: "text_end", content: "hello", contentIndex: 0 }));
+
+    expect(runState.assistantTexts.join("")).toBe("hello");
+    const textEvents = emitted.filter((e) => e.type === "assistant" && e.message.content[0].type === "text");
+    // Two deltas emitted; the text_end is deduped because its index streamed.
+    expect(textEvents.map((e) => e.message.content[0].text)).toEqual(["hel", "lo"]);
+  });
+
+  it("emits a text_end that never streamed as a delta (no matching index)", () => {
+    const { runState, emitted, handler } = driver();
+    handler(msgUpdate({ type: "text_end", content: "whole", contentIndex: 2 }));
+    expect(runState.assistantTexts).toEqual(["whole"]);
+    expect(emitted.filter((e) => e.type === "assistant")).toHaveLength(1);
+  });
+
+  it("dedups thinking the same way", () => {
+    const { runState, emitted, handler } = driver();
+    handler(msgUpdate({ type: "thinking_delta", delta: "hm", contentIndex: 0 }));
+    handler(msgUpdate({ type: "thinking_end", content: "hm", contentIndex: 0 }));
+    handler(msgUpdate({ type: "thinking_end", content: "fresh", contentIndex: 5 }));
+
+    expect(runState.assistantThinking).toEqual(["hm", "fresh"]);
+    const thinkingTexts = emitted
+      .filter((e) => e.type === "assistant" && e.message.content[0].type === "thinking")
+      .map((e) => e.message.content[0].text);
+    expect(thinkingTexts).toEqual(["hm", "fresh"]);
+  });
+});
+
+describe("createStreamSubscriber — tool lifecycle + timing", () => {
+  it("emits progress + tool_use on start, tool_update on update, tool_timing + tool_result on end", () => {
+    const { runState, emitted, handler } = driver();
+    handler({ type: "tool_execution_start", toolName: "my_tool", toolCallId: "call-1", args: { a: 1 } });
+    handler({ type: "tool_execution_update", toolName: "my_tool", toolCallId: "call-1", args: { a: 1 }, partialResult: "partial" });
+    handler({ type: "tool_execution_end", toolName: "my_tool", toolCallId: "call-1", result: "final", isError: false });
+
+    expect(runState.lastToolName).toBe("my_tool");
+    expect(runState.toolResultsSeen).toBe(1);
+    // Start emits a "Running my_tool..." thinking line + the tool_use.
+    expect(emitted.some((e) => e.type === "assistant" && e.message.content[0].text === "Running my_tool...")).toBe(true);
+    expect(emitted.some((e) => e.type === "assistant" && e.message.content[0].type === "tool_use" && e.message.content[0].id === "call-1")).toBe(true);
+    expect(emitted.some((e) => e.type === "tool_update" && e.tool_use_id === "call-1")).toBe(true);
+    const timing = emitted.find((e) => e.type === "tool_timing");
+    expect(timing).toMatchObject({ tool_use_id: "call-1", name: "my_tool", is_error: false });
+    expect(typeof timing.execution_ms).toBe("number");
+    const result = emitted.find((e) => e.type === "user");
+    expect(result.message.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "call-1", is_error: false });
+    // toolStartTimes cleaned up after the timing event.
+    expect(runState.toolStartTimes.has("call-1")).toBe(false);
+  });
+
+  it("does not count an errored tool result and marks the timing/result is_error", () => {
+    const { runState, emitted, handler } = driver();
+    handler({ type: "tool_execution_start", toolName: "t", toolCallId: "c", args: {} });
+    handler({ type: "tool_execution_end", toolName: "t", toolCallId: "c", result: "boom", isError: true });
+    expect(runState.toolResultsSeen).toBe(0);
+    expect(emitted.find((e) => e.type === "tool_timing").is_error).toBe(true);
+    expect(emitted.find((e) => e.type === "user").message.content[0].is_error).toBe(true);
+  });
+
+  it("emits no tool_timing when the end has no recorded start", () => {
+    const { emitted, handler } = driver();
+    handler({ type: "tool_execution_end", toolName: "t", toolCallId: "unseen", result: "x", isError: false });
+    expect(emitted.some((e) => e.type === "tool_timing")).toBe(false);
+  });
+});
+
+describe("createStreamSubscriber — turn counting + maxTurns stop", () => {
+  it("increments turnCount on turn_end", () => {
+    const { runState, handler } = driver();
+    handler({ type: "turn_end", message: { stopReason: "endTurn" } });
+    handler({ type: "turn_end", message: { stopReason: "endTurn" } });
+    expect(runState.turnCount).toBe(2);
+  });
+
+  it("aborts and flags maxTurnsHit when the crossing turn ended to run more tools", () => {
+    const { runState, harness, handler } = driver({ maxTurns: 1 });
+    handler({ type: "turn_end", message: { stopReason: "toolUse" } });
+    expect(runState.maxTurnsHit).toBe(true);
+    expect(harness.calls.aborts).toBe(1);
+  });
+
+  it("does not stop when the crossing turn ended for a non-tool reason", () => {
+    const { runState, harness, handler } = driver({ maxTurns: 1 });
+    handler({ type: "turn_end", message: { stopReason: "endTurn" } });
+    expect(runState.maxTurnsHit).toBe(false);
+    expect(harness.calls.aborts).toBe(0);
+  });
+
+  it("does not stop before the ceiling is crossed", () => {
+    const { runState, harness, handler } = driver({ maxTurns: 3 });
+    handler({ type: "turn_end", message: { stopReason: "toolUse" } });
+    expect(runState.maxTurnsHit).toBe(false);
+    expect(harness.calls.aborts).toBe(0);
+  });
+});
+
+describe("toolStartProgressText", () => {
+  it("returns a Running line for a valid name and null for blanks", () => {
+    expect(toolStartProgressText("Bash")).toBe("Running Bash...");
+    expect(toolStartProgressText("   ")).toBeNull();
+    expect(toolStartProgressText("")).toBeNull();
+    expect(toolStartProgressText(null)).toBeNull();
+  });
+});

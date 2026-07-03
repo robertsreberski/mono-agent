@@ -13,6 +13,7 @@ pnpm-debug.log*
 yarn-error.log*
 mono-agent.config.json
 packages/*/dist/
+packages/*/types/
 demos/*/dist/
 # memory-bujo SQLite index — disposable, rebuildable from canonical markdown (spec §6.1)
 memory.db

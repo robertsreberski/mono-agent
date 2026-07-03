@@ -1,14 +1,15 @@
 // Pi-native AgentHarness bridge integration.
 //
-// Drives generatePiNativeResponse end-to-end through pi-ai's own
-// `registerFauxProvider`: a real provider is registered into pi-ai's API
-// registry, so the REAL AgentHarness + REAL `streamSimple` dispatch run with
-// scripted assistant responses and no network/API key. This exercises the
-// production harness path while keeping the provider deterministic.
+// Drives generatePiNativeResponse end-to-end through pi-ai's own `fauxProvider`:
+// a real provider is added to a `Models` collection, so the REAL AgentHarness +
+// REAL `streamSimple` dispatch run with scripted assistant responses and no
+// network/API key. This exercises the production harness path while keeping the
+// provider deterministic.
 //
-// The bridge's `piResolvedModel` seam hands the harness the faux Model
-// directly (the faux model is only reachable via the registration handle, not
-// the static model registry).
+// pi 0.80 drives model requests through `Models`, so the bridge is handed both
+// the faux Model (via the `piResolvedModel` seam) and the faux `Models`
+// collection (via `piResolvedModels`) — the faux provider is not in pi's
+// builtin catalog, so it can only be reached through an explicit collection.
 //
 // The native bridge must return the SAME unified result shape and emit the
 // SAME normalized runtime events as the legacy pi-sdk bridge.
@@ -17,14 +18,20 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createModels,
   fauxAssistantMessage,
+  fauxProvider,
   fauxText,
   fauxThinking,
   fauxToolCall,
-  registerFauxProvider,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { generatePiNativeResponse, splitPromptMessages } from "../../ai/providers/pi-native.js";
+import {
+  createDynamicCredentialStore,
+  generatePiNativeResponse,
+  splitPromptMessages,
+} from "../../ai/providers/pi-native.js";
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 
@@ -70,42 +77,85 @@ describe("splitPromptMessages (pi-native multimodal preservation)", () => {
   });
 });
 
-describe("pi-sdk.js compatibility shim", () => {
-  it("re-exports the pi-native bridge + helpers under the legacy names", async () => {
-    const shim = await import("../../ai/providers/pi-sdk.js");
-    expect(typeof shim.generatePiResponse).toBe("function");
-    expect(shim.piRuntimeBridge?.kind).toBe("pi");
-    expect(typeof shim.piRuntimeBridge?.execute).toBe("function");
-    expect(shim.piOpenAiBackend?.execute).toBe(shim.generatePiResponse);
-    expect(typeof shim.isContextLimitError).toBe("function");
-    expect(typeof shim.normalizePiErrorMessage).toBe("function");
+// pi 0.80 resolves request auth through a Models CredentialStore instead of the
+// removed harness getApiKeyAndHeaders hook. These assert the bridge's per-run
+// key-resolution contract survived the migration: apiKeys map wins, else the
+// host resolvePiApiKey callback, and a callback failure emits a pi_auth_failed
+// runtime warning and proceeds keyless (never throwing a hard auth error).
+describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
+  it("returns the apiKeys map entry as an api_key credential without consulting the callback", async () => {
+    let called = false;
+    const store = createDynamicCredentialStore(
+      new Map([["anthropic", "map-key"]]),
+      async () => { called = true; return "callback-key"; },
+      [],
+    );
+    expect(await store.read("anthropic")).toEqual({ type: "api_key", key: "map-key" });
+    expect(called).toBe(false);
+  });
+
+  it("falls back to resolvePiApiKey when the map has no entry", async () => {
+    const store = createDynamicCredentialStore(new Map(), async (provider) => `key-for-${provider}`, []);
+    expect(await store.read("openai")).toEqual({ type: "api_key", key: "key-for-openai" });
+  });
+
+  it("emits a pi_auth_failed warning and proceeds keyless when resolvePiApiKey throws", async () => {
+    const warnings = [];
+    const store = createDynamicCredentialStore(
+      new Map(),
+      async () => { throw new Error("boom"); },
+      warnings,
+    );
+    // Resolves to no credential rather than rejecting: a keyless read lets a
+    // builtin provider fall back to its own env vars, exactly as the removed
+    // getApiKeyAndHeaders hook did when it returned undefined.
+    await expect(store.read("anthropic")).resolves.toBeUndefined();
+    expect(warnings).toContainEqual({ warning_kind: "pi_auth_failed", provider: "anthropic", message: "boom" });
+  });
+
+  it("returns no credential (env fallback) when no key source is available, never throwing", async () => {
+    const store = createDynamicCredentialStore(new Map(), undefined, []);
+    await expect(store.read("google")).resolves.toBeUndefined();
+  });
+
+  it("treats an empty-string key as no credential", async () => {
+    const store = createDynamicCredentialStore(new Map(), async () => "", []);
+    expect(await store.read("openai")).toBeUndefined();
   });
 });
 
 let faux = null;
+let fauxModels = null;
 
-function setup({ reasoning = false } = {}) {
-  faux = registerFauxProvider({
+// Register a faux provider into a fresh `Models` collection and hand its model
+// back. `modelDef` overrides merge onto the base faux model (e.g. `reasoning`,
+// `input`). The collection is stashed so `runOptions` can inject it.
+function setup(modelDef = {}) {
+  faux = fauxProvider({
     provider: "faux",
-    models: [{ id: "faux-model", reasoning }],
+    models: [{ id: "faux-model", ...modelDef }],
     tokensPerSecond: undefined,
   });
+  fauxModels = createModels();
+  fauxModels.setProvider(faux.provider);
   return faux.getModel();
 }
 
 beforeEach(() => {
   faux = null;
+  fauxModels = null;
 });
 
 afterEach(() => {
-  faux?.unregister();
   faux = null;
+  fauxModels = null;
 });
 
 function runOptions(model, overrides = {}) {
   return {
     model: { sdk: "pi", provider: "faux", model: "faux-model", reference: "pi:faux:faux-model" },
     piResolvedModel: model,
+    piResolvedModels: fauxModels,
     effort: "none",
     allowedTools: [],
     ...overrides,
@@ -156,12 +206,7 @@ describe("pi-native AgentHarness bridge", () => {
     // (`{ images }`). Passing a bare ImageContent[] as the second positional arg
     // makes `options?.images` undefined, so the image is silently dropped and
     // never reaches the model. Assert the image block survives to the provider.
-    faux = registerFauxProvider({
-      provider: "faux",
-      models: [{ id: "faux-model", input: ["text", "image"] }],
-      tokensPerSecond: undefined,
-    });
-    const model = faux.getModel();
+    const model = setup({ input: ["text", "image"] });
 
     let capturedMessages = null;
     faux.setResponses([
@@ -492,6 +537,127 @@ describe("pi-native AgentHarness bridge", () => {
     }));
     expect(result.error).toBeNull();
     expect(result.capabilitiesUsed.context_compaction_applied).toBeNull();
+  });
+});
+
+describe("pi-native typed policy objects + deprecated settings shim", () => {
+  const deprecationWarnings = (result) =>
+    (result.runtimeWarnings || []).filter((warning) => warning?.warning_kind === "deprecated_settings_option");
+
+  async function grepClampRun(overrides) {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-typed-"));
+    try {
+      writeFileSync(join(root, "a.txt"), "needle here\n");
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Grep", { pattern: "needle" }, { id: "g-1" })]),
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const onEvent = vi.fn();
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Grep"],
+        messages: [{ role: "user", content: "search" }],
+        onEvent,
+        ...overrides,
+      }));
+      expect(result.error).toBeNull();
+      const events = onEvent.mock.calls.map(([event]) => event);
+      const toolUse = events
+        .filter((event) => event?.message?.content?.[0]?.type === "tool_use")
+        .map((event) => event.message.content[0])
+        .find((block) => block.name === "Grep");
+      return { result, toolUse };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("applies typed toolLimits clamps to tool params, with no deprecation warning", async () => {
+    const { result, toolUse } = await grepClampRun({
+      toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
+    });
+    // 1000 / 25 are the configured clamps; the fallback path would yield 16000 / 100.
+    expect(toolUse.input.max_output_chars).toBe(1000);
+    expect(toolUse.input.head_limit).toBe(25);
+    expect(deprecationWarnings(result)).toHaveLength(0);
+  });
+
+  it("emits exactly one deprecated_settings_option warning (with the consumed keys) when settings is used", async () => {
+    const { result } = await grepClampRun({
+      settings: { agent_tool_text_limit_chars: 1000, agent_search_result_limit: 25 },
+    });
+    const warnings = deprecationWarnings(result);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].settings_keys).toEqual(
+      expect.arrayContaining(["agent_tool_text_limit_chars", "agent_search_result_limit"]),
+    );
+  });
+
+  it("lets a typed toolLimits object win over settings for its group (settings ignored, no warning)", async () => {
+    const { result, toolUse } = await grepClampRun({
+      toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
+      settings: { agent_tool_text_limit_chars: 5000, agent_search_result_limit: 77 },
+    });
+    // Typed object wins; the settings tool keys are ignored, so no group falls
+    // back to settings and no deprecation warning fires.
+    expect(toolUse.input.max_output_chars).toBe(1000);
+    expect(toolUse.input.head_limit).toBe(25);
+    expect(deprecationWarnings(result)).toHaveLength(0);
+  });
+
+  it("emits no deprecation warning when neither settings nor typed objects are passed", async () => {
+    const { result } = await grepClampRun({});
+    expect(deprecationWarnings(result)).toHaveLength(0);
+  });
+
+  it("honors a typed compaction policy object (enabled:false -> context_compaction_applied null)", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "hi" }],
+      compaction: { enabled: false },
+    }));
+    expect(result.error).toBeNull();
+    expect(result.capabilitiesUsed.context_compaction_applied).toBeNull();
+    expect(result.runtimeWarnings.filter((w) => w?.warning_kind === "deprecated_settings_option")).toHaveLength(0);
+  });
+
+  it("routes tool sandboxing through a per-run RuntimeSandbox override (run impl > host impl)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-sandbox-"));
+    try {
+      const recorder = (calls) => ({
+        mergePolicies: (a, b) => b ?? a,
+        prepareCommand: async ({ command }) => {
+          calls.push(command);
+          return { ...command, args: command.args ?? [], cwd: command.cwd ?? root, sandboxed: false };
+        },
+        networkAllowsUrl: () => true,
+      });
+      const hostCalls = [];
+      const runCalls = [];
+      // Host ToolContext carries one sandbox impl; the run overrides it with another.
+      const toolContext = createToolContext({ workspace: root, sandbox: recorder(hostCalls) });
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Bash", { command: "echo hi", workdir: root }, { id: "b-1" })]),
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Bash"],
+        messages: [{ role: "user", content: "run it" }],
+        toolContext,
+        sandbox: recorder(runCalls),
+      }));
+      expect(result.error).toBeNull();
+      // The per-run sandbox impl enforced this run's Bash call; the host impl was
+      // NOT consulted (run impl > host impl).
+      expect(runCalls.some((command) => (command.args || []).some((arg) => /echo hi/.test(arg)))).toBe(true);
+      expect(hostCalls).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

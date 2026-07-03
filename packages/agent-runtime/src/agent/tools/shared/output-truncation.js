@@ -9,8 +9,8 @@ function sanitizeName(value) {
   return String(value || "tool").replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "tool";
 }
 
-export function writeToolArtifact(label, text) {
-  const { toolArtifactDir, runId } = readToolRuntime();
+export function writeToolArtifact(label, text, ctx) {
+  const { toolArtifactDir, runId } = ctx ?? readToolRuntime();
   if (!toolArtifactDir) return null;
   try {
     const safeRunId = sanitizeName(runId || "manual");
@@ -33,16 +33,21 @@ export function truncationSuffix({ label, shown, total, artifact, hint }) {
   ].filter(Boolean).join("\n");
 }
 
+/**
+ * @param {string} text
+ * @param {{label?: string, maxChars?: number, strategy?: string, hint?: string, ctx?: any}} [options]
+ */
 export function capChars(text, {
   label = "tool",
   maxChars = DEFAULT_MAX_TOOL_OUTPUT_CHARS,
   strategy = "head",
   hint,
+  ctx,
 } = {}) {
   const value = String(text || "");
   const limit = boundedInt(maxChars, DEFAULT_MAX_TOOL_OUTPUT_CHARS, { min: 200 });
   if (value.length <= limit) return value;
-  const artifact = writeToolArtifact(label, value);
+  const artifact = writeToolArtifact(label, value, ctx);
   const suffix = truncationSuffix({ label, shown: limit, total: value.length, artifact, hint });
   const budget = Math.max(0, limit - suffix.length);
   if (strategy === "head_tail" && budget > 200) {

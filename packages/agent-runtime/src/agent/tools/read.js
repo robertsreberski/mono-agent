@@ -20,9 +20,13 @@ const IMAGE_MIME_BY_EXT = {
   ".bmp": "image/bmp",
 };
 
-export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy } = {}) {
-  const target = resolveToolPath(file_path, workdir);
-  if (!isPathAllowed(target, workdir, { sandboxPolicy })) return `Error: Path not allowed: ${file_path}`;
+/**
+ * @param {{file_path: string, offset?: number, start_line?: number, limit?: number, max_output_chars?: number, workdir?: string}} params
+ * @param {{sandboxPolicy?: any, ctx?: any}} [options]
+ */
+export async function readToolImpl({ file_path, offset = 0, start_line, limit, max_output_chars, workdir }, { sandboxPolicy, ctx } = {}) {
+  const target = resolveToolPath(file_path, workdir, ctx);
+  if (!isPathAllowed(target, workdir, { sandboxPolicy, ctx })) return `Error: Path not allowed: ${file_path}`;
   if (!existsSync(target)) return `Error: File not found: ${file_path}`;
   // Image files are returned as an image result so vision models see pixels
   // rather than the raw bytes decoded (and garbled) as utf8 text. The builtin
@@ -55,5 +59,6 @@ export async function readToolImpl({ file_path, offset = 0, start_line, limit, m
     label: "Read",
     maxChars: Number(max_output_chars) || DEFAULT_MAX_READ_CHARS,
     hint: "Use Read with offset/start_line and limit for the specific range you need.",
+    ctx,
   });
 }

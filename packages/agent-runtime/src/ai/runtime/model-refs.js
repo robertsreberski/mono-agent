@@ -1,3 +1,7 @@
+// @ts-check
+
+/** @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef */
+
 const RESERVED_RUNTIME_IDS = new Set(["openai", "vercel", "claude-code", "codex-cli"]);
 const ACTIVE_RUNTIME_IDS = new Set(["claude", "pi", "codex", "opencode"]);
 
@@ -14,6 +18,10 @@ function rejectTierAlias(model) {
   }
 }
 
+/**
+ * @param {string} value
+ * @returns {string}
+ */
 export function canonicalizeLegacyModelReference(value) {
   if (!value || typeof value !== "string") throw new Error("model reference required");
 
@@ -42,15 +50,27 @@ export function canonicalizeLegacyModelReference(value) {
   return value;
 }
 
+/**
+ * @param {string} value
+ * @returns {RuntimeModelRef}
+ */
 export function normalizeRuntimeModelReference(value) {
   return parseRuntimeModelReference(canonicalizeLegacyModelReference(value));
 }
 
+/**
+ * @param {string} value
+ * @returns {RuntimeModelRef["sdk"]}
+ */
 export function sdkFromModelReference(value) {
   const parsed = parseRuntimeModelReference(value);
   return parsed.sdk;
 }
 
+/**
+ * @param {string} value
+ * @returns {RuntimeModelRef}
+ */
 export function parseRuntimeModelReference(value) {
   if (!value || typeof value !== "string") throw new Error("model reference required");
 
@@ -107,6 +127,11 @@ export const RESERVED_RUNTIME_KINDS = [...RESERVED_RUNTIME_IDS];
 
 // Returns null when the combo is fine; otherwise a short reason string the
 // UI / API can show.
+/**
+ * @param {string|RuntimeModelRef} modelRefOrParsed
+ * @param {string} executionMode
+ * @returns {string|null}
+ */
 export function executionModeIncompatibilityReason(modelRefOrParsed, executionMode) {
   let parsed;
   try {
@@ -139,6 +164,11 @@ export function executionModeIncompatibilityReason(modelRefOrParsed, executionMo
   return `sdk \`${parsed.sdk}\` is not supported under CLI execution mode.`;
 }
 
+/**
+ * @param {string|RuntimeModelRef} modelRefOrParsed
+ * @param {string} executionMode
+ * @returns {boolean}
+ */
 export function isModelCompatibleWithExecutionMode(modelRefOrParsed, executionMode) {
   return executionModeIncompatibilityReason(modelRefOrParsed, executionMode) === null;
 }

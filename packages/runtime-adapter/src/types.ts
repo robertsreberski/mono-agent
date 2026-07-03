@@ -102,6 +102,55 @@ export interface RuntimeResult {
   readonly [key: string]: unknown;
 }
 
+/**
+ * Typed per-run tool-output limits (mirrors agent-runtime's RuntimeToolLimits,
+ * ai/types.js). The supported replacement for the deprecated `settings` tool
+ * keys; build one with {@link resolveRuntimePolicies}.
+ */
+export interface RuntimeToolLimits {
+  readonly toolTextLimitChars?: number;
+  readonly bashOutputLimitChars?: number;
+  readonly mcpTextLimitChars?: number;
+  readonly searchResultLimit?: number;
+  readonly imageInlineMaxBytes?: number;
+  readonly toolPayloadMaxBytes?: number;
+  readonly mcpCallTimeoutMs?: number;
+  readonly mcpCallMaxTotalTimeoutMs?: number;
+  /** Documented for forward-compat; NOT wired to any tool today. */
+  readonly bashTimeoutMs?: number;
+}
+
+/**
+ * Typed per-run context-compaction policy (mirrors agent-runtime's
+ * RuntimeCompactionPolicy). The supported replacement for the deprecated
+ * `settings` compaction keys.
+ */
+export interface RuntimeCompactionPolicy {
+  readonly enabled?: boolean;
+  readonly triggerRatio?: number;
+  readonly keepRecentTokens?: number;
+  readonly summaryMaxTokens?: number;
+  readonly minSavingsTokens?: number;
+  readonly fixedOverheadEnabled?: boolean;
+  readonly contextWindowOverride?: number;
+}
+
+/** The pair {@link resolveRuntimePolicies} returns from a legacy settings bag. */
+export interface RuntimePolicies {
+  readonly toolLimits: RuntimeToolLimits;
+  readonly compaction: RuntimeCompactionPolicy;
+}
+
+/**
+ * Per-run prompt-fragment overrides (mirrors agent-runtime's
+ * RuntimePromptOverrides). Precedence run over host over the kernel default.
+ */
+export interface RuntimePromptOverrides {
+  readonly structuredOutputInstruction?: (systemPrompt: string) => string;
+  readonly structuredOutputFinalization?: () => string;
+  readonly liveInputGuidance?: (body: string) => string;
+}
+
 export interface RuntimeRunOptions {
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
@@ -116,6 +165,12 @@ export interface RuntimeRunOptions {
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
   readonly sandboxPolicy?: SandboxPolicy;
+  /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
+  readonly toolLimits?: RuntimeToolLimits;
+  /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
+  readonly compaction?: RuntimeCompactionPolicy;
+  /** Per-run prompt-fragment overrides. */
+  readonly prompts?: RuntimePromptOverrides;
   // Pi-native provider knobs (optional; ignored by other bridges).
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
@@ -141,17 +196,70 @@ export interface RuntimeToolOptions {
   readonly [key: string]: unknown;
 }
 
+/** A parsed model reference as agent-runtime's pricing resolvers receive it (see ai/cost.js's ParsedModelReference). */
+export interface MonoRuntimeParsedPricingModel {
+  readonly sdk: string | null;
+  readonly provider?: string;
+  readonly model: string;
+}
+
+/** agent-runtime's normalized per-token pricing row (see ai/cost.js's NormalizedPricing). */
+export interface MonoRuntimePricing {
+  readonly input: number | null;
+  readonly cacheRead: number | null;
+  readonly cacheWrite: number | null;
+  readonly output: number | null;
+  readonly source: string;
+  readonly priced: boolean;
+}
+
+/** Payload passed to `onToolApprovalRequest` (see agent/approval.js's ApprovalRequestPayload). */
+export interface MonoRuntimeApprovalRequest {
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly toolUseId: string | null;
+  readonly argumentsSummary: string;
+  readonly riskTier: "low" | "medium" | "high";
+  readonly model: string | null;
+}
+
+/** A host's response to a MonoRuntimeApprovalRequest. */
+export interface MonoRuntimeApprovalDecision {
+  readonly decision: "approve" | "deny" | "always";
+  readonly reason?: string;
+}
+
+/** Payload passed to `onCompactionRecorded` after a successful context compaction (see ai/providers/pi-native.js). */
+export interface MonoRuntimeCompactionRecord {
+  readonly task_run_id: string | null;
+  readonly trigger: string;
+  readonly provider_kind: string;
+  readonly model: string | null;
+  readonly tokens_before: number | null;
+  readonly summary: string;
+  readonly first_kept_entry_id: string | null;
+  readonly status: "succeeded";
+  readonly created_at: number;
+}
+
 export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly observers?: readonly unknown[];
   readonly runtimeBrand?: unknown;
-  readonly resolveCustomPricing?: unknown;
-  readonly resolvePiApiKey?: unknown;
-  readonly persistArtifact?: unknown;
-  readonly onCompactionRecorded?: unknown;
-  readonly onToolApprovalRequest?: unknown;
-  readonly toolRiskTiers?: unknown;
-  readonly approvalDefaultRiskTier?: unknown;
-  readonly approvalTimeoutMs?: unknown;
-  readonly approvalAlwaysAllowTools?: unknown;
+  /** Host-level prompt-fragment override defaults; a per-run `prompts` wins over these. */
+  readonly prompts?: RuntimePromptOverrides;
+  readonly resolveCustomPricing?: (parsed: MonoRuntimeParsedPricingModel) => MonoRuntimePricing | null;
+  readonly resolvePiApiKey?: (provider: string) => Promise<string | undefined>;
+  readonly persistArtifact?: (artifact: {
+    readonly filename: string;
+    readonly buffer: Buffer;
+    readonly toolName: string;
+    readonly toolUseId: string | null;
+  }) => string | null;
+  readonly onCompactionRecorded?: (record: MonoRuntimeCompactionRecord) => void;
+  readonly onToolApprovalRequest?: (payload: MonoRuntimeApprovalRequest) => Promise<MonoRuntimeApprovalDecision>;
+  readonly toolRiskTiers?: Readonly<Record<string, "low" | "medium" | "high">>;
+  readonly approvalDefaultRiskTier?: "low" | "medium" | "high";
+  readonly approvalTimeoutMs?: number;
+  readonly approvalAlwaysAllowTools?: readonly string[];
   readonly [key: string]: unknown;
 }
