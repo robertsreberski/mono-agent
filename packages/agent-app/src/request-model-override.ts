@@ -1,6 +1,10 @@
 import { EFFORT_LEVELS } from "@mono-agent/config";
-import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
-import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/runtime-adapter";
+import type {
+  LocalProviderDefinition,
+  LocalProviderRuntimeOptions,
+  RuntimeModelReference,
+} from "@mono-agent/runtime-adapter";
 
 /**
  * Per-request runtime-options extension that applies a per-turn model/effort
@@ -18,12 +22,37 @@ import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
  * claude in `cli`, and only falling back to the model default for an incompatible
  * one, e.g. a `codex:*` override under an `sdk` host).
  *
- * NOTE: targets are cloud/registry models. Overriding to a model served by a
- * different LOCAL provider than the host default is unsupported — the default's
- * local-provider endpoint/capabilities are retained for the turn.
+ * A model override OWNS the local-provider endpoint block. Whenever a VALID model
+ * override is applied, this extension SETS the four endpoint fields
+ * (`customProvider`/`customModel`/`modelCapabilities`/`isPrivateProvider`):
+ *   - LOCAL override (`sdk === "pi"` with a configured provider id): recompute the
+ *     block for the OVERRIDE model via `runtimeOptionsForLocalProvider`.
+ *   - CLOUD/registry override, an UNCONFIGURED local provider id, or a
+ *     misconfigured provider: set the four fields to `null` to explicitly CLEAR
+ *     the host default's block.
+ * This is required because the host default block is computed ONCE from
+ * `config.runtime.model` at harness creation, and the pi runtime routes on
+ * `customProvider` PRESENCE alone — so a cloud override under an all-LOCAL default
+ * would otherwise inherit the default's local endpoint and send the cloud model to
+ * localhost (same mis-route for an unconfigured local provider id). The harness
+ * `mergeRuntimeOptions` applies the override AFTER the host default
+ * (last-writer-wins) and reads `null` on these keys as "delete", so a set block
+ * REPLACES the default and a null CLEARS it. An effort-only / no-model turn leaves
+ * the block untouched (the default's block is correct for the default model).
  */
 export interface RequestModelOverrideLogger {
   warn?(message: string, metadata?: Record<string, unknown>): void;
+}
+
+export interface RequestModelOverrideOptions {
+  readonly logger?: RequestModelOverrideLogger;
+  /**
+   * Configured local providers (`config.providers?.local`). When an override
+   * names a model one of these serves, the extension recomputes the provider
+   * endpoint block so the override reaches the right local endpoint instead of
+   * inheriting the host default's block.
+   */
+  readonly localProviders?: readonly LocalProviderDefinition[];
 }
 
 interface RequestModelOverrideInput {
@@ -32,8 +61,15 @@ interface RequestModelOverrideInput {
 
 interface RequestModelOverrideResult {
   readonly runtimeOptions: {
-    readonly model?: RuntimeModelReference;
-    readonly effort?: string;
+    model?: RuntimeModelReference;
+    effort?: string;
+    // `null` is an explicit CLEAR sentinel the harness merge reads as "delete the
+    // host default's value" (undefined would leave it untouched) — see the module
+    // doc. Set for a local override, null for a non-local one.
+    customProvider?: LocalProviderRuntimeOptions["customProvider"] | null;
+    customModel?: LocalProviderRuntimeOptions["customModel"] | null;
+    modelCapabilities?: LocalProviderRuntimeOptions["modelCapabilities"] | null;
+    isPrivateProvider?: LocalProviderRuntimeOptions["isPrivateProvider"] | null;
   };
   readonly cleanup: () => Promise<void>;
 }
@@ -41,23 +77,27 @@ interface RequestModelOverrideResult {
 const EFFORT_SET: ReadonlySet<string> = new Set(EFFORT_LEVELS);
 
 export function createRequestModelOverrideRuntimeExtension(
-  logger?: RequestModelOverrideLogger,
+  options?: RequestModelOverrideOptions,
 ): (input: RequestModelOverrideInput) => Promise<RequestModelOverrideResult> {
+  const logger = options?.logger;
+  const localProviders = options?.localProviders;
   return async (input) => {
     const { model: rawModel, effort: rawEffort } = readOverride(input.request.metadata);
-    const runtimeOptions: {
-      model?: RuntimeModelReference;
-      effort?: string;
-    } = {};
+    const runtimeOptions: RequestModelOverrideResult["runtimeOptions"] = {};
 
     if (rawModel !== undefined) {
+      let parsed: RuntimeModelReference | undefined;
       try {
-        runtimeOptions.model = parseMonoRuntimeModelReference(rawModel);
+        parsed = parseMonoRuntimeModelReference(rawModel);
       } catch (error) {
         logger?.warn?.("Ignoring invalid per-request model override.", {
           model: rawModel,
           reason: error instanceof Error ? error.message : String(error),
         });
+      }
+      if (parsed !== undefined) {
+        runtimeOptions.model = parsed;
+        applyLocalProviderBlock(runtimeOptions, parsed, rawModel, localProviders, logger);
       }
     }
 
@@ -74,6 +114,40 @@ export function createRequestModelOverrideRuntimeExtension(
 
     return { runtimeOptions, cleanup: async () => {} };
   };
+}
+
+/**
+ * OWN the endpoint block for a valid model override. For a model served by a
+ * configured LOCAL provider, `runtimeOptionsForLocalProvider` yields the block and
+ * we SET all four fields. For a cloud/registry model or an unconfigured provider
+ * id it returns `{}`, so `x ?? null` sets each field to `null` — the harness merge
+ * reads that as an explicit CLEAR of the host default's local block (undefined
+ * would silently inherit it and mis-route the run to localhost). A genuinely
+ * MISCONFIGURED provider (e.g. an untrusted public HTTP baseUrl) throws; that is
+ * warned-and-ignored and treated as non-local (block cleared) so a bad override
+ * never fails the turn — the model ref still applies.
+ */
+function applyLocalProviderBlock(
+  runtimeOptions: RequestModelOverrideResult["runtimeOptions"],
+  model: RuntimeModelReference,
+  rawModel: string,
+  localProviders: readonly LocalProviderDefinition[] | undefined,
+  logger: RequestModelOverrideLogger | undefined,
+): void {
+  let local: LocalProviderRuntimeOptions;
+  try {
+    local = runtimeOptionsForLocalProvider(model, localProviders);
+  } catch (error) {
+    logger?.warn?.("Ignoring local-provider endpoint for per-request model override.", {
+      model: rawModel,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+    local = {};
+  }
+  runtimeOptions.customProvider = local.customProvider ?? null;
+  runtimeOptions.customModel = local.customModel ?? null;
+  runtimeOptions.modelCapabilities = local.modelCapabilities ?? null;
+  runtimeOptions.isPrivateProvider = local.isPrivateProvider ?? null;
 }
 
 /**

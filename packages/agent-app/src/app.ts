@@ -810,7 +810,7 @@ class MonoAgentAppController implements MonoAgentApp {
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     // Always active: a no-op for interactive turns (which carry no cron/webhook
     // metadata), it applies the per-trigger model/effort override otherwise.
-    const requestModelOverride = this.requestModelOverrideRuntimeOptions();
+    const requestModelOverride = this.requestModelOverrideRuntimeOptions(coreConfig);
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
       memoryRecall,
       supermemoryMcp,
@@ -842,12 +842,17 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   /**
-   * Per-request extension that applies a cron/webhook per-trigger model + effort
-   * override (validated, warn-and-ignore on bad input). Composed alongside the
-   * memory/adapter extensions.
+   * Per-request extension that applies a cron/webhook/tui per-trigger model +
+   * effort override (validated, warn-and-ignore on bad input). Threads the
+   * configured local providers so a LOCAL-model override recomputes its endpoint
+   * block for the OVERRIDE model (see request-model-override doc). Composed
+   * alongside the memory/adapter extensions.
    */
-  private requestModelOverrideRuntimeOptions(): RuntimeOptionsExtension {
-    const extension = createRequestModelOverrideRuntimeExtension(this.logger);
+  private requestModelOverrideRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension {
+    const extension = createRequestModelOverrideRuntimeExtension({
+      ...(this.logger === undefined ? {} : { logger: this.logger }),
+      ...(coreConfig.providers?.local === undefined ? {} : { localProviders: coreConfig.providers.local }),
+    });
     return async (input) => extension({ request: input.request });
   }
 

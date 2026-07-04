@@ -890,6 +890,22 @@ function validateRequest(request: AgentHarnessRequest): void {
   }
 }
 
+/**
+ * Local-provider endpoint keys a per-request model override OWNS. On these keys
+ * an explicit `null` from a LATER options object CLEARS an earlier value (the
+ * key is deleted from the merge); `undefined` still means "leave untouched".
+ * This lets a cloud / unconfigured-local model override explicitly drop the host
+ * default's local `customProvider` block so the pi runtime — which routes on
+ * `customProvider` PRESENCE alone — does not send a cloud model to the default
+ * local endpoint. See request-model-override.ts for who emits the null.
+ */
+const ENDPOINT_CLEAR_KEYS: ReadonlySet<string> = new Set([
+  "customProvider",
+  "customModel",
+  "modelCapabilities",
+  "isPrivateProvider",
+]);
+
 function mergeRuntimeOptions(
   ...optionsList: readonly (AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined)[]
 ): Record<string, unknown> {
@@ -900,6 +916,10 @@ function mergeRuntimeOptions(
     }
     for (const [key, value] of Object.entries(options)) {
       if (value === undefined) {
+        continue;
+      }
+      if (value === null && ENDPOINT_CLEAR_KEYS.has(key)) {
+        delete merged[key];
         continue;
       }
       if (key === "allowedTools" || key === "disallowedTools") {
