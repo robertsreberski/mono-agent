@@ -55,6 +55,7 @@ type StepVM =
       calls: CallVM[];
       hasText: boolean;
       text: string;
+      hasUsage: boolean;
       uTok: string;
       uCost: string;
       turnPct: number;
@@ -185,7 +186,8 @@ export function DetailView({ id, onBack }: Props) {
           } as CallVM;
         });
         const hasText = !!(x.text && x.text.trim());
-        const cst = x.u ? x.u.cost : 0;
+        const usage = x.u;
+        const cst = usage ? usage.cost : 0;
         const vm: StepVM = {
           kind: "assistant",
           key: "s" + i,
@@ -201,7 +203,8 @@ export function DetailView({ id, onBack }: Props) {
           calls,
           hasText,
           text: (x.text || "") + (x.ttr ? "\n…" : ""),
-          uTok: fmtTok(x.u ? x.u.i : 0) + " in · " + fmtTok(x.u ? x.u.o : 0) + " out",
+          hasUsage: usage !== undefined,
+          uTok: fmtTok(usage ? usage.i : 0) + " in · " + fmtTok(usage ? usage.o : 0) + " out",
           uCost: fmtCost(cst),
           turnPct: Math.round((cst / (t.cost || 1)) * 100),
         };
@@ -332,7 +335,7 @@ export function DetailView({ id, onBack }: Props) {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 9, marginBottom: 16 }}>
           {[
             { k: "Model", v: s.model || "—", strong: true, color: TEXT },
-            { k: "SDK", v: "pi", strong: true, color: TEXT },
+            { k: "API", v: s.api || "—", strong: true, color: TEXT },
             { k: "Provider", v: s.provider || "—", strong: false, color: "#C9CBD1" },
           ].map((chip) => (
             <div
@@ -661,15 +664,17 @@ export function DetailView({ id, onBack }: Props) {
                       </div>
                     )}
 
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px 11px", flexWrap: "wrap", marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.06)" }}>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIM, flex: "1 1 126px", minWidth: 0, overflowWrap: "anywhere" }}>{st.uTok}</span>
-                      <div style={{ flex: isMobile ? "1 1 100%" : 1, order: isMobile ? 3 : 0, minWidth: isMobile ? "100%" : 70, height: 4, background: "rgba(255,255,255,.06)", borderRadius: 3, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${st.turnPct}%`, background: AMBER, borderRadius: 3 }} />
+                    {st.hasUsage && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px 11px", flexWrap: "wrap", marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.06)" }}>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIM, flex: "1 1 126px", minWidth: 0, overflowWrap: "anywhere" }}>{st.uTok}</span>
+                        <div style={{ flex: isMobile ? "1 1 100%" : 1, order: isMobile ? 3 : 0, minWidth: isMobile ? "100%" : 70, height: 4, background: "rgba(255,255,255,.06)", borderRadius: 3, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${st.turnPct}%`, background: AMBER, borderRadius: 3 }} />
+                        </div>
+                        <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>
+                          {st.uCost} · {st.turnPct}% of run
+                        </span>
                       </div>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>
-                        {st.uCost} · {st.turnPct}% of run
-                      </span>
-                    </div>
+                    )}
                   </div>
                 )}
               </div>

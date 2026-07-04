@@ -55,7 +55,7 @@ export interface DiscoveredWebInstance {
 export async function discoverWebInstances(
   options: DiscoverWebInstancesOptions,
 ): Promise<readonly DiscoveredWebInstance[]> {
-  const registryDirs = normalizeRegistryDirs(options.registryDirs);
+  const registryDirs = normalizeRegistryDirs(options.registryDirs, options.env);
   const results = await Promise.all(
     registryDirs.map((registryDir) =>
       listTraceSources({
@@ -142,8 +142,8 @@ export async function resolveLiveApiKey(
 }
 
 /** Resolve + dedupe the requested registry list; empties fall back to the machine-wide default. */
-function normalizeRegistryDirs(registryDirs: readonly string[]): string[] {
-  const requested = registryDirs.length > 0 ? registryDirs : [defaultTraceRegistryDir()];
+function normalizeRegistryDirs(registryDirs: readonly string[], env: Record<string, string | undefined> | undefined): string[] {
+  const requested = registryDirs.length > 0 ? registryDirs : [defaultTraceRegistryDir(env)];
   const seen = new Set<string>();
   const dirs: string[] = [];
   for (const dir of requested) {

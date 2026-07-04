@@ -53,4 +53,26 @@ describe("buildInstanceCards", () => {
     ]);
     expect(cards[1]?.last).toBe("no runs");
   });
+
+  test("surfaces live and stale instance health instead of a hardcoded green state", () => {
+    const cards = buildInstanceCards(
+      [
+        { ...instances[0]!, health: "stale", liveConnected: false },
+        { ...instances[1]!, health: "failed", liveConnected: true },
+      ],
+      [session],
+    );
+
+    expect(cards.map((card) => [card.sourceId, card.healthLabel])).toEqual([
+      ["agent-a", "stale"],
+      ["agent-b", "live"],
+    ]);
+  });
+
+  test("labels session-only fallback cards as unknown health", () => {
+    const cards = buildInstanceCards([], [session]);
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.healthLabel).toBe("unknown");
+  });
 });

@@ -66,7 +66,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   stdout.write(
     `Watching ${registryDirs.length} registr${registryDirs.length === 1 ? "y" : "ies"} for agents. Press Ctrl-C to stop.\n`,
   );
-  stdout.write(`${reachabilityHint(handle.url, options.allowNonLoopback ?? false)}\n`);
+  stdout.write(`${reachabilityHint(handle.url)}\n`);
 
   if (options.open ?? true) {
     try {
@@ -89,17 +89,25 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
  * MagicDNS name, keeping the PWA installable). Non-loopback → note it is already
  * reachable over the LAN/tailnet at this port.
  */
-function reachabilityHint(url: string, allowNonLoopback: boolean): string {
+function reachabilityHint(url: string): string {
   let port = "";
+  let host = "";
   try {
-    port = new URL(url).port;
+    const parsed = new URL(url);
+    port = parsed.port;
+    host = parsed.hostname;
   } catch {
     /* leave blank */
   }
-  if (allowNonLoopback) {
+  if (!isLoopbackHost(host)) {
     return "Bound non-loopback: reachable over your LAN/Tailnet at this port (use the machine's Tailscale IP or MagicDNS name). For HTTPS + a PWA-installable URL, prefer `tailscale serve` instead.";
   }
   return `Loopback only. To reach it over Tailscale with HTTPS + your MagicDNS name (keeps the PWA installable): tailscale serve --bg ${port || "<port>"}`;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.toLowerCase().replace(/^\[|\]$/gu, "");
+  return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
 /** Resolve + dedupe registry dirs, preserving precedence order. */

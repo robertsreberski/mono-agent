@@ -90,6 +90,12 @@ export interface OutcomeInfo {
 export function outcomeInfo(s: Session): OutcomeInfo {
   if (s.status === "running")
     return { label: "LIVE", color: "#4FB6A6", running: true, silent: false };
+  if (s.status === "failed")
+    return { label: "FAILED", color: ERROR, running: false, silent: false };
+  if (s.status === "cancelled")
+    return { label: "CANCELLED", color: "#E8955A", running: false, silent: false };
+  if (s.status === "interrupted")
+    return { label: "INTERRUPTED", color: "#E8955A", running: false, silent: false };
   const silent = s.outcome === "silent";
   return {
     label: silent ? "SILENT" : "NOTIFIED",

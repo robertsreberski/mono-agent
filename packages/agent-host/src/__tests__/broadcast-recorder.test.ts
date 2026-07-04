@@ -52,6 +52,34 @@ describe("createBroadcastRunRecorder", () => {
     expect(JSON.stringify(frames[0])).toContain("[redacted]");
   });
 
+  it("bounds large runtime event strings before publishing to the live bus", () => {
+    const frames: RunEventFrame[] = [];
+    const sink: RunEventSink = { publish: (frame) => { frames.push(frame); } };
+    const summary: RunSummary = {
+      runId: "run-large",
+      conversationId: "chat:large",
+      status: "succeeded",
+      startedAt: "2026-07-04T00:00:00.000Z",
+      durationMs: 0,
+      eventCount: 0,
+      artifactPaths: [],
+    };
+    const recorder = createBroadcastRunRecorder(innerRecorder(summary), sink, {
+      runId: "run-large",
+      conversationId: "chat:large",
+      sourceId: "src-large",
+    });
+
+    recorder.onEvent({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "x".repeat(50_000) }] },
+    });
+
+    const serialized = JSON.stringify(frames[0]);
+    expect(serialized.length).toBeLessThan(20_000);
+    expect(serialized).toContain("[truncated");
+  });
+
   it("redacts sensitive fields from terminal summaries before publishing", async () => {
     const frames: RunEventFrame[] = [];
     const sink: RunEventSink = { publish: (frame) => { frames.push(frame); } };

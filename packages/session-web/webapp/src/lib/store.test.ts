@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 
 import type { Session } from "./types";
-import { applySessionOps, sessionStoreKey } from "./store";
+import { ApiError } from "./api";
+import { FIXTURE_SESSIONS } from "./fixture";
+import { applySessionOps, sessionStoreKey, shouldUseFixtureFallback } from "./store";
 
 const baseSession: Session = {
   id: "run-1",
@@ -52,5 +54,23 @@ describe("session store identity", () => {
     ]);
 
     expect(afterRemove.map((item) => item.title)).toEqual(["B"]);
+  });
+});
+
+describe("fixture sessions", () => {
+  test("keep totals.steps consistent with rendered steps", () => {
+    for (const item of FIXTURE_SESSIONS) {
+      expect(item.totals.steps, item.id).toBe(item.steps.length);
+    }
+  });
+});
+
+describe("fixture fallback gate", () => {
+  test("does not mask JSON backend failures with demo data", () => {
+    expect(shouldUseFixtureFallback(new ApiError("/api/instances", "500", { status: 500, contentType: "application/json" }), false)).toBe(false);
+  });
+
+  test("allows standalone preview fallback when api routes are missing", () => {
+    expect(shouldUseFixtureFallback(new ApiError("/api/instances", "404", { status: 404, contentType: "text/html" }), false)).toBe(true);
   });
 });

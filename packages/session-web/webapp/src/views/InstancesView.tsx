@@ -16,11 +16,32 @@ export interface InstanceCard {
   name: string;
   cwd: string;
   count: number;
+  health: string;
+  liveConnected: boolean;
+  healthLabel: string;
+  healthColor: string;
   stats: { label: string; value: string; color: string }[];
   chSegs: { label: string; color: string; n: number; w: number }[];
   noti: number;
   sil: number;
   last: string;
+}
+
+function healthInfo(instance: Pick<WebInstance, "health" | "liveConnected">): { label: string; color: string } {
+  if (instance.liveConnected) {
+    return { label: "live", color: "#6FBF8E" };
+  }
+  const health = instance.health.toLowerCase();
+  if (health === "running" || health === "ok") {
+    return { label: "running", color: "#6FBF8E" };
+  }
+  if (health === "stale") {
+    return { label: "stale", color: AMBER };
+  }
+  if (health === "failed" || health === "error" || health === "stopped") {
+    return { label: health, color: "#E0685B" };
+  }
+  return { label: health || "unknown", color: DIM };
 }
 
 export function buildInstanceCards(instances: readonly WebInstance[], sessions: readonly Session[]): InstanceCard[] {
@@ -39,7 +60,7 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
         label: arr[0]?.instance ?? sourceId,
         cwd: arr[0]?.cwd ?? "",
         artifactDir: "",
-        health: "ok",
+        health: "unknown",
         liveConnected: false,
         counts: { runs: arr.length },
       }));
@@ -67,6 +88,7 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
       });
       const times = arr.map((s) => +new Date(s.startTs));
       const last = times.length > 0 ? Math.max(...times) : undefined;
+      const health = healthInfo(instance);
       const chSegs = chOrder
         .filter((c) => chCount[c])
         .map((c) => ({
@@ -80,6 +102,10 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
         name: instance.label,
         cwd: instance.cwd,
         count: arr.length,
+        health: instance.health,
+        liveConnected: instance.liveConnected,
+        healthLabel: health.label,
+        healthColor: health.color,
         stats: [
           { label: "Cost", value: fmtCost(cost), color: AMBER },
           { label: "Tokens", value: fmtTok(tok), color: BLUE },
@@ -127,7 +153,7 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
             className="inst-card"
             role="button"
             tabIndex={0}
-            aria-label={`Open instance ${ic.name}: ${ic.count} runs`}
+            aria-label={`Open instance ${ic.name}: ${ic.count} runs, ${ic.healthLabel}`}
             onClick={() => onOpenInstance(ic.sourceId)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
@@ -145,7 +171,11 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 6 }}>
-              <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#6FBF8E", boxShadow: "0 0 10px #6FBF8E", flex: "none" }} />
+              <span
+                title={ic.healthLabel}
+                aria-label={ic.healthLabel}
+                style={{ width: 10, height: 10, borderRadius: "50%", background: ic.healthColor, boxShadow: `0 0 10px ${ic.healthColor}`, flex: "none" }}
+              />
               <span
                 style={{
                   fontSize: 20,
@@ -162,6 +192,21 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
               </span>
               <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: "#C9CBD1", background: "rgba(255,255,255,.06)", padding: "3px 9px", borderRadius: 6 }}>
                 {ic.count} runs
+              </span>
+              <span
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  color: ic.healthColor,
+                  background: "rgba(255,255,255,.04)",
+                  border: `1px solid ${ic.healthColor}55`,
+                  padding: "3px 7px",
+                  borderRadius: 6,
+                  textTransform: "uppercase",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {ic.healthLabel}
               </span>
             </div>
             <div

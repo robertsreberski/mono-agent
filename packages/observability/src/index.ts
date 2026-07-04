@@ -1,6 +1,7 @@
 export {
   createJsonlRunRecorder,
   ObservabilityError,
+  redactJsonValue,
 } from "./recorder.js";
 export type {
   ObservabilityErrorCode,

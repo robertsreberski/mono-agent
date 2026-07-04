@@ -20,6 +20,7 @@ const DEFAULT_PORT = 0;
 const DEFAULT_MAX_RUNS_PER_INSTANCE = 200;
 /** Browser SSE heartbeat interval — a comment frame that keeps the connection warm through proxies. */
 const HEARTBEAT_INTERVAL_MS = 15_000;
+const MAX_BROWSER_SSE_QUEUE_FRAMES = 10_000;
 
 export interface StartSessionWebServerOptions {
   readonly registryDirs: readonly string[];
@@ -184,6 +185,8 @@ function handleStream(aggregator: SessionAggregator, res: Response, activeStream
   }
   const queue: QueueEntry[] = [];
   const pendingUpserts = new Map<string, QueueEntry>();
+  const pendingRemovals = new Map<string, QueueEntry>();
+  let pendingInstances: QueueEntry | undefined;
   let draining = false;
   let closed = false;
   let unsubscribe: (() => void) | undefined;
@@ -202,6 +205,8 @@ function handleStream(aggregator: SessionAggregator, res: Response, activeStream
     unsubscribe = undefined;
     queue.length = 0;
     pendingUpserts.clear();
+    pendingRemovals.clear();
+    pendingInstances = undefined;
     activeStreams.delete(closeStream);
     if (!res.writableEnded) {
       res.end();
@@ -217,6 +222,10 @@ function handleStream(aggregator: SessionAggregator, res: Response, activeStream
       }
       if (entry.frame.t === "session_upsert") {
         pendingUpserts.delete(sessionQueueKey(entry.frame.session));
+      } else if (entry.frame.t === "session_removed") {
+        pendingRemovals.delete(sessionQueueKey({ id: entry.frame.runId, sourceId: entry.frame.sourceId }));
+      } else if (entry === pendingInstances) {
+        pendingInstances = undefined;
       }
       if (res.writableEnded) {
         closed = true;
@@ -255,8 +264,41 @@ function handleStream(aggregator: SessionAggregator, res: Response, activeStream
       const entry: QueueEntry = { frame };
       pendingUpserts.set(queueKey, entry);
       queue.push(entry);
+    } else if (frame.t === "session_removed") {
+      const queueKey = sessionQueueKey({ id: frame.runId, sourceId: frame.sourceId });
+      const staleUpsert = pendingUpserts.get(queueKey);
+      if (staleUpsert !== undefined) {
+        const idx = queue.indexOf(staleUpsert);
+        if (idx >= 0) {
+          queue.splice(idx, 1);
+        }
+        pendingUpserts.delete(queueKey);
+      }
+      const existing = pendingRemovals.get(queueKey);
+      if (existing !== undefined) {
+        const idx = queue.indexOf(existing);
+        if (idx >= 0) {
+          queue.splice(idx, 1);
+        }
+      }
+      const entry: QueueEntry = { frame };
+      pendingRemovals.set(queueKey, entry);
+      queue.push(entry);
+    } else if (frame.t === "instances") {
+      if (pendingInstances !== undefined) {
+        const idx = queue.indexOf(pendingInstances);
+        if (idx >= 0) {
+          queue.splice(idx, 1);
+        }
+      }
+      pendingInstances = { frame };
+      queue.push(pendingInstances);
     } else {
       queue.push({ frame });
+    }
+    if (queue.length > MAX_BROWSER_SSE_QUEUE_FRAMES) {
+      closeStream();
+      return;
     }
     flush();
   };

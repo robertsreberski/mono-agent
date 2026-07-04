@@ -62,7 +62,7 @@ export const FIXTURE_SESSIONS: Session[] = [
       tokOut: 9851,
       tokCache: 797184,
       cost: 0.6415,
-      steps: 8,
+      steps: 7,
     },
     toolCounts: { read_skill: 1, Bash: 1, Grep: 1 },
     steps: [
@@ -487,7 +487,7 @@ export const FIXTURE_SESSIONS: Session[] = [
       tokOut: 5210,
       tokCache: 410000,
       cost: 0.523,
-      steps: 9,
+      steps: 8,
     },
     toolCounts: { Bash: 3, read_skill: 1 },
     steps: [

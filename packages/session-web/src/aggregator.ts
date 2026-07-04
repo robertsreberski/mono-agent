@@ -71,6 +71,7 @@ export interface SessionAggregatorOptions {
 interface LiveRunState {
   summary: RunSummary;
   readonly events: RuntimeEventLike[];
+  readonly seenEventKeys: Set<string>;
 }
 
 interface LiveState {
@@ -188,8 +189,7 @@ export class SessionAggregator {
       return undefined;
     }
     if (session !== undefined && this.states.has(sourceId)) {
-      state.sessions.set(runId, session);
-      this.scheduleInstancesEmit();
+      this.insertDiskSession(state, runId, session, { emit: true });
     }
     return session;
   }
@@ -338,7 +338,7 @@ export class SessionAggregator {
       // authoritative conversationId/source/startedAt this frame carries.
       const existing = live.runs.get(frame.runId);
       if (existing === undefined) {
-        live.runs.set(frame.runId, { summary: runningSummaryFromStart(frame), events: [] });
+        live.runs.set(frame.runId, { summary: runningSummaryFromStart(frame), events: [], seenEventKeys: new Set() });
       } else {
         existing.summary = runningSummaryFromStart(frame);
       }
@@ -348,8 +348,15 @@ export class SessionAggregator {
     if (frame.t === "event") {
       let run = live.runs.get(frame.runId);
       if (run === undefined) {
-        run = { summary: runningSummaryFromEvent(frame), events: [] };
+        run = { summary: runningSummaryFromEvent(frame), events: [], seenEventKeys: new Set() };
         live.runs.set(frame.runId, run);
+      }
+      const eventKey = liveEventKey(frame);
+      if (eventKey !== undefined) {
+        if (run.seenEventKeys.has(eventKey)) {
+          return;
+        }
+        run.seenEventKeys.add(eventKey);
       }
       run.events.push(coerceRuntimeEvent(frame.event));
       this.scheduleLiveRecompute(state, frame.runId);
@@ -411,9 +418,32 @@ export class SessionAggregator {
     }
     const sourceId = state.discovered.instance.sourceId;
     const session: SourceStampedSession = { ...mapRunToSession(summary, events, this.mapOptions(state)), sourceId };
+    this.insertSession(state, runId, session, { emit: true });
+  }
+
+  private insertDiskSession(
+    state: InstanceState,
+    runId: string,
+    session: SourceStampedSession,
+    options: { readonly emit: boolean },
+  ): void {
+    if (session.status !== "running") {
+      state.artifactFinished.add(runId);
+    }
+    this.insertSession(state, runId, session, options);
+  }
+
+  private insertSession(
+    state: InstanceState,
+    runId: string,
+    session: SourceStampedSession,
+    options: { readonly emit: boolean },
+  ): void {
     state.sessions.set(runId, session);
     this.evictSessionOverflow(state, runId);
-    this.emit({ t: "session_upsert", session });
+    if (options.emit) {
+      this.emit({ t: "session_upsert", session });
+    }
     this.scheduleInstancesEmit();
   }
 
@@ -512,14 +542,7 @@ export class SessionAggregator {
       // until the disk artifact itself becomes terminal.
       return;
     }
-    state.sessions.set(runId, session);
-    if (session.status !== "running") {
-      // Finished on disk: mark it authoritative so live folds stop overwriting it.
-      state.artifactFinished.add(runId);
-    }
-    this.evictSessionOverflow(state, runId);
-    this.emit({ t: "session_upsert", session });
-    this.scheduleInstancesEmit();
+    this.insertDiskSession(state, runId, session, { emit: true });
   }
 
   private setupRegistryWatchers(): void {
@@ -590,7 +613,10 @@ export class SessionAggregator {
   private async updateInstance(state: InstanceState, discovered: DiscoveredWebInstance): Promise<boolean> {
     const previous = state.discovered;
     state.discovered = discovered;
-    let changed = previous.instance.health !== discovered.instance.health;
+    let changed =
+      previous.instance.health !== discovered.instance.health ||
+      previous.instance.label !== discovered.instance.label ||
+      previous.instance.cwd !== discovered.instance.cwd;
     let liveReconnected = false;
 
     if (previous.instance.artifactDir !== discovered.instance.artifactDir) {
@@ -814,6 +840,16 @@ function coerceRunSummary(value: unknown): RunSummary | undefined {
 
 function coerceRuntimeEvent(value: unknown): RuntimeEventLike {
   return isRecord(value) ? (value as RuntimeEventLike) : { type: "unknown" };
+}
+
+function liveEventKey(frame: Extract<RunEventFrame, { t: "event" }>): string | undefined {
+  if (typeof frame.eventIndex === "number" && Number.isFinite(frame.eventIndex)) {
+    return `event:${frame.eventIndex}`;
+  }
+  if (typeof frame.seq === "number" && Number.isFinite(frame.seq)) {
+    return `seq:${frame.seq}`;
+  }
+  return undefined;
 }
 
 function startMs(timestamp: string): number {

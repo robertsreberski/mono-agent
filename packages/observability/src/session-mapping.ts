@@ -383,7 +383,7 @@ function walkEvents(summary: RunSummary, events: readonly RuntimeEventLike[]): W
     const content = message !== undefined && Array.isArray(message.content) ? message.content : undefined;
     if (content === undefined) return; // lifecycle/warning/foreign event — no semantic step
 
-    for (const block of content) {
+    for (const [blockIndex, block] of content.entries()) {
       if (!isRecord(block)) continue;
       const isAssistantEvent = type === "assistant";
       if (block.type === "thinking") {
@@ -391,12 +391,13 @@ function walkEvents(summary: RunSummary, events: readonly RuntimeEventLike[]): W
         appendChunk(ts, "thinking", blockText(block));
       } else if (block.type === "text") {
         if (!isAssistantEvent) continue;
+        if (readString(block.phase) === "commentary") continue;
         appendChunk(ts, "text", blockText(block));
       } else if (block.type === "tool_use") {
         if (!isAssistantEvent) continue;
         const work = ensureCurrent(ts);
         commitBuffer(work);
-        const id = readString(block.id) ?? `tool-${index}`;
+        const id = readString(block.id) ?? `tool-${index}-${blockIndex}`;
         const name = readString(block.name) ?? "tool";
         const call: MutableToolCall = { id, name, input: block.input };
         work.calls.push(call);

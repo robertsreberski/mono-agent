@@ -1,5 +1,6 @@
 import { LIVE_EVENT_SCHEMA } from "@mono-agent/agent-contracts";
 import type { RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
+import { redactJsonValue } from "@mono-agent/observability";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 
 /** Stable run context stamped onto every broadcast frame. */
@@ -40,7 +41,7 @@ export function createBroadcastRunRecorder(
     }
   };
   const finished = async (summary: RunSummary): Promise<RunSummary> => {
-    const redactedSummary = redactBroadcastValue(summary) as RunSummary;
+    const redactedSummary = redactJsonValue(summary) as RunSummary;
     publish({
       t: "run_finished",
       schema: LIVE_EVENT_SCHEMA,
@@ -55,7 +56,7 @@ export function createBroadcastRunRecorder(
   const recorder: RunRecorder = {
     onEvent(event: RuntimeEventLike): void {
       inner.onEvent(event);
-      const redactedEvent = redactBroadcastValue(event) as RuntimeEventLike;
+      const redactedEvent = redactJsonValue(event) as RuntimeEventLike;
       publish({
         t: "event",
         schema: LIVE_EVENT_SCHEMA,
@@ -96,43 +97,4 @@ export function createBroadcastRunRecorder(
     };
   }
   return recorder;
-}
-
-const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|api[_-]?key|cookie)/iu;
-
-function redactBroadcastValue(value: unknown): unknown {
-  return redact(value, undefined, new WeakSet<object>());
-}
-
-function redact(value: unknown, key: string | undefined, seen: WeakSet<object>): unknown {
-  if (key !== undefined && SENSITIVE_KEY_PATTERN.test(key) && typeof value !== "number") {
-    return "[redacted]";
-  }
-  if (value === null || typeof value === "boolean" || typeof value === "number") {
-    return value;
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  if (typeof value === "undefined" || typeof value === "function" || typeof value === "symbol") {
-    return String(value);
-  }
-  if (value instanceof Error) {
-    return { name: value.name, message: value.message };
-  }
-  if (seen.has(value)) {
-    return "[circular]";
-  }
-  seen.add(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => redact(item, undefined, seen));
-  }
-  const out: Record<string, unknown> = {};
-  for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
-    out[entryKey] = redact(entryValue, entryKey, seen);
-  }
-  return out;
 }

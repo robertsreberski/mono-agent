@@ -210,6 +210,7 @@ describe("parseCliArgs", () => {
   it("includes setup in the help screen", () => {
     expect(renderHelp()).toContain("mono-agent setup");
     expect(renderHelp()).toContain("mono-agent web");
+    expect(renderHelp()).toContain("--allow-non-loopback");
   });
 
   it("accepts --memory bujo and --memory lite, rejects --memory markdown", () => {

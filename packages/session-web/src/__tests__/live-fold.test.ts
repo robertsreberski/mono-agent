@@ -146,6 +146,36 @@ describe("SessionAggregator live fold", () => {
     expect(aggregator.getInstances()[0]?.counts.runs).toBe(1);
   });
 
+  it("dedupes replayed live event frames for an in-flight run", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+    });
+    await aggregator.start();
+
+    const event = assistantEvent();
+    bus.publish(runStarted());
+    bus.publish(event);
+    bus.publish(event);
+    await waitFor(() => aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.finalText === "live answer"));
+    await sleep(80);
+
+    await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
+      finalText: "live answer",
+    });
+  });
+
   it("ignores live frames whose sourceId does not match the discovered instance", async () => {
     const bus: RunEventBus = createLiveEventBus();
     sse = await startTinySseServer(bus);
@@ -289,6 +319,78 @@ describe("SessionAggregator live fold", () => {
     expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-new"]);
     expect(frames).toContainEqual({ t: "session_removed", sourceId: SOURCE_ID, runId: "run-old" });
     expect(frames.some((frame) => frame.t === "session_upsert" && frame.session.id === "run-new")).toBe(true);
+  });
+
+  it("routes on-demand disk detail through eviction and subscriber upsert", async () => {
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await seedRun({
+      artifactDir,
+      runId: "run-old",
+      conversationId: "cron:old",
+      userInput: "Old",
+      text: "old answer",
+      source: "cron",
+      at: 1_700_000_000_000,
+    });
+    await seedRun({
+      artifactDir,
+      runId: "run-new",
+      conversationId: "cron:new",
+      userInput: "New",
+      text: "new answer",
+      source: "cron",
+      at: 1_700_000_100_000,
+    });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 1,
+      reconcileIntervalMs: 60_000,
+      instancesDebounceMs: 5,
+    });
+    const frames: BrowserStreamFrame[] = [];
+    aggregator.subscribe((frame) => frames.push(frame));
+    await aggregator.start();
+    expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-new"]);
+
+    await expect(aggregator.getSession(SOURCE_ID, "run-old")).resolves.toMatchObject({ id: "run-old", finalText: "old answer" });
+
+    expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-old"]);
+    expect(frames).toContainEqual({ t: "session_removed", sourceId: SOURCE_ID, runId: "run-new" });
+    expect(frames.some((frame) => frame.t === "session_upsert" && frame.session.id === "run-old")).toBe(true);
+  });
+
+  it("emits an instances frame when registry metadata changes without endpoint changes", async () => {
+    const registryDir = await tmp("reg");
+    const agentDir = await tmp("agent");
+    const artifactDir = join(agentDir, "runs");
+    const configPath = join(agentDir, "mono-agent.config.json");
+    await mkdir(artifactDir, { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, configPath });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      instancesDebounceMs: 5,
+    });
+    const frames: BrowserStreamFrame[] = [];
+    aggregator.subscribe((frame) => frames.push(frame));
+    await aggregator.start();
+
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Renamed Agent", artifactDir, configPath });
+    await (aggregator as unknown as { reconcile(): Promise<void> }).reconcile();
+
+    await waitFor(() =>
+      frames.find(
+        (frame): frame is Extract<BrowserStreamFrame, { t: "instances" }> =>
+          frame.t === "instances" && frame.instances.some((instance) => instance.label === "Renamed Agent"),
+      ),
+    );
+    expect(aggregator.getInstances()[0]?.label).toBe("Renamed Agent");
   });
 });
 

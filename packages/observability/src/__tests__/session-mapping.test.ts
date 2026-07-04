@@ -190,6 +190,59 @@ describe("mapRunToSession", () => {
     expect(assistantSteps(session.steps)).toHaveLength(1);
   });
 
+  it("does not treat commentary-phase assistant text as final output", () => {
+    const summary: RunSummary = {
+      runId: "run-commentary-phase",
+      conversationId: "chat:commentary-phase",
+      status: "succeeded",
+      durationMs: 0,
+      eventCount: 1,
+      artifactPaths: [],
+    };
+    const events: RuntimeEventLike[] = [
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", phase: "commentary", text: "I am checking the files now." }],
+        },
+      },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+
+    expect(session.finalText).toBe("");
+    expect(session.outcome).toBe("silent");
+    expect(assistantSteps(session.steps)).toHaveLength(0);
+  });
+
+  it("generates unique fallback ids for multiple anonymous tool calls in one event", () => {
+    const summary: RunSummary = {
+      runId: "run-anonymous-tools",
+      conversationId: "chat:anonymous-tools",
+      status: "running",
+      durationMs: 0,
+      eventCount: 1,
+      artifactPaths: [],
+    };
+    const events: RuntimeEventLike[] = [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", name: "first_tool", input: { value: 1 } },
+            { type: "tool_use", name: "second_tool", input: { value: 2 } },
+          ],
+        },
+      },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+    const calls = assistantSteps(session.steps).flatMap((step) => step.calls);
+
+    expect(calls.map((call) => call.id)).toEqual(["tool-0-0", "tool-0-1"]);
+    expect(calls.map((call) => call.name)).toEqual(["first_tool", "second_tool"]);
+  });
+
   it("classifies legacy (unstamped) runs from the conversationId", () => {
     const src = (conversationId: string): string => {
       const summary: RunSummary = {

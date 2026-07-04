@@ -96,9 +96,11 @@ a {
    (inline transform would otherwise win by specificity). */
 .rec-bar {
   transform: translateX(-50%);
+}
+.rec-bar-visual {
   transition: transform 0.16s, box-shadow 0.16s;
 }
-.rec-bar:hover {
+.rec-bar:hover .rec-bar-visual {
   transform: translateX(-50%) scaleY(1.08);
   box-shadow: 0 0 14px var(--color);
 }

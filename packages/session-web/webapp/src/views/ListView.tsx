@@ -138,7 +138,10 @@ export function ListView(props: Props) {
     const chanBase = sessions.filter(
       (s) => (fOut === "all" || s.outcome === fOut) && (fInstance === "all" || sourceFor(s) === fInstance),
     );
-    const present = CHANNEL_ORDER.filter((c) => chanBase.some((s) => channelOf(s) === c));
+    const present: string[] = CHANNEL_ORDER.filter((c) => chanBase.some((s) => channelOf(s) === c));
+    if (fChannel !== "all" && !present.includes(fChannel)) {
+      present.push(fChannel);
+    }
     const chKeys = ["all", ...present];
     const kindChips = chKeys.map((k) => {
       const active = fChannel === k;
@@ -277,14 +280,16 @@ export function ListView(props: Props) {
       const nBars = activity.length;
       activity = activity.map((a, i) => ({ ...a, left: nBars <= 1 ? 50 : ((i + 0.5) / nBars) * 100 }));
     }
-    const dayMs = 86400000;
     const dayTicks: { left: number; label: string }[] = [];
-    const d0 = new Date(amin);
-    d0.setUTCHours(0, 0, 0, 0);
-    for (let t = +d0; t <= amax + dayMs; t += dayMs) {
-      const x = ((t - amin) / span) * 100;
-      if (x < -3 || x > 103) continue;
-      dayTicks.push({ left: Math.max(0, Math.min(100, x)), label: tz(t, { day: "2-digit" }) });
+    if (list.length > 0) {
+      const dayMs = 86400000;
+      const d0 = new Date(amin);
+      d0.setUTCHours(0, 0, 0, 0);
+      for (let t = +d0; t <= amax + dayMs; t += dayMs) {
+        const x = ((t - amin) / span) * 100;
+        if (x < -3 || x > 103) continue;
+        dayTicks.push({ left: Math.max(0, Math.min(100, x)), label: tz(t, { day: "2-digit" }) });
+      }
     }
     const legend = present.map((k) => ({ label: channelLabel(k), color: channelColor(k) }));
 
@@ -593,8 +598,8 @@ export function ListView(props: Props) {
                   position: "absolute",
                   bottom: 14,
                   left: `${a.left}%`,
-                  width: 24,
-                  height: a.h,
+                  width: 44,
+                  height: Math.max(44, a.h),
                   background: "transparent",
                   border: "none",
                   cursor: "pointer",
@@ -603,11 +608,14 @@ export function ListView(props: Props) {
               }
             >
               <span
+                className="rec-bar-visual"
                 style={{
-                  display: "block",
+                  position: "absolute",
+                  left: "50%",
+                  bottom: 0,
+                  transform: "translateX(-50%)",
                   width: 8,
-                  height: "100%",
-                  margin: "0 auto",
+                  height: a.h,
                   borderRadius: 3,
                   background: a.fill,
                   border: `1.5px solid ${a.color}`,

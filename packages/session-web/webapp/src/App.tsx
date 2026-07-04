@@ -56,7 +56,7 @@ function TopNav({
 }
 
 export function App() {
-  const { sessions, instances, status } = useRecorder();
+  const { sessions, instances, status, error } = useRecorder();
   const isMobile = useIsMobile();
   const [view, setView] = useState<View>("list");
   const [selId, setSelId] = useState<string | null>(null);
@@ -132,6 +132,26 @@ export function App() {
       >
         demo data
       </span>
+    ) : status === "error" ? (
+      <span
+        title={error || "Session web backend unavailable"}
+        aria-label={error || "Session web backend unavailable"}
+        style={{
+          fontFamily: FONT_MONO,
+          fontSize: 10,
+          letterSpacing: ".12em",
+          textTransform: "uppercase",
+          color: "#E0685B",
+          border: "1px solid rgba(224,104,91,.35)",
+          borderRadius: 999,
+          padding: "5px 11px",
+          background: "rgba(224,104,91,.1)",
+          whiteSpace: "nowrap",
+          flex: "none",
+        }}
+      >
+        backend error
+      </span>
     ) : null;
 
   return (
@@ -148,7 +168,13 @@ export function App() {
         }}
       >
         <TopNav view={view} onNav={setView} statusPill={statusPill} />
-        {view === "instances" ? (
+        {status === "error" ? (
+          <div style={{ margin: "48px auto", maxWidth: 640, border: "1px solid rgba(224,104,91,.24)", borderRadius: 14, padding: 24, background: "rgba(224,104,91,.06)" }}>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".16em", color: "#E0685B", textTransform: "uppercase", marginBottom: 10 }}>Backend error</div>
+            <div style={{ color: TEXT, fontSize: 20, fontWeight: 600, marginBottom: 8 }}>Session data could not be loaded.</div>
+            <div style={{ color: DIM, fontSize: 14, lineHeight: 1.55, overflowWrap: "anywhere" }}>{error || "The session-web API returned an error."}</div>
+          </div>
+        ) : view === "instances" ? (
           <InstancesView instances={instances} sessions={sessions} onOpenInstance={openInstance} />
         ) : (
           <ListView

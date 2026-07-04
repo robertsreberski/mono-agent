@@ -42,7 +42,7 @@ The `mono-agent web` CLI command wraps this with registry resolution + browser o
 ## Public API
 
 - `startSessionWebServer(options)` → `{ url, stop() }`.
-- `discoverWebInstances(options)` and the `Session`/`Step`/`WebInstance` types.
+- `discoverWebInstances(options)` and the `Session`/`SessionStep`/`WebInstance` types.
 
 ## Dependency Boundary
 

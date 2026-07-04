@@ -84,6 +84,20 @@ describe("discoverWebInstances", () => {
     expect(discovered[0]?.instance.cwd).toBe(dirname(resolve(artifactDir)));
     expect(discovered[0]?.liveBaseUrl).toBeUndefined();
   });
+
+  it("uses env when resolving the default registry dir", async () => {
+    const registryDir = await tmp("env-reg");
+    const agentDir = await tmp("agent");
+    const artifactDir = join(agentDir, "runs");
+    await registerSource({ registryDir, sourceId: "env-agent", label: "Env Agent", artifactDir });
+
+    const discovered = await discoverWebInstances({
+      registryDirs: [],
+      env: { MONO_AGENT_TRACE_REGISTRY_DIR: registryDir },
+    });
+
+    expect(discovered.map((item) => item.instance.sourceId)).toEqual(["env-agent"]);
+  });
 });
 
 describe("resolveLiveApiKey", () => {

@@ -1,16 +1,29 @@
 // Data-access layer. Talks to the same-origin backend served by
-// @mono-agent/session-web. Every call throws on failure so the store can fall
-// back to the bundled fixture for standalone `vite dev`/`preview`.
+// @mono-agent/session-web. Every call throws on failure so the store can either
+// show a real backend error or fall back to bundled fixtures for standalone
+// `vite dev`/`preview` where /api routes do not exist.
 
 import type { Session, WebInstance, StreamMessage } from "./types";
 
+export class ApiError extends Error {
+  readonly status: number | undefined;
+  readonly contentType: string | undefined;
+
+  constructor(url: string, reason: string, options: { readonly status?: number; readonly contentType?: string } = {}) {
+    super(`${url} -> ${reason}`);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.contentType = options.contentType;
+  }
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url, { headers: { accept: "application/json" } });
-  if (!res.ok) throw new Error(`${url} → ${res.status}`);
+  if (!res.ok) throw new ApiError(url, String(res.status), { status: res.status, contentType: res.headers.get("content-type") || undefined });
   const ct = res.headers.get("content-type") || "";
   // A dev server SPA-fallback returns index.html (200) for unknown routes; guard
   // against parsing HTML as JSON so we cleanly trip the fixture fallback.
-  if (!ct.includes("application/json")) throw new Error(`${url} → non-JSON (${ct})`);
+  if (!ct.includes("application/json")) throw new ApiError(url, `non-JSON (${ct})`, { status: res.status, contentType: ct });
   return (await res.json()) as T;
 }
 

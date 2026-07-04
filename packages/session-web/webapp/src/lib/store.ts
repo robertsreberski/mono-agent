@@ -15,15 +15,16 @@ import {
   type ReactNode,
 } from "react";
 import type { Session, WebInstance } from "./types";
-import { fetchInstances, fetchSessions, fetchSessionDetail, openStream } from "./api";
+import { ApiError, fetchInstances, fetchSessions, fetchSessionDetail, openStream } from "./api";
 import { FIXTURE_INSTANCES, FIXTURE_SESSIONS } from "./fixture";
 
-export type ConnStatus = "loading" | "live" | "fixture";
+export type ConnStatus = "loading" | "live" | "fixture" | "error";
 
 export interface RecorderStore {
   instances: WebInstance[];
   sessions: Session[];
   status: ConnStatus;
+  error?: string;
   /** Trigger a lazy detail fetch for a run if its steps aren't loaded yet. */
   ensureDetail: (key: string) => void;
 }
@@ -56,6 +57,17 @@ export function applySessionOps(prev: readonly Session[], ops: readonly SessionS
   return [...map.values()].sort(byNewest);
 }
 
+export function shouldUseFixtureFallback(error: unknown, isDev = import.meta.env.DEV): boolean {
+  if (isDev) {
+    return true;
+  }
+  // Standalone `vite preview` serves built assets without the session-web backend:
+  // /api/* either 404s or returns an HTML SPA fallback. A real session-web backend
+  // returns JSON for /api failures, and 500s should surface as operator-visible
+  // errors rather than fake demo data.
+  return error instanceof ApiError && (error.status === 404 || !error.contentType?.includes("application/json"));
+}
+
 /** Resolve the owning trace-source id for a run, for the detail endpoint. */
 function resolveSourceId(session: Session, instances: WebInstance[]): string {
   if (session.sourceId) return session.sourceId;
@@ -67,6 +79,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   const [instances, setInstances] = useState<WebInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [status, setStatus] = useState<ConnStatus>("loading");
+  const [error, setError] = useState<string | undefined>(undefined);
 
   const instancesRef = useRef<WebInstance[]>([]);
   instancesRef.current = instances;
@@ -140,12 +153,20 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
             else if (msg.t === "session_removed") queueRemove(msg.sourceId, msg.runId);
           },
         });
-      } catch {
-        // No backend — develop/verify against the bundled fixture.
+      } catch (error_) {
         if (disposed) return;
+        if (!shouldUseFixtureFallback(error_)) {
+          setInstances([]);
+          setSessions([]);
+          setStatus("error");
+          setError(error_ instanceof Error ? error_.message : String(error_));
+          return;
+        }
+        // No backend — develop/verify against the bundled fixture.
         setInstances(FIXTURE_INSTANCES);
         setSessions([...FIXTURE_SESSIONS].sort(byNewest));
         setStatus("fixture");
+        setError(undefined);
       }
     })();
 
@@ -172,7 +193,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
     [queueUpsert],
   );
 
-  const value: RecorderStore = { instances, sessions, status, ensureDetail };
+  const value: RecorderStore = { instances, sessions, status, error, ensureDetail };
   return createElement(RecorderContext.Provider, { value }, children);
 }
 

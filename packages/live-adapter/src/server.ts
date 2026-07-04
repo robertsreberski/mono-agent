@@ -21,6 +21,8 @@ import {
 } from "./constants.js";
 import { LiveAdapterError } from "./errors.js";
 
+const MAX_SSE_QUEUE_FRAMES = 1_000;
+
 export interface LiveAdapterLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
   info?(message: string, metadata?: Record<string, unknown>): void;
@@ -134,6 +136,7 @@ export async function startLiveAdapter(options: LiveAdapterOptions): Promise<Liv
     const queue: string[] = [];
     let draining = false;
     let closed = false;
+    let teardown: (() => void) | undefined;
 
     const flush = (): void => {
       while (!closed && !draining && queue.length > 0) {
@@ -157,11 +160,31 @@ export async function startLiveAdapter(options: LiveAdapterOptions): Promise<Liv
       }
     };
 
+    const closeSlowClient = (): void => {
+      if (closed) {
+        return;
+      }
+      options.logger?.warn?.("Closing slow live SSE client after queue overflow.", {
+        queuedFrames: queue.length,
+        maxQueuedFrames: MAX_SSE_QUEUE_FRAMES,
+      });
+      teardown?.();
+      closed = true;
+      queue.length = 0;
+      if (!res.writableEnded) {
+        res.end();
+      }
+    };
+
     const enqueue = (payload: string): void => {
       if (closed || res.writableEnded) {
         return;
       }
       queue.push(payload);
+      if (queue.length > MAX_SSE_QUEUE_FRAMES) {
+        closeSlowClient();
+        return;
+      }
       flush();
     };
 
@@ -177,6 +200,9 @@ export async function startLiveAdapter(options: LiveAdapterOptions): Promise<Liv
     for (const frame of options.bus.recentFrames()) {
       write(frame);
     }
+    if (closed) {
+      return;
+    }
     const unsubscribe = options.bus.subscribe(write);
 
     const heartbeat = setInterval(() => {
@@ -189,7 +215,7 @@ export async function startLiveAdapter(options: LiveAdapterOptions): Promise<Liv
     heartbeat.unref?.();
 
     let torn = false;
-    const teardown = (): void => {
+    teardown = (): void => {
       if (torn) {
         return;
       }
