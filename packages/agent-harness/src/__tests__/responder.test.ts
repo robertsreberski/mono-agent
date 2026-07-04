@@ -284,6 +284,26 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     expect(streamEventFromRuntimeEvent("not an object")).toBeUndefined();
   });
 
+  it("maps thinking blocks to assistant_thought but NOT commentary-phase text (tool preambles are not reasoning)", () => {
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "assistant",
+        message: { content: [{ type: "thinking", text: "reason about it" }] },
+      }),
+    ).toEqual({ type: "assistant_thought", text: "reason about it" });
+
+    // A phase:"commentary" text block (tool-preamble narration) is status,
+    // not model reasoning — it must not become an assistant_thought. This
+    // also matches replay, where classifyAssistantContent counts only
+    // thinking-typed blocks as the thinking category.
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "inspecting glob results", phase: "commentary" }] },
+      }),
+    ).toBeUndefined();
+  });
+
   it("records tool_timing into the context map instead of emitting, then stamps executionMs onto tool_call_completed", () => {
     const toolTimings = new Map<string, number>();
 
@@ -356,6 +376,67 @@ describe("respond() end-to-end event forwarding", () => {
       { type: "tool_call_completed", id: "t1", content: "done", isError: false, executionMs: 55 },
       { type: "usage_update", cumulativeUsd: 0.01, tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 } },
     ]);
+  });
+
+  it("routes commentary-phase text to stream.status only — never into thinking or the answer", async () => {
+    const events: AgentStreamEvent[] = [];
+    const appended: string[] = [];
+    const statuses: string[] = [];
+    const stream: AgentMessageStream = {
+      append: async (delta: string) => {
+        appended.push(delta);
+      },
+      event: async (event) => {
+        events.push(event);
+      },
+      status: async (text: string) => {
+        statuses.push(text);
+      },
+    };
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => {
+        const emit = request.onEvent!;
+        emit({ type: "assistant", message: { content: [{ type: "text", text: "inspecting glob results", phase: "commentary" }] } });
+        emit({ type: "assistant", message: { content: [{ type: "thinking", text: "actual reasoning" }] } });
+        emit({ type: "assistant", message: { content: [{ type: "text", text: "The answer." }] } });
+        return okResponse(request.conversationId);
+      },
+    };
+    const responder = createAgentResponder({ harness });
+
+    await responder.respond(baseRequest(), stream);
+
+    // Commentary contributes NOTHING to thinking (so thinking chars/duration
+    // stats reflect pure reasoning) and nothing to the streamed answer.
+    expect(events).toEqual([{ type: "assistant_thought", text: "actual reasoning" }]);
+    expect(appended).toEqual(["The answer."]);
+    // The operator still sees the preamble transiently as ephemeral status.
+    expect(statuses).toEqual(["inspecting glob results"]);
+  });
+
+  it("drops commentary-phase text entirely when the stream has no status callback", async () => {
+    const events: AgentStreamEvent[] = [];
+    const appended: string[] = [];
+    const stream: AgentMessageStream = {
+      append: async (delta: string) => {
+        appended.push(delta);
+      },
+      event: async (event) => {
+        events.push(event);
+      },
+    };
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => {
+        request.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "inspecting glob results", phase: "commentary" }] } });
+        return okResponse(request.conversationId);
+      },
+    };
+    const responder = createAgentResponder({ harness });
+
+    await responder.respond(baseRequest(), stream);
+
+    expect(events).toEqual([]);
+    expect(appended).toEqual([]);
   });
 
   it("scopes tool timing state per respond() call (no bleed across turns)", async () => {
