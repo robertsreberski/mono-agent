@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -881,5 +882,103 @@ describe("startMonoAgentApp", () => {
 
     await app.stop();
     expect(order).toEqual(["flush", "close"]);
+  });
+});
+
+describe("startMonoAgentApp global trace-source mirror", () => {
+  // Deliberately NOT under os.tmpdir(): shouldMirrorTraceSourceGlobally skips
+  // any registryDir nested under the OS tmp directory (so ephemeral test runs
+  // never pollute a developer's real ~/.mono-agent registry), which would make
+  // every fixture in this file's shared `dir` (mkdtemp under tmpdir()) exempt
+  // from mirroring. To exercise the mirror for real, this fixture lives next
+  // to the test file instead and is removed in afterEach.
+  const fixturesRoot = dirname(fileURLToPath(import.meta.url));
+  let mirrorDir: string;
+
+  beforeEach(async () => {
+    mirrorDir = await mkdtemp(join(fixturesRoot, "trace-mirror-fixture-"));
+    await writeFile(join(mirrorDir, "IDENTITY.md"), "# Identity\n\nMirror test agent.\n");
+  });
+
+  afterEach(async () => {
+    await rm(mirrorDir, { recursive: true, force: true });
+  });
+
+  function mirrorConfig(traceability: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      runtime: { model: "pi:openai-codex:gpt-5.5", workspace: "." },
+      context: { identityPath: "./IDENTITY.md", selectedSkills: [] },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: "./artifacts" },
+      traceability: { registryDir: "./trace-sources", sourceId: "mirror-test", sourceLabel: "Mirror Test", ...traceability },
+    };
+  }
+
+  async function writeMirrorConfig(json: Record<string, unknown>): Promise<void> {
+    await writeFile(join(mirrorDir, "mono-agent.config.json"), JSON.stringify(json, null, 2));
+  }
+
+  it("mirrors an identical manifest into the global registry, and unregister removes both", async () => {
+    await writeMirrorConfig(mirrorConfig());
+    const globalRegistryDir = join(mirrorDir, "global-trace-sources");
+
+    const app = await startMonoAgentApp({
+      cwd: mirrorDir,
+      env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: globalRegistryDir },
+    });
+
+    const local = await listTraceSources({ registryDir: join(mirrorDir, "trace-sources") });
+    const global = await listTraceSources({ registryDir: globalRegistryDir });
+    expect(local.sources).toHaveLength(1);
+    expect(global.sources).toHaveLength(1);
+    const localSource = local.sources[0];
+    const globalSource = global.sources[0];
+    expect(globalSource?.sourceId).toBe(localSource?.sourceId);
+    expect(globalSource?.label).toBe(localSource?.label);
+    expect(globalSource?.artifactDir).toBe(localSource?.artifactDir);
+    expect(globalSource?.pid).toBe(localSource?.pid);
+    expect(globalSource?.configPath).toBe(localSource?.configPath);
+    expect(globalSource?.transports).toEqual(localSource?.transports);
+
+    await app.stop();
+
+    const localAfterStop = await listTraceSources({ registryDir: join(mirrorDir, "trace-sources") });
+    const globalAfterStop = await listTraceSources({ registryDir: globalRegistryDir });
+    expect(localAfterStop.sources[0]?.status).toBe("stopped");
+    expect(globalAfterStop.sources[0]?.status).toBe("stopped");
+  });
+
+  it("does not mirror when traceability.globalDiscovery is false", async () => {
+    await writeMirrorConfig(mirrorConfig({ globalDiscovery: false }));
+    const globalRegistryDir = join(mirrorDir, "global-trace-sources");
+
+    const app = await startMonoAgentApp({
+      cwd: mirrorDir,
+      env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: globalRegistryDir },
+    });
+
+    const local = await listTraceSources({ registryDir: join(mirrorDir, "trace-sources") });
+    const global = await listTraceSources({ registryDir: globalRegistryDir });
+    expect(local.sources).toHaveLength(1);
+    expect(global.sources).toHaveLength(0);
+
+    await app.stop();
+  });
+
+  it("does not mirror when the resolved registryDir already IS the global registry", async () => {
+    const globalRegistryDir = join(mirrorDir, "trace-sources");
+    await writeMirrorConfig(mirrorConfig());
+
+    const app = await startMonoAgentApp({
+      cwd: mirrorDir,
+      // The global override points at the SAME dir the agent already registers
+      // in: nothing to mirror, and only one manifest file should exist.
+      env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: globalRegistryDir },
+    });
+
+    const { sources } = await listTraceSources({ registryDir: globalRegistryDir });
+    expect(sources).toHaveLength(1);
+
+    await app.stop();
   });
 });

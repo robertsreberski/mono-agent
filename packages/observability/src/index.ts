@@ -75,8 +75,10 @@ export type {
   ReconcileStaleRunsResult,
 } from "./recorded-runs.js";
 export {
+  DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS,
   listTraceRuns,
   listTraceSources,
+  pruneTraceSources,
   readTraceRun,
   registerTraceSource,
   TraceSourceRegistryError,
@@ -94,6 +96,8 @@ export type {
   KnownArtifactFailureKind,
   ObservabilityExporterConfig,
   PhoenixExporterConfig,
+  PruneTraceSourcesOptions,
+  PruneTraceSourcesResult,
   RunExportContext,
   RunExportEventContext,
   RunExporter,

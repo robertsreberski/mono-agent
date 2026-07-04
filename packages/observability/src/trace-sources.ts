@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
@@ -19,6 +19,8 @@ import { listRecordedRuns, readRecordedRun } from "./recorded-runs.js";
 import { redactJsonValue } from "./recorder.js";
 import type {
   JsonlRunReaderOptions,
+  PruneTraceSourcesOptions,
+  PruneTraceSourcesResult,
   RegisterTraceSourceOptions,
   TraceRunDetail,
   TraceRunListItem,
@@ -37,6 +39,9 @@ const DEFAULT_STALE_AFTER_MS = 30_000;
 const MANIFEST_SUFFIX = ".json";
 const SOURCE_ID_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const DEFAULT_MAX_RUNS = 100;
+
+/** Default retention window for {@link pruneTraceSources}: 7 days. */
+export const DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type TraceSourceRegistryErrorCode =
   | "invalid_registry_options"
@@ -127,6 +132,74 @@ export async function listTraceSources(options: TraceSourceRegistryOptions): Pro
     sources: manifests.map((manifest) => toListItem(manifest, normalized)).sort(compareSources),
     warnings,
   };
+}
+
+/**
+ * Delete stale, dead manifests from a registry directory: registrations pile
+ * up over time from ephemeral/test runs and crashed processes, and nothing
+ * else ever removes them. A manifest is removed only when BOTH hold: its
+ * heartbeat (`updatedAt`) is older than `olderThanMs` (default
+ * {@link DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS}), AND its `pid` is not
+ * alive (a manifest with no recorded pid cannot be verified alive, so it is
+ * treated as prunable once it is old enough). A live pid is never removed
+ * regardless of age, and a fresh-but-dead manifest (a just-crashed process)
+ * is kept so `status`/the picker still surface it as stopped/failed.
+ *
+ * Never throws: an unreadable registry directory, a per-file read/parse
+ * failure, or a delete race (another writer already removed the file) are all
+ * swallowed so this can always be called fire-and-forget.
+ */
+export async function pruneTraceSources(options: PruneTraceSourcesOptions): Promise<PruneTraceSourcesResult> {
+  const olderThanMs = options.olderThanMs ?? DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS;
+  const isAlive = options.isAlive ?? defaultPidIsAlive;
+  const now = options.clock?.() ?? Date.now();
+
+  let registryDir: string;
+  let entries;
+  try {
+    registryDir = resolve(options.registryDir);
+    entries = await readdir(registryDir, { withFileTypes: true });
+  } catch {
+    return { removed: 0 };
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(MANIFEST_SUFFIX)) {
+      continue;
+    }
+    try {
+      const path = safeJoin(registryDir, entry.name);
+      const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+      if (!isRecord(parsed)) {
+        continue;
+      }
+      const pid = typeof parsed.pid === "number" && Number.isInteger(parsed.pid) ? parsed.pid : undefined;
+      if (pid !== undefined && isAlive(pid)) {
+        continue;
+      }
+      const updatedAtMs = typeof parsed.updatedAt === "string" ? Date.parse(parsed.updatedAt) : NaN;
+      if (!Number.isFinite(updatedAtMs) || now - updatedAtMs < olderThanMs) {
+        continue;
+      }
+      await rm(path, { force: true });
+      removed += 1;
+    } catch {
+      // Malformed manifest or a concurrent-writer race: leave it for the next pass.
+      continue;
+    }
+  }
+  return { removed };
+}
+
+function defaultPidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but is owned by someone else.
+    return isErrno(error, "EPERM");
+  }
 }
 
 export async function listTraceRuns(options: TraceRunListOptions): Promise<TraceRunListResult> {

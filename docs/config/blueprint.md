@@ -148,7 +148,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "sourceId": "my-agent",
     "sourceLabel": "My Agent",
     "heartbeatMs": 10000,
-    "staleAfterMs": 30000
+    "staleAfterMs": 30000,
+    "globalDiscovery": true                // mirror into ~/.mono-agent/trace-sources too (default true)
   },
 
   // Optional trace viewer: add a Phoenix (OTLP) exporter to browse traces in

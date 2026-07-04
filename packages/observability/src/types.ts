@@ -432,3 +432,16 @@ export interface TraceRunListResult {
   readonly runs: readonly TraceRunListItem[];
   readonly warnings: readonly string[];
 }
+
+export interface PruneTraceSourcesOptions {
+  readonly registryDir: string;
+  /** Manifests whose heartbeat is older than this AND whose pid is dead are removed. Default {@link DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS}. */
+  readonly olderThanMs?: number;
+  /** Test seam for pid liveness; defaults to a real `process.kill(pid, 0)` probe. */
+  readonly isAlive?: (pid: number) => boolean;
+  readonly clock?: () => number;
+}
+
+export interface PruneTraceSourcesResult {
+  readonly removed: number;
+}

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createJsonlRunRecorder,
+  DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS,
   listTraceRuns,
   listTraceSources,
+  pruneTraceSources,
   readTraceRun,
   registerTraceSource,
   TraceSourceRegistryError,
@@ -153,5 +155,99 @@ describe("trace source registry", () => {
       label: "Bad",
       artifactDir: join(dir, "artifacts"),
     })).rejects.toBeInstanceOf(TraceSourceRegistryError);
+  });
+});
+
+describe("pruneTraceSources", () => {
+  const NOW = Date.parse("2026-07-03T12:00:00.000Z");
+  const EIGHT_DAYS_MS = 8 * 24 * 60 * 60 * 1000;
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  async function writeRawManifest(
+    registryDir: string,
+    sourceId: string,
+    overrides: { readonly updatedAt: string; readonly pid?: number },
+  ): Promise<string> {
+    await mkdir(registryDir, { recursive: true });
+    const path = join(registryDir, `${sourceId}.json`);
+    await writeFile(
+      path,
+      JSON.stringify({
+        schema: "agent-runtime.trace-source.v1",
+        sourceId,
+        label: sourceId,
+        artifactDir: join(registryDir, "..", `${sourceId}-artifacts`),
+        status: "running",
+        startedAt: overrides.updatedAt,
+        updatedAt: overrides.updatedAt,
+        ...(overrides.pid === undefined ? {} : { pid: overrides.pid }),
+      }, null, 2),
+      "utf8",
+    );
+    return path;
+  }
+
+  it("has a 7-day default retention window", () => {
+    expect(DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("removes an old manifest whose pid is dead, keeps an old-but-alive one, and keeps a fresh-but-dead one", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const oldIso = new Date(NOW - EIGHT_DAYS_MS).toISOString();
+    const freshIso = new Date(NOW - ONE_HOUR_MS).toISOString();
+
+    await writeRawManifest(registryDir, "old-dead", { updatedAt: oldIso, pid: 111 });
+    await writeRawManifest(registryDir, "old-alive", { updatedAt: oldIso, pid: 222 });
+    await writeRawManifest(registryDir, "fresh-dead", { updatedAt: freshIso, pid: 333 });
+    // No pid recorded at all: treated like "dead" for age-based pruning purposes.
+    await writeRawManifest(registryDir, "old-no-pid", { updatedAt: oldIso });
+
+    const result = await pruneTraceSources({
+      registryDir,
+      clock: () => NOW,
+      isAlive: (pid) => pid === 222,
+    });
+
+    expect(result).toEqual({ removed: 2 });
+    const remaining = (await readdir(registryDir)).sort();
+    expect(remaining).toEqual(["fresh-dead.json", "old-alive.json"]);
+  });
+
+  it("never deletes a manifest with a live pid regardless of age", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const ancientIso = new Date(NOW - 365 * 24 * 60 * 60 * 1000).toISOString();
+    await writeRawManifest(registryDir, "ancient-alive", { updatedAt: ancientIso, pid: 999 });
+
+    const result = await pruneTraceSources({
+      registryDir,
+      olderThanMs: 1_000,
+      clock: () => NOW,
+      isAlive: () => true,
+    });
+
+    expect(result).toEqual({ removed: 0 });
+    expect(await readdir(registryDir)).toEqual(["ancient-alive.json"]);
+  });
+
+  it("tolerates malformed manifest files without throwing", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const oldIso = new Date(NOW - EIGHT_DAYS_MS).toISOString();
+    await writeRawManifest(registryDir, "old-dead", { updatedAt: oldIso, pid: 111 });
+    await writeFile(join(registryDir, "corrupt.json"), "{not valid json", "utf8");
+
+    await expect(
+      pruneTraceSources({ registryDir, clock: () => NOW, isAlive: () => false }),
+    ).resolves.toEqual({ removed: 1 });
+    expect(await readdir(registryDir)).toEqual(["corrupt.json"]);
+  });
+
+  it("never throws when the registry directory does not exist", async () => {
+    const dir = await tempDir();
+    await expect(
+      pruneTraceSources({ registryDir: join(dir, "does-not-exist"), clock: () => NOW }),
+    ).resolves.toEqual({ removed: 0 });
   });
 });

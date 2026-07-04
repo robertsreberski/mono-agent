@@ -1,10 +1,10 @@
 import { dirname, resolve } from "node:path";
 
-import { listTraceSources } from "@mono-agent/observability";
+import { listTraceSources, pruneTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 import { loadTuiAdapterConfig } from "@mono-agent/tui-adapter";
 
-import { resolveAppTraceRegistryDir } from "./app-config.js";
+import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
 
 export interface RunTuiOptions {
   readonly configPath: string;
@@ -33,14 +33,19 @@ export type TuiLaunchPlan =
 
 /**
  * Pure selection logic for `mono-agent tui`: which running agent to connect
- * to, or whether to open the picker. Exported for unit tests.
+ * to, or whether to open the picker. `registryDirs` names every registry that
+ * was consulted (one entry, or two when the configured registry and the
+ * machine-wide global one differ) purely for the "nothing found" messaging.
+ * Exported for unit tests.
  */
 export function resolveTuiLaunch(
   sources: readonly TraceSourceListItem[],
-  registryDir: string,
+  registryDirs: readonly string[],
   agentFilter: string | undefined,
 ): TuiLaunchPlan {
   const alive = sources.filter((source) => source.health !== "stopped");
+  const registryLabel =
+    registryDirs.length <= 1 ? `registry: ${registryDirs[0] ?? ""}` : `registries: ${registryDirs.join(", ")}`;
   if (agentFilter !== undefined) {
     const match = alive.find(
       (source) => source.label === agentFilter || source.sourceId === agentFilter,
@@ -52,7 +57,7 @@ export function resolveTuiLaunch(
         message:
           `No running agent matches \`${agentFilter}\`.\n` +
           (alive.length === 0
-            ? `No agents are running (registry: ${registryDir}).`
+            ? `No agents are running (${registryLabel}).`
             : `Running agents:\n${available}`),
       };
     }
@@ -62,7 +67,7 @@ export function resolveTuiLaunch(
     return {
       kind: "none",
       message:
-        `No running agents found (registry: ${registryDir}).\n` +
+        `No running agents found (${registryLabel}).\n` +
         "Start one with `mono-agent start` in its folder, then run `mono-agent tui` again.",
     };
   }
@@ -70,6 +75,32 @@ export function resolveTuiLaunch(
     return { kind: "connect", source: alive[0] };
   }
   return { kind: "picker", sources: alive };
+}
+
+/**
+ * Merge two trace-source lists (e.g. the configured registry and the global
+ * machine-wide one) by `sourceId`: a source unique to either list is kept
+ * as-is, and a source present in both keeps whichever copy has the fresher
+ * `updatedAt` heartbeat (the primary list's copy wins a tie). Exported for
+ * unit tests.
+ */
+export function mergeTraceSources(
+  primary: readonly TraceSourceListItem[],
+  secondary: readonly TraceSourceListItem[],
+): TraceSourceListItem[] {
+  const bySourceId = new Map<string, TraceSourceListItem>();
+  for (const source of [...secondary, ...primary]) {
+    const existing = bySourceId.get(source.sourceId);
+    if (existing === undefined || Date.parse(source.updatedAt) >= Date.parse(existing.updatedAt)) {
+      bySourceId.set(source.sourceId, source);
+    }
+  }
+  return [...bySourceId.values()].sort(compareTraceSourcesByUpdatedAt);
+}
+
+function compareTraceSourcesByUpdatedAt(a: TraceSourceListItem, b: TraceSourceListItem): number {
+  const byUpdated = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+  return byUpdated === 0 ? a.sourceId.localeCompare(b.sourceId) : byUpdated;
 }
 
 /** Extract the tui channel's baseUrl from a manifest's channel summaries. */
@@ -109,10 +140,30 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
     cwd: options.cwd,
     configPath: options.configPath,
   });
+  const globalRegistryDir = resolveGlobalTraceRegistryDir(options.env);
   const listSources = deps.listSources ?? listTraceSources;
-  // Use the registry's own echoed (normalized) dir from here on.
-  const { sources, registryDir } = await listSources({ registryDir: configuredRegistryDir });
-  const plan = resolveTuiLaunch(sources, registryDir, options.agent);
+
+  // Use the registry's own echoed (normalized) dir from here on. The "does this
+  // differ from the global registry" decision is made BEFORE querying (against
+  // the resolvers' own output), not against the echoed result, since a listing
+  // seam is free to echo back whatever registryDir it likes.
+  const sameAsGlobal = resolve(configuredRegistryDir) === resolve(globalRegistryDir);
+  const primary = await listSources({ registryDir: configuredRegistryDir });
+  void pruneTraceSources({ registryDir: primary.registryDir });
+
+  const merged = sameAsGlobal ? undefined : await listSources({ registryDir: globalRegistryDir });
+  if (merged !== undefined) {
+    void pruneTraceSources({ registryDir: merged.registryDir });
+  }
+
+  const sources = merged === undefined ? primary.sources : mergeTraceSources(primary.sources, merged.sources);
+  const registryDirs = merged === undefined ? [primary.registryDir] : [primary.registryDir, merged.registryDir];
+  const plan = resolveTuiLaunch(sources, registryDirs, options.agent);
+  // When merged, the GLOBAL registry is the machine-wide one (the whole point
+  // of this feature), and every mirror-registering agent's own manifest
+  // already lands there too, so it is a superset of the configured registry
+  // in the common case — use it for any further discovery inside the TUI.
+  const discoveryRegistryDir = merged === undefined ? primary.registryDir : merged.registryDir;
 
   if (plan.kind === "none") {
     stdout.write(`${plan.message}\n`);
@@ -138,7 +189,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
   };
 
   if (plan.kind === "picker") {
-    const handle = await startTui({ ...common, discovery: { registryDir } });
+    const handle = await startTui({ ...common, discovery: { registryDir: discoveryRegistryDir } });
     await handle.waitUntilExit();
     return 0;
   }
@@ -150,7 +201,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
     ...common,
     ...(baseUrl === undefined
       ? // No stream endpoint (tui channel disabled): replay/config still work.
-        { discovery: { registryDir } }
+        { discovery: { registryDir: discoveryRegistryDir } }
       : { connection: { baseUrl, ...(apiKey === undefined ? {} : { apiKey }) } }),
     instance: {
       label: source.label,

@@ -36,6 +36,7 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_TRACE_SOURCE_LABEL: "Agent One",
         MONO_AGENT_TRACE_HEARTBEAT_MS: "5000",
         MONO_AGENT_TRACE_STALE_AFTER_MS: "15000",
+        MONO_AGENT_TRACE_GLOBAL_DISCOVERY: "false",
       },
     });
 
@@ -66,6 +67,7 @@ describe("loadMonoAgentConfig", () => {
       sourceLabel: "Agent One",
       heartbeatMs: 5000,
       staleAfterMs: 15000,
+      globalDiscovery: false,
     });
   });
 
@@ -415,6 +417,24 @@ describe("loadMonoAgentConfig", () => {
     });
 
     expect(config.traceability.registryDir).toMatch(/\.mono-agent\/trace-sources$/u);
+  });
+
+  it("defaults traceability.globalDiscovery to true so agents mirror into the machine-wide registry", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: baseEnv,
+    });
+
+    expect(config.traceability.globalDiscovery).toBe(true);
+  });
+
+  it("rejects a non-boolean MONO_AGENT_TRACE_GLOBAL_DISCOVERY", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_TRACE_GLOBAL_DISCOVERY: "sometimes" },
+      }),
+    ).toThrow(MonoAgentConfigError);
   });
 
   it("loads a local Ollama provider from the one-provider env shape", () => {
