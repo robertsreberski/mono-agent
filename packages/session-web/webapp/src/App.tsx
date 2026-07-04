@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import { useRecorder } from "./lib/store";
+import { useIsMobile } from "./lib/useIsMobile";
 import { PAGE_BG, TEXT, FONT_UI, FONT_MONO, DIM } from "./lib/tokens";
 import { ListView } from "./views/ListView";
 import { InstancesView } from "./views/InstancesView";
@@ -21,7 +22,10 @@ function TopNav({
     fontFamily: FONT_MONO,
     fontSize: 12,
     letterSpacing: ".04em",
-    padding: "8px 16px",
+    padding: "10px 16px",
+    minHeight: 44,
+    display: "inline-flex",
+    alignItems: "center",
     borderRadius: 10,
     border: `1px solid ${active ? "rgba(255,255,255,.2)" : "rgba(255,255,255,.08)"}`,
     background: active ? "rgba(255,255,255,.1)" : "transparent",
@@ -29,7 +33,7 @@ function TopNav({
     transition: "all .15s",
   });
   return (
-    <div style={{ display: "flex", gap: 7, marginBottom: 26, alignItems: "center" }}>
+    <div style={{ display: "flex", gap: 7, marginBottom: 26, alignItems: "center", flexWrap: "wrap", rowGap: 8 }}>
       <button className="rec-chip" onClick={() => onNav("list")} style={btn(view !== "instances")}>
         Sessions
       </button>
@@ -43,6 +47,7 @@ function TopNav({
 
 export function App() {
   const { sessions, instances, status } = useRecorder();
+  const isMobile = useIsMobile();
   const [view, setView] = useState<View>("list");
   const [selId, setSelId] = useState<string | null>(null);
   const [fChannel, setFChannel] = useState("all");
@@ -67,7 +72,7 @@ export function App() {
   }, []);
 
   const page: React.CSSProperties = {
-    minHeight: "100vh",
+    minHeight: "100dvh",
     background: PAGE_BG,
     color: TEXT,
     fontFamily: FONT_UI,
@@ -100,6 +105,8 @@ export function App() {
           borderRadius: 999,
           padding: "5px 11px",
           background: "rgba(255,255,255,.03)",
+          whiteSpace: "nowrap",
+          flex: "none",
         }}
       >
         demo data
@@ -108,7 +115,17 @@ export function App() {
 
   return (
     <div style={page}>
-      <div style={{ maxWidth: 1160, margin: "0 auto", padding: "34px 22px 90px" }}>
+      <div
+        style={{
+          maxWidth: 1160,
+          margin: "0 auto",
+          padding: `calc(${isMobile ? 18 : 24}px + env(safe-area-inset-top)) max(${
+            isMobile ? 12 : 16
+          }px, env(safe-area-inset-right)) calc(${isMobile ? 72 : 84}px + env(safe-area-inset-bottom)) max(${
+            isMobile ? 12 : 16
+          }px, env(safe-area-inset-left))`,
+        }}
+      >
         <TopNav view={view} onNav={setView} statusPill={statusPill} />
         {view === "instances" ? (
           <InstancesView sessions={sessions} onOpenInstance={openInstance} />

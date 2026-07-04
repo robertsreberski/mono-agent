@@ -14,15 +14,24 @@ body {
   margin: 0;
   padding: 0;
   background: #0a0b0e;
+  /* Never let a stray fixed-width child produce a horizontal scrollbar / rubber-band
+     on mobile — the layout is fluid and should always fit the viewport width. */
+  overflow-x: hidden;
+  max-width: 100%;
 }
 
 body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Only vertical rubber-band; avoids horizontal overscroll revealing the page edge. */
+  overscroll-behavior-x: none;
 }
 
 #root {
+  /* 100vh over-reports on mobile (counts the retracting URL bar) → content is too tall
+     and jumps. 100dvh tracks the *visible* viewport. Keep 100vh as the older fallback. */
   min-height: 100vh;
+  min-height: 100dvh;
 }
 
 a {

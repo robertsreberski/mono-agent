@@ -17,6 +17,7 @@ import {
   effortInfo,
 } from "../lib/format";
 import { FONT_MONO, FONT_UI, FONT_SERIF, TEXT, MUTED, DIM, DIMMER, AMBER, BLUE, TEAL, VIOLET, OK, ERROR } from "../lib/tokens";
+import { useIsMobile } from "../lib/useIsMobile";
 
 interface Props {
   id: string;
@@ -69,6 +70,7 @@ const secLabel = (color: string) => ({
 
 export function DetailView({ id, onBack }: Props) {
   const { sessions } = useRecorder();
+  const isMobile = useIsMobile();
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [showRecall, setShowRecall] = useState(false);
   const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
@@ -249,7 +251,7 @@ export function DetailView({ id, onBack }: Props) {
   const t = s.totals;
 
   return (
-    <div style={{ maxWidth: 920, margin: "0 auto", padding: "0 0 100px" }}>
+    <div style={{ maxWidth: 920, margin: "0 auto", padding: "0 0 calc(48px + env(safe-area-inset-bottom))" }}>
       {/* sticky header */}
       <div
         style={{
@@ -262,9 +264,16 @@ export function DetailView({ id, onBack }: Props) {
           borderBottom: "1px solid rgba(255,255,255,.08)",
         }}
       >
-        <div style={{ padding: "14px 22px", display: "flex", alignItems: "center", gap: 14 }}>
+        <div
+          style={{
+            padding: "calc(14px + env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 14px max(16px, env(safe-area-inset-left))",
+            display: "flex",
+            alignItems: "center",
+            gap: isMobile ? 8 : 14,
+          }}
+        >
           <button className="back-btn" onClick={onBack} style={backBtnStyle}>
-            &larr; all sessions
+            {isMobile ? <>&larr;</> : <>&larr; all sessions</>}
           </button>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 15, fontWeight: 600, color: TEXT, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -284,7 +293,7 @@ export function DetailView({ id, onBack }: Props) {
                 fontSize: 10,
                 letterSpacing: ".08em",
                 textTransform: "uppercase",
-                padding: "5px 11px",
+                padding: isMobile ? "4px 8px" : "5px 11px",
                 borderRadius: 6,
                 background: hexA(outcome.color, 0.14),
                 color: outcome.color,
@@ -310,7 +319,7 @@ export function DetailView({ id, onBack }: Props) {
         </div>
       </div>
 
-      <div style={{ padding: "22px 22px 0" }}>
+      <div style={{ padding: "22px max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left))" }}>
         {/* engine strip */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 9, marginBottom: 16 }}>
           {[
@@ -328,10 +337,25 @@ export function DetailView({ id, onBack }: Props) {
                 border: "1px solid rgba(255,255,255,.08)",
                 borderRadius: 9,
                 padding: "8px 12px",
+                maxWidth: "100%",
+                minWidth: 0,
               }}
             >
-              <span style={{ fontFamily: FONT_MONO, fontSize: 9, letterSpacing: ".14em", color: DIMMER, textTransform: "uppercase" }}>{chip.k}</span>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: chip.color, fontWeight: chip.strong ? 600 : 400 }}>{chip.v}</span>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 9, letterSpacing: ".14em", color: DIMMER, textTransform: "uppercase", flex: "none" }}>{chip.k}</span>
+              <span
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 13,
+                  color: chip.color,
+                  fontWeight: chip.strong ? 600 : 400,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {chip.v}
+              </span>
             </div>
           ))}
           <div
@@ -404,7 +428,8 @@ export function DetailView({ id, onBack }: Props) {
                     fontFamily: FONT_MONO,
                     fontSize: 11,
                     letterSpacing: ".06em",
-                    padding: 0,
+                    padding: "8px 4px",
+                    margin: "0 0 0 -4px",
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
@@ -448,7 +473,7 @@ export function DetailView({ id, onBack }: Props) {
             <div style={{ background: "rgba(255,255,255,.028)", border: "1px solid rgba(255,255,255,.07)", borderRadius: 14, padding: "15px 17px", display: "flex", flexDirection: "column", gap: 12 }}>
               {toolBars.map((tb) => (
                 <div key={tb.name} style={{ display: "flex", alignItems: "center", gap: 13 }}>
-                  <div style={{ width: 144, display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+                  <div style={{ width: "clamp(84px, 34vw, 144px)", flex: "none", display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
                     <span style={{ width: 9, height: 9, borderRadius: 3, background: tb.c2, boxShadow: `0 0 8px ${tb.c1}`, flex: "none" }} />
                     <span style={{ fontFamily: FONT_MONO, fontSize: 12.5, color: "#DEDCD5", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                       {tb.name}
@@ -525,7 +550,8 @@ export function DetailView({ id, onBack }: Props) {
                             cursor: "pointer",
                             background: "none",
                             border: "none",
-                            padding: 0,
+                            padding: "8px 4px",
+                            margin: "0 0 0 -4px",
                             display: "flex",
                             alignItems: "center",
                             gap: 7,
@@ -553,7 +579,7 @@ export function DetailView({ id, onBack }: Props) {
                             const isOpen = !!open[c.key];
                             return (
                               <div key={c.key} style={{ background: "rgba(79,182,166,.05)", border: "1px solid rgba(79,182,166,.16)", borderRadius: 9, overflow: "hidden" }}>
-                                <div className="call-head" onClick={() => toggle(c.key)} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 9, padding: "9px 11px" }}>
+                                <div className="call-head" onClick={() => toggle(c.key)} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 9, padding: "12px 11px", minHeight: 44 }}>
                                   <span style={{ width: 7, height: 7, borderRadius: "50%", background: c.statusColor, flex: "none", boxShadow: `0 0 6px ${c.statusColor}` }} />
                                   <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: "#6FD0C0" }}>{c.name}</span>
                                   <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: "#8b8d94", flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -664,7 +690,8 @@ const backBtnStyle: React.CSSProperties = {
   color: "#C9CBD1",
   fontFamily: FONT_MONO,
   fontSize: 12,
-  padding: "8px 13px",
+  minHeight: 44,
+  padding: "10px 13px",
   borderRadius: 9,
   transition: "all .15s",
 };

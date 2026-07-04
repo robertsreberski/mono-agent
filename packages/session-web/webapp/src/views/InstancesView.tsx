@@ -83,13 +83,13 @@ export function InstancesView({ sessions, onOpenInstance }: Props) {
           />
           <span style={{ fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".28em", color: MUTED, textTransform: "uppercase" }}>Instances</span>
         </div>
-        <h1 style={{ margin: 0, fontSize: 36, lineHeight: 1.04, fontWeight: 600, letterSpacing: "-.02em" }}>Agents on this machine</h1>
+        <h1 style={{ margin: 0, fontSize: "clamp(26px, 7vw, 36px)", lineHeight: 1.04, fontWeight: 600, letterSpacing: "-.02em" }}>Agents on this machine</h1>
         <p style={{ margin: "11px 0 0", color: MUTED, fontSize: 15 }}>
           {cards.length} agent instance{cards.length !== 1 ? "s" : ""} recording sessions — open one to dig into its runs.
         </p>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(330px,1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(min(330px, 100%),1fr))", gap: 14 }}>
         {cards.map((ic) => (
           <div
             key={ic.name}
@@ -137,11 +137,11 @@ export function InstancesView({ sessions, onOpenInstance }: Props) {
             >
               {ic.cwd}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 17 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(88px, 1fr))", gap: 10, marginBottom: 17 }}>
               {ic.stats.map((st) => (
                 <div key={st.label}>
                   <div style={{ fontFamily: FONT_MONO, fontSize: 9, letterSpacing: ".1em", color: DIM, textTransform: "uppercase" }}>{st.label}</div>
-                  <div style={{ fontFamily: FONT_MONO, fontSize: 18, fontWeight: 600, marginTop: 4, color: st.color }}>{st.value}</div>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: "clamp(16px, 4.6vw, 18px)", fontWeight: 600, marginTop: 4, color: st.color }}>{st.value}</div>
                 </div>
               ))}
             </div>
@@ -163,6 +163,8 @@ export function InstancesView({ sessions, onOpenInstance }: Props) {
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
+                flexWrap: "wrap",
+                gap: "4px 12px",
                 marginTop: 14,
                 paddingTop: 13,
                 borderTop: "1px solid rgba(255,255,255,.07)",
@@ -170,10 +172,10 @@ export function InstancesView({ sessions, onOpenInstance }: Props) {
                 fontSize: 11,
               }}
             >
-              <span style={{ color: MUTED }}>
+              <span style={{ color: MUTED, whiteSpace: "nowrap" }}>
                 <span style={{ color: AMBER }}>{ic.noti}</span> notified · <span style={{ color: "#8b8d94" }}>{ic.sil}</span> silent
               </span>
-              <span style={{ color: DIM }}>last {ic.last}</span>
+              <span style={{ color: DIM, whiteSpace: "nowrap" }}>last {ic.last}</span>
             </div>
           </div>
         ))}

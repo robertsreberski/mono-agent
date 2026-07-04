@@ -16,6 +16,7 @@ import {
   tz,
 } from "../lib/format";
 import { FONT_MONO, FONT_UI, TEXT, MUTED, DIM, DIMMER, AMBER, BLUE, TEAL, VIOLET, type Style } from "../lib/tokens";
+import { useIsMobile } from "../lib/useIsMobile";
 
 interface Props {
   sessions: Session[];
@@ -40,6 +41,7 @@ const label9: Style = {
 export function ListView(props: Props) {
   const { sessions, fChannel, fOut, fInstance, setFChannel, setFOut, setFInstance, onOpen } = props;
   const [instOpen, setInstOpen] = useState(false);
+  const isMobile = useIsMobile();
 
   const m = useMemo(() => {
     // ---- instances (over all sessions) ----
@@ -301,7 +303,7 @@ export function ListView(props: Props) {
               Session Recorder
             </span>
           </div>
-          <h1 style={{ margin: 0, fontSize: 40, lineHeight: 1.02, fontWeight: 600, letterSpacing: "-.02em", maxWidth: "16ch" }}>
+          <h1 style={{ margin: 0, fontSize: "clamp(27px, 8vw, 40px)", lineHeight: 1.02, fontWeight: 600, letterSpacing: "-.02em", maxWidth: "16ch" }}>
             The agent's flight recorder
           </h1>
           <p style={{ margin: "12px 0 0", color: MUTED, fontSize: 15, maxWidth: "52ch", lineHeight: 1.5 }}>
@@ -325,6 +327,7 @@ export function ListView(props: Props) {
               border: "1px solid rgba(255,255,255,.14)",
               borderRadius: 11,
               padding: "9px 13px",
+              minHeight: 44,
               color: TEXT,
               fontFamily: FONT_MONO,
               transition: "border-color .15s",
@@ -362,6 +365,15 @@ export function ListView(props: Props) {
                 padding: 6,
                 boxShadow: "0 24px 60px -16px rgba(0,0,0,.7)",
                 textAlign: "left",
+                ...(isMobile
+                  ? {
+                      left: 0,
+                      right: "auto",
+                      minWidth: 0,
+                      width: "min(250px, calc(100vw - 32px))",
+                      maxWidth: "calc(100vw - 32px)",
+                    }
+                  : {}),
               }}
             >
               {m.instances.map((ins) => (
@@ -378,6 +390,7 @@ export function ListView(props: Props) {
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
+                    minHeight: 44,
                     background: ins.bg,
                     border: "none",
                     borderRadius: 9,
@@ -484,16 +497,27 @@ export function ListView(props: Props) {
                   position: "absolute",
                   bottom: 14,
                   left: `${a.left}%`,
-                  width: 8,
+                  width: 24,
                   height: a.h,
-                  borderRadius: 3,
-                  background: a.fill,
-                  border: `1.5px solid ${a.color}`,
+                  background: "transparent",
+                  border: "none",
                   cursor: "pointer",
                   "--color": a.color,
                 } as Style
               }
-            />
+            >
+              <span
+                style={{
+                  display: "block",
+                  width: 8,
+                  height: "100%",
+                  margin: "0 auto",
+                  borderRadius: 3,
+                  background: a.fill,
+                  border: `1.5px solid ${a.color}`,
+                }}
+              />
+            </div>
           ))}
         </div>
       </div>
@@ -545,11 +569,14 @@ export function ListView(props: Props) {
               onClick={() => setFChannel(c.key)}
               style={{
                 cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                minHeight: 44,
                 fontFamily: FONT_MONO,
                 fontSize: 11,
                 letterSpacing: ".06em",
                 textTransform: "uppercase",
-                padding: "7px 13px",
+                padding: "9px 14px",
                 borderRadius: 999,
                 border: `1px solid ${c.border}`,
                 background: c.bg,
@@ -561,7 +588,7 @@ export function ListView(props: Props) {
             </button>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 7, marginLeft: "auto" }}>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", ...(isMobile ? {} : { marginLeft: "auto" }) }}>
           {m.outcomeChips.map((c) => (
             <button
               key={c.key}
@@ -569,11 +596,14 @@ export function ListView(props: Props) {
               onClick={() => setFOut(c.key)}
               style={{
                 cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                minHeight: 44,
                 fontFamily: FONT_MONO,
                 fontSize: 11,
                 letterSpacing: ".06em",
                 textTransform: "uppercase",
-                padding: "7px 13px",
+                padding: "9px 14px",
                 borderRadius: 999,
                 border: `1px solid ${c.border}`,
                 background: c.bg,
