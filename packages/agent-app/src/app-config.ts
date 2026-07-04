@@ -455,6 +455,23 @@ function parseTraceBoolean(value: string, name: string): boolean {
 }
 
 /**
+ * The root under which a trace registry counts as ephemeral: mirror
+ * registration is suppressed for registries below it, so throwaway test/CI
+ * runs never pollute the developer's real global registry. Defaults to the
+ * real OS tmp directory; the env override is a TEST seam (same pattern as
+ * `MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR`) letting integration tests point the
+ * guard elsewhere so a genuine `mkdtemp(tmpdir())` fixture can exercise the
+ * mirror-happens path.
+ */
+export function resolveTraceTmpdirRoot(env: Record<string, string | undefined>): string {
+  const override = env.MONO_AGENT_TRACE_TMPDIR_ROOT?.trim();
+  if (override !== undefined && override.length > 0) {
+    return resolve(override);
+  }
+  return resolve(tmpdir());
+}
+
+/**
  * True when `path` resolves inside `tmpRoot` (default the real OS tmp
  * directory). Exported so the mirror-registration safety guard below is
  * directly unit-testable without touching the filesystem.

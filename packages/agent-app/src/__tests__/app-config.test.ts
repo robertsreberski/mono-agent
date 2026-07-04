@@ -1,5 +1,5 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -7,6 +7,7 @@ import {
   isPathUnderTmpdir,
   resolveAppTraceGlobalDiscovery,
   resolveGlobalTraceRegistryDir,
+  resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
 } from "../app-config.js";
 
@@ -19,6 +20,16 @@ describe("resolveGlobalTraceRegistryDir", () => {
     expect(resolveGlobalTraceRegistryDir({ MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: "/fake/global-registry" })).toBe(
       "/fake/global-registry",
     );
+  });
+});
+
+describe("resolveTraceTmpdirRoot", () => {
+  it("defaults to the real OS tmp directory", () => {
+    expect(resolveTraceTmpdirRoot({})).toBe(resolve(tmpdir()));
+  });
+
+  it("honors MONO_AGENT_TRACE_TMPDIR_ROOT (test injection seam)", () => {
+    expect(resolveTraceTmpdirRoot({ MONO_AGENT_TRACE_TMPDIR_ROOT: "/fake/tmp-root" })).toBe("/fake/tmp-root");
   });
 });
 

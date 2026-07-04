@@ -24,6 +24,7 @@ import {
   resolveAppTraceSourceLabel,
   resolveAppTraceStaleAfterMs,
   resolveGlobalTraceRegistryDir,
+  resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
 } from "./app-config.js";
 import type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
@@ -328,7 +329,8 @@ class MonoAgentAppController implements MonoAgentApp {
       // config-local override (e.g. `mono-agent init`'s scaffold). A mirror
       // failure must never affect the primary registration above.
       const globalRegistryDir = resolveGlobalTraceRegistryDir(this.env);
-      if (shouldMirrorTraceSourceGlobally({ registryDir, globalRegistryDir, globalDiscovery })) {
+      const tmpdirRoot = resolveTraceTmpdirRoot(this.env);
+      if (shouldMirrorTraceSourceGlobally({ registryDir, globalRegistryDir, globalDiscovery, tmpdirRoot })) {
         try {
           this.globalTraceSource = await registerTraceSource({ ...registerOptions, registryDir: globalRegistryDir });
           void pruneTraceSources({ registryDir: globalRegistryDir });

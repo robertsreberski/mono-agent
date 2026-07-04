@@ -159,11 +159,17 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
   const sources = merged === undefined ? primary.sources : mergeTraceSources(primary.sources, merged.sources);
   const registryDirs = merged === undefined ? [primary.registryDir] : [primary.registryDir, merged.registryDir];
   const plan = resolveTuiLaunch(sources, registryDirs, options.agent);
-  // When merged, the GLOBAL registry is the machine-wide one (the whole point
-  // of this feature), and every mirror-registering agent's own manifest
-  // already lands there too, so it is a superset of the configured registry
-  // in the common case — use it for any further discovery inside the TUI.
-  const discoveryRegistryDir = merged === undefined ? primary.registryDir : merged.registryDir;
+  // For the machine-wide PICKER, prefer the GLOBAL registry when merged (the
+  // whole point of this feature): every mirror-registering agent's own
+  // manifest already lands there too, so it is a superset of the configured
+  // registry in the common case.
+  const pickerRegistryDir = merged === undefined ? primary.registryDir : merged.registryDir;
+  // A SELECTED instance's follow-up discovery must instead use the registry
+  // its winning manifest was actually read from: an opt-out agent
+  // (globalDiscovery:false) exists ONLY in its local registry. mergeTraceSources
+  // preserves object identity, so list membership tells us the origin.
+  const registryDirOf = (winner: TraceSourceListItem): string =>
+    merged !== undefined && merged.sources.includes(winner) ? merged.registryDir : primary.registryDir;
 
   if (plan.kind === "none") {
     stdout.write(`${plan.message}\n`);
@@ -189,7 +195,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
   };
 
   if (plan.kind === "picker") {
-    const handle = await startTui({ ...common, discovery: { registryDir: discoveryRegistryDir } });
+    const handle = await startTui({ ...common, discovery: { registryDir: pickerRegistryDir } });
     await handle.waitUntilExit();
     return 0;
   }
@@ -201,7 +207,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
     ...common,
     ...(baseUrl === undefined
       ? // No stream endpoint (tui channel disabled): replay/config still work.
-        { discovery: { registryDir: discoveryRegistryDir } }
+        { discovery: { registryDir: registryDirOf(source) } }
       : { connection: { baseUrl, ...(apiKey === undefined ? {} : { apiKey }) } }),
     instance: {
       label: source.label,

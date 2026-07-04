@@ -207,6 +207,42 @@ describe("runTui", () => {
     expect(plan.discovery?.registryDir).toBe("/global-registry");
   });
 
+  it("hands the connect-path discovery fallback the registry the winning manifest actually came from", async () => {
+    const started: Record<string, unknown>[] = [];
+    // An opt-out agent (globalDiscovery:false) exists ONLY in its local
+    // registry and has no tui stream endpoint: the discovery fallback must
+    // point at ITS registry, not the global one it never mirrored into.
+    const localOnly = source({ sourceId: "local-only", label: "local-only", metadata: {} });
+    const globalOnly = source({ sourceId: "global-only", label: "global-only" });
+
+    const code = await runTui(
+      {
+        configPath: "/local-agent/mono-agent.config.json",
+        cwd: "/local-agent",
+        env: {
+          MONO_AGENT_TRACE_REGISTRY_DIR: "/local-registry",
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: "/global-registry",
+        },
+        agent: "local-only",
+      },
+      {
+        isTty: true,
+        listSources: async (options): Promise<TraceSourceListResult> =>
+          options.registryDir === "/global-registry"
+            ? { registryDir: "/global-registry", sources: [globalOnly], warnings: [] }
+            : { registryDir: "/local-registry", sources: [localOnly], warnings: [] },
+        startTui: async (options) => {
+          started.push(options);
+          return { waitUntilExit: async () => {} };
+        },
+        stdout: { write: () => {} },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(started[0]).toMatchObject({ discovery: { registryDir: "/local-registry" } });
+  });
+
   it("does not re-list the global registry when it is identical to the configured one", async () => {
     const calls: string[] = [];
     const code = await runTui(baseOptions, {
