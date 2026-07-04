@@ -16,6 +16,12 @@ export interface TurnPresenterOptions {
   readonly thinkingExpanded?: () => boolean;
   /** Injectable clock for thinking-duration assertions; defaults to Date.now. */
   readonly now?: () => number;
+  /**
+   * The model override the operator requested for this turn (via `/model`), if
+   * any. Used only to notice when a run reports `overridden: false` despite a
+   * requested override — i.e. the override was ignored (old agent) or invalid.
+   */
+  readonly requestedModelOverride?: string;
 }
 
 const DEFAULT_FLUSH_MS = 50;
@@ -143,6 +149,18 @@ export class TurnPresenter implements AgentMessageStream {
           }
           if (typeof data?.model === "string") {
             this.options.statusBar.setModel(data.model);
+          }
+          // `overridden` is the harness's authoritative "an override was actually
+          // applied" — reconcile the status-bar tag with it so the marker never
+          // lies (e.g. an ignored or invalid override falling back to the default).
+          if (typeof data?.overridden === "boolean") {
+            this.options.statusBar.setModelOverridden(data.overridden);
+            if (!data.overridden && this.options.requestedModelOverride !== undefined) {
+              const ranOn = typeof data.model === "string" ? ` — ran on ${data.model}` : "";
+              this.options.transcript.addChild(
+                new NoticeCell(`model override not applied${ranOn}`, "warning"),
+              );
+            }
           }
         }
         break;

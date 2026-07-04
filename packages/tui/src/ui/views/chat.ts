@@ -203,6 +203,7 @@ export class ChatView extends Container {
       requestRender: () => this.options.tui.requestRender(),
       thinkingExpanded: () => this.thinkingExpandedFlag,
       ...(this.options.flushIntervalMs === undefined ? {} : { flushIntervalMs: this.options.flushIntervalMs }),
+      ...(this.modelOverride === undefined ? {} : { requestedModelOverride: this.modelOverride }),
     });
     this.activeControllers.add(controller);
     this.setLoading(true);

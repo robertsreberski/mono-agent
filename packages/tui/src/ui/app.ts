@@ -493,8 +493,12 @@ export class MonoAgentTuiApp {
     }
     if (this.availableModels.length === 0) {
       // Older agents (or embedded mode) advertise no candidate list; the direct
-      // form still works, so tell the user how to override manually.
-      this.statusBar.setEphemeral("no model list advertised — set one with /model <ref>");
+      // form still works. Use a persistent transcript notice (not a transient
+      // ephemeral) so it doesn't read as "the picker is broken".
+      this.chat.addNotice(
+        "Model picker unavailable — this agent advertises no model list. Use /model <ref>, or update and restart the agent.",
+        "warning",
+      );
       this.tui.requestRender();
       return;
     }

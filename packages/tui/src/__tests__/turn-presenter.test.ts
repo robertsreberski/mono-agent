@@ -6,7 +6,7 @@ import { formatDurationMs, formatTokens } from "../ui/format.js";
 import { TurnPresenter } from "../ui/turn-presenter.js";
 import { stripAnsi } from "./test-terminal.js";
 
-function setup(now?: () => number): {
+function setup(now?: () => number, opts?: { requestedModelOverride?: string }): {
   presenter: TurnPresenter;
   transcript: Container;
   statusBar: StatusBar;
@@ -25,6 +25,7 @@ function setup(now?: () => number): {
     },
     flushIntervalMs: 0,
     ...(now === undefined ? {} : { now }),
+    ...(opts?.requestedModelOverride === undefined ? {} : { requestedModelOverride: opts.requestedModelOverride }),
   });
   return {
     presenter,
@@ -201,6 +202,40 @@ describe("TurnPresenter", () => {
     await presenter.event({ type: "runtime_telemetry", kind: "run_config", data: { model: "claude-fable-5" } });
     expect(status()).toContain("effort:high");
     expect(status()).toContain("claude-fable-5");
+  });
+
+  it("tags the model as (override) when run_config reports overridden:true", async () => {
+    const { presenter, status } = setup();
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "run_config",
+      data: { model: "kimi-k2.6", overridden: true },
+    });
+    expect(status()).toContain("kimi-k2.6 (override)");
+  });
+
+  it("clears the (override) tag and notices when a requested override was not applied", async () => {
+    const { presenter, status, rendered } = setup(undefined, { requestedModelOverride: "kimi-k2.6" });
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "run_config",
+      data: { model: "claude-fable-5", overridden: false },
+    });
+    expect(status()).toContain("claude-fable-5");
+    expect(status()).not.toContain("(override)");
+    expect(rendered()).toContain("model override not applied");
+    expect(rendered()).toContain("claude-fable-5");
+  });
+
+  it("does not notice on overridden:false when no override was requested", async () => {
+    const { presenter, status, rendered } = setup();
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "run_config",
+      data: { model: "claude-fable-5", overridden: false },
+    });
+    expect(status()).not.toContain("(override)");
+    expect(rendered()).not.toContain("not applied");
   });
 
   it("accumulates thinking chars on the status bar while active", async () => {
