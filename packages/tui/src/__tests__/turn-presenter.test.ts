@@ -139,6 +139,25 @@ describe("TurnPresenter", () => {
     expect(status()).toContain("answered by kimi");
   });
 
+  it("no longer sets a 'waiting for <model>' ephemeral on request_started", async () => {
+    const { presenter, status } = setup();
+
+    await presenter.event({ type: "provider_status", kind: "request_started", model: "claude-fable-5" });
+
+    expect(status()).not.toContain("waiting for");
+  });
+
+  it("still clears the ephemeral on request_completed (no-op when nothing was set)", async () => {
+    const { presenter, status } = setup();
+
+    await presenter.event({ type: "provider_status", kind: "request_started", model: "claude-fable-5" });
+    await presenter.status("Thinking…");
+    await presenter.event({ type: "provider_status", kind: "request_completed", model: "claude-fable-5" });
+
+    expect(status()).not.toContain("Thinking…");
+    expect(status()).not.toContain("waiting for");
+  });
+
   it("ignores unknown event types (forward compatibility)", async () => {
     const { presenter, rendered } = setup();
     await presenter.event({ type: "quantum_flux", level: 9 } as never);

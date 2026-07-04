@@ -107,7 +107,9 @@ export class TurnPresenter implements AgentMessageStream {
       }
       case "provider_status": {
         if (event.kind === "request_started") {
-          this.options.statusBar.setEphemeral(`waiting for ${event.model ?? "model"}…`);
+          // No ephemeral status here (removed per user feedback: "too long and
+          // awkward, no need for that") — the ChatView loader already
+          // indicates in-flight activity.
         } else if (event.kind === "request_completed") {
           this.options.statusBar.setEphemeral("");
         } else if (event.kind === "failover_started") {
