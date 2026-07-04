@@ -1,6 +1,7 @@
 import { Container, matchesKey, SelectList, Text, TUI } from "@earendil-works/pi-tui";
 import type { Component, OverlayHandle, SelectItem, SlashCommand, Terminal } from "@earendil-works/pi-tui";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { EFFORT_LEVELS } from "@mono-agent/config";
 
 import type { TuiHistoryStore } from "../agent/history.js";
 import { discoverInstances, resolveInstanceApiKey, toInstance } from "../data/instances.js";
@@ -56,6 +57,8 @@ const VIEW_ORDER: readonly TuiViewId[] = ["chat", "replay", "config", "picker"];
 
 /** Sentinel `SelectItem.value` for the model picker's "clear override" row (never a real model ref). */
 const MODEL_PICKER_DEFAULT_VALUE = "tui-model-picker:__default__";
+/** Sentinel `SelectItem.value` for the effort picker's "clear override" row (never a real level). */
+const EFFORT_PICKER_DEFAULT_VALUE = "tui-effort-picker:__default__";
 
 /**
  * Root controller: owns the pi-tui instance, the view stack, connection state,
@@ -76,8 +79,12 @@ export class MonoAgentTuiApp {
   private helpHandle: { hide(): void } | undefined;
   /** Candidate models advertised by the connected agent's `/v1/info` (primary first, then fallbacks). */
   private availableModels: readonly string[] = [];
-  private modelPickerHandle: OverlayHandle | undefined;
-  private modelPickerList: SelectList | undefined;
+  /** Per-model effort/reasoning/label options from `/v1/info` (keyed by model ref); drives the model-aware effort picker + `/model` row annotations. */
+  private modelOptions: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }> = {};
+  /** The connected agent's own default model ref (from `/v1/info`) — the effort picker's effective model when no `/model` override is active. */
+  private agentModel: string | undefined;
+  /** The single open picker overlay (model or effort); only one at a time. */
+  private activePicker: { readonly handle: OverlayHandle; readonly list: SelectList } | undefined;
   private ctrlCArmedAt = 0;
   private exitResolve: (() => void) | undefined;
   private readonly exitPromise: Promise<void>;
@@ -205,13 +212,14 @@ export class MonoAgentTuiApp {
 
   private async connectTo(instance: DiscoveredInstance): Promise<void> {
     // A newly selected agent ends the previous agent's session-scoped /model
-    // override right away -- synchronously, before any async info() round
+    // and /effort overrides right away -- synchronously, before any async info() round
     // trip. `applyAgentInfo` alone is NOT a sufficient choke point here: it
     // only runs once `info()` resolves successfully, but `setResponder` below
     // (has-endpoint branch) happens before that await, so a turn submitted
     // while info() is still in flight -- or after it fails -- would otherwise
     // still carry the old agent's override to the new one.
     this.chat.setModelOverride(undefined);
+    this.chat.setEffortOverride(undefined);
     const normalized = toInstance(instance.source);
     if (normalized.tuiBaseUrl === undefined) {
       this.statusBar.setEphemeral("selected agent has no tui endpoint — replay/config only");
@@ -252,18 +260,21 @@ export class MonoAgentTuiApp {
     readonly model?: string;
     readonly effort?: string;
     readonly models?: readonly string[];
+    readonly modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }>;
   }): void {
-    this.statusBar.setEffort(info.effort);
+    // Routed through ChatView (not statusBar directly) so it can remember these
+    // as the agent's defaults -- what a later /model|/effort default repaints
+    // to, instead of leaving the last override string shown.
+    this.chat.setDefaultEffort(info.effort);
+    this.agentModel = info.model;
     if (info.model !== undefined) {
-      // Routed through ChatView (not statusBar.setModel directly) so it can
-      // remember this as the agent's default -- what a later /model default
-      // repaints to, instead of leaving the last override string shown.
       this.chat.setDefaultModel(info.model);
     }
-    // A full snapshot of the newly selected agent: an absent list means this
-    // agent advertises no candidates, so replace (not merge) — a stale list
-    // from a previously connected agent must not leak into this one's picker.
+    // A full snapshot of the newly selected agent: an absent list/map means
+    // this agent advertises none, so replace (not merge) — stale entries from a
+    // previously connected agent must not leak into this one's pickers.
     this.availableModels = info.models ?? [];
+    this.modelOptions = info.modelOptions ?? {};
   }
 
   private applyStaticIdentity(): void {
@@ -296,13 +307,13 @@ export class MonoAgentTuiApp {
       }
       return { consume: true };
     }
-    // Model picker overlay is a modal: forward navigation/confirm to its
-    // SelectList, esc cancels, and every other key is swallowed. This mirrors
+    // The model/effort picker overlay is a modal: forward navigation/confirm to
+    // its SelectList, esc cancels, and every other key is swallowed. This mirrors
     // replay.ts's key-capture pattern -- deliberately NOT the help overlay's
     // "any key closes" behaviour, which would dismiss the picker on arrows.
-    if (this.modelPickerHandle !== undefined) {
+    if (this.activePicker !== undefined) {
       if (matchesKey(data, "escape")) {
-        this.closeModelPicker();
+        this.closePicker();
         return { consume: true };
       }
       if (
@@ -312,7 +323,7 @@ export class MonoAgentTuiApp {
         matchesKey(data, "pageDown") ||
         matchesKey(data, "enter")
       ) {
-        this.modelPickerList?.handleInput(data);
+        this.activePicker.list.handleInput(data);
         return { consume: true };
       }
       return { consume: true };
@@ -421,6 +432,9 @@ export class MonoAgentTuiApp {
       case "model":
         this.handleModelCommand(args);
         return true;
+      case "effort":
+        this.handleEffortCommand(args);
+        return true;
       case "new": {
         this.chat.addInfo(`conversation continues under a fresh screen${args.length > 0 ? ` (${args})` : ""}`);
         return true;
@@ -448,8 +462,12 @@ export class MonoAgentTuiApp {
           "/model",
         )} picker; ${styles.accent("/model default")} clears it`,
         styles.dim("an override to a different model runs each turn as a fresh provider session"),
+        `${styles.accent("/effort")}     override this session's effort — ${styles.accent("/effort <level>")} or a bare ${styles.accent(
+          "/effort",
+        )} picker; ${styles.accent("/effort default")} clears it`,
+        styles.dim("effort options are model-specific"),
         "",
-        `${styles.accent("/help /agents /replay /config /cancel /thinking /model /quit")}`,
+        `${styles.accent("/help /agents /replay /config /cancel /thinking /model /effort /quit")}`,
         "",
         styles.dim("any key closes this help"),
       ].join("\n"),
@@ -488,7 +506,7 @@ export class MonoAgentTuiApp {
   }
 
   private showModelPicker(): void {
-    if (this.modelPickerHandle !== undefined) {
+    if (this.activePicker !== undefined) {
       return; // Already open.
     }
     if (this.availableModels.length === 0) {
@@ -503,51 +521,131 @@ export class MonoAgentTuiApp {
       return;
     }
     const current = this.chat.getModelOverride();
-    const withCurrent = (label: string, isCurrent: boolean): string =>
-      isCurrent ? `${label} (current)` : label;
-    const items: SelectItem[] = this.availableModels.map((model) => ({
-      value: model,
-      label: withCurrent(model, model === current),
-    }));
+    const items: SelectItem[] = this.availableModels.map((model) => {
+      const opts = this.modelOptions[model];
+      // Prefer the friendly label for discovered local models; keep the ref as
+      // the selection value so the override contract is unchanged. A dim
+      // "· no thinking" flags models that don't support reasoning/effort.
+      const base = opts?.label ?? model;
+      const noThinking = opts?.reasoning === false ? styles.dim(" · no thinking") : "";
+      return { value: model, label: `${withCurrentMarker(base, model === current)}${noThinking}` };
+    });
     items.push({
       value: MODEL_PICKER_DEFAULT_VALUE,
-      label: withCurrent("— default (clear override) —", current === undefined),
+      label: withCurrentMarker("— default (clear override) —", current === undefined),
     });
 
-    const list = new SelectList(items, 10, selectListTheme);
-    list.onSelect = (item: SelectItem) => {
+    this.openPickerOverlay("Session model override", items, (item) => {
       const choice = item.value === MODEL_PICKER_DEFAULT_VALUE ? undefined : item.value;
       this.chat.setModelOverride(choice);
       this.statusBar.setEphemeral(
         choice === undefined ? "model override cleared" : `model override → ${choice}`,
       );
-      this.closeModelPicker();
+    });
+  }
+
+  /**
+   * `/effort` — with an argument, set (or, for `default`, clear) the session
+   * effort override directly; with no argument, open the model-aware picker.
+   */
+  private handleEffortCommand(args: string): void {
+    const arg = args.trim();
+    if (arg.length > 0) {
+      const override = arg === "default" ? undefined : arg;
+      this.chat.setEffortOverride(override);
+      this.statusBar.setEphemeral(
+        override === undefined ? "effort override cleared" : `effort override → ${override}`,
+      );
+      this.tui.requestRender();
+      return;
+    }
+    this.showEffortPicker();
+  }
+
+  /**
+   * Model-aware effort picker: the effective model is the `/model` override if
+   * set, else the agent's default. Its valid levels come from that model's
+   * `modelOptions.effortLevels` when advertised (local models), falling back to
+   * the global {@link EFFORT_LEVELS} enum (cloud models). A model that reports
+   * `reasoning: false` (or an empty `effortLevels`) has no adjustable effort, so
+   * we surface a persistent notice instead of opening an empty picker.
+   */
+  private showEffortPicker(): void {
+    if (this.activePicker !== undefined) {
+      return; // Already open.
+    }
+    const effectiveModel = this.chat.getModelOverride() ?? this.agentModel;
+    const opts = effectiveModel === undefined ? undefined : this.modelOptions[effectiveModel];
+    const unsupported =
+      opts !== undefined &&
+      (opts.reasoning === false || (opts.effortLevels !== undefined && opts.effortLevels.length === 0));
+    if (unsupported) {
+      const name = opts?.label ?? effectiveModel ?? "This model";
+      this.chat.addNotice(`${name} does not support adjustable thinking/effort`, "warning");
+      this.tui.requestRender();
+      return;
+    }
+    const levels = opts?.effortLevels ?? EFFORT_LEVELS;
+    const current = this.chat.getEffortOverride();
+    const items: SelectItem[] = levels.map((level) => ({
+      value: level,
+      label: withCurrentMarker(level, level === current),
+    }));
+    items.push({
+      value: EFFORT_PICKER_DEFAULT_VALUE,
+      label: withCurrentMarker("— default (clear override) —", current === undefined),
+    });
+
+    this.openPickerOverlay("Session effort override", items, (item) => {
+      const choice = item.value === EFFORT_PICKER_DEFAULT_VALUE ? undefined : item.value;
+      this.chat.setEffortOverride(choice);
+      this.statusBar.setEphemeral(
+        choice === undefined ? "effort override cleared" : `effort override → ${choice}`,
+      );
+    });
+  }
+
+  /**
+   * Open a modal select overlay (the model and effort pickers share this).
+   * `onChoose` handles the picked item; the overlay always closes afterward.
+   * nonCapturing keeps input routed through the global listener (which drives
+   * the list explicitly and swallows the rest), so the overlay never contends
+   * for focus with the chat editor underneath it.
+   */
+  private openPickerOverlay(title: string, items: SelectItem[], onChoose: (item: SelectItem) => void): void {
+    const list = new SelectList(items, 10, selectListTheme);
+    list.onSelect = (item: SelectItem) => {
+      onChoose(item);
+      this.closePicker();
     };
-    list.onCancel = () => this.closeModelPicker();
+    list.onCancel = () => this.closePicker();
     // The current choice is called out by its `(current)` label; the cursor
     // opens at the top so navigation is predictable regardless of which entry
     // is current.
     list.setSelectedIndex(0);
 
     const overlay = new Container();
-    overlay.addChild(new Text(styles.bold("Session model override"), 1, 0));
+    overlay.addChild(new Text(styles.bold(title), 1, 0));
     overlay.addChild(list);
     overlay.addChild(new Text(styles.dim("↑↓ move · enter select · esc cancel"), 1, 0));
 
-    this.modelPickerList = list;
-    // nonCapturing: input stays routed through the global listener (which drives
-    // the list explicitly and swallows the rest), so the overlay never contends
-    // for focus with the chat editor underneath it.
-    this.modelPickerHandle = this.tui.showOverlay(overlay, { anchor: "center", width: 64, nonCapturing: true });
+    this.activePicker = {
+      handle: this.tui.showOverlay(overlay, { anchor: "center", width: 64, nonCapturing: true }),
+      list,
+    };
     this.tui.requestRender();
   }
 
-  private closeModelPicker(): void {
-    this.modelPickerHandle?.hide();
-    this.modelPickerHandle = undefined;
-    this.modelPickerList = undefined;
+  private closePicker(): void {
+    this.activePicker?.handle.hide();
+    this.activePicker = undefined;
     this.tui.requestRender();
   }
+}
+
+/** `<label> (current)` when this row is the active override, else `<label>`. */
+function withCurrentMarker(label: string, isCurrent: boolean): string {
+  return isCurrent ? `${label} (current)` : label;
 }
 
 const SLASH_COMMANDS: readonly SlashCommand[] = [
@@ -558,6 +656,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "cancel", description: "Cancel the in-flight turn" },
   { name: "thinking", description: "Expand/collapse thinking blocks" },
   { name: "model", description: "Override this session's model (no arg opens a picker)" },
+  { name: "effort", description: "Override this session's effort (no arg opens a model-aware picker)" },
   { name: "new", description: "Visual break in the transcript" },
   { name: "quit", description: "Exit the TUI" },
 ];

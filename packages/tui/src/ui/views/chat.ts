@@ -55,6 +55,19 @@ export class ChatView extends Container {
    * which is the just-cleared override itself. Set via {@link setDefaultModel}.
    */
   private defaultModel: string | undefined;
+  /**
+   * Session-scoped effort override set via `/effort`. When present, each turn's
+   * request carries `metadata.tui.effort` so the harness runs that turn at the
+   * chosen reasoning effort instead of the agent default. Mirrors
+   * {@link modelOverride}; the two are independent and can be set together.
+   */
+  private effortOverride: string | undefined;
+  /**
+   * The connected agent's own default effort (from `/v1/info`), tracked so
+   * clearing the override repaints the status bar to it (not the just-cleared
+   * override string). Mirror of {@link defaultModel}; set via {@link setDefaultEffort}.
+   */
+  private defaultEffort: string | undefined;
 
   constructor(options: ChatViewOptions) {
     super();
@@ -95,6 +108,26 @@ export class ChatView extends Container {
   }
 
   /**
+   * Set (effort string) or clear (`undefined`) the session effort override, and
+   * reflect it on the status bar immediately: the effort segment shows the
+   * chosen level with an `(override)` tag, cleared back to the connected agent's
+   * own default (via {@link setDefaultEffort}, not the last override string) on
+   * `undefined`. The override applies from the next turn onward. Independent of
+   * {@link setModelOverride} — both can be active at once.
+   */
+  setEffortOverride(effort: string | undefined): void {
+    this.effortOverride = effort;
+    this.options.statusBar.setEffort(effort ?? this.defaultEffort);
+    this.options.statusBar.setEffortOverridden(effort !== undefined);
+    this.options.tui.requestRender();
+  }
+
+  /** The active session effort override, or `undefined` — drives the picker's `(current)` marker. */
+  getEffortOverride(): string | undefined {
+    return this.effortOverride;
+  }
+
+  /**
    * Record the connected agent's own default model (from `/v1/info`), so a
    * later `setModelOverride(undefined)` knows what to repaint the status bar
    * to. When no override is currently active, also repaints immediately --
@@ -105,6 +138,21 @@ export class ChatView extends Container {
     this.defaultModel = model;
     if (this.modelOverride === undefined) {
       this.options.statusBar.setModel(model);
+      this.options.tui.requestRender();
+    }
+  }
+
+  /**
+   * Record the connected agent's own default effort (from `/v1/info`), so a
+   * later `setEffortOverride(undefined)` knows what to repaint the status bar
+   * to. When no override is currently active, repaints immediately — this is
+   * how a fresh `/v1/info` snapshot (e.g. after switching agents) reaches the
+   * status bar's effort segment. Mirror of {@link setDefaultModel}.
+   */
+  setDefaultEffort(effort: string | undefined): void {
+    this.defaultEffort = effort;
+    if (this.effortOverride === undefined) {
+      this.options.statusBar.setEffort(effort);
       this.options.tui.requestRender();
     }
   }
@@ -208,6 +256,12 @@ export class ChatView extends Container {
     this.activeControllers.add(controller);
     this.setLoading(true);
 
+    // metadata.tui carries whichever session overrides are active; when both are
+    // clear it is omitted entirely so the turn runs the agent's own defaults.
+    const tuiMetadata = {
+      ...(this.modelOverride === undefined ? {} : { model: this.modelOverride }),
+      ...(this.effortOverride === undefined ? {} : { effort: this.effortOverride }),
+    };
     let status: "ok" | "cancelled" | "error" = "ok";
     try {
       const response = await this.responder.respond(
@@ -217,7 +271,7 @@ export class ChatView extends Container {
           abortSignal: controller.signal,
           metadata: {
             source: "tui",
-            ...(this.modelOverride === undefined ? {} : { tui: { model: this.modelOverride } }),
+            ...(Object.keys(tuiMetadata).length === 0 ? {} : { tui: tuiMetadata }),
           },
         },
         presenter,

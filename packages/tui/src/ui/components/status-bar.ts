@@ -27,6 +27,7 @@ export class StatusBar implements Component {
   private model: string | undefined;
   private modelOverridden = false;
   private effort: string | undefined;
+  private effortOverridden = false;
   private usage: StatusBarUsage | undefined;
   private cumulativeUsd: number | undefined;
   private thinking: StatusBarThinkingStats | undefined;
@@ -54,6 +55,19 @@ export class StatusBar implements Component {
   /** Persists across turns; only replaced by another setEffort call. */
   setEffort(effort: string | undefined): void {
     this.effort = effort;
+  }
+
+  /**
+   * Marks the effort segment as a session override (renders a trailing
+   * `(override)` tag). Additive to {@link setEffort} — the effort string itself
+   * is unchanged; this only toggles the annotation. Unlike the model override
+   * (reconciled against the harness's authoritative `run_config.overridden`),
+   * this is driven by local intent alone: the model-aware picker already
+   * prevents choosing an unsupported level, and `run_config.overridden` is a
+   * combined model-or-effort flag that can't be split back out for effort.
+   */
+  setEffortOverridden(overridden: boolean): void {
+    this.effortOverridden = overridden;
   }
 
   /**
@@ -103,7 +117,7 @@ export class StatusBar implements Component {
       segments.push(styles.muted(this.modelOverridden ? `${this.model} (override)` : this.model));
     }
     if (this.effort !== undefined && this.effort.length > 0) {
-      segments.push(styles.muted(`effort:${this.effort}`));
+      segments.push(styles.muted(this.effortOverridden ? `effort:${this.effort} (override)` : `effort:${this.effort}`));
     }
     if (this.usage !== undefined) {
       const cache = this.usage.cacheRead > 0 ? ` (cache ${formatTokens(this.usage.cacheRead)})` : "";
