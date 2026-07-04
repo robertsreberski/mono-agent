@@ -25,12 +25,36 @@ export interface RecorderStore {
   sessions: Session[];
   status: ConnStatus;
   /** Trigger a lazy detail fetch for a run if its steps aren't loaded yet. */
-  ensureDetail: (id: string) => void;
+  ensureDetail: (key: string) => void;
 }
 
 const RecorderContext = createContext<RecorderStore | null>(null);
 
 const byNewest = (a: Session, b: Session) => +new Date(b.startTs) - +new Date(a.startTs);
+
+export type SessionStoreOp =
+  | { readonly type: "upsert"; readonly session: Session }
+  | { readonly type: "remove"; readonly sourceId: string; readonly runId: string };
+
+export function sessionStoreKeyParts(sourceId: string, runId: string): string {
+  return `${sourceId}::${runId}`;
+}
+
+export function sessionStoreKey(session: Session): string {
+  return sessionStoreKeyParts(session.sourceId ?? session.instance, session.id);
+}
+
+export function applySessionOps(prev: readonly Session[], ops: readonly SessionStoreOp[]): Session[] {
+  const map = new Map(prev.map((s) => [sessionStoreKey(s), s] as const));
+  for (const op of ops) {
+    if (op.type === "remove") {
+      map.delete(sessionStoreKeyParts(op.sourceId, op.runId));
+    } else {
+      map.set(sessionStoreKey(op.session), op.session);
+    }
+  }
+  return [...map.values()].sort(byNewest);
+}
 
 /** Resolve the owning trace-source id for a run, for the detail endpoint. */
 function resolveSourceId(session: Session, instances: WebInstance[]): string {
@@ -61,7 +85,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   // setState + re-sort + list re-renders on every connect/reconnect. Coalesce
   // incoming ops by runId and apply them in ONE setSessions per microtask.
   // `op === null` means remove.
-  const pendingOps = useRef<Map<string, Session | null>>(new Map());
+  const pendingOps = useRef<Map<string, SessionStoreOp>>(new Map());
   const flushScheduled = useRef(false);
 
   const flushPending = useCallback(() => {
@@ -70,12 +94,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
     if (ops.size === 0) return;
     pendingOps.current = new Map();
     setSessions((prev) => {
-      const map = new Map(prev.map((s) => [s.id, s] as const));
-      for (const [id, op] of ops) {
-        if (op === null) map.delete(id);
-        else map.set(id, op);
-      }
-      return [...map.values()].sort(byNewest);
+      return applySessionOps(prev, [...ops.values()]);
     });
   }, []);
 
@@ -87,15 +106,15 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
 
   const queueUpsert = useCallback(
     (incoming: Session) => {
-      pendingOps.current.set(incoming.id, incoming);
+      pendingOps.current.set(sessionStoreKey(incoming), { type: "upsert", session: incoming });
       scheduleFlush();
     },
     [scheduleFlush],
   );
 
   const queueRemove = useCallback(
-    (runId: string) => {
-      pendingOps.current.set(runId, null);
+    (sourceId: string, runId: string) => {
+      pendingOps.current.set(sessionStoreKeyParts(sourceId, runId), { type: "remove", sourceId, runId });
       scheduleFlush();
     },
     [scheduleFlush],
@@ -118,7 +137,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
           onMessage: (msg) => {
             if (msg.t === "instances") setInstances(msg.instances);
             else if (msg.t === "session_upsert") queueUpsert(msg.session);
-            else if (msg.t === "session_removed") queueRemove(msg.runId);
+            else if (msg.t === "session_removed") queueRemove(msg.sourceId, msg.runId);
           },
         });
       } catch {
@@ -137,18 +156,18 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   }, [queueUpsert, queueRemove]);
 
   const ensureDetail = useCallback(
-    (id: string) => {
+    (key: string) => {
       if (statusRef.current !== "live") return; // fixture already carries steps
-      if (inflight.current.has(id) || loadedDetail.current.has(id)) return; // in-flight or already attempted
-      const s = sessionsRef.current.find((x) => x.id === id);
+      if (inflight.current.has(key) || loadedDetail.current.has(key)) return; // in-flight or already attempted
+      const s = sessionsRef.current.find((x) => sessionStoreKey(x) === key);
       if (!s) return;
-      loadedDetail.current.add(id);
-      inflight.current.add(id);
+      loadedDetail.current.add(key);
+      inflight.current.add(key);
       const sourceId = resolveSourceId(s, instancesRef.current);
-      fetchSessionDetail(sourceId, id)
+      fetchSessionDetail(sourceId, s.id)
         .then((full) => queueUpsert(full))
         .catch(() => {})
-        .finally(() => inflight.current.delete(id));
+        .finally(() => inflight.current.delete(key));
     },
     [queueUpsert],
   );

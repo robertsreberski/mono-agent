@@ -62,6 +62,6 @@ SPA lives in the isolated `webapp/` sub-project (its own lockfile), built to
 ## Verification
 
 ```sh
-pnpm --filter @mono-agent/session-web run build
+pnpm --filter @mono-agent/session-web... run build
 pnpm --filter @mono-agent/session-web run test
 ```

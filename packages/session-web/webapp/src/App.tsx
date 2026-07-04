@@ -78,6 +78,8 @@ export function App() {
 
   const openInstance = useCallback((name: string) => {
     setFInstance(name);
+    setFChannel("all");
+    setFOut("all");
     setView("list");
     window.scrollTo?.(0, 0);
   }, []);
@@ -147,7 +149,7 @@ export function App() {
       >
         <TopNav view={view} onNav={setView} statusPill={statusPill} />
         {view === "instances" ? (
-          <InstancesView sessions={sessions} onOpenInstance={openInstance} />
+          <InstancesView instances={instances} sessions={sessions} onOpenInstance={openInstance} />
         ) : (
           <ListView
             sessions={sessions}

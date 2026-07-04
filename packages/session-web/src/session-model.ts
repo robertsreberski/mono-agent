@@ -41,9 +41,10 @@ export interface WebInstance {
 /**
  * A frame on the browser SSE stream (`GET /api/stream`). `instances` replaces the
  * client's instance list wholesale; `session_upsert` inserts-or-replaces one
- * session by `session.id` (both the recorded-artifact path and the live-fold path
- * emit these — last write wins); `session_removed` drops one run (e.g. its
- * instance vanished from the registry).
+ * session by `session.sourceId + session.id` (both the recorded-artifact path and
+ * the live-fold path emit these — last write wins within one source);
+ * `session_removed` drops one run from one source (e.g. its instance vanished
+ * from the registry).
  */
 export type BrowserStreamFrame =
   | { readonly t: "instances"; readonly instances: readonly WebInstance[] }

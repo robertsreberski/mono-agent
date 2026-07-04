@@ -19,11 +19,11 @@ export function mdInline(input: string): string {
   let s = esc(input);
   s = s.replace(
     /`([^`]+)`/g,
-    `<code style="font-family:${FONT_MONO};background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px;font-size:.88em;color:#D9C9A8">$1</code>`,
+    `<code style="font-family:${FONT_MONO};background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px;font-size:.88em;color:#D9C9A8;overflow-wrap:anywhere;word-break:break-word">$1</code>`,
   );
   s = s.replace(
     /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
-    `<a href="$2" target="_blank" rel="noopener" style="color:#7FB0E4;text-decoration:underline">$1</a>`,
+    `<a href="$2" target="_blank" rel="noopener" style="color:#7FB0E4;text-decoration:underline;overflow-wrap:anywhere;word-break:break-word">$1</a>`,
   );
   s = s.replace(/\*\*([^*]+)\*\*/g, `<strong style="font-weight:600;color:#F2F0EA">$1</strong>`);
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, `$1<em style="color:#DAD7D0">$2</em>`);
@@ -88,7 +88,7 @@ export function md(src: string): string {
 /** Rendered markdown block — the React equivalent of the mock's `mdEl`. */
 export function Markdown({ src, style }: { src: string; style?: CSSProperties }): ReactElement {
   return createElement("div", {
-    style: style || {},
+    style: { overflowWrap: "anywhere", wordBreak: "break-word", ...(style || {}) },
     dangerouslySetInnerHTML: { __html: md(src) },
   });
 }

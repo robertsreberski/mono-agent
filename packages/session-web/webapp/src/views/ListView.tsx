@@ -16,6 +16,7 @@ import {
   tz,
 } from "../lib/format";
 import { FONT_MONO, FONT_UI, TEXT, MUTED, DIM, DIMMER, AMBER, BLUE, TEAL, VIOLET, CHANNEL_ORDER, type Style } from "../lib/tokens";
+import { sessionStoreKey } from "../lib/store";
 import { useIsMobile } from "../lib/useIsMobile";
 
 interface Props {
@@ -39,7 +40,7 @@ const label9: Style = {
 };
 
 export function ListView(props: Props) {
-  const { sessions, fChannel, fOut, fInstance, setFChannel, setFOut, setFInstance, onOpen } = props;
+  const { sessions, instances: discoveredInstances, fChannel, fOut, fInstance, setFChannel, setFOut, setFInstance, onOpen } = props;
   const [instOpen, setInstOpen] = useState(false);
   const isMobile = useIsMobile();
 
@@ -54,28 +55,36 @@ export function ListView(props: Props) {
 
   const m = useMemo(() => {
     // ---- instances (over all sessions) ----
-    const instMap: Record<string, { count: number; cwd: string }> = {};
+    const sourceFor = (s: Session) => s.sourceId ?? s.instance;
+    const instMap: Record<string, { count: number; cwd: string; label: string }> = {};
     sessions.forEach((s) => {
-      if (!instMap[s.instance]) instMap[s.instance] = { count: 0, cwd: s.cwd };
-      instMap[s.instance].count++;
+      const key = sourceFor(s);
+      if (!instMap[key]) instMap[key] = { count: 0, cwd: s.cwd, label: s.instance };
+      instMap[key].count++;
     });
-    const instNames = Object.keys(instMap).sort();
+    const instRecords = discoveredInstances.length > 0
+      ? [...discoveredInstances]
+          .map((inst) => ({ sourceId: inst.sourceId, label: inst.label, cwd: inst.cwd }))
+          .sort((a, b) => a.label.localeCompare(b.label) || a.sourceId.localeCompare(b.sourceId))
+      : Object.entries(instMap)
+          .map(([sourceId, value]) => ({ sourceId, label: value.label, cwd: value.cwd }))
+          .sort((a, b) => a.label.localeCompare(b.label) || a.sourceId.localeCompare(b.sourceId));
     const instances = [
       {
         key: "all",
         label: "All instances",
         count: sessions.length,
-        cwd: `${instNames.length} instance${instNames.length !== 1 ? "s" : ""} on this machine`,
+        cwd: `${instRecords.length} instance${instRecords.length !== 1 ? "s" : ""} on this machine`,
         active: fInstance === "all",
       },
     ]
       .concat(
-        instNames.map((nm) => ({
-          key: nm,
-          label: nm,
-          count: instMap[nm].count,
-          cwd: instMap[nm].cwd,
-          active: fInstance === nm,
+        instRecords.map((inst) => ({
+          key: inst.sourceId,
+          label: inst.label,
+          count: instMap[inst.sourceId]?.count ?? 0,
+          cwd: inst.cwd,
+          active: fInstance === inst.sourceId,
         })),
       )
       .map((o) => ({
@@ -87,7 +96,8 @@ export function ListView(props: Props) {
         fg: o.active ? TEXT : "#C9CBD1",
         dot: o.active ? "#6FBF8E" : DIMMER,
       }));
-    const activeInst = fInstance === "all" ? "All instances" : fInstance;
+    const activeRecord = instRecords.find((inst) => inst.sourceId === fInstance);
+    const activeInst = fInstance === "all" ? "All instances" : activeRecord?.label ?? instMap[fInstance]?.label ?? fInstance;
     const activeCount = fInstance === "all" ? sessions.length : instMap[fInstance]?.count || 0;
 
     // ---- filtered set ----
@@ -95,7 +105,7 @@ export function ListView(props: Props) {
       (s) =>
         (fChannel === "all" || channelOf(s) === fChannel) &&
         (fOut === "all" || s.outcome === fOut) &&
-        (fInstance === "all" || s.instance === fInstance),
+        (fInstance === "all" || sourceFor(s) === fInstance),
     );
 
     // ---- aggregates over filtered ----
@@ -126,7 +136,7 @@ export function ListView(props: Props) {
     // filters (instance + outcome), NOT fChannel itself — otherwise picking
     // instance A still offers channels only in B and shows global counts.
     const chanBase = sessions.filter(
-      (s) => (fOut === "all" || s.outcome === fOut) && (fInstance === "all" || s.instance === fInstance),
+      (s) => (fOut === "all" || s.outcome === fOut) && (fInstance === "all" || sourceFor(s) === fInstance),
     );
     const present = CHANNEL_ORDER.filter((c) => chanBase.some((s) => channelOf(s) === c));
     const chKeys = ["all", ...present];
@@ -170,6 +180,7 @@ export function ListView(props: Props) {
       const oi = outcomeInfo(s);
       return {
         id: s.id,
+        key: sessionStoreKey(s),
         timeStr: timeStr(s.startTs),
         dateStr: dateStr(s.startTs),
         dow: dow(s.startTs),
@@ -216,7 +227,7 @@ export function ListView(props: Props) {
         const c = channelColor(ch);
         const sil = s.outcome === "silent";
         return {
-          id: s.id,
+          id: sessionStoreKey(s),
           left: ((+new Date(s.startTs) - amin) / span) * 100,
           h: Math.round(12 + (s.totals.cost / maxC) * 52),
           color: c,
@@ -232,7 +243,7 @@ export function ListView(props: Props) {
         const idx = Math.max(0, Math.min(MAX_BARS - 1, Math.floor(((+new Date(s.startTs) - amin) / span) * MAX_BARS)));
         let b = buckets.get(idx);
         if (!b) {
-          b = { idx, cost: 0, count: 0, notified: 0, chCost: {}, repId: s.id, repCost: -1 };
+          b = { idx, cost: 0, count: 0, notified: 0, chCost: {}, repId: sessionStoreKey(s), repCost: -1 };
           buckets.set(idx, b);
         }
         b.cost += s.totals.cost;
@@ -242,7 +253,7 @@ export function ListView(props: Props) {
         b.chCost[ch] = (b.chCost[ch] ?? 0) + s.totals.cost + 1e-4;
         if (s.totals.cost > b.repCost) {
           b.repCost = s.totals.cost;
-          b.repId = s.id;
+          b.repId = sessionStoreKey(s);
         }
       });
       const arr = [...buckets.values()].sort((a, b) => a.idx - b.idx);
@@ -328,7 +339,7 @@ export function ListView(props: Props) {
       legend,
       costChart,
     };
-  }, [sessions, fChannel, fOut, fInstance, isMobile]);
+  }, [sessions, discoveredInstances, fChannel, fOut, fInstance, isMobile]);
 
   return (
     <>
@@ -388,7 +399,7 @@ export function ListView(props: Props) {
           <button
             className="rec-btn"
             onClick={() => setInstOpen((o) => !o)}
-            aria-haspopup="listbox"
+            aria-haspopup="menu"
             aria-expanded={instOpen}
             style={{
               cursor: "pointer",
@@ -707,15 +718,15 @@ export function ListView(props: Props) {
       <div style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 11 }}>
         {m.cards.map((card) => (
           <div
-            key={card.id}
+            key={card.key}
             className="rec-card"
             role="button"
             tabIndex={0}
-            onClick={() => onOpen(card.id)}
+            onClick={() => onOpen(card.key)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                onOpen(card.id);
+                onOpen(card.key);
               }
             }}
             aria-label={`Open run: ${card.title} — ${card.kindLabel}, ${card.dateStr} ${card.timeStr}`}

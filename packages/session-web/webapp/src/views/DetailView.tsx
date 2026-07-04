@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useRecorder } from "../lib/store";
+import { sessionStoreKey, useRecorder } from "../lib/store";
 import type { SessionStep } from "../lib/types";
 import { Markdown } from "../lib/markdown";
 import {
@@ -75,7 +75,7 @@ export function DetailView({ id, onBack }: Props) {
   const [showRecall, setShowRecall] = useState(false);
   const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
-  const s = useMemo(() => sessions.find((x) => x.id === id), [sessions, id]);
+  const s = useMemo(() => sessions.find((x) => sessionStoreKey(x) === id), [sessions, id]);
   const d = useMemo(() => {
     if (!s) return null;
     const t = s.totals;
@@ -84,7 +84,8 @@ export function DetailView({ id, onBack }: Props) {
     const isChat = ch === "chat";
     const oi = outcomeInfo(s);
     const eff = effortInfo(s);
-    const tokTot = t.tokIn + t.tokOut + t.tokCache || 1;
+    const rawTokTot = t.tokIn + t.tokOut + t.tokCache;
+    const tokTot = rawTokTot || 1;
 
     const vitals = [
       { label: "Duration", value: fmtDur(s.durMs), sub: t.asst + " agent turns", color: TEXT },
@@ -233,7 +234,7 @@ export function DetailView({ id, onBack }: Props) {
       toolBars,
       toolEntries,
       steps,
-      tokTot,
+      tokTot: rawTokTot,
       tbInput: Math.round((t.tokIn / tokTot) * 100),
       tbOutput: Math.round((t.tokOut / tokTot) * 100),
       tbCache: Math.round((t.tokCache / tokTot) * 100),
@@ -606,7 +607,21 @@ export function DetailView({ id, onBack }: Props) {
                                   style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 9, padding: "12px 11px", minHeight: 44 }}
                                 >
                                   <span style={{ width: 7, height: 7, borderRadius: "50%", background: c.statusColor, flex: "none", boxShadow: `0 0 6px ${c.statusColor}` }} />
-                                  <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: "#6FD0C0" }}>{c.name}</span>
+                                  <span
+                                    style={{
+                                      fontFamily: FONT_MONO,
+                                      fontSize: 12,
+                                      fontWeight: 600,
+                                      color: "#6FD0C0",
+                                      minWidth: 0,
+                                      maxWidth: "min(150px, 34vw)",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    {c.name}
+                                  </span>
                                   <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: "#8b8d94", flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                     {c.argDig}
                                   </span>
@@ -646,10 +661,9 @@ export function DetailView({ id, onBack }: Props) {
                       </div>
                     )}
 
-                    <div style={{ display: "flex", alignItems: "center", gap: 11, marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.06)" }}>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIM }}>{st.uTok}</span>
-                      <div style={{ flex: 1 }} />
-                      <div style={{ width: 70, height: 4, background: "rgba(255,255,255,.06)", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px 11px", flexWrap: "wrap", marginTop: 12, paddingTop: 10, borderTop: "1px solid rgba(255,255,255,.06)" }}>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIM, flex: "1 1 126px", minWidth: 0, overflowWrap: "anywhere" }}>{st.uTok}</span>
+                      <div style={{ flex: isMobile ? "1 1 100%" : 1, order: isMobile ? 3 : 0, minWidth: isMobile ? "100%" : 70, height: 4, background: "rgba(255,255,255,.06)", borderRadius: 3, overflow: "hidden" }}>
                         <div style={{ height: "100%", width: `${st.turnPct}%`, background: AMBER, borderRadius: 3 }} />
                       </div>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>

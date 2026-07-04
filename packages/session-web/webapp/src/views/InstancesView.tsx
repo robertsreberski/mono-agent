@@ -1,74 +1,105 @@
 import { useMemo } from "react";
-import type { Session } from "../lib/types";
+import type { Session, WebInstance } from "../lib/types";
 import { dateStr, timeStr, fmtCost, fmtTok, channelOf, channelColor, channelLabel } from "../lib/format";
 import { FONT_MONO, TEXT, MUTED, DIM, AMBER, BLUE, TEAL, VIOLET, CHANNEL_ORDER } from "../lib/tokens";
 
 interface Props {
+  instances: WebInstance[];
   sessions: Session[];
-  onOpenInstance: (name: string) => void;
+  onOpenInstance: (sourceId: string) => void;
 }
 
 const chOrder = CHANNEL_ORDER;
 
-export function InstancesView({ sessions, onOpenInstance }: Props) {
-  const cards = useMemo(() => {
-    const map: Record<string, { name: string; cwd: string; arr: Session[] }> = {};
-    sessions.forEach((s) => {
-      if (!map[s.instance]) map[s.instance] = { name: s.instance, cwd: s.cwd, arr: [] };
-      map[s.instance].arr.push(s);
-    });
-    return Object.keys(map)
-      .sort()
-      .map((nm) => {
-        const arr = map[nm].arr;
-        let cost = 0,
-          tok = 0,
-          tools = 0,
-          think = 0,
-          sil = 0,
-          noti = 0;
-        const chCount: Record<string, number> = {};
-        arr.forEach((s) => {
-          cost += s.totals.cost;
-          tok += s.totals.tokIn + s.totals.tokOut;
-          tools += s.totals.tcalls;
-          think += s.totals.think;
-          if (s.outcome === "silent") sil++;
-          else noti++;
-          const ch = channelOf(s);
-          chCount[ch] = (chCount[ch] || 0) + 1;
-        });
-        const times = arr.map((s) => +new Date(s.startTs));
-        const last = Math.max(...times);
-        const chSegs = chOrder
-          .filter((c) => chCount[c])
-          .map((c) => ({
-            label: channelLabel(c),
-            color: channelColor(c),
-            n: chCount[c],
-            w: Math.round((chCount[c] / arr.length) * 100),
-          }));
-        return {
-          name: nm,
-          cwd: map[nm].cwd,
-          count: arr.length,
-          stats: [
-            { label: "Cost", value: fmtCost(cost), color: AMBER },
-            { label: "Tokens", value: fmtTok(tok), color: BLUE },
-            { label: "Tool calls", value: "" + tools, color: TEAL },
-            { label: "Reasoning", value: "" + think, color: VIOLET },
-          ],
-          chSegs,
-          noti,
-          sil,
-          last: dateStr(last) + " · " + timeStr(last),
-        };
+export interface InstanceCard {
+  sourceId: string;
+  name: string;
+  cwd: string;
+  count: number;
+  stats: { label: string; value: string; color: string }[];
+  chSegs: { label: string; color: string; n: number; w: number }[];
+  noti: number;
+  sil: number;
+  last: string;
+}
+
+export function buildInstanceCards(instances: readonly WebInstance[], sessions: readonly Session[]): InstanceCard[] {
+  const sessionsBySource = new Map<string, Session[]>();
+  for (const session of sessions) {
+    const sourceId = session.sourceId ?? session.instance;
+    const arr = sessionsBySource.get(sourceId) ?? [];
+    arr.push(session);
+    sessionsBySource.set(sourceId, arr);
+  }
+
+  const instanceRecords = instances.length > 0
+    ? instances
+    : [...sessionsBySource.entries()].map(([sourceId, arr]) => ({
+        sourceId,
+        label: arr[0]?.instance ?? sourceId,
+        cwd: arr[0]?.cwd ?? "",
+        artifactDir: "",
+        health: "ok",
+        liveConnected: false,
+        counts: { runs: arr.length },
+      }));
+
+  return [...instanceRecords]
+    .sort((a, b) => a.label.localeCompare(b.label) || a.sourceId.localeCompare(b.sourceId))
+    .map((instance) => {
+      const arr = sessionsBySource.get(instance.sourceId) ?? [];
+      let cost = 0,
+        tok = 0,
+        tools = 0,
+        think = 0,
+        sil = 0,
+        noti = 0;
+      const chCount: Record<string, number> = {};
+      arr.forEach((s) => {
+        cost += s.totals.cost;
+        tok += s.totals.tokIn + s.totals.tokOut;
+        tools += s.totals.tcalls;
+        think += s.totals.think;
+        if (s.outcome === "silent") sil++;
+        else noti++;
+        const ch = channelOf(s);
+        chCount[ch] = (chCount[ch] || 0) + 1;
       });
-  }, [sessions]);
+      const times = arr.map((s) => +new Date(s.startTs));
+      const last = times.length > 0 ? Math.max(...times) : undefined;
+      const chSegs = chOrder
+        .filter((c) => chCount[c])
+        .map((c) => ({
+          label: channelLabel(c),
+          color: channelColor(c),
+          n: chCount[c],
+          w: Math.round((chCount[c] / Math.max(1, arr.length)) * 100),
+        }));
+      return {
+        sourceId: instance.sourceId,
+        name: instance.label,
+        cwd: instance.cwd,
+        count: arr.length,
+        stats: [
+          { label: "Cost", value: fmtCost(cost), color: AMBER },
+          { label: "Tokens", value: fmtTok(tok), color: BLUE },
+          { label: "Tool calls", value: "" + tools, color: TEAL },
+          { label: "Reasoning", value: "" + think, color: VIOLET },
+        ],
+        chSegs,
+        noti,
+        sil,
+        last: last === undefined ? "no runs" : dateStr(last) + " · " + timeStr(last),
+      };
+    });
+}
+
+export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
+  const cards = useMemo(() => buildInstanceCards(instances, sessions), [instances, sessions]);
 
   return (
     <>
-      <div style={{ marginBottom: 24, animation: "rec-rise .5s ease both" }}>
+      <div style={{ marginBottom: 24 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
           <span
             style={{
@@ -83,8 +114,8 @@ export function InstancesView({ sessions, onOpenInstance }: Props) {
           />
           <span style={{ fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".28em", color: MUTED, textTransform: "uppercase" }}>Instances</span>
         </div>
-        <h1 style={{ margin: 0, fontSize: "clamp(26px, 7vw, 36px)", lineHeight: 1.04, fontWeight: 600, letterSpacing: "-.02em" }}>Agents on this machine</h1>
-        <p style={{ margin: "11px 0 0", color: MUTED, fontSize: 15 }}>
+        <h1 style={{ margin: 0, color: TEXT, fontSize: "clamp(26px, 7vw, 36px)", lineHeight: 1.04, fontWeight: 600, letterSpacing: "-.02em" }}>Agents on this machine</h1>
+        <p style={{ margin: "11px 0 0", color: MUTED, fontSize: 15, lineHeight: 1.45, maxWidth: "48ch" }}>
           {cards.length} agent instance{cards.length !== 1 ? "s" : ""} recording sessions — open one to dig into its runs.
         </p>
       </div>
@@ -92,16 +123,16 @@ export function InstancesView({ sessions, onOpenInstance }: Props) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(min(330px, 100%),1fr))", gap: 14 }}>
         {cards.map((ic) => (
           <div
-            key={ic.name}
+            key={ic.sourceId}
             className="inst-card"
             role="button"
             tabIndex={0}
             aria-label={`Open instance ${ic.name}: ${ic.count} runs`}
-            onClick={() => onOpenInstance(ic.name)}
+            onClick={() => onOpenInstance(ic.sourceId)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                onOpenInstance(ic.name);
+                onOpenInstance(ic.sourceId);
               }
             }}
             style={{

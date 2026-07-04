@@ -23,7 +23,7 @@
     "build:server": "tsc -p tsconfig.build.json",
     "build:webapp": "pnpm --dir webapp install --frozen-lockfile && pnpm --dir webapp run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests src/__tests__ && pnpm --dir webapp run test"
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:0.4.0",
