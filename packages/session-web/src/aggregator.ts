@@ -506,6 +506,12 @@ export class SessionAggregator {
     if (session === undefined || !this.states.has(state.discovered.instance.sourceId)) {
       return;
     }
+    if (session.status === "running" && state.liveFinished.has(runId)) {
+      // A debounced artifact watch can read the start-time "running" summary after
+      // live SSE already delivered the terminal frame. Keep the terminal live fold
+      // until the disk artifact itself becomes terminal.
+      return;
+    }
     state.sessions.set(runId, session);
     if (session.status !== "running") {
       // Finished on disk: mark it authoritative so live folds stop overwriting it.

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionAggregator } from "../aggregator.js";
 import type { BrowserStreamFrame } from "../session-model.js";
-import { makeTmpDir, registerSource, removeDir, seedRun, startTinySseServer, waitFor, type TinySseServer } from "./helpers.js";
+import { makeTmpDir, registerSource, removeDir, seedRun, seedRunningRun, startTinySseServer, waitFor, type TinySseServer } from "./helpers.js";
 
 const tmpDirs: string[] = [];
 let aggregator: SessionAggregator | undefined;
@@ -204,6 +204,47 @@ describe("SessionAggregator live fold", () => {
       status: "succeeded",
       finalText: "disk answer",
       sourceId: SOURCE_ID,
+    });
+  });
+
+  it("keeps a live terminal state authoritative over a delayed running artifact reread", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await seedRunningRun({
+      artifactDir,
+      runId: RUN_ID,
+      conversationId: "cron:live",
+      userInput: "Run from disk",
+      text: "stale running disk answer",
+      source: "cron",
+      at: Date.parse(STARTED_AT),
+    });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+    });
+    await aggregator.start();
+
+    bus.publish(runStarted());
+    bus.publish(assistantEvent());
+    bus.publish(runFinished());
+    await waitFor(() => aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.status === "succeeded"));
+
+    const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get(SOURCE_ID);
+    await (aggregator as unknown as { rereadArtifactRun(state: unknown, runId: string): Promise<void> })
+      .rereadArtifactRun(state, RUN_ID);
+
+    await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
+      status: "succeeded",
+      finalText: "live answer",
     });
   });
 

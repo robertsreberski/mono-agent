@@ -73,6 +73,25 @@ export async function seedRun(input: SeedRunInput): Promise<void> {
   await recorder.finish({ usage: { input_tokens: 10, output_tokens: 5 }, model: "pi:ollama:qwen" });
 }
 
+/** Write one real recorded run that is still marked running on disk. */
+export async function seedRunningRun(input: SeedRunInput): Promise<void> {
+  await mkdir(input.artifactDir, { recursive: true });
+  const recorder = createJsonlRunRecorder({
+    runId: input.runId,
+    conversationId: input.conversationId,
+    artifactDir: input.artifactDir,
+    clock: () => input.at,
+    ...(input.userInput === undefined ? {} : { userInput: input.userInput }),
+    ...(input.source === undefined ? {} : { source: input.source }),
+  });
+  recorder.onEvent({
+    type: "assistant",
+    timestamp: new Date(input.at).toISOString(),
+    message: { content: [{ type: "text", text: input.text }] },
+  });
+  await recorder.start?.();
+}
+
 export interface TinySseServer {
   readonly baseUrl: string;
   stop(): Promise<void>;
