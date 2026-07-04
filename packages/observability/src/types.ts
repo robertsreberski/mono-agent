@@ -129,6 +129,12 @@ export interface RunSummary {
    * redacted+truncated so the trace shows what the model was instructed to do.
    */
   readonly systemPrompt?: string;
+  /** Resolved reasoning-effort level the run executed with (e.g. "low", "high"). */
+  readonly effort?: string;
+  /** Originating channel/trigger kind, e.g. "tui" | "telegram" | "slack" | "cron" | "webhook" | "memory". */
+  readonly source?: string;
+  /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
+  readonly sourceDetail?: string;
 }
 
 export interface RunRecorder {
@@ -205,6 +211,18 @@ export interface JsonlRunRecorderOptions {
    * the memory path, which supplies its constant prompt at recorder-creation time.
    */
   readonly systemPrompt?: string;
+  /**
+   * Originating channel/trigger kind for this run, e.g. "tui" | "telegram" |
+   * "slack" | "cron" | "webhook" | "memory". Persisted verbatim into the summary
+   * as `source`. See {@link deriveRunSource} for the conversationId-based fallback
+   * consumers use when a summary predates this field.
+   */
+  readonly source?: string;
+  /**
+   * Trigger name for `source`, e.g. the cron job id or webhook endpoint name.
+   * Persisted verbatim into the summary as `sourceDetail`.
+   */
+  readonly sourceDetail?: string;
 }
 
 export type RecordedRunEventCategory = "tool" | "thinking" | "message" | "runtime" | "error";
@@ -230,6 +248,14 @@ export interface RecordedRunListItem {
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
+  /** Resolved reasoning-effort level the run executed with (e.g. "low", "high"). */
+  readonly effort?: string;
+  /** Originating channel/trigger kind, e.g. "tui" | "telegram" | "slack" | "cron" | "webhook" | "memory". */
+  readonly source?: string;
+  /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
+  readonly sourceDetail?: string;
+  /** The user's prompt for this run, persisted so backfill/replay can show it as input. */
+  readonly userInput?: string;
 }
 
 export interface RecordedRunEvent {
@@ -246,6 +272,56 @@ export interface RecordedRunTimelineItem extends RecordedRunEvent {
   readonly sourceEventCount: number;
   readonly sourceEventStartIndex: number;
   readonly sourceEventEndIndex: number;
+  /**
+   * Total character count of the coalesced group's joined thinking/text block
+   * text, captured BEFORE {@link SUMMARY_MAX_CHARS} summary compaction — so
+   * consumers that need the real content volume (e.g. turn thinking stats)
+   * aren't limited by the display-oriented summary cap. Set for coalesced
+   * thinking/text groups (`sourceEventCount > 1`); left undefined for
+   * single-event items and for groups without a joinable text (e.g. tool
+   * events, which are never coalesced).
+   */
+  readonly contentChars?: number;
+  /**
+   * The group's last source event's (normalized ISO) timestamp. Single-event
+   * items reuse their own `timestamp`. Undefined when no source event in the
+   * group carried a timestamp (e.g. artifacts recorded before the recorder
+   * began stamping events).
+   */
+  readonly endTimestamp?: string;
+}
+
+/**
+ * One agent-loop turn within a single recorded run's timeline: one recorded
+ * run corresponds to one user request, and each turn is the work the agent
+ * did before/after a round-trip through one or more tools. Turn 0 starts at
+ * the first timeline item; once a `user` `tool_result` item has been seen in
+ * the current turn, the turn ends immediately BEFORE the next `assistant`-
+ * typed item (a PARALLEL tool batch streams all its `tool_use` items before
+ * any `tool_timing`/`tool_result` pairs arrive, so non-assistant items after
+ * the first tool_result — more tool_results, tool_timing, runtime events —
+ * stay in the current turn rather than each starting a new one; see
+ * {@link segmentTimelineTurns}).
+ */
+export interface TimelineTurn {
+  readonly turnIndex: number;
+  /** Inclusive start index into the `items` array passed to `segmentTimelineTurns`. */
+  readonly startItemIndex: number;
+  /** Inclusive end index into the `items` array passed to `segmentTimelineTurns`. */
+  readonly endItemIndex: number;
+  /** First item-with-timestamp's timestamp in the turn; undefined when none carried one. */
+  readonly startedAt?: string;
+  /** `durationMs` = last item's `endTimestamp`/`timestamp` minus `startedAt`, when both parse. */
+  readonly durationMs?: number;
+  /** Sum of `contentChars` over the turn's `"thinking"`-category items. */
+  readonly thinkingChars: number;
+  /**
+   * Completed tool calls in the turn: the number of `tool_result` content
+   * blocks across the turn's `user`-typed tool items (category `"tool"`), not
+   * a flat 1-per-item count — a single `user` event can carry more than one
+   * `tool_result` block.
+   */
+  readonly toolCalls: number;
 }
 
 export interface RecordedRunDetail {
@@ -290,11 +366,17 @@ export interface TraceSourceListItem extends TraceSourceManifest {
 }
 
 export interface TraceRunListItem extends RecordedRunListItem {
-  readonly source: TraceSourceListItem;
+  /**
+   * The trace-source PROCESS this run was read from (which agent instance).
+   * Distinct from the inherited `source`, the run's originating channel/trigger
+   * kind (e.g. "telegram") — a run can carry both.
+   */
+  readonly traceSource: TraceSourceListItem;
 }
 
 export interface TraceRunDetail {
-  readonly source: TraceSourceListItem;
+  /** The trace-source PROCESS this run was read from (which agent instance). */
+  readonly traceSource: TraceSourceListItem;
   readonly run: RecordedRunDetail;
 }
 
@@ -349,4 +431,17 @@ export interface TraceRunListResult {
   readonly sources: readonly TraceSourceListItem[];
   readonly runs: readonly TraceRunListItem[];
   readonly warnings: readonly string[];
+}
+
+export interface PruneTraceSourcesOptions {
+  readonly registryDir: string;
+  /** Manifests whose heartbeat is older than this AND whose pid is dead are removed. Default {@link DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS}. */
+  readonly olderThanMs?: number;
+  /** Test seam for pid liveness; defaults to a real `process.kill(pid, 0)` probe. */
+  readonly isAlive?: (pid: number) => boolean;
+  readonly clock?: () => number;
+}
+
+export interface PruneTraceSourcesResult {
+  readonly removed: number;
 }

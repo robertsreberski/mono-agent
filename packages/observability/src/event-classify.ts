@@ -38,7 +38,13 @@ export function classifyRecordedRunEvent(event: unknown): RecordedRunEventCatego
     stringField(event, "toolName") !== undefined ||
     stringField(event, "tool") !== undefined ||
     stringField(event, "tool_call_id") !== undefined ||
-    stringField(event, "toolCallId") !== undefined
+    stringField(event, "toolCallId") !== undefined ||
+    // Real pi-runtime tool activity arrives as a nested `tool_use`/`tool_result`
+    // content block on an otherwise plain assistant/user message event, not as a
+    // top-level tool field. Mixed content (e.g. text + tool_use) still classifies
+    // as tool: the tool call is the salient part of the event.
+    firstToolUseBlock(event) !== undefined ||
+    firstToolResultBlock(event) !== undefined
   ) {
     return "tool";
   }
@@ -61,9 +67,24 @@ export function classifyRecordedRunEvent(event: unknown): RecordedRunEventCatego
 }
 
 export function eventLabel(record: Record<string, unknown>, category: RecordedRunEventCategory, type: string | undefined): string {
-  const toolName = stringField(record, "toolName") ?? stringField(record, "tool") ?? stringField(record, "name");
-  if (category === "tool" && toolName !== undefined) {
-    return `Tool: ${toolName}`;
+  if (category === "tool") {
+    const toolUseBlock = firstToolUseBlock(record);
+    if (toolUseBlock !== undefined) {
+      const name = stringField(toolUseBlock, "name");
+      return name !== undefined ? `Tool: ${name}` : "Tool call";
+    }
+    const toolResultBlock = firstToolResultBlock(record);
+    if (toolResultBlock !== undefined) {
+      // tool_result blocks almost never carry the tool's own name (that lives on
+      // the earlier tool_use block); appending it here is opportunistic, not an
+      // id->name lookup.
+      const name = stringField(toolResultBlock, "name");
+      return name !== undefined ? `Tool result: ${name}` : "Tool result";
+    }
+    const toolName = stringField(record, "toolName") ?? stringField(record, "tool") ?? stringField(record, "name");
+    if (toolName !== undefined) {
+      return `Tool: ${toolName}`;
+    }
   }
   const role = stringField(record, "role");
   if (category === "message" && role !== undefined) {
@@ -88,6 +109,12 @@ export function eventSummary(
   if (direct !== undefined) {
     return compactString(direct);
   }
+  if (category === "tool") {
+    const nestedSummary = nestedToolBlockSummary(record);
+    if (nestedSummary !== undefined) {
+      return nestedSummary;
+    }
+  }
   const messageText = textFromMessage(record.message);
   if (messageText !== undefined) {
     return compactString(messageText);
@@ -106,6 +133,105 @@ export function eventSummary(
     return "Runtime emitted a reasoning/thinking process event.";
   }
   return compactString(JSON.stringify(redactJsonValue(payload, maxStringBytes)));
+}
+
+/**
+ * A message's `content` array, filtered down to record-shaped blocks, or
+ * undefined when `message`/`content` isn't record/array-shaped. Single
+ * source of truth for the array walk shared by {@link findContentBlock} and
+ * {@link countToolResultBlocks}.
+ */
+function contentBlocks(message: unknown): readonly Record<string, unknown>[] | undefined {
+  if (!isRecord(message)) {
+    return undefined;
+  }
+  const content = message.content;
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  return content.filter((block): block is Record<string, unknown> => isRecord(block));
+}
+
+/** First content block of `blockType` on a message's `content` array, if any. */
+function findContentBlock(message: unknown, blockType: string): Record<string, unknown> | undefined {
+  return contentBlocks(message)?.find((block) => block.type === blockType);
+}
+
+/** First `tool_use` content block on an `assistant` event's message, if any. */
+function firstToolUseBlock(event: Record<string, unknown>): Record<string, unknown> | undefined {
+  return stringField(event, "type") === "assistant" ? findContentBlock(event.message, "tool_use") : undefined;
+}
+
+/**
+ * First `tool_result` content block on a `user` event's message, if any.
+ * Exported so other modules (e.g. turn segmentation) can detect tool_result
+ * boundaries without re-implementing this block walk.
+ */
+export function firstToolResultBlock(event: Record<string, unknown>): Record<string, unknown> | undefined {
+  return stringField(event, "type") === "user" ? findContentBlock(event.message, "tool_result") : undefined;
+}
+
+/**
+ * Count of `tool_result` content blocks on a `user` event's message. A real
+ * pi-runtime parallel tool batch delivers one `user` event per completed
+ * call, but a single `user` event CAN carry more than one `tool_result`
+ * block; turn-segmentation's `toolCalls` count sums this across a turn's
+ * user-typed tool items rather than counting items 1-for-1. Falls back to 1
+ * when the event's `type` isn't "user" or its message/content isn't
+ * array-shaped (foreign/malformed payload) -- the item still represents one
+ * completed call, just with a shape this helper can't decompose.
+ */
+export function countToolResultBlocks(event: Record<string, unknown>): number {
+  if (stringField(event, "type") !== "user") {
+    return 1;
+  }
+  const blocks = contentBlocks(event.message);
+  if (blocks === undefined) {
+    return 1;
+  }
+  return blocks.filter((block) => block.type === "tool_result").length;
+}
+
+/**
+ * Compacted preview for a nested tool_use/tool_result block, or undefined when
+ * the event carries neither (falls through to the existing summary paths).
+ */
+function nestedToolBlockSummary(record: Record<string, unknown>): string | undefined {
+  const toolUseBlock = firstToolUseBlock(record);
+  if (toolUseBlock !== undefined) {
+    const input = toolUseBlock.input;
+    return compactString(typeof input === "string" ? input : JSON.stringify(input ?? {}));
+  }
+  const toolResultBlock = firstToolResultBlock(record);
+  if (toolResultBlock !== undefined) {
+    const content = toolResultBlock.content;
+    const preview = typeof content === "string"
+      ? content
+      : joinedTextIfAllTextBlocks(content) ?? JSON.stringify(content ?? "");
+    return compactString(toolResultBlock.is_error === true ? `error: ${preview}` : preview);
+  }
+  return undefined;
+}
+
+/**
+ * The real Pi-runtime `tool_result.content` shape for text-only results is
+ * `[{type:"text",text:"..."}]` (possibly multiple blocks). Join their text when
+ * EVERY entry is a text block; return undefined (falling back to the flat JSON
+ * preview) when any entry isn't, since a partial join would silently drop
+ * non-text content instead of surfacing it.
+ */
+function joinedTextIfAllTextBlocks(content: unknown): string | undefined {
+  if (!Array.isArray(content) || content.length === 0) {
+    return undefined;
+  }
+  const texts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block) || block.type !== "text" || typeof block.text !== "string") {
+      return undefined;
+    }
+    texts.push(block.text);
+  }
+  return texts.join("");
 }
 
 export function textFromMessage(value: unknown): string | undefined {

@@ -130,7 +130,11 @@ my-agent/
     "sourceId": "my-agent",
     "sourceLabel": "My Agent",
     "heartbeatMs": 10000,
-    "staleAfterMs": 30000
+    "staleAfterMs": 30000,
+    // Also mirror this agent's manifest into the global ~/.mono-agent/trace-sources
+    // registry so `mono-agent tui` discovers it from any directory. Default true;
+    // set false to keep the agent visible only via its own registryDir.
+    "globalDiscovery": true
   },
 
   // Optional trace viewer: add a Phoenix (OTLP) exporter to browse traces in

@@ -6,6 +6,7 @@ import type { AgentAttachment } from "@mono-agent/agent-contracts";
 import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
 import { loadContextFromFiles, loadSkillIndexFromDirectory } from "@mono-agent/context";
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono-agent/context";
+import { deriveRunSource } from "@mono-agent/observability";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import {
   assertExecutionModeCompatible,
@@ -148,7 +149,14 @@ export class MonoAgentHarness implements AgentHarness {
   async run(request: AgentHarnessRequest): Promise<AgentHarnessResponse> {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
-    const recorder = this.options.recorderFactory?.({ runId, conversationId: request.conversationId, userInput: request.userMessage }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId });
+    const runSource = runSourceFromRequest(request);
+    const recorder = this.options.recorderFactory?.({
+      runId,
+      conversationId: request.conversationId,
+      userInput: request.userMessage,
+      ...(runSource.source === undefined ? {} : { source: runSource.source }),
+      ...(runSource.sourceDetail === undefined ? {} : { sourceDetail: runSource.sourceDetail }),
+    }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId });
     await recorder.start?.();
 
     if (request.abortSignal.aborted) {
@@ -771,6 +779,21 @@ export class MonoAgentHarness implements AgentHarness {
       // release its maxPendingRuns slot. Idempotent at the run() scope, so the
       // resume-retry's second runRuntime does not double-release.
       onProviderStart?.();
+      // Synthetic run_config event: tells live/recorded consumers (TUI, replay)
+      // the per-run RESOLVED model/effort/executionMode — including per-request
+      // overrides (cron job / webhook per-trigger model+effort) — so they never
+      // have to re-derive it from scattered runtime_telemetry fields. Delivered
+      // to both sinks the same way as the provider_bridge_latency event below.
+      const runConfigEvent: RuntimeEventLike = {
+        type: "run_config",
+        model: modelReferenceKey(effectiveModel),
+        ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
+        ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
+        overridden: overrideModel !== undefined || overrideEffort !== undefined,
+        timestamp: new Date().toISOString(),
+      };
+      recorder.onEvent(runConfigEvent);
+      hostOnEvent?.(runConfigEvent);
       // Bracket the provider call so observability can separate provider+tool+IO
       // time (this event's durationMs) from harness overhead (context build,
       // attachment persistence, compaction, admission wait).
@@ -867,6 +890,22 @@ function validateRequest(request: AgentHarnessRequest): void {
   }
 }
 
+/**
+ * Local-provider endpoint keys a per-request model override OWNS. On these keys
+ * an explicit `null` from a LATER options object CLEARS an earlier value (the
+ * key is deleted from the merge); `undefined` still means "leave untouched".
+ * This lets a cloud / unconfigured-local model override explicitly drop the host
+ * default's local `customProvider` block so the pi runtime — which routes on
+ * `customProvider` PRESENCE alone — does not send a cloud model to the default
+ * local endpoint. See request-model-override.ts for who emits the null.
+ */
+const ENDPOINT_CLEAR_KEYS: ReadonlySet<string> = new Set([
+  "customProvider",
+  "customModel",
+  "modelCapabilities",
+  "isPrivateProvider",
+]);
+
 function mergeRuntimeOptions(
   ...optionsList: readonly (AgentHarnessRuntimeOptionsExtension["runtimeOptions"] | Record<string, unknown> | undefined)[]
 ): Record<string, unknown> {
@@ -877,6 +916,10 @@ function mergeRuntimeOptions(
     }
     for (const [key, value] of Object.entries(options)) {
       if (value === undefined) {
+        continue;
+      }
+      if (value === null && ENDPOINT_CLEAR_KEYS.has(key)) {
+        delete merged[key];
         continue;
       }
       if (key === "allowedTools" || key === "disallowedTools") {
@@ -1322,6 +1365,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Derives a run's `source` (and optional `sourceDetail`) from its request
+ * metadata, for the recorder factory input. Priority order mirrors how each
+ * channel/trigger stamps `request.metadata`:
+ *  1. `metadata.source === "tui"` (the tui-adapter injects this) → "tui"
+ *  2. `metadata.cron` present → "cron", detail = `metadata.cron.jobId` (string)
+ *  3. `metadata.webhook` present → "webhook", detail = `metadata.webhook.endpointName` (string)
+ *  4. `metadata.slack` / `metadata.telegram` present → that channel name
+ *  5. otherwise falls back to {@link deriveRunSource}'s conversationId-prefix
+ *     derivation, so unrecognized/legacy metadata still gets a best-effort source.
+ * Never throws — `metadata` is `Record<string, unknown> | undefined` and any
+ * unexpected shape (e.g. `cron` not itself a record) just falls through.
+ */
+export function runSourceFromRequest(
+  request: Pick<AgentHarnessRequest, "conversationId" | "metadata">,
+): { readonly source?: string; readonly sourceDetail?: string } {
+  const metadata = request.metadata;
+  if (isRecord(metadata)) {
+    if (metadata.source === "tui") {
+      return { source: "tui" };
+    }
+    if (isRecord(metadata.cron)) {
+      const jobId = metadata.cron.jobId;
+      return { source: "cron", ...(typeof jobId === "string" ? { sourceDetail: jobId } : {}) };
+    }
+    if (isRecord(metadata.webhook)) {
+      const endpointName = metadata.webhook.endpointName;
+      return { source: "webhook", ...(typeof endpointName === "string" ? { sourceDetail: endpointName } : {}) };
+    }
+    if (isRecord(metadata.slack)) {
+      return { source: "slack" };
+    }
+    if (isRecord(metadata.telegram)) {
+      return { source: "telegram" };
+    }
+  }
+  return { source: deriveRunSource(request.conversationId) };
+}
+
+/**
  * A cron/proactive request carries a `cron` metadata block (set by the cron
  * scheduler when it fires a job). Used to scope the proactive-session-isolation
  * opt-in to scheduled runs without touching interactive turns.
@@ -1331,12 +1413,14 @@ function isCronRequest(request: AgentHarnessRequest): boolean {
 }
 
 /**
- * Whether the request carries a per-trigger MODEL override that resolves to a
- * model DIFFERENT from the harness default. Only a different model forces session
- * isolation — it runs on a different model (often a different runtime), and the
- * provider session is keyed by conversationId + bound to a model, so resuming or
- * persisting it against the shared session would mix two models' lineage
- * (durable-session corruption / wrong-runtime disposal).
+ * Whether the request carries a per-turn MODEL override that resolves to a
+ * model DIFFERENT from the harness default. The override may be pinned by a
+ * trigger (`metadata.webhook`/`metadata.cron`) or picked interactively from the
+ * TUI (`metadata.tui`). Only a different model forces session isolation — it
+ * runs on a different model (often a different runtime), and the provider session
+ * is keyed by conversationId + bound to a model, so resuming or persisting it
+ * against the shared session would mix two models' lineage (durable-session
+ * corruption / wrong-runtime disposal).
  *
  * A SAME-MODEL override (e.g. an endpoint redundantly naming the host default)
  * leaves the runtime/model chain unchanged, so it must keep the shared continuous
@@ -1347,7 +1431,7 @@ function isCronRequest(request: AgentHarnessRequest): boolean {
  * to switch runtimes (`sameRuntimeModel`), so the isolation decision and the
  * runtime/session-key decision can never disagree.
  */
-function requestOverridesModel(request: AgentHarnessRequest, defaultModel: RuntimeModelReference): boolean {
+export function requestOverridesModel(request: AgentHarnessRequest, defaultModel: RuntimeModelReference): boolean {
   const metadata = request.metadata;
   if (!isRecord(metadata)) {
     return false;
@@ -1356,7 +1440,9 @@ function requestOverridesModel(request: AgentHarnessRequest, defaultModel: Runti
     ? metadata.webhook
     : isRecord(metadata.cron)
       ? metadata.cron
-      : undefined;
+      : isRecord(metadata.tui)
+        ? metadata.tui
+        : undefined;
   if (source === undefined || typeof source.model !== "string" || source.model.trim().length === 0) {
     return false;
   }

@@ -100,6 +100,15 @@ export interface AgentHarnessRecorderFactoryInput {
   readonly conversationId: string;
   /** The user's prompt for this run, so recorders/exporters can surface it. */
   readonly userInput?: string;
+  /**
+   * Originating channel/trigger kind for this run, e.g. "tui" | "telegram" |
+   * "slack" | "cron" | "webhook", derived from the request metadata (falling
+   * back to a conversationId-prefix guess). Forwarded to the recorder so
+   * summaries/exports can classify the run without re-deriving it.
+   */
+  readonly source?: string;
+  /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
+  readonly sourceDetail?: string;
 }
 
 export interface AgentHarnessOptions {

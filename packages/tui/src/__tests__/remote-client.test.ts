@@ -97,6 +97,152 @@ describe("RemoteAgentResponder", () => {
     );
   });
 
+  it("surfaces effort from /v1/info when the agent has one configured", async () => {
+    const adapter = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: { label: "fixture-agent", model: "claude-fable-5", effort: "high" },
+    });
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+      const info = await client.info();
+      expect(info).toMatchObject({ effort: "high" });
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it("tolerates the absence of effort from an older agent's /v1/info", async () => {
+    await withAdapter(
+      { respond: async () => ({ text: "ok" }) },
+      async (adapter) => {
+        const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+        const info = await client.info();
+        expect(info.effort).toBeUndefined();
+      },
+    );
+  });
+
+  it("surfaces the candidate models list from /v1/info", async () => {
+    const adapter = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: { model: "claude-fable-5", models: ["claude-fable-5", "codex:gpt-5.5"] },
+    });
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+      const info = await client.info();
+      expect(info.models).toEqual(["claude-fable-5", "codex:gpt-5.5"]);
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it("tolerates the absence of models from an older agent's /v1/info", async () => {
+    await withAdapter(
+      { respond: async () => ({ text: "ok" }) },
+      async (adapter) => {
+        const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+        const info = await client.info();
+        expect(info.models).toBeUndefined();
+      },
+    );
+  });
+
+  it("surfaces modelOptions from /v1/info when configured", async () => {
+    const adapter = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: {
+        model: "pi:ollama:qwen3.6",
+        models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
+        modelOptions: {
+          // reasoningMode passes through end to end: a toggle model (no levels)
+          // and an effort model (mode + levels).
+          "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+          "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
+        },
+      },
+    });
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+      const info = await client.info();
+      expect(info.modelOptions).toEqual({
+        "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+        "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
+      });
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it("tolerates the absence of modelOptions from an older agent's /v1/info", async () => {
+    await withAdapter(
+      { respond: async () => ({ text: "ok" }) },
+      async (adapter) => {
+        const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+        const info = await client.info();
+        expect(info.modelOptions).toBeUndefined();
+      },
+    );
+  });
+
+  it("tolerates a malformed modelOptions payload without throwing, dropping unrecognized entries/fields", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          schema: 1,
+          model: "x",
+          modelOptions: {
+            wellFormed: { effortLevels: ["low", "high"], reasoning: true, label: "ok" },
+            // A malformed `effortLevels` is dropped, but the well-typed `reasoning`
+            // alongside it survives — matching the documented degrade semantics
+            // where `{ reasoning: true }` with no `effortLevels` means "fall back
+            // to the global effort enum", so a partial entry is still meaningful.
+            badEffortLevels: { effortLevels: ["low", 123], reasoning: true },
+            badReasoning: { reasoning: "yes" },
+            // A non-string reasoningMode is dropped; the toggle sibling survives.
+            badReasoningMode: { reasoning: true, reasoningMode: 42 },
+            toggle: { reasoning: true, reasoningMode: "toggle" },
+            notAnObject: "nope",
+          },
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` });
+      const info = await client.info();
+      expect(info.modelOptions).toEqual({
+        wellFormed: { effortLevels: ["low", "high"], reasoning: true, label: "ok" },
+        badEffortLevels: { reasoning: true },
+        badReasoningMode: { reasoning: true },
+        toggle: { reasoning: true, reasoningMode: "toggle" },
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it("omits modelOptions entirely when the payload's modelOptions is not a record", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ schema: 1, model: "x", modelOptions: "garbage" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` });
+      const info = await client.info();
+      expect(info.modelOptions).toBeUndefined();
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
   it("throws AgentResponseCancelledError for a cancelled remote turn", async () => {
     await withAdapter(
       {

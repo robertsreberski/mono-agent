@@ -13,6 +13,16 @@ const tempDirs: string[] = [];
 const defaultModel = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
 const claudeModel = { sdk: "claude", model: "claude-opus-4-8", reference: "claude:claude-opus-4-8" } as const;
 const codexModel = { sdk: "codex", model: "gpt-5.5", reference: "codex:gpt-5.5" } as const;
+// All-LOCAL default + override targets for the endpoint-block ownership tests.
+const localDefaultModel = { sdk: "pi", provider: "lmstudio", model: "qwen", reference: "pi:lmstudio:qwen" } as const;
+const otherLocalModel = { sdk: "pi", provider: "ollama", model: "llama3", reference: "pi:ollama:llama3" } as const;
+const openAiCloudModel = { sdk: "pi", provider: "openai", model: "gpt-4o", reference: "pi:openai:gpt-4o" } as const;
+const lmstudioDefaultBlock = {
+  customProvider: { id: "lmstudio", provider_type: "lmstudio", base_url: "http://localhost:1234" },
+  customModel: { provider_id: "lmstudio", model_name: "qwen" },
+  modelCapabilities: { reasoning: true },
+  isPrivateProvider: true,
+} as const;
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -156,6 +166,98 @@ describe("AgentHarness per-request model/effort override", () => {
     const options = base.calls[0]?.options as unknown as { messages: Array<{ content: string }> };
     expect(options.messages[0]?.content).toContain("real message");
     expect(options.messages[0]?.content).not.toContain("HIJACKED");
+  });
+});
+
+describe("AgentHarness per-request override OWNS the local-provider endpoint block", () => {
+  // These drive the REAL harness mergeRuntimeOptions end-to-end (host default
+  // runtimeOptions vs the extension's per-request runtimeOptions) and assert the
+  // options actually handed to runtime.run — no inline re-implementation of the
+  // merge. `runtimeOptionsForRequest` here mirrors what the app's
+  // request-model-override extension emits.
+
+  it("an all-local-default agent overriding to a cloud model CLEARS the leaked local endpoint block", async () => {
+    const identityPath = await identityFixture();
+    const base = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: localDefaultModel,
+      executionMode: "sdk",
+      // Host default endpoint block, computed once from the local default model.
+      runtimeOptions: lmstudioDefaultBlock,
+      // Cloud override: sets the cloud model and null-CLEARS the four endpoint
+      // keys so the default block cannot mis-route the cloud model to localhost.
+      runtimeOptionsForRequest: () => ({
+        runtimeOptions: {
+          model: openAiCloudModel,
+          customProvider: null,
+          customModel: null,
+          modelCapabilities: null,
+          isPrivateProvider: null,
+        },
+      }),
+    });
+
+    await harness.run(request());
+
+    const options = base.calls[0]?.options as Record<string, unknown>;
+    expect(options.model).toEqual(openAiCloudModel);
+    // The regression: NO local endpoint block leaks into the cloud run.
+    expect(options.customProvider).toBeUndefined();
+    expect(options.customModel).toBeUndefined();
+    expect(options.modelCapabilities).toBeUndefined();
+    expect(options.isPrivateProvider).toBeUndefined();
+  });
+
+  it("an all-local-default agent overriding to a DIFFERENT local model REPLACES the endpoint block", async () => {
+    const identityPath = await identityFixture();
+    const base = createFakeRuntime();
+    const overrideBlock = {
+      customProvider: { id: "ollama", provider_type: "ollama", base_url: "http://localhost:11434" },
+      customModel: { provider_id: "ollama", model_name: "llama3" },
+      modelCapabilities: { reasoning: false },
+      isPrivateProvider: true,
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: localDefaultModel,
+      executionMode: "sdk",
+      runtimeOptions: lmstudioDefaultBlock,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { model: otherLocalModel, ...overrideBlock } }),
+    });
+
+    await harness.run(request());
+
+    const options = base.calls[0]?.options as Record<string, unknown>;
+    expect(options.model).toEqual(otherLocalModel);
+    // The override block fully replaces the default's — no lmstudio leak.
+    expect(options.customProvider).toEqual(overrideBlock.customProvider);
+    expect(options.customModel).toEqual(overrideBlock.customModel);
+    expect((options.customProvider as Record<string, unknown>).id).toBe("ollama");
+  });
+
+  it("an effort-only override PRESERVES the host default endpoint block (no clear)", async () => {
+    const identityPath = await identityFixture();
+    const base = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: localDefaultModel,
+      executionMode: "sdk",
+      runtimeOptions: lmstudioDefaultBlock,
+      // No model → the extension emits no endpoint keys, so the default block for
+      // the (unchanged) default model must survive the merge.
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { effort: "high" } }),
+    });
+
+    await harness.run(request());
+
+    const options = base.calls[0]?.options as Record<string, unknown>;
+    expect(options.model).toEqual(localDefaultModel);
+    expect(options.effort).toBe("high");
+    expect(options.customProvider).toEqual(lmstudioDefaultBlock.customProvider);
   });
 });
 

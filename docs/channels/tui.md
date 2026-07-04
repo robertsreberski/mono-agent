@@ -53,7 +53,7 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET {basePath}/v1/info` | `{ schema, pid, label?, model? }` — identity + wire-schema version for skew detection. |
+| `GET {basePath}/v1/info` | `{ schema, pid, label?, model?, effort? }` — identity + wire-schema version for skew detection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
 | `POST {basePath}/v1/turns` | Body `{ conversationId, text, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Closing the socket aborts the in-flight turn. |
 | `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
 

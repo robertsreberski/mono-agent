@@ -85,6 +85,12 @@ export function createAgentResponder(options: {
           if (delta.length > 0) {
             runtimeEventStream.enqueueText(delta);
           }
+          // Commentary-phase narration appears in neither thinking nor the
+          // answer; surface it transiently on the ephemeral status line.
+          const commentary = commentaryTextFromRuntimeEvent(event);
+          if (commentary.length > 0) {
+            runtimeEventStream.enqueueStatus(commentary);
+          }
         },
       });
       await runtimeEventStream.flush();
@@ -139,6 +145,7 @@ const RUNTIME_TELEMETRY_KINDS = new Set([
   "cache_miss",
   "capabilities_resolved",
   "provider_bridge_latency",
+  "run_config",
 ]);
 
 export function streamEventFromRuntimeEvent(
@@ -286,6 +293,7 @@ export function streamEventFromRuntimeEvent(
 function createRuntimeEventStream(stream: AgentMessageStream): {
   enqueueText(delta: string): void;
   enqueueEvent(event: AgentStreamEvent): void;
+  enqueueStatus(text: string): void;
   flush(): Promise<void>;
 } {
   // A serialized promise chain preserves the order of text deltas and events
@@ -329,6 +337,14 @@ function createRuntimeEventStream(stream: AgentMessageStream): {
         }
       });
     },
+    enqueueStatus(text: string): void {
+      if (typeof stream.status !== "function") {
+        return;
+      }
+      enqueue(async () => {
+        await stream.status?.(text);
+      });
+    },
     async flush(): Promise<void> {
       await chain;
       if (firstError !== undefined) {
@@ -338,14 +354,44 @@ function createRuntimeEventStream(stream: AgentMessageStream): {
   };
 }
 
+/**
+ * Only genuine `thinking`-typed blocks are model reasoning. A `text` block
+ * tagged `phase:"commentary"` (tool-preamble narration like "inspecting glob
+ * results") is deliberately NOT a thought — it goes to the ephemeral status
+ * line instead (see {@link commentaryTextFromRuntimeEvent}) so the thinking
+ * cell (and its chars/duration stats) reflects pure reasoning. This also
+ * matches replay, where classifyAssistantContent counts only thinking-typed
+ * blocks as the thinking category.
+ */
 function thoughtTextFromBlock(block: Record<string, unknown>): string | undefined {
   if (block.type === "thinking") {
     return stringField(block, "text") ?? stringField(block, "thinking") ?? stringField(block, "content");
   }
-  if (block.type === "text" && stringField(block, "phase") === "commentary") {
-    return stringField(block, "text");
-  }
   return undefined;
+}
+
+/**
+ * Commentary-phase text out of an assistant runtime event: tool-preamble
+ * narration that belongs in neither the thinking stream nor the answer text
+ * ({@link assistantTextFromRuntimeEvent} already excludes it there). Routed
+ * to the stream's ephemeral `status` callback so the operator still sees the
+ * progress transiently.
+ */
+export function commentaryTextFromRuntimeEvent(event: unknown): string {
+  if (!isRecord(event) || event.type !== "assistant") {
+    return "";
+  }
+  const message = event.message;
+  if (!isRecord(message) || !Array.isArray(message.content)) {
+    return "";
+  }
+  let text = "";
+  for (const block of message.content) {
+    if (isRecord(block) && block.type === "text" && stringField(block, "phase") === "commentary" && typeof block.text === "string") {
+      text += block.text;
+    }
+  }
+  return text;
 }
 
 function stringField(value: Record<string, unknown>, field: string): string | undefined {

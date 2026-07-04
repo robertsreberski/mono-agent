@@ -172,7 +172,7 @@ describe("final demo deployment", () => {
       const run = runs.runs.find((candidate) => candidate.source.sourceId === "final-agent-gemma4");
       expect(run).toBeDefined();
       const detail = await getTraceabilityRun(demo, "final-agent-gemma4", run?.runId ?? "");
-      expect(detail.detail?.run.events[0]).toMatchObject({ category: "runtime", type: "fake-deploy-event" });
+      expect(detail.detail?.run.events.find((event) => event.type === "fake-deploy-event")).toMatchObject({ category: "runtime" });
     } finally {
       await demo.stop();
     }
@@ -258,7 +258,7 @@ async function getTraceabilityRuns(demo: FinalAgentDemo): Promise<{
     runs: result.runs.map((run) => ({
       runId: run.runId,
       conversationId: run.conversationId,
-      source: { sourceId: run.source.sourceId, label: run.source.label },
+      source: { sourceId: run.traceSource.sourceId, label: run.traceSource.label },
     })),
   };
 }

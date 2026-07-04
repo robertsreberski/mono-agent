@@ -120,6 +120,10 @@ function composeRunRecorder(
     readonly systemPrompt?: string;
     readonly runKind?: "memory" | "channel";
     readonly memoryOperation?: string;
+    /** Originating channel/trigger kind, e.g. "tui" | "cron" | "webhook" | "memory". */
+    readonly source?: string;
+    /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
+    readonly sourceDetail?: string;
   },
 ): RunRecorder {
   const jsonl = createJsonlRunRecorder({
@@ -128,6 +132,8 @@ function composeRunRecorder(
     artifactDir: deps.artifactDir,
     ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
     ...(args.systemPrompt === undefined ? {} : { systemPrompt: args.systemPrompt }),
+    ...(args.source === undefined ? {} : { source: args.source }),
+    ...(args.sourceDetail === undefined ? {} : { sourceDetail: args.sourceDetail }),
   });
   const exporterCfg = deps.exporters[0];
   if (exporterCfg === undefined) {
@@ -302,12 +308,14 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
-    recorderFactory: ({ runId, conversationId, userInput }) =>
+    recorderFactory: ({ runId, conversationId, userInput, source, sourceDetail }) =>
       composeRunRecorder(recorderCompositionDeps(config, options), {
         runId,
         conversationId,
         runKind: "channel",
         ...(userInput === undefined ? {} : { userInput }),
+        ...(source === undefined ? {} : { source }),
+        ...(sourceDetail === undefined ? {} : { sourceDetail }),
       }),
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
     ...(options.now === undefined ? {} : { now: options.now }),
@@ -553,7 +561,9 @@ function createAgentHostMemoryLlm(options: {
               userInput: prompt,
               systemPrompt: MEMORY_LLM_SYSTEM_PROMPT,
               runKind: "memory",
+              source: "memory",
               ...(memoryOperation === undefined ? {} : { memoryOperation }),
+              ...(memoryOperation === undefined ? {} : { sourceDetail: memoryOperation }),
             });
       try {
         await safeRecorderCall(() => recorder?.start?.());

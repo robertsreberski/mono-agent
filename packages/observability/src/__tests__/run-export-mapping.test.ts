@@ -134,6 +134,33 @@ describe("buildEventSpanAttributes", () => {
     expect(spanKindHint(result.category)).toBe("TOOL");
   });
 
+  it("classifies a nested assistant tool_use block as tool with a TOOL span kind hint", () => {
+    const result = buildEventSpanAttributes(
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { path: "/etc/hosts" } }] },
+      },
+      5,
+      makeContext(),
+    );
+    expect(result.category).toBe("tool");
+    expect(result.attributes["mono.agent.event.label"]).toBe("Tool: Read");
+    expect(spanKindHint(result.category)).toBe("TOOL");
+  });
+
+  it("classifies a nested user tool_result block as tool", () => {
+    const result = buildEventSpanAttributes(
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }] },
+      },
+      6,
+      makeContext(),
+    );
+    expect(result.category).toBe("tool");
+    expect(result.attributes["mono.agent.event.label"]).toBe("Tool result");
+  });
+
   it("classifies an assistant text event as message", () => {
     const result = buildEventSpanAttributes(
       { type: "assistant", message: { content: [{ type: "text", text: "hi" }] } },

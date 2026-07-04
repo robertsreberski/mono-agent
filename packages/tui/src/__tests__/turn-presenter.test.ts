@@ -2,10 +2,11 @@ import { Container } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 
 import { StatusBar } from "../ui/components/status-bar.js";
+import { formatDurationMs, formatTokens } from "../ui/format.js";
 import { TurnPresenter } from "../ui/turn-presenter.js";
 import { stripAnsi } from "./test-terminal.js";
 
-function setup(): {
+function setup(now?: () => number, opts?: { requestedModelOverride?: string }): {
   presenter: TurnPresenter;
   transcript: Container;
   statusBar: StatusBar;
@@ -23,6 +24,8 @@ function setup(): {
       renders.count += 1;
     },
     flushIntervalMs: 0,
+    ...(now === undefined ? {} : { now }),
+    ...(opts?.requestedModelOverride === undefined ? {} : { requestedModelOverride: opts.requestedModelOverride }),
   });
   return {
     presenter,
@@ -137,6 +140,25 @@ describe("TurnPresenter", () => {
     expect(status()).toContain("answered by kimi");
   });
 
+  it("no longer sets a 'waiting for <model>' ephemeral on request_started", async () => {
+    const { presenter, status } = setup();
+
+    await presenter.event({ type: "provider_status", kind: "request_started", model: "claude-fable-5" });
+
+    expect(status()).not.toContain("waiting for");
+  });
+
+  it("still clears the ephemeral on request_completed (no-op when nothing was set)", async () => {
+    const { presenter, status } = setup();
+
+    await presenter.event({ type: "provider_status", kind: "request_started", model: "claude-fable-5" });
+    await presenter.status("Thinking…");
+    await presenter.event({ type: "provider_status", kind: "request_completed", model: "claude-fable-5" });
+
+    expect(status()).not.toContain("Thinking…");
+    expect(status()).not.toContain("waiting for");
+  });
+
   it("ignores unknown event types (forward compatibility)", async () => {
     const { presenter, rendered } = setup();
     await presenter.event({ type: "quantum_flux", level: 9 } as never);
@@ -152,5 +174,147 @@ describe("TurnPresenter", () => {
     expect(status()).toContain("Thinking…");
     await presenter.event({ type: "memory_recalled", source: "bujo", bytes: 2048 });
     expect(status()).toContain("memory recalled 2.0KB");
+  });
+
+  it("applies run_config telemetry (model + effort) to the status bar", async () => {
+    const { presenter, status } = setup();
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "run_config",
+      data: { model: "claude-fable-5", effort: "high", overridden: false, timestamp: "2026-01-01T00:00:00.000Z" },
+    });
+    const text = status();
+    expect(text).toContain("claude-fable-5");
+    expect(text).toContain("effort:high");
+  });
+
+  it("ignores non run_config runtime_telemetry kinds (no transcript, no status bar change)", async () => {
+    const { presenter, status, rendered } = setup();
+    await presenter.event({ type: "runtime_telemetry", kind: "cache_hit", data: { tokens: 400 } });
+    expect(rendered()).toBe("");
+    expect(status()).not.toContain("effort:");
+  });
+
+  it("does not clear a previously known effort when a later run_config omits it", async () => {
+    const { presenter, status } = setup();
+    await presenter.event({ type: "runtime_telemetry", kind: "run_config", data: { effort: "high" } });
+    expect(status()).toContain("effort:high");
+    await presenter.event({ type: "runtime_telemetry", kind: "run_config", data: { model: "claude-fable-5" } });
+    expect(status()).toContain("effort:high");
+    expect(status()).toContain("claude-fable-5");
+  });
+
+  it("tags the model as (override) when run_config reports overridden:true", async () => {
+    const { presenter, status } = setup();
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "run_config",
+      data: { model: "kimi-k2.6", overridden: true },
+    });
+    expect(status()).toContain("kimi-k2.6 (override)");
+  });
+
+  it("clears the (override) tag and notices when a requested override was not applied", async () => {
+    const { presenter, status, rendered } = setup(undefined, { requestedModelOverride: "kimi-k2.6" });
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "run_config",
+      data: { model: "claude-fable-5", overridden: false },
+    });
+    expect(status()).toContain("claude-fable-5");
+    expect(status()).not.toContain("(override)");
+    expect(rendered()).toContain("model override not applied");
+    expect(rendered()).toContain("claude-fable-5");
+  });
+
+  it("does not notice on overridden:false when no override was requested", async () => {
+    const { presenter, status, rendered } = setup();
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "run_config",
+      data: { model: "claude-fable-5", overridden: false },
+    });
+    expect(status()).not.toContain("(override)");
+    expect(rendered()).not.toContain("not applied");
+  });
+
+  it("accumulates thinking chars on the status bar while active", async () => {
+    const { presenter, status } = setup();
+    await presenter.event({ type: "assistant_thought", text: "12345" });
+    expect(status()).toContain(`∴ thinking ${formatTokens(5)}`);
+    await presenter.event({ type: "assistant_thought", text: "67890" });
+    expect(status()).toContain(`∴ thinking ${formatTokens(10)}`);
+  });
+
+  it("finalizes thinking duration (via injected clock) when the thinking cell is sealed by a tool call", async () => {
+    let clock = 1_000;
+    const { presenter, status, rendered } = setup(() => clock);
+    await presenter.event({ type: "assistant_thought", text: "12345" }); // 5 chars, t=1000
+    clock = 42_000; // +41s
+    await presenter.event({ type: "tool_call_started", id: "t1", name: "bash", arguments: { command: "ls" } });
+
+    const expectedDuration = formatDurationMs(41_000);
+    expect(status()).toContain(`∴ ${formatTokens(5)} chars · ${expectedDuration}`);
+    expect(status()).not.toContain("thinking 5"); // no longer "active"
+    // The sealed ThinkingCell header also carries the duration.
+    expect(rendered()).toContain(`thought (${formatTokens(5)} chars · ${expectedDuration}`);
+  });
+
+  it("accumulates chars and spans first-thought-to-last-seal duration across multiple thinking cells in one turn", async () => {
+    let clock = 0;
+    const { presenter, status } = setup(() => clock);
+    await presenter.event({ type: "assistant_thought", text: "aaaaa" }); // 5 chars, t=0 (first thought)
+    clock = 5_000;
+    await presenter.event({ type: "tool_call_started", id: "t1", name: "bash", arguments: {} });
+    await presenter.event({ type: "tool_call_completed", id: "t1", content: "ok" });
+    clock = 10_000;
+    await presenter.event({ type: "assistant_thought", text: "bbbbbbbbbb" }); // +10 chars = 15 total
+    clock = 20_000; // last seal at t=20000; duration = 20000 - 0 = 20000ms
+    presenter.settle();
+
+    const expectedDuration = formatDurationMs(20_000);
+    expect(status()).toContain(`∴ ${formatTokens(15)} chars · ${expectedDuration}`);
+  });
+
+  it("shows chars+duration on the ThinkingCell header after settle finalizes it", async () => {
+    let clock = 0;
+    const { presenter, rendered } = setup(() => clock);
+    await presenter.event({ type: "assistant_thought", text: "reasoning text here" }); // 19 chars
+    clock = 3_500;
+    presenter.settle();
+
+    expect(rendered()).toContain(`thought (${formatTokens(19)} chars · ${formatDurationMs(3_500)}`);
+  });
+
+  it("replaces the status bar's thinking segment on a new turn's first thought (fresh presenter per turn)", async () => {
+    let clock = 0;
+    const statusBar = new StatusBar();
+    const transcript = new Container();
+    const firstTurn = new TurnPresenter({
+      transcript,
+      statusBar,
+      requestRender: () => {},
+      flushIntervalMs: 0,
+      now: () => clock,
+    });
+    await firstTurn.event({ type: "assistant_thought", text: "a".repeat(100) });
+    clock = 10_000;
+    firstTurn.settle();
+    const afterFirstTurn = stripAnsi(statusBar.render(80).join("\n"));
+    expect(afterFirstTurn).toContain(`∴ ${formatTokens(100)} chars`);
+
+    // A new turn gets a brand-new presenter (ChatView's pattern); its counters
+    // start fresh rather than adding onto the previous turn's totals.
+    const secondTurn = new TurnPresenter({
+      transcript: new Container(),
+      statusBar,
+      requestRender: () => {},
+      flushIntervalMs: 0,
+      now: () => clock,
+    });
+    await secondTurn.event({ type: "assistant_thought", text: "bb" });
+    const afterSecondTurnFirstThought = stripAnsi(statusBar.render(80).join("\n"));
+    expect(afterSecondTurnFirstThought).toContain(`∴ thinking ${formatTokens(2)}`);
+    expect(afterSecondTurnFirstThought).not.toContain(`${formatTokens(100)} chars`);
   });
 });

@@ -14,6 +14,14 @@ export interface TurnPresenterOptions {
   readonly flushIntervalMs?: number;
   /** New thinking cells start expanded when the app-level toggle is on. */
   readonly thinkingExpanded?: () => boolean;
+  /** Injectable clock for thinking-duration assertions; defaults to Date.now. */
+  readonly now?: () => number;
+  /**
+   * The model override the operator requested for this turn (via `/model`), if
+   * any. Used only to notice when a run reports `overridden: false` despite a
+   * requested override — i.e. the override was ignored (old agent) or invalid.
+   */
+  readonly requestedModelOverride?: string;
 }
 
 const DEFAULT_FLUSH_MS = 50;
@@ -36,6 +44,10 @@ export class TurnPresenter implements AgentMessageStream {
   /** Concatenated text of sealed segments (everything before the live buffer). */
   private sealedText = "";
   private thinkingCell: ThinkingCell | undefined;
+  /** Running total across the whole turn, even across multiple thinking cells. */
+  private thinkingChars = 0;
+  /** Wall-clock time of this turn's first thought; undefined until then. */
+  private firstThoughtTime: number | undefined;
   private readonly toolPanels = new Map<string, ToolPanel>();
   private buffer = "";
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -65,6 +77,11 @@ export class TurnPresenter implements AgentMessageStream {
     switch (event.type) {
       case "assistant_thought": {
         this.thinkingCellFor().append(event.text);
+        this.thinkingChars += event.text.length;
+        if (this.firstThoughtTime === undefined) {
+          this.firstThoughtTime = this.nowMs();
+        }
+        this.options.statusBar.setThinking({ chars: this.thinkingChars, active: true });
         break;
       }
       case "tool_call_started": {
@@ -96,7 +113,9 @@ export class TurnPresenter implements AgentMessageStream {
       }
       case "provider_status": {
         if (event.kind === "request_started") {
-          this.options.statusBar.setEphemeral(`waiting for ${event.model ?? "model"}…`);
+          // No ephemeral status here (removed per user feedback: "too long and
+          // awkward, no need for that") — the ChatView loader already
+          // indicates in-flight activity.
         } else if (event.kind === "request_completed") {
           this.options.statusBar.setEphemeral("");
         } else if (event.kind === "failover_started") {
@@ -121,7 +140,29 @@ export class TurnPresenter implements AgentMessageStream {
       }
       case "runtime_telemetry": {
         // Cache/capability/latency details stay off the live transcript; the
-        // replay view shows them from run artifacts.
+        // replay view shows them from run artifacts. run_config is the one
+        // exception: it feeds the persistent status-bar model/effort chrome.
+        if (event.kind === "run_config") {
+          const data = event.data;
+          if (typeof data?.effort === "string") {
+            this.options.statusBar.setEffort(data.effort);
+          }
+          if (typeof data?.model === "string") {
+            this.options.statusBar.setModel(data.model);
+          }
+          // `overridden` is the harness's authoritative "an override was actually
+          // applied" — reconcile the status-bar tag with it so the marker never
+          // lies (e.g. an ignored or invalid override falling back to the default).
+          if (typeof data?.overridden === "boolean") {
+            this.options.statusBar.setModelOverridden(data.overridden);
+            if (!data.overridden && this.options.requestedModelOverride !== undefined) {
+              const ranOn = typeof data.model === "string" ? ` — ran on ${data.model}` : "";
+              this.options.transcript.addChild(
+                new NoticeCell(`model override not applied${ranOn}`, "warning"),
+              );
+            }
+          }
+        }
         break;
       }
       default: {
@@ -259,8 +300,17 @@ export class TurnPresenter implements AgentMessageStream {
   private sealThinking(): void {
     if (this.thinkingCell !== undefined) {
       this.thinkingCell.active = false;
+      if (this.firstThoughtTime !== undefined) {
+        const durationMs = this.nowMs() - this.firstThoughtTime;
+        this.thinkingCell.setDurationMs(durationMs);
+        this.options.statusBar.setThinking({ chars: this.thinkingChars, durationMs, active: false });
+      }
       this.thinkingCell = undefined;
     }
+  }
+
+  private nowMs(): number {
+    return this.options.now?.() ?? Date.now();
   }
 }
 
