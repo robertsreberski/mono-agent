@@ -58,7 +58,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "tui", "install-skill", "backfill", "audit-runs", "metrics"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics"] as const;
 
 // `doctor` never reaches routing: parseCliArgs normalizes it to `validate`.
 type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor"> | "help";
@@ -108,6 +108,14 @@ interface ParsedCliArgs {
   readonly staleAfterMs?: number;
   /** audit-runs: print the full machine-readable report. */
   readonly json?: boolean;
+  /** web: bind host (default 127.0.0.1). */
+  readonly host?: string;
+  /** web: bind port (default 0 → ephemeral). */
+  readonly port?: number;
+  /** web: `--no-open` sets this false to suppress the browser launch. */
+  readonly open?: boolean;
+  /** web: `--allow-non-loopback` permits a non-loopback bind. */
+  readonly allowNonLoopback?: boolean;
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
@@ -148,6 +156,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let conversation: string | undefined;
   let staleAfterMs: number | undefined;
   let json = false;
+  let host: string | undefined;
+  let port: number | undefined;
+  let open: boolean | undefined;
+  let allowNonLoopback: boolean | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
@@ -204,6 +216,24 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       }
       case "--json":
         json = true;
+        break;
+      case "--host":
+        host = requireValue(rest, ++i, flag);
+        break;
+      case "--port": {
+        const raw = requireValue(rest, ++i, flag);
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed < 0 || parsed > 65535) {
+          throw new Error("--port must be an integer between 0 and 65535.");
+        }
+        port = parsed;
+        break;
+      }
+      case "--no-open":
+        open = false;
+        break;
+      case "--allow-non-loopback":
+        allowNonLoopback = true;
         break;
       case "--model":
         model = requireValue(rest, ++i, flag);
@@ -285,6 +315,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent audit-runs`.");
   }
 
+  if ((host !== undefined || port !== undefined || open !== undefined || allowNonLoopback !== undefined) && cmd !== "web") {
+    throw new Error("--host, --port, --no-open, and --allow-non-loopback are only supported for `mono-agent web`.");
+  }
+
   return {
     command: cmd,
     ...(configPath === undefined ? {} : { configPath }),
@@ -312,6 +346,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(json ? { json } : {}),
     ...(agent === undefined ? {} : { agent }),
     ...(conversation === undefined ? {} : { conversation }),
+    ...(host === undefined ? {} : { host }),
+    ...(port === undefined ? {} : { port }),
+    ...(open === undefined ? {} : { open }),
+    ...(allowNonLoopback === undefined ? {} : { allowNonLoopback }),
   };
 }
 
@@ -440,6 +478,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open]",
+    lines: [
+      "Serve the read-only Session Recorder web PWA from any directory: a live",
+      "flight-recorder over every agent's runs (prompt, reasoning, tools, cost).",
+      "Discovers running agents via the trace-source registry — the same",
+      "mechanism as `tui` — and streams new/updated runs in real time.",
+    ],
+  },
+  {
     signature: "mono-agent install-skill [--target claude|codex|both] [--force]",
     lines: [
       "Copy the bundled mono-agent-composer skill into ~/.claude/skills and",
@@ -556,6 +603,19 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         env: process.env,
         ...(args.agent === undefined ? {} : { agent: args.agent }),
         ...(args.conversation === undefined ? {} : { conversationId: args.conversation }),
+      });
+    }
+    case "web": {
+      // Lazy import: the web server (and express/session-web) load only on demand.
+      const { runWeb } = await import("./web-command.js");
+      return await runWeb({
+        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
+        cwd: process.cwd(),
+        env: process.env,
+        ...(args.host === undefined ? {} : { host: args.host }),
+        ...(args.port === undefined ? {} : { port: args.port }),
+        ...(args.open === undefined ? {} : { open: args.open }),
+        ...(args.allowNonLoopback === undefined ? {} : { allowNonLoopback: args.allowNonLoopback }),
       });
     }
     case "install-skill":

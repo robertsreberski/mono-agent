@@ -6,7 +6,8 @@ import {
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "@mono-agent/agent-host";
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { createLiveEventBus } from "@mono-agent/agent-contracts";
+import type { AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
 import { pruneTraceSources, reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import { modelReferenceKey } from "@mono-agent/runtime-adapter";
@@ -197,6 +198,11 @@ class MonoAgentAppController implements MonoAgentApp {
   private interactionBridge: InteractionBridgeHandle | undefined;
   private interactionBridgeStart: Promise<InteractionBridgeHandle | undefined> | undefined;
   private interactionBridgeEnvKeys: readonly string[] = [];
+  // Shared in-process run-event bus: every run's recorder publishes to it (via the
+  // broadcast recorder threaded as `runEventSink`), and the `live` channel relays
+  // it over SSE. One instance for the app's lifetime — cheap, bounded ring buffer,
+  // and it must exist before any responder is built (like the interaction bridge).
+  private readonly liveEventBus: RunEventBus = createLiveEventBus();
 
   constructor(input: MonoAgentAppControllerInput) {
     this.cwd = input.cwd;
@@ -723,6 +729,7 @@ class MonoAgentAppController implements MonoAgentApp {
         listNotifyDestinations: () => this.listNotifyDestinations(),
         postedMessageIndexPath,
         ...(interactionBridge === undefined ? {} : { interaction: interactionBridge }),
+        liveEventBus: this.liveEventBus,
         ...(this.logger === undefined ? {} : { logger: this.logger }),
         onFailure: (failureReason) => {
           this.running.delete(driver.id);
@@ -837,6 +844,9 @@ class MonoAgentAppController implements MonoAgentApp {
       // when config.observability.exporters is non-empty).
       observabilityContext,
       exporterWarn: (warning) => this.recordExporterWarning(warning),
+      // Publish every run's start/event/finish to the shared bus so the `live`
+      // channel can relay it. Best-effort + additive (see broadcast recorder).
+      runEventSink: this.liveEventBus,
     });
     return responder;
   }

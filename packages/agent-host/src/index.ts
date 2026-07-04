@@ -12,7 +12,7 @@ import type {
 } from "@mono-agent/agent-harness";
 import { resolve as resolvePath } from "node:path";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { AgentResponder, RunEventSink } from "@mono-agent/agent-contracts";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { LlmComplete } from "@mono-agent/memory-bujo";
@@ -25,6 +25,7 @@ import type {
   RunRecorder,
 } from "@mono-agent/observability";
 import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
+import { createBroadcastRunRecorder } from "./broadcast-recorder.js";
 import {
   assertExecutionModeCompatible,
   createMonoRuntime,
@@ -86,6 +87,12 @@ export interface ConfiguredAgentHarnessOptions {
   readonly exporterWarn?: (warning: { phase: string; message: string }) => void;
   /** Injection seam (tests); defaults to createPhoenixRunExporter. */
   readonly exporterFactory?: (config: PhoenixExporterConfig) => RunExporter;
+  /**
+   * In-process live run-event bus. When present, every run's start/event/finish
+   * is ALSO published here (best-effort, additive) so a live operator surface can
+   * observe runs mid-flight. Wired by the app from its shared bus.
+   */
+  readonly runEventSink?: RunEventSink;
 }
 
 export interface ConfiguredAgentResponderOptions extends ConfiguredAgentHarnessOptions {}
@@ -102,6 +109,7 @@ interface RecorderCompositionDeps {
   readonly observabilityContext?: ConfiguredAgentHarnessOptions["observabilityContext"];
   readonly exporterWarn?: ConfiguredAgentHarnessOptions["exporterWarn"];
   readonly exporterFactory?: ConfiguredAgentHarnessOptions["exporterFactory"];
+  readonly runEventSink?: ConfiguredAgentHarnessOptions["runEventSink"];
 }
 
 /**
@@ -137,7 +145,7 @@ function composeRunRecorder(
   });
   const exporterCfg = deps.exporters[0];
   if (exporterCfg === undefined) {
-    return jsonl;
+    return withBroadcast(jsonl, deps, args);
   }
   const exporter = (deps.exporterFactory ?? createPhoenixRunExporter)(exporterCfg);
   const context: RunExportContext = {
@@ -158,12 +166,38 @@ function composeRunRecorder(
     ...(args.runKind === undefined ? {} : { runKind: args.runKind }),
     ...(args.memoryOperation === undefined ? {} : { memoryOperation: args.memoryOperation }),
   };
-  return createCompositeRunRecorder({
+  const composite = createCompositeRunRecorder({
     recorder: jsonl,
     exporter,
     context,
     timeoutMs: exporterCfg.timeoutMs ?? 5000,
     ...(deps.exporterWarn === undefined ? {} : { onWarning: deps.exporterWarn }),
+  });
+  return withBroadcast(composite, deps, args);
+}
+
+/**
+ * Wrap the composed recorder so runs are ALSO published to the live bus when one
+ * is configured. Outermost by design: it observes the authoritative final summary
+ * the inner recorder returns. A no-op passthrough when no bus is present.
+ */
+function withBroadcast(
+  recorder: RunRecorder,
+  deps: RecorderCompositionDeps,
+  args: { readonly runId: string; readonly conversationId: string; readonly source?: string; readonly sourceDetail?: string },
+): RunRecorder {
+  if (deps.runEventSink === undefined) {
+    return recorder;
+  }
+  return createBroadcastRunRecorder(recorder, deps.runEventSink, {
+    runId: args.runId,
+    conversationId: args.conversationId,
+    sourceId: deps.observabilityContext?.sourceId ?? "",
+    ...(deps.observabilityContext?.sourceLabel === undefined
+      ? {}
+      : { sourceLabel: deps.observabilityContext.sourceLabel }),
+    ...(args.source === undefined ? {} : { source: args.source }),
+    ...(args.sourceDetail === undefined ? {} : { sourceDetail: args.sourceDetail }),
   });
 }
 
@@ -172,7 +206,7 @@ function recorderCompositionDeps(
   config: MonoAgentConfig,
   options: Pick<
     ConfiguredAgentHarnessOptions,
-    "observabilityContext" | "exporterWarn" | "exporterFactory"
+    "observabilityContext" | "exporterWarn" | "exporterFactory" | "runEventSink"
   >,
 ): RecorderCompositionDeps {
   return {
@@ -183,6 +217,7 @@ function recorderCompositionDeps(
       : { observabilityContext: options.observabilityContext }),
     ...(options.exporterWarn === undefined ? {} : { exporterWarn: options.exporterWarn }),
     ...(options.exporterFactory === undefined ? {} : { exporterFactory: options.exporterFactory }),
+    ...(options.runEventSink === undefined ? {} : { runEventSink: options.runEventSink }),
   };
 }
 

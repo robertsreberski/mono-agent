@@ -192,12 +192,24 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["--help"]).command).toBe("help");
     expect(() => parseCliArgs(["serve"])).toThrow(/Unknown command/u);
     expect(() => parseCliArgs(["start", "--what"])).toThrow(/Unknown flag/u);
-    expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/Unknown flag/u);
+    // `--port` is a recognized (web-only) flag; it is rejected for non-web commands.
+    expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/only supported for/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
+  });
+
+  it("parses web command flags", () => {
+    const result = parseCliArgs(["web", "--host", "0.0.0.0", "--port", "4599", "--no-open", "--allow-non-loopback"]);
+    expect(result.command).toBe("web");
+    expect(result.host).toBe("0.0.0.0");
+    expect(result.port).toBe(4599);
+    expect(result.open).toBe(false);
+    expect(result.allowNonLoopback).toBe(true);
+    expect(() => parseCliArgs(["web", "--port", "notaport"])).toThrow(/--port/u);
   });
 
   it("includes setup in the help screen", () => {
     expect(renderHelp()).toContain("mono-agent setup");
+    expect(renderHelp()).toContain("mono-agent web");
   });
 
   it("accepts --memory bujo and --memory lite, rejects --memory markdown", () => {

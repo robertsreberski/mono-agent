@@ -1,0 +1,39 @@
+{
+  "runId": "run-mpcec5td-r4cw4p",
+  "conversationId": "downloads-curator",
+  "status": "succeeded",
+  "startedAt": "2026-05-19T08:54:04.657Z",
+  "endedAt": "2026-05-19T08:54:22.998Z",
+  "updatedAt": "2026-05-19T08:54:22.998Z",
+  "durationMs": 18341,
+  "usage": {
+    "input_tokens": "[redacted]",
+    "output_tokens": "[redacted]",
+    "cache_read_tokens": "[redacted]",
+    "cache_creation_tokens": "[redacted]",
+    "cost_usd": 0.028859
+  },
+  "providerSessionId": "019e3f71-3a25-7c20-bed7-709a354b0bd8",
+  "eventCount": 6,
+  "artifactPaths": [
+    "/Users/robertsreberski/Personal_Repositories/mono-agent/.mono-agent/downloads-curator/artifacts/run-mpcec5td-r4cw4p.events.jsonl",
+    "/Users/robertsreberski/Personal_Repositories/mono-agent/.mono-agent/downloads-curator/artifacts/run-mpcec5td-r4cw4p.summary.json"
+  ],
+  "diagnostics": {
+    "codex_thread_start_attempts": 1,
+    "codex_thread_start_timeout_ms": 60000,
+    "codex_thread_start_duration_ms": 660
+  },
+  "capabilitiesUsed": {
+    "prompt_cache_active": true,
+    "thinking_enabled": null,
+    "structured_output_enforced": false,
+    "subagent_invoked": null,
+    "mcp_servers_used": [
+      "downloads_curator"
+    ],
+    "native_subagents_used": [],
+    "tool_compaction_applied": false,
+    "context_compaction_applied": null
+  }
+}

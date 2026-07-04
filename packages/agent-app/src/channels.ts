@@ -44,6 +44,11 @@ import type {
   TuiAdapterStartResult,
 } from "@mono-agent/tui-adapter";
 import type {
+  LiveAdapterConfig,
+  LiveAdapterHandle,
+  LiveAdapterOptions,
+} from "@mono-agent/live-adapter";
+import type {
   WebhookAdapterConfig,
   WebhookAdapterOptions,
   WebhookAdapterStartResult,
@@ -97,6 +102,7 @@ export const BUILTIN_CHANNEL_IDS = [
   "cron",
   "whatsapp",
   "tui",
+  "live",
 ] as const;
 export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
 
@@ -145,6 +151,11 @@ const loadWhatsAppModule = async (): Promise<WhatsAppAdapterModule> =>
   (whatsappModule ??= await import("@mono-agent/whatsapp-adapter"));
 const loadTuiModule = async (): Promise<TuiAdapterModule> =>
   (tuiModule ??= await import("@mono-agent/tui-adapter"));
+
+type LiveAdapterModule = typeof import("@mono-agent/live-adapter");
+let liveModule: LiveAdapterModule | undefined;
+const loadLiveModule = async (): Promise<LiveAdapterModule> =>
+  (liveModule ??= await import("@mono-agent/live-adapter"));
 
 const TELEGRAM_GATE: ChannelGateSpec = { jsonKey: "telegram", envPrefix: "MONO_AGENT_TELEGRAM_" };
 const SLACK_GATE: ChannelGateSpec = { jsonKey: "slack", envPrefix: "MONO_AGENT_SLACK_" };
@@ -867,6 +878,62 @@ export function createTuiChannelDriver(
   };
 }
 
+export interface LiveChannelOverrides {
+  readonly adapterFactory?: (options: LiveAdapterOptions) => Promise<LiveAdapterHandle>;
+}
+
+/**
+ * The live event relay, like the TUI endpoint, deviates from the channels-off
+ * convention: it is ENABLED by default on loopback with an ephemeral port so
+ * `mono-agent web` can observe any running agent without a per-agent config edit.
+ * It is passive and read-only — it relays the host's in-process run-event bus over
+ * SSE and never drives a turn. `"live": {"enabled": false}` opts out.
+ */
+export function createLiveChannelDriver(
+  overrides: LiveChannelOverrides = {},
+): ChannelDriver<LiveAdapterConfig> {
+  return {
+    id: "live",
+    label: "Live",
+    async configView(input) {
+      const adapter = await loadLiveModule();
+      return await buildChannelConfigView(this, adapter.LIVE_CONFIG_FIELDS, input, { jsonKey: "live" });
+    },
+    async loadConfig(input) {
+      const adapter = await loadLiveModule();
+      return await adapter.loadLiveAdapterConfig({ env: input.env, jsonPath: input.configPath });
+    },
+    isConfigError(error) {
+      return liveModule !== undefined && error instanceof liveModule.LiveAdapterError;
+    },
+    disabledReason(config) {
+      return config.enabled ? undefined : "Live event relay is disabled.";
+    },
+    async start(input) {
+      const adapterModule = await loadLiveModule();
+      const adapterFactory = overrides.adapterFactory ?? adapterModule.startLiveAdapter;
+      // The host feeds the shared run-event bus (via the broadcast recorder). If it
+      // has none, still serve an (empty) stream rather than failing the channel.
+      const bus = input.liveEventBus ?? adapterModule.createLiveEventBus();
+      const adapter = await adapterFactory({
+        bus,
+        host: input.config.host,
+        port: input.config.port,
+        basePath: input.config.basePath,
+        allowNonLoopback: input.config.allowNonLoopback,
+        ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
+        // A dead endpoint must flip the channel to failed, not serve nothing
+        // silently — the web surface's only per-agent live signal is this status.
+        onServerError: (reason) => input.onFailure(reason),
+      });
+      return {
+        summary: { baseUrl: adapter.baseUrl },
+        stop: () => adapter.stop(),
+      };
+    },
+  };
+}
+
 export interface CronChannelOverrides {
   readonly adapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
   /**
@@ -1217,6 +1284,7 @@ export interface ChannelDriverOverrides {
   readonly cron?: CronChannelOverrides;
   readonly whatsapp?: WhatsAppChannelOverrides;
   readonly tui?: TuiChannelOverrides;
+  readonly live?: LiveChannelOverrides;
 }
 
 /** Every channel the app can drive, in startup/status display order. */
@@ -1230,6 +1298,7 @@ export function defaultChannelDrivers(overrides: ChannelDriverOverrides = {}): r
     createCronChannelDriver(overrides.cron),
     createWhatsAppChannelDriver(overrides.whatsapp),
     createTuiChannelDriver(overrides.tui),
+    createLiveChannelDriver(overrides.live),
   ] as readonly ChannelDriver[];
 }
 

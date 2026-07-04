@@ -1,0 +1,40 @@
+{
+  "name": "@mono-agent/session-web",
+  "version": "0.4.0",
+  "description": "Discovers local mono-agent instances and serves a read-only web PWA that visualises their runs live — aggregating recorded-run history with live-adapter sub-run streams.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "webapp/dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "pnpm run build:webapp && pnpm run build:server",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:webapp": "pnpm --dir webapp install --frozen-lockfile && pnpm --dir webapp run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@mono-agent/agent-contracts": "workspace:0.4.0",
+    "@mono-agent/observability": "workspace:0.4.0",
+    "@mono-agent/settings": "workspace:0.4.0",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

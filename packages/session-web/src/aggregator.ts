@@ -1,0 +1,659 @@
+/**
+ * The session store + orchestrator behind the web operator surface. It folds two
+ * sources into one per-instance session model, both keyed by `runId` in the same
+ * `sessions` map (last write wins — the finished on-disk artifact is authoritative):
+ *
+ *  - **Recorded history**: seeded from each instance's artifact dir on discovery,
+ *    then refreshed by watching that dir for changed `*.summary.json` files.
+ *  - **Live sub-runs**: streamed from each running instance's `live-adapter` SSE
+ *    endpoint (over HTTP) and folded frame-by-frame into a provisional session
+ *    that firms up when the run finishes.
+ *
+ * Instance membership itself is reconciled from the trace-source registry — both
+ * `fs.watch` (fast, best-effort) and a periodic timer (the reliable source of
+ * truth). All state changes fan out to browser subscribers as
+ * {@link BrowserStreamFrame}s.
+ */
+import { watch } from "node:fs";
+import type { FSWatcher } from "node:fs";
+
+import type { RunEventFrame } from "@mono-agent/agent-contracts";
+import { mapRunToSession } from "@mono-agent/observability";
+import type { RunSummary, RunSummaryStatus, RuntimeEventLike, Session } from "@mono-agent/observability";
+
+import { discoverWebInstances, resolveLiveApiKey } from "./discovery.js";
+import type { DiscoveredWebInstance } from "./discovery.js";
+import { listInstanceSessions, readInstanceSession } from "./history.js";
+import { connectLiveStream } from "./live-client.js";
+import type { LiveStreamConnection, LiveStreamStatus } from "./live-client.js";
+import type { BrowserStreamFrame, WebInstance } from "./session-model.js";
+
+/** On-disk recorded-run summary suffix (observability's `SUMMARY_SUFFIX`, not exported). */
+const SUMMARY_SUFFIX = ".summary.json";
+
+const RUN_SUMMARY_STATUSES = new Set<RunSummaryStatus>([
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
+export interface SessionAggregatorLogger {
+  info?(message: string, metadata?: unknown): void;
+  warn?(message: string, metadata?: unknown): void;
+  error?(message: string, metadata?: unknown): void;
+}
+
+export interface SessionAggregatorOptions {
+  readonly registryDirs: readonly string[];
+  readonly maxRunsPerInstance: number;
+  readonly staleAfterMs?: number;
+  readonly env?: Record<string, string | undefined>;
+  readonly logger?: SessionAggregatorLogger;
+  /** Periodic registry reconcile interval (source of truth for membership). Default 5000. */
+  readonly reconcileIntervalMs?: number;
+  /** Debounce for `fs.watch`-triggered registry reconciles. Default 300. */
+  readonly registryDebounceMs?: number;
+  /** Debounce for `fs.watch`-triggered artifact re-reads (per run). Default 300. */
+  readonly artifactDebounceMs?: number;
+  /** Debounce for live-fold recomputes (per run). Default 150. */
+  readonly liveFoldDebounceMs?: number;
+  /** Coalescing window for `instances` frame emissions. Default 100. */
+  readonly instancesDebounceMs?: number;
+  /** Injectable fetch, threaded to the live client (tests point it at a local SSE server). */
+  readonly fetchImpl?: typeof fetch;
+}
+
+/** Per-run live-fold state: the running summary + the ordered events folded so far. */
+interface LiveRunState {
+  summary: RunSummary;
+  readonly events: RuntimeEventLike[];
+}
+
+interface LiveState {
+  readonly conn: LiveStreamConnection;
+  readonly runs: Map<string, LiveRunState>;
+  readonly recomputeTimers: Map<string, ReturnType<typeof setTimeout>>;
+}
+
+interface InstanceState {
+  discovered: DiscoveredWebInstance;
+  readonly sessions: Map<string, Session>;
+  liveConnected: boolean;
+  live: LiveState | undefined;
+  artifactWatcher: FSWatcher | undefined;
+  readonly artifactTimers: Map<string, ReturnType<typeof setTimeout>>;
+}
+
+export class SessionAggregator {
+  private readonly registryDirs: readonly string[];
+  private readonly maxRunsPerInstance: number;
+  private readonly staleAfterMs: number | undefined;
+  private readonly env: Record<string, string | undefined> | undefined;
+  private readonly logger: SessionAggregatorLogger | undefined;
+  private readonly reconcileIntervalMs: number;
+  private readonly registryDebounceMs: number;
+  private readonly artifactDebounceMs: number;
+  private readonly liveFoldDebounceMs: number;
+  private readonly instancesDebounceMs: number;
+  private readonly fetchImpl: typeof fetch | undefined;
+
+  private readonly states = new Map<string, InstanceState>();
+  private readonly subscribers = new Set<(frame: BrowserStreamFrame) => void>();
+  private readonly registryWatchers: FSWatcher[] = [];
+  private reconcileTimer: ReturnType<typeof setInterval> | undefined;
+  private reconcileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private instancesEmitTimer: ReturnType<typeof setTimeout> | undefined;
+  private stopped = false;
+
+  constructor(options: SessionAggregatorOptions) {
+    this.registryDirs = options.registryDirs;
+    this.maxRunsPerInstance = options.maxRunsPerInstance;
+    this.staleAfterMs = options.staleAfterMs;
+    this.env = options.env;
+    this.logger = options.logger;
+    this.reconcileIntervalMs = options.reconcileIntervalMs ?? 5000;
+    this.registryDebounceMs = options.registryDebounceMs ?? 300;
+    this.artifactDebounceMs = options.artifactDebounceMs ?? 300;
+    this.liveFoldDebounceMs = options.liveFoldDebounceMs ?? 150;
+    this.instancesDebounceMs = options.instancesDebounceMs ?? 100;
+    this.fetchImpl = options.fetchImpl;
+  }
+
+  /** Discover instances, seed history, open live connections, and start watching. */
+  async start(): Promise<void> {
+    this.stopped = false;
+    const discovered = await this.discover();
+    for (const instance of discovered) {
+      await this.addInstance(instance, { emitSessions: false });
+    }
+    this.setupRegistryWatchers();
+    this.reconcileTimer = setInterval(() => {
+      void this.reconcile();
+    }, this.reconcileIntervalMs);
+    this.reconcileTimer.unref?.();
+  }
+
+  getInstances(): WebInstance[] {
+    return [...this.states.values()].map((state) => this.projectInstance(state));
+  }
+
+  /** Sessions for one instance (by sourceId) or all ("all"), newest-first by `startTs`. */
+  getSessions(filter: string): Session[] {
+    const states =
+      filter === "all"
+        ? [...this.states.values()]
+        : ((): InstanceState[] => {
+            const state = this.states.get(filter);
+            return state === undefined ? [] : [state];
+          })();
+    return states
+      .flatMap((state) => [...state.sessions.values()])
+      .sort((left, right) => startMs(right.startTs) - startMs(left.startTs));
+  }
+
+  /** One session, reading it from disk on demand when it isn't already held. */
+  async getSession(sourceId: string, runId: string): Promise<Session | undefined> {
+    const state = this.states.get(sourceId);
+    if (state === undefined) {
+      return undefined;
+    }
+    const existing = state.sessions.get(runId);
+    if (existing !== undefined) {
+      return existing;
+    }
+    let session: Session | undefined;
+    try {
+      session = await readInstanceSession(state.discovered, runId);
+    } catch (error) {
+      this.logger?.warn?.("Failed to read session on demand.", { sourceId, runId, error: errorMessage(error) });
+      return undefined;
+    }
+    if (session !== undefined && this.states.has(sourceId)) {
+      state.sessions.set(runId, session);
+      this.scheduleInstancesEmit();
+    }
+    return session;
+  }
+
+  /** Subscribe to the browser frame fan-out. Returns an unsubscribe function. */
+  subscribe(listener: (frame: BrowserStreamFrame) => void): () => void {
+    this.subscribers.add(listener);
+    return () => {
+      this.subscribers.delete(listener);
+    };
+  }
+
+  /** Close every live connection, watcher, and timer, and drop all subscribers. */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    if (this.reconcileTimer !== undefined) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = undefined;
+    }
+    if (this.reconcileDebounceTimer !== undefined) {
+      clearTimeout(this.reconcileDebounceTimer);
+      this.reconcileDebounceTimer = undefined;
+    }
+    if (this.instancesEmitTimer !== undefined) {
+      clearTimeout(this.instancesEmitTimer);
+      this.instancesEmitTimer = undefined;
+    }
+    for (const watcher of this.registryWatchers) {
+      watcher.close();
+    }
+    this.registryWatchers.length = 0;
+    for (const state of this.states.values()) {
+      this.teardownState(state);
+    }
+    this.states.clear();
+    this.subscribers.clear();
+  }
+
+  private async discover(): Promise<readonly DiscoveredWebInstance[]> {
+    return discoverWebInstances({
+      registryDirs: this.registryDirs,
+      ...(this.staleAfterMs === undefined ? {} : { staleAfterMs: this.staleAfterMs }),
+      ...(this.env === undefined ? {} : { env: this.env }),
+    });
+  }
+
+  private async addInstance(
+    discovered: DiscoveredWebInstance,
+    options: { readonly emitSessions: boolean },
+  ): Promise<void> {
+    const state: InstanceState = {
+      discovered,
+      sessions: new Map(),
+      liveConnected: false,
+      live: undefined,
+      artifactWatcher: undefined,
+      artifactTimers: new Map(),
+    };
+    this.states.set(discovered.instance.sourceId, state);
+
+    try {
+      const sessions = await listInstanceSessions(discovered, { maxRuns: this.maxRunsPerInstance });
+      for (const session of sessions) {
+        state.sessions.set(session.id, session);
+      }
+    } catch (error) {
+      this.logger?.warn?.("Failed to seed instance history.", {
+        sourceId: discovered.instance.sourceId,
+        error: errorMessage(error),
+      });
+    }
+
+    this.watchArtifacts(state);
+    await this.connectLive(state);
+
+    if (options.emitSessions) {
+      for (const session of state.sessions.values()) {
+        this.emit({ t: "session_upsert", session });
+      }
+    }
+    this.scheduleInstancesEmit();
+  }
+
+  private async connectLive(state: InstanceState): Promise<void> {
+    const baseUrl = state.discovered.liveBaseUrl;
+    if (baseUrl === undefined) {
+      return;
+    }
+    const apiKey = await resolveLiveApiKey(state.discovered, this.env);
+    const conn = connectLiveStream({
+      baseUrl,
+      ...(apiKey === undefined ? {} : { apiKey }),
+      onFrame: (frame) => this.handleLiveFrame(state, frame),
+      onStatus: (status) => this.handleLiveStatus(state, status),
+      ...(this.logger === undefined ? {} : { logger: this.logger }),
+      ...(this.fetchImpl === undefined ? {} : { fetchImpl: this.fetchImpl }),
+    });
+    state.live = { conn, runs: new Map(), recomputeTimers: new Map() };
+  }
+
+  private disconnectLive(state: InstanceState): void {
+    const live = state.live;
+    if (live === undefined) {
+      return;
+    }
+    live.conn.close();
+    for (const timer of live.recomputeTimers.values()) {
+      clearTimeout(timer);
+    }
+    live.recomputeTimers.clear();
+    live.runs.clear();
+    state.live = undefined;
+    if (state.liveConnected) {
+      state.liveConnected = false;
+      this.scheduleInstancesEmit();
+    }
+  }
+
+  private handleLiveStatus(state: InstanceState, status: LiveStreamStatus): void {
+    if (state.live === undefined) {
+      return;
+    }
+    const connected = status === "connected";
+    if (state.liveConnected !== connected) {
+      state.liveConnected = connected;
+      this.scheduleInstancesEmit();
+    }
+  }
+
+  private handleLiveFrame(state: InstanceState, frame: RunEventFrame): void {
+    const live = state.live;
+    if (live === undefined) {
+      return;
+    }
+    if (frame.t === "run_started") {
+      live.runs.set(frame.runId, { summary: runningSummaryFromStart(frame), events: [] });
+      this.scheduleLiveRecompute(state, frame.runId);
+      return;
+    }
+    if (frame.t === "event") {
+      let run = live.runs.get(frame.runId);
+      if (run === undefined) {
+        run = { summary: runningSummaryFromEvent(frame.runId), events: [] };
+        live.runs.set(frame.runId, run);
+      }
+      run.events.push(coerceRuntimeEvent(frame.event));
+      this.scheduleLiveRecompute(state, frame.runId);
+      return;
+    }
+    // run_finished: replace the provisional summary with the authoritative one and
+    // recompute once, immediately (cancel any pending debounced recompute).
+    const run = live.runs.get(frame.runId);
+    const summary = coerceRunSummary(frame.summary) ?? run?.summary ?? finishedSummary(frame.runId, frame.status);
+    const events = run?.events ?? [];
+    if (run !== undefined) {
+      run.summary = summary;
+    }
+    const pending = live.recomputeTimers.get(frame.runId);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      live.recomputeTimers.delete(frame.runId);
+    }
+    this.recomputeLiveRun(state, frame.runId, summary, events);
+  }
+
+  private scheduleLiveRecompute(state: InstanceState, runId: string): void {
+    const live = state.live;
+    if (live === undefined || live.recomputeTimers.has(runId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      live.recomputeTimers.delete(runId);
+      const run = live.runs.get(runId);
+      if (run !== undefined) {
+        this.recomputeLiveRun(state, runId, run.summary, run.events);
+      }
+    }, this.liveFoldDebounceMs);
+    timer.unref?.();
+    live.recomputeTimers.set(runId, timer);
+  }
+
+  private recomputeLiveRun(
+    state: InstanceState,
+    runId: string,
+    summary: RunSummary,
+    events: readonly RuntimeEventLike[],
+  ): void {
+    if (this.stopped || !this.states.has(state.discovered.instance.sourceId)) {
+      return;
+    }
+    const session = mapRunToSession(summary, events, this.mapOptions(state));
+    state.sessions.set(runId, session);
+    this.emit({ t: "session_upsert", session });
+    this.scheduleInstancesEmit();
+  }
+
+  private watchArtifacts(state: InstanceState): void {
+    const artifactDir = state.discovered.instance.artifactDir;
+    let watcher: FSWatcher;
+    try {
+      watcher = watch(artifactDir, (_eventType, filename) => {
+        if (filename === null) {
+          return;
+        }
+        const name = typeof filename === "string" ? filename : String(filename);
+        if (!name.endsWith(SUMMARY_SUFFIX)) {
+          return;
+        }
+        const runId = name.slice(0, name.length - SUMMARY_SUFFIX.length);
+        if (runId.length > 0) {
+          this.scheduleArtifactReread(state, runId);
+        }
+      });
+    } catch (error) {
+      this.logger?.warn?.("Failed to watch artifact dir.", { artifactDir, error: errorMessage(error) });
+      return;
+    }
+    watcher.on("error", (error) => {
+      this.logger?.warn?.("Artifact watcher error.", { artifactDir, error: errorMessage(error) });
+    });
+    state.artifactWatcher = watcher;
+  }
+
+  private scheduleArtifactReread(state: InstanceState, runId: string): void {
+    const existing = state.artifactTimers.get(runId);
+    if (existing !== undefined) {
+      clearTimeout(existing);
+    }
+    const timer = setTimeout(() => {
+      state.artifactTimers.delete(runId);
+      void this.rereadArtifactRun(state, runId);
+    }, this.artifactDebounceMs);
+    timer.unref?.();
+    state.artifactTimers.set(runId, timer);
+  }
+
+  private async rereadArtifactRun(state: InstanceState, runId: string): Promise<void> {
+    if (this.stopped || !this.states.has(state.discovered.instance.sourceId)) {
+      return;
+    }
+    let session: Session | undefined;
+    try {
+      session = await readInstanceSession(state.discovered, runId);
+    } catch (error) {
+      this.logger?.warn?.("Failed to re-read changed run artifact.", { runId, error: errorMessage(error) });
+      return;
+    }
+    if (session === undefined || !this.states.has(state.discovered.instance.sourceId)) {
+      return;
+    }
+    state.sessions.set(runId, session);
+    this.emit({ t: "session_upsert", session });
+    this.scheduleInstancesEmit();
+  }
+
+  private setupRegistryWatchers(): void {
+    for (const dir of this.registryDirs) {
+      let watcher: FSWatcher;
+      try {
+        watcher = watch(dir, () => this.scheduleReconcile());
+      } catch (error) {
+        this.logger?.warn?.("Failed to watch registry dir.", { dir, error: errorMessage(error) });
+        continue;
+      }
+      watcher.on("error", (error) => {
+        this.logger?.warn?.("Registry watcher error.", { dir, error: errorMessage(error) });
+      });
+      this.registryWatchers.push(watcher);
+    }
+  }
+
+  private scheduleReconcile(): void {
+    if (this.stopped || this.reconcileDebounceTimer !== undefined) {
+      return;
+    }
+    this.reconcileDebounceTimer = setTimeout(() => {
+      this.reconcileDebounceTimer = undefined;
+      void this.reconcile();
+    }, this.registryDebounceMs);
+    this.reconcileDebounceTimer.unref?.();
+  }
+
+  private async reconcile(): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    let discovered: readonly DiscoveredWebInstance[];
+    try {
+      discovered = await this.discover();
+    } catch (error) {
+      this.logger?.warn?.("Registry reconcile failed.", { error: errorMessage(error) });
+      return;
+    }
+    if (this.stopped) {
+      return;
+    }
+    const byId = new Map(discovered.map((instance) => [instance.instance.sourceId, instance]));
+    let changed = false;
+
+    for (const [sourceId, state] of [...this.states]) {
+      if (!byId.has(sourceId)) {
+        this.removeInstance(state);
+        this.states.delete(sourceId);
+        changed = true;
+      }
+    }
+    for (const instance of discovered) {
+      const existing = this.states.get(instance.instance.sourceId);
+      if (existing === undefined) {
+        await this.addInstance(instance, { emitSessions: true });
+        changed = true;
+      } else if (await this.updateInstance(existing, instance)) {
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.scheduleInstancesEmit();
+    }
+  }
+
+  private async updateInstance(state: InstanceState, discovered: DiscoveredWebInstance): Promise<boolean> {
+    const previous = state.discovered;
+    state.discovered = discovered;
+    let changed = previous.instance.health !== discovered.instance.health;
+
+    if (previous.instance.artifactDir !== discovered.instance.artifactDir) {
+      if (state.artifactWatcher !== undefined) {
+        state.artifactWatcher.close();
+        state.artifactWatcher = undefined;
+      }
+      this.watchArtifacts(state);
+      changed = true;
+    }
+    if (previous.liveBaseUrl !== discovered.liveBaseUrl) {
+      this.disconnectLive(state);
+      await this.connectLive(state);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private removeInstance(state: InstanceState): void {
+    const sourceId = state.discovered.instance.sourceId;
+    for (const runId of state.sessions.keys()) {
+      this.emit({ t: "session_removed", sourceId, runId });
+    }
+    this.teardownState(state);
+  }
+
+  /** Close connections/watchers/timers for an instance without emitting any frames. */
+  private teardownState(state: InstanceState): void {
+    this.disconnectLive(state);
+    if (state.artifactWatcher !== undefined) {
+      state.artifactWatcher.close();
+      state.artifactWatcher = undefined;
+    }
+    for (const timer of state.artifactTimers.values()) {
+      clearTimeout(timer);
+    }
+    state.artifactTimers.clear();
+    state.sessions.clear();
+  }
+
+  private scheduleInstancesEmit(): void {
+    if (this.stopped || this.instancesEmitTimer !== undefined) {
+      return;
+    }
+    this.instancesEmitTimer = setTimeout(() => {
+      this.instancesEmitTimer = undefined;
+      this.emit({ t: "instances", instances: this.getInstances() });
+    }, this.instancesDebounceMs);
+    this.instancesEmitTimer.unref?.();
+  }
+
+  private emit(frame: BrowserStreamFrame): void {
+    for (const listener of [...this.subscribers]) {
+      try {
+        listener(frame);
+      } catch (error) {
+        this.logger?.warn?.("Browser stream subscriber threw.", { error: errorMessage(error) });
+      }
+    }
+  }
+
+  private projectInstance(state: InstanceState): WebInstance {
+    const base = state.discovered.instance;
+    return {
+      sourceId: base.sourceId,
+      label: base.label,
+      cwd: base.cwd,
+      artifactDir: base.artifactDir,
+      health: base.health,
+      liveConnected: state.liveConnected,
+      counts: { runs: state.sessions.size },
+    };
+  }
+
+  private mapOptions(state: InstanceState): { instanceLabel: string; cwd?: string } {
+    const cwd = state.discovered.instance.cwd;
+    return {
+      instanceLabel: state.discovered.instance.label,
+      ...(cwd.length === 0 ? {} : { cwd }),
+    };
+  }
+}
+
+function runningSummaryFromStart(frame: Extract<RunEventFrame, { t: "run_started" }>): RunSummary {
+  return {
+    runId: frame.runId,
+    conversationId: frame.conversationId,
+    status: "running",
+    startedAt: frame.startedAt,
+    durationMs: 0,
+    eventCount: 0,
+    artifactPaths: [],
+    ...(frame.source === undefined ? {} : { source: frame.source }),
+    ...(frame.sourceDetail === undefined ? {} : { sourceDetail: frame.sourceDetail }),
+  };
+}
+
+function runningSummaryFromEvent(runId: string): RunSummary {
+  return {
+    runId,
+    conversationId: "",
+    status: "running",
+    durationMs: 0,
+    eventCount: 0,
+    artifactPaths: [],
+  };
+}
+
+function finishedSummary(runId: string, status: string): RunSummary {
+  return {
+    runId,
+    conversationId: "",
+    status: normalizeStatus(status),
+    durationMs: 0,
+    eventCount: 0,
+    artifactPaths: [],
+  };
+}
+
+function normalizeStatus(status: string): RunSummaryStatus {
+  return RUN_SUMMARY_STATUSES.has(status as RunSummaryStatus) ? (status as RunSummaryStatus) : "failed";
+}
+
+/** Accept a live `run_finished.summary` payload only when it is a plausible {@link RunSummary}. */
+function coerceRunSummary(value: unknown): RunSummary | undefined {
+  if (!isRecord(value) || typeof value.runId !== "string") {
+    return undefined;
+  }
+  const status = typeof value.status === "string" ? normalizeStatus(value.status) : "succeeded";
+  const durationMs = typeof value.durationMs === "number" && Number.isFinite(value.durationMs) ? value.durationMs : 0;
+  const eventCount = typeof value.eventCount === "number" && Number.isFinite(value.eventCount) ? value.eventCount : 0;
+  const artifactPaths = Array.isArray(value.artifactPaths)
+    ? value.artifactPaths.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  return {
+    ...(value as Record<string, unknown>),
+    runId: value.runId,
+    conversationId: typeof value.conversationId === "string" ? value.conversationId : "",
+    status,
+    durationMs,
+    eventCount,
+    artifactPaths,
+  } as RunSummary;
+}
+
+function coerceRuntimeEvent(value: unknown): RuntimeEventLike {
+  return isRecord(value) ? (value as RuntimeEventLike) : { type: "unknown" };
+}
+
+function startMs(timestamp: string): number {
+  const ms = Date.parse(timestamp);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

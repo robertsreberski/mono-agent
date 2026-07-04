@@ -1,4 +1,5 @@
 import type { AgentResponder } from "./index.js";
+import type { RunEventBus } from "./live-events.js";
 
 /**
  * Identifier of one communication channel. Open by design: hosts ship a set of
@@ -190,6 +191,13 @@ export interface ChannelStartInput<TConfig, TCore = unknown> {
    * supports it registers a sink and wires reply interception/cancellation.
    */
   readonly interaction?: ChannelInteractionHub;
+  /**
+   * In-process live run-event bus, when the host runs one. A passive-observer
+   * driver (the `live` SSE adapter) reads it to relay sub-run events to operator
+   * surfaces; most drivers ignore it. The bus is fed by the host's broadcast
+   * recorder, not by drivers.
+   */
+  readonly liveEventBus?: RunEventBus;
 }
 
 /**

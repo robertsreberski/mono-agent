@@ -244,3 +244,5 @@ export type {
   NotifyDestination,
   RunningChannel,
 } from "./channel.js";
+export { LIVE_EVENT_SCHEMA, DEFAULT_RUN_EVENT_BUFFER_SIZE, createLiveEventBus } from "./live-events.js";
+export type { RunEventFrame, RunEventSink, RunEventBus, CreateLiveEventBusOptions } from "./live-events.js";
