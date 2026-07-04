@@ -38,6 +38,9 @@ await server.stop();
 ```
 
 The `mono-agent web` CLI command wraps this with registry resolution + browser open.
+Loopback is the default. A non-loopback bind requires `allowNonLoopback: true`
+and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
+<token>` (or `?token=<token>` for browser `EventSource`).
 
 ## Public API
 

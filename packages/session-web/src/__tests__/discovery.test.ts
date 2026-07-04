@@ -36,6 +36,9 @@ describe("liveBaseUrlFromMetadata", () => {
     expect(
       liveBaseUrlFromMetadata({ channels: { live: { kind: "running", baseUrl: "http://127.0.0.1:5/live" } } }),
     ).toBe("http://127.0.0.1:5/live");
+    expect(
+      liveBaseUrlFromMetadata({ channels: { live: { kind: "running", baseUrl: "http://192.0.2.10:5/live" } } }),
+    ).toBeUndefined();
     expect(liveBaseUrlFromMetadata({ channels: { live: { kind: "disabled" } } })).toBeUndefined();
     expect(liveBaseUrlFromMetadata({ channels: { live: { kind: "running", baseUrl: "" } } })).toBeUndefined();
     expect(liveBaseUrlFromMetadata({ channels: {} })).toBeUndefined();
@@ -117,6 +120,29 @@ describe("resolveLiveApiKey", () => {
     expect(await resolveLiveApiKey(discovered, { MONO_AGENT_LIVE_API_KEY: "from-env" })).toBe("from-env");
     // No env override → read + trim the agent's own config.
     expect(await resolveLiveApiKey(discovered, {})).toBe("from-config");
+  });
+
+  it("does not resolve a live api key for an untrusted live URL", async () => {
+    const registryDir = await tmp("reg");
+    const agentDir = await tmp("agent");
+    const configPath = join(agentDir, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify({ live: { apiKey: "from-config" } }), "utf8");
+    await registerSource({
+      registryDir,
+      sourceId: "agent-key",
+      label: "Agent Key",
+      artifactDir: join(agentDir, "runs"),
+      configPath,
+    });
+
+    const [discovered] = await discoverWebInstances({ registryDirs: [registryDir] });
+    if (discovered === undefined) {
+      throw new Error("expected a discovered instance");
+    }
+
+    const withUntrustedUrl = { ...discovered, liveBaseUrl: "http://192.0.2.10:5/live" };
+    expect(await resolveLiveApiKey(withUntrustedUrl, { MONO_AGENT_LIVE_API_KEY: "from-env" })).toBeUndefined();
+    expect(await resolveLiveApiKey(withUntrustedUrl, {})).toBeUndefined();
   });
 
   it("resolves undefined when neither env nor config supplies a key", async () => {

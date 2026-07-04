@@ -1048,7 +1048,8 @@ class MonoAgentAppController implements MonoAgentApp {
 
   private applyResult(): ConfigApplyResult {
     const transports = this.activeTransports();
-    const statuses = [...this.statuses.values()];
+    const statusEntries = [...this.statuses.entries()];
+    const statuses = statusEntries.map(([, status]) => status);
     const failedChannel = statuses.find((status) => status.kind === "failed");
     const failure = failedChannel?.kind === "failed"
       ? failedChannel.reason
@@ -1065,7 +1066,9 @@ class MonoAgentAppController implements MonoAgentApp {
 
     // A degraded channel is still serving (transport self-recovering, harness alive),
     // so it counts as running for the "is anything live?" check.
-    const hasServingChannel = statuses.some((status) => status.kind === "running" || status.kind === "degraded");
+    const hasServingChannel = statusEntries.some(
+      ([id, status]) => id !== "live" && (status.kind === "running" || status.kind === "degraded"),
+    );
     if (!hasServingChannel && statuses.some((status) => status.kind === "waiting_for_config")) {
       return {
         kind: "waiting_for_config",

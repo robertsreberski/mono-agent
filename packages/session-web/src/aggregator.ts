@@ -123,6 +123,7 @@ export class SessionAggregator {
   private reconcileTimer: ReturnType<typeof setInterval> | undefined;
   private reconcileDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   private instancesEmitTimer: ReturnType<typeof setTimeout> | undefined;
+  private lifecycleGeneration = 0;
   private stopped = false;
 
   constructor(options: SessionAggregatorOptions) {
@@ -142,9 +143,19 @@ export class SessionAggregator {
   /** Discover instances, seed history, open live connections, and start watching. */
   async start(): Promise<void> {
     this.stopped = false;
+    const generation = ++this.lifecycleGeneration;
     const discovered = await this.discover();
+    if (!this.isActive(generation)) {
+      return;
+    }
     for (const instance of discovered) {
-      await this.addInstance(instance, { emitSessions: false });
+      await this.addInstance(instance, { emitSessions: false }, generation);
+      if (!this.isActive(generation)) {
+        return;
+      }
+    }
+    if (!this.isActive(generation)) {
+      return;
     }
     this.setupRegistryWatchers();
     this.reconcileTimer = setInterval(() => {
@@ -188,7 +199,7 @@ export class SessionAggregator {
       this.logger?.warn?.("Failed to read session on demand.", { sourceId, runId, error: errorMessage(error) });
       return undefined;
     }
-    if (session !== undefined && this.states.has(sourceId)) {
+    if (session !== undefined && this.isCurrentState(state)) {
       this.insertDiskSession(state, runId, session, { emit: true });
     }
     return session;
@@ -205,6 +216,7 @@ export class SessionAggregator {
   /** Close every live connection, watcher, and timer, and drop all subscribers. */
   async stop(): Promise<void> {
     this.stopped = true;
+    this.lifecycleGeneration += 1;
     if (this.reconcileTimer !== undefined) {
       clearInterval(this.reconcileTimer);
       this.reconcileTimer = undefined;
@@ -239,6 +251,7 @@ export class SessionAggregator {
   private async addInstance(
     discovered: DiscoveredWebInstance,
     options: { readonly emitSessions: boolean },
+    generation = this.lifecycleGeneration,
   ): Promise<void> {
     const state: InstanceState = {
       discovered,
@@ -261,9 +274,17 @@ export class SessionAggregator {
         error: errorMessage(error),
       });
     }
+    if (!this.isCurrentState(state, generation)) {
+      this.teardownState(state);
+      return;
+    }
 
     this.watchArtifacts(state);
-    await this.connectLive(state);
+    await this.connectLive(state, generation);
+    if (!this.isCurrentState(state, generation)) {
+      this.teardownState(state);
+      return;
+    }
 
     if (options.emitSessions) {
       for (const session of state.sessions.values()) {
@@ -273,12 +294,15 @@ export class SessionAggregator {
     this.scheduleInstancesEmit();
   }
 
-  private async connectLive(state: InstanceState): Promise<void> {
+  private async connectLive(state: InstanceState, generation = this.lifecycleGeneration): Promise<void> {
     const baseUrl = state.discovered.liveBaseUrl;
     if (baseUrl === undefined) {
       return;
     }
     const apiKey = await resolveLiveApiKey(state.discovered, this.env);
+    if (!this.isCurrentState(state, generation)) {
+      return;
+    }
     const conn = connectLiveStream({
       baseUrl,
       ...(apiKey === undefined ? {} : { apiKey }),
@@ -287,6 +311,10 @@ export class SessionAggregator {
       ...(this.logger === undefined ? {} : { logger: this.logger }),
       ...(this.fetchImpl === undefined ? {} : { fetchImpl: this.fetchImpl }),
     });
+    if (!this.isCurrentState(state, generation)) {
+      conn.close();
+      return;
+    }
     state.live = { conn, runs: new Map(), recomputeTimers: new Map() };
   }
 
@@ -309,7 +337,7 @@ export class SessionAggregator {
   }
 
   private handleLiveStatus(state: InstanceState, status: LiveStreamStatus): void {
-    if (state.live === undefined) {
+    if (state.live === undefined || !this.isCurrentState(state)) {
       return;
     }
     const connected = status === "connected";
@@ -321,7 +349,7 @@ export class SessionAggregator {
 
   private handleLiveFrame(state: InstanceState, frame: RunEventFrame): void {
     const live = state.live;
-    if (live === undefined) {
+    if (live === undefined || !this.isCurrentState(state)) {
       return;
     }
     if (frame.sourceId !== state.discovered.instance.sourceId) {
@@ -406,7 +434,7 @@ export class SessionAggregator {
     summary: RunSummary,
     events: readonly RuntimeEventLike[],
   ): void {
-    if (this.stopped || !this.states.has(state.discovered.instance.sourceId)) {
+    if (!this.isCurrentState(state)) {
       return;
     }
     // The finished on-disk artifact is authoritative: once a run has been
@@ -523,7 +551,7 @@ export class SessionAggregator {
   }
 
   private async rereadArtifactRun(state: InstanceState, runId: string): Promise<void> {
-    if (this.stopped || !this.states.has(state.discovered.instance.sourceId)) {
+    if (!this.isCurrentState(state)) {
       return;
     }
     let session: SourceStampedSession | undefined;
@@ -533,7 +561,7 @@ export class SessionAggregator {
       this.logger?.warn?.("Failed to re-read changed run artifact.", { runId, error: errorMessage(error) });
       return;
     }
-    if (session === undefined || !this.states.has(state.discovered.instance.sourceId)) {
+    if (session === undefined || !this.isCurrentState(state)) {
       return;
     }
     if (session.status === "running" && state.liveFinished.has(runId)) {
@@ -576,6 +604,7 @@ export class SessionAggregator {
     if (this.stopped) {
       return;
     }
+    const generation = this.lifecycleGeneration;
     let discovered: readonly DiscoveredWebInstance[];
     try {
       discovered = await this.discover();
@@ -583,7 +612,7 @@ export class SessionAggregator {
       this.logger?.warn?.("Registry reconcile failed.", { error: errorMessage(error) });
       return;
     }
-    if (this.stopped) {
+    if (!this.isActive(generation)) {
       return;
     }
     const byId = new Map(discovered.map((instance) => [instance.instance.sourceId, instance]));
@@ -599,10 +628,27 @@ export class SessionAggregator {
     for (const instance of discovered) {
       const existing = this.states.get(instance.instance.sourceId);
       if (existing === undefined) {
-        await this.addInstance(instance, { emitSessions: true });
+        await this.addInstance(instance, { emitSessions: true }, generation);
         changed = true;
-      } else if (await this.updateInstance(existing, instance)) {
-        changed = true;
+      } else {
+        if (await this.updateInstance(existing, instance, generation)) {
+          changed = true;
+        }
+        if (this.isCurrentState(existing, generation)) {
+          try {
+            if (await this.refreshDiskState(existing, { emitSessions: true })) {
+              changed = true;
+            }
+            if (existing.artifactWatcher === undefined) {
+              this.watchArtifacts(existing);
+            }
+          } catch (error) {
+            this.logger?.warn?.("Failed to refresh instance history.", {
+              sourceId: existing.discovered.instance.sourceId,
+              error: errorMessage(error),
+            });
+          }
+        }
       }
     }
     if (changed) {
@@ -610,7 +656,11 @@ export class SessionAggregator {
     }
   }
 
-  private async updateInstance(state: InstanceState, discovered: DiscoveredWebInstance): Promise<boolean> {
+  private async updateInstance(
+    state: InstanceState,
+    discovered: DiscoveredWebInstance,
+    generation = this.lifecycleGeneration,
+  ): Promise<boolean> {
     const previous = state.discovered;
     state.discovered = discovered;
     let changed =
@@ -638,13 +688,16 @@ export class SessionAggregator {
         this.emit({ t: "session_removed", sourceId: discovered.instance.sourceId, runId });
       }
       await this.seedHistory(state, { emitSessions: true });
+      if (!this.isCurrentState(state, generation)) {
+        return changed;
+      }
       this.watchArtifacts(state);
-      await this.connectLive(state);
+      await this.connectLive(state, generation);
       changed = true;
     }
     if (!liveReconnected && previous.liveBaseUrl !== discovered.liveBaseUrl) {
       this.disconnectLive(state);
-      await this.connectLive(state);
+      await this.connectLive(state, generation);
       changed = true;
     }
     return changed;
@@ -709,16 +762,32 @@ export class SessionAggregator {
   }
 
   private async seedHistory(state: InstanceState, options: { readonly emitSessions: boolean }): Promise<void> {
+    await this.refreshDiskState(state, options);
+  }
+
+  private async refreshDiskState(state: InstanceState, options: { readonly emitSessions: boolean }): Promise<boolean> {
     const sessions = await listInstanceSessions(state.discovered, { maxRuns: state.maxRunsPerInstance });
+    let changed = false;
     for (const session of sessions) {
-      state.sessions.set(session.id, session);
-      if (session.status !== "running") {
-        state.artifactFinished.add(session.id);
+      if (session.status === "running" && state.liveFinished.has(session.id)) {
+        continue;
       }
-      if (options.emitSessions) {
-        this.emit({ t: "session_upsert", session });
+      const existing = state.sessions.get(session.id);
+      if (existing !== undefined && JSON.stringify(existing) === JSON.stringify(session)) {
+        continue;
       }
+      this.insertDiskSession(state, session.id, session, { emit: options.emitSessions });
+      changed = true;
     }
+    return changed;
+  }
+
+  private isActive(generation = this.lifecycleGeneration): boolean {
+    return !this.stopped && generation === this.lifecycleGeneration;
+  }
+
+  private isCurrentState(state: InstanceState, generation = this.lifecycleGeneration): boolean {
+    return this.isActive(generation) && this.states.get(state.discovered.instance.sourceId) === state;
   }
 
   private mapOptions(state: InstanceState): { instanceLabel: string; cwd?: string } {

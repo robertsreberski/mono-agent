@@ -40,6 +40,21 @@ await adapter.stop();
 - `startLiveAdapter(options)` → `{ baseUrl, stop() }`.
 - `LiveAdapterError`, constants, and option/result types.
 
+## Configuration (`live` section / `MONO_AGENT_LIVE_*` env)
+
+The app starts this channel by default on loopback so `mono-agent web` can
+observe any running agent without per-agent edits. Set `"live": { "enabled":
+false }` to opt out.
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `enabled` | `true` | Default-on read-only operator relay. |
+| `host` | `127.0.0.1` | Non-loopback binds require `allowNonLoopback`. |
+| `port` | `0` | Ephemeral; published in the trace-source manifest. |
+| `basePath` | `/live` | Serves `/v1/info` and `/v1/events`. |
+| `allowNonLoopback` | `false` | Guard before exposing the relay off-host. |
+| `apiKey` | unset | Optional bearer token for both routes. |
+
 ## Dependency Boundary
 
 Depends only on `core` packages: `@mono-agent/agent-contracts` (frame/bus types,

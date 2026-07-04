@@ -162,8 +162,67 @@ describe("startSessionWebServer", () => {
       startSessionWebServer({ registryDirs: [fix.registryDir], host: "0.0.0.0", port: 0, staticDir: fix.staticDir }),
     ).rejects.toThrow(/non-loopback/u);
   });
+
+  it("requires an auth token before binding a non-loopback host", async () => {
+    const fix = await fixture();
+    await expect(
+      startSessionWebServer({
+        registryDirs: [fix.registryDir],
+        host: "0.0.0.0",
+        port: 0,
+        allowNonLoopback: true,
+        staticDir: fix.staticDir,
+      }),
+    ).rejects.toThrow(/auth token/u);
+  });
+
+  it("requires bearer auth on API and stream routes for non-loopback binds", async () => {
+    const fix = await fixture();
+    server = await startSessionWebServer({
+      registryDirs: [fix.registryDir],
+      host: "0.0.0.0",
+      port: 0,
+      allowNonLoopback: true,
+      staticDir: fix.staticDir,
+      authToken: "session-secret",
+    });
+
+    const apiUrl = localLoopbackUrl(server.url, "api/instances");
+    const unauthApi = await fetch(apiUrl);
+    expect(unauthApi.status).toBe(401);
+
+    const wrongApi = await fetch(apiUrl, { headers: { authorization: "Bearer wrong" } });
+    expect(wrongApi.status).toBe(401);
+
+    const authedApi = await fetch(apiUrl, { headers: { authorization: "Bearer session-secret" } });
+    expect(authedApi.status).toBe(200);
+
+    const queryAuthedApi = await fetch(localLoopbackUrl(server.url, "api/instances?token=session-secret"));
+    expect(queryAuthedApi.status).toBe(200);
+
+    const unauthStream = await fetch(localLoopbackUrl(server.url, "api/stream"));
+    const unauthStreamStatus = unauthStream.status;
+    await unauthStream.body?.cancel().catch(() => undefined);
+    expect(unauthStreamStatus).toBe(401);
+
+    const authedStream = await fetch(localLoopbackUrl(server.url, "api/stream"), {
+      headers: { authorization: "Bearer session-secret" },
+    });
+    const authedStreamStatus = authedStream.status;
+    await authedStream.body?.cancel().catch(() => undefined);
+    expect(authedStreamStatus).toBe(200);
+  });
 });
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function localLoopbackUrl(serverUrl: string, path: string): string {
+  const url = new URL(serverUrl);
+  url.hostname = "127.0.0.1";
+  const separator = path.indexOf("?");
+  url.pathname = separator === -1 ? path : path.slice(0, separator);
+  url.search = separator === -1 ? "" : path.slice(separator);
+  return url.toString();
 }

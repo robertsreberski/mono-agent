@@ -65,7 +65,10 @@ export function shouldUseFixtureFallback(error: unknown, isDev = import.meta.env
   // /api/* either 404s or returns an HTML SPA fallback. A real session-web backend
   // returns JSON for /api failures, and 500s should surface as operator-visible
   // errors rather than fake demo data.
-  return error instanceof ApiError && (error.status === 404 || !error.contentType?.includes("application/json"));
+  if (!(error instanceof ApiError) || error.contentType?.includes("application/json")) {
+    return false;
+  }
+  return error.status === 404 || (error.status !== undefined && error.status >= 200 && error.status < 300);
 }
 
 /** Resolve the owning trace-source id for a run, for the detail endpoint. */

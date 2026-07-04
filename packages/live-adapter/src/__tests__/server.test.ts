@@ -102,7 +102,7 @@ describe("startLiveAdapter", () => {
     expect(frames.map((frame) => (frame as { runId: string }).runId)).toEqual(["r1", "r2"]);
   });
 
-  it("skips unserializable frames without closing the stream", async () => {
+  it("streams an unserializable sentinel without closing the stream", async () => {
     const bus = createLiveEventBus();
     const circular: Record<string, unknown> = { type: "assistant" };
     circular.self = circular;
@@ -117,11 +117,14 @@ describe("startLiveAdapter", () => {
     });
     running = await startLiveAdapter({ bus });
 
-    const framesPromise = readSseFramesWithDeadline(`${running.baseUrl}/v1/events`, 1, 1000);
+    const framesPromise = readSseFramesWithDeadline(`${running.baseUrl}/v1/events`, 2, 1000);
     await sleep(25);
     bus.publish(runStarted("good"));
 
-    await expect(framesPromise).resolves.toMatchObject([{ t: "run_started", runId: "good" }]);
+    await expect(framesPromise).resolves.toMatchObject([
+      { t: "event", runId: "bad", event: { type: "live_frame_unserializable", originalType: "assistant" } },
+      { t: "run_started", runId: "good" },
+    ]);
   });
 
   it("streams a frame published after the subscriber connects", async () => {

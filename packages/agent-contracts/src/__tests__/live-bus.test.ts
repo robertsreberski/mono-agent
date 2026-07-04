@@ -78,6 +78,53 @@ describe("createLiveEventBus", () => {
     expect(bus.recentFrames()).toHaveLength(2);
   });
 
+  it("replaces oversized event frames before retention and delivery", () => {
+    const bus = createLiveEventBus({ maxFrameBytes: 180 });
+    const received: RunEventFrame[] = [];
+    bus.subscribe((frame) => received.push(frame));
+
+    bus.publish({
+      t: "event",
+      schema: LIVE_EVENT_SCHEMA,
+      sourceId: "src-1",
+      runId: "r1",
+      eventIndex: 0,
+      event: { text: "x".repeat(1_000) },
+      seq: 0,
+    });
+
+    const [frame] = bus.recentFrames();
+    expect(frame).toMatchObject({
+      t: "event",
+      event: { type: "live_frame_oversized", originalType: undefined },
+    });
+    expect(JSON.stringify(frame).length).toBeLessThanOrEqual(180);
+    expect(received[0]).toEqual(frame);
+  });
+
+  it("replaces unserializable event frames instead of throwing", () => {
+    const bus = createLiveEventBus();
+    const circular: Record<string, unknown> = { type: "assistant" };
+    circular.self = circular;
+
+    expect(() =>
+      bus.publish({
+        t: "event",
+        schema: LIVE_EVENT_SCHEMA,
+        sourceId: "src-1",
+        runId: "r1",
+        eventIndex: 0,
+        event: circular,
+        seq: 0,
+      }),
+    ).not.toThrow();
+
+    expect(bus.recentFrames()[0]).toMatchObject({
+      t: "event",
+      event: { type: "live_frame_unserializable", originalType: "assistant" },
+    });
+  });
+
   it("rejects a non-positive ring buffer size loudly", () => {
     expect(() => createLiveEventBus({ ringBufferSize: 0 })).toThrowError(/positive integer/u);
     expect(() => createLiveEventBus({ ringBufferSize: -1 })).toThrowError(/positive integer/u);

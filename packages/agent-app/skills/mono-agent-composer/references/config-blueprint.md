@@ -145,8 +145,27 @@ my-agent/
     ]
   },
 
-  // ----- Channels: one section per channel; all independent. An unconfigured
-  // ----- channel reports waiting_for_config and never blocks the others.
+  // ----- Channels: one section per channel; all independent. Most channels are
+  // ----- opt-in; operator surfaces (`tui`, `live`) default on and can opt out.
+  // ----- A waiting/disabled channel never blocks the others.
+
+  "tui": {
+    "enabled": true,                       // default-on loopback operator console endpoint
+    "host": "127.0.0.1",
+    "port": 0,
+    "basePath": "/tui",
+    "allowNonLoopback": false,
+    "apiKey": "optional-bearer"
+  },
+
+  "live": {
+    "enabled": true,                       // default-on read-only SSE relay for mono-agent web
+    "host": "127.0.0.1",
+    "port": 0,
+    "basePath": "/live",
+    "allowNonLoopback": false,
+    "apiKey": "optional-bearer"
+  },
 
   "webhook": {
     "enabled": true,
@@ -262,7 +281,7 @@ A `.env` file in the folder is loaded automatically (exported shell variables wi
 
 For BuJo capture and rituals, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `codex:gpt-5.5` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. The standalone `memory-bujo` maintenance CLI remains Ollama-only; `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
 
-For a terminal operator console, run `mono-agent tui` from any directory once the agent is started — it discovers running agents via the trace-source registry and chats over the agent's `tui` stream endpoint (the `tui` config section; the one channel ON by default, loopback-only, `"tui": {"enabled": false}` opts out). The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
+For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI chats over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out); the web PWA reads artifacts and live updates from the default-on `live` relay (`"live": {"enabled": false}` opts out). Both bind loopback by default. The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
 
 ## Programmatic Escape Hatch
 

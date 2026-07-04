@@ -12,6 +12,7 @@ import { dirname, resolve } from "node:path";
 
 import { listTraceSources, mergeTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
+import { isLoopbackHost } from "@mono-agent/settings";
 
 import type { WebInstance } from "./session-model.js";
 
@@ -108,7 +109,7 @@ export function liveBaseUrlFromMetadata(metadata: Record<string, unknown> | unde
   if (record.kind !== "running") {
     return undefined;
   }
-  return typeof record.baseUrl === "string" && record.baseUrl.length > 0 ? record.baseUrl : undefined;
+  return typeof record.baseUrl === "string" && isTrustedLiveBaseUrl(record.baseUrl) ? record.baseUrl : undefined;
 }
 
 /**
@@ -122,6 +123,9 @@ export async function resolveLiveApiKey(
   instance: DiscoveredWebInstance,
   env: Record<string, string | undefined> = process.env,
 ): Promise<string | undefined> {
+  if (instance.liveBaseUrl !== undefined && !isTrustedLiveBaseUrl(instance.liveBaseUrl)) {
+    return undefined;
+  }
   const fromEnv = env.MONO_AGENT_LIVE_API_KEY?.trim();
   if (fromEnv !== undefined && fromEnv.length > 0) {
     return fromEnv;
@@ -138,6 +142,18 @@ export async function resolveLiveApiKey(
     return apiKey !== undefined && apiKey.length > 0 ? apiKey : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function isTrustedLiveBaseUrl(baseUrl: string): boolean {
+  if (baseUrl.trim().length === 0) {
+    return false;
+  }
+  try {
+    const parsed = new URL(baseUrl);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && isLoopbackHost(parsed.hostname);
+  } catch {
+    return false;
   }
 }
 

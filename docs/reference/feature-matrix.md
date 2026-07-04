@@ -102,7 +102,7 @@ The entity graph that BuJo capture maintains is documented separately in [Entity
 
 ## Channels
 
-All channels are independent JSON sections and opt-in via an `enabled` flag (default off). An off channel reports `disabled`; an enabled channel with incomplete config reports `waiting_for_config`. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
+All channels are independent JSON sections. Most are opt-in via an `enabled` flag (default off); `tui` and `live` are default-on loopback operator surfaces. An off channel reports `disabled`; an enabled channel with incomplete config reports `waiting_for_config`. Every field also has a `MONO_AGENT_<CHANNEL>_*` env var.
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
@@ -115,6 +115,7 @@ All channels are independent JSON sections and opt-in via an `enabled` flag (def
 | `a2a.provider` | config | `a2a.provider.*`, `a2a.agent.*`, `a2a.skill.*` | `MONO_AGENT_A2A_*` | [A2A](/channels/a2a/) | [A2A provider & consumer](/playbooks/a2a-provider-and-consumer/) |
 | `a2a.consumer` | config + code | `a2a.consumer.{remoteAgentUrls,defaultRemoteAgentUrl,bearerToken,timeoutMs}`; invocation via `createA2AConsumerResponder` | `MONO_AGENT_A2A_*` | [A2A consumer](/programmatic/a2a-consumer/) | [A2A provider & consumer](/playbooks/a2a-provider-and-consumer/) |
 | `tui.stream-endpoint` | config | `tui.{enabled,host,port,basePath,allowNonLoopback,apiKey}` — **on by default** (loopback operator surface) | `MONO_AGENT_TUI_*` | [TUI stream endpoint](/channels/tui/) | — |
+| `live.event-relay` | config | `live.{enabled,host,port,basePath,allowNonLoopback,apiKey}` — **on by default** (read-only SSE relay for web) | `MONO_AGENT_LIVE_*` | [Live event relay](/channels/tui/#live-event-relay-for-web-pwa) | — |
 | `cron.scheduled-prompts` | config | `cron.jobs[]: {id, enabled, expression, timezone, prompt, conversationId, maxRunMs, notify, notifyConversationId, model, effort}`, `cron.dir` | `MONO_AGENT_CRON_JOBS_JSON`, `MONO_AGENT_CRON_*` (incl. `MONO_AGENT_CRON_MODEL`, `MONO_AGENT_CRON_EFFORT`), `MONO_AGENT_CRON_DIR` | [Cron](/channels/cron/) | [Cron digest + native notify](/playbooks/cron-digest-proactive-notify/) |
 | `cron.run-watchdog` | config + code | `jobs[].maxRunMs` or `maxRunMs` frontmatter; programmatic fallback via `startCronAdapter` | — | [Cron](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve) | — |
 | `channel.native-notify` | config | per cron job / webhook endpoint `notify` + optional `notifyConversationId`; bounded by `telegram.allowedChatIds` / `slack.allowedChannelIds` or `allowAll*` | `MONO_AGENT_CRON_NOTIFY`, `MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID` (+ webhook equivalents) | [Delivery & send tools](/channels/delivery-and-send-tools/) | [Cron digest + native notify](/playbooks/cron-digest-proactive-notify/) |
@@ -136,6 +137,7 @@ All channels are independent JSON sections and opt-in via an `enabled` flag (def
 | `observability.rich-traces` | auto | (model / token counts / cost / duration on every span; system prompt gated by `includeSensitiveData`; memory runs get `span.kind=memory` + `memory.operation`) | — | [Phoenix & backfill](/observability/phoenix-and-backfill/#per-run-attributes) | — |
 | `observability.stale-run-reconciliation` | auto | (`reconcileStaleRunArtifacts()` at startup over `artifacts.dir`; rewrites orphaned `running` → `interrupted`) | — | [Artifacts & traces](/observability/artifacts-and-traces/#run-status-and-stale-run-reconciliation) | — |
 | `tui.chat` | cli | `mono-agent tui [--agent <label\|sourceId>] [--conversation <id>]`; low-level `mono-agent-tui [--responder \| --url]` | `MONO_AGENT_TUI_API_KEY` (connect key) | [TUI](/observability/tui/) | — |
+| `session-web.pwa` | cli | `mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--config <path>]` | `MONO_AGENT_LIVE_*` (agent-side relay) | [CLI reference](/observability/cli-reference/#web) | — |
 
 ## Execution & composition
 

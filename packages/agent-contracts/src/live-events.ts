@@ -92,6 +92,8 @@ export interface RunEventBus extends RunEventSink {
 
 /** Default bounded ring-buffer size for {@link createLiveEventBus}. */
 export const DEFAULT_RUN_EVENT_BUFFER_SIZE = 500;
+/** Default max serialized frame size retained/broadcast by the live bus. */
+export const DEFAULT_RUN_EVENT_MAX_FRAME_BYTES = 1_000_000;
 
 export interface CreateLiveEventBusOptions {
   /**
@@ -100,6 +102,11 @@ export interface CreateLiveEventBusOptions {
    * {@link DEFAULT_RUN_EVENT_BUFFER_SIZE}.
    */
   readonly ringBufferSize?: number;
+  /**
+   * Max UTF-8 bytes for one serialized live frame. Oversized opaque event/summary
+   * payloads are replaced with a compact sentinel before retention and delivery.
+   */
+  readonly maxFrameBytes?: number;
 }
 
 /**
@@ -117,13 +124,14 @@ export interface CreateLiveEventBusOptions {
  */
 export function createLiveEventBus(options: CreateLiveEventBusOptions = {}): RunEventBus {
   const ringBufferSize = normalizeRingBufferSize(options.ringBufferSize);
+  const maxFrameBytes = normalizeMaxFrameBytes(options.maxFrameBytes);
   const ring: RunEventFrame[] = [];
   const listeners = new Set<(frame: RunEventFrame) => void>();
   let nextSeq = 0;
 
   return {
     publish(frame: RunEventFrame): void {
-      const stamped: RunEventFrame = { ...frame, seq: nextSeq++ };
+      const stamped = fitFrameWithinBudget({ ...frame, seq: nextSeq++ } as RunEventFrame, maxFrameBytes);
       ring.push(stamped);
       if (ring.length > ringBufferSize) {
         ring.shift();
@@ -158,4 +166,134 @@ function normalizeRingBufferSize(size: number | undefined): number {
     throw new RangeError("ringBufferSize must be a positive integer.");
   }
   return size;
+}
+
+function normalizeMaxFrameBytes(size: number | undefined): number {
+  if (size === undefined) {
+    return DEFAULT_RUN_EVENT_MAX_FRAME_BYTES;
+  }
+  if (!Number.isInteger(size) || size <= 0) {
+    throw new RangeError("maxFrameBytes must be a positive integer.");
+  }
+  return size;
+}
+
+const FRAME_ENCODER = new TextEncoder();
+
+function fitFrameWithinBudget(frame: RunEventFrame, maxFrameBytes: number): RunEventFrame {
+  const size = serializedBytes(frame);
+  if (size === undefined) {
+    return replaceUnserializableFrame(frame, maxFrameBytes);
+  }
+  if (size <= maxFrameBytes) {
+    return frame;
+  }
+  if (frame.t === "event") {
+    return compactFrame(
+      {
+        ...frame,
+        event: {
+          type: "live_frame_oversized",
+          originalType: eventType(frame.event),
+          omittedBytes: size,
+        },
+      } as RunEventFrame,
+      maxFrameBytes,
+    );
+  }
+  if (frame.t === "run_finished") {
+    return compactFrame(
+      {
+        ...frame,
+        summary: {
+          type: "live_frame_oversized",
+          omittedBytes: size,
+        },
+      } as RunEventFrame,
+      maxFrameBytes,
+    );
+  }
+  return compactFrame(
+    {
+      t: "event",
+      schema: frame.schema,
+      sourceId: frame.sourceId,
+      runId: frame.runId,
+      eventIndex: 0,
+      event: { type: "live_frame_oversized", originalType: frame.t, omittedBytes: size },
+      seq: frame.seq,
+    },
+    maxFrameBytes,
+  );
+}
+
+function compactFrame(frame: RunEventFrame, maxFrameBytes: number): RunEventFrame {
+  const size = serializedBytes(frame);
+  if (size !== undefined && size <= maxFrameBytes) {
+    return frame;
+  }
+  if (frame.t === "event") {
+    return {
+      t: "event",
+      schema: frame.schema,
+      sourceId: frame.sourceId,
+      runId: frame.runId,
+      eventIndex: frame.eventIndex,
+      event: { type: "live_frame_oversized" },
+      seq: frame.seq,
+    };
+  }
+  if (frame.t === "run_finished") {
+    return {
+      t: "run_finished",
+      schema: frame.schema,
+      sourceId: frame.sourceId,
+      runId: frame.runId,
+      status: frame.status,
+      summary: { type: "live_frame_oversized" },
+      seq: frame.seq,
+    };
+  }
+  return frame;
+}
+
+function replaceUnserializableFrame(frame: RunEventFrame, maxFrameBytes: number): RunEventFrame {
+  if (frame.t === "event") {
+    return compactFrame(
+      {
+        ...frame,
+        event: {
+          type: "live_frame_unserializable",
+          originalType: eventType(frame.event),
+        },
+      } as RunEventFrame,
+      maxFrameBytes,
+    );
+  }
+  if (frame.t === "run_finished") {
+    return compactFrame(
+      {
+        ...frame,
+        summary: { type: "live_frame_unserializable" },
+      } as RunEventFrame,
+      maxFrameBytes,
+    );
+  }
+  return frame;
+}
+
+function serializedBytes(value: unknown): number | undefined {
+  try {
+    return FRAME_ENCODER.encode(JSON.stringify(value)).length;
+  } catch {
+    return undefined;
+  }
+}
+
+function eventType(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || !("type" in value)) {
+    return undefined;
+  }
+  const type = (value as { readonly type?: unknown }).type;
+  return typeof type === "string" && type.length > 0 ? type : undefined;
 }

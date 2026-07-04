@@ -62,6 +62,8 @@ Every framework capability and how a composed agent reaches it. This table is th
 | WhatsApp (Baileys, QR login, group mention/any triggers) | config | `whatsapp` section |
 | A2A provider (Agent Card, JSON-RPC + REST, streaming, bearer) | config | `a2a.enabled` (canonical; legacy `a2a.provider.enabled` honored) + `a2a.provider` + `a2a.agent` + `a2a.skill` |
 | A2A consumer settings (remote agent URLs, timeouts) | config + code | `a2a.consumer` holds settings; calls via `createA2AConsumerResponder` |
+| TUI stream endpoint (operator console transport) | config | `tui.{enabled,host,port,basePath,allowNonLoopback,apiKey}`; default on, loopback |
+| Live event relay (read-only run-event SSE for web) | config | `live.{enabled,host,port,basePath,allowNonLoopback,apiKey}`; default on, loopback |
 | Cron jobs (five-field expressions, timezones, overlap skip) | config | `cron.jobs[]`, single-job `MONO_AGENT_CRON_*`, or one markdown file per job in `cron.dir` / `MONO_AGENT_CRON_DIR` (default `cron/`) |
 | Channel message texts / stream tuning (welcome, debounce, ...) | code | channel driver overrides |
 | Custom transports | code | implement `ChannelDriver`, pass via `startMonoAgentApp({ drivers })` |
@@ -74,6 +76,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Trace-source registry (heartbeat manifests `mono-agent status` reads) | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs,globalDiscovery}` |
 | Phoenix trace viewer (OTLP exporter; local JSONL artifacts are the fallback) | config | `observability.exporters` (phoenix entry) |
 | Operator console (live chat with thinking/tool/telemetry insight, run replay, config view) | cli | `mono-agent tui [--agent <label>]`; agents serve the `tui` stream endpoint by default (`tui.enabled`, loopback) |
+| Session Recorder web PWA (read-only run browser) | cli | `mono-agent web [--host] [--port] [--no-open] [--allow-non-loopback]`; consumes the default-on `live` relay and local artifacts |
 | Executable config blueprints (generate config + `.env.example` + checklist) | cli | `mono-agent recipes list\|show <id>`, `mono-agent init --recipe <id>` |
 | Resolved config view (every field tagged env/json/default) | cli | `mono-agent config` |
 | Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate [--consumer <path>]\|config\|recipes\|start\|install-skill` |

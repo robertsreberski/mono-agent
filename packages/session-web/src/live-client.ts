@@ -10,7 +10,7 @@
  * HTTP only — this is how the `operator-surface` package reaches a `communication`
  * adapter without importing it.
  */
-import type { RunEventFrame } from "@mono-agent/agent-contracts";
+import { DEFAULT_RUN_EVENT_MAX_FRAME_BYTES, type RunEventFrame } from "@mono-agent/agent-contracts";
 
 export type LiveStreamStatus = "connected" | "disconnected";
 
@@ -48,6 +48,7 @@ export interface LiveStreamConnection {
 }
 
 const SSE_FRAME_SEPARATOR = "\n\n";
+const SSE_ENCODER = new TextEncoder();
 
 /**
  * Open a live SSE stream and keep it open (reconnecting on drop) until `close()`.
@@ -146,6 +147,10 @@ async function readFrames(
         emitBlock(block, onFrame, logger);
         separator = buffered.indexOf(SSE_FRAME_SEPARATOR);
       }
+      if (!done && SSE_ENCODER.encode(buffered).length > DEFAULT_RUN_EVENT_MAX_FRAME_BYTES) {
+        logger?.warn?.("Discarding oversized live SSE buffer.", { maxFrameBytes: DEFAULT_RUN_EVENT_MAX_FRAME_BYTES });
+        buffered = "";
+      }
       if (done) {
         break;
       }
@@ -172,6 +177,10 @@ function emitBlock(
     return;
   }
   const payload = dataParts.join("\n");
+  if (SSE_ENCODER.encode(payload).length > DEFAULT_RUN_EVENT_MAX_FRAME_BYTES) {
+    logger?.warn?.("Discarding oversized live SSE frame.", { maxFrameBytes: DEFAULT_RUN_EVENT_MAX_FRAME_BYTES });
+    return;
+  }
   try {
     onFrame(JSON.parse(payload) as RunEventFrame);
   } catch (error) {

@@ -81,4 +81,35 @@ describe("runWeb", () => {
 
     expect(output).toContain("Bound non-loopback");
   });
+
+  it("passes an auth token to non-loopback servers and prints a tokenized URL", async () => {
+    const configPath = await testConfig();
+    let output = "";
+    let capturedOptions: StartSessionWebServerOptions | undefined;
+    const openUrl = vi.fn();
+    const startServer = vi.fn(async (options: StartSessionWebServerOptions): Promise<SessionWebServerHandle> => {
+      capturedOptions = options;
+      return { url: "http://0.0.0.0:4599", stop: vi.fn(async () => undefined) };
+    });
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources") },
+        host: "0.0.0.0",
+        allowNonLoopback: true,
+      },
+      {
+        startServer,
+        openUrl,
+        waitForShutdown: async () => undefined,
+        stdout: { write: (text) => (output += text) },
+      },
+    );
+
+    expect(capturedOptions?.authToken).toMatch(/^[a-f0-9]{64}$/u);
+    expect(output).toContain(`token=${capturedOptions?.authToken}`);
+    expect(openUrl).toHaveBeenCalledWith(expect.stringContaining(`token=${capturedOptions?.authToken}`));
+  });
 });

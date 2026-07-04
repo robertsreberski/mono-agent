@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 
-import type { RunEventBus, RunEventFrame } from "@mono-agent/agent-contracts";
+import { DEFAULT_RUN_EVENT_MAX_FRAME_BYTES, type RunEventBus, type RunEventFrame } from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
   bearerTokensEqual,
@@ -22,6 +22,7 @@ import {
 import { LiveAdapterError } from "./errors.js";
 
 const MAX_SSE_QUEUE_FRAMES = 1_000;
+const FRAME_ENCODER = new TextEncoder();
 
 export interface LiveAdapterLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -280,7 +281,15 @@ function normalizeBasePath(basePath: string): string {
 function serializeFrame(frame: RunEventFrame, logger: LiveAdapterLogger | undefined): string | undefined {
   try {
     // JSON.stringify is single-line, so the only newlines are the SSE terminator.
-    return `data: ${JSON.stringify(frame)}\n\n`;
+    const json = JSON.stringify(frame);
+    if (FRAME_ENCODER.encode(json).length > DEFAULT_RUN_EVENT_MAX_FRAME_BYTES) {
+      logger?.warn?.("Dropped oversized live event frame.", {
+        maxFrameBytes: DEFAULT_RUN_EVENT_MAX_FRAME_BYTES,
+        runId: "runId" in frame ? frame.runId : undefined,
+      });
+      return undefined;
+    }
+    return `data: ${json}\n\n`;
   } catch (error) {
     logger?.warn?.("Dropped unserializable live event frame.", {
       reason: error instanceof Error ? error.message : String(error),

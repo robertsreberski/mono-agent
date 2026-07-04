@@ -278,6 +278,45 @@ describe("SessionAggregator live fold", () => {
     });
   });
 
+  it("reconciles artifacts that appear after discovery and lets terminal disk replace live", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+    });
+    await aggregator.start();
+
+    bus.publish(runStarted());
+    bus.publish(assistantEvent());
+    bus.publish(runFinished());
+    await waitFor(() => aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.finalText === "live answer"));
+
+    await seedRun({
+      artifactDir,
+      runId: RUN_ID,
+      conversationId: "cron:live",
+      userInput: "Run from disk",
+      text: "disk answer",
+      source: "cron",
+      at: Date.parse(STARTED_AT),
+    });
+    await (aggregator as unknown as { reconcile(): Promise<void> }).reconcile();
+
+    await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
+      status: "succeeded",
+      finalText: "disk answer",
+    });
+  });
+
   it("replaces retained history when a sourceId moves to a new artifact directory", async () => {
     const registryDir = await tmp("reg");
     const oldArtifactDir = join(await tmp("old-agent"), "runs");

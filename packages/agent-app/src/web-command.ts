@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { startSessionWebServer } from "@mono-agent/session-web";
 import type { SessionWebServerHandle } from "@mono-agent/session-web";
+import { generateBearerToken, isLoopbackHost } from "@mono-agent/settings";
 
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
 
@@ -46,6 +47,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   });
   const globalRegistryDir = resolveGlobalTraceRegistryDir(options.env);
   const registryDirs = dedupePaths([configuredRegistryDir, globalRegistryDir]);
+  const authToken = requiresServerAuth(options.host) ? generateBearerToken() : undefined;
 
   const startServer = deps.startServer ?? startSessionWebServer;
   let handle: SessionWebServerHandle;
@@ -56,13 +58,15 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
       ...(options.host === undefined ? {} : { host: options.host }),
       ...(options.port === undefined ? {} : { port: options.port }),
       ...(options.allowNonLoopback === undefined ? {} : { allowNonLoopback: options.allowNonLoopback }),
+      ...(authToken === undefined ? {} : { authToken }),
     });
   } catch (error) {
     stderr.write(`mono-agent web failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 
-  stdout.write(`mono-agent web  →  ${handle.url}\n`);
+  const browserUrl = authToken === undefined ? handle.url : withAuthToken(handle.url, authToken);
+  stdout.write(`mono-agent web  →  ${browserUrl}\n`);
   stdout.write(
     `Watching ${registryDirs.length} registr${registryDirs.length === 1 ? "y" : "ies"} for agents. Press Ctrl-C to stop.\n`,
   );
@@ -70,7 +74,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
 
   if (options.open ?? true) {
     try {
-      (deps.openUrl ?? openInBrowser)(handle.url);
+      (deps.openUrl ?? openInBrowser)(browserUrl);
     } catch {
       // Best-effort: a headless host without a browser is fine — the URL is printed.
     }
@@ -99,15 +103,20 @@ function reachabilityHint(url: string): string {
   } catch {
     /* leave blank */
   }
-  if (!isLoopbackHost(host)) {
+  if (host.length > 0 && !isLoopbackHost(host)) {
     return "Bound non-loopback: reachable over your LAN/Tailnet at this port (use the machine's Tailscale IP or MagicDNS name). For HTTPS + a PWA-installable URL, prefer `tailscale serve` instead.";
   }
   return `Loopback only. To reach it over Tailscale with HTTPS + your MagicDNS name (keeps the PWA installable): tailscale serve --bg ${port || "<port>"}`;
 }
 
-function isLoopbackHost(host: string): boolean {
-  const normalized = host.toLowerCase().replace(/^\[|\]$/gu, "");
-  return normalized === "" || normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+function requiresServerAuth(host: string | undefined): boolean {
+  return host !== undefined && !isLoopbackHost(host);
+}
+
+function withAuthToken(url: string, token: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("token", token);
+  return parsed.toString();
 }
 
 /** Resolve + dedupe registry dirs, preserving precedence order. */

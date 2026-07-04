@@ -8,7 +8,16 @@ import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { assertSafeBind, close, hostForUrl, listen, normalizeOptionalString } from "@mono-agent/settings";
+import {
+  assertSafeBind,
+  bearerTokensEqual,
+  close,
+  hostForUrl,
+  isLoopbackHost,
+  listen,
+  normalizeOptionalString,
+  readAuthorizationBearer,
+} from "@mono-agent/settings";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { SessionAggregator } from "./aggregator.js";
@@ -21,6 +30,8 @@ const DEFAULT_MAX_RUNS_PER_INSTANCE = 200;
 /** Browser SSE heartbeat interval — a comment frame that keeps the connection warm through proxies. */
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_BROWSER_SSE_QUEUE_FRAMES = 10_000;
+const MAX_BROWSER_SSE_FRAME_BYTES = 1_000_000;
+const BROWSER_FRAME_ENCODER = new TextEncoder();
 
 export interface StartSessionWebServerOptions {
   readonly registryDirs: readonly string[];
@@ -31,6 +42,11 @@ export interface StartSessionWebServerOptions {
   readonly maxRunsPerInstance?: number;
   readonly env?: Record<string, string | undefined>;
   readonly staticDir?: string;
+  /**
+   * Bearer token required for /api/* when present. Mandatory for non-loopback
+   * binds so the read-only operator API is not published unauthenticated.
+   */
+  readonly authToken?: string;
   readonly logger?: {
     info?(message: string, metadata?: unknown): void;
     warn?(message: string, metadata?: unknown): void;
@@ -61,12 +77,19 @@ export async function startSessionWebServer(
   const maxRunsPerInstance = options.maxRunsPerInstance ?? DEFAULT_MAX_RUNS_PER_INSTANCE;
   const staticDir = options.staticDir ?? defaultStaticDir();
   const logger = options.logger;
+  const authToken = normalizeOptionalString(options.authToken);
 
   assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
     new SessionWebServerError(
       "unsafe_host",
       `Session web server refuses to bind a non-loopback host (${boundHost}) unless allowNonLoopback is true.`,
     ));
+  if (!isLoopbackHost(host) && authToken === undefined) {
+    throw new SessionWebServerError(
+      "missing_auth_token",
+      "Session web server requires an auth token when binding a non-loopback host.",
+    );
+  }
 
   const aggregator = new SessionAggregator({
     registryDirs: options.registryDirs,
@@ -80,6 +103,10 @@ export async function startSessionWebServer(
   const app = express();
   const server = createServer(app);
   const activeStreams = new Set<() => void>();
+
+  if (authToken !== undefined) {
+    app.use("/api", requireApiAuth(authToken));
+  }
 
   app.get("/api/instances", (_req, res) => {
     res.json({ instances: aggregator.getInstances() });
@@ -108,7 +135,7 @@ export async function startSessionWebServer(
   });
 
   app.get("/api/stream", (_req, res) => {
-    handleStream(aggregator, res, activeStreams);
+    handleStream(aggregator, res, activeStreams, logger);
   });
 
   // Any other /api/* path is a genuine 404 (never falls through to the SPA).
@@ -165,7 +192,12 @@ export async function startSessionWebServer(
   }
 }
 
-function handleStream(aggregator: SessionAggregator, res: Response, activeStreams: Set<() => void>): void {
+function handleStream(
+  aggregator: SessionAggregator,
+  res: Response,
+  activeStreams: Set<() => void>,
+  logger: StartSessionWebServerOptions["logger"] | undefined,
+): void {
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -231,7 +263,11 @@ function handleStream(aggregator: SessionAggregator, res: Response, activeStream
         closed = true;
         return;
       }
-      const ok = res.write(`data: ${JSON.stringify(entry.frame)}\n\n`);
+      const payload = serializeBrowserFrame(entry.frame, logger);
+      if (payload === undefined) {
+        continue;
+      }
+      const ok = res.write(payload);
       if (!ok) {
         draining = true;
         res.once("drain", () => {
@@ -353,4 +389,38 @@ function parseLimit(value: string | undefined): number | undefined {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function requireApiAuth(authToken: string): (req: Request, res: Response, next: NextFunction) => void {
+  return (req, res, next) => {
+    const supplied = readAuthorizationBearer(req.headers.authorization) ?? firstString(req.query.token);
+    if (supplied !== undefined && bearerTokensEqual(supplied, authToken)) {
+      next();
+      return;
+    }
+    res.status(401).json({ error: { message: "Unauthorized.", code: "unauthorized" } });
+  };
+}
+
+function serializeBrowserFrame(
+  frame: BrowserStreamFrame,
+  logger: StartSessionWebServerOptions["logger"] | undefined,
+): string | undefined {
+  try {
+    const json = JSON.stringify(frame);
+    if (BROWSER_FRAME_ENCODER.encode(json).length > MAX_BROWSER_SSE_FRAME_BYTES) {
+      logger?.warn?.("Dropped oversized browser SSE frame.", {
+        maxFrameBytes: MAX_BROWSER_SSE_FRAME_BYTES,
+        frameType: frame.t,
+      });
+      return undefined;
+    }
+    return `data: ${json}\n\n`;
+  } catch (error) {
+    logger?.warn?.("Dropped unserializable browser SSE frame.", {
+      reason: error instanceof Error ? error.message : String(error),
+      frameType: frame.t,
+    });
+    return undefined;
+  }
 }

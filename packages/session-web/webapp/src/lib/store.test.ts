@@ -73,4 +73,9 @@ describe("fixture fallback gate", () => {
   test("allows standalone preview fallback when api routes are missing", () => {
     expect(shouldUseFixtureFallback(new ApiError("/api/instances", "404", { status: 404, contentType: "text/html" }), false)).toBe(true);
   });
+
+  test("does not mask HTML backend failures with demo data in production", () => {
+    expect(shouldUseFixtureFallback(new ApiError("/api/instances", "502", { status: 502, contentType: "text/html" }), false)).toBe(false);
+    expect(shouldUseFixtureFallback(new ApiError("/api/instances", "401", { status: 401, contentType: "text/html" }), false)).toBe(false);
+  });
 });
