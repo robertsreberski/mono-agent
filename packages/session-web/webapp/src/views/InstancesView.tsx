@@ -1,14 +1,14 @@
 import { useMemo } from "react";
 import type { Session } from "../lib/types";
 import { dateStr, timeStr, fmtCost, fmtTok, channelOf, channelColor, channelLabel } from "../lib/format";
-import { FONT_MONO, TEXT, MUTED, DIM, AMBER, BLUE, TEAL, VIOLET } from "../lib/tokens";
+import { FONT_MONO, TEXT, MUTED, DIM, AMBER, BLUE, TEAL, VIOLET, CHANNEL_ORDER } from "../lib/tokens";
 
 interface Props {
   sessions: Session[];
   onOpenInstance: (name: string) => void;
 }
 
-const chOrder = ["cron", "webhook", "chat", "memory"];
+const chOrder = CHANNEL_ORDER;
 
 export function InstancesView({ sessions, onOpenInstance }: Props) {
   const cards = useMemo(() => {

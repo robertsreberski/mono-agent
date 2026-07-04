@@ -149,6 +149,43 @@ export interface MapRunToSessionOptions {
   readonly cwd?: string;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A bare slug id: letters/digits with -/_ separators, no channel prefix. */
+const SLUG_RE = /^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$/i;
+
+/**
+ * A run's channel `source`, robust to legacy summaries that predate per-run
+ * source stamping. Prefers the persisted `summary.source`; else derives it from
+ * the conversationId:
+ *  - Daily session rollover appends a "#<partition>" suffix (e.g.
+ *    "p2-notifications-check#2026-07-02"); it is not channel-specific, so it is
+ *    stripped before classification.
+ *  - A recognised channel prefix ("cron:"/"memory:"/"telegram:"/"slack:"/…) wins
+ *    (via {@link deriveRunSource}).
+ *  - A remaining BARE slug id (no prefix, not a UUID) is, in practice, a cron job
+ *    id — scheduled jobs (each a fixed slug that runs repeatedly) are the
+ *    overwhelming majority of runs recorded before source stamping. A "…-tui"
+ *    slug is a TUI session. Prefixed and UUID ids never reach this branch, so
+ *    real chat/webhook/openai runs (UUID or prefixed conversationIds) stay
+ *    correctly classified rather than being swept into cron.
+ */
+function refineRunSource(summary: RunSummary): string {
+  if (summary.source !== undefined && summary.source.length > 0) {
+    return summary.source;
+  }
+  const cid = summary.conversationId ?? "";
+  const hashIdx = cid.indexOf("#");
+  const base = hashIdx >= 0 ? cid.slice(0, hashIdx) : cid;
+  const derived = deriveRunSource(base);
+  if (derived !== "other") {
+    return derived;
+  }
+  if (base.length > 0 && !base.includes(":") && !UUID_RE.test(base) && SLUG_RE.test(base)) {
+    return /(?:^|[-_])tui$/i.test(base) ? "tui" : "cron";
+  }
+  return "other";
+}
+
 /**
  * Map a recorded run into the UI {@link Session} model. Pure and total: never
  * throws on a partial/running summary or a truncated event stream.
@@ -196,7 +233,7 @@ export function mapRunToSession(
     startTs: summary.startedAt ?? "",
     durMs: summary.durationMs,
     ...(summary.sourceDetail === undefined ? {} : { trigger: summary.sourceDetail }),
-    source: summary.source ?? deriveRunSource(summary.conversationId),
+    source: refineRunSource(summary),
     title,
     outcome,
     ...(summary.model === undefined ? {} : { model: summary.model }),

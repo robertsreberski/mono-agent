@@ -15,7 +15,7 @@ import {
   outcomeInfo,
   tz,
 } from "../lib/format";
-import { FONT_MONO, FONT_UI, TEXT, MUTED, DIM, DIMMER, AMBER, BLUE, TEAL, VIOLET, type Style } from "../lib/tokens";
+import { FONT_MONO, FONT_UI, TEXT, MUTED, DIM, DIMMER, AMBER, BLUE, TEAL, VIOLET, CHANNEL_ORDER, type Style } from "../lib/tokens";
 import { useIsMobile } from "../lib/useIsMobile";
 
 interface Props {
@@ -113,8 +113,7 @@ export function ListView(props: Props) {
     ];
 
     // ---- channel + outcome filter chips ----
-    const chOrder = ["memory", "webhook", "chat", "cron"];
-    const present = chOrder.filter((c) => sessions.some((s) => channelOf(s) === c));
+    const present = CHANNEL_ORDER.filter((c) => sessions.some((s) => channelOf(s) === c));
     const chKeys = ["all", ...present];
     const kindChips = chKeys.map((k) => {
       const active = fChannel === k;
@@ -182,30 +181,66 @@ export function ListView(props: Props) {
     const amin = times.length ? Math.min(...times) : 0;
     const amax = times.length ? Math.max(...times) : 1;
     const span = Math.max(1, amax - amin);
-    const maxC = Math.max(...[0.001, ...list.map((s) => s.totals.cost)]);
-    const activity = list.map((s) => {
-      const ch = channelOf(s);
-      const x = ((+new Date(s.startTs) - amin) / span) * 100;
-      const cn = s.totals.cost / maxC;
-      const c = channelColor(ch);
-      const sil = s.outcome === "silent";
-      return {
-        id: s.id,
-        left: x,
-        h: Math.round(12 + cn * 52),
-        color: c,
-        fill: sil ? "transparent" : c,
-        tip:
-          channelLabel(ch) +
-          " · " +
-          dateStr(s.startTs) +
-          " " +
-          timeStr(s.startTs) +
-          " · " +
-          fmtCost(s.totals.cost) +
-          (sil ? " · silent" : " · notified"),
-      };
-    });
+    // A bar per run reads fine at a handful of runs but smears into a cluttered
+    // solid block at hundreds. Above a cap, bucket by time (one bar per slot:
+    // height ∝ total cost, dominant-channel colour, filled if any run notified)
+    // so the strip stays legible regardless of volume.
+    type ActBar = { id: string; left: number; h: number; color: string; fill: string; tip: string };
+    const MAX_BARS = isMobile ? 44 : 96;
+    let activity: ActBar[];
+    if (list.length <= MAX_BARS) {
+      const maxC = Math.max(...[0.001, ...list.map((s) => s.totals.cost)]);
+      activity = list.map((s) => {
+        const ch = channelOf(s);
+        const c = channelColor(ch);
+        const sil = s.outcome === "silent";
+        return {
+          id: s.id,
+          left: ((+new Date(s.startTs) - amin) / span) * 100,
+          h: Math.round(12 + (s.totals.cost / maxC) * 52),
+          color: c,
+          fill: sil ? hexA(c, 0.14) : c,
+          tip:
+            channelLabel(ch) + " · " + dateStr(s.startTs) + " " + timeStr(s.startTs) + " · " + fmtCost(s.totals.cost) + (sil ? " · silent" : " · notified"),
+        };
+      });
+    } else {
+      type Bucket = { idx: number; cost: number; count: number; notified: number; chCost: Record<string, number>; repId: string; repCost: number };
+      const buckets = new Map<number, Bucket>();
+      list.forEach((s) => {
+        const idx = Math.max(0, Math.min(MAX_BARS - 1, Math.floor(((+new Date(s.startTs) - amin) / span) * MAX_BARS)));
+        let b = buckets.get(idx);
+        if (!b) {
+          b = { idx, cost: 0, count: 0, notified: 0, chCost: {}, repId: s.id, repCost: -1 };
+          buckets.set(idx, b);
+        }
+        b.cost += s.totals.cost;
+        b.count += 1;
+        if (s.outcome !== "silent") b.notified += 1;
+        const ch = channelOf(s);
+        b.chCost[ch] = (b.chCost[ch] ?? 0) + s.totals.cost + 1e-4;
+        if (s.totals.cost > b.repCost) {
+          b.repCost = s.totals.cost;
+          b.repId = s.id;
+        }
+      });
+      const arr = [...buckets.values()].sort((a, b) => a.idx - b.idx);
+      const maxBucket = Math.max(0.001, ...arr.map((b) => b.cost));
+      activity = arr.map((b) => {
+        const domCh = Object.entries(b.chCost).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "other";
+        const c = channelColor(domCh);
+        const sil = b.notified === 0;
+        const start = amin + (b.idx / MAX_BARS) * span;
+        return {
+          id: b.repId,
+          left: ((b.idx + 0.5) / MAX_BARS) * 100,
+          h: Math.round(12 + (b.cost / maxBucket) * 52),
+          color: c,
+          fill: sil ? hexA(c, 0.14) : c,
+          tip: b.count + (b.count > 1 ? " runs" : " run") + " · " + dateStr(start) + " · " + fmtCost(b.cost) + (sil ? " · all silent" : " · " + b.notified + " notified"),
+        };
+      });
+    }
     const dayMs = 86400000;
     const dayTicks: { left: number; label: string }[] = [];
     const d0 = new Date(amin);
@@ -263,7 +298,7 @@ export function ListView(props: Props) {
       legend,
       costChart,
     };
-  }, [sessions, fChannel, fOut, fInstance]);
+  }, [sessions, fChannel, fOut, fInstance, isMobile]);
 
   return (
     <>
@@ -276,6 +311,11 @@ export function ListView(props: Props) {
           gap: 20,
           flexWrap: "wrap",
           animation: "rec-rise .5s ease both",
+          // The rec-rise animation makes this row a stacking context; without a
+          // lift, the later session cards paint OVER the (absolutely-positioned)
+          // instance dropdown. Raise the whole row above them while it's open.
+          position: "relative",
+          ...(instOpen ? { zIndex: 60 } : {}),
         }}
       >
         <div>

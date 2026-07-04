@@ -39,7 +39,7 @@ describe("mapRunToSession", () => {
     expect(session.instance).toBe("downloads-curator");
     expect(session.cwd).toBe("/repo");
     expect(session.status).toBe("succeeded");
-    // conversationId "downloads-curator" matches no known prefix -> derived "other".
+    // A UUID conversationId (no channel prefix, not a bare slug) -> "other".
     expect(session.source).toBe("other");
 
     // Last assistant text block is the final answer -> notified.
@@ -166,6 +166,33 @@ describe("mapRunToSession", () => {
     expect(session.source).toBe("telegram");
     expect(session.totals).toMatchObject({ asst: 0, tcalls: 0, think: 0, steps: 0, cost: 0 });
     expect(session.title).toBe("run-empty"); // no prompt/final text -> falls back to runId
+  });
+
+  it("classifies legacy (unstamped) runs from the conversationId", () => {
+    const src = (conversationId: string): string => {
+      const summary: RunSummary = {
+        runId: "r",
+        conversationId,
+        status: "succeeded",
+        durationMs: 0,
+        eventCount: 0,
+        artifactPaths: [],
+      };
+      return mapRunToSession(summary, [], OPTS).source;
+    };
+    // Bare cron job ids (with and without the daily-rollover "#<date>" suffix).
+    expect(src("p2-notifications-check")).toBe("cron");
+    expect(src("p2-notifications-check#2026-07-02")).toBe("cron");
+    expect(src("gmail-focus-hourly")).toBe("cron");
+    // Channel prefixes win (suffix stripped first).
+    expect(src("cron:nightly")).toBe("cron");
+    expect(src("memory:capture:reconcile")).toBe("memory");
+    expect(src("telegram:123#2026-06-24")).toBe("telegram");
+    // TUI sessions.
+    expect(src("work-agent-tui")).toBe("tui");
+    expect(src("tui-local")).toBe("tui");
+    // A UUID (chat/webhook without a stamped source) stays "other".
+    expect(src("b7e4c1a0-9f2d-4c6b-8a51-0d3e2f1a6c7b")).toBe("other");
   });
 });
 

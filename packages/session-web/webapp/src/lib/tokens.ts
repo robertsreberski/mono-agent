@@ -18,19 +18,46 @@ export const MUTED = "#9A9CA4";
 export const DIM = "#6a6d76";
 export const DIMMER = "#565963";
 
-// Channel palette (how a run was triggered).
+// Channel palette (how a run was triggered). Covers every `source` the backend
+// can emit (see deriveRunSource / mapRunToSession) so no real run falls through
+// to a colourless "other". Each hue is visually distinct on the dark ground.
 export const CHANNEL_COLOR: Record<string, string> = {
-  cron: "#4FB6A6",
-  webhook: "#B18AE0",
-  chat: "#6FA8DC",
-  memory: "#E0955A",
+  cron: "#4FB6A6", // teal
+  webhook: "#B18AE0", // violet
+  chat: "#6FA8DC", // blue
+  memory: "#E0955A", // orange
+  slack: "#6FBF8E", // green
+  telegram: "#5EC8E8", // cyan
+  "openai-api": "#C6B85E", // olive-gold
+  a2a: "#D98BB0", // pink
+  tui: "#E8A24A", // amber
+  other: "#8b8d94", // grey
 };
 export const CHANNEL_LABEL: Record<string, string> = {
   cron: "Cron",
   webhook: "Webhook",
   chat: "Chat",
   memory: "Memory",
+  slack: "Slack",
+  telegram: "Telegram",
+  "openai-api": "OpenAI API",
+  a2a: "A2A",
+  tui: "TUI",
+  other: "Other",
 };
+/** Display/filter order for channels (present ones are shown; absent ones skipped). */
+export const CHANNEL_ORDER = [
+  "cron",
+  "webhook",
+  "chat",
+  "memory",
+  "slack",
+  "telegram",
+  "openai-api",
+  "a2a",
+  "tui",
+  "other",
+] as const;
 
 // Accents.
 export const AMBER = "#E8A24A"; // cost
