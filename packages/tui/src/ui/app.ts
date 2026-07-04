@@ -1,12 +1,12 @@
-import { Container, matchesKey, Text, TUI } from "@earendil-works/pi-tui";
-import type { Component, SlashCommand, Terminal } from "@earendil-works/pi-tui";
+import { Container, matchesKey, SelectList, Text, TUI } from "@earendil-works/pi-tui";
+import type { Component, OverlayHandle, SelectItem, SlashCommand, Terminal } from "@earendil-works/pi-tui";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import type { TuiHistoryStore } from "../agent/history.js";
 import { discoverInstances, resolveInstanceApiKey, toInstance } from "../data/instances.js";
 import type { DiscoveredInstance } from "../data/instances.js";
 import { RemoteAgentResponder } from "../remote/client.js";
-import { styles } from "./theme.js";
+import { selectListTheme, styles } from "./theme.js";
 import { StatusBar } from "./components/status-bar.js";
 import { ChatView } from "./views/chat.js";
 import { ConfigView } from "./views/config.js";
@@ -54,6 +54,9 @@ export interface MonoAgentTuiAppOptions {
 
 const VIEW_ORDER: readonly TuiViewId[] = ["chat", "replay", "config", "picker"];
 
+/** Sentinel `SelectItem.value` for the model picker's "clear override" row (never a real model ref). */
+const MODEL_PICKER_DEFAULT_VALUE = "tui-model-picker:__default__";
+
 /**
  * Root controller: owns the pi-tui instance, the view stack, connection state,
  * and global keys (view cycling, cancel, quit, thinking toggle, help).
@@ -71,6 +74,10 @@ export class MonoAgentTuiApp {
   private view: TuiViewId = "chat";
   private helpVisible = false;
   private helpHandle: { hide(): void } | undefined;
+  /** Candidate models advertised by the connected agent's `/v1/info` (primary first, then fallbacks). */
+  private availableModels: readonly string[] = [];
+  private modelPickerHandle: OverlayHandle | undefined;
+  private modelPickerList: SelectList | undefined;
   private ctrlCArmedAt = 0;
   private exitResolve: (() => void) | undefined;
   private readonly exitPromise: Promise<void>;
@@ -197,6 +204,14 @@ export class MonoAgentTuiApp {
   }
 
   private async connectTo(instance: DiscoveredInstance): Promise<void> {
+    // A newly selected agent ends the previous agent's session-scoped /model
+    // override right away -- synchronously, before any async info() round
+    // trip. `applyAgentInfo` alone is NOT a sufficient choke point here: it
+    // only runs once `info()` resolves successfully, but `setResponder` below
+    // (has-endpoint branch) happens before that await, so a turn submitted
+    // while info() is still in flight -- or after it fails -- would otherwise
+    // still carry the old agent's override to the new one.
+    this.chat.setModelOverride(undefined);
     const normalized = toInstance(instance.source);
     if (normalized.tuiBaseUrl === undefined) {
       this.statusBar.setEphemeral("selected agent has no tui endpoint — replay/config only");
@@ -233,11 +248,22 @@ export class MonoAgentTuiApp {
    * clearing is correct: otherwise a stale effort from a previously
    * connected agent would misattribute to this one.
    */
-  private applyAgentInfo(info: { readonly model?: string; readonly effort?: string }): void {
+  private applyAgentInfo(info: {
+    readonly model?: string;
+    readonly effort?: string;
+    readonly models?: readonly string[];
+  }): void {
     this.statusBar.setEffort(info.effort);
     if (info.model !== undefined) {
-      this.statusBar.setModel(info.model);
+      // Routed through ChatView (not statusBar.setModel directly) so it can
+      // remember this as the agent's default -- what a later /model default
+      // repaints to, instead of leaving the last override string shown.
+      this.chat.setDefaultModel(info.model);
     }
+    // A full snapshot of the newly selected agent: an absent list means this
+    // agent advertises no candidates, so replace (not merge) — a stale list
+    // from a previously connected agent must not leak into this one's picker.
+    this.availableModels = info.models ?? [];
   }
 
   private applyStaticIdentity(): void {
@@ -267,6 +293,27 @@ export class MonoAgentTuiApp {
         this.ctrlCArmedAt = now;
         this.statusBar.setEphemeral("press ctrl+c again to quit");
         this.tui.requestRender();
+      }
+      return { consume: true };
+    }
+    // Model picker overlay is a modal: forward navigation/confirm to its
+    // SelectList, esc cancels, and every other key is swallowed. This mirrors
+    // replay.ts's key-capture pattern -- deliberately NOT the help overlay's
+    // "any key closes" behaviour, which would dismiss the picker on arrows.
+    if (this.modelPickerHandle !== undefined) {
+      if (matchesKey(data, "escape")) {
+        this.closeModelPicker();
+        return { consume: true };
+      }
+      if (
+        matchesKey(data, "up") ||
+        matchesKey(data, "down") ||
+        matchesKey(data, "pageUp") ||
+        matchesKey(data, "pageDown") ||
+        matchesKey(data, "enter")
+      ) {
+        this.modelPickerList?.handleInput(data);
+        return { consume: true };
       }
       return { consume: true };
     }
@@ -371,6 +418,9 @@ export class MonoAgentTuiApp {
       case "thinking":
         this.chat.toggleThinkingExpanded();
         return true;
+      case "model":
+        this.handleModelCommand(args);
+        return true;
       case "new": {
         this.chat.addInfo(`conversation continues under a fresh screen${args.length > 0 ? ` (${args})` : ""}`);
         return true;
@@ -394,7 +444,12 @@ export class MonoAgentTuiApp {
         `${styles.accent("replay list")}    s source filter · x status filter · r refresh`,
         `${styles.accent("replay detail")}  ↑↓/pgup/pgdn/g/G step · [ ] turn · t/o/m/y/e/a filter · / search · n/N match · enter raw json · esc layers back`,
         "",
-        `${styles.accent("/help /agents /replay /config /cancel /thinking /quit")}`,
+        `${styles.accent("/model")}      override this session's model — ${styles.accent("/model <ref>")} or a bare ${styles.accent(
+          "/model",
+        )} picker; ${styles.accent("/model default")} clears it`,
+        styles.dim("an override to a different model runs each turn as a fresh provider session"),
+        "",
+        `${styles.accent("/help /agents /replay /config /cancel /thinking /model /quit")}`,
         "",
         styles.dim("any key closes this help"),
       ].join("\n"),
@@ -412,6 +467,83 @@ export class MonoAgentTuiApp {
     this.helpVisible = false;
     this.tui.requestRender();
   }
+
+  /**
+   * `/model` — with an argument, set (or, for `default`, clear) the session
+   * model override directly; with no argument, open the picker overlay. An
+   * override to a different model runs each turn as a fresh provider session.
+   */
+  private handleModelCommand(args: string): void {
+    const arg = args.trim();
+    if (arg.length > 0) {
+      const override = arg === "default" ? undefined : arg;
+      this.chat.setModelOverride(override);
+      this.statusBar.setEphemeral(
+        override === undefined ? "model override cleared" : `model override → ${override}`,
+      );
+      this.tui.requestRender();
+      return;
+    }
+    this.showModelPicker();
+  }
+
+  private showModelPicker(): void {
+    if (this.modelPickerHandle !== undefined) {
+      return; // Already open.
+    }
+    if (this.availableModels.length === 0) {
+      // Older agents (or embedded mode) advertise no candidate list; the direct
+      // form still works, so tell the user how to override manually.
+      this.statusBar.setEphemeral("no model list advertised — set one with /model <ref>");
+      this.tui.requestRender();
+      return;
+    }
+    const current = this.chat.getModelOverride();
+    const withCurrent = (label: string, isCurrent: boolean): string =>
+      isCurrent ? `${label} (current)` : label;
+    const items: SelectItem[] = this.availableModels.map((model) => ({
+      value: model,
+      label: withCurrent(model, model === current),
+    }));
+    items.push({
+      value: MODEL_PICKER_DEFAULT_VALUE,
+      label: withCurrent("— default (clear override) —", current === undefined),
+    });
+
+    const list = new SelectList(items, 10, selectListTheme);
+    list.onSelect = (item: SelectItem) => {
+      const choice = item.value === MODEL_PICKER_DEFAULT_VALUE ? undefined : item.value;
+      this.chat.setModelOverride(choice);
+      this.statusBar.setEphemeral(
+        choice === undefined ? "model override cleared" : `model override → ${choice}`,
+      );
+      this.closeModelPicker();
+    };
+    list.onCancel = () => this.closeModelPicker();
+    // The current choice is called out by its `(current)` label; the cursor
+    // opens at the top so navigation is predictable regardless of which entry
+    // is current.
+    list.setSelectedIndex(0);
+
+    const overlay = new Container();
+    overlay.addChild(new Text(styles.bold("Session model override"), 1, 0));
+    overlay.addChild(list);
+    overlay.addChild(new Text(styles.dim("↑↓ move · enter select · esc cancel"), 1, 0));
+
+    this.modelPickerList = list;
+    // nonCapturing: input stays routed through the global listener (which drives
+    // the list explicitly and swallows the rest), so the overlay never contends
+    // for focus with the chat editor underneath it.
+    this.modelPickerHandle = this.tui.showOverlay(overlay, { anchor: "center", width: 64, nonCapturing: true });
+    this.tui.requestRender();
+  }
+
+  private closeModelPicker(): void {
+    this.modelPickerHandle?.hide();
+    this.modelPickerHandle = undefined;
+    this.modelPickerList = undefined;
+    this.tui.requestRender();
+  }
 }
 
 const SLASH_COMMANDS: readonly SlashCommand[] = [
@@ -421,6 +553,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "config", description: "Read-only resolved config" },
   { name: "cancel", description: "Cancel the in-flight turn" },
   { name: "thinking", description: "Expand/collapse thinking blocks" },
+  { name: "model", description: "Override this session's model (no arg opens a picker)" },
   { name: "new", description: "Visual break in the transcript" },
   { name: "quit", description: "Exit the TUI" },
 ];

@@ -3,9 +3,11 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 /**
- * Per-request runtime-options extension that applies a per-trigger model/effort
- * override carried on cron (`metadata.cron`) or webhook (`metadata.webhook`)
- * request metadata. The adapters carry the override as raw strings; this is the
+ * Per-request runtime-options extension that applies a per-turn model/effort
+ * override carried on webhook (`metadata.webhook`), cron (`metadata.cron`), or
+ * interactive TUI (`metadata.tui`) request metadata — an operator can pick a
+ * per-session model/effort from the TUI just as a trigger can pin one. The
+ * adapters carry the override as raw strings; this is the
  * first place with both the model parser and the effort enum, so validation
  * lives here. An invalid value is WARNED and IGNORED (the turn falls back to the
  * harness default) rather than failing — a bad dynamic webhook `model` must not
@@ -75,10 +77,10 @@ export function createRequestModelOverrideRuntimeExtension(
 }
 
 /**
- * Read model/effort from cron or webhook request metadata. Webhook takes
- * precedence when both are somehow present, though a turn is only ever one or
- * the other. Interactive turns carry neither, so this returns `{}` and the
- * extension is a no-op.
+ * Read model/effort from webhook, cron, or TUI request metadata. Webhook takes
+ * precedence, then cron, then an interactive TUI per-session override — a turn
+ * is only ever one of the three. A turn carrying none of these blocks (e.g. an
+ * ordinary chat turn) returns `{}` and the extension is a no-op.
  */
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;
@@ -91,7 +93,9 @@ function readOverride(metadata: Record<string, unknown> | undefined): {
     ? metadata.webhook
     : isRecord(metadata.cron)
       ? metadata.cron
-      : undefined;
+      : isRecord(metadata.tui)
+        ? metadata.tui
+        : undefined;
   if (source === undefined) {
     return {};
   }

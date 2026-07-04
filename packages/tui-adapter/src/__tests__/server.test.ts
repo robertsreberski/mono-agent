@@ -75,6 +75,33 @@ describe("startTuiAdapter", () => {
     });
   });
 
+  it("includes the candidate models list in /v1/info when configured", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { model: "claude-fable-5", models: ["claude-fable-5", "codex:gpt-5.5"] },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json();
+
+    expect(info).toEqual({
+      schema: 1,
+      pid: process.pid,
+      model: "claude-fable-5",
+      models: ["claude-fable-5", "codex:gpt-5.5"],
+    });
+  });
+
+  it("omits models from /v1/info when the list is empty or absent", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { model: "claude-fable-5", models: [] },
+    });
+
+    const info = (await (await fetch(running.infoUrl)).json()) as Record<string, unknown>;
+
+    expect("models" in info).toBe(false);
+  });
+
   it("omits effort from /v1/info when not configured", async () => {
     running = await startTuiAdapter({
       responder: scriptedResponder(async () => ({ text: "ok" })),

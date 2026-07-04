@@ -20,12 +20,16 @@ const baseConfig: TuiAdapterConfig = {
   allowNonLoopback: false,
 };
 
-function baseInput(effort?: string): ChannelStartInput<TuiAdapterConfig> {
+function baseInput(
+  effort?: string,
+  fallbackModels?: readonly { sdk: string; model: string; reference?: string }[],
+): ChannelStartInput<TuiAdapterConfig> {
   return {
     coreConfig: {
       runtime: {
         model: { sdk: "claude-sdk", model: "claude-fable-5" },
         ...(effort === undefined ? {} : { effort }),
+        ...(fallbackModels === undefined ? {} : { fallbackModels }),
       },
     } as never,
     responder: noopResponder,
@@ -35,7 +39,10 @@ function baseInput(effort?: string): ChannelStartInput<TuiAdapterConfig> {
   };
 }
 
-async function startCapturingTui(effort?: string): Promise<TuiAdapterOptions> {
+async function startCapturingTui(
+  effort?: string,
+  fallbackModels?: readonly { sdk: string; model: string; reference?: string }[],
+): Promise<TuiAdapterOptions> {
   let captured: TuiAdapterOptions | undefined;
   const driver = createTuiChannelDriver({
     adapterFactory: (options): Promise<TuiAdapterStartResult> => {
@@ -52,7 +59,7 @@ async function startCapturingTui(effort?: string): Promise<TuiAdapterOptions> {
     },
   });
 
-  await driver.start(baseInput(effort));
+  await driver.start(baseInput(effort, fallbackModels));
   if (captured === undefined) {
     throw new Error("TUI adapter was not started.");
   }
@@ -63,12 +70,28 @@ describe("tui channel driver — info composition", () => {
   it("passes the configured runtime effort through to the adapter's info", async () => {
     const captured = await startCapturingTui("high");
 
-    expect(captured.info).toEqual({ model: "claude-sdk:claude-fable-5", effort: "high" });
+    expect(captured.info).toEqual({
+      model: "claude-sdk:claude-fable-5",
+      effort: "high",
+      models: ["claude-sdk:claude-fable-5"],
+    });
   });
 
   it("omits effort from info when the runtime has none configured", async () => {
     const captured = await startCapturingTui(undefined);
 
-    expect(captured.info).toEqual({ model: "claude-sdk:claude-fable-5" });
+    expect(captured.info).toEqual({
+      model: "claude-sdk:claude-fable-5",
+      models: ["claude-sdk:claude-fable-5"],
+    });
+  });
+
+  it("lists the primary then fallback models as candidate models, de-duplicated", async () => {
+    const captured = await startCapturingTui(undefined, [
+      { sdk: "codex", model: "gpt-5.5" },
+      { sdk: "claude-sdk", model: "claude-fable-5" },
+    ]);
+
+    expect(captured.info?.models).toEqual(["claude-sdk:claude-fable-5", "codex:gpt-5.5"]);
   });
 });

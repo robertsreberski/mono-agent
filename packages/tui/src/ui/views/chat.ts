@@ -42,6 +42,19 @@ export class ChatView extends Container {
   private readonly activeControllers = new Set<AbortController>();
   private turnCounter = 0;
   private thinkingExpandedFlag = false;
+  /**
+   * Session-scoped model override set via `/model`. When present, each turn's
+   * request carries `metadata.tui.model` so the harness runs that turn against
+   * the chosen model (a fresh provider session) instead of the agent default.
+   */
+  private modelOverride: string | undefined;
+  /**
+   * The connected agent's own default model (from `/v1/info`), tracked so
+   * clearing the override has something correct to repaint the status bar
+   * to -- otherwise it would fall back to whatever string was last painted,
+   * which is the just-cleared override itself. Set via {@link setDefaultModel}.
+   */
+  private defaultModel: string | undefined;
 
   constructor(options: ChatViewOptions) {
     super();
@@ -60,6 +73,40 @@ export class ChatView extends Container {
 
   setResponder(responder: AgentResponder | undefined): void {
     this.responder = responder;
+  }
+
+  /**
+   * Set (model string) or clear (`undefined`) the session model override, and
+   * reflect it on the status bar immediately: the model segment shows the
+   * chosen model with an `(override)` tag, cleared back to the connected
+   * agent's own default (via {@link setDefaultModel}, not the last override
+   * string) on `undefined`. The override applies from the next turn onward.
+   */
+  setModelOverride(model: string | undefined): void {
+    this.modelOverride = model;
+    this.options.statusBar.setModel(model ?? this.defaultModel);
+    this.options.statusBar.setModelOverridden(model !== undefined);
+    this.options.tui.requestRender();
+  }
+
+  /** The active session override, or `undefined` — drives the picker's `(current)` marker. */
+  getModelOverride(): string | undefined {
+    return this.modelOverride;
+  }
+
+  /**
+   * Record the connected agent's own default model (from `/v1/info`), so a
+   * later `setModelOverride(undefined)` knows what to repaint the status bar
+   * to. When no override is currently active, also repaints immediately --
+   * this is how a fresh `/v1/info` snapshot (e.g. after switching agents)
+   * reaches the status bar's model segment.
+   */
+  setDefaultModel(model: string | undefined): void {
+    this.defaultModel = model;
+    if (this.modelOverride === undefined) {
+      this.options.statusBar.setModel(model);
+      this.options.tui.requestRender();
+    }
   }
 
   /**
@@ -167,7 +214,10 @@ export class ChatView extends Container {
           conversationId: this.options.conversationId,
           text,
           abortSignal: controller.signal,
-          metadata: { source: "tui" },
+          metadata: {
+            source: "tui",
+            ...(this.modelOverride === undefined ? {} : { tui: { model: this.modelOverride } }),
+          },
         },
         presenter,
       );

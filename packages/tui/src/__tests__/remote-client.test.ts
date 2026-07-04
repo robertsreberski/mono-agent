@@ -122,6 +122,31 @@ describe("RemoteAgentResponder", () => {
     );
   });
 
+  it("surfaces the candidate models list from /v1/info", async () => {
+    const adapter = await startTuiAdapter({
+      responder: { respond: async () => ({ text: "ok" }) },
+      info: { model: "claude-fable-5", models: ["claude-fable-5", "codex:gpt-5.5"] },
+    });
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+      const info = await client.info();
+      expect(info.models).toEqual(["claude-fable-5", "codex:gpt-5.5"]);
+    } finally {
+      await adapter.stop();
+    }
+  });
+
+  it("tolerates the absence of models from an older agent's /v1/info", async () => {
+    await withAdapter(
+      { respond: async () => ({ text: "ok" }) },
+      async (adapter) => {
+        const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+        const info = await client.info();
+        expect(info.models).toBeUndefined();
+      },
+    );
+  });
+
   it("throws AgentResponseCancelledError for a cancelled remote turn", async () => {
     await withAdapter(
       {

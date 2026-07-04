@@ -30,6 +30,22 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude" }));
   });
 
+  it("applies a tui per-session model + effort override", async () => {
+    const result = await run({ tui: { model: "claude:claude-opus-4-8", effort: "low" } });
+    expect(result.runtimeOptions).toEqual({
+      model: expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }),
+      effort: "low",
+    });
+  });
+
+  it("prefers cron metadata over tui metadata when both are present", async () => {
+    const result = await run({
+      cron: { model: "codex:gpt-5.5" },
+      tui: { model: "claude:claude-opus-4-8" },
+    });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "codex" }));
+  });
+
   it("warns and ignores an invalid model string (no override applied)", async () => {
     const logger = { warn: vi.fn() };
     const result = await run({ webhook: { model: "not a model" } }, logger);

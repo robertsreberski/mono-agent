@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
+
 import { createAgentHarness } from "../index.js";
-import { runSourceFromRequest } from "../harness.js";
+import { requestOverridesModel, runSourceFromRequest } from "../harness.js";
 import type { AgentHarnessRecorderFactoryInput, AgentHarnessRequest } from "../types.js";
 
 const tempDirs: string[] = [];
@@ -100,6 +102,34 @@ describe("runSourceFromRequest", () => {
   it("never throws on unusual metadata shapes", () => {
     expect(() => runSourceFromRequest(req({ cron: "not-a-record" } as never))).not.toThrow();
     expect(() => runSourceFromRequest(req(null as never))).not.toThrow();
+  });
+});
+
+describe("requestOverridesModel", () => {
+  const defaultModel = parseMonoRuntimeModelReference("claude:claude-fable-5");
+  function req(metadata?: Record<string, unknown>): AgentHarnessRequest {
+    return { conversationId: "c", text: "hi", ...(metadata === undefined ? {} : { metadata }) } as AgentHarnessRequest;
+  }
+
+  it("returns true for a tui model override that differs from the default", () => {
+    expect(requestOverridesModel(req({ tui: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+  });
+
+  it("returns false for a tui model override equal to the default", () => {
+    expect(requestOverridesModel(req({ tui: { model: "claude:claude-fable-5" } }), defaultModel)).toBe(false);
+  });
+
+  it("returns false for a tui effort-only override (no model string)", () => {
+    expect(requestOverridesModel(req({ tui: { effort: "high" } }), defaultModel)).toBe(false);
+  });
+
+  it("returns false for an unparseable tui model override", () => {
+    expect(requestOverridesModel(req({ tui: { model: "not a model" } }), defaultModel)).toBe(false);
+  });
+
+  it("still honors webhook and cron overrides alongside tui", () => {
+    expect(requestOverridesModel(req({ webhook: { model: "codex:gpt-5.5" } }), defaultModel)).toBe(true);
+    expect(requestOverridesModel(req({ cron: { model: "codex:gpt-5.5" } }), defaultModel)).toBe(true);
   });
 });
 

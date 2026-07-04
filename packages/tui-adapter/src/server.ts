@@ -42,6 +42,12 @@ export interface TuiAdapterInfo {
    * here — those arrive via the `run_config` runtime_telemetry event instead.
    */
   readonly effort?: string;
+  /**
+   * The candidate models a TUI session may switch to — the host's primary model
+   * first, then each configured fallback, as canonical reference strings. Absent
+   * on older agents; the TUI tolerates that and offers no model picker.
+   */
+  readonly models?: readonly string[];
 }
 
 export interface TuiAdapterOptions {
@@ -105,6 +111,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       ...(options.info?.label === undefined ? {} : { label: options.info.label }),
       ...(options.info?.model === undefined ? {} : { model: options.info.model }),
       ...(options.info?.effort === undefined ? {} : { effort: options.info.effort }),
+      ...(options.info?.models === undefined || options.info.models.length === 0
+        ? {}
+        : { models: options.info.models }),
     });
   });
 

@@ -53,7 +53,14 @@ export class RemoteAgentResponder implements AgentResponder {
   }
 
   /** Probe GET /v1/info; throws RemoteAgentResponderError when unreachable/unauthorized. */
-  async info(): Promise<{ schema: number; pid?: number; label?: string; model?: string; effort?: string }> {
+  async info(): Promise<{
+    schema: number;
+    pid?: number;
+    label?: string;
+    model?: string;
+    effort?: string;
+    models?: readonly string[];
+  }> {
     const response = await this.request(`${this.baseUrl}/v1/info`, { headers: this.headers(false) });
     const body = (await response.json()) as {
       schema: number;
@@ -61,13 +68,19 @@ export class RemoteAgentResponder implements AgentResponder {
       label?: string;
       model?: string;
       effort?: unknown;
+      models?: unknown;
     };
-    const { effort, ...rest } = body;
+    const { effort, models, ...rest } = body;
     return {
       ...rest,
       // Older agents may omit `effort` entirely, or send a malformed value; either
       // way tolerate it and just leave `effort` unset rather than surfacing garbage.
       ...(typeof effort === "string" ? { effort } : {}),
+      // Older agents omit `models`; only surface a well-formed array of strings so
+      // the model picker never renders garbage entries.
+      ...(Array.isArray(models) && models.every((entry): entry is string => typeof entry === "string")
+        ? { models }
+        : {}),
     };
   }
 

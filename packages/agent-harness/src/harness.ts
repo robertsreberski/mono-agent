@@ -1393,12 +1393,14 @@ function isCronRequest(request: AgentHarnessRequest): boolean {
 }
 
 /**
- * Whether the request carries a per-trigger MODEL override that resolves to a
- * model DIFFERENT from the harness default. Only a different model forces session
- * isolation — it runs on a different model (often a different runtime), and the
- * provider session is keyed by conversationId + bound to a model, so resuming or
- * persisting it against the shared session would mix two models' lineage
- * (durable-session corruption / wrong-runtime disposal).
+ * Whether the request carries a per-turn MODEL override that resolves to a
+ * model DIFFERENT from the harness default. The override may be pinned by a
+ * trigger (`metadata.webhook`/`metadata.cron`) or picked interactively from the
+ * TUI (`metadata.tui`). Only a different model forces session isolation — it
+ * runs on a different model (often a different runtime), and the provider session
+ * is keyed by conversationId + bound to a model, so resuming or persisting it
+ * against the shared session would mix two models' lineage (durable-session
+ * corruption / wrong-runtime disposal).
  *
  * A SAME-MODEL override (e.g. an endpoint redundantly naming the host default)
  * leaves the runtime/model chain unchanged, so it must keep the shared continuous
@@ -1409,7 +1411,7 @@ function isCronRequest(request: AgentHarnessRequest): boolean {
  * to switch runtimes (`sameRuntimeModel`), so the isolation decision and the
  * runtime/session-key decision can never disagree.
  */
-function requestOverridesModel(request: AgentHarnessRequest, defaultModel: RuntimeModelReference): boolean {
+export function requestOverridesModel(request: AgentHarnessRequest, defaultModel: RuntimeModelReference): boolean {
   const metadata = request.metadata;
   if (!isRecord(metadata)) {
     return false;
@@ -1418,7 +1420,9 @@ function requestOverridesModel(request: AgentHarnessRequest, defaultModel: Runti
     ? metadata.webhook
     : isRecord(metadata.cron)
       ? metadata.cron
-      : undefined;
+      : isRecord(metadata.tui)
+        ? metadata.tui
+        : undefined;
   if (source === undefined || typeof source.model !== "string" || source.model.trim().length === 0) {
     return false;
   }

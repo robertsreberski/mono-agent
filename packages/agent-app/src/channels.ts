@@ -756,6 +756,16 @@ export function createTuiChannelDriver(
     async start(input) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
+      // The candidate models the TUI can switch a session to: the primary first,
+      // then each configured fallback, as canonical `modelReferenceKey` strings,
+      // de-duplicated (a fallback redundantly naming the primary collapses away).
+      const models: string[] = [];
+      for (const ref of [input.coreConfig.runtime.model, ...(input.coreConfig.runtime.fallbackModels ?? [])]) {
+        const key = modelReferenceKey(ref);
+        if (!models.includes(key)) {
+          models.push(key);
+        }
+      }
       const adapter = await adapterFactory({
         host: input.config.host,
         port: input.config.port,
@@ -766,6 +776,7 @@ export function createTuiChannelDriver(
         info: {
           model: modelReferenceKey(input.coreConfig.runtime.model),
           ...(input.coreConfig.runtime.effort === undefined ? {} : { effort: input.coreConfig.runtime.effort }),
+          models,
         },
         // A dead endpoint must flip the channel to failed, not serve nothing
         // silently — the TUI's only discovery signal is this channel's status.

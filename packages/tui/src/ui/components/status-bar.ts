@@ -25,6 +25,7 @@ export interface StatusBarThinkingStats {
 export class StatusBar implements Component {
   private identity = "";
   private model: string | undefined;
+  private modelOverridden = false;
   private effort: string | undefined;
   private usage: StatusBarUsage | undefined;
   private cumulativeUsd: number | undefined;
@@ -39,6 +40,15 @@ export class StatusBar implements Component {
 
   setModel(model: string | undefined): void {
     this.model = model;
+  }
+
+  /**
+   * Marks the model segment as a session override (renders a trailing
+   * `(override)` tag). Additive to {@link setModel} — the model string itself is
+   * unchanged; this only toggles the annotation.
+   */
+  setModelOverridden(overridden: boolean): void {
+    this.modelOverridden = overridden;
   }
 
   /** Persists across turns; only replaced by another setEffort call. */
@@ -90,7 +100,7 @@ export class StatusBar implements Component {
       segments.push(styles.accent(this.identity));
     }
     if (this.model !== undefined && this.model.length > 0) {
-      segments.push(styles.muted(this.model));
+      segments.push(styles.muted(this.modelOverridden ? `${this.model} (override)` : this.model));
     }
     if (this.effort !== undefined && this.effort.length > 0) {
       segments.push(styles.muted(`effort:${this.effort}`));
