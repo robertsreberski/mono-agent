@@ -113,6 +113,92 @@ describe("startTuiAdapter", () => {
     expect("effort" in info).toBe(false);
   });
 
+  it("includes modelOptions in /v1/info when configured", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        model: "pi:lmstudio:qwen3-8b",
+        models: ["pi:lmstudio:qwen3-8b"],
+        modelOptions: {
+          "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, label: "qwen3-8b" },
+        },
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json();
+
+    expect(info).toEqual({
+      schema: 1,
+      pid: process.pid,
+      model: "pi:lmstudio:qwen3-8b",
+      models: ["pi:lmstudio:qwen3-8b"],
+      modelOptions: {
+        "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, label: "qwen3-8b" },
+      },
+    });
+  });
+
+  it("omits modelOptions from /v1/info when absent or empty", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: { model: "claude-fable-5", modelOptions: {} },
+    });
+
+    const info = (await (await fetch(running.infoUrl)).json()) as Record<string, unknown>;
+
+    expect("modelOptions" in info).toBe(false);
+  });
+
+  it("accepts an info PROVIDER function and resolves it fresh on every /v1/info request", async () => {
+    let calls = 0;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: () => {
+        calls += 1;
+        return { model: "claude-fable-5", models: [`model-${calls}`] };
+      },
+    });
+
+    const first = (await (await fetch(running.infoUrl)).json()) as { models: string[] };
+    const second = (await (await fetch(running.infoUrl)).json()) as { models: string[] };
+
+    expect(first.models).toEqual(["model-1"]);
+    expect(second.models).toEqual(["model-2"]);
+  });
+
+  it("reports a 500 (not a crash) when the info provider rejects", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: async () => {
+        throw new Error("discovery exploded");
+      },
+    });
+
+    const response = await fetch(running.infoUrl);
+
+    expect(response.status).toBe(500);
+    expect(((await response.json()) as { error: { message: string } }).error.message).toContain("discovery exploded");
+  });
+
+  it("accepts an ASYNC info provider function (returning a promise)", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { model: "claude-fable-5", modelOptions: { "claude-fable-5": { reasoning: true } } };
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json();
+
+    expect(info).toEqual({
+      schema: 1,
+      pid: process.pid,
+      model: "claude-fable-5",
+      modelOptions: { "claude-fable-5": { reasoning: true } },
+    });
+  });
+
   it("streams the full callback sequence as NDJSON frames in order", async () => {
     running = await startTuiAdapter({
       responder: scriptedResponder(async (request, stream) => {

@@ -48,6 +48,14 @@ export interface TuiAdapterInfo {
    * on older agents; the TUI tolerates that and offers no model picker.
    */
   readonly models?: readonly string[];
+  /**
+   * Per-model reasoning/effort metadata, keyed by the same canonical ref
+   * strings that appear in `models`. Local-provider models resolve precise
+   * `effortLevels`; cloud models degrade to `{ reasoning: true }` with no
+   * `effortLevels` so the TUI falls back to the global effort enum. Absent on
+   * older agents; the TUI tolerates that and offers no model-aware picker.
+   */
+  readonly modelOptions?: Record<string, { readonly effortLevels?: readonly string[]; readonly reasoning?: boolean; readonly label?: string }>;
 }
 
 export interface TuiAdapterOptions {
@@ -58,7 +66,15 @@ export interface TuiAdapterOptions {
   readonly apiKey?: string;
   readonly responder: AgentResponder;
   readonly logger?: TuiAdapterLogger;
-  readonly info?: TuiAdapterInfo;
+  /**
+   * Static info, OR a provider invoked fresh on every GET /v1/info. Discovery
+   * of local-provider models can change after the adapter starts (an endpoint
+   * started later, or restarted); a provider lets `/v1/info` reflect that
+   * without a restart. The channel composition layer is responsible for
+   * caching/rate-limiting any expensive work the provider does — this adapter
+   * just calls it (and awaits it) on every request.
+   */
+  readonly info?: TuiAdapterInfo | (() => TuiAdapterInfo | Promise<TuiAdapterInfo>);
   /**
    * Invoked when the already-listening HTTP server dies (e.g. EADDRINUSE
    * appearing later, socket-level failure). The hosting channel driver maps
@@ -105,16 +121,24 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     if (!authorize(req, res, apiKey)) {
       return;
     }
-    res.status(200).json({
-      schema: TUI_WIRE_SCHEMA,
-      pid: process.pid,
-      ...(options.info?.label === undefined ? {} : { label: options.info.label }),
-      ...(options.info?.model === undefined ? {} : { model: options.info.model }),
-      ...(options.info?.effort === undefined ? {} : { effort: options.info.effort }),
-      ...(options.info?.models === undefined || options.info.models.length === 0
-        ? {}
-        : { models: options.info.models }),
-    });
+    void resolveInfo(options.info)
+      .then((info) => {
+        res.status(200).json({
+          schema: TUI_WIRE_SCHEMA,
+          pid: process.pid,
+          ...(info?.label === undefined ? {} : { label: info.label }),
+          ...(info?.model === undefined ? {} : { model: info.model }),
+          ...(info?.effort === undefined ? {} : { effort: info.effort }),
+          ...(info?.models === undefined || info.models.length === 0 ? {} : { models: info.models }),
+          ...(info?.modelOptions === undefined || Object.keys(info.modelOptions).length === 0
+            ? {}
+            : { modelOptions: info.modelOptions }),
+        });
+      })
+      .catch((error: unknown) => {
+        options.logger?.error?.("TUI info provider failed.", { error: errorToMessage(error) });
+        sendJsonError(res, 500, error);
+      });
   });
 
   app.post(turnsPath, (req, res) => {
@@ -347,6 +371,13 @@ function normalizeTurnBody(body: unknown): NormalizedTurnBody {
       ? (record.metadata as Record<string, unknown>)
       : {};
   return { conversationId, text, metadata };
+}
+
+async function resolveInfo(info: TuiAdapterOptions["info"]): Promise<TuiAdapterInfo | undefined> {
+  if (typeof info === "function") {
+    return await info();
+  }
+  return info;
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {

@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import type { TuiAdapterConfig, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/tui-adapter";
+import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
+import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/tui-adapter";
 
 import type { ChannelStartInput } from "../channels.js";
 import { createTuiChannelDriver } from "../channels.js";
@@ -20,17 +21,21 @@ const baseConfig: TuiAdapterConfig = {
   allowNonLoopback: false,
 };
 
-function baseInput(
-  effort?: string,
-  fallbackModels?: readonly { sdk: string; model: string; reference?: string }[],
-): ChannelStartInput<TuiAdapterConfig> {
+interface BuildInputOptions {
+  readonly effort?: string;
+  readonly fallbackModels?: readonly { sdk: string; model: string; reference?: string }[];
+  readonly localProviders?: readonly LocalProviderDefinition[];
+}
+
+function baseInput(options: BuildInputOptions = {}): ChannelStartInput<TuiAdapterConfig> {
   return {
     coreConfig: {
       runtime: {
-        model: { sdk: "claude-sdk", model: "claude-fable-5" },
-        ...(effort === undefined ? {} : { effort }),
-        ...(fallbackModels === undefined ? {} : { fallbackModels }),
+        model: { sdk: "claude", model: "claude-fable-5" },
+        ...(options.effort === undefined ? {} : { effort: options.effort }),
+        ...(options.fallbackModels === undefined ? {} : { fallbackModels: options.fallbackModels }),
       },
+      ...(options.localProviders === undefined ? {} : { providers: { local: options.localProviders } }),
     } as never,
     responder: noopResponder,
     cwd: "/tmp",
@@ -39,14 +44,17 @@ function baseInput(
   };
 }
 
-async function startCapturingTui(
-  effort?: string,
-  fallbackModels?: readonly { sdk: string; model: string; reference?: string }[],
-): Promise<TuiAdapterOptions> {
+interface StartOptions extends BuildInputOptions {
+  readonly discoverModels?: (
+    providers: readonly LocalProviderDefinition[] | undefined,
+  ) => Promise<readonly DiscoveredLocalModel[]>;
+}
+
+async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapterOptions> {
   let captured: TuiAdapterOptions | undefined;
   const driver = createTuiChannelDriver({
-    adapterFactory: (options): Promise<TuiAdapterStartResult> => {
-      captured = options;
+    adapterFactory: (adapterOptions): Promise<TuiAdapterStartResult> => {
+      captured = adapterOptions;
       return Promise.resolve({
         url: "http://127.0.0.1:0",
         baseUrl: "http://127.0.0.1:0/tui",
@@ -57,41 +65,152 @@ async function startCapturingTui(
         stop: () => Promise.resolve(),
       });
     },
+    ...(options.discoverModels === undefined ? {} : { discoverModels: options.discoverModels }),
   });
 
-  await driver.start(baseInput(effort, fallbackModels));
+  await driver.start(baseInput(options));
   if (captured === undefined) {
     throw new Error("TUI adapter was not started.");
   }
   return captured;
 }
 
+/** `captured.info` is always an info PROVIDER (see design note on createTuiChannelDriver); resolve it. */
+async function resolveInfo(captured: TuiAdapterOptions): Promise<TuiAdapterInfo> {
+  if (typeof captured.info !== "function") {
+    throw new Error("Expected info to be a provider function.");
+  }
+  return await captured.info();
+}
+
 describe("tui channel driver — info composition", () => {
   it("passes the configured runtime effort through to the adapter's info", async () => {
-    const captured = await startCapturingTui("high");
+    const captured = await startCapturingTui({ effort: "high" });
+    const info = await resolveInfo(captured);
 
-    expect(captured.info).toEqual({
-      model: "claude-sdk:claude-fable-5",
+    expect(info).toEqual({
+      model: "claude:claude-fable-5",
       effort: "high",
-      models: ["claude-sdk:claude-fable-5"],
+      models: ["claude:claude-fable-5"],
+      modelOptions: { "claude:claude-fable-5": { reasoning: true } },
     });
   });
 
   it("omits effort from info when the runtime has none configured", async () => {
-    const captured = await startCapturingTui(undefined);
+    const captured = await startCapturingTui();
+    const info = await resolveInfo(captured);
 
-    expect(captured.info).toEqual({
-      model: "claude-sdk:claude-fable-5",
-      models: ["claude-sdk:claude-fable-5"],
+    expect(info).toEqual({
+      model: "claude:claude-fable-5",
+      models: ["claude:claude-fable-5"],
+      modelOptions: { "claude:claude-fable-5": { reasoning: true } },
     });
   });
 
   it("lists the primary then fallback models as candidate models, de-duplicated", async () => {
-    const captured = await startCapturingTui(undefined, [
-      { sdk: "codex", model: "gpt-5.5" },
-      { sdk: "claude-sdk", model: "claude-fable-5" },
-    ]);
+    const captured = await startCapturingTui({
+      fallbackModels: [
+        { sdk: "codex", model: "gpt-5.5" },
+        { sdk: "claude", model: "claude-fable-5" },
+      ],
+    });
+    const info = await resolveInfo(captured);
 
-    expect(captured.info?.models).toEqual(["claude-sdk:claude-fable-5", "codex:gpt-5.5"]);
+    expect(info.models).toEqual(["claude:claude-fable-5", "codex:gpt-5.5"]);
+  });
+
+  it("degrades to no discovered models/no local modelOptions detail when no local providers are configured", async () => {
+    const discoverModels = vi.fn().mockResolvedValue([]);
+    const captured = await startCapturingTui({ discoverModels });
+    const info = await resolveInfo(captured);
+
+    expect(info.models).toEqual(["claude:claude-fable-5"]);
+    // The configured cloud model still gets a `reasoning: true` degrade entry
+    // (so the TUI knows it's reasoning-capable) but no precise effortLevels.
+    expect(info.modelOptions).toEqual({ "claude:claude-fable-5": { reasoning: true } });
+  });
+
+  it("includes locally discovered models in info.models and their resolved effort levels in info.modelOptions", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      {
+        id: "lmstudio",
+        type: "lmstudio",
+        baseUrl: "http://localhost:1234",
+        enabled: true,
+        models: [
+          {
+            name: "qwen/qwen3-8b",
+            capabilities: { reasoning: true, reasoning_mode: "effort", reasoning_levels: ["low", "medium", "high"] },
+          },
+        ],
+      },
+    ];
+    const discoverModels = vi.fn().mockResolvedValue([
+      { ref: "pi:lmstudio:qwen/qwen3-8b", label: "qwen/qwen3-8b", providerId: "lmstudio" },
+      { ref: "pi:lmstudio:llama-3.1", label: "llama-3.1", providerId: "lmstudio" },
+    ] satisfies DiscoveredLocalModel[]);
+
+    const captured = await startCapturingTui({ localProviders, discoverModels });
+    const info = await resolveInfo(captured);
+
+    expect(info.models).toEqual([
+      "claude:claude-fable-5",
+      "pi:lmstudio:qwen/qwen3-8b",
+      "pi:lmstudio:llama-3.1",
+    ]);
+    expect(info.modelOptions).toEqual({
+      "claude:claude-fable-5": { reasoning: true },
+      "pi:lmstudio:qwen/qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, label: "qwen/qwen3-8b" },
+      "pi:lmstudio:llama-3.1": { reasoning: false, label: "llama-3.1" },
+    });
+    expect(discoverModels).toHaveBeenCalledWith(localProviders);
+  });
+
+  it("dedups a discovered model that collides with a config-listed model, keeping the config model first", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+    ];
+    const discoverModels = vi.fn().mockResolvedValue([
+      { ref: "claude:claude-fable-5", label: "claude-fable-5", providerId: "lmstudio" },
+      { ref: "pi:lmstudio:qwen3-8b", label: "qwen3-8b", providerId: "lmstudio" },
+    ] satisfies DiscoveredLocalModel[]);
+
+    const captured = await startCapturingTui({ localProviders, discoverModels });
+    const info = await resolveInfo(captured);
+
+    expect(info.models).toEqual(["claude:claude-fable-5", "pi:lmstudio:qwen3-8b"]);
+  });
+
+  it("caches discovered models within the TTL window, avoiding a fresh discovery call on every /v1/info", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+    ];
+    const discoverModels = vi.fn().mockResolvedValue([]);
+    const captured = await startCapturingTui({ localProviders, discoverModels });
+
+    await resolveInfo(captured);
+    await resolveInfo(captured);
+    await resolveInfo(captured);
+
+    expect(discoverModels).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes discovery once the TTL window elapses", async () => {
+    vi.useFakeTimers();
+    try {
+      const localProviders: readonly LocalProviderDefinition[] = [
+        { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+      ];
+      const discoverModels = vi.fn().mockResolvedValue([]);
+      const captured = await startCapturingTui({ localProviders, discoverModels });
+
+      await resolveInfo(captured);
+      vi.advanceTimersByTime(30_001);
+      await resolveInfo(captured);
+
+      expect(discoverModels).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,6 +1,7 @@
 import net from "node:net";
 
 import { RuntimeAdapterError } from "./runtime-adapter.js";
+import { isPlainObject } from "./runtime-helpers.js";
 import type { RuntimeModelReference } from "./types.js";
 
 export type LocalProviderType = "ollama" | "lmstudio" | "openai_compat";
@@ -89,6 +90,133 @@ const OLLAMA_EFFORT_REASONING_HINTS = ["gpt-oss"];
 const OLLAMA_EFFORT_REASONING_LEVELS = ["low", "medium", "high"];
 const OLLAMA_TOGGLE_REASONING_HINTS = ["deepseek", "qwen", "qwq", "thinking", "reasoning"];
 const OPENAI_COMPAT_REASONING_LEVELS = ["none", "low", "medium", "high", "xhigh"];
+
+/** One model discovered live from a local provider's OpenAI-compatible `/v1/models` endpoint. */
+export interface DiscoveredLocalModel {
+  readonly ref: string;
+  readonly label: string;
+  readonly providerId: string;
+}
+
+export interface DiscoverLocalProviderModelsOptions {
+  readonly fetch?: typeof fetch;
+  readonly timeoutMs?: number;
+}
+
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 1500;
+
+/**
+ * Live-discovers the models each ENABLED local provider currently serves, by
+ * GETting its OpenAI-compatible `/v1/models` endpoint. Resilient by design: a
+ * down/erroring/non-JSON/malformed-shape endpoint is skipped, never thrown —
+ * this is called on the `/v1/info` request path and must never fail it. Only
+ * enabled providers are probed; a disabled provider is skipped without a
+ * network call.
+ */
+export async function discoverLocalProviderModels(
+  providers: readonly LocalProviderDefinition[] | undefined,
+  opts: DiscoverLocalProviderModelsOptions = {},
+): Promise<DiscoveredLocalModel[]> {
+  if (providers === undefined || providers.length === 0) {
+    return [];
+  }
+  const fetchImpl = opts.fetch ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_DISCOVERY_TIMEOUT_MS;
+  const enabled = providers.filter((provider) => provider.enabled ?? true);
+  const perProvider = await Promise.all(
+    enabled.map((provider) => discoverProviderModels(provider, fetchImpl, timeoutMs)),
+  );
+  return perProvider.flat();
+}
+
+async function discoverProviderModels(
+  provider: LocalProviderDefinition,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+): Promise<DiscoveredLocalModel[]> {
+  try {
+    const normalized = validateLocalProviderDefinition(provider);
+    const url = modelsEndpointForProvider(normalized);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+    try {
+      response = await fetchImpl(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!response.ok) {
+      return [];
+    }
+    const body: unknown = await response.json();
+    if (!isPlainObject(body) || !Array.isArray(body.data)) {
+      return [];
+    }
+    const models: DiscoveredLocalModel[] = [];
+    for (const entry of body.data) {
+      if (isPlainObject(entry) && typeof entry.id === "string" && entry.id.length > 0) {
+        models.push({ ref: `pi:${normalized.id}:${entry.id}`, label: entry.id, providerId: normalized.id });
+      }
+    }
+    return models;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Mirrors `openAiCompatBaseUrl` in agent-runtime's pi-models.js: ollama's
+ * OpenAI-compat surface always lives at `<root>/v1` (stripping any existing
+ * `/api` or `/v1` suffix first); other local provider types get `/v1`
+ * appended unless the configured baseUrl already ends in a version segment
+ * (e.g. a gateway pre-configured with `.../v1`).
+ */
+function modelsEndpointForProvider(provider: LocalProviderDefinition): string {
+  const baseUrl = provider.baseUrl as string;
+  const versioned = provider.type === "ollama"
+    ? `${baseUrl.replace(/\/(api|v1)$/u, "")}/v1`
+    : (/\/v\d+$/u.test(baseUrl) ? baseUrl : `${baseUrl}/v1`);
+  return `${versioned}/models`;
+}
+
+/** The effort-related facts the TUI needs to render a per-model reasoning/effort picker. */
+export interface ModelEffortLevels {
+  readonly reasoning: boolean;
+  readonly effortLevels?: readonly string[];
+}
+
+/**
+ * Resolves the reasoning support + effort levels for a parsed model reference.
+ * Local provider models (`ref.sdk === "pi"` with a configured local provider)
+ * get precise levels via the same capability resolution `runtimeOptionsForLocalProvider`
+ * uses for execution. Everything else (cloud pi/claude/codex, or a local ref
+ * whose provider isn't configured here) deliberately degrades to
+ * `{ reasoning: true }` with `effortLevels` left undefined — resolving cloud
+ * reasoning levels precisely would require reaching into the pi-ai model
+ * registry from this package, which would cycle back through config; the TUI
+ * falls back to the global effort enum for those. Never throws.
+ */
+export function resolveModelEffortLevels(
+  ref: RuntimeModelReference,
+  providers: readonly LocalProviderDefinition[] | undefined,
+): ModelEffortLevels {
+  try {
+    if (ref.sdk === "pi" && ref.provider !== undefined && providers !== undefined) {
+      const provider = providers.find((candidate) => candidate.id === ref.provider);
+      if (provider !== undefined) {
+        const normalized = validateLocalProviderDefinition(provider);
+        const capabilities = customModelForProvider(normalized, ref.model).capabilities;
+        return {
+          reasoning: capabilities.reasoning_mode !== "none" && Boolean(capabilities.reasoning),
+          ...(capabilities.reasoning_levels === undefined ? {} : { effortLevels: capabilities.reasoning_levels }),
+        };
+      }
+    }
+    return { reasoning: true };
+  } catch {
+    return { reasoning: true };
+  }
+}
 
 export function runtimeOptionsForLocalProvider(
   model: RuntimeModelReference,

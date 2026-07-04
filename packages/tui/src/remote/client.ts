@@ -60,6 +60,7 @@ export class RemoteAgentResponder implements AgentResponder {
     model?: string;
     effort?: string;
     models?: readonly string[];
+    modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }>;
   }> {
     const response = await this.request(`${this.baseUrl}/v1/info`, { headers: this.headers(false) });
     const body = (await response.json()) as {
@@ -69,8 +70,10 @@ export class RemoteAgentResponder implements AgentResponder {
       model?: string;
       effort?: unknown;
       models?: unknown;
+      modelOptions?: unknown;
     };
-    const { effort, models, ...rest } = body;
+    const { effort, models, modelOptions, ...rest } = body;
+    const parsedModelOptions = parseModelOptions(modelOptions);
     return {
       ...rest,
       // Older agents may omit `effort` entirely, or send a malformed value; either
@@ -81,6 +84,10 @@ export class RemoteAgentResponder implements AgentResponder {
       ...(Array.isArray(models) && models.every((entry): entry is string => typeof entry === "string")
         ? { models }
         : {}),
+      // Older agents omit `modelOptions` entirely; a newer agent sends it keyed by
+      // the same ref strings as `models`. Parsed defensively per-entry so one
+      // malformed entry never poisons the well-formed rest.
+      ...(parsedModelOptions === undefined ? {} : { modelOptions: parsedModelOptions }),
     };
   }
 
@@ -175,4 +182,37 @@ export class RemoteAgentResponder implements AgentResponder {
     }
     return response;
   }
+}
+
+/**
+ * Defensively parses `/v1/info`'s `modelOptions` field: tolerates absence (an
+ * older agent), a non-record payload, and per-entry shape mismatches — a
+ * malformed entry is dropped rather than surfacing garbage or throwing. Never
+ * returns an empty record; an all-malformed payload degrades to `undefined`,
+ * same as an agent that never sent the field.
+ */
+function parseModelOptions(
+  value: unknown,
+): Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const result: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }> = {};
+  for (const [ref, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      continue;
+    }
+    const entry = raw as { effortLevels?: unknown; reasoning?: unknown; label?: unknown };
+    const parsedEntry: { effortLevels?: readonly string[]; reasoning?: boolean; label?: string } = {
+      ...(Array.isArray(entry.effortLevels) && entry.effortLevels.every((level): level is string => typeof level === "string")
+        ? { effortLevels: entry.effortLevels }
+        : {}),
+      ...(typeof entry.reasoning === "boolean" ? { reasoning: entry.reasoning } : {}),
+      ...(typeof entry.label === "string" ? { label: entry.label } : {}),
+    };
+    if (Object.keys(parsedEntry).length > 0) {
+      result[ref] = parsedEntry;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
