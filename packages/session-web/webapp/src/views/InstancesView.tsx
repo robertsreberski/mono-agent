@@ -94,7 +94,16 @@ export function InstancesView({ sessions, onOpenInstance }: Props) {
           <div
             key={ic.name}
             className="inst-card"
+            role="button"
+            tabIndex={0}
+            aria-label={`Open instance ${ic.name}: ${ic.count} runs`}
             onClick={() => onOpenInstance(ic.name)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onOpenInstance(ic.name);
+              }
+            }}
             style={{
               cursor: "pointer",
               background: "linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.014))",

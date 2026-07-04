@@ -135,6 +135,28 @@ a {
   filter: brightness(1.13);
 }
 
+/* ---- keyboard focus ring (focus-visible only, so mouse clicks stay quiet) ----
+   Div-based targets that are now role="button" tabIndex=0 have no UA ring, so
+   give every interactive surface a shared, visible outline for keyboard users. */
+:focus-visible {
+  outline: 2px solid #6fa8dc;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.rec-card:focus-visible,
+.inst-card:focus-visible,
+.rec-bar:focus-visible,
+.rec-chip:focus-visible,
+.rec-btn:focus-visible,
+.menu-item:focus-visible,
+.call-head:focus-visible,
+.back-btn:focus-visible,
+.think-btn:focus-visible,
+.link-btn:focus-visible {
+  outline: 2px solid #6fa8dc;
+  outline-offset: 2px;
+}
+
 /* respect reduced-motion */
 @media (prefers-reduced-motion: reduce) {
   * {

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRecorder } from "./lib/store";
 import { useIsMobile } from "./lib/useIsMobile";
 import { PAGE_BG, TEXT, FONT_UI, FONT_MONO, DIM } from "./lib/tokens";
@@ -34,10 +34,20 @@ function TopNav({
   });
   return (
     <div style={{ display: "flex", gap: 7, marginBottom: 26, alignItems: "center", flexWrap: "wrap", rowGap: 8 }}>
-      <button className="rec-chip" onClick={() => onNav("list")} style={btn(view !== "instances")}>
+      <button
+        className="rec-chip"
+        onClick={() => onNav("list")}
+        style={btn(view !== "instances")}
+        aria-current={view !== "instances" ? "page" : undefined}
+      >
         Sessions
       </button>
-      <button className="rec-chip" onClick={() => onNav("instances")} style={btn(view === "instances")}>
+      <button
+        className="rec-chip"
+        onClick={() => onNav("instances")}
+        style={btn(view === "instances")}
+        aria-current={view === "instances" ? "page" : undefined}
+      >
         Instances
       </button>
       <div style={{ marginLeft: "auto" }}>{statusPill}</div>
@@ -54,6 +64,7 @@ export function App() {
   const [fOut, setFOut] = useState("all");
   const [fInstance, setFInstance] = useState("all");
   const { ensureDetail } = useRecorder();
+  const pageRef = useRef<HTMLDivElement>(null);
 
   const open = useCallback(
     (id: string) => {
@@ -71,17 +82,24 @@ export function App() {
     window.scrollTo?.(0, 0);
   }, []);
 
+  // On view switch, move focus to the page container so keyboard/AT users
+  // aren't stranded on document.body. Programmatic + non-visual (no ring).
+  useEffect(() => {
+    pageRef.current?.focus({ preventScroll: true });
+  }, [view]);
+
   const page: React.CSSProperties = {
     minHeight: "100dvh",
     background: PAGE_BG,
     color: TEXT,
     fontFamily: FONT_UI,
     WebkitFontSmoothing: "antialiased",
+    outline: "none",
   };
 
   if (view === "detail" && selId) {
     return (
-      <div style={page}>
+      <div ref={pageRef} tabIndex={-1} style={page}>
         <DetailView
           key={selId}
           id={selId}
@@ -95,6 +113,7 @@ export function App() {
     status === "fixture" ? (
       <span
         title="No backend reachable — showing bundled demo data"
+        aria-label="No backend reachable — showing bundled demo data"
         style={{
           fontFamily: FONT_MONO,
           fontSize: 10,
@@ -114,7 +133,7 @@ export function App() {
     ) : null;
 
   return (
-    <div style={page}>
+    <div ref={pageRef} tabIndex={-1} style={page}>
       <div
         style={{
           maxWidth: 1160,

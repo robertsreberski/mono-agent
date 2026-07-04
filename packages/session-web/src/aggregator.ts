@@ -84,6 +84,14 @@ interface InstanceState {
   live: LiveState | undefined;
   artifactWatcher: FSWatcher | undefined;
   readonly artifactTimers: Map<string, ReturnType<typeof setTimeout>>;
+  /** Per-instance cap on retained sessions (mirrors {@link SessionAggregator.maxRunsPerInstance}). */
+  readonly maxRunsPerInstance: number;
+  /**
+   * Runs materialized from their finished (terminal) on-disk artifact. The disk
+   * artifact is authoritative: once a runId is here, live folds must not overwrite
+   * it with a mid-run/truncated view (last write wins in favour of disk).
+   */
+  readonly artifactFinished: Set<string>;
 }
 
 export class SessionAggregator {
@@ -230,6 +238,8 @@ export class SessionAggregator {
       live: undefined,
       artifactWatcher: undefined,
       artifactTimers: new Map(),
+      maxRunsPerInstance: this.maxRunsPerInstance,
+      artifactFinished: new Set(),
     };
     this.states.set(discovered.instance.sourceId, state);
 
@@ -308,34 +318,46 @@ export class SessionAggregator {
       return;
     }
     if (frame.t === "run_started") {
-      live.runs.set(frame.runId, { summary: runningSummaryFromStart(frame), events: [] });
+      // `run_started` may arrive *after* `event` frames (viewer connected mid-run,
+      // or the frame was reordered): keep any already-folded events, but adopt the
+      // authoritative conversationId/source/startedAt this frame carries.
+      const existing = live.runs.get(frame.runId);
+      if (existing === undefined) {
+        live.runs.set(frame.runId, { summary: runningSummaryFromStart(frame), events: [] });
+      } else {
+        existing.summary = runningSummaryFromStart(frame);
+      }
       this.scheduleLiveRecompute(state, frame.runId);
       return;
     }
     if (frame.t === "event") {
       let run = live.runs.get(frame.runId);
       if (run === undefined) {
-        run = { summary: runningSummaryFromEvent(frame.runId), events: [] };
+        run = { summary: runningSummaryFromEvent(frame), events: [] };
         live.runs.set(frame.runId, run);
       }
       run.events.push(coerceRuntimeEvent(frame.event));
       this.scheduleLiveRecompute(state, frame.runId);
       return;
     }
-    // run_finished: replace the provisional summary with the authoritative one and
-    // recompute once, immediately (cancel any pending debounced recompute).
+    // run_finished is terminal: fold once with the authoritative summary (cancelling
+    // any pending debounced recompute), then drop the run's live state so its
+    // `events[]` aren't retained for the lifetime of the process.
     const run = live.runs.get(frame.runId);
-    const summary = coerceRunSummary(frame.summary) ?? run?.summary ?? finishedSummary(frame.runId, frame.status);
-    const events = run?.events ?? [];
+    let summary = coerceRunSummary(frame.summary) ?? run?.summary ?? finishedSummary(frame.runId, frame.status);
     if (run !== undefined) {
-      run.summary = summary;
+      // Preserve conversationId/startedAt/source a live placeholder already learned
+      // but a sparse `run_finished.summary` may omit.
+      summary = backfillRunningSummary(summary, run.summary);
     }
+    const events = run?.events ?? [];
     const pending = live.recomputeTimers.get(frame.runId);
     if (pending !== undefined) {
       clearTimeout(pending);
       live.recomputeTimers.delete(frame.runId);
     }
     this.recomputeLiveRun(state, frame.runId, summary, events);
+    live.runs.delete(frame.runId);
   }
 
   private scheduleLiveRecompute(state: InstanceState, runId: string): void {
@@ -363,10 +385,49 @@ export class SessionAggregator {
     if (this.stopped || !this.states.has(state.discovered.instance.sourceId)) {
       return;
     }
+    // The finished on-disk artifact is authoritative: once a run has been
+    // materialized from its terminal artifact, a late/mid-run live fold must not
+    // clobber it with a truncated view (a viewer that connected mid-run misses the
+    // early events). Skip the overwrite entirely for such runs.
+    if (state.artifactFinished.has(runId)) {
+      return;
+    }
     const session = mapRunToSession(summary, events, this.mapOptions(state));
     state.sessions.set(runId, session);
+    this.evictSessionOverflow(state);
     this.emit({ t: "session_upsert", session });
     this.scheduleInstancesEmit();
+  }
+
+  /**
+   * Bound `state.sessions` to the per-instance cap, evicting the oldest *completed*
+   * sessions by `startTs`. A still-running session is never evicted (its live fold
+   * is in flight); each drop emits a `session_removed` so browser subscribers stay
+   * in sync with the server-side map.
+   */
+  private evictSessionOverflow(state: InstanceState): void {
+    const cap = state.maxRunsPerInstance;
+    while (state.sessions.size > cap) {
+      let oldestId: string | undefined;
+      let oldestMs = Number.POSITIVE_INFINITY;
+      for (const [id, session] of state.sessions) {
+        if (session.status === "running") {
+          continue;
+        }
+        const ms = startMs(session.startTs);
+        if (ms < oldestMs) {
+          oldestMs = ms;
+          oldestId = id;
+        }
+      }
+      if (oldestId === undefined) {
+        // Every remaining session is still running — nothing safe to evict.
+        break;
+      }
+      state.sessions.delete(oldestId);
+      state.artifactFinished.delete(oldestId);
+      this.emit({ t: "session_removed", sourceId: state.discovered.instance.sourceId, runId: oldestId });
+    }
   }
 
   private watchArtifacts(state: InstanceState): void {
@@ -424,6 +485,11 @@ export class SessionAggregator {
       return;
     }
     state.sessions.set(runId, session);
+    if (session.status !== "running") {
+      // Finished on disk: mark it authoritative so live folds stop overwriting it.
+      state.artifactFinished.add(runId);
+    }
+    this.evictSessionOverflow(state);
     this.emit({ t: "session_upsert", session });
     this.scheduleInstancesEmit();
   }
@@ -533,6 +599,7 @@ export class SessionAggregator {
       clearTimeout(timer);
     }
     state.artifactTimers.clear();
+    state.artifactFinished.clear();
     state.sessions.clear();
   }
 
@@ -593,15 +660,61 @@ function runningSummaryFromStart(frame: Extract<RunEventFrame, { t: "run_started
   };
 }
 
-function runningSummaryFromEvent(runId: string): RunSummary {
+function runningSummaryFromEvent(frame: Extract<RunEventFrame, { t: "event" }>): RunSummary {
+  // Default `startedAt` to the event's own timestamp (else wall clock now) so a live
+  // run whose first observed frame is an `event` (run_started missed/dropped) still
+  // sorts to the TOP of the newest-first list rather than the bottom (empty startTs).
+  const startedAt = eventStartedAt(frame.event) ?? new Date().toISOString();
   return {
-    runId,
+    runId: frame.runId,
     conversationId: "",
     status: "running",
+    startedAt,
     durationMs: 0,
     eventCount: 0,
     artifactPaths: [],
   };
+}
+
+/**
+ * Merge a later authoritative summary with an earlier live-derived one, filling only
+ * the identity/provenance fields the later summary left as placeholders
+ * (`conversationId:""`, or absent `startedAt`/`source`/`sourceDetail`). Lets a sparse
+ * `run_finished.summary` inherit provenance a live placeholder already learned rather
+ * than regressing it to blanks.
+ */
+function backfillRunningSummary(base: RunSummary, from: RunSummary): RunSummary {
+  const conversationId = base.conversationId.length > 0 ? base.conversationId : from.conversationId;
+  const startedAt = base.startedAt ?? from.startedAt;
+  const source = base.source ?? from.source;
+  const sourceDetail = base.sourceDetail ?? from.sourceDetail;
+  return {
+    ...base,
+    conversationId,
+    ...(startedAt === undefined ? {} : { startedAt }),
+    ...(source === undefined ? {} : { source }),
+    ...(sourceDetail === undefined ? {} : { sourceDetail }),
+  };
+}
+
+/**
+ * Best-effort ISO timestamp off a raw runtime event (`timestamp`/`createdAt`/`time`,
+ * an ISO string or an epoch number), mirroring observability's `eventTimestamp`.
+ * Returns `undefined` when the event carries none.
+ */
+function eventStartedAt(event: unknown): string | undefined {
+  if (!isRecord(event)) {
+    return undefined;
+  }
+  const raw = event.timestamp ?? event.createdAt ?? event.time;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return raw.trim();
+  }
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const ms = raw < 1e12 ? raw * 1000 : raw;
+    return new Date(ms).toISOString();
+  }
+  return undefined;
 }
 
 function finishedSummary(runId: string, status: string): RunSummary {

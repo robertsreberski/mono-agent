@@ -15,8 +15,8 @@ export const PAGE_BG =
 
 export const TEXT = "#ECEAE3";
 export const MUTED = "#9A9CA4";
-export const DIM = "#6a6d76";
-export const DIMMER = "#565963";
+export const DIM = "#868a93";
+export const DIMMER = "#8a8d95";
 
 // Channel palette (how a run was triggered). Covers every `source` the backend
 // can emit (see deriveRunSource / mapRunToSession) so no real run falls through

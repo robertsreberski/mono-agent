@@ -75,8 +75,8 @@ export function DetailView({ id, onBack }: Props) {
   const [showRecall, setShowRecall] = useState(false);
   const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
+  const s = useMemo(() => sessions.find((x) => x.id === id), [sessions, id]);
   const d = useMemo(() => {
-    const s = sessions.find((x) => x.id === id);
     if (!s) return null;
     const t = s.totals;
     const ch = channelOf(s);
@@ -208,17 +208,21 @@ export function DetailView({ id, onBack }: Props) {
       }
     });
     // The final answer is shown once, in "Delivered output" — hide it from the
-    // timeline by clearing the last assistant turn that carries text.
-    for (let j = steps.length - 1; j >= 0; j--) {
-      const sv = steps[j];
-      if (sv.kind === "assistant" && sv.hasText) {
-        sv.hasText = false;
-        break;
+    // timeline by clearing the last assistant turn that carries text. Only do
+    // this when there is a real, finished delivered text to show it instead;
+    // otherwise (empty finalText for memory/tui runs, or a still-streaming live
+    // run) keep the assistant turn visible so its output isn't lost entirely.
+    if (s.finalText.trim() && s.status !== "running") {
+      for (let j = steps.length - 1; j >= 0; j--) {
+        const sv = steps[j];
+        if (sv.kind === "assistant" && sv.hasText) {
+          sv.hasText = false;
+          break;
+        }
       }
     }
 
     return {
-      s,
       isChat,
       col,
       channel: channelLabel(ch),
@@ -234,12 +238,14 @@ export function DetailView({ id, onBack }: Props) {
       tbCache: Math.round((t.tokCache / tokTot) * 100),
     };
     // note: `open`/`showRecall` are read at render time, not memo deps.
-  }, [sessions, id]);
+    // keyed on `s` alone so an SSE upsert to any *other* session doesn't
+    // rebuild this run's timeline.
+  }, [s]);
 
-  if (!d) {
+  if (!s || !d) {
     return (
       <div style={{ maxWidth: 920, margin: "0 auto", padding: 60, textAlign: "center", color: DIM, fontFamily: FONT_MONO }}>
-        <button className="back-btn" onClick={onBack} style={backBtnStyle}>
+        <button className="back-btn" onClick={onBack} style={backBtnStyle} aria-label="Back to all sessions">
           &larr; all sessions
         </button>
         <div style={{ marginTop: 30 }}>This run is no longer available.</div>
@@ -247,7 +253,7 @@ export function DetailView({ id, onBack }: Props) {
     );
   }
 
-  const { s, isChat, outcome, eff, vitals, toolBars, toolEntries, steps } = d;
+  const { isChat, outcome, eff, vitals, toolBars, toolEntries, steps } = d;
   const t = s.totals;
 
   return (
@@ -272,7 +278,7 @@ export function DetailView({ id, onBack }: Props) {
             gap: isMobile ? 8 : 14,
           }}
         >
-          <button className="back-btn" onClick={onBack} style={backBtnStyle}>
+          <button className="back-btn" onClick={onBack} style={backBtnStyle} aria-label="Back to all sessions">
             {isMobile ? <>&larr;</> : <>&larr; all sessions</>}
           </button>
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -420,6 +426,7 @@ export function DetailView({ id, onBack }: Props) {
                 <button
                   className="link-btn"
                   onClick={() => setShowRecall((v) => !v)}
+                  aria-expanded={showRecall}
                   style={{
                     cursor: "pointer",
                     background: "none",
@@ -430,6 +437,7 @@ export function DetailView({ id, onBack }: Props) {
                     letterSpacing: ".06em",
                     padding: "8px 4px",
                     margin: "0 0 0 -4px",
+                    minHeight: 44,
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
@@ -537,7 +545,7 @@ export function DetailView({ id, onBack }: Props) {
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", color: AMBER, fontWeight: 600 }}>Agent</span>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIMMER }}>
-                        {st.dt} · {st.timeStr}
+                        {st.dt ? st.dt + " · " : ""}{st.timeStr}
                       </span>
                     </div>
 
@@ -546,12 +554,14 @@ export function DetailView({ id, onBack }: Props) {
                         <button
                           className="think-btn"
                           onClick={() => toggle(st.thinkKey)}
+                          aria-expanded={open[st.thinkKey]}
                           style={{
                             cursor: "pointer",
                             background: "none",
                             border: "none",
                             padding: "8px 4px",
                             margin: "0 0 0 -4px",
+                            minHeight: 44,
                             display: "flex",
                             alignItems: "center",
                             gap: 7,
@@ -579,13 +589,27 @@ export function DetailView({ id, onBack }: Props) {
                             const isOpen = !!open[c.key];
                             return (
                               <div key={c.key} style={{ background: "rgba(79,182,166,.05)", border: "1px solid rgba(79,182,166,.16)", borderRadius: 9, overflow: "hidden" }}>
-                                <div className="call-head" onClick={() => toggle(c.key)} style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 9, padding: "12px 11px", minHeight: 44 }}>
+                                <div
+                                  className="call-head"
+                                  role="button"
+                                  tabIndex={0}
+                                  onClick={() => toggle(c.key)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault();
+                                      toggle(c.key);
+                                    }
+                                  }}
+                                  aria-expanded={isOpen}
+                                  aria-label={`${c.name} tool call`}
+                                  style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 9, padding: "12px 11px", minHeight: 44 }}
+                                >
                                   <span style={{ width: 7, height: 7, borderRadius: "50%", background: c.statusColor, flex: "none", boxShadow: `0 0 6px ${c.statusColor}` }} />
                                   <span style={{ fontFamily: FONT_MONO, fontSize: 12, fontWeight: 600, color: "#6FD0C0" }}>{c.name}</span>
                                   <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: "#8b8d94", flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                     {c.argDig}
                                   </span>
-                                  <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: "#7d8088", whiteSpace: "nowrap" }}>{c.durStr}</span>
+                                  <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: "#9aa0a8", whiteSpace: "nowrap" }}>{c.durStr}</span>
                                   <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: DIMMER }}>{isOpen ? "▾" : "▸"}</span>
                                 </div>
                                 {c.hasResult && !isOpen && (
@@ -662,15 +686,17 @@ export function DetailView({ id, onBack }: Props) {
                 </span>
                 <div style={{ lineHeight: 1.1 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: TEXT }}>{s.instance}</div>
-                  <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: "#9A7B4A" }}>
+                  <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: "#c39a5e" }}>
                     {outcome.running ? "Running · streaming live" : `${channelLabel(channelOf(s))} · delivered`}
                   </div>
                 </div>
               </div>
               {s.finalText.trim() ? (
                 <Markdown src={s.finalText + (s.finalTr ? "\n…" : "")} style={{ fontSize: 14, lineHeight: 1.6, color: "#ECE6DC", fontFamily: FONT_UI }} />
-              ) : (
+              ) : outcome.running ? (
                 <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: DIM }}>Still running — no final output yet.</div>
+              ) : (
+                <div style={{ fontFamily: FONT_MONO, fontSize: 13, color: DIM }}>No final output captured for this run.</div>
               )}
             </div>
           )}

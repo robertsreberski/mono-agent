@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Session, WebInstance } from "../lib/types";
 import {
   timeStr,
@@ -42,6 +42,15 @@ export function ListView(props: Props) {
   const { sessions, fChannel, fOut, fInstance, setFChannel, setFOut, setFInstance, onOpen } = props;
   const [instOpen, setInstOpen] = useState(false);
   const isMobile = useIsMobile();
+
+  useEffect(() => {
+    if (!instOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setInstOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [instOpen]);
 
   const m = useMemo(() => {
     // ---- instances (over all sessions) ----
@@ -107,21 +116,28 @@ export function ListView(props: Props) {
     const aggTiles = [
       { label: "Total cost", value: fmtCost(cost), sub: "≈ " + fmtCost(cost / n) + " / run", color: AMBER },
       { label: "Tokens", value: fmtTok(tok), sub: "in + out", color: BLUE },
-      { label: "Tool calls", value: "" + tools, sub: "across all runs", color: TEAL },
-      { label: "Reasoning", value: "" + think, sub: "thinking blocks", color: VIOLET },
+      { label: "Tool calls", value: tools.toLocaleString(), sub: "across all runs", color: TEAL },
+      { label: "Reasoning", value: think.toLocaleString(), sub: "thinking blocks", color: VIOLET },
       { label: "Silent runs", value: "" + silentN, sub: "stayed quiet, no interrupt", color: "#8b8d94" },
     ];
 
     // ---- channel + outcome filter chips ----
-    const present = CHANNEL_ORDER.filter((c) => sessions.some((s) => channelOf(s) === c));
+    // Channel chips describe what's pickable/how many within the OTHER active
+    // filters (instance + outcome), NOT fChannel itself — otherwise picking
+    // instance A still offers channels only in B and shows global counts.
+    const chanBase = sessions.filter(
+      (s) => (fOut === "all" || s.outcome === fOut) && (fInstance === "all" || s.instance === fInstance),
+    );
+    const present = CHANNEL_ORDER.filter((c) => chanBase.some((s) => channelOf(s) === c));
     const chKeys = ["all", ...present];
     const kindChips = chKeys.map((k) => {
       const active = fChannel === k;
       const col = k === "all" ? TEXT : channelColor(k);
-      const nn = k === "all" ? sessions.length : sessions.filter((s) => channelOf(s) === k).length;
+      const nn = k === "all" ? chanBase.length : chanBase.filter((s) => channelOf(s) === k).length;
       return {
         key: k,
         label: k === "all" ? "All" : channelLabel(k),
+        active,
         n: nn,
         bg: active ? (k === "all" ? "rgba(255,255,255,.14)" : hexA(col, 0.16)) : "rgba(255,255,255,.03)",
         border: active ? hexA(col, 0.5) : "rgba(255,255,255,.1)",
@@ -139,6 +155,7 @@ export function ListView(props: Props) {
       return {
         key: k,
         label: l,
+        active,
         bg: active ? hexA(col, 0.16) : "rgba(255,255,255,.03)",
         border: active ? hexA(col, 0.5) : "rgba(255,255,255,.1)",
         color: active ? col : MUTED,
@@ -181,6 +198,10 @@ export function ListView(props: Props) {
     const amin = times.length ? Math.min(...times) : 0;
     const amax = times.length ? Math.max(...times) : 1;
     const span = Math.max(1, amax - amin);
+    // When every filtered run shares a timestamp (or there's just one), the
+    // time axis collapses and everything pins to left:0%. Fall back to an even
+    // spread by index so bars/points stay laid out across the strip.
+    const degenerate = list.length <= 1 || amax === amin;
     // A bar per run reads fine at a handful of runs but smears into a cluttered
     // solid block at hundreds. Above a cap, bucket by time (one bar per slot:
     // height ∝ total cost, dominant-channel colour, filled if any run notified)
@@ -241,6 +262,10 @@ export function ListView(props: Props) {
         };
       });
     }
+    if (degenerate) {
+      const nBars = activity.length;
+      activity = activity.map((a, i) => ({ ...a, left: nBars <= 1 ? 50 : ((i + 0.5) / nBars) * 100 }));
+    }
     const dayMs = 86400000;
     const dayTicks: { left: number; label: string }[] = [];
     const d0 = new Date(amin);
@@ -256,9 +281,14 @@ export function ListView(props: Props) {
     const sorted = [...list].sort((a, b) => +new Date(a.startTs) - +new Date(b.startTs));
     const totC = sorted.reduce((a, x) => a + x.totals.cost, 0) || 0.0001;
     let cc = 0;
-    const pts = sorted.map((s) => {
+    const pts = sorted.map((s, i) => {
       cc += s.totals.cost;
-      return { x: ((+new Date(s.startTs) - amin) / span) * 100, y: (cc / totC) * 100 };
+      const x = degenerate
+        ? sorted.length <= 1
+          ? 50
+          : (i / (sorted.length - 1)) * 100
+        : ((+new Date(s.startTs) - amin) / span) * 100;
+      return { x, y: (cc / totC) * 100 };
     });
     let costChart: {
       has: boolean;
@@ -358,6 +388,8 @@ export function ListView(props: Props) {
           <button
             className="rec-btn"
             onClick={() => setInstOpen((o) => !o)}
+            aria-haspopup="listbox"
+            aria-expanded={instOpen}
             style={{
               cursor: "pointer",
               display: "inline-flex",
@@ -393,6 +425,8 @@ export function ListView(props: Props) {
 
           {instOpen && (
             <div
+              role="listbox"
+              aria-label="Instance"
               style={{
                 position: "absolute",
                 right: 0,
@@ -420,6 +454,8 @@ export function ListView(props: Props) {
                 <button
                   key={ins.key}
                   className="menu-item"
+                  role="option"
+                  aria-selected={ins.key === fInstance}
                   onClick={() => {
                     setFInstance(ins.key);
                     setInstOpen(false);
@@ -530,8 +566,17 @@ export function ListView(props: Props) {
             <div
               key={a.id + i}
               className="rec-bar"
+              role="button"
+              tabIndex={0}
               onClick={() => onOpen(a.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onOpen(a.id);
+                }
+              }}
               title={a.tip}
+              aria-label={a.tip}
               style={
                 {
                   position: "absolute",
@@ -606,6 +651,7 @@ export function ListView(props: Props) {
             <button
               key={c.key}
               className="rec-chip"
+              aria-pressed={c.active}
               onClick={() => setFChannel(c.key)}
               style={{
                 cursor: "pointer",
@@ -633,6 +679,7 @@ export function ListView(props: Props) {
             <button
               key={c.key}
               className="rec-chip"
+              aria-pressed={c.active}
               onClick={() => setFOut(c.key)}
               style={{
                 cursor: "pointer",
@@ -662,7 +709,16 @@ export function ListView(props: Props) {
           <div
             key={card.id}
             className="rec-card"
+            role="button"
+            tabIndex={0}
             onClick={() => onOpen(card.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onOpen(card.id);
+              }
+            }}
+            aria-label={`Open run: ${card.title} — ${card.kindLabel}, ${card.dateStr} ${card.timeStr}`}
             style={
               {
                 cursor: "pointer",
@@ -758,21 +814,21 @@ export function ListView(props: Props) {
                   </span>
                 )}
                 <div style={{ display: "flex", gap: 14, alignItems: "center", fontFamily: FONT_MONO, fontSize: 12.5 }}>
-                  <span title="duration" style={{ display: "flex", alignItems: "center", gap: 5, color: "#8b8d94" }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                  <span title="duration" role="img" aria-label={`Duration ${card.durStr}`} style={{ display: "flex", alignItems: "center", gap: 5, color: "#8b8d94" }}>
+                    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
                       <circle cx="12" cy="12" r="9" />
                       <path d="M12 7.5v5l3.2 1.8" />
                     </svg>
                     {card.durStr}
                   </span>
-                  <span title="tool calls" style={{ display: "flex", alignItems: "center", gap: 5, color: TEAL }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <span title="tool calls" role="img" aria-label={`${card.tools} tool calls`} style={{ display: "flex", alignItems: "center", gap: 5, color: TEAL }}>
+                    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M8.5 6L3.5 12l5 6M15.5 6l5 6-5 6" />
                     </svg>
                     {card.tools}
                   </span>
-                  <span title="reasoning" style={{ display: "flex", alignItems: "center", gap: 5, color: VIOLET }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <span title="reasoning" role="img" aria-label={`${card.think} reasoning blocks`} style={{ display: "flex", alignItems: "center", gap: 5, color: VIOLET }}>
+                    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M12 3l1.7 5.6L19 10l-5.3 1.4L12 17l-1.7-5.6L5 10l5.3-1.4z" />
                     </svg>
                     {card.think}
@@ -786,7 +842,9 @@ export function ListView(props: Props) {
       </div>
 
       {m.cards.length === 0 && (
-        <div style={{ textAlign: "center", color: DIM, padding: 50, fontFamily: FONT_MONO, fontSize: 13 }}>No sessions match this filter.</div>
+        <div style={{ textAlign: "center", color: DIM, padding: 50, fontFamily: FONT_MONO, fontSize: 13 }}>
+          {fChannel === "all" && fOut === "all" && fInstance === "all" ? "No runs recorded yet." : "No sessions match this filter."}
+        </div>
       )}
 
       {instOpen && <div onClick={() => setInstOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />}

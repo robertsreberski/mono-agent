@@ -7,7 +7,12 @@ import { createElement, type CSSProperties, type ReactElement } from "react";
 import { FONT_MONO } from "./tokens";
 
 export function esc(s: unknown): string {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export function mdInline(input: string): string {

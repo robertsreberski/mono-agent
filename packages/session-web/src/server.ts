@@ -168,30 +168,90 @@ function handleStream(aggregator: SessionAggregator, res: Response): void {
   res.socket?.setNoDelay(true);
   res.flushHeaders();
 
-  const send = (frame: BrowserStreamFrame): void => {
-    if (!res.writableEnded) {
-      res.write(`data: ${JSON.stringify(frame)}\n\n`);
+  // Per-connection outbound queue that respects socket backpressure. `res.write`
+  // returning false means the send buffer is full; we stop and resume on the next
+  // 'drain' rather than letting Node buffer unboundedly for a slow/backgrounded
+  // client. `session_upsert`s coalesce per runId — an unsent upsert is replaced in
+  // place by a newer one — so a stalled client never accumulates stale duplicates
+  // (it just gets the latest state for each run once it can receive again).
+  interface QueueEntry {
+    frame: BrowserStreamFrame;
+  }
+  const queue: QueueEntry[] = [];
+  const pendingUpserts = new Map<string, QueueEntry>();
+  let draining = false;
+  let closed = false;
+
+  const flush = (): void => {
+    while (!closed && !draining && queue.length > 0) {
+      const entry = queue.shift();
+      if (entry === undefined) {
+        break;
+      }
+      if (entry.frame.t === "session_upsert") {
+        pendingUpserts.delete(entry.frame.session.id);
+      }
+      if (res.writableEnded) {
+        closed = true;
+        return;
+      }
+      const ok = res.write(`data: ${JSON.stringify(entry.frame)}\n\n`);
+      if (!ok) {
+        draining = true;
+        res.once("drain", () => {
+          draining = false;
+          flush();
+        });
+        return;
+      }
     }
   };
 
+  const enqueue = (frame: BrowserStreamFrame): void => {
+    if (closed || res.writableEnded) {
+      return;
+    }
+    if (frame.t === "session_upsert") {
+      const existing = pendingUpserts.get(frame.session.id);
+      if (existing !== undefined) {
+        // Coalesce: overwrite the still-queued upsert for this run with the latest.
+        existing.frame = frame;
+        flush();
+        return;
+      }
+      const entry: QueueEntry = { frame };
+      pendingUpserts.set(frame.session.id, entry);
+      queue.push(entry);
+    } else {
+      queue.push({ frame });
+    }
+    flush();
+  };
+
   // Initial snapshot: the instance list, then one upsert per current session, so a
-  // fresh browser reconstructs full state before any live frame arrives.
-  send({ t: "instances", instances: aggregator.getInstances() });
+  // fresh browser reconstructs full state before any live frame arrives. It flows
+  // through the same backpressure-aware queue; the aggregator's per-instance
+  // eviction cap bounds how large the snapshot can grow.
+  enqueue({ t: "instances", instances: aggregator.getInstances() });
   for (const session of aggregator.getSessions("all")) {
-    send({ t: "session_upsert", session });
+    enqueue({ t: "session_upsert", session });
   }
 
-  const unsubscribe = aggregator.subscribe(send);
+  const unsubscribe = aggregator.subscribe(enqueue);
   const heartbeat = setInterval(() => {
-    if (!res.writableEnded) {
+    // Skip the keep-alive while draining so we don't pile onto a full buffer.
+    if (!closed && !draining && !res.writableEnded) {
       res.write(": ping\n\n");
     }
   }, HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();
 
   res.on("close", () => {
+    closed = true;
     clearInterval(heartbeat);
     unsubscribe();
+    queue.length = 0;
+    pendingUpserts.clear();
   });
 }
 

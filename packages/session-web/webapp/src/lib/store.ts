@@ -48,7 +48,12 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   instancesRef.current = instances;
   const statusRef = useRef<ConnStatus>("loading");
   statusRef.current = status;
+  const sessionsRef = useRef<Session[]>([]);
+  sessionsRef.current = sessions;
   const inflight = useRef<Set<string>>(new Set());
+  // Runs we've already fired a detail fetch for (attempted), so a legitimately
+  // zero-step run isn't re-fetched on every open.
+  const loadedDetail = useRef<Set<string>>(new Set());
 
   const upsertSession = useCallback((incoming: Session) => {
     setSessions((prev) => {
@@ -69,7 +74,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
 
     (async () => {
       try {
-        const [ins, ses] = await Promise.all([fetchInstances(), fetchSessions("all", 200)]);
+        const [ins, ses] = await Promise.all([fetchInstances(), fetchSessions("all", 2000)]);
         if (disposed) return;
         setInstances(ins);
         setSessions([...ses].sort(byNewest));
@@ -100,18 +105,16 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   const ensureDetail = useCallback(
     (id: string) => {
       if (statusRef.current !== "live") return; // fixture already carries steps
-      if (inflight.current.has(id)) return;
-      setSessions((prev) => {
-        const s = prev.find((x) => x.id === id);
-        if (!s || (s.steps && s.steps.length > 0)) return prev; // already have detail
-        inflight.current.add(id);
-        const sourceId = resolveSourceId(s, instancesRef.current);
-        fetchSessionDetail(sourceId, id)
-          .then((full) => upsertSession(full))
-          .catch(() => {})
-          .finally(() => inflight.current.delete(id));
-        return prev;
-      });
+      if (inflight.current.has(id) || loadedDetail.current.has(id)) return; // in-flight or already attempted
+      const s = sessionsRef.current.find((x) => x.id === id);
+      if (!s) return;
+      loadedDetail.current.add(id);
+      inflight.current.add(id);
+      const sourceId = resolveSourceId(s, instancesRef.current);
+      fetchSessionDetail(sourceId, id)
+        .then((full) => upsertSession(full))
+        .catch(() => {})
+        .finally(() => inflight.current.delete(id));
     },
     [upsertSession],
   );
