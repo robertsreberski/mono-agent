@@ -324,6 +324,12 @@ export class MonoAgentTuiApp {
         matchesKey(data, "enter")
       ) {
         this.activePicker.list.handleInput(data);
+        // A consumed key never reaches pi-tui's focused-component path (which is
+        // what would otherwise schedule a paint), and SelectList.handleInput does
+        // not self-render -- so without this the moved cursor never repaints in an
+        // idle session (a streaming turn's animation would mask it, which is why it
+        // only looks frozen once the conversation has gone quiet).
+        this.tui.requestRender();
         return { consume: true };
       }
       return { consume: true };
