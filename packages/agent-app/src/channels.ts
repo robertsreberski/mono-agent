@@ -925,6 +925,7 @@ export function createLiveChannelDriver(
         // A dead endpoint must flip the channel to failed, not serve nothing
         // silently — the web surface's only per-agent live signal is this status.
         onServerError: (reason) => input.onFailure(reason),
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
       return {
         summary: { baseUrl: adapter.baseUrl },
