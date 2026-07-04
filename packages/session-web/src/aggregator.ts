@@ -1,7 +1,8 @@
 /**
  * The session store + orchestrator behind the web operator surface. It folds two
- * sources into one per-instance session model, both keyed by `runId` in the same
- * `sessions` map (last write wins — the finished on-disk artifact is authoritative):
+ * sources into one per-instance session model, keyed by `sourceId + runId` at
+ * the browser boundary and by `runId` inside each instance state (the finished
+ * on-disk artifact is authoritative):
  *
  *  - **Recorded history**: seeded from each instance's artifact dir on discovery,
  *    then refreshed by watching that dir for changed `*.summary.json` files.
@@ -19,11 +20,12 @@ import type { FSWatcher } from "node:fs";
 
 import type { RunEventFrame } from "@mono-agent/agent-contracts";
 import { mapRunToSession } from "@mono-agent/observability";
-import type { RunSummary, RunSummaryStatus, RuntimeEventLike, Session } from "@mono-agent/observability";
+import type { RunSummary, RunSummaryStatus, RuntimeEventLike } from "@mono-agent/observability";
 
 import { discoverWebInstances, resolveLiveApiKey } from "./discovery.js";
 import type { DiscoveredWebInstance } from "./discovery.js";
 import { listInstanceSessions, readInstanceSession } from "./history.js";
+import type { SourceStampedSession } from "./history.js";
 import { connectLiveStream } from "./live-client.js";
 import type { LiveStreamConnection, LiveStreamStatus } from "./live-client.js";
 import type { BrowserStreamFrame, WebInstance } from "./session-model.js";
@@ -79,7 +81,7 @@ interface LiveState {
 
 interface InstanceState {
   discovered: DiscoveredWebInstance;
-  readonly sessions: Map<string, Session>;
+  readonly sessions: Map<string, SourceStampedSession>;
   liveConnected: boolean;
   live: LiveState | undefined;
   artifactWatcher: FSWatcher | undefined;
@@ -155,7 +157,7 @@ export class SessionAggregator {
   }
 
   /** Sessions for one instance (by sourceId) or all ("all"), newest-first by `startTs`. */
-  getSessions(filter: string): Session[] {
+  getSessions(filter: string): SourceStampedSession[] {
     const states =
       filter === "all"
         ? [...this.states.values()]
@@ -169,7 +171,7 @@ export class SessionAggregator {
   }
 
   /** One session, reading it from disk on demand when it isn't already held. */
-  async getSession(sourceId: string, runId: string): Promise<Session | undefined> {
+  async getSession(sourceId: string, runId: string): Promise<SourceStampedSession | undefined> {
     const state = this.states.get(sourceId);
     if (state === undefined) {
       return undefined;
@@ -178,7 +180,7 @@ export class SessionAggregator {
     if (existing !== undefined) {
       return existing;
     }
-    let session: Session | undefined;
+    let session: SourceStampedSession | undefined;
     try {
       session = await readInstanceSession(state.discovered, runId);
     } catch (error) {
@@ -252,10 +254,7 @@ export class SessionAggregator {
     this.states.set(discovered.instance.sourceId, state);
 
     try {
-      const sessions = await listInstanceSessions(discovered, { maxRuns: this.maxRunsPerInstance });
-      for (const session of sessions) {
-        state.sessions.set(session.id, session);
-      }
+      await this.seedHistory(state, { emitSessions: false });
     } catch (error) {
       this.logger?.warn?.("Failed to seed instance history.", {
         sourceId: discovered.instance.sourceId,
@@ -325,9 +324,12 @@ export class SessionAggregator {
     if (live === undefined) {
       return;
     }
+    if (frame.sourceId !== state.discovered.instance.sourceId) {
+      return;
+    }
     // A run that already finished (live) or was materialized from its terminal
     // disk artifact must not be resurrected by a late/replayed non-terminal frame.
-    if (frame.t !== "run_finished" && (state.liveFinished.has(frame.runId) || state.artifactFinished.has(frame.runId))) {
+    if (state.liveFinished.has(frame.runId) || state.artifactFinished.has(frame.runId)) {
       return;
     }
     if (frame.t === "run_started") {
@@ -407,7 +409,8 @@ export class SessionAggregator {
     if (state.artifactFinished.has(runId)) {
       return;
     }
-    const session = mapRunToSession(summary, events, this.mapOptions(state));
+    const sourceId = state.discovered.instance.sourceId;
+    const session: SourceStampedSession = { ...mapRunToSession(summary, events, this.mapOptions(state)), sourceId };
     state.sessions.set(runId, session);
     this.evictSessionOverflow(state, runId);
     this.emit({ t: "session_upsert", session });
@@ -493,7 +496,7 @@ export class SessionAggregator {
     if (this.stopped || !this.states.has(state.discovered.instance.sourceId)) {
       return;
     }
-    let session: Session | undefined;
+    let session: SourceStampedSession | undefined;
     try {
       session = await readInstanceSession(state.discovered, runId);
     } catch (error) {
@@ -582,16 +585,32 @@ export class SessionAggregator {
     const previous = state.discovered;
     state.discovered = discovered;
     let changed = previous.instance.health !== discovered.instance.health;
+    let liveReconnected = false;
 
     if (previous.instance.artifactDir !== discovered.instance.artifactDir) {
+      this.disconnectLive(state);
+      liveReconnected = true;
       if (state.artifactWatcher !== undefined) {
         state.artifactWatcher.close();
         state.artifactWatcher = undefined;
       }
+      for (const timer of state.artifactTimers.values()) {
+        clearTimeout(timer);
+      }
+      state.artifactTimers.clear();
+      const removedRunIds = [...state.sessions.keys()];
+      state.sessions.clear();
+      state.artifactFinished.clear();
+      state.liveFinished.clear();
+      for (const runId of removedRunIds) {
+        this.emit({ t: "session_removed", sourceId: discovered.instance.sourceId, runId });
+      }
+      await this.seedHistory(state, { emitSessions: true });
       this.watchArtifacts(state);
+      await this.connectLive(state);
       changed = true;
     }
-    if (previous.liveBaseUrl !== discovered.liveBaseUrl) {
+    if (!liveReconnected && previous.liveBaseUrl !== discovered.liveBaseUrl) {
       this.disconnectLive(state);
       await this.connectLive(state);
       changed = true;
@@ -655,6 +674,19 @@ export class SessionAggregator {
       liveConnected: state.liveConnected,
       counts: { runs: state.sessions.size },
     };
+  }
+
+  private async seedHistory(state: InstanceState, options: { readonly emitSessions: boolean }): Promise<void> {
+    const sessions = await listInstanceSessions(state.discovered, { maxRuns: state.maxRunsPerInstance });
+    for (const session of sessions) {
+      state.sessions.set(session.id, session);
+      if (session.status !== "running") {
+        state.artifactFinished.add(session.id);
+      }
+      if (options.emitSessions) {
+        this.emit({ t: "session_upsert", session });
+      }
+    }
   }
 
   private mapOptions(state: InstanceState): { instanceLabel: string; cwd?: string } {

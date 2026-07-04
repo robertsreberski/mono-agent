@@ -61,6 +61,7 @@ describe("listInstanceSessions", () => {
     expect(sessions[0]?.id).toBe("run-newer");
 
     const newer = sessions[0];
+    expect(newer?.sourceId).toBe(discovered.instance.sourceId);
     expect(newer?.instance).toBe("History Agent");
     expect(newer?.source).toBe("chat");
     expect(newer?.finalText).toBe("Newer answer.");
@@ -88,6 +89,7 @@ describe("readInstanceSession", () => {
 
     const session = await readInstanceSession(discovered, "run-solo");
     expect(session?.id).toBe("run-solo");
+    expect(session?.sourceId).toBe(discovered.instance.sourceId);
     expect(session?.finalText).toBe("General Kenobi.");
     expect(session?.cwd).toBe(discovered.instance.cwd);
 

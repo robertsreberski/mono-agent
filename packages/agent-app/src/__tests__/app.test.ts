@@ -883,6 +883,31 @@ describe("startMonoAgentApp", () => {
     await app.stop();
     expect(order).toEqual(["flush", "close"]);
   });
+
+  it("builds the shared memory store once when concurrent channel startup requests it", async () => {
+    await writeConfig(baseConfig());
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+    const coreConfig = {
+      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" }, executionMode: "sdk", maxTurns: 4, workspace: dir, session: { mode: "per-message", idleTimeoutMs: 1_800_000 } },
+      context: { identityPath: join(dir, "IDENTITY.md"), selectedSkills: [] },
+      memory: { mode: "lite", path: join(dir, "mem"), writeMode: "disabled", maxBytes: 8_000 },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: join(dir, "artifacts") },
+      traceability: { registryDir: join(dir, "trace-sources"), sourceId: "app-test", sourceLabel: "App Test" },
+    };
+
+    try {
+      const controller = app as unknown as { memoryStore(config: unknown): Promise<unknown> };
+      const [first, second] = await Promise.all([
+        controller.memoryStore(coreConfig),
+        controller.memoryStore(coreConfig),
+      ]);
+
+      expect(first).toBe(second);
+    } finally {
+      await app.stop();
+    }
+  });
 });
 
 describe("startMonoAgentApp global trace-source mirror", () => {

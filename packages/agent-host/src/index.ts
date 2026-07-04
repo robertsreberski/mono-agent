@@ -397,7 +397,7 @@ export async function createConfiguredMemory(
      */
     observability?: Pick<
       ConfiguredAgentHarnessOptions,
-      "observabilityContext" | "exporterWarn" | "exporterFactory"
+      "observabilityContext" | "exporterWarn" | "exporterFactory" | "runEventSink"
     >;
   } = {},
 ): Promise<MemoryStore | undefined> {

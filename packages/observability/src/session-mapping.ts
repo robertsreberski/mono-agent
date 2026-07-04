@@ -114,6 +114,8 @@ export type SessionStep =
 /** The UI "Session" model the web visualizer renders. */
 export interface Session {
   readonly id: string;
+  /** Trace-source id of the producing agent instance, when known. */
+  readonly sourceId?: string;
   readonly cwd: string;
   readonly instance: string;
   readonly startTs: string;
@@ -143,6 +145,8 @@ export interface Session {
 }
 
 export interface MapRunToSessionOptions {
+  /** Trace-source id of the producing agent instance, used for stable cross-instance identity. */
+  readonly sourceId?: string;
   /** Which agent instance this run belongs to (display label). */
   readonly instanceLabel: string;
   /** Working directory the run executed in, when known. */
@@ -228,6 +232,7 @@ export function mapRunToSession(
 
   return {
     id: summary.runId,
+    ...(opts.sourceId === undefined ? {} : { sourceId: opts.sourceId }),
     cwd: opts.cwd ?? "",
     instance: opts.instanceLabel,
     startTs: summary.startedAt ?? "",
@@ -380,11 +385,15 @@ function walkEvents(summary: RunSummary, events: readonly RuntimeEventLike[]): W
 
     for (const block of content) {
       if (!isRecord(block)) continue;
+      const isAssistantEvent = type === "assistant";
       if (block.type === "thinking") {
+        if (!isAssistantEvent) continue;
         appendChunk(ts, "thinking", blockText(block));
       } else if (block.type === "text") {
+        if (!isAssistantEvent) continue;
         appendChunk(ts, "text", blockText(block));
       } else if (block.type === "tool_use") {
+        if (!isAssistantEvent) continue;
         const work = ensureCurrent(ts);
         commitBuffer(work);
         const id = readString(block.id) ?? `tool-${index}`;

@@ -78,6 +78,7 @@ export async function startSessionWebServer(
 
   const app = express();
   const server = createServer(app);
+  const activeStreams = new Set<() => void>();
 
   app.get("/api/instances", (_req, res) => {
     res.json({ instances: aggregator.getInstances() });
@@ -106,7 +107,7 @@ export async function startSessionWebServer(
   });
 
   app.get("/api/stream", (_req, res) => {
-    handleStream(aggregator, res);
+    handleStream(aggregator, res, activeStreams);
   });
 
   // Any other /api/* path is a genuine 404 (never falls through to the SPA).
@@ -148,6 +149,10 @@ export async function startSessionWebServer(
     return {
       url,
       async stop() {
+        for (const closeStream of [...activeStreams]) {
+          closeStream();
+        }
+        activeStreams.clear();
         await close(server);
         await aggregator.stop();
       },
@@ -159,7 +164,7 @@ export async function startSessionWebServer(
   }
 }
 
-function handleStream(aggregator: SessionAggregator, res: Response): void {
+function handleStream(aggregator: SessionAggregator, res: Response, activeStreams: Set<() => void>): void {
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -181,6 +186,28 @@ function handleStream(aggregator: SessionAggregator, res: Response): void {
   const pendingUpserts = new Map<string, QueueEntry>();
   let draining = false;
   let closed = false;
+  let unsubscribe: (() => void) | undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+
+  const closeStream = (): void => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    if (heartbeat !== undefined) {
+      clearInterval(heartbeat);
+      heartbeat = undefined;
+    }
+    unsubscribe?.();
+    unsubscribe = undefined;
+    queue.length = 0;
+    pendingUpserts.clear();
+    activeStreams.delete(closeStream);
+    if (!res.writableEnded) {
+      res.end();
+    }
+  };
+  activeStreams.add(closeStream);
 
   const flush = (): void => {
     while (!closed && !draining && queue.length > 0) {
@@ -189,7 +216,7 @@ function handleStream(aggregator: SessionAggregator, res: Response): void {
         break;
       }
       if (entry.frame.t === "session_upsert") {
-        pendingUpserts.delete(entry.frame.session.id);
+        pendingUpserts.delete(sessionQueueKey(entry.frame.session));
       }
       if (res.writableEnded) {
         closed = true;
@@ -212,7 +239,8 @@ function handleStream(aggregator: SessionAggregator, res: Response): void {
       return;
     }
     if (frame.t === "session_upsert") {
-      const existing = pendingUpserts.get(frame.session.id);
+      const queueKey = sessionQueueKey(frame.session);
+      const existing = pendingUpserts.get(queueKey);
       if (existing !== undefined) {
         // Coalesce by REMOVING the stale queued upsert and re-appending the latest
         // at the tail — not overwriting in place. If a session_removed for the same
@@ -225,7 +253,7 @@ function handleStream(aggregator: SessionAggregator, res: Response): void {
         }
       }
       const entry: QueueEntry = { frame };
-      pendingUpserts.set(frame.session.id, entry);
+      pendingUpserts.set(queueKey, entry);
       queue.push(entry);
     } else {
       queue.push({ frame });
@@ -242,8 +270,8 @@ function handleStream(aggregator: SessionAggregator, res: Response): void {
     enqueue({ t: "session_upsert", session });
   }
 
-  const unsubscribe = aggregator.subscribe(enqueue);
-  const heartbeat = setInterval(() => {
+  unsubscribe = aggregator.subscribe(enqueue);
+  heartbeat = setInterval(() => {
     // Skip the keep-alive while draining so we don't pile onto a full buffer.
     if (!closed && !draining && !res.writableEnded) {
       res.write(": ping\n\n");
@@ -252,12 +280,12 @@ function handleStream(aggregator: SessionAggregator, res: Response): void {
   heartbeat.unref?.();
 
   res.on("close", () => {
-    closed = true;
-    clearInterval(heartbeat);
-    unsubscribe();
-    queue.length = 0;
-    pendingUpserts.clear();
+    closeStream();
   });
+}
+
+function sessionQueueKey(session: { readonly id: string; readonly sourceId?: string; readonly instance?: string }): string {
+  return `${session.sourceId ?? session.instance ?? ""}:${session.id}`;
 }
 
 /**

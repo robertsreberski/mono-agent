@@ -5,6 +5,7 @@ import { LIVE_EVENT_SCHEMA, type RunEventFrame } from "@mono-agent/agent-contrac
 import {
   createLiveEventBus,
   LIVE_ADAPTER_INFO_SCHEMA,
+  loadLiveAdapterConfig,
   startLiveAdapter,
   type LiveAdapterHandle,
 } from "../index.js";
@@ -101,6 +102,28 @@ describe("startLiveAdapter", () => {
     expect(frames.map((frame) => (frame as { runId: string }).runId)).toEqual(["r1", "r2"]);
   });
 
+  it("skips unserializable frames without closing the stream", async () => {
+    const bus = createLiveEventBus();
+    const circular: Record<string, unknown> = { type: "assistant" };
+    circular.self = circular;
+    bus.publish({
+      t: "event",
+      schema: LIVE_EVENT_SCHEMA,
+      sourceId: "src-1",
+      runId: "bad",
+      eventIndex: 0,
+      event: circular,
+      seq: 0,
+    });
+    running = await startLiveAdapter({ bus });
+
+    const framesPromise = readSseFramesWithDeadline(`${running.baseUrl}/v1/events`, 1, 1000);
+    await sleep(25);
+    bus.publish(runStarted("good"));
+
+    await expect(framesPromise).resolves.toMatchObject([{ t: "run_started", runId: "good" }]);
+  });
+
   it("streams a frame published after the subscriber connects", async () => {
     const bus = createLiveEventBus();
     running = await startLiveAdapter({ bus });
@@ -167,4 +190,22 @@ describe("startLiveAdapter", () => {
       startLiveAdapter({ bus: createLiveEventBus(), host: "0.0.0.0" }),
     ).rejects.toMatchObject({ code: "unsafe_host" });
   });
+
+  it("rejects Express route metacharacters in basePath", async () => {
+    await expect(startLiveAdapter({ bus: createLiveEventBus(), basePath: "/live/:source" })).rejects.toMatchObject({ code: "invalid_config" });
+    await expect(loadLiveAdapterConfig({ env: { MONO_AGENT_LIVE_BASE_PATH: "/live/:source" } })).rejects.toMatchObject({ code: "invalid_config" });
+  });
 });
+
+async function readSseFramesWithDeadline(url: string, count: number, timeoutMs: number): Promise<RunEventFrame[]> {
+  return await Promise.race([
+    readSseFrames(url, count),
+    sleep(timeoutMs).then(() => {
+      throw new Error(`Timed out waiting for ${count} SSE frame(s).`);
+    }),
+  ]);
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}

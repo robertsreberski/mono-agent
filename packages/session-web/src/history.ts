@@ -13,6 +13,8 @@ import type { RecordedRunListItem, RunSummary, RuntimeEventLike, Session } from 
 
 import type { DiscoveredWebInstance } from "./discovery.js";
 
+export type SourceStampedSession = Session & { readonly sourceId: string };
+
 /**
  * Matches the TUI replay's detail read (`REPLAY_MAX_STRING_BYTES`). observability's
  * own default (~4 KiB) is tuned for compact summaries and guts tool/message
@@ -33,10 +35,10 @@ export interface ListInstanceSessionsOptions {
 export async function listInstanceSessions(
   instance: DiscoveredWebInstance,
   options: ListInstanceSessionsOptions,
-): Promise<readonly Session[]> {
+): Promise<readonly SourceStampedSession[]> {
   const artifactDir = instance.instance.artifactDir;
   const { runs } = await listRecordedRuns({ artifactDir, maxRuns: options.maxRuns });
-  const sessions: Session[] = [];
+  const sessions: SourceStampedSession[] = [];
   for (const run of runs) {
     const session = await readInstanceSession(instance, run.runId);
     if (session !== undefined) {
@@ -50,7 +52,7 @@ export async function listInstanceSessions(
 export async function readInstanceSession(
   instance: DiscoveredWebInstance,
   runId: string,
-): Promise<Session | undefined> {
+): Promise<SourceStampedSession | undefined> {
   const artifactDir = instance.instance.artifactDir;
   const detail = await readRecordedRun({ artifactDir, maxStringBytes: DETAIL_MAX_STRING_BYTES }, runId);
   if (detail === undefined) {
@@ -60,10 +62,11 @@ export async function readInstanceSession(
   // `event.tool_use_id`, …); the reader exposes each redacted raw event as
   // `RecordedRunEvent.payload` under a classified envelope, so unwrap the payloads.
   const events = detail.events.map((event) => toRuntimeEvent(event.payload));
-  return mapRunToSession(runSummaryFromListItem(detail.summary), events, {
+  const session = mapRunToSession(runSummaryFromListItem(detail.summary), events, {
     instanceLabel: instance.instance.label,
     ...(instance.instance.cwd.length === 0 ? {} : { cwd: instance.instance.cwd }),
   });
+  return { ...session, sourceId: instance.instance.sourceId };
 }
 
 function toRuntimeEvent(payload: unknown): RuntimeEventLike {

@@ -191,6 +191,7 @@ class MonoAgentAppController implements MonoAgentApp {
   // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
   private sharedMemory: Awaited<ReturnType<typeof createConfiguredMemory>> = undefined;
   private sharedMemoryBuilt = false;
+  private sharedMemoryBuild: Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
   // Interaction bridge (ask_user + tool progress): lazily started once, shared
@@ -977,7 +978,13 @@ class MonoAgentAppController implements MonoAgentApp {
   private async memoryStore(
     coreConfig: MonoAgentConfig,
   ): Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> {
-    if (!this.sharedMemoryBuilt) {
+    if (this.sharedMemoryBuilt) {
+      return this.sharedMemory;
+    }
+    if (this.sharedMemoryBuild !== undefined) {
+      return await this.sharedMemoryBuild;
+    }
+    this.sharedMemoryBuild = (async () => {
       const appLogger = this.logger;
       const logger = appLogger?.warn !== undefined
         ? { warn: (message: string) => { appLogger.warn?.(message); } }
@@ -993,16 +1000,23 @@ class MonoAgentAppController implements MonoAgentApp {
       // router overrides each run's per-call model. createConfiguredMemory builds
       // the memory LLM its own fallback-free runtime when no `memoryRuntime` is set.
       const observabilityContext = await this.observabilityContext();
+      const observability = {
+        observabilityContext,
+        exporterWarn: (warning: { readonly phase: string; readonly message: string }) => this.recordExporterWarning(warning),
+        runEventSink: this.liveEventBus,
+      };
       this.sharedMemory = await createConfiguredMemory(coreConfig, {
         ...(logger === undefined ? {} : { logger }),
-        observability: {
-          observabilityContext,
-          exporterWarn: (warning) => this.recordExporterWarning(warning),
-        },
+        observability,
       });
       this.sharedMemoryBuilt = true;
+      return this.sharedMemory;
+    })();
+    try {
+      return await this.sharedMemoryBuild;
+    } finally {
+      this.sharedMemoryBuild = undefined;
     }
-    return this.sharedMemory;
   }
 
   /** Close + clear the shared memory store (on config reload or stop) so the next build is fresh. */
@@ -1012,6 +1026,7 @@ class MonoAgentAppController implements MonoAgentApp {
       | undefined;
     this.sharedMemory = undefined;
     this.sharedMemoryBuilt = false;
+    this.sharedMemoryBuild = undefined;
     if (mem?.flush !== undefined) {
       await Promise.resolve(mem.flush()).catch(() => undefined);
     }

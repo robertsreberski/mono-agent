@@ -168,6 +168,28 @@ describe("mapRunToSession", () => {
     expect(session.title).toBe("run-empty"); // no prompt/final text -> falls back to runId
   });
 
+  it("derives finalText only from assistant text, not user/commentary text blocks", () => {
+    const summary: RunSummary = {
+      runId: "run-final-role",
+      conversationId: "chat:roles",
+      status: "succeeded",
+      durationMs: 0,
+      eventCount: 3,
+      artifactPaths: [],
+    };
+    const events: RuntimeEventLike[] = [
+      { type: "assistant", message: { content: [{ type: "text", text: "Actual answer." }] } },
+      { type: "commentary", message: { content: [{ type: "text", text: "Internal progress update." }] } },
+      { type: "user", message: { content: [{ type: "text", text: "User follow-up should not be final." }] } },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+
+    expect(session.finalText).toBe("Actual answer.");
+    expect(session.outcome).toBe("notified");
+    expect(assistantSteps(session.steps)).toHaveLength(1);
+  });
+
   it("classifies legacy (unstamped) runs from the conversationId", () => {
     const src = (conversationId: string): string => {
       const summary: RunSummary = {

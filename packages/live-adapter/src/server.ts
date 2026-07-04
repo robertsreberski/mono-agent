@@ -131,12 +131,45 @@ export async function startLiveAdapter(options: LiveAdapterOptions): Promise<Liv
     res.socket?.setNoDelay(true);
     res.flushHeaders();
 
-    const write = (frame: RunEventFrame): void => {
-      if (res.writableEnded) {
+    const queue: string[] = [];
+    let draining = false;
+    let closed = false;
+
+    const flush = (): void => {
+      while (!closed && !draining && queue.length > 0) {
+        const payload = queue.shift();
+        if (payload === undefined) {
+          break;
+        }
+        if (res.writableEnded) {
+          closed = true;
+          return;
+        }
+        const ok = res.write(payload);
+        if (!ok) {
+          draining = true;
+          res.once("drain", () => {
+            draining = false;
+            flush();
+          });
+          return;
+        }
+      }
+    };
+
+    const enqueue = (payload: string): void => {
+      if (closed || res.writableEnded) {
         return;
       }
-      // JSON.stringify is single-line, so the only newlines are the SSE terminator.
-      res.write(`data: ${JSON.stringify(frame)}\n\n`);
+      queue.push(payload);
+      flush();
+    };
+
+    const write = (frame: RunEventFrame): void => {
+      const payload = serializeFrame(frame, options.logger);
+      if (payload !== undefined) {
+        enqueue(payload);
+      }
     };
 
     // Replay the ring buffer (oldest-first) so a late joiner can reconstruct
@@ -147,10 +180,10 @@ export async function startLiveAdapter(options: LiveAdapterOptions): Promise<Liv
     const unsubscribe = options.bus.subscribe(write);
 
     const heartbeat = setInterval(() => {
-      if (res.writableEnded) {
+      if (closed || draining || res.writableEnded) {
         return;
       }
-      res.write(": ping\n\n");
+      enqueue(": ping\n\n");
     }, LIVE_HEARTBEAT_INTERVAL_MS);
     // Never keep the process alive solely for the heartbeat timer.
     heartbeat.unref?.();
@@ -161,8 +194,10 @@ export async function startLiveAdapter(options: LiveAdapterOptions): Promise<Liv
         return;
       }
       torn = true;
+      closed = true;
       clearInterval(heartbeat);
       unsubscribe();
+      queue.length = 0;
     };
     const connection: LiveConnection = { res, teardown };
     connections.add(connection);
@@ -210,8 +245,25 @@ function errorToMessage(error: unknown): string {
 }
 
 function normalizeBasePath(basePath: string): string {
-  if (!basePath.startsWith("/")) {
-    throw new LiveAdapterError("invalid_config", "basePath must start with '/'.");
+  if (!isLiteralBasePath(basePath)) {
+    throw new LiveAdapterError("invalid_config", "basePath must be an absolute literal path made of slash-separated URL path segments.");
   }
   return basePath.length === 1 ? "" : basePath.replace(/\/+$/u, "");
+}
+
+function serializeFrame(frame: RunEventFrame, logger: LiveAdapterLogger | undefined): string | undefined {
+  try {
+    // JSON.stringify is single-line, so the only newlines are the SSE terminator.
+    return `data: ${JSON.stringify(frame)}\n\n`;
+  } catch (error) {
+    logger?.warn?.("Dropped unserializable live event frame.", {
+      reason: error instanceof Error ? error.message : String(error),
+      runId: "runId" in frame ? frame.runId : undefined,
+    });
+    return undefined;
+  }
+}
+
+function isLiteralBasePath(basePath: string): boolean {
+  return basePath === "/" || /^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\/?$/u.test(basePath);
 }

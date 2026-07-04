@@ -104,9 +104,13 @@ function layerLiveJsonOntoEnv(
 
 function readBasePath(raw: string | undefined): string {
   const value = readString(raw, DEFAULT_LIVE_BASE_PATH);
-  if (!value.startsWith("/") || value.includes("?") || value.includes("#")) {
-    throw invalidConfig("MONO_AGENT_LIVE_BASE_PATH must be an absolute path without query or hash.");
+  if (!isLiteralBasePath(value)) {
+    throw invalidConfig("MONO_AGENT_LIVE_BASE_PATH must be an absolute literal path made of slash-separated URL path segments.");
   }
   const stripped = value.replace(/\/+$/u, "");
   return stripped.length === 0 ? "/" : stripped;
+}
+
+function isLiteralBasePath(basePath: string): boolean {
+  return basePath === "/" || /^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*\/?$/u.test(basePath);
 }

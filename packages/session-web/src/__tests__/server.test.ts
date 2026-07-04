@@ -69,9 +69,10 @@ describe("startSessionWebServer", () => {
     expect(limited.sessions).toHaveLength(0);
 
     const one = (await (await fetch(`${server.url}api/sessions/${fix.sourceId}/${fix.runId}`)).json()) as {
-      session: { id: string; finalText: string };
+      session: { id: string; sourceId: string; finalText: string };
     };
     expect(one.session.id).toBe("run-http-1");
+    expect(one.session.sourceId).toBe(fix.sourceId);
     expect(one.session.finalText).toBe("Pong.");
 
     const missing = await fetch(`${server.url}api/sessions/${fix.sourceId}/nope`);
@@ -117,6 +118,28 @@ describe("startSessionWebServer", () => {
     expect(frames[1]?.t).toBe("session_upsert");
   });
 
+  it("stops promptly with an open browser SSE stream", async () => {
+    const fix = await fixture();
+    server = await startSessionWebServer({ registryDirs: [fix.registryDir], port: 0, staticDir: fix.staticDir });
+
+    const controller = new AbortController();
+    const response = await fetch(`${server.url}api/stream`, { signal: controller.signal });
+    const reader = response.body?.getReader();
+    if (reader === undefined) {
+      throw new Error("stream had no body");
+    }
+
+    const stopPromise = server.stop().then(() => "stopped" as const);
+    server = undefined;
+    try {
+      await expect(Promise.race([stopPromise, sleep(300).then(() => "timeout" as const)])).resolves.toBe("stopped");
+    } finally {
+      controller.abort();
+      await reader.cancel().catch(() => undefined);
+      await stopPromise.catch(() => undefined);
+    }
+  });
+
   it("serves the SPA index.html for the root and unknown client routes", async () => {
     const fix = await fixture();
     server = await startSessionWebServer({ registryDirs: [fix.registryDir], port: 0, staticDir: fix.staticDir });
@@ -140,3 +163,7 @@ describe("startSessionWebServer", () => {
     ).rejects.toThrow(/non-loopback/u);
   });
 });
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
