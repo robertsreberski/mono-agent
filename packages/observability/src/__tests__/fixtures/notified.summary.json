@@ -16,8 +16,8 @@
   "providerSessionId": "019e3f71-3a25-7c20-bed7-709a354b0bd8",
   "eventCount": 6,
   "artifactPaths": [
-    "/Users/robertsreberski/Personal_Repositories/mono-agent/.mono-agent/downloads-curator/artifacts/run-mpcec5td-r4cw4p.events.jsonl",
-    "/Users/robertsreberski/Personal_Repositories/mono-agent/.mono-agent/downloads-curator/artifacts/run-mpcec5td-r4cw4p.summary.json"
+    "/Users/example/Personal_Repositories/mono-agent/.mono-agent/downloads-curator/artifacts/run-mpcec5td-r4cw4p.events.jsonl",
+    "/Users/example/Personal_Repositories/mono-agent/.mono-agent/downloads-curator/artifacts/run-mpcec5td-r4cw4p.summary.json"
   ],
   "diagnostics": {
     "codex_thread_start_attempts": 1,

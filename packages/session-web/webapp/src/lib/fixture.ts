@@ -9,8 +9,8 @@ export const FIXTURE_INSTANCES: WebInstance[] = [
   {
     sourceId: "personal-agent",
     label: "personal-agent",
-    cwd: "/Users/robertsreberski/personal-agent",
-    artifactDir: "/Users/robertsreberski/personal-agent/.mono-agent/runs",
+    cwd: "/Users/example/personal-agent",
+    artifactDir: "/Users/example/personal-agent/.mono-agent/runs",
     health: "ok",
     liveConnected: true,
     counts: { runs: 4 },
@@ -18,8 +18,8 @@ export const FIXTURE_INSTANCES: WebInstance[] = [
   {
     sourceId: "orchestrator",
     label: "orchestrator",
-    cwd: "/Users/robertsreberski/a8c-agents/orchestrator",
-    artifactDir: "/Users/robertsreberski/a8c-agents/orchestrator/.mono-agent/runs",
+    cwd: "/Users/example/a8c-agents/orchestrator",
+    artifactDir: "/Users/example/a8c-agents/orchestrator/.mono-agent/runs",
     health: "ok",
     liveConnected: true,
     counts: { runs: 2 },
@@ -30,7 +30,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 1 — CRON focus-scan, silent (NOTHING_TO_REPORT). The archetype run.
   {
     id: "2582cf1d-636e-475c-ac72-eab20e09d829",
-    cwd: "/Users/robertsreberski/personal-agent",
+    cwd: "/Users/example/personal-agent",
     instance: "personal-agent",
     sourceId: "personal-agent",
     startTs: "2026-07-04T07:10:00.153Z",
@@ -106,8 +106,8 @@ export const FIXTURE_SESSIONS: Session[] = [
         tcid: "call_readskill_1",
         tool: "read_skill",
         ok: true,
-        dig: "Configured skills root: /Users/robertsreberski/personal-agent/skills",
-        text: "Skill directory: /Users/robertsreberski/personal-agent/skills/focus-scan\nPath rule: files referenced by SKILL.md are bundled with the skill.",
+        dig: "Configured skills root: /Users/example/personal-agent/skills",
+        text: "Skill directory: /Users/example/personal-agent/skills/focus-scan\nPath rule: files referenced by SKILL.md are bundled with the skill.",
       },
       {
         k: "result",
@@ -162,7 +162,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 2 — WEBHOOK, notified. Deploy webhook that summarised a CI failure.
   {
     id: "d1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
-    cwd: "/Users/robertsreberski/a8c-agents/orchestrator",
+    cwd: "/Users/example/a8c-agents/orchestrator",
     instance: "orchestrator",
     sourceId: "orchestrator",
     startTs: "2026-07-04T09:42:11.020Z",
@@ -283,7 +283,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 3 — CHAT, notified (chat runs show no outcome badge in the mock).
   {
     id: "b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2",
-    cwd: "/Users/robertsreberski/personal-agent",
+    cwd: "/Users/example/personal-agent",
     instance: "personal-agent",
     sourceId: "personal-agent",
     startTs: "2026-07-04T11:05:44.700Z",
@@ -352,7 +352,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 4 — MEMORY, silent. A background memory-curation pass.
   {
     id: "f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8",
-    cwd: "/Users/robertsreberski/personal-agent",
+    cwd: "/Users/example/personal-agent",
     instance: "personal-agent",
     sourceId: "personal-agent",
     startTs: "2026-07-04T03:00:02.010Z",
@@ -454,7 +454,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 5 — CRON briefing, notified, rich markdown final. The showcase card.
   {
     id: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
-    cwd: "/Users/robertsreberski/personal-agent",
+    cwd: "/Users/example/personal-agent",
     instance: "personal-agent",
     sourceId: "personal-agent",
     startTs: "2026-07-04T06:30:00.400Z",
@@ -607,7 +607,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 6 — CRON focus-scan, RUNNING (live). Partial run still streaming.
   {
     id: "c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4",
-    cwd: "/Users/robertsreberski/a8c-agents/orchestrator",
+    cwd: "/Users/example/a8c-agents/orchestrator",
     instance: "orchestrator",
     sourceId: "orchestrator",
     startTs: "2026-07-04T12:00:00.900Z",
