@@ -108,7 +108,7 @@ describe("runSourceFromRequest", () => {
 describe("requestOverridesModel", () => {
   const defaultModel = parseMonoRuntimeModelReference("claude:claude-fable-5");
   function req(metadata?: Record<string, unknown>): AgentHarnessRequest {
-    return { conversationId: "c", text: "hi", ...(metadata === undefined ? {} : { metadata }) } as AgentHarnessRequest;
+    return { conversationId: "c", text: "hi", ...(metadata === undefined ? {} : { metadata }) } as unknown as AgentHarnessRequest;
   }
 
   it("returns true for a tui model override that differs from the default", () => {
