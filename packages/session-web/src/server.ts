@@ -214,10 +214,15 @@ function handleStream(aggregator: SessionAggregator, res: Response): void {
     if (frame.t === "session_upsert") {
       const existing = pendingUpserts.get(frame.session.id);
       if (existing !== undefined) {
-        // Coalesce: overwrite the still-queued upsert for this run with the latest.
-        existing.frame = frame;
-        flush();
-        return;
+        // Coalesce by REMOVING the stale queued upsert and re-appending the latest
+        // at the tail — not overwriting in place. If a session_removed for the same
+        // id was enqueued between the two upserts, the removed frame keeps its slot
+        // and the newer upsert lands AFTER it, so last-write-wins (run present) is
+        // preserved on drain rather than the browser ending on a stale removal.
+        const idx = queue.indexOf(existing);
+        if (idx >= 0) {
+          queue.splice(idx, 1);
+        }
       }
       const entry: QueueEntry = { frame };
       pendingUpserts.set(frame.session.id, entry);

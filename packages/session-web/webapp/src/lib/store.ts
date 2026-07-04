@@ -55,17 +55,51 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   // zero-step run isn't re-fetched on every open.
   const loadedDetail = useRef<Set<string>>(new Set());
 
-  const upsertSession = useCallback((incoming: Session) => {
+  // Batch SSE folds: the connect snapshot is N separate `session_upsert` frames
+  // (one per run, ~477 today) and each EventSource onmessage is its own task, so
+  // React 19 does NOT batch them — applying each individually would be N full
+  // setState + re-sort + list re-renders on every connect/reconnect. Coalesce
+  // incoming ops by runId and apply them in ONE setSessions per microtask.
+  // `op === null` means remove.
+  const pendingOps = useRef<Map<string, Session | null>>(new Map());
+  const flushScheduled = useRef(false);
+
+  const flushPending = useCallback(() => {
+    flushScheduled.current = false;
+    const ops = pendingOps.current;
+    if (ops.size === 0) return;
+    pendingOps.current = new Map();
     setSessions((prev) => {
-      const idx = prev.findIndex((s) => s.id === incoming.id);
-      const next = idx >= 0 ? prev.map((s) => (s.id === incoming.id ? incoming : s)) : [incoming, ...prev];
-      return next.sort(byNewest);
+      const map = new Map(prev.map((s) => [s.id, s] as const));
+      for (const [id, op] of ops) {
+        if (op === null) map.delete(id);
+        else map.set(id, op);
+      }
+      return [...map.values()].sort(byNewest);
     });
   }, []);
 
-  const removeSession = useCallback((runId: string) => {
-    setSessions((prev) => prev.filter((s) => s.id !== runId));
-  }, []);
+  const scheduleFlush = useCallback(() => {
+    if (flushScheduled.current) return;
+    flushScheduled.current = true;
+    queueMicrotask(flushPending);
+  }, [flushPending]);
+
+  const queueUpsert = useCallback(
+    (incoming: Session) => {
+      pendingOps.current.set(incoming.id, incoming);
+      scheduleFlush();
+    },
+    [scheduleFlush],
+  );
+
+  const queueRemove = useCallback(
+    (runId: string) => {
+      pendingOps.current.set(runId, null);
+      scheduleFlush();
+    },
+    [scheduleFlush],
+  );
 
   // Initial load + live stream.
   useEffect(() => {
@@ -83,8 +117,8 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
         closeStream = openStream({
           onMessage: (msg) => {
             if (msg.t === "instances") setInstances(msg.instances);
-            else if (msg.t === "session_upsert") upsertSession(msg.session);
-            else if (msg.t === "session_removed") removeSession(msg.runId);
+            else if (msg.t === "session_upsert") queueUpsert(msg.session);
+            else if (msg.t === "session_removed") queueRemove(msg.runId);
           },
         });
       } catch {
@@ -100,7 +134,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
       disposed = true;
       closeStream?.();
     };
-  }, [upsertSession, removeSession]);
+  }, [queueUpsert, queueRemove]);
 
   const ensureDetail = useCallback(
     (id: string) => {
@@ -112,11 +146,11 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
       inflight.current.add(id);
       const sourceId = resolveSourceId(s, instancesRef.current);
       fetchSessionDetail(sourceId, id)
-        .then((full) => upsertSession(full))
+        .then((full) => queueUpsert(full))
         .catch(() => {})
         .finally(() => inflight.current.delete(id));
     },
-    [upsertSession],
+    [queueUpsert],
   );
 
   const value: RecorderStore = { instances, sessions, status, ensureDetail };

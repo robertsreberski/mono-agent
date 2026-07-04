@@ -92,6 +92,13 @@ interface InstanceState {
    * it with a mid-run/truncated view (last write wins in favour of disk).
    */
   readonly artifactFinished: Set<string>;
+  /**
+   * Runs whose live stream already delivered `run_finished`. A late/replayed live
+   * frame (SSE reconnect/replay) for such a run must not resurrect it as a fresh
+   * "running" state and overwrite the finished session. Distinct from
+   * {@link artifactFinished} (disk) so a later authoritative disk read still wins.
+   */
+  readonly liveFinished: Set<string>;
 }
 
 export class SessionAggregator {
@@ -240,6 +247,7 @@ export class SessionAggregator {
       artifactTimers: new Map(),
       maxRunsPerInstance: this.maxRunsPerInstance,
       artifactFinished: new Set(),
+      liveFinished: new Set(),
     };
     this.states.set(discovered.instance.sourceId, state);
 
@@ -317,6 +325,11 @@ export class SessionAggregator {
     if (live === undefined) {
       return;
     }
+    // A run that already finished (live) or was materialized from its terminal
+    // disk artifact must not be resurrected by a late/replayed non-terminal frame.
+    if (frame.t !== "run_finished" && (state.liveFinished.has(frame.runId) || state.artifactFinished.has(frame.runId))) {
+      return;
+    }
     if (frame.t === "run_started") {
       // `run_started` may arrive *after* `event` frames (viewer connected mid-run,
       // or the frame was reordered): keep any already-folded events, but adopt the
@@ -358,6 +371,8 @@ export class SessionAggregator {
     }
     this.recomputeLiveRun(state, frame.runId, summary, events);
     live.runs.delete(frame.runId);
+    // Mark terminal so a late/replayed frame can't rebuild it as "running".
+    state.liveFinished.add(frame.runId);
   }
 
   private scheduleLiveRecompute(state: InstanceState, runId: string): void {
@@ -394,7 +409,7 @@ export class SessionAggregator {
     }
     const session = mapRunToSession(summary, events, this.mapOptions(state));
     state.sessions.set(runId, session);
-    this.evictSessionOverflow(state);
+    this.evictSessionOverflow(state, runId);
     this.emit({ t: "session_upsert", session });
     this.scheduleInstancesEmit();
   }
@@ -405,13 +420,16 @@ export class SessionAggregator {
    * is in flight); each drop emits a `session_removed` so browser subscribers stay
    * in sync with the server-side map.
    */
-  private evictSessionOverflow(state: InstanceState): void {
+  private evictSessionOverflow(state: InstanceState, protectedId?: string): void {
     const cap = state.maxRunsPerInstance;
     while (state.sessions.size > cap) {
       let oldestId: string | undefined;
       let oldestMs = Number.POSITIVE_INFINITY;
       for (const [id, session] of state.sessions) {
-        if (session.status === "running") {
+        // Never evict a still-running run, nor the run just written by the caller
+        // (evicting-then-upserting the same id would emit removed→upsert and
+        // diverge the browser from the server map).
+        if (session.status === "running" || id === protectedId) {
           continue;
         }
         const ms = startMs(session.startTs);
@@ -421,11 +439,12 @@ export class SessionAggregator {
         }
       }
       if (oldestId === undefined) {
-        // Every remaining session is still running — nothing safe to evict.
+        // Every remaining session is running or protected — nothing safe to evict.
         break;
       }
       state.sessions.delete(oldestId);
       state.artifactFinished.delete(oldestId);
+      state.liveFinished.delete(oldestId);
       this.emit({ t: "session_removed", sourceId: state.discovered.instance.sourceId, runId: oldestId });
     }
   }
@@ -489,7 +508,7 @@ export class SessionAggregator {
       // Finished on disk: mark it authoritative so live folds stop overwriting it.
       state.artifactFinished.add(runId);
     }
-    this.evictSessionOverflow(state);
+    this.evictSessionOverflow(state, runId);
     this.emit({ t: "session_upsert", session });
     this.scheduleInstancesEmit();
   }
@@ -600,6 +619,7 @@ export class SessionAggregator {
     }
     state.artifactTimers.clear();
     state.artifactFinished.clear();
+    state.liveFinished.clear();
     state.sessions.clear();
   }
 

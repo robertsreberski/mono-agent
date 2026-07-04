@@ -208,11 +208,12 @@ export function DetailView({ id, onBack }: Props) {
       }
     });
     // The final answer is shown once, in "Delivered output" — hide it from the
-    // timeline by clearing the last assistant turn that carries text. Only do
-    // this when there is a real, finished delivered text to show it instead;
-    // otherwise (empty finalText for memory/tui runs, or a still-streaming live
-    // run) keep the assistant turn visible so its output isn't lost entirely.
-    if (s.finalText.trim() && s.status !== "running") {
+    // timeline by clearing the last assistant turn that carries text, whenever
+    // there is a non-empty finalText being shown there (finalText IS that last
+    // assistant text, so this de-dups). Empty-finalText runs (memory/tui) keep
+    // the turn visible via the `.trim()` check — including while still running,
+    // where the partial answer would otherwise render in both places.
+    if (s.finalText.trim()) {
       for (let j = steps.length - 1; j >= 0; j--) {
         const sv = steps[j];
         if (sv.kind === "assistant" && sv.hasText) {

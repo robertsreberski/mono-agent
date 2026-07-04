@@ -425,7 +425,7 @@ export function ListView(props: Props) {
 
           {instOpen && (
             <div
-              role="listbox"
+              role="menu"
               aria-label="Instance"
               style={{
                 position: "absolute",
@@ -454,8 +454,8 @@ export function ListView(props: Props) {
                 <button
                   key={ins.key}
                   className="menu-item"
-                  role="option"
-                  aria-selected={ins.key === fInstance}
+                  role="menuitemradio"
+                  aria-checked={ins.key === fInstance}
                   onClick={() => {
                     setFInstance(ins.key);
                     setInstOpen(false);
