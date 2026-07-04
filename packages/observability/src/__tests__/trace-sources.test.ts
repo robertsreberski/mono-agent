@@ -9,11 +9,13 @@ import {
   DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS,
   listTraceRuns,
   listTraceSources,
+  mergeTraceSources,
   pruneTraceSources,
   readTraceRun,
   registerTraceSource,
   TraceSourceRegistryError,
 } from "../index.js";
+import type { TraceSourceListItem } from "../index.js";
 
 const tempDirs: string[] = [];
 
@@ -249,5 +251,60 @@ describe("pruneTraceSources", () => {
     await expect(
       pruneTraceSources({ registryDir: join(dir, "does-not-exist"), clock: () => NOW }),
     ).resolves.toEqual({ removed: 0 });
+  });
+});
+
+describe("mergeTraceSources", () => {
+  function item(overrides: Partial<TraceSourceListItem> = {}): TraceSourceListItem {
+    return {
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "agent-a",
+      label: "agent-a",
+      artifactDir: "/tmp/artifacts",
+      pid: 123,
+      status: "running",
+      startedAt: "2026-07-01T00:00:00.000Z",
+      updatedAt: "2026-07-01T00:00:00.000Z",
+      health: "running",
+      warnings: [],
+      ...overrides,
+    };
+  }
+
+  it("keeps a source unique to either list, and the fresher heartbeat for a source in both", () => {
+    const onlyA = item({ sourceId: "only-a" });
+    const onlyB = item({ sourceId: "only-b" });
+    const staleDupe = item({ sourceId: "both", label: "stale-copy", updatedAt: "2026-07-01T00:00:00.000Z" });
+    const freshDupe = item({ sourceId: "both", label: "fresh-copy", updatedAt: "2026-07-02T00:00:00.000Z" });
+
+    const merged = mergeTraceSources([onlyA, staleDupe], [onlyB, freshDupe]);
+
+    expect(merged).toHaveLength(3);
+    const bySourceId = new Map(merged.map((entry) => [entry.sourceId, entry]));
+    // Object identity preserved: callers can attribute a winner to its origin list.
+    expect(bySourceId.get("only-a")).toBe(onlyA);
+    expect(bySourceId.get("only-b")).toBe(onlyB);
+    expect(bySourceId.get("both")).toBe(freshDupe);
+  });
+
+  it("prefers the earlier list's entry when heartbeats tie", () => {
+    const tie = "2026-07-01T00:00:00.000Z";
+    const primary = item({ sourceId: "both", label: "primary-copy", updatedAt: tie });
+    const secondary = item({ sourceId: "both", label: "secondary-copy", updatedAt: tie });
+
+    const merged = mergeTraceSources([primary], [secondary]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(primary);
+  });
+
+  it("is variadic and sorts the union like listTraceSources (fresher first)", () => {
+    const oldest = item({ sourceId: "c-oldest", updatedAt: "2026-07-01T00:00:00.000Z" });
+    const middle = item({ sourceId: "b-middle", updatedAt: "2026-07-02T00:00:00.000Z" });
+    const newest = item({ sourceId: "a-newest", updatedAt: "2026-07-03T00:00:00.000Z" });
+
+    const merged = mergeTraceSources([oldest], [middle], [newest]);
+
+    expect(merged.map((entry) => entry.sourceId)).toEqual(["a-newest", "b-middle", "c-oldest"]);
   });
 });

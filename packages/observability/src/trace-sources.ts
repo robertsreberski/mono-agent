@@ -135,6 +135,33 @@ export async function listTraceSources(options: TraceSourceRegistryOptions): Pro
 }
 
 /**
+ * Merge {@link listTraceSources} results from several registries (e.g. an
+ * agent's own config-local registry plus the machine-wide global one) by
+ * `sourceId`: a source unique to any list is kept as-is, and a source present
+ * in more than one keeps whichever copy has the fresher `updatedAt` heartbeat
+ * (earlier lists win ties). Object identity is preserved — a winner is the
+ * exact item from the list it came from, so callers can attribute it back to
+ * its origin registry, and its absolute `artifactDir`/`configPath` ride
+ * along. The union is sorted like `listTraceSources` output (fresher first).
+ */
+export function mergeTraceSources(
+  ...lists: ReadonlyArray<readonly TraceSourceListItem[]>
+): TraceSourceListItem[] {
+  const bySourceId = new Map<string, TraceSourceListItem>();
+  // Later-processed entries win ties (>=), so process lists back-to-front to
+  // give EARLIER lists tie precedence.
+  for (let index = lists.length - 1; index >= 0; index -= 1) {
+    for (const source of lists[index] ?? []) {
+      const existing = bySourceId.get(source.sourceId);
+      if (existing === undefined || Date.parse(source.updatedAt) >= Date.parse(existing.updatedAt)) {
+        bySourceId.set(source.sourceId, source);
+      }
+    }
+  }
+  return [...bySourceId.values()].sort(compareSources);
+}
+
+/**
  * Delete stale, dead manifests from a registry directory: registrations pile
  * up over time from ephemeral/test runs and crashed processes, and nothing
  * else ever removes them. A manifest is removed only when BOTH hold: its

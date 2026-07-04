@@ -28,8 +28,12 @@ export interface MonoAgentTuiAppOptions {
   readonly responder?: AgentResponder;
   /** Direct remote connection (from `mono-agent tui` after resolution). */
   readonly connection?: { readonly baseUrl: string; readonly apiKey?: string };
-  /** Discovery mode: open on the instance picker over this registry. */
-  readonly discovery?: { readonly registryDir?: string; readonly staleAfterMs?: number };
+  /** Discovery mode: open on the instance picker over these registries (`registryDirs` union beats the single `registryDir`). */
+  readonly discovery?: {
+    readonly registryDir?: string;
+    readonly registryDirs?: readonly string[];
+    readonly staleAfterMs?: number;
+  };
   /** Identity + data roots of the selected instance (replay/config views). */
   readonly instance?: {
     readonly label?: string;
@@ -178,15 +182,17 @@ export class MonoAgentTuiApp {
     const discovery = this.options.discovery;
     const result = await discoverInstances({
       ...(discovery?.registryDir === undefined ? {} : { registryDir: discovery.registryDir }),
+      ...(discovery?.registryDirs === undefined ? {} : { registryDirs: discovery.registryDirs }),
       ...(discovery?.staleAfterMs === undefined ? {} : { staleAfterMs: discovery.staleAfterMs }),
       env: this.options.env ?? process.env,
     }).catch((error: unknown) => {
       this.options.logger?.error?.("tui.discovery.failed", {
         message: error instanceof Error ? error.message : String(error),
       });
-      return { instances: [], registryDir: discovery?.registryDir ?? "", warnings: [] };
+      const registryDirs = discovery?.registryDirs ?? (discovery?.registryDir === undefined ? [] : [discovery.registryDir]);
+      return { instances: [], registryDir: registryDirs[0] ?? "", registryDirs, warnings: [] };
     });
-    this.picker.setInstances(result.instances, result.registryDir);
+    this.picker.setInstances(result.instances, result.registryDirs.join(", "));
     this.tui.requestRender();
   }
 

@@ -1,6 +1,6 @@
 import { dirname, resolve } from "node:path";
 
-import { listTraceSources, pruneTraceSources } from "@mono-agent/observability";
+import { listTraceSources, mergeTraceSources, pruneTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 import { loadTuiAdapterConfig } from "@mono-agent/tui-adapter";
 
@@ -77,32 +77,6 @@ export function resolveTuiLaunch(
   return { kind: "picker", sources: alive };
 }
 
-/**
- * Merge two trace-source lists (e.g. the configured registry and the global
- * machine-wide one) by `sourceId`: a source unique to either list is kept
- * as-is, and a source present in both keeps whichever copy has the fresher
- * `updatedAt` heartbeat (the primary list's copy wins a tie). Exported for
- * unit tests.
- */
-export function mergeTraceSources(
-  primary: readonly TraceSourceListItem[],
-  secondary: readonly TraceSourceListItem[],
-): TraceSourceListItem[] {
-  const bySourceId = new Map<string, TraceSourceListItem>();
-  for (const source of [...secondary, ...primary]) {
-    const existing = bySourceId.get(source.sourceId);
-    if (existing === undefined || Date.parse(source.updatedAt) >= Date.parse(existing.updatedAt)) {
-      bySourceId.set(source.sourceId, source);
-    }
-  }
-  return [...bySourceId.values()].sort(compareTraceSourcesByUpdatedAt);
-}
-
-function compareTraceSourcesByUpdatedAt(a: TraceSourceListItem, b: TraceSourceListItem): number {
-  const byUpdated = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
-  return byUpdated === 0 ? a.sourceId.localeCompare(b.sourceId) : byUpdated;
-}
-
 /** Extract the tui channel's baseUrl from a manifest's channel summaries. */
 export function tuiEndpointOf(source: TraceSourceListItem): string | undefined {
   const channels = source.metadata?.channels;
@@ -157,19 +131,13 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
   }
 
   const sources = merged === undefined ? primary.sources : mergeTraceSources(primary.sources, merged.sources);
+  // Every consulted registry, in precedence order. The TUI's discovery view
+  // (picker, and its in-TUI `r`/`/agents` refresh) re-lists from these, so it
+  // MUST see the full union: an agent present only in its local registry (a
+  // globalDiscovery:false opt-out, or one still running a pre-mirror build)
+  // stays visible from inside its own directory.
   const registryDirs = merged === undefined ? [primary.registryDir] : [primary.registryDir, merged.registryDir];
   const plan = resolveTuiLaunch(sources, registryDirs, options.agent);
-  // For the machine-wide PICKER, prefer the GLOBAL registry when merged (the
-  // whole point of this feature): every mirror-registering agent's own
-  // manifest already lands there too, so it is a superset of the configured
-  // registry in the common case.
-  const pickerRegistryDir = merged === undefined ? primary.registryDir : merged.registryDir;
-  // A SELECTED instance's follow-up discovery must instead use the registry
-  // its winning manifest was actually read from: an opt-out agent
-  // (globalDiscovery:false) exists ONLY in its local registry. mergeTraceSources
-  // preserves object identity, so list membership tells us the origin.
-  const registryDirOf = (winner: TraceSourceListItem): string =>
-    merged !== undefined && merged.sources.includes(winner) ? merged.registryDir : primary.registryDir;
 
   if (plan.kind === "none") {
     stdout.write(`${plan.message}\n`);
@@ -195,7 +163,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
   };
 
   if (plan.kind === "picker") {
-    const handle = await startTui({ ...common, discovery: { registryDir: pickerRegistryDir } });
+    const handle = await startTui({ ...common, discovery: { registryDirs } });
     await handle.waitUntilExit();
     return 0;
   }
@@ -207,7 +175,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
     ...common,
     ...(baseUrl === undefined
       ? // No stream endpoint (tui channel disabled): replay/config still work.
-        { discovery: { registryDir: registryDirOf(source) } }
+        { discovery: { registryDirs } }
       : { connection: { baseUrl, ...(apiKey === undefined ? {} : { apiKey }) } }),
     instance: {
       label: source.label,

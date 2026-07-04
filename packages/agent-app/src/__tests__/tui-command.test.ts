@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { TraceSourceListItem, TraceSourceListResult } from "@mono-agent/observability";
 
 import { parseCliArgs } from "../cli.js";
-import { mergeTraceSources, resolveTuiLaunch, runTui, tuiEndpointOf } from "../tui-command.js";
+import { resolveTuiLaunch, runTui, tuiEndpointOf } from "../tui-command.js";
 
 function source(overrides: Partial<TraceSourceListItem> = {}): TraceSourceListItem {
   return {
@@ -81,34 +81,9 @@ describe("resolveTuiLaunch", () => {
   });
 });
 
-describe("mergeTraceSources", () => {
-  it("keeps a source unique to either list, and the fresher heartbeat for a source in both", () => {
-    const onlyLocal = source({ sourceId: "only-local", updatedAt: "2026-07-01T00:00:00.000Z" });
-    const onlyGlobal = source({ sourceId: "only-global", updatedAt: "2026-07-01T00:00:00.000Z" });
-    const staleDupeLocal = source({ sourceId: "both", label: "stale-copy", updatedAt: "2026-07-01T00:00:00.000Z" });
-    const freshDupeGlobal = source({ sourceId: "both", label: "fresh-copy", updatedAt: "2026-07-02T00:00:00.000Z" });
-
-    const merged = mergeTraceSources([onlyLocal, staleDupeLocal], [onlyGlobal, freshDupeGlobal]);
-
-    expect(merged).toHaveLength(3);
-    const bySourceId = new Map(merged.map((entry) => [entry.sourceId, entry]));
-    expect(bySourceId.get("only-local")).toEqual(onlyLocal);
-    expect(bySourceId.get("only-global")).toEqual(onlyGlobal);
-    // The fresher (later updatedAt) copy wins for the duplicate sourceId.
-    expect(bySourceId.get("both")?.label).toBe("fresh-copy");
-  });
-
-  it("prefers the primary list's entry when heartbeats tie", () => {
-    const tie = "2026-07-01T00:00:00.000Z";
-    const primary = source({ sourceId: "both", label: "primary-copy", updatedAt: tie });
-    const secondary = source({ sourceId: "both", label: "secondary-copy", updatedAt: tie });
-
-    const merged = mergeTraceSources([primary], [secondary]);
-
-    expect(merged).toHaveLength(1);
-    expect(merged[0]?.label).toBe("primary-copy");
-  });
-});
+// mergeTraceSources itself lives in @mono-agent/observability (next to
+// listTraceSources) and is unit-tested there; these tests cover runTui's use
+// of it (the dual-registry union below).
 
 describe("tuiEndpointOf", () => {
   it("reads a running tui channel's baseUrl and rejects non-running", () => {
@@ -167,7 +142,7 @@ describe("runTui", () => {
     });
 
     expect(code).toBe(0);
-    expect(started[0]).toMatchObject({ discovery: { registryDir: "/reg" } });
+    expect(started[0]).toMatchObject({ discovery: { registryDirs: ["/reg"] } });
   });
 
   it("merges the configured and global registries by sourceId, opening the picker over the union with the fresher dupe winning", async () => {
@@ -202,16 +177,18 @@ describe("runTui", () => {
     expect(code).toBe(0);
     expect(started).toHaveLength(1);
     // The merge collapses the "dupe" sourceId to one entry (fresher wins) —
-    // three total instances across both registries.
-    const plan = started[0] as { discovery?: { registryDir?: string } };
-    expect(plan.discovery?.registryDir).toBe("/global-registry");
+    // three total instances across both registries. The picker gets BOTH
+    // registries: its in-TUI refresh must keep showing agents that exist only
+    // in the local one (opt-outs, or agents on a pre-mirror build).
+    const plan = started[0] as { discovery?: { registryDirs?: readonly string[] } };
+    expect(plan.discovery?.registryDirs).toEqual(["/local-registry", "/global-registry"]);
   });
 
-  it("hands the connect-path discovery fallback the registry the winning manifest actually came from", async () => {
+  it("hands the connect-path discovery fallback BOTH registries so an opt-out agent stays reachable", async () => {
     const started: Record<string, unknown>[] = [];
     // An opt-out agent (globalDiscovery:false) exists ONLY in its local
-    // registry and has no tui stream endpoint: the discovery fallback must
-    // point at ITS registry, not the global one it never mirrored into.
+    // registry and has no tui stream endpoint: the discovery fallback's
+    // registry union must include its local registry.
     const localOnly = source({ sourceId: "local-only", label: "local-only", metadata: {} });
     const globalOnly = source({ sourceId: "global-only", label: "global-only" });
 
@@ -240,7 +217,9 @@ describe("runTui", () => {
     );
 
     expect(code).toBe(0);
-    expect(started[0]).toMatchObject({ discovery: { registryDir: "/local-registry" } });
+    expect(started[0]).toMatchObject({
+      discovery: { registryDirs: ["/local-registry", "/global-registry"] },
+    });
   });
 
   it("does not re-list the global registry when it is identical to the configured one", async () => {

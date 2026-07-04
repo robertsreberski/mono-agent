@@ -78,6 +78,7 @@ export {
   DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS,
   listTraceRuns,
   listTraceSources,
+  mergeTraceSources,
   pruneTraceSources,
   readTraceRun,
   registerTraceSource,

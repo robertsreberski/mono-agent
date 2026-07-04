@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,12 +16,14 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-async function writeManifest(
+async function writeManifestIn(
+  registryDir: string,
   sourceId: string,
   overrides: Record<string, unknown> = {},
 ): Promise<void> {
+  await mkdir(registryDir, { recursive: true });
   await writeFile(
-    join(dir, `${sourceId}.json`),
+    join(registryDir, `${sourceId}.json`),
     JSON.stringify({
       schema: "agent-runtime.trace-source.v1",
       sourceId,
@@ -39,6 +41,13 @@ async function writeManifest(
       ...overrides,
     }),
   );
+}
+
+async function writeManifest(
+  sourceId: string,
+  overrides: Record<string, unknown> = {},
+): Promise<void> {
+  await writeManifestIn(dir, sourceId, overrides);
 }
 
 describe("discoverInstances", () => {
@@ -76,6 +85,45 @@ describe("discoverInstances", () => {
     const result = await discoverInstances({ registryDir: join(dir, "does-not-exist") });
 
     expect(result.instances).toEqual([]);
+  });
+
+  it("discovers across multiple registries: union shown, fresher dupe wins with its own manifest paths", async () => {
+    const registryA = join(dir, "registry-a");
+    const registryB = join(dir, "registry-b");
+    await writeManifestIn(registryA, "only-a");
+    await writeManifestIn(registryB, "only-b");
+    // The same agent registered in both (mirror): registry A holds the older
+    // heartbeat, registry B the fresher one with different artifact paths.
+    await writeManifestIn(registryA, "dupe", {
+      updatedAt: new Date(Date.now() - 10_000).toISOString(),
+      artifactDir: join(dir, "stale-artifacts"),
+    });
+    await writeManifestIn(registryB, "dupe", {
+      artifactDir: join(dir, "fresh-artifacts"),
+    });
+
+    const result = await discoverInstances({ registryDirs: [registryA, registryB] });
+
+    expect(result.registryDirs).toEqual([registryA, registryB]);
+    expect(result.registryDir).toBe(registryA);
+    expect(result.instances.map((instance) => instance.source.sourceId).sort()).toEqual([
+      "dupe",
+      "only-a",
+      "only-b",
+    ]);
+    // The winning (fresher) manifest's own absolute paths ride along, so
+    // replay/config for the dupe resolve against the copy that won.
+    const dupe = result.instances.find((instance) => instance.source.sourceId === "dupe");
+    expect(dupe?.source.artifactDir).toBe(join(dir, "fresh-artifacts"));
+  });
+
+  it("dedupes repeated registry dirs and keeps the single-dir option working unchanged", async () => {
+    await writeManifest("agent-a");
+
+    const result = await discoverInstances({ registryDirs: [dir, dir] });
+
+    expect(result.instances).toHaveLength(1);
+    expect(result.registryDirs).toEqual([dir]);
   });
 });
 
