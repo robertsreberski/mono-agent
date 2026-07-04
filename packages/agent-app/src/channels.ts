@@ -817,7 +817,7 @@ export function createTuiChannelDriver(
           }
         }
 
-        const modelOptions: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }> = {};
+        const modelOptions: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }> = {};
         for (const ref of models) {
           let parsedRef;
           try {
@@ -830,6 +830,7 @@ export function createTuiChannelDriver(
           const entry = {
             ...(resolved.effortLevels === undefined ? {} : { effortLevels: resolved.effortLevels }),
             reasoning: resolved.reasoning,
+            ...(resolved.reasoningMode === undefined ? {} : { reasoningMode: resolved.reasoningMode }),
             ...(label === undefined ? {} : { label }),
           };
           if (Object.keys(entry).length > 0) {

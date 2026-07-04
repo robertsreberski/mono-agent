@@ -182,6 +182,14 @@ function modelsEndpointForProvider(provider: LocalProviderDefinition): string {
 /** The effort-related facts the TUI needs to render a per-model reasoning/effort picker. */
 export interface ModelEffortLevels {
   readonly reasoning: boolean;
+  /**
+   * How this model exposes reasoning: `"effort"` (graded levels, see
+   * `effortLevels`), `"toggle"` (binary thinking on/off — the client renders
+   * on/off, NOT graded levels), or `"none"` (no adjustable thinking). Absent
+   * for cloud/unconfigured refs, where the client falls back to the global
+   * effort enum.
+   */
+  readonly reasoningMode?: "none" | "toggle" | "effort" | string;
   readonly effortLevels?: readonly string[];
 }
 
@@ -208,6 +216,7 @@ export function resolveModelEffortLevels(
         const capabilities = customModelForProvider(normalized, ref.model).capabilities;
         return {
           reasoning: capabilities.reasoning_mode !== "none" && Boolean(capabilities.reasoning),
+          ...(capabilities.reasoning_mode === undefined ? {} : { reasoningMode: capabilities.reasoning_mode }),
           ...(capabilities.reasoning_levels === undefined ? {} : { effortLevels: capabilities.reasoning_levels }),
         };
       }

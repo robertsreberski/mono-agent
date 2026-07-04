@@ -50,12 +50,13 @@ export interface TuiAdapterInfo {
   readonly models?: readonly string[];
   /**
    * Per-model reasoning/effort metadata, keyed by the same canonical ref
-   * strings that appear in `models`. Local-provider models resolve precise
-   * `effortLevels`; cloud models degrade to `{ reasoning: true }` with no
-   * `effortLevels` so the TUI falls back to the global effort enum. Absent on
-   * older agents; the TUI tolerates that and offers no model-aware picker.
+   * strings that appear in `models`. Local-provider models resolve a precise
+   * `reasoningMode` (`"effort"` with graded `effortLevels`, `"toggle"` for
+   * binary thinking, or `"none"`); cloud models degrade to `{ reasoning: true }`
+   * with no mode/levels so the TUI falls back to the global effort enum. Absent
+   * on older agents; the TUI tolerates that and offers no model-aware picker.
    */
-  readonly modelOptions?: Record<string, { readonly effortLevels?: readonly string[]; readonly reasoning?: boolean; readonly label?: string }>;
+  readonly modelOptions?: Record<string, { readonly effortLevels?: readonly string[]; readonly reasoning?: boolean; readonly reasoningMode?: string; readonly label?: string }>;
 }
 
 export interface TuiAdapterOptions {

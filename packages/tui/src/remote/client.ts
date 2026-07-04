@@ -60,7 +60,7 @@ export class RemoteAgentResponder implements AgentResponder {
     model?: string;
     effort?: string;
     models?: readonly string[];
-    modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }>;
+    modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }>;
   }> {
     const response = await this.request(`${this.baseUrl}/v1/info`, { headers: this.headers(false) });
     const body = (await response.json()) as {
@@ -193,21 +193,22 @@ export class RemoteAgentResponder implements AgentResponder {
  */
 function parseModelOptions(
   value: unknown,
-): Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }> | undefined {
+): Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return undefined;
   }
-  const result: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }> = {};
+  const result: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }> = {};
   for (const [ref, raw] of Object.entries(value as Record<string, unknown>)) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
       continue;
     }
-    const entry = raw as { effortLevels?: unknown; reasoning?: unknown; label?: unknown };
-    const parsedEntry: { effortLevels?: readonly string[]; reasoning?: boolean; label?: string } = {
+    const entry = raw as { effortLevels?: unknown; reasoning?: unknown; reasoningMode?: unknown; label?: unknown };
+    const parsedEntry: { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string } = {
       ...(Array.isArray(entry.effortLevels) && entry.effortLevels.every((level): level is string => typeof level === "string")
         ? { effortLevels: entry.effortLevels }
         : {}),
       ...(typeof entry.reasoning === "boolean" ? { reasoning: entry.reasoning } : {}),
+      ...(typeof entry.reasoningMode === "string" ? { reasoningMode: entry.reasoningMode } : {}),
       ...(typeof entry.label === "string" ? { label: entry.label } : {}),
     };
     if (Object.keys(parsedEntry).length > 0) {

@@ -160,10 +160,42 @@ describe("tui channel driver — info composition", () => {
     ]);
     expect(info.modelOptions).toEqual({
       "claude:claude-fable-5": { reasoning: true },
-      "pi:lmstudio:qwen/qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, label: "qwen/qwen3-8b" },
-      "pi:lmstudio:llama-3.1": { reasoning: false, label: "llama-3.1" },
+      "pi:lmstudio:qwen/qwen3-8b": {
+        effortLevels: ["low", "medium", "high"],
+        reasoning: true,
+        reasoningMode: "effort",
+        label: "qwen/qwen3-8b",
+      },
+      "pi:lmstudio:llama-3.1": { reasoning: false, reasoningMode: "none", label: "llama-3.1" },
     });
     expect(discoverModels).toHaveBeenCalledWith(localProviders);
+  });
+
+  it("surfaces reasoningMode:'toggle' (no effortLevels) for a discovered Ollama toggle-reasoning model (e.g. qwen)", async () => {
+    const localProviders: readonly LocalProviderDefinition[] = [
+      { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
+    ];
+    const discoverModels = vi.fn().mockResolvedValue([
+      { ref: "pi:ollama:qwen3.6:latest", label: "qwen3.6:latest", providerId: "ollama" },
+      { ref: "pi:ollama:gpt-oss:20b", label: "gpt-oss:20b", providerId: "ollama" },
+    ] satisfies DiscoveredLocalModel[]);
+
+    const captured = await startCapturingTui({ localProviders, discoverModels });
+    const info = await resolveInfo(captured);
+
+    // Toggle model carries the mode but NO graded effortLevels; the effort model
+    // carries mode + levels. The TUI renders on/off vs graded from this.
+    expect(info.modelOptions?.["pi:ollama:qwen3.6:latest"]).toEqual({
+      reasoning: true,
+      reasoningMode: "toggle",
+      label: "qwen3.6:latest",
+    });
+    expect(info.modelOptions?.["pi:ollama:gpt-oss:20b"]).toEqual({
+      effortLevels: ["low", "medium", "high"],
+      reasoning: true,
+      reasoningMode: "effort",
+      label: "gpt-oss:20b",
+    });
   });
 
   it("dedups a discovered model that collides with a config-listed model, keeping the config model first", async () => {

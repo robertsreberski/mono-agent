@@ -117,10 +117,13 @@ describe("startTuiAdapter", () => {
     running = await startTuiAdapter({
       responder: scriptedResponder(async () => ({ text: "ok" })),
       info: {
-        model: "pi:lmstudio:qwen3-8b",
-        models: ["pi:lmstudio:qwen3-8b"],
+        model: "pi:ollama:qwen3.6",
+        models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
         modelOptions: {
-          "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, label: "qwen3-8b" },
+          // A toggle-reasoning model (mode, no graded levels) and an effort model
+          // (mode + levels) — both pass through /v1/info verbatim.
+          "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+          "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
         },
       },
     });
@@ -130,10 +133,11 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
-      model: "pi:lmstudio:qwen3-8b",
-      models: ["pi:lmstudio:qwen3-8b"],
+      model: "pi:ollama:qwen3.6",
+      models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
       modelOptions: {
-        "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, label: "qwen3-8b" },
+        "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+        "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
       },
     });
   });

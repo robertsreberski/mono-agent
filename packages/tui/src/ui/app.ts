@@ -59,6 +59,14 @@ const VIEW_ORDER: readonly TuiViewId[] = ["chat", "replay", "config", "picker"];
 const MODEL_PICKER_DEFAULT_VALUE = "tui-model-picker:__default__";
 /** Sentinel `SelectItem.value` for the effort picker's "clear override" row (never a real level). */
 const EFFORT_PICKER_DEFAULT_VALUE = "tui-effort-picker:__default__";
+/**
+ * The effort a toggle-reasoning model's "thinking on" row sends: `"high"` maps
+ * to thinking-on via the harness's `thinkingLevelForEffort`. "thinking off"
+ * sends `"none"` (→ thinking-off). A toggle model has no graded levels, so
+ * these two + the clear-override row are all it offers.
+ */
+const TOGGLE_THINKING_ON_EFFORT = "high";
+const TOGGLE_THINKING_OFF_EFFORT = "none";
 
 /**
  * Root controller: owns the pi-tui instance, the view stack, connection state,
@@ -79,8 +87,8 @@ export class MonoAgentTuiApp {
   private helpHandle: { hide(): void } | undefined;
   /** Candidate models advertised by the connected agent's `/v1/info` (primary first, then fallbacks). */
   private availableModels: readonly string[] = [];
-  /** Per-model effort/reasoning/label options from `/v1/info` (keyed by model ref); drives the model-aware effort picker + `/model` row annotations. */
-  private modelOptions: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }> = {};
+  /** Per-model effort/reasoning/mode/label options from `/v1/info` (keyed by model ref); drives the model-aware effort picker + `/model` row annotations. */
+  private modelOptions: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }> = {};
   /** The connected agent's own default model ref (from `/v1/info`) — the effort picker's effective model when no `/model` override is active. */
   private agentModel: string | undefined;
   /** The single open picker overlay (model or effort); only one at a time. */
@@ -260,7 +268,7 @@ export class MonoAgentTuiApp {
     readonly model?: string;
     readonly effort?: string;
     readonly models?: readonly string[];
-    readonly modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; label?: string }>;
+    readonly modelOptions?: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }>;
   }): void {
     // Routed through ChatView (not statusBar directly) so it can remember these
     // as the agent's defaults -- what a later /model|/effort default repaints
@@ -570,11 +578,14 @@ export class MonoAgentTuiApp {
 
   /**
    * Model-aware effort picker: the effective model is the `/model` override if
-   * set, else the agent's default. Its valid levels come from that model's
-   * `modelOptions.effortLevels` when advertised (local models), falling back to
-   * the global {@link EFFORT_LEVELS} enum (cloud models). A model that reports
-   * `reasoning: false` (or an empty `effortLevels`) has no adjustable effort, so
-   * we surface a persistent notice instead of opening an empty picker.
+   * set, else the agent's default. The rows depend on that model's advertised
+   * `reasoningMode`:
+   * - `reasoning: false` / mode `"none"` / empty `effortLevels` → no adjustable
+   *   effort, so we surface a persistent notice instead of an empty picker.
+   * - mode `"toggle"` (binary-thinking local models, e.g. Ollama qwen3.6) → a
+   *   two-row on/off picker; graded levels would misrepresent the model.
+   * - mode `"effort"` with `effortLevels` → those graded levels (local models).
+   * - no mode / no levels (cloud models) → the global {@link EFFORT_LEVELS} enum.
    */
   private showEffortPicker(): void {
     if (this.activePicker !== undefined) {
@@ -584,19 +595,38 @@ export class MonoAgentTuiApp {
     const opts = effectiveModel === undefined ? undefined : this.modelOptions[effectiveModel];
     const unsupported =
       opts !== undefined &&
-      (opts.reasoning === false || (opts.effortLevels !== undefined && opts.effortLevels.length === 0));
+      (opts.reasoning === false ||
+        opts.reasoningMode === "none" ||
+        (opts.effortLevels !== undefined && opts.effortLevels.length === 0));
     if (unsupported) {
       const name = opts?.label ?? effectiveModel ?? "This model";
       this.chat.addNotice(`${name} does not support adjustable thinking/effort`, "warning");
       this.tui.requestRender();
       return;
     }
-    const levels = opts?.effortLevels ?? EFFORT_LEVELS;
     const current = this.chat.getEffortOverride();
-    const items: SelectItem[] = levels.map((level) => ({
-      value: level,
-      label: withCurrentMarker(level, level === current),
-    }));
+    // A toggle-reasoning model supports only on/off, so offer exactly that; an
+    // existing non-"none" override reads as "on". Effort-mode + cloud models
+    // keep the graded levels (per-model when advertised, else the global enum).
+    const items: SelectItem[] =
+      opts?.reasoningMode === "toggle"
+        ? [
+            {
+              value: TOGGLE_THINKING_ON_EFFORT,
+              label: withCurrentMarker(
+                "thinking on",
+                current !== undefined && current !== TOGGLE_THINKING_OFF_EFFORT,
+              ),
+            },
+            {
+              value: TOGGLE_THINKING_OFF_EFFORT,
+              label: withCurrentMarker("thinking off", current === TOGGLE_THINKING_OFF_EFFORT),
+            },
+          ]
+        : (opts?.effortLevels ?? EFFORT_LEVELS).map((level) => ({
+            value: level,
+            label: withCurrentMarker(level, level === current),
+          }));
     items.push({
       value: EFFORT_PICKER_DEFAULT_VALUE,
       label: withCurrentMarker("— default (clear override) —", current === undefined),

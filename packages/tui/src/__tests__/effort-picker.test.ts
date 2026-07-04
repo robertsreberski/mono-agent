@@ -125,6 +125,122 @@ describe("/effort slash command (Layer E)", () => {
     }
   });
 
+  it("offers a binary on/off picker (not graded levels) for a toggle-reasoning model", async () => {
+    const adapter = await startTuiAdapter({
+      responder: okResponder(),
+      info: {
+        model: "pi:ollama:qwen3.6",
+        models: ["pi:ollama:qwen3.6"],
+        modelOptions: { "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
+      },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      type(terminal, "/effort");
+      terminal.feed("\r");
+      await frame();
+
+      const overlay = stripAnsi(terminal.output());
+      expect(overlay).toContain("Session effort override");
+      expect(overlay).toContain("thinking on");
+      expect(overlay).toContain("thinking off");
+      expect(overlay).toContain("default");
+      // A toggle model supports only on/off, so the graded effort levels must
+      // NOT appear -- proves it's mode-aware, not the global enum.
+      expect(overlay).not.toContain("medium");
+      expect(overlay).not.toContain("xhigh");
+      expect(overlay).not.toContain("max");
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+
+  it("sends effort 'none' when 'thinking off' is picked for a toggle model", async () => {
+    const captured: (Record<string, unknown> | undefined)[] = [];
+    const adapter = await startTuiAdapter({
+      responder: capturingResponder(captured),
+      info: {
+        model: "pi:ollama:qwen3.6",
+        models: ["pi:ollama:qwen3.6"],
+        modelOptions: { "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
+      },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      type(terminal, "/effort");
+      terminal.feed("\r");
+      await frame();
+      terminal.feed("\x1b[B"); // down -> "thinking off" (index 1)
+      terminal.feed("\r"); // select
+      await frame();
+
+      type(terminal, "hello");
+      terminal.feed("\r");
+      await frame();
+      await frame();
+      expect((captured[0] as Record<string, unknown>).tui).toEqual({ effort: "none" });
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+
+  it("sends a non-none effort when 'thinking on' is picked for a toggle model", async () => {
+    const captured: (Record<string, unknown> | undefined)[] = [];
+    const adapter = await startTuiAdapter({
+      responder: capturingResponder(captured),
+      info: {
+        model: "pi:ollama:qwen3.6",
+        models: ["pi:ollama:qwen3.6"],
+        modelOptions: { "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" } },
+      },
+    });
+    const terminal = new TestTerminal(120, 30);
+    const handle = startMonoAgentTui({
+      terminal,
+      connection: { baseUrl: adapter.baseUrl },
+      flushIntervalMs: 0,
+    });
+    try {
+      await frame();
+      await frame(); // info() resolves
+
+      type(terminal, "/effort");
+      terminal.feed("\r");
+      await frame();
+      terminal.feed("\r"); // select index 0 -> "thinking on"
+      await frame();
+
+      type(terminal, "hi");
+      terminal.feed("\r");
+      await frame();
+      await frame();
+      const tui = (captured[0] as Record<string, unknown>).tui as { effort?: string };
+      expect(tui.effort).toBe("high"); // "high" maps to thinking-on via the harness
+      expect(tui.effort).not.toBe("none");
+    } finally {
+      await handle.stop();
+      await adapter.stop();
+    }
+  });
+
   it("falls back to the global effort enum when the effective model advertises no effortLevels", async () => {
     const adapter = await startTuiAdapter({
       responder: okResponder(),

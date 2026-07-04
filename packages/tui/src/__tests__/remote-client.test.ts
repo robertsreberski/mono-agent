@@ -151,10 +151,13 @@ describe("RemoteAgentResponder", () => {
     const adapter = await startTuiAdapter({
       responder: { respond: async () => ({ text: "ok" }) },
       info: {
-        model: "pi:lmstudio:qwen3-8b",
-        models: ["pi:lmstudio:qwen3-8b"],
+        model: "pi:ollama:qwen3.6",
+        models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
         modelOptions: {
-          "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, label: "qwen3-8b" },
+          // reasoningMode passes through end to end: a toggle model (no levels)
+          // and an effort model (mode + levels).
+          "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+          "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
         },
       },
     });
@@ -162,7 +165,8 @@ describe("RemoteAgentResponder", () => {
       const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
       const info = await client.info();
       expect(info.modelOptions).toEqual({
-        "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, label: "qwen3-8b" },
+        "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+        "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
       });
     } finally {
       await adapter.stop();
@@ -196,6 +200,9 @@ describe("RemoteAgentResponder", () => {
             // to the global effort enum", so a partial entry is still meaningful.
             badEffortLevels: { effortLevels: ["low", 123], reasoning: true },
             badReasoning: { reasoning: "yes" },
+            // A non-string reasoningMode is dropped; the toggle sibling survives.
+            badReasoningMode: { reasoning: true, reasoningMode: 42 },
+            toggle: { reasoning: true, reasoningMode: "toggle" },
             notAnObject: "nope",
           },
         }),
@@ -210,6 +217,8 @@ describe("RemoteAgentResponder", () => {
       expect(info.modelOptions).toEqual({
         wellFormed: { effortLevels: ["low", "high"], reasoning: true, label: "ok" },
         badEffortLevels: { reasoning: true },
+        badReasoningMode: { reasoning: true },
+        toggle: { reasoning: true, reasoningMode: "toggle" },
       });
     } finally {
       await new Promise((resolve) => server.close(resolve));

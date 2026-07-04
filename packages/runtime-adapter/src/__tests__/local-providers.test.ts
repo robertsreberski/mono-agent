@@ -199,22 +199,47 @@ describe("resolveModelEffortLevels", () => {
     },
   ];
 
-  it("returns the configured reasoning levels for a configured local model", () => {
+  it("returns the configured reasoning levels + effort mode for a configured local model", () => {
     const ref = parseMonoRuntimeModelReference("pi:lmstudio:qwen/qwen3-8b");
 
     expect(resolveModelEffortLevels(ref, configuredProviders)).toEqual({
       reasoning: true,
+      reasoningMode: "effort",
       effortLevels: ["low", "medium", "high"],
     });
   });
 
-  it("defaults an undeclared local model to non-reasoning (no capabilities configured for it)", () => {
+  it("returns reasoningMode:'toggle' with no effortLevels for an Ollama toggle-reasoning model (e.g. qwen)", () => {
+    const providers: readonly LocalProviderDefinition[] = [
+      { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
+    ];
+    const ref = parseMonoRuntimeModelReference("pi:ollama:qwen3.6:latest");
+
+    // Toggle models support only binary thinking, so they carry NO graded
+    // effortLevels — the client renders on/off from the mode alone.
+    expect(resolveModelEffortLevels(ref, providers)).toEqual({ reasoning: true, reasoningMode: "toggle" });
+  });
+
+  it("returns reasoningMode:'effort' + levels for an Ollama effort-reasoning model (e.g. gpt-oss)", () => {
+    const providers: readonly LocalProviderDefinition[] = [
+      { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
+    ];
+    const ref = parseMonoRuntimeModelReference("pi:ollama:gpt-oss:20b");
+
+    expect(resolveModelEffortLevels(ref, providers)).toEqual({
+      reasoning: true,
+      reasoningMode: "effort",
+      effortLevels: ["low", "medium", "high"],
+    });
+  });
+
+  it("defaults an undeclared local model to non-reasoning (reasoningMode 'none', no capabilities configured for it)", () => {
     const providers: readonly LocalProviderDefinition[] = [
       { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
     ];
     const ref = parseMonoRuntimeModelReference("pi:lmstudio:some-new-model");
 
-    expect(resolveModelEffortLevels(ref, providers)).toEqual({ reasoning: false });
+    expect(resolveModelEffortLevels(ref, providers)).toEqual({ reasoning: false, reasoningMode: "none" });
   });
 
   it("degrades to reasoning:true with no effortLevels for a cloud model reference", () => {
