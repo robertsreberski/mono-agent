@@ -74,6 +74,8 @@ Because these live in the JSONL, you get the attribution even with no exporter c
 
 The host periodically writes a heartbeat manifest describing this agent into `traceability.registryDir`. `mono-agent status` reads that directory to list known trace sources and mark any whose last heartbeat is older than `staleAfterMs` as stale. This is how the CLI discovers running agents on the machine without a central service.
 
+When `registryDir` is a config-local override (as `mono-agent init` scaffolds), the same manifest is ALSO best-effort mirrored into the global `~/.mono-agent/trace-sources` registry (`traceability.globalDiscovery`, default `true`), so `mono-agent tui`/`status` run from anywhere on the machine still finds this agent. See [Terminal UI](/observability/tui/) for how discovery merges the two registries.
+
 ```json
 {
   "traceability": {
@@ -81,7 +83,8 @@ The host periodically writes a heartbeat manifest describing this agent into `tr
     "sourceId": "my-agent",
     "sourceLabel": "My Agent",
     "heartbeatMs": 10000,
-    "staleAfterMs": 30000
+    "staleAfterMs": 30000,
+    "globalDiscovery": true
   }
 }
 ```
@@ -93,8 +96,9 @@ The host periodically writes a heartbeat manifest describing this agent into `tr
 | `traceability.sourceLabel` | `My Agent` | `MONO_AGENT_TRACE_SOURCE_LABEL` | Human-friendly name shown by `status` (and used as the default Phoenix project name). |
 | `traceability.heartbeatMs` | `10000` | `MONO_AGENT_TRACE_HEARTBEAT_MS` | How often the manifest is refreshed. |
 | `traceability.staleAfterMs` | `30000` | `MONO_AGENT_TRACE_STALE_AFTER_MS` | Age after which `status` marks a source stale. |
+| `traceability.globalDiscovery` | `true` | `MONO_AGENT_TRACE_GLOBAL_DISCOVERY` | When `registryDir` differs from the global default, also mirror this agent's manifest there. Set `false` to keep registration local-only. |
 
-Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state.
+Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts or `mono-agent tui` runs.
 
 :::note
 :::

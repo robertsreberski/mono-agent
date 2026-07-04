@@ -197,6 +197,25 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     expect(convs).toContain("memory:capture:entities");
   });
 
+  it("tags every memory run's summary with source 'memory' and sourceDetail = the operation", async () => {
+    const dir = await tempDir();
+    const store = await createConfiguredMemory(
+      bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
+      { memoryRuntime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
+    ) as unknown as CapturableStore;
+
+    await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
+    await store.close();
+
+    const summaries = await readSummaries(join(dir, "artifacts"));
+    expect(summaries.length).toBeGreaterThanOrEqual(2);
+    expect(summaries.every((s) => s.source === "memory")).toBe(true);
+    const distill = summaries.find((s) => s.conversationId === "memory:capture:distill");
+    expect(distill?.sourceDetail).toBe("distill");
+    const entities = summaries.find((s) => s.conversationId === "memory:capture:entities");
+    expect(entities?.sourceDetail).toBe("entities");
+  });
+
   it("exports memory runs through the configured exporter", async () => {
     const dir = await tempDir();
     const spy = createSpyExporter();

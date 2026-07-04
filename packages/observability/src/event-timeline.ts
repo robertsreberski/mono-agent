@@ -49,6 +49,9 @@ function singleEventItem(event: RecordedRunEvent): RecordedRunTimelineItem {
     sourceEventCount: 1,
     sourceEventStartIndex: event.index,
     sourceEventEndIndex: event.index,
+    // A single-event item has no group to span, so it reuses its own timestamp
+    // as endTimestamp (undefined stays undefined — nothing to reuse).
+    ...(event.timestamp === undefined ? {} : { endTimestamp: event.timestamp }),
   };
 }
 
@@ -63,14 +66,20 @@ function combinedEventItem(
   }
   const last = events[events.length - 1] ?? first;
   const kind = firstChunk.kind;
-  const summary = compactString(chunks.map((chunk) => chunk.text ?? "").join("") || events.map((event) => event.summary).join(" "));
+  const joinedText = chunks.map((chunk) => chunk.text ?? "").join("");
+  const summary = compactString(joinedText || events.map((event) => event.summary).join(" "));
   return {
     index: first.index,
     ...(first.type === undefined ? {} : { type: first.type }),
     category: kind === "thinking" ? "thinking" : "message",
     ...(first.timestamp === undefined ? {} : { timestamp: first.timestamp }),
+    ...(last.timestamp === undefined ? {} : { endTimestamp: last.timestamp }),
     label: kind === "thinking" ? "Assistant thoughts" : "Assistant message",
     summary,
+    // Captured BEFORE `compactString` truncates to SUMMARY_MAX_CHARS, so callers
+    // needing the real coalesced content volume (e.g. turn thinking stats)
+    // aren't bounded by the display-oriented summary cap.
+    contentChars: joinedText.length,
     payload: {
       type: "assistant.timeline.combined",
       contentKind: kind,

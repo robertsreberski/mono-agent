@@ -17,6 +17,9 @@ export {
   combineRecordedRunEvents,
 } from "./event-timeline.js";
 export {
+  segmentTimelineTurns,
+} from "./turn-segmentation.js";
+export {
   buildEventSpanAttributes,
   buildRootSpanAttributes,
   countRuntimeWarnings,
@@ -63,14 +66,20 @@ export {
   readRecordedRun,
   reconcileStaleRunArtifacts,
 } from "./recorded-runs.js";
+export {
+  deriveRunSource,
+} from "./run-source.js";
 export type {
   ObservabilityReadErrorCode,
   ObservabilityReadErrorDetails,
   ReconcileStaleRunsResult,
 } from "./recorded-runs.js";
 export {
+  DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS,
   listTraceRuns,
   listTraceSources,
+  mergeTraceSources,
+  pruneTraceSources,
   readTraceRun,
   registerTraceSource,
   TraceSourceRegistryError,
@@ -88,6 +97,8 @@ export type {
   KnownArtifactFailureKind,
   ObservabilityExporterConfig,
   PhoenixExporterConfig,
+  PruneTraceSourcesOptions,
+  PruneTraceSourcesResult,
   RunExportContext,
   RunExportEventContext,
   RunExporter,
@@ -103,6 +114,7 @@ export type {
   RuntimeEventLike,
   RuntimeResultLike,
   RegisterTraceSourceOptions,
+  TimelineTurn,
   TraceRunDetail,
   TraceRunListItem,
   TraceRunListOptions,

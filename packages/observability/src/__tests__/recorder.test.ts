@@ -99,6 +99,60 @@ describe("JsonlRunRecorder", () => {
     expect(summaryJson).toContain('"status": "succeeded"');
   });
 
+  it("stamps events with no usable timestamp using the injected clock, but preserves provider-supplied timestamps untouched", async () => {
+    const dir = await tempDir();
+    let now = Date.parse("2026-05-16T08:00:00.000Z");
+    const recorder = createJsonlRunRecorder({ runId: "run:ts", conversationId: "telegram:1", artifactDir: dir, clock: () => now });
+
+    recorder.onEvent({ type: "assistant", message: "no timestamp field at all" });
+    now = Date.parse("2026-05-16T08:00:01.000Z");
+    recorder.onEvent({ type: "provider_request_started", timestamp: "1778952408375" });
+    now = Date.parse("2026-05-16T08:00:02.000Z");
+    recorder.onEvent({ type: "tool.call", timestamp: 1778952409000 });
+
+    const summary = await recorder.finish({});
+    const events = (await readFile(summary.artifactPaths[0] ?? "", "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type?: string; timestamp?: unknown });
+
+    expect(events[0]?.timestamp).toBe("2026-05-16T08:00:00.000Z");
+    expect(events[1]?.timestamp).toBe("1778952408375");
+    expect(events[2]?.timestamp).toBe(1778952409000);
+  });
+
+  it("persists effort (from the result) and source/sourceDetail (from the recorder options)", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "run:effort",
+      conversationId: "cron:nightly-digest",
+      artifactDir: dir,
+      source: "cron",
+      sourceDetail: "nightly-digest",
+    });
+    const summary = await recorder.finish({ effort: "high" });
+    expect(summary.effort).toBe("high");
+    expect(summary.source).toBe("cron");
+    expect(summary.sourceDetail).toBe("nightly-digest");
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
+      effort?: string;
+      source?: string;
+      sourceDetail?: string;
+    };
+    expect(onDisk.effort).toBe("high");
+    expect(onDisk.source).toBe("cron");
+    expect(onDisk.sourceDetail).toBe("nightly-digest");
+  });
+
+  it("omits effort/source/sourceDetail when not supplied", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({ runId: "run:no-effort", conversationId: "c", artifactDir: dir });
+    const summary = await recorder.finish({});
+    expect(summary.effort).toBeUndefined();
+    expect(summary.source).toBeUndefined();
+    expect(summary.sourceDetail).toBeUndefined();
+  });
+
   it("can write a running summary before the final result", async () => {
     const dir = await tempDir();
     let now = Date.parse("2026-05-16T08:00:00.000Z");

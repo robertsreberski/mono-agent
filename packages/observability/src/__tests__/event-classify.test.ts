@@ -4,6 +4,7 @@ import {
   assistantMessageContentKind,
   buildEventDescriptors,
   classifyRecordedRunEvent,
+  countToolResultBlocks,
   eventLabel,
   eventSummary,
   textFromMessage,
@@ -38,6 +39,179 @@ describe("event-classify exported helpers", () => {
   it("extracts message text and assistant content kind", () => {
     expect(textFromMessage({ content: [{ type: "text", text: "answer" }] })).toBe("answer");
     expect(assistantMessageContentKind({ type: "assistant", message: { content: [{ type: "thinking", thinking: "x" }] } })).toBe("thinking");
+  });
+});
+
+describe("countToolResultBlocks", () => {
+  it("counts multiple tool_result blocks on a single user event", () => {
+    expect(
+      countToolResultBlocks({
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "a", content: "1" },
+            { type: "tool_result", tool_use_id: "b", content: "2" },
+          ],
+        },
+      }),
+    ).toBe(2);
+  });
+
+  it("counts exactly one tool_result block", () => {
+    expect(
+      countToolResultBlocks({
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "a", content: "1" }] },
+      }),
+    ).toBe(1);
+  });
+
+  it("returns 0 when a user event's content array has no tool_result block", () => {
+    expect(countToolResultBlocks({ type: "user", message: { content: [{ type: "text", text: "hi" }] } })).toBe(0);
+  });
+
+  it("falls back to 1 when content isn't an array", () => {
+    expect(countToolResultBlocks({ type: "user", message: { content: "not-an-array" } })).toBe(1);
+  });
+
+  it("falls back to 1 when type isn't \"user\"", () => {
+    expect(countToolResultBlocks({ type: "assistant", message: { content: [] } })).toBe(1);
+  });
+});
+
+describe("nested tool blocks classify as category \"tool\"", () => {
+  it("classifies an assistant tool_use block as tool, labelled Tool: <name>, summarized from input", () => {
+    const descriptors = buildEventDescriptors({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { path: "/etc/hosts" } }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool: Read");
+    expect(descriptors.summary).toBe('{"path":"/etc/hosts"}');
+  });
+
+  it("labels an assistant tool_use block with no `name` field as the bare 'Tool call' fallback", () => {
+    const descriptors = buildEventDescriptors({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "toolu_1", input: { path: "/etc/hosts" } }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool call");
+  });
+
+  it("labels a tool_result block that itself carries a `name` field as 'Tool result: <name>'", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", name: "Read", content: "file contents here" }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool result: Read");
+  });
+
+  it("classifies a user tool_result block as tool, labelled Tool result, summarized from content", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "file contents here" }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool result");
+    expect(descriptors.summary).toBe("file contents here");
+  });
+
+  it("prefixes an errored tool_result summary with 'error: ' while the category stays tool", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "boom", is_error: true }],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool result");
+    expect(descriptors.summary).toBe("error: boom");
+  });
+
+  it("classifies mixed text+tool_use assistant content as tool (the tool call is salient)", () => {
+    const descriptors = buildEventDescriptors({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "Let me check that file." },
+          { type: "tool_use", id: "toolu_2", name: "Grep", input: { pattern: "foo" } },
+        ],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool: Grep");
+  });
+
+  it("regression: a plain thinking block is still classified as thinking", () => {
+    expect(
+      classifyRecordedRunEvent({
+        type: "assistant",
+        message: { content: [{ type: "thinking", thinking: "hmm" }] },
+      }),
+    ).toBe("thinking");
+  });
+
+  it("regression: a plain assistant text message (no nested tool blocks) is still classified as message", () => {
+    expect(
+      classifyRecordedRunEvent({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } }),
+    ).toBe("message");
+  });
+
+  it("regression: a plain user text message (no nested tool blocks) is still classified as message", () => {
+    expect(
+      classifyRecordedRunEvent({ type: "user", message: { content: [{ type: "text", text: "hi" }] } }),
+    ).toBe("message");
+  });
+
+  it("extracts joined readable text from an array-of-text tool_result content (real Pi-runtime shape)", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            content: [
+              { type: "text", text: "line one\n" },
+              { type: "text", text: "line two" },
+            ],
+          },
+        ],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.label).toBe("Tool result");
+    expect(descriptors.summary).toBe("line one line two");
+  });
+
+  it("falls back to JSON when array tool_result content mixes text with non-text blocks", () => {
+    const descriptors = buildEventDescriptors({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_1",
+            content: [
+              { type: "text", text: "line one" },
+              { type: "image", source: { data: "abc" } },
+            ],
+          },
+        ],
+      },
+    });
+    expect(descriptors.category).toBe("tool");
+    expect(descriptors.summary).toContain('"type":"image"');
   });
 });
 

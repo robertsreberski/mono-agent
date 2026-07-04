@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
-import { listTraceSources } from "@mono-agent/observability";
+import { listTraceSources, mergeTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
 export type { TraceSourceListItem } from "@mono-agent/observability";
@@ -17,6 +17,13 @@ export function defaultTraceRegistryDir(env: Record<string, string | undefined> 
 
 export interface DiscoverInstancesOptions {
   readonly registryDir?: string;
+  /**
+   * Consult several registries at once (e.g. an agent's config-local registry
+   * plus the machine-wide global one) and merge by sourceId — the fresher
+   * heartbeat wins a duplicate, earlier dirs win ties. Takes precedence over
+   * the single `registryDir` when non-empty; repeated dirs are deduped.
+   */
+  readonly registryDirs?: readonly string[];
   readonly staleAfterMs?: number;
   readonly env?: Record<string, string | undefined>;
 }
@@ -29,23 +36,61 @@ export interface DiscoveredInstance {
   readonly agentDir?: string;
 }
 
+export interface DiscoverInstancesResult {
+  readonly instances: readonly DiscoveredInstance[];
+  /** First consulted registry — kept for callers that predate multi-registry discovery. */
+  readonly registryDir: string;
+  /** Every consulted registry, in precedence order (deduped, normalized). */
+  readonly registryDirs: readonly string[];
+  readonly warnings: readonly string[];
+}
+
 /**
- * Discover mono-agent instances via the trace-source registry. Stopped sources
- * are filtered out; stale ones stay listed (marked by health) because a busy
- * agent can miss heartbeats while remaining connectable.
+ * Discover mono-agent instances via one or more trace-source registries
+ * (merged by sourceId — fresher heartbeat wins a duplicate, so each instance
+ * carries its winning manifest's own absolute artifact/config paths). Stopped
+ * sources are filtered out; stale ones stay listed (marked by health) because
+ * a busy agent can miss heartbeats while remaining connectable.
  */
 export async function discoverInstances(
   options: DiscoverInstancesOptions = {},
-): Promise<{ instances: readonly DiscoveredInstance[]; registryDir: string; warnings: readonly string[] }> {
-  const registryDir = options.registryDir ?? defaultTraceRegistryDir(options.env);
-  const result = await listTraceSources({
-    registryDir,
-    ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
-  });
-  const instances = result.sources
+): Promise<DiscoverInstancesResult> {
+  const registryDirs = normalizeRegistryDirs(options);
+  const results = await Promise.all(
+    registryDirs.map((registryDir) =>
+      listTraceSources({
+        registryDir,
+        ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
+      }),
+    ),
+  );
+  const instances = mergeTraceSources(...results.map((result) => result.sources))
     .filter((source) => source.health !== "stopped")
     .map((source) => toInstance(source));
-  return { instances, registryDir, warnings: result.warnings };
+  return {
+    instances,
+    registryDir: registryDirs[0] ?? "",
+    registryDirs,
+    warnings: results.flatMap((result) => result.warnings),
+  };
+}
+
+/** Resolve + dedupe the requested registry list; `registryDirs` (when non-empty) beats the single `registryDir`. */
+function normalizeRegistryDirs(options: DiscoverInstancesOptions): string[] {
+  const requested =
+    options.registryDirs !== undefined && options.registryDirs.length > 0
+      ? options.registryDirs
+      : [options.registryDir ?? defaultTraceRegistryDir(options.env)];
+  const seen = new Set<string>();
+  const dirs: string[] = [];
+  for (const dir of requested) {
+    const resolved = resolve(dir);
+    if (!seen.has(resolved)) {
+      seen.add(resolved);
+      dirs.push(resolved);
+    }
+  }
+  return dirs;
 }
 
 export function toInstance(source: TraceSourceListItem): DiscoveredInstance {

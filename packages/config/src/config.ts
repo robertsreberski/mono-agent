@@ -845,12 +845,14 @@ function readTraceabilityConfig(env: Record<string, string | undefined>, cwd: st
     min: 1_000,
     max: 604_800_000,
   });
+  const globalDiscovery = readBoolean(env.MONO_AGENT_TRACE_GLOBAL_DISCOVERY, "MONO_AGENT_TRACE_GLOBAL_DISCOVERY", true, invalidEnv);
   return {
     registryDir,
     ...(sourceId === undefined ? {} : { sourceId }),
     ...(sourceLabel === undefined ? {} : { sourceLabel }),
     heartbeatMs,
     staleAfterMs,
+    globalDiscovery,
   };
 }
 

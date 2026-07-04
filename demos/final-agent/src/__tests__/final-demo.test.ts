@@ -381,7 +381,7 @@ describe("final agent demo", () => {
       expect(observedRuns.artifactDir).toBe(resolve(dir, "artifacts"));
       expect(observedRuns.runs[0]).toMatchObject({ conversationId: "telegram:987654321", status: "succeeded" });
       const observedDetail = await getObservedRun(demo, observedRuns.runs[0]?.runId ?? "");
-      expect(observedDetail.run?.events[0]).toMatchObject({ category: "runtime", type: "fake-event" });
+      expect(observedDetail.run?.events.find((event) => event.type === "fake-event")).toMatchObject({ category: "runtime" });
       expect(JSON.stringify(observedDetail)).not.toContain("redacted-value");
       const traceability = await getTraceabilityRuns(demo);
       expect(traceability.runs[0]).toMatchObject({
@@ -393,7 +393,7 @@ describe("final agent demo", () => {
         traceability.runs[0]?.source.sourceId ?? "",
         traceability.runs[0]?.runId ?? "",
       );
-      expect(traceDetail.detail?.run.events[0]).toMatchObject({ category: "runtime", type: "fake-event" });
+      expect(traceDetail.detail?.run.events.find((event) => event.type === "fake-event")).toMatchObject({ category: "runtime" });
       // The responder returns the final answer for the channel to deliver.
       expect(response.text).toContain("runtime ok");
     } finally {
@@ -761,7 +761,7 @@ async function getTraceabilityRuns(demo: FinalAgentDemo): Promise<{
     runs: result.runs.map((run) => ({
       runId: run.runId,
       conversationId: run.conversationId,
-      source: { sourceId: run.source.sourceId, label: run.source.label },
+      source: { sourceId: run.traceSource.sourceId, label: run.traceSource.label },
     })),
   };
 }

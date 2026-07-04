@@ -117,6 +117,31 @@ describe("agent host composition helpers", () => {
     expect(await readFile(join(artifactDir, summaryFile as string), "utf8")).toContain("run-host");
   });
 
+  it("forwards the request-derived source/sourceDetail into the recorded run summary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "Digest done" }));
+
+    const harness = await createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: fake.runtime,
+      createRunId: () => "run-cron",
+    });
+
+    await harness.run({
+      conversationId: "conversation-cron",
+      userMessage: "Run the nightly digest.",
+      abortSignal: new AbortController().signal,
+      metadata: { cron: { jobId: "nightly-digest" } },
+    });
+
+    const summary = await readSummary(artifactDir, "run-cron");
+    expect(summary.source).toBe("cron");
+    expect(summary.sourceDetail).toBe("nightly-digest");
+  });
+
   it("records each turn into today's daily file (journal tier) and surfaces it on the next turn", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -978,6 +1003,16 @@ function realPhoenixExporter(
   deps: { fetch: typeof fetch },
 ): RunExporter {
   return createPhoenixRunExporter(config, { fetch: deps.fetch });
+}
+
+/** Reads the JSONL recorder's `<runId>.summary.json` artifact for a given run. */
+async function readSummary(artifactDir: string, runId: string): Promise<RunSummary> {
+  const files = await readdir(artifactDir);
+  const summaryFile = files.find((file) => file.startsWith(runId) && file.endsWith(".summary.json"));
+  if (summaryFile === undefined) {
+    throw new Error(`No summary artifact found for runId ${runId} in ${artifactDir}`);
+  }
+  return JSON.parse(await readFile(join(artifactDir, summaryFile), "utf8")) as RunSummary;
 }
 
 function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>) {

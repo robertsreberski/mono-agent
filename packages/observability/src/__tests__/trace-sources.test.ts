@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -6,12 +6,16 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createJsonlRunRecorder,
+  DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS,
   listTraceRuns,
   listTraceSources,
+  mergeTraceSources,
+  pruneTraceSources,
   readTraceRun,
   registerTraceSource,
   TraceSourceRegistryError,
 } from "../index.js";
+import type { TraceSourceListItem } from "../index.js";
 
 const tempDirs: string[] = [];
 
@@ -72,19 +76,52 @@ describe("trace source registry", () => {
 
     const runs = await listTraceRuns({ registryDir, staleAfterMs: 10_000, clock, maxRuns: 10 });
 
-    expect(runs.runs.map((run) => [run.source.sourceId, run.runId, run.conversationId])).toEqual([
+    expect(runs.runs.map((run) => [run.traceSource.sourceId, run.runId, run.conversationId])).toEqual([
       ["agent-b", "same-run", "chat-b"],
       ["agent-a", "same-run", "chat-a"],
     ]);
 
     const detail = await readTraceRun({ registryDir, clock }, "agent-a", "same-run");
-    expect(detail?.source.sourceId).toBe("agent-a");
+    expect(detail?.traceSource.sourceId).toBe("agent-a");
     expect(detail?.run.summary.conversationId).toBe("chat-a");
     expect(JSON.stringify(detail)).not.toContain("event-secret");
 
     await sourceA.stop({ status: "stopped" });
     const stopped = await listTraceSources({ registryDir, clock });
     expect(stopped.sources.find((source) => source.sourceId === "agent-a")).toMatchObject({ health: "stopped" });
+  });
+
+  it("preserves a run's persisted channel `source` alongside its `traceSource` on TraceRunListItem", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const artifactDir = join(dir, "artifacts");
+
+    await registerTraceSource({
+      registryDir,
+      sourceId: "agent-cron",
+      label: "Agent Cron",
+      artifactDir,
+      transports: ["cron"],
+    });
+
+    const run = createJsonlRunRecorder({
+      runId: "cron-run",
+      conversationId: "cron:1",
+      artifactDir,
+      source: "cron",
+      sourceDetail: "nightly-report",
+    });
+    await run.finish({});
+
+    const runs = await listTraceRuns({ registryDir, maxRuns: 10 });
+    const item = runs.runs.find((entry) => entry.runId === "cron-run");
+    // The run's OWN persisted channel `source` ("cron", the trigger kind)
+    // must survive alongside `traceSource` (the process/agent instance it was
+    // read from) -- they are distinct fields (see TraceRunListItem's doc
+    // comment) and composition must not drop or clobber either.
+    expect(item?.source).toBe("cron");
+    expect(item?.sourceDetail).toBe("nightly-report");
+    expect(item?.traceSource.sourceId).toBe("agent-cron");
   });
 
   it("keeps malformed manifests as warnings and rejects path-like ids", async () => {
@@ -120,5 +157,154 @@ describe("trace source registry", () => {
       label: "Bad",
       artifactDir: join(dir, "artifacts"),
     })).rejects.toBeInstanceOf(TraceSourceRegistryError);
+  });
+});
+
+describe("pruneTraceSources", () => {
+  const NOW = Date.parse("2026-07-03T12:00:00.000Z");
+  const EIGHT_DAYS_MS = 8 * 24 * 60 * 60 * 1000;
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  async function writeRawManifest(
+    registryDir: string,
+    sourceId: string,
+    overrides: { readonly updatedAt: string; readonly pid?: number },
+  ): Promise<string> {
+    await mkdir(registryDir, { recursive: true });
+    const path = join(registryDir, `${sourceId}.json`);
+    await writeFile(
+      path,
+      JSON.stringify({
+        schema: "agent-runtime.trace-source.v1",
+        sourceId,
+        label: sourceId,
+        artifactDir: join(registryDir, "..", `${sourceId}-artifacts`),
+        status: "running",
+        startedAt: overrides.updatedAt,
+        updatedAt: overrides.updatedAt,
+        ...(overrides.pid === undefined ? {} : { pid: overrides.pid }),
+      }, null, 2),
+      "utf8",
+    );
+    return path;
+  }
+
+  it("has a 7-day default retention window", () => {
+    expect(DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("removes an old manifest whose pid is dead, keeps an old-but-alive one, and keeps a fresh-but-dead one", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const oldIso = new Date(NOW - EIGHT_DAYS_MS).toISOString();
+    const freshIso = new Date(NOW - ONE_HOUR_MS).toISOString();
+
+    await writeRawManifest(registryDir, "old-dead", { updatedAt: oldIso, pid: 111 });
+    await writeRawManifest(registryDir, "old-alive", { updatedAt: oldIso, pid: 222 });
+    await writeRawManifest(registryDir, "fresh-dead", { updatedAt: freshIso, pid: 333 });
+    // No pid recorded at all: treated like "dead" for age-based pruning purposes.
+    await writeRawManifest(registryDir, "old-no-pid", { updatedAt: oldIso });
+
+    const result = await pruneTraceSources({
+      registryDir,
+      clock: () => NOW,
+      isAlive: (pid) => pid === 222,
+    });
+
+    expect(result).toEqual({ removed: 2 });
+    const remaining = (await readdir(registryDir)).sort();
+    expect(remaining).toEqual(["fresh-dead.json", "old-alive.json"]);
+  });
+
+  it("never deletes a manifest with a live pid regardless of age", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const ancientIso = new Date(NOW - 365 * 24 * 60 * 60 * 1000).toISOString();
+    await writeRawManifest(registryDir, "ancient-alive", { updatedAt: ancientIso, pid: 999 });
+
+    const result = await pruneTraceSources({
+      registryDir,
+      olderThanMs: 1_000,
+      clock: () => NOW,
+      isAlive: () => true,
+    });
+
+    expect(result).toEqual({ removed: 0 });
+    expect(await readdir(registryDir)).toEqual(["ancient-alive.json"]);
+  });
+
+  it("tolerates malformed manifest files without throwing", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const oldIso = new Date(NOW - EIGHT_DAYS_MS).toISOString();
+    await writeRawManifest(registryDir, "old-dead", { updatedAt: oldIso, pid: 111 });
+    await writeFile(join(registryDir, "corrupt.json"), "{not valid json", "utf8");
+
+    await expect(
+      pruneTraceSources({ registryDir, clock: () => NOW, isAlive: () => false }),
+    ).resolves.toEqual({ removed: 1 });
+    expect(await readdir(registryDir)).toEqual(["corrupt.json"]);
+  });
+
+  it("never throws when the registry directory does not exist", async () => {
+    const dir = await tempDir();
+    await expect(
+      pruneTraceSources({ registryDir: join(dir, "does-not-exist"), clock: () => NOW }),
+    ).resolves.toEqual({ removed: 0 });
+  });
+});
+
+describe("mergeTraceSources", () => {
+  function item(overrides: Partial<TraceSourceListItem> = {}): TraceSourceListItem {
+    return {
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "agent-a",
+      label: "agent-a",
+      artifactDir: "/tmp/artifacts",
+      pid: 123,
+      status: "running",
+      startedAt: "2026-07-01T00:00:00.000Z",
+      updatedAt: "2026-07-01T00:00:00.000Z",
+      health: "running",
+      warnings: [],
+      ...overrides,
+    };
+  }
+
+  it("keeps a source unique to either list, and the fresher heartbeat for a source in both", () => {
+    const onlyA = item({ sourceId: "only-a" });
+    const onlyB = item({ sourceId: "only-b" });
+    const staleDupe = item({ sourceId: "both", label: "stale-copy", updatedAt: "2026-07-01T00:00:00.000Z" });
+    const freshDupe = item({ sourceId: "both", label: "fresh-copy", updatedAt: "2026-07-02T00:00:00.000Z" });
+
+    const merged = mergeTraceSources([onlyA, staleDupe], [onlyB, freshDupe]);
+
+    expect(merged).toHaveLength(3);
+    const bySourceId = new Map(merged.map((entry) => [entry.sourceId, entry]));
+    // Object identity preserved: callers can attribute a winner to its origin list.
+    expect(bySourceId.get("only-a")).toBe(onlyA);
+    expect(bySourceId.get("only-b")).toBe(onlyB);
+    expect(bySourceId.get("both")).toBe(freshDupe);
+  });
+
+  it("prefers the earlier list's entry when heartbeats tie", () => {
+    const tie = "2026-07-01T00:00:00.000Z";
+    const primary = item({ sourceId: "both", label: "primary-copy", updatedAt: tie });
+    const secondary = item({ sourceId: "both", label: "secondary-copy", updatedAt: tie });
+
+    const merged = mergeTraceSources([primary], [secondary]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(primary);
+  });
+
+  it("is variadic and sorts the union like listTraceSources (fresher first)", () => {
+    const oldest = item({ sourceId: "c-oldest", updatedAt: "2026-07-01T00:00:00.000Z" });
+    const middle = item({ sourceId: "b-middle", updatedAt: "2026-07-02T00:00:00.000Z" });
+    const newest = item({ sourceId: "a-newest", updatedAt: "2026-07-03T00:00:00.000Z" });
+
+    const merged = mergeTraceSources([oldest], [middle], [newest]);
+
+    expect(merged.map((entry) => entry.sourceId)).toEqual(["a-newest", "b-middle", "c-oldest"]);
   });
 });

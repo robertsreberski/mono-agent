@@ -61,3 +61,60 @@ export function formatClock(iso: string | undefined): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString();
 }
+
+/**
+ * `MM-DD HH:MM` in local time -- unlike {@link formatClock} (time only), this
+ * carries the date too: a run list spans days, and a bare clock reading is
+ * ambiguous once results run past midnight.
+ */
+export function formatDateClock(iso: string | undefined): string {
+  if (iso === undefined) {
+    return "";
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** Token/cost numbers pulled out of a run summary's opaque `usage`/`cost` fields. */
+export interface ExtractedUsage {
+  readonly input?: number;
+  readonly output?: number;
+  readonly usd?: number;
+}
+
+/**
+ * Provider-shape-agnostic extraction shared by the replay detail headline
+ * (`usageLine`) and the run list description: `usage`/`cost` are recorded
+ * verbatim from whatever the runtime/provider handed back, so field names
+ * vary (`input` vs `inputTokens` vs `input_tokens`, `totalUsd` vs `usd`).
+ * Returns undefined when no token counts are present at all.
+ */
+export function extractUsage(usage: unknown, cost: unknown): ExtractedUsage | undefined {
+  if (typeof usage !== "object" || usage === null) {
+    return undefined;
+  }
+  const record = usage as Record<string, unknown>;
+  const input = numberOrUndefined(record.input ?? record.inputTokens ?? record.input_tokens);
+  const output = numberOrUndefined(record.output ?? record.outputTokens ?? record.output_tokens);
+  if (input === undefined && output === undefined) {
+    return undefined;
+  }
+  const usd = numberOrUndefined(
+    typeof cost === "object" && cost !== null
+      ? ((cost as Record<string, unknown>).totalUsd ?? (cost as Record<string, unknown>).usd)
+      : cost,
+  );
+  return {
+    ...(input === undefined ? {} : { input }),
+    ...(output === undefined ? {} : { output }),
+    ...(usd === undefined ? {} : { usd }),
+  };
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}

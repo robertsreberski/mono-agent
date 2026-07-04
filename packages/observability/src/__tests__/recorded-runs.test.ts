@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   createJsonlRunRecorder,
+  deriveRunSource,
   listRecordedRuns,
   readRecordedRun,
   ObservabilityReadError,
@@ -51,6 +52,60 @@ describe("recorded run reader", () => {
   it("returns an empty list when the artifact directory does not exist", async () => {
     const dir = join(await tempDir(), "missing");
     await expect(listRecordedRuns({ artifactDir: dir })).resolves.toEqual({ totalRuns: 0, runs: [], warnings: [] });
+  });
+
+  it("surfaces model, effort, source, sourceDetail, and userInput on both list items and run detail (regression: model was previously dropped)", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "run-meta",
+      conversationId: "cron:nightly-digest",
+      artifactDir: dir,
+      userInput: "Summarize today's digest.",
+      source: "cron",
+      sourceDetail: "nightly-digest",
+    });
+    await recorder.finish({ model: "pi:openai-codex:gpt-5.5", effort: "high" });
+
+    const expectedMeta = {
+      model: "pi:openai-codex:gpt-5.5",
+      effort: "high",
+      source: "cron",
+      sourceDetail: "nightly-digest",
+      userInput: "Summarize today's digest.",
+    };
+    const list = await listRecordedRuns({ artifactDir: dir });
+    expect(list.runs[0]).toMatchObject(expectedMeta);
+
+    const detail = await readRecordedRun({ artifactDir: dir }, "run-meta");
+    expect(detail?.summary).toMatchObject(expectedMeta);
+  });
+
+  it("normalizes epoch-string and epoch-number timestamps to ISO, passing ISO strings through unchanged", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({ runId: "run-epoch", conversationId: "chat-1", artifactDir: dir });
+    const summary = await recorder.finish({});
+    // Overwrite the (empty) events file with raw provider-shaped lines exercising
+    // every timestamp shape the reader must normalize.
+    await writeFile(
+      summary.artifactPaths[0] ?? "",
+      `${[
+        JSON.stringify({ type: "provider_request_started", timestamp: "1778952408375" }), // 13-digit epoch ms (string)
+        JSON.stringify({ type: "provider_request_started", timestamp: "1778952408" }), // 10-digit epoch seconds (string)
+        JSON.stringify({ type: "provider_request_started", timestamp: 1778952409123 }), // 13-digit epoch ms (number)
+        JSON.stringify({ type: "provider_request_started", timestamp: 1778952410 }), // 10-digit epoch seconds (number)
+        JSON.stringify({ type: "assistant", timestamp: "2026-05-16T08:00:00.000Z" }), // ISO passthrough
+      ].join("\n")}\n`,
+      "utf8",
+    );
+
+    const detail = await readRecordedRun({ artifactDir: dir }, "run-epoch");
+    expect(detail?.events.map((event) => event.timestamp)).toEqual([
+      new Date(1778952408375).toISOString(),
+      new Date(1778952408_000).toISOString(),
+      new Date(1778952409123).toISOString(),
+      new Date(1778952410_000).toISOString(),
+      "2026-05-16T08:00:00.000Z",
+    ]);
   });
 
   it("reads event timelines, classifies visible runtime events, caps events, and warns for malformed lines", async () => {
@@ -153,5 +208,20 @@ describe("reconcileStaleRunArtifacts", () => {
   it("returns empty for a missing artifact directory", async () => {
     const dir = join(await tempDir(), "missing");
     await expect(reconcileStaleRunArtifacts(dir, { startedBeforeMs: 0 })).resolves.toEqual({ reconciled: [], warnings: [] });
+  });
+});
+
+describe("deriveRunSource", () => {
+  it("maps each known conversationId prefix to its source, and falls back to \"other\"", () => {
+    expect(deriveRunSource("telegram:12345")).toBe("telegram");
+    expect(deriveRunSource("slack:C123:U456")).toBe("slack");
+    expect(deriveRunSource("cron:nightly-digest")).toBe("cron");
+    expect(deriveRunSource("webhook:my-endpoint")).toBe("webhook");
+    expect(deriveRunSource("memory:capture:distill")).toBe("memory");
+    expect(deriveRunSource("a2a:peer-1")).toBe("a2a");
+    expect(deriveRunSource("openai:thread-1")).toBe("openai-api");
+    expect(deriveRunSource("tui-local")).toBe("tui");
+    expect(deriveRunSource("tui:session-1")).toBe("tui");
+    expect(deriveRunSource("something-else")).toBe("other");
   });
 });

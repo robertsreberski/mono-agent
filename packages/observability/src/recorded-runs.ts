@@ -329,6 +329,11 @@ function coerceRunSummary(
   const updatedAt = stringField(value, "updatedAt");
   const providerSessionId = providerSessionIdField(value.providerSessionId);
   const artifactPaths = Array.isArray(value.artifactPaths) ? value.artifactPaths.filter((entry): entry is string => typeof entry === "string") : [];
+  const model = stringField(value, "model");
+  const effort = stringField(value, "effort");
+  const source = stringField(value, "source");
+  const sourceDetail = stringField(value, "sourceDetail");
+  const userInput = stringField(value, "userInput");
   const summary: RunSummary = {
     runId,
     conversationId,
@@ -345,9 +350,14 @@ function coerceRunSummary(
     ...(providerSessionId === undefined ? {} : { providerSessionId }),
     eventCount,
     artifactPaths,
+    ...(model === undefined ? {} : { model }),
+    ...(userInput === undefined ? {} : { userInput: redactJsonValue(userInput, maxStringBytes) as string }),
     ...(value.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(value.runtimeWarnings, maxStringBytes) }),
     ...(value.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(value.diagnostics, maxStringBytes) }),
     ...(value.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(value.capabilitiesUsed, maxStringBytes) }),
+    ...(effort === undefined ? {} : { effort }),
+    ...(source === undefined ? {} : { source }),
+    ...(sourceDetail === undefined ? {} : { sourceDetail }),
   };
   return summary;
 }
@@ -367,10 +377,15 @@ function summaryToListItem(summary: RunSummary, updatedAt: string, maxStringByte
     updatedAt: summary.updatedAt ?? updatedAt,
     ...(summary.usage === undefined ? {} : { usage: redactJsonValue(summary.usage, maxStringBytes) }),
     ...(summary.cost === undefined ? {} : { cost: redactJsonValue(summary.cost, maxStringBytes) }),
+    ...(summary.model === undefined ? {} : { model: summary.model }),
     ...(summary.providerSessionId === undefined ? {} : { providerSessionId: summary.providerSessionId }),
     ...(summary.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(summary.runtimeWarnings, maxStringBytes) }),
     ...(summary.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(summary.diagnostics, maxStringBytes) }),
     ...(summary.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(summary.capabilitiesUsed, maxStringBytes) }),
+    ...(summary.effort === undefined ? {} : { effort: summary.effort }),
+    ...(summary.source === undefined ? {} : { source: summary.source }),
+    ...(summary.sourceDetail === undefined ? {} : { sourceDetail: summary.sourceDetail }),
+    ...(summary.userInput === undefined ? {} : { userInput: summary.userInput }),
   };
 }
 
@@ -378,7 +393,8 @@ function toRecordedEvent(raw: unknown, index: number, maxStringBytes: number): R
   const payload = redactJsonValue(raw, maxStringBytes);
   const record = isRecord(payload) ? payload : {};
   const type = stringField(record, "type");
-  const timestamp = stringField(record, "timestamp") ?? stringField(record, "createdAt") ?? stringField(record, "time");
+  const timestamp =
+    normalizeEventTimestamp(record.timestamp) ?? normalizeEventTimestamp(record.createdAt) ?? normalizeEventTimestamp(record.time);
   // Use the shared single-source-of-truth descriptors so the reader and the
   // export path always agree on category/label/summary. buildEventDescriptors
   // redacts the raw event itself (mirroring the prior inline path: redact ->
@@ -442,4 +458,34 @@ function finiteNumberField(record: Record<string, unknown>, key: string): number
 function integerNumberField(record: Record<string, unknown>, key: string): number | undefined {
   const value = record[key];
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+const EPOCH_DIGITS_PATTERN = /^\d{10,13}$/u;
+
+/**
+ * Normalize a raw event timestamp field into an ISO string. Real runtime events
+ * (e.g. `provider_request_started`) carry raw epoch values as either a
+ * 10-13 digit string or a bare number — pre-normalization these rendered as an
+ * empty clock in consumers that expect ISO. 10-digit values are epoch seconds
+ * (`* 1000`); 11-13 digit values are epoch milliseconds. Already-ISO strings and
+ * any other shape pass through unchanged (or drop, matching prior behavior).
+ */
+function normalizeEventTimestamp(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+    return EPOCH_DIGITS_PATTERN.test(trimmed) ? epochDigitsToIso(trimmed) : trimmed;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const digits = Math.trunc(Math.abs(value)).toString();
+    return EPOCH_DIGITS_PATTERN.test(digits) ? epochDigitsToIso(digits) : undefined;
+  }
+  return undefined;
+}
+
+function epochDigitsToIso(digits: string): string {
+  const ms = digits.length <= 10 ? Number(digits) * 1000 : Number(digits);
+  return new Date(ms).toISOString();
 }

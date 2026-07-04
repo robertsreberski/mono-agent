@@ -26,7 +26,7 @@ mono-agent tui --conversation ops     # chat under a stable conversation id
 :::note
 It requires an interactive TTY. Piped or non-interactive stdin exits with an error.
 
-Agents whose config sets a custom `traceability.registryDir` (as `mono-agent init` scaffolds — `./.mono-agent/trace-sources`) register in **that** directory instead of the global one. Run `mono-agent tui` from the agent's folder (or with `--config` pointing at its config) so the local registry is resolved, or remove the override to make the agent globally discoverable.
+Agents whose config sets a custom `traceability.registryDir` (as `mono-agent init` scaffolds — `./.mono-agent/trace-sources`) register in **that** directory AND, by default, also mirror an identical manifest into the global `~/.mono-agent/trace-sources` registry — so `mono-agent tui` run from anywhere on the machine finds them. Set `traceability.globalDiscovery: false` to opt an agent out of the mirror (it stays visible only from its own folder, or with `--config` pointing at it). Running `mono-agent tui` from an agent's own folder additionally consults the global registry (when different), so both that agent and every other machine-wide agent show up together.
 :::
 
 Chat runs under its own `conversationId` (default `tui-<sourceId>`), so it never blocks or interleaves with Telegram/Slack/cron conversations — the harness serializes per conversation and runs different conversations concurrently. Closing the TUI mid-turn (or pressing `esc`) aborts the in-flight turn server-side.

@@ -37,19 +37,24 @@ export { parseMcpServers } from "./mcp-servers.js";
 export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
 export { resolveRuntimePolicies } from "./runtime-policies.js";
 export {
+  discoverLocalProviderModels,
   isPrivateBaseUrl,
+  resolveModelEffortLevels,
   runtimeOptionsForLocalProvider,
   validateLocalProviderDefinition,
 } from "./local-providers.js";
 export type {
   AgentRuntimeCustomModel,
   AgentRuntimeCustomProvider,
+  DiscoverLocalProviderModelsOptions,
+  DiscoveredLocalModel,
   LocalProviderCapabilities,
   LocalProviderDefinition,
   LocalProviderModelDefinition,
   LocalProviderPricing,
   LocalProviderRuntimeOptions,
   LocalProviderType,
+  ModelEffortLevels,
 } from "./local-providers.js";
 export type {
   MonoRuntimeApprovalDecision,

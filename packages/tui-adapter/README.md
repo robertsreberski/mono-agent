@@ -34,7 +34,7 @@ const adapter = await startTuiAdapter({
 
 ## Endpoints
 
-- `GET {basePath}/v1/info` — `{ schema, pid, label?, model? }`
+- `GET {basePath}/v1/info` — `{ schema, pid, label?, model?, effort? }`
 - `POST {basePath}/v1/turns` — body `{ conversationId, text, metadata? }`;
   responds with chunked `application/x-ndjson` frames
   (`status | append | replace | event | finish | error`). Closing the socket

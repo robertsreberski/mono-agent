@@ -39,6 +39,7 @@ import type {
 } from "@mono-agent/telegram-adapter";
 import type {
   TuiAdapterConfig,
+  TuiAdapterInfo,
   TuiAdapterOptions,
   TuiAdapterStartResult,
 } from "@mono-agent/tui-adapter";
@@ -50,7 +51,13 @@ import type {
   WebhookInvocationRequest,
   WebhookInvocationStatus,
 } from "@mono-agent/webhook-adapter";
-import { modelReferenceKey } from "@mono-agent/runtime-adapter";
+import {
+  discoverLocalProviderModels,
+  modelReferenceKey,
+  parseMonoRuntimeModelReference,
+  resolveModelEffortLevels,
+} from "@mono-agent/runtime-adapter";
+import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import type {
   StartWhatsAppAdapterOptions,
   WhatsAppAdapterConfig,
@@ -720,8 +727,20 @@ export function createOpenAIApiChannelDriver(
   };
 }
 
+/**
+ * `/v1/info` re-runs local-provider discovery at most this often; the TUI
+ * fetches info on connect + agent switch (not per turn), so this just bounds
+ * how often a flaky/slow local endpoint gets probed rather than affecting
+ * perceived freshness in practice.
+ */
+const LOCAL_MODEL_DISCOVERY_TTL_MS = 30_000;
+
 export interface TuiChannelOverrides {
   readonly adapterFactory?: (options: TuiAdapterOptions) => Promise<TuiAdapterStartResult>;
+  /** Test seam: replaces the real local-provider model discovery call. */
+  readonly discoverModels?: (
+    providers: readonly LocalProviderDefinition[] | undefined,
+  ) => Promise<readonly DiscoveredLocalModel[]>;
 }
 
 /**
@@ -756,6 +775,77 @@ export function createTuiChannelDriver(
     async start(input) {
       const adapterModule = await loadTuiModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
+      const discoverModels = overrides.discoverModels ?? discoverLocalProviderModels;
+      const localProviders = input.coreConfig.providers?.local;
+
+      // The statically configured candidate models: the primary first, then
+      // each configured fallback, as canonical `modelReferenceKey` strings,
+      // de-duplicated (a fallback redundantly naming the primary collapses away).
+      const configModelKeys: string[] = [];
+      for (const ref of [input.coreConfig.runtime.model, ...(input.coreConfig.runtime.fallbackModels ?? [])]) {
+        const key = modelReferenceKey(ref);
+        if (!configModelKeys.includes(key)) {
+          configModelKeys.push(key);
+        }
+      }
+
+      // Local-provider discovery is async and its result can change after
+      // startup (an endpoint started later, a model loaded/unloaded) — so
+      // `info` is a PROVIDER the adapter re-invokes on every GET /v1/info,
+      // rather than a value snapshotted once at channel composition. A short
+      // TTL cache keeps a flaky/slow endpoint from being hammered; the TUI
+      // only calls /v1/info on connect + agent switch, not per turn, so 30s
+      // of staleness there is unnoticeable in practice.
+      let discoveryCache: { readonly expiresAt: number; readonly models: readonly DiscoveredLocalModel[] } | undefined;
+      const discoverModelsCached = async (): Promise<readonly DiscoveredLocalModel[]> => {
+        const now = Date.now();
+        if (discoveryCache !== undefined && now < discoveryCache.expiresAt) {
+          return discoveryCache.models;
+        }
+        const models = await discoverModels(localProviders);
+        discoveryCache = { expiresAt: now + LOCAL_MODEL_DISCOVERY_TTL_MS, models };
+        return models;
+      };
+
+      const buildInfo = async (): Promise<TuiAdapterInfo> => {
+        const discovered = await discoverModelsCached();
+        const labelByRef = new Map(discovered.map((model) => [model.ref, model.label]));
+        const models = [...configModelKeys];
+        for (const model of discovered) {
+          if (!models.includes(model.ref)) {
+            models.push(model.ref);
+          }
+        }
+
+        const modelOptions: Record<string, { effortLevels?: readonly string[]; reasoning?: boolean; reasoningMode?: string; label?: string }> = {};
+        for (const ref of models) {
+          let parsedRef;
+          try {
+            parsedRef = parseMonoRuntimeModelReference(ref);
+          } catch {
+            continue;
+          }
+          const resolved = resolveModelEffortLevels(parsedRef, localProviders);
+          const label = labelByRef.get(ref);
+          const entry = {
+            ...(resolved.effortLevels === undefined ? {} : { effortLevels: resolved.effortLevels }),
+            reasoning: resolved.reasoning,
+            ...(resolved.reasoningMode === undefined ? {} : { reasoningMode: resolved.reasoningMode }),
+            ...(label === undefined ? {} : { label }),
+          };
+          if (Object.keys(entry).length > 0) {
+            modelOptions[ref] = entry;
+          }
+        }
+
+        return {
+          model: modelReferenceKey(input.coreConfig.runtime.model),
+          ...(input.coreConfig.runtime.effort === undefined ? {} : { effort: input.coreConfig.runtime.effort }),
+          models,
+          ...(Object.keys(modelOptions).length === 0 ? {} : { modelOptions }),
+        };
+      };
+
       const adapter = await adapterFactory({
         host: input.config.host,
         port: input.config.port,
@@ -763,7 +853,7 @@ export function createTuiChannelDriver(
         allowNonLoopback: input.config.allowNonLoopback,
         ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
         responder: input.responder,
-        info: { model: modelReferenceKey(input.coreConfig.runtime.model) },
+        info: buildInfo,
         // A dead endpoint must flip the channel to failed, not serve nothing
         // silently — the TUI's only discovery signal is this channel's status.
         onServerError: (reason) => input.onFailure(reason),

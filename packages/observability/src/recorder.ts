@@ -40,6 +40,8 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly events: RuntimeEventLike[] = [];
   private readonly userInput: string | undefined;
   private readonly systemPrompt: string | undefined;
+  private readonly source: string | undefined;
+  private readonly sourceDetail: string | undefined;
 
   constructor(options: JsonlRunRecorderOptions) {
     this.runId = normalizeId(options.runId, "runId");
@@ -59,6 +61,9 @@ class JsonlRunRecorder implements RunRecorder {
         : undefined;
     this.systemPrompt =
       typeof options.systemPrompt === "string" ? truncateString(options.systemPrompt, SYSTEM_PROMPT_MAX_BYTES) : undefined;
+    this.source = typeof options.source === "string" && options.source.length > 0 ? options.source : undefined;
+    this.sourceDetail =
+      typeof options.sourceDetail === "string" && options.sourceDetail.length > 0 ? options.sourceDetail : undefined;
     this.startedAt = this.clock();
     this.startedAtIso = new Date(this.startedAt).toISOString();
   }
@@ -68,7 +73,12 @@ class JsonlRunRecorder implements RunRecorder {
   }
 
   onEvent(event: RuntimeEventLike): void {
-    this.events.push(redactJsonValue(event, this.maxStringBytes) as RuntimeEventLike);
+    const redacted = redactJsonValue(event, this.maxStringBytes) as RuntimeEventLike;
+    const timestamp = redacted.timestamp;
+    const hasUsableTimestamp = typeof timestamp === "string" || typeof timestamp === "number";
+    this.events.push(
+      hasUsableTimestamp ? redacted : { ...redacted, timestamp: new Date(this.clock()).toISOString() },
+    );
   }
 
   async finish(result: RuntimeResultLike): Promise<RunSummary> {
@@ -124,6 +134,9 @@ class JsonlRunRecorder implements RunRecorder {
       artifactPaths: this.artifactPaths(),
       ...(this.userInput === undefined ? {} : { userInput: this.userInput }),
       ...(systemPrompt === undefined ? {} : { systemPrompt }),
+      ...(typeof result.effort === "string" ? { effort: result.effort } : {}),
+      ...(this.source === undefined ? {} : { source: this.source }),
+      ...(this.sourceDetail === undefined ? {} : { sourceDetail: this.sourceDetail }),
       ...(result.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(result.runtimeWarnings, this.maxStringBytes) }),
       ...(result.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(result.diagnostics, this.maxStringBytes) }),
       ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(result.capabilitiesUsed, this.maxStringBytes) }),

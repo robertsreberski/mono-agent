@@ -259,6 +259,9 @@ export function layerJsonOntoEnv(
   if (json.traceability?.staleAfterMs !== undefined) {
     fromJson.MONO_AGENT_TRACE_STALE_AFTER_MS = String(json.traceability.staleAfterMs);
   }
+  if (json.traceability?.globalDiscovery !== undefined) {
+    fromJson.MONO_AGENT_TRACE_GLOBAL_DISCOVERY = String(json.traceability.globalDiscovery);
+  }
   if (json.observability?.exporters !== undefined && !hasObservabilityEnv(env)) {
     fromJson.MONO_AGENT_OBSERVABILITY_EXPORTERS = JSON.stringify(json.observability.exporters);
   }

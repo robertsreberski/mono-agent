@@ -7,7 +7,7 @@ import {
   createConfiguredMemory,
 } from "@mono-agent/agent-host";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import { reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
+import { pruneTraceSources, reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import { modelReferenceKey } from "@mono-agent/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
@@ -17,11 +17,15 @@ import {
   loadAppCoreConfig,
   resolveAppArtifactDir,
   resolveAppObservabilityExporters,
+  resolveAppTraceGlobalDiscovery,
   resolveAppTraceHeartbeatMs,
   resolveAppTraceRegistryDir,
   resolveAppTraceSourceId,
   resolveAppTraceSourceLabel,
   resolveAppTraceStaleAfterMs,
+  resolveGlobalTraceRegistryDir,
+  resolveTraceTmpdirRoot,
+  shouldMirrorTraceSourceGlobally,
 } from "./app-config.js";
 import type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
 import { defaultChannelDrivers } from "./channels.js";
@@ -176,6 +180,11 @@ class MonoAgentAppController implements MonoAgentApp {
   /** The exporter the responder threads into agent-host (first configured exporter). */
   private resolvedExporter: ResolvedExporter | undefined;
   private traceSource: TraceSourceHandle | undefined;
+  // Best-effort mirror of `traceSource` into the machine-wide global registry,
+  // present only when `shouldMirrorTraceSourceGlobally` gates it on (see
+  // `startTraceability`). Kept in lockstep with `traceSource` on every
+  // refresh/stop so both manifests describe the same instance identically.
+  private globalTraceSource: TraceSourceHandle | undefined;
   private memoryRituals: RunningRituals | undefined;
   // One shared memory store across all channel responders + the ritual scheduler, so there is a single
   // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
@@ -291,14 +300,15 @@ class MonoAgentAppController implements MonoAgentApp {
     try {
       const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
       await this.refreshSelectedSkillsSnapshot(reason);
-      const [registryDir, artifactDir, sourceId, label, heartbeatMs] = await Promise.all([
+      const [registryDir, artifactDir, sourceId, label, heartbeatMs, globalDiscovery] = await Promise.all([
         resolveAppTraceRegistryDir(input),
         resolveAppArtifactDir(input),
         resolveAppTraceSourceId(input, this.traceDefaults),
         resolveAppTraceSourceLabel(input, this.traceDefaults),
         resolveAppTraceHeartbeatMs(input),
+        resolveAppTraceGlobalDiscovery(input),
       ]);
-      this.traceSource = await registerTraceSource({
+      const registerOptions = {
         registryDir,
         sourceId,
         label,
@@ -308,9 +318,30 @@ class MonoAgentAppController implements MonoAgentApp {
         configPath: this.configPath,
         metadata: this.traceMetadata(reason),
         heartbeatMs,
-      });
+      };
+      this.traceSource = await registerTraceSource(registerOptions);
       this.traceabilityStatusValue = { kind: "running", sourceId, registryDir, artifactDir };
       this.logger?.info?.("Traceability source registered.", { reason, sourceId, registryDir, artifactDir });
+      void pruneTraceSources({ registryDir });
+
+      // Best-effort global mirror: makes this agent discoverable by `mono-agent
+      // tui` run anywhere on the machine, even when its own registryDir is a
+      // config-local override (e.g. `mono-agent init`'s scaffold). A mirror
+      // failure must never affect the primary registration above.
+      const globalRegistryDir = resolveGlobalTraceRegistryDir(this.env);
+      const tmpdirRoot = resolveTraceTmpdirRoot(this.env);
+      if (shouldMirrorTraceSourceGlobally({ registryDir, globalRegistryDir, globalDiscovery, tmpdirRoot })) {
+        try {
+          this.globalTraceSource = await registerTraceSource({ ...registerOptions, registryDir: globalRegistryDir });
+          void pruneTraceSources({ registryDir: globalRegistryDir });
+        } catch (error) {
+          this.globalTraceSource = undefined;
+          this.logger?.warn?.("Global trace-source mirror registration failed.", { reason: reasonOf(error) });
+        }
+      } else {
+        this.globalTraceSource = undefined;
+      }
+
       // Fire-and-forget: orphan reclamation is best-effort cleanup and must not gate startup
       // readiness (it scans the whole artifacts dir, which grows unbounded over time).
       void this.reconcileStaleRunsOnce(artifactDir);
@@ -415,13 +446,18 @@ class MonoAgentAppController implements MonoAgentApp {
     if (this.traceSource === undefined) {
       return;
     }
+    const patch = { transports: this.activeTransports(), metadata: this.traceMetadata(reason) };
     try {
-      await this.traceSource.update({
-        transports: this.activeTransports(),
-        metadata: this.traceMetadata(reason),
-      });
+      await this.traceSource.update(patch);
     } catch (error) {
       this.logger?.warn?.("Traceability source update failed.", { reason: reasonOf(error) });
+    }
+    if (this.globalTraceSource !== undefined) {
+      try {
+        await this.globalTraceSource.update(patch);
+      } catch (error) {
+        this.logger?.warn?.("Global trace-source mirror update failed.", { reason: reasonOf(error) });
+      }
     }
   }
 
@@ -774,7 +810,7 @@ class MonoAgentAppController implements MonoAgentApp {
     const adapterSendTools = await this.adapterSendToolsRuntimeOptions(coreConfig);
     // Always active: a no-op for interactive turns (which carry no cron/webhook
     // metadata), it applies the per-trigger model/effort override otherwise.
-    const requestModelOverride = this.requestModelOverrideRuntimeOptions();
+    const requestModelOverride = this.requestModelOverrideRuntimeOptions(coreConfig);
     const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
       memoryRecall,
       supermemoryMcp,
@@ -806,12 +842,17 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   /**
-   * Per-request extension that applies a cron/webhook per-trigger model + effort
-   * override (validated, warn-and-ignore on bad input). Composed alongside the
-   * memory/adapter extensions.
+   * Per-request extension that applies a cron/webhook/tui per-trigger model +
+   * effort override (validated, warn-and-ignore on bad input). Threads the
+   * configured local providers so a LOCAL-model override recomputes its endpoint
+   * block for the OVERRIDE model (see request-model-override doc). Composed
+   * alongside the memory/adapter extensions.
    */
-  private requestModelOverrideRuntimeOptions(): RuntimeOptionsExtension {
-    const extension = createRequestModelOverrideRuntimeExtension(this.logger);
+  private requestModelOverrideRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension {
+    const extension = createRequestModelOverrideRuntimeExtension({
+      ...(this.logger === undefined ? {} : { logger: this.logger }),
+      ...(coreConfig.providers?.local === undefined ? {} : { localProviders: coreConfig.providers.local }),
+    });
     return async (input) => extension({ request: input.request });
   }
 
@@ -1017,15 +1058,18 @@ class MonoAgentAppController implements MonoAgentApp {
 
   private async stopTraceSource(reason: string): Promise<void> {
     const traceSource = this.traceSource;
-    if (traceSource === undefined) {
+    const globalTraceSource = this.globalTraceSource;
+    if (traceSource === undefined && globalTraceSource === undefined) {
       return;
     }
     this.traceSource = undefined;
-    await traceSource.stop({
-      metadata: this.traceMetadata(reason),
-      transports: this.activeTransports(),
-    }).catch((error: unknown) => {
+    this.globalTraceSource = undefined;
+    const patch = { metadata: this.traceMetadata(reason), transports: this.activeTransports() };
+    await traceSource?.stop(patch).catch((error: unknown) => {
       this.logger?.warn?.("Traceability source stop update failed.", { reason: reasonOf(error) });
+    });
+    await globalTraceSource?.stop(patch).catch((error: unknown) => {
+      this.logger?.warn?.("Global trace-source mirror stop update failed.", { reason: reasonOf(error) });
     });
     if (!this.stopped) {
       this.traceabilityStatusValue = { kind: "disabled", reason: "Traceability source stopped while applying config." };

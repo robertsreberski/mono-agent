@@ -1,7 +1,7 @@
 import { Markdown, Text } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 
-import { formatTokens } from "../format.js";
+import { formatDurationMs, formatTokens } from "../format.js";
 import { dimMarkdownTheme, markdownTheme, styles } from "../theme.js";
 
 /** A user-authored message. */
@@ -59,6 +59,7 @@ export class AssistantCell implements Component {
 export class ThinkingCell implements Component {
   private textValue = "";
   private expandedValue: boolean;
+  private durationMsValue: number | undefined;
   private readonly body = new Markdown("", 3, 0, dimMarkdownTheme, { color: styles.muted, italic: true });
   /** Set while the turn is still streaming into this cell. */
   active = true;
@@ -88,14 +89,25 @@ export class ThinkingCell implements Component {
     return this.expandedValue;
   }
 
+  /** Stamped once this cell is sealed (turn's first thought → this seal). */
+  setDurationMs(ms: number): void {
+    this.durationMsValue = ms;
+  }
+
   render(width: number): string[] {
     if (this.isEmpty()) {
       return [];
     }
     const chars = this.textValue.length;
     const marker = this.active ? "∴ thinking…" : "∴ thought";
+    const durationPart =
+      this.durationMsValue !== undefined && this.durationMsValue >= 0
+        ? ` · ${formatDurationMs(this.durationMsValue)}`
+        : "";
     const header = new Text(
-      styles.thinking(`${marker} (${formatTokens(chars)} chars${this.expandedValue ? "" : " — ctrl+t expands"})`),
+      styles.thinking(
+        `${marker} (${formatTokens(chars)} chars${durationPart}${this.expandedValue ? "" : " — ctrl+t expands"})`,
+      ),
       1,
       0,
     );

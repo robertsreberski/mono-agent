@@ -131,6 +131,7 @@ export const CONFIG_ENV_KEYS = {
   "traceability.sourceLabel": "MONO_AGENT_TRACE_SOURCE_LABEL",
   "traceability.heartbeatMs": "MONO_AGENT_TRACE_HEARTBEAT_MS",
   "traceability.staleAfterMs": "MONO_AGENT_TRACE_STALE_AFTER_MS",
+  "traceability.globalDiscovery": "MONO_AGENT_TRACE_GLOBAL_DISCOVERY",
   "observability.exporters": "MONO_AGENT_OBSERVABILITY_EXPORTERS",
   "providers.piAuthPath": "MONO_AGENT_PI_AUTH_PATH",
   "providers.piNative.piMaxRetries": "MONO_AGENT_PI_MAX_RETRIES",
@@ -767,6 +768,12 @@ function buildTraceabilitySection(input: BuildMonoAgentConfigViewInput): ConfigV
         label: "Stale after (ms)",
         value: trace.staleAfterMs === undefined ? "default" : String(trace.staleAfterMs),
         jsonPresent: json.traceability?.staleAfterMs !== undefined,
+      }),
+      toField(env, {
+        id: "traceability.globalDiscovery",
+        label: "Global discovery",
+        value: trace.globalDiscovery === false ? "no" : "yes",
+        jsonPresent: json.traceability?.globalDiscovery !== undefined,
       }),
     ],
   };

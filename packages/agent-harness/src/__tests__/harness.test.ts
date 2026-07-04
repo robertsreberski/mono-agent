@@ -151,8 +151,8 @@ describe("AgentHarness", () => {
     expect(response.metadata.summary).toMatchObject({
       status: "succeeded",
       // The memory_recalled diagnostic, the assistant event, and the
-      // provider_bridge_latency observability event.
-      eventCount: 3,
+      // synthetic run_config + provider_bridge_latency observability events.
+      eventCount: 4,
       cost: { totalUsd: 0.01 },
       capabilitiesUsed: ["tools:read"],
     });

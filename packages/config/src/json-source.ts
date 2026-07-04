@@ -169,6 +169,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly sourceLabel?: string;
     readonly heartbeatMs?: number;
     readonly staleAfterMs?: number;
+    readonly globalDiscovery?: boolean;
   };
   readonly observability?: {
     readonly exporters?: readonly MonoAgentObservabilityExporterJson[];
