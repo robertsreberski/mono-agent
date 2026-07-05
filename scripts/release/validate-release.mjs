@@ -37,7 +37,7 @@ export function validateRelease({
 } = {}) {
   const version = releaseVersionFromTag(tag);
   const publishable = publishablePackages(packages);
-  const packagesByName = new Map(publishable.map((pkg) => [pkg.name, pkg]));
+  const packagesByName = new Map(packages.map((pkg) => [pkg.name, pkg]));
   const issues = [];
 
   if (!publishable.length) {
@@ -64,6 +64,11 @@ export function validateRelease({
 
   for (const pkg of publishable) {
     for (const dep of internalDependencies(pkg, packagesByName)) {
+      if (dep.package.catalogEntry.publishable !== true) {
+        issues.push(`${pkg.name} ${dep.section}.${dep.name} points at nonpublishable workspace package ${dep.name}`);
+        continue;
+      }
+
       const expectedRange = `workspace:${version}`;
       if (dep.range !== expectedRange) {
         issues.push(`${pkg.name} ${dep.section}.${dep.name} must be ${expectedRange}; found ${dep.range}`);
