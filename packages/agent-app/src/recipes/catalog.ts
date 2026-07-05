@@ -10,6 +10,11 @@ function withSections(
   return { ...baseConfig(input), ...extra } as MonoAgentConfigJson;
 }
 
+const SANDBOX_FAIL_CLOSED_ENGINE_NOTE =
+  "Install `srt` and keep it on PATH; without it, fail-closed sandboxed commands stop with `sandbox_unavailable` instead of running unsandboxed.";
+const SANDBOX_UNSAFE_ENGINE_NOTE =
+  "Install `srt` and keep it on PATH. If it is missing, unsafe-host-process fallback is active: all sandbox roots/denyWrite entries are inert and commands run unsandboxed on the host.";
+
 /** `minimal-webhook` — the zero-credential smoke agent (matches default init). */
 const minimalWebhook: AgentRecipe = {
   id: "minimal-webhook",
@@ -373,7 +378,7 @@ const phoenixObserved: AgentRecipe = {
 const sandboxedCodeAgent: AgentRecipe = {
   id: "sandboxed-code-agent",
   title: "Sandboxed code agent",
-  description: "Native srt sandbox, workspace-only filesystem, localhost-only network, fail-closed when the engine is unavailable.",
+  description: "Native srt sandbox (requires `srt` on PATH), workspace-only filesystem, localhost-only network, and fail-closed `sandbox_unavailable` errors instead of unsandboxed host execution when the engine is unavailable.",
   tags: ["sandbox", "code", "safe"],
   riskLevel: "medium",
   playbook: "sandboxed-code-agent.md",
@@ -390,7 +395,7 @@ const sandboxedCodeAgent: AgentRecipe = {
     webhook: { enabled: true },
   }),
   validateExpectations: [
-    { sectionId: "sandbox", mustBe: "ok" },
+    { sectionId: "sandbox", mustBe: "ok", note: SANDBOX_FAIL_CLOSED_ENGINE_NOTE },
     { sectionId: "tools", mustBe: "ok" },
   ],
 };
@@ -408,7 +413,7 @@ const ALL_CHANNELS_SECTIONS = {
 const fullSafe: AgentRecipe = {
   id: "full-safe",
   title: "Full (safe) blueprint",
-  description: "Every channel structurally configured but loopback-only: secrets externalized to .env.example, allowlists required, observability with includeSensitiveData=false, sandbox fail-closed.",
+  description: "Every channel structurally configured but loopback-only: secrets externalized to .env.example, allowlists required, observability with includeSensitiveData=false, and a native `srt` sandbox that fails closed with `sandbox_unavailable` instead of falling back to host execution.",
   tags: ["full", "safe", "blueprint", "all-channels"],
   riskLevel: "medium",
   inputs: [MODEL_INPUT],
@@ -439,7 +444,7 @@ const fullSafe: AgentRecipe = {
   ].join("\n"),
   validateExpectations: [
     { sectionId: "runtime", mustBe: "ok" },
-    { sectionId: "sandbox", mustBe: "ok" },
+    { sectionId: "sandbox", mustBe: "ok", note: SANDBOX_FAIL_CLOSED_ENGINE_NOTE },
     { sectionId: "channel:webhook", mustBe: "ok" },
   ],
 };
@@ -448,7 +453,7 @@ const fullSafe: AgentRecipe = {
 const fullLocalPower: AgentRecipe = {
   id: "full-local-power",
   title: "Full (local power) blueprint",
-  description: "Explicitly high-risk local operator profile: all channels, broad tool access, unrestricted network, and unsafe host-process fallback. No committed secrets, but intentionally unsafe — local use only.",
+  description: "UNSAFE local operator profile: all channels, broad tool access, unrestricted network, and `unsafe-host-process` fallback. If `srt` is missing, all sandbox roots/denyWrite entries are inert and commands run unsandboxed on the host. No committed secrets, but intentionally unsafe — trusted local use only.",
   tags: ["full", "power", "blueprint", "high-risk", "local"],
   riskLevel: "high",
   inputs: [MODEL_INPUT],
@@ -482,6 +487,7 @@ const fullLocalPower: AgentRecipe = {
   ].join("\n"),
   validateExpectations: [
     { sectionId: "runtime", mustBe: "ok" },
+    { sectionId: "sandbox", mustBe: "ok", note: SANDBOX_UNSAFE_ENGINE_NOTE },
     { sectionId: "channel:webhook", mustBe: "ok" },
   ],
 };

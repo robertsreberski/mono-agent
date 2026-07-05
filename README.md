@@ -46,13 +46,15 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 
 ### Recipes: executable example configs
 
-Twelve recipes cover the common shapes — personal Telegram assistant with tiered memory, Slack team bot, OpenAI-compatible gateway, cron digest, A2A provider, fully-local Ollama setup, sandboxed code agent, and more. Each generates a working config with secrets externalized to `.env.example`, and each mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
+Thirteen recipes cover the common shapes — personal Telegram assistant with tiered memory, Slack team bot, OpenAI-compatible gateway, cron digest, A2A provider, fully local model setups, sandboxed code agent, safe/full blueprints, and more. Each generates a working config with secrets externalized to `.env.example`, and each mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
 
 ```bash
 mono-agent recipes list
 mono-agent recipes show personal-telegram-bujo
 mono-agent init --recipe personal-telegram-bujo
 ```
+
+Recipes that ship `sandbox.mode: "native"` require `srt` on `PATH`; run `mono-agent validate --recipe <id>` and read the `Sandbox` section before starting. Safe recipes such as `sandboxed-code-agent` and `full-safe` use `fallback: "fail-closed"` so missing `srt` produces `sandbox_unavailable` instead of host execution. `full-local-power` is intentionally high risk: it opts into `unsafe-host-process`, so if `srt` is missing, roots/denyWrite are inert and commands run unsandboxed.
 
 See [`docs/reference/recipes.md`](./docs/reference/recipes.md) for the full catalog at a glance.
 

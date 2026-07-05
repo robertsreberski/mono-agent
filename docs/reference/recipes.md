@@ -32,11 +32,27 @@ Most recipes mirror a copy-paste [playbook](/playbooks/) that walks the same set
 | `local-ollama-private` | Local Ollama private agent — fully local model + memory, no cloud calls. | low | [Local-only Ollama agent](/playbooks/local-only-ollama-agent/) |
 | `local-lmstudio-private` | Local LM Studio private agent — fully local model + lite (FTS-only) memory, no cloud calls; playbook covers an optional journal-tier upgrade using LM Studio's own embeddings. | low | [Local-only LM Studio agent](/playbooks/local-only-lmstudio-agent/) |
 | `phoenix-observed` | Phoenix-observed agent — OTLP trace export of every run to a local Phoenix. | low | [Phoenix-observed agent](/playbooks/phoenix-observed-agent/) |
-| `sandboxed-code-agent` | Sandboxed code agent — fail-closed sandbox policy for runtime-owned commands. | medium | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
-| `full-safe` | Full (safe) blueprint — every channel enabled with conservative defaults. | medium | — |
-| `full-local-power` | Full (local power) blueprint — everything on, local models, permissive tools. | high | — |
+| `sandboxed-code-agent` | Sandboxed code agent — native `srt` sandbox; if the engine is missing, commands fail closed with `sandbox_unavailable` instead of running on the host. | medium | [Sandboxed code agent](/playbooks/sandboxed-code-agent/) |
+| `full-safe` | Full (safe) blueprint — every channel enabled with conservative defaults and a fail-closed native sandbox. | medium | — |
+| `full-local-power` | Full (local power) blueprint — intentionally unsafe local operator profile with `unsafe-host-process`; if `srt` is missing, commands run unsandboxed and roots/denyWrite are inert. | high | — |
 
 Risk levels reflect blast radius, not difficulty: `low` recipes expose nothing beyond loopback and need at most a model key; `medium` recipes talk to external services or hold channel credentials; `high` recipes enable permissive tool/sandbox settings you should read before running.
+
+## Sandboxed recipes
+
+Recipes that generate `"sandbox": { "mode": "native" }` require `srt` on `PATH`. Check the engine before trusting the sandbox:
+
+```bash
+command -v srt
+srt --version
+mono-agent validate --recipe sandboxed-code-agent
+```
+
+Safe sandboxed recipes (`sandboxed-code-agent`, `full-safe`) set `fallback: "fail-closed"`. If `srt` is unavailable, sandboxed commands stop with `sandbox_unavailable`; they do not quietly run as normal host processes.
+
+`full-local-power` is different on purpose. It sets `fallback: "unsafe-host-process"` and `unsafeAllowHostProcess: true`, so it is high risk. If the engine is unavailable, mono-agent reports `WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.` Use it only for a trusted local operator profile where that consequence is acceptable.
+
+`mono-agent validate --recipe <id>` checks the recipe's sandbox promise against the doctor report. A missing `srt` engine shows the `Sandbox` section as `waiting` and the recipe block as incomplete. `mono-agent start` and `mono-agent status` surface the effective sandbox state (`native`, `blocked`, `unsafe-host-process`, or `off`), the engine availability, the fallback, and whether the fallback is active. Existing configs are not rewritten; change `sandbox.fallback` explicitly if you want a different behavior.
 
 ## How recipes relate to the config
 

@@ -22,6 +22,14 @@ function repoRoot(): string {
   throw new Error("could not locate pnpm-workspace.yaml");
 }
 
+function requireRecipe(id: string): NonNullable<ReturnType<typeof findRecipe>> {
+  const recipe = findRecipe(id);
+  if (recipe === undefined) {
+    throw new Error(`recipe not found: ${id}`);
+  }
+  return recipe;
+}
+
 let dir: string;
 
 beforeEach(async () => {
@@ -54,6 +62,56 @@ describe("recipe catalog", () => {
       }
       const path = join(root, "docs/playbooks", recipe.playbook);
       expect(existsSync(path), `${recipe.id} -> ${recipe.playbook}`).toBe(true);
+    }
+  });
+
+  it("keeps safe sandbox recipes fail-closed when the engine is unavailable", () => {
+    for (const id of ["sandboxed-code-agent", "full-safe"]) {
+      const recipe = requireRecipe(id);
+
+      const config = recipe.config(resolveRecipeInputs(recipe));
+      expect(config.sandbox, id).toMatchObject({
+        mode: "native",
+        fallback: "fail-closed",
+      });
+      expect(config.sandbox?.unsafeAllowHostProcess, id).not.toBe(true);
+
+      const sandboxExpectation = recipe.validateExpectations.find((expectation) => expectation.sectionId === "sandbox");
+      expect(sandboxExpectation?.mustBe, id).toBe("ok");
+      expect(sandboxExpectation?.note, id).toContain("sandbox_unavailable");
+      expect(recipe.description, id).toContain("fail");
+    }
+  });
+
+  it("makes the full-local-power unsafe sandbox fallback explicit", () => {
+    const recipe = requireRecipe("full-local-power");
+    expect(recipe.riskLevel).toBe("high");
+    expect(recipe.description).toContain("UNSAFE");
+    expect(recipe.description).toContain("unsafe-host-process");
+    expect(recipe.description).toContain("commands run unsandboxed on the host");
+
+    const config = recipe.config(resolveRecipeInputs(recipe));
+    expect(config.sandbox).toMatchObject({
+      mode: "native",
+      fallback: "unsafe-host-process",
+      unsafeAllowHostProcess: true,
+    });
+
+    const sandboxExpectation = recipe.validateExpectations.find((expectation) => expectation.sectionId === "sandbox");
+    expect(sandboxExpectation?.mustBe).toBe("ok");
+    expect(sandboxExpectation?.note).toContain("all sandbox roots/denyWrite entries are inert");
+    expect(sandboxExpectation?.note).toContain("commands run unsandboxed on the host");
+  });
+
+  it("declares an engine expectation for every native sandbox recipe", () => {
+    for (const recipe of RECIPE_CATALOG) {
+      const config = recipe.config(resolveRecipeInputs(recipe));
+      if (config.sandbox?.mode !== "native") {
+        continue;
+      }
+      const sandboxExpectation = recipe.validateExpectations.find((expectation) => expectation.sectionId === "sandbox");
+      expect(sandboxExpectation?.mustBe, recipe.id).toBe("ok");
+      expect(sandboxExpectation?.note, recipe.id).toContain("srt");
     }
   });
 
