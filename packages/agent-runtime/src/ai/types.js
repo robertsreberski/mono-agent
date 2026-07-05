@@ -262,7 +262,7 @@
  * @property {string} [qaOutputDir]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
  * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine]
- * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject the workspace's sandbox package via the runtime-adapter package.
+ * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject runtime-adapter's implementation from packages/runtime-adapter/src/sandbox.ts.
  * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.

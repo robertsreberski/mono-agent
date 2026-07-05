@@ -83,12 +83,12 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
-| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
-| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers, adapter-neutral core config, and fail-closed tool/MCP policy normalization. |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
-| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
+| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers with adapter-neutral core config. |
+| `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
+| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, fail-closed tool/MCP policy normalization, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
-| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
+| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients; Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
 | `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
 | `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
@@ -97,24 +97,20 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 
 ```text
 demos/final-agent (not a workspace package)
-  ├─ agent-app ── all of the below; config-first host + mono-agent CLI
+  ├─ agent-app ── all of the below; config-first host + mono-agent CLI + configured runtime/responder/memory composition
   ├─ a2a-adapter ── agent-contracts, @a2a-js/sdk, express
   ├─ cron-adapter ── agent-contracts, cron-parser
-  ├─ live-adapter ── agent-contracts, express
   ├─ openai-api-adapter ── agent-contracts, express
+  ├─ operator-adapter ── agent-contracts, express
   ├─ slack-adapter ── agent-contracts, ws
   ├─ telegram-adapter ── agent-contracts
   ├─ webhook-adapter ── agent-contracts, express
   ├─ whatsapp-adapter ── agent-contracts, baileys
-  ├─ agent-host
-  │   ├─ config
-  │   ├─ agent-harness ── agent-contracts, context, skills, observability, runtime-adapter, sandbox, tool-policy
-  │   ├─ runtime-adapter ── @mono-agent/agent-runtime, sandbox types
-  │   ├─ sandbox ── agent-contracts
-  │   ├─ memory (./store, ./search, ./bujo)
-  │   ├─ observability
-  │   └─ tool-policy
-  ├─ config ── agent-contracts, runtime-adapter, sandbox
+  ├─ agent-harness ── agent-contracts, observability, runtime-adapter (owns context assembly, selected skills, tool policy)
+  ├─ runtime-adapter ── agent-contracts, @mono-agent/agent-runtime, sandbox policy/types
+  ├─ memory (./store, ./search, ./bujo)
+  ├─ memory-supermemory
+  ├─ config ── agent-contracts, runtime-adapter
   ├─ observability
   ├─ session-web ── agent-contracts, observability
   ├─ tui ── config
@@ -291,26 +287,25 @@ flowchart TB
   subgraph Core["Core contracts and config"]
     Contracts["`@mono-agent/agent-contracts`\nrequest/response/stream/settings helpers"]
     Config["`@mono-agent/config`\ncore runtime/context settings"]
-    Policy["`@mono-agent/tool-policy`\nfail-closed tools + MCP"]
   end
 
   subgraph PromptContext["Context layer"]
-    Context["`@mono-agent/context`\nprompt assembly"]
-    Skills["`@mono-agent/skills`\nselected skill blocks"]
     Memory["`@mono-agent/memory`\n./store SQLite, ./search embeddings, ./bujo engine"]
     MemorySupermemory["`@mono-agent/memory-supermemory`\nSupermemory-backed store"]
   end
 
+  subgraph AppLayer["App layer"]
+    AgentApp["`@mono-agent/agent-app`\nconfig to channels + responder"]
+  end
+
   subgraph Execution["Execution layer"]
-    AgentHost["`@mono-agent/agent-host`\nconfig to responder"]
-    Harness["`@mono-agent/agent-harness`\nrequest to runtime run"]
+    Harness["`@mono-agent/agent-harness`\nrequest to runtime run\ncontext + skills + tool policy"]
     Orchestrator["`@mono-agent/agent-orchestrator`\ncollaborator MCP tool"]
     Observability["`@mono-agent/observability`\nJSONL events + summaries + trace registry"]
   end
 
   subgraph Runtime["Runtime backend choices"]
-    RuntimeAdapter["`@mono-agent/runtime-adapter`\nmodel refs + backend support"]
-    Sandbox["`@mono-agent/sandbox`\nfail-closed sandbox policy"]
+    RuntimeAdapter["`@mono-agent/runtime-adapter`\nmodel refs + sandbox policy"]
     AgentRuntime["`@mono-agent/agent-runtime`\nprovider/CLI implementation"]
     ClaudeSdk["Claude SDK\n`claude:<model>` + `sdk`"]
     ClaudeCli["Claude Code CLI\n`claude:<model>` + `cli`"]
@@ -328,7 +323,7 @@ flowchart TB
   Host -. optional package .-> WhatsApp
   Host -. optional package .-> Orchestrator
   Host --> Config
-  Host --> AgentHost
+  Host --> AgentApp
 
   Tui --> Contracts
   Tui --> Config
@@ -342,29 +337,21 @@ flowchart TB
 
   Orchestrator --> Contracts
   Orchestrator -.->|runtime extension| Harness
-  AgentHost --> Config
-  AgentHost --> Harness
-  AgentHost --> Memory
-  AgentHost -. optional backend .-> MemorySupermemory
-  AgentHost --> Policy
-  AgentHost --> Sandbox
-  AgentHost --> RuntimeAdapter
-  AgentHost --> Observability
+  AgentApp --> Config
+  AgentApp --> Harness
+  AgentApp --> Memory
+  AgentApp -. optional backend .-> MemorySupermemory
+  AgentApp --> RuntimeAdapter
+  AgentApp --> Observability
   Config --> Contracts
   Config --> RuntimeAdapter
-  Config --> Sandbox
   Harness --> Contracts
-  Harness --> Context
-  Harness --> Skills
   MemorySupermemory --> Contracts
-  Harness --> Policy
-  Harness --> Sandbox
   Harness --> RuntimeAdapter
   Harness --> Observability
 
   RuntimeAdapter --> AgentRuntime
-  RuntimeAdapter --> Sandbox
-  AgentRuntime --> Sandbox
+  RuntimeAdapter --> Contracts
   AgentRuntime --> ClaudeSdk
   AgentRuntime --> ClaudeCli
   AgentRuntime --> CodexCli

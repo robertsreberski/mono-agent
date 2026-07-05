@@ -23,18 +23,12 @@ importers:
       '@mono-agent/agent-harness':
         specifier: workspace:0.4.0
         version: link:packages/agent-harness
-      '@mono-agent/agent-host':
-        specifier: workspace:0.4.0
-        version: link:packages/agent-host
       '@mono-agent/agent-orchestrator':
         specifier: workspace:0.4.0
         version: link:packages/agent-orchestrator
       '@mono-agent/config':
         specifier: workspace:0.4.0
         version: link:packages/config
-      '@mono-agent/context':
-        specifier: workspace:0.4.0
-        version: link:packages/context
       '@mono-agent/cron-adapter':
         specifier: workspace:0.4.0
         version: link:packages/cron-adapter
@@ -47,27 +41,21 @@ importers:
       '@mono-agent/openai-api-adapter':
         specifier: workspace:0.4.0
         version: link:packages/openai-api-adapter
+      '@mono-agent/operator-adapter':
+        specifier: workspace:0.4.0
+        version: link:packages/operator-adapter
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:packages/runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:packages/sandbox
       '@mono-agent/slack-adapter':
         specifier: workspace:0.4.0
         version: link:packages/slack-adapter
       '@mono-agent/telegram-adapter':
         specifier: workspace:0.4.0
         version: link:packages/telegram-adapter
-      '@mono-agent/tool-policy':
-        specifier: workspace:0.4.0
-        version: link:packages/tool-policy
       '@mono-agent/tui':
         specifier: workspace:0.4.0
         version: link:packages/tui
-      '@mono-agent/tui-adapter':
-        specifier: workspace:0.4.0
-        version: link:packages/tui-adapter
       '@mono-agent/webhook-adapter':
         specifier: workspace:0.4.0
         version: link:packages/webhook-adapter
@@ -114,18 +102,15 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/agent-host':
+      '@mono-agent/agent-harness':
         specifier: workspace:0.4.0
-        version: link:../agent-host
+        version: link:../agent-harness
       '@mono-agent/config':
         specifier: workspace:0.4.0
         version: link:../config
       '@mono-agent/cron-adapter':
         specifier: workspace:0.4.0
         version: link:../cron-adapter
-      '@mono-agent/live-adapter':
-        specifier: workspace:0.4.0
-        version: link:../live-adapter
       '@mono-agent/memory':
         specifier: workspace:0.4.0
         version: link:../memory
@@ -138,12 +123,12 @@ importers:
       '@mono-agent/openai-api-adapter':
         specifier: workspace:0.4.0
         version: link:../openai-api-adapter
+      '@mono-agent/operator-adapter':
+        specifier: workspace:0.4.0
+        version: link:../operator-adapter
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
       '@mono-agent/session-web':
         specifier: workspace:0.4.0
         version: link:../session-web
@@ -156,9 +141,6 @@ importers:
       '@mono-agent/tui':
         specifier: workspace:0.4.0
         version: link:../tui
-      '@mono-agent/tui-adapter':
-        specifier: workspace:0.4.0
-        version: link:../tui-adapter
       '@mono-agent/webhook-adapter':
         specifier: workspace:0.4.0
         version: link:../webhook-adapter
@@ -176,54 +158,12 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/context':
-        specifier: workspace:0.4.0
-        version: link:../context
       '@mono-agent/observability':
         specifier: workspace:0.4.0
         version: link:../observability
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
-      '@mono-agent/skills':
-        specifier: workspace:0.4.0
-        version: link:../skills
-      '@mono-agent/tool-policy':
-        specifier: workspace:0.4.0
-        version: link:../tool-policy
-
-  packages/agent-host:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.0
-        version: link:../agent-contracts
-      '@mono-agent/agent-harness':
-        specifier: workspace:0.4.0
-        version: link:../agent-harness
-      '@mono-agent/config':
-        specifier: workspace:0.4.0
-        version: link:../config
-      '@mono-agent/memory':
-        specifier: workspace:0.4.0
-        version: link:../memory
-      '@mono-agent/memory-supermemory':
-        specifier: workspace:0.4.0
-        version: link:../memory-supermemory
-      '@mono-agent/observability':
-        specifier: workspace:0.4.0
-        version: link:../observability
-      '@mono-agent/runtime-adapter':
-        specifier: workspace:0.4.0
-        version: link:../runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
-      '@mono-agent/tool-policy':
-        specifier: workspace:0.4.0
-        version: link:../tool-policy
 
   packages/agent-orchestrator:
     dependencies:
@@ -266,11 +206,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
-
-  packages/context: {}
 
   packages/cron-adapter:
     dependencies:
@@ -280,19 +215,6 @@ importers:
       cron-parser:
         specifier: ^5.5.0
         version: 5.5.0
-
-  packages/live-adapter:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.0
-        version: link:../agent-contracts
-      express:
-        specifier: ^5.1.0
-        version: 5.2.1
-    devDependencies:
-      '@types/express':
-        specifier: ^5.0.2
-        version: 5.0.6
 
   packages/memory:
     dependencies:
@@ -341,6 +263,19 @@ importers:
         specifier: ^5.0.2
         version: 5.0.6
 
+  packages/operator-adapter:
+    dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.4.0
+        version: link:../agent-contracts
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
+
   packages/runtime-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
@@ -349,15 +284,6 @@ importers:
       '@mono-agent/agent-runtime':
         specifier: workspace:0.4.0
         version: link:../agent-runtime
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
-
-  packages/sandbox:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.0
-        version: link:../agent-contracts
 
   packages/session-web:
     dependencies:
@@ -374,12 +300,6 @@ importers:
       '@types/express':
         specifier: ^5.0.2
         version: 5.0.6
-
-  packages/skills:
-    dependencies:
-      '@mono-agent/context':
-        specifier: workspace:0.4.0
-        version: link:../context
 
   packages/slack-adapter:
     dependencies:
@@ -409,8 +329,6 @@ importers:
         specifier: ^1.3.3
         version: 1.3.3
 
-  packages/tool-policy: {}
-
   packages/tui:
     dependencies:
       '@earendil-works/pi-tui':
@@ -426,22 +344,9 @@ importers:
         specifier: workspace:0.4.0
         version: link:../observability
     devDependencies:
-      '@mono-agent/tui-adapter':
+      '@mono-agent/operator-adapter':
         specifier: workspace:0.4.0
-        version: link:../tui-adapter
-
-  packages/tui-adapter:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.0
-        version: link:../agent-contracts
-      express:
-        specifier: ^5.1.0
-        version: 5.2.1
-    devDependencies:
-      '@types/express':
-        specifier: ^5.0.2
-        version: 5.0.6
+        version: link:../operator-adapter
 
   packages/webhook-adapter:
     dependencies:

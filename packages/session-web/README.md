@@ -4,7 +4,7 @@ Discovers local mono-agent instances and serves a read-only **web PWA** that
 visualises their runs in real time — the browser counterpart to the TUI. It is
 the single backend the browser talks to: it aggregates recorded-run history (from
 each instance's artifact dir) with live sub-run streams (from each running
-agent's `live-adapter`), and never drives an agent.
+agent's operator-adapter live endpoint), and never drives an agent.
 
 ## Category
 
@@ -19,7 +19,7 @@ discovers everything on the machine via the trace-source registry.
   name, cwd, `artifactDir`, health, and the optional `live` SSE endpoint.
 - Read recorded runs per instance and map them to the UI `Session` model
   (`mapRunToSession`, from `@mono-agent/observability`).
-- Watch artifact dirs (run-level) and connect to `live-adapter` SSE (sub-run);
+- Watch artifact dirs (run-level) and connect to operator-adapter live SSE (sub-run);
   fold both into one live session model.
 - Serve the built PWA (`express.static`), a JSON API, and a browser SSE stream.
 
@@ -56,7 +56,7 @@ detail view opens.
 
 Depends only on `core` + `observability`: `@mono-agent/agent-contracts`,
 `@mono-agent/observability`. Plus `express`. It reaches
-`live-adapter` endpoints **over HTTP only** — it does not (and, per the
+operator-adapter live endpoints **over HTTP only** — it does not (and, per the
 architecture rule, may not) depend on that `communication` package. The browser
 SPA lives in the isolated `webapp/` sub-project (its own lockfile), built to
 `webapp/dist` and served statically.

@@ -50,7 +50,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.approval-gates` | Human-in-the-loop tool approval (risk tiers, timeout, always-allow) | `code` | `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` — needs a host UI to answer; config posture is `runtime.permissionMode` |
 | `runtime.custom` | Any `MonoRuntimeLike` implementation | `code` | `startMonoAgentApp({ runtime })` or `await createConfiguredAgentResponder({ runtime })` (see [custom runtime](../programmatic/custom-runtime.md)) |
 
-## Sandbox (`@mono-agent/sandbox`)
+## Sandbox (`@mono-agent/runtime-adapter`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |
@@ -60,7 +60,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `sandbox.fallback` | fail-closed vs unsafe-host-process when srt is unavailable | `config` | `sandbox.fallback` (`MONO_AGENT_SANDBOX_FALLBACK`), `sandbox.unsafeAllowHostProcess` (`MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS`) |
 | `sandbox.monotonic-merge` | Request-scoped policies can only tighten, never widen | `auto` | Harness merges configured + request policies |
 
-## Context, skills, memory (`@mono-agent/context`, `skills`, `memory-*`)
+## Context, skills, memory (`@mono-agent/agent-harness`, `memory-*`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |
@@ -82,7 +82,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `memory.llm-timeout` | Per-call timeout for the **in-app** memory LLM (per-turn capture + in-app rituals), distinct from the standalone CLI's timeout. A timeout now reports `agent-host memory LLM timed out after <ms>ms (provider too slow or unavailable)` instead of a generic `cancelled` | `config` | `memory.llm.timeoutMs` (`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`, 1000–600000, **default 60000**; the `memory-bujo` CLI reads the same var but defaults to 120000) |
 | `memory.custom-store` | Any `MemoryStore` implementation | `code` | `await createConfiguredAgentResponder({ memory })` (async since the lazy-backend change; see [custom memory backend](../programmatic/custom-memory-backend.md)) |
 
-## Tools & MCP (`@mono-agent/tool-policy`)
+## Tools & MCP (`@mono-agent/agent-harness`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |
@@ -138,7 +138,7 @@ also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | `tui.chat` | pi-tui operator console: live chat with full stream-event insight (collapsed-expandable thinking, tool panels with args/progress/result/duration, usage/cost/failover status bar), recorded-run replay from the artifact dir, source-annotated config view, running-instance picker. Connects remotely to any running agent via the trace-source registry + `tui.stream-endpoint`, or embeds in-process against an `AgentResponderLike` | `cli` | `mono-agent tui [--agent <label\|sourceId>] [--conversation <id>]`; low-level `mono-agent-tui [--responder <file> \| --url <baseUrl>] [--config <path>]` (ships with `@mono-agent/tui`) |
 | `session-web.pwa` | Browser Session Recorder operator surface: discovers all running agents via trace-source registries, serves the built PWA plus read-only JSON/SSE APIs, folds local run artifacts with each trusted `live` relay, and shows run prompts/reasoning/tools/usage/cost. Loopback by default; `mono-agent web --allow-non-loopback` generates a bearer token and protects `/api/*` plus `/api/stream` | `cli` | `mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--config <path>]` |
 
-## Execution & composition (`agent-harness`, `agent-host`, `agent-orchestrator`, `agent-app`)
+## Execution & composition (`agent-harness`, `agent-orchestrator`, `agent-app`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { MemoryStore } from "@mono-agent/agent-contracts";
 import type { RuntimeResult } from "@mono-agent/runtime-adapter";
-import type { SkillsCache } from "@mono-agent/skills";
+import type { SkillsCache } from "../skills/index.js";
 
 import { createAgentHarness } from "../index.js";
 

@@ -2,9 +2,9 @@
 //
 // agent-runtime's kernel has ZERO workspace-package imports (see
 // ../../agent/sandbox-seam.js and its passthroughSandbox default); production
-// hosts inject the real sandbox package's implementation via the
-// runtime-adapter package (see packages/runtime-adapter/src/sandbox-impl.ts).
-// This fixture reimplements just enough of that package's pure policy algebra
+// hosts inject @mono-agent/runtime-adapter's implementation from
+// packages/runtime-adapter/src/sandbox.ts (via sandbox-impl.ts).
+// This fixture reimplements just enough of runtime-adapter's pure policy algebra
 // (monotonic merge, engine-delegated command prep, network-mode allow checks)
 // for agent-runtime's OWN tool-enforcement tests (tools.test.js,
 // pi-bridge.test.js, tool-context.test.js) to exercise realistic sandbox
@@ -19,8 +19,8 @@
 const DEFAULT_DENY_WRITE = [".env", ".env.*", ".git/config", ".git/hooks/**"];
 
 /**
- * Builds a native-mode, fail-closed policy object shaped like the real
- * sandbox package's `failClosedSandboxPolicy({...})` output — enough for
+ * Builds a native-mode, fail-closed policy object shaped like runtime-adapter's
+ * `failClosedSandboxPolicy({...})` output — enough for
  * path-resolver.js (which reads `root`/`readableRoots`/`writableRoots`/
  * `denyWrite` directly off whatever the injected `mergePolicies` returns) to
  * enforce realistic root/write restrictions in tests.

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import { startTuiAdapter } from "@mono-agent/tui-adapter";
+import { startTuiAdapter } from "@mono-agent/operator-adapter";
 
 import { startMonoAgentTui } from "../runtime/start.js";
 import { stripAnsi, TestTerminal } from "./test-terminal.js";

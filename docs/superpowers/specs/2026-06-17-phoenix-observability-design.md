@@ -113,7 +113,7 @@ and test-pinned.
 
 1. `@mono-agent/agent-app` loads config and resolves artifacts, traceability,
    and observability exporter settings.
-2. `@mono-agent/agent-host` creates the run recorder as it does today.
+2. `@mono-agent/agent-app` creates the run recorder as it does today.
 3. The recorder writes:
    - `<runId>.events.jsonl`
    - `<runId>.summary.json`
@@ -224,7 +224,6 @@ Package tests:
 pnpm --filter @mono-agent/observability run test
 pnpm --filter @mono-agent/observability run typecheck
 pnpm --filter @mono-agent/config run test
-pnpm --filter @mono-agent/agent-host run test
 pnpm --filter @mono-agent/agent-app run test
 ```
 

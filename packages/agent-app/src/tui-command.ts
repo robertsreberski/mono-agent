@@ -2,7 +2,7 @@ import { dirname, resolve } from "node:path";
 
 import { listTraceSources, mergeTraceSources, pruneTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
-import { loadTuiAdapterConfig } from "@mono-agent/tui-adapter";
+import { loadTuiAdapterConfig } from "@mono-agent/operator-adapter";
 
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
 

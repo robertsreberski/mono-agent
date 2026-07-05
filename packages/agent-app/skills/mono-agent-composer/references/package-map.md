@@ -4,7 +4,7 @@ Use this map to select the smallest mono-agent package set for a host. Package c
 
 ## App Join (default)
 
-`@mono-agent/agent-app` is the config-first host: it loads `mono-agent.config.json`, builds the responder through `agent-host`, and drives every configured channel plus traceability and any configured observability exporters. It ships the `mono-agent` CLI (`init`, `validate`, `start`) and is the only publishable package allowed to compose communication adapters.
+`@mono-agent/agent-app` is the config-first host: it loads `mono-agent.config.json`, owns configured runtime/harness/responder/memory composition, and drives every configured channel plus traceability and any configured observability exporters. It ships the `mono-agent` CLI (`init`, `validate`, `start`) and is the only publishable package allowed to compose communication adapters.
 
 ```ts
 import { startMonoAgentApp } from "@mono-agent/agent-app";
@@ -23,13 +23,13 @@ Every real host needs these concepts:
 | Shared request/response shape | `@mono-agent/agent-contracts` | `AgentResponder`, request, response, stream, cancellation contracts | Prompt building, runtime execution, transport |
 | Core config | `@mono-agent/config` | Runtime, context, memory, tools, artifact, traceability settings | Adapter credentials, chat allowlists |
 | Runtime facade | `@mono-agent/runtime-adapter` | Model refs, execution-mode validation, local provider runtime options | Prompts, adapters, memory |
-| Configured responder | `@mono-agent/agent-host` | Turns `MonoAgentConfig` into runtime, harness, and responder | Polling chats, serving APIs, adapter settings |
+| Configured responder | `@mono-agent/agent-app` | Turns `MonoAgentConfig` into runtime, memory, harness, and responder | Polling chats, serving APIs, adapter settings |
 
 Minimal local host:
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
 const config = await loadMonoAgentConfigWithSources({
   env: process.env,
@@ -46,8 +46,8 @@ Use this path when the agent needs identity, selected skills, history, and optio
 
 | Need | Package | Use |
 | --- | --- | --- |
-| Prompt assembly | `@mono-agent/context` | Load identity/SOUL/skills/history/memory into deterministic prompt context |
-| Selected skill bodies | `@mono-agent/skills` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
+| Prompt assembly | `@mono-agent/agent-harness` | Load identity/SOUL/skills/history/memory into deterministic prompt context |
+| Selected skill bodies | `@mono-agent/agent-harness` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
 | Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` from `@mono-agent/agent-contracts` |
 | Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + decay (journal), LLM capture/reconcile + entity graph + reflection/migration + auto-scheduler (bujo) |
 | Embedding providers | `@mono-agent/memory/search` | Ollama/OpenAI embedding providers used by the store subpath for vector recall |
@@ -57,7 +57,7 @@ Mono-agent selected skills are not auto-selected by description. The host choose
 
 ## Execution Join
 
-Use `@mono-agent/agent-harness` directly when a host needs custom runtime, memory, history, recorder, or request-scoped runtime options. Use `@mono-agent/agent-host` when config-driven composition is enough.
+Use `@mono-agent/agent-harness` directly when a host needs custom prompt/runtime/memory/history/recorder wiring below the config layer. Use `@mono-agent/agent-app` when config-driven composition is enough.
 
 `@mono-agent/agent-harness` owns:
 
@@ -72,10 +72,10 @@ Use `@mono-agent/agent-harness` directly when a host needs custom runtime, memor
 
 ## Tools And MCP Join
 
-Use `@mono-agent/tool-policy` for fail-closed tool/MCP policy normalization:
+Use `@mono-agent/agent-harness` for fail-closed tool/MCP policy normalization:
 
 ```ts
-import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/tool-policy";
+import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/agent-harness";
 
 const policy = createToolPolicy({
   allowedTools: ["Read", "Grep"],
@@ -98,6 +98,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Slack | `@mono-agent/slack-adapter` | Allowed channel or DM gets a streamed reply |
 | WhatsApp | `@mono-agent/whatsapp-adapter` | Allowed sender/group trigger produces a reply |
 | OpenAI-compatible API | `@mono-agent/openai-api-adapter` | `curl /v1/models` and `/v1/chat/completions` |
+| Operator endpoints | `@mono-agent/operator-adapter` | `mono-agent tui` connects; `mono-agent web` observes live runs |
 | A2A provider/consumer | `@mono-agent/a2a-adapter` | Send text to the Agent Card URL |
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
@@ -109,7 +110,7 @@ Adapters must not import the harness, runtime adapter, memory package (`@mono-ag
 Use:
 
 - `@mono-agent/tui` for the pi-tui operator console (`mono-agent tui`): live chat with full stream-event insight, recorded-run replay, config view.
-- `@mono-agent/tui-adapter` for the loopback NDJSON stream endpoint the console connects to (`tui` config section, on by default).
+- `@mono-agent/operator-adapter` for the loopback NDJSON stream endpoint the console connects to (`tui` config section, on by default) and the live SSE endpoint `mono-agent web` observes (`live` config section, on by default).
 - `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and the `@mono-agent/observability/otel` Phoenix OTLP exporter configured via `observability.exporters`.
 
 Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; local JSONL artifacts are the fallback otherwise.

@@ -6,7 +6,7 @@ sidebar:
 
 # Tools, MCP & Sandbox
 
-This section covers how an agent's tool surface is controlled in mono-agent: the **fail-closed tool policy** (`@mono-agent/tool-policy`) that allow/deny-lists built-in and MCP tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/sandbox`) that confines what tools like `Bash`, `Write`, and `Edit` may touch on disk and over the network.
+This section covers how an agent's tool surface is controlled in mono-agent: the **fail-closed tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and MCP tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Bash`, `Write`, and `Edit` may touch on disk and over the network.
 
 All three are configured in `mono-agent.config.json` and are enforced by the harness — they are not advisory. The default posture is restrictive: tools are denied unless allowed, and filesystem/network access is scoped to the workspace.
 
@@ -14,9 +14,9 @@ All three are configured in `mono-agent.config.json` and are enforced by the har
 
 | Concern | Package | Config block | Page |
 | --- | --- | --- | --- |
-| Which tools the model may call | `@mono-agent/tool-policy` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](/tools/policy/) |
-| Attaching external MCP servers | `@mono-agent/tool-policy` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
-| Confining what tools touch | `@mono-agent/sandbox` | `sandbox.*` | [Sandbox](/tools/sandbox/) |
+| Which tools the model may call | `@mono-agent/agent-harness` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](/tools/policy/) |
+| Attaching external MCP servers | `@mono-agent/agent-harness` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
+| Confining what tools touch | `@mono-agent/runtime-adapter` | `sandbox.*` | [Sandbox](/tools/sandbox/) |
 
 ## At a glance
 

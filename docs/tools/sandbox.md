@@ -8,7 +8,7 @@ sidebar:
 
 The sandbox confines the shell commands your agent runs (e.g. a code-exec tool) by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
-The whole block is **config** coverage (`@mono-agent/sandbox`). Omit `sandbox` entirely for no sandboxing.
+The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. Omit `sandbox` entirely for no sandboxing.
 
 ## Quick reference
 

@@ -16,7 +16,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 
 - Aggregate the adapter-neutral core config and every channel section
   (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`).
-- Build the shared runtime/responder through `@mono-agent/agent-host`
+- Build the shared runtime/responder/memory stack through app-owned configured
+  composition
   (including `runtime.fallbackModels` backup chains).
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `failed` status.
@@ -58,6 +59,11 @@ await app.stop();
   `startChannelIfConfigured`, `stop`).
 - `defaultChannelDrivers(overrides)` plus per-channel
   `create<Channel>ChannelDriver(overrides)` factories with test seams.
+- `createConfiguredAgentRuntime`, `createConfiguredAgentHarness`,
+  `createConfiguredAgentResponder`, and `createConfiguredMemory` for
+  transport-free programmatic composition from a loaded `MonoAgentConfig`.
+- `createBroadcastRunRecorder` for publishing recorder lifecycle events to a
+  live run-event sink.
 - `initMonoAgentFolder(options)` / `validateMonoAgentFolder(options)`.
 - `MONO_AGENT_APP_FIELD_GROUPS` and the `resolveApp*` traceability/artifact
   resolvers.
@@ -74,7 +80,8 @@ compose communication adapters; adapters never depend on it.
 - Adapter transports, credentials, or allowlists (owned by each
   `*-adapter` package).
 - Core config schema and loading (owned by `@mono-agent/config`).
-- Harness/runtime composition internals (owned by `@mono-agent/agent-host`).
+- Low-level prompt/session/tool execution internals (owned by
+  `@mono-agent/agent-harness` and `@mono-agent/runtime-adapter`).
 - Multi-agent orchestration (owned by `@mono-agent/agent-orchestrator`).
 
 ## Verification
