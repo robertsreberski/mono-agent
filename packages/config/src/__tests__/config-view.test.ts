@@ -118,6 +118,35 @@ describe("buildMonoAgentConfigView", () => {
     expect(memory.status).toBe("active");
     expect(field(sections, "memory.mode")).toMatchObject({ value: "lite", source: "env" });
   });
+
+  it("shows artifact retention with default, json, and env sources", () => {
+    const defaultSections = buildView(baseEnv);
+    expect(field(defaultSections, "artifacts.retention.maxAgeDays")).toMatchObject({ value: "365 day(s)", source: "default" });
+    expect(field(defaultSections, "artifacts.retention.maxCount")).toMatchObject({ value: "50000", source: "default" });
+    expect(field(defaultSections, "artifacts.retention.dryRun")).toMatchObject({ value: "no", source: "default" });
+
+    const jsonSections = buildView(baseEnv, {
+      artifacts: {
+        retention: { maxAgeDays: 10, maxCount: 200, dryRun: true },
+      },
+    });
+    expect(field(jsonSections, "artifacts.retention.maxAgeDays")).toMatchObject({ value: "10 day(s)", source: "json" });
+    expect(field(jsonSections, "artifacts.retention.maxCount")).toMatchObject({ value: "200", source: "json" });
+    expect(field(jsonSections, "artifacts.retention.dryRun")).toMatchObject({ value: "yes", source: "json" });
+
+    const envSections = buildView(
+      {
+        ...baseEnv,
+        MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT: "50",
+      },
+      {
+        artifacts: {
+          retention: { maxCount: 200 },
+        },
+      },
+    );
+    expect(field(envSections, "artifacts.retention.maxCount")).toMatchObject({ value: "50", source: "env" });
+  });
 });
 
 describe("findJsonSecretConfigWarnings", () => {

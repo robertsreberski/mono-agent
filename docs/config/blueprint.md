@@ -142,7 +142,14 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 
   // Observability: JSONL artifacts (always written; the local fallback) + the
   // trace-source registry that `mono-agent status` reads.
-  "artifacts": { "dir": "./.mono-agent/artifacts" },
+  "artifacts": {
+    "dir": "./.mono-agent/artifacts",
+    "retention": {
+      "maxAgeDays": 365,
+      "maxCount": 50000,
+      "dryRun": false
+    }
+  },
   "traceability": {
     "registryDir": "./.mono-agent/trace-sources",
     "sourceId": "my-agent",

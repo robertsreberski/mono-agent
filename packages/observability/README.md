@@ -19,18 +19,19 @@ import {
   createJsonlRunRecorder,
   auditRecordedRuns,
   registerTraceSource,
-  combineRecordedRunEvents,
-  listRecordedRuns,
-  listTraceRuns,
-  readRecordedRun,
-} from "@mono-agent/observability";
+	  combineRecordedRunEvents,
+	  listRecordedRuns,
+	  listTraceRuns,
+	  pruneRunArtifacts,
+	  readRecordedRun,
+	} from "@mono-agent/observability";
 ```
 
 ## Public API
 
 - `createJsonlRunRecorder`, `JsonlRunRecorder`
 - `auditRecordedRuns`
-- `listRecordedRuns`, `readRecordedRun`, `classifyRecordedRunEvent`
+- `listRecordedRuns`, `readRecordedRun`, `pruneRunArtifacts`, `classifyRecordedRunEvent`
 - `combineRecordedRunEvents`
 - `registerTraceSource`, `listTraceSources`, `listTraceRuns`, `readTraceRun`
 - `redactJsonValue`

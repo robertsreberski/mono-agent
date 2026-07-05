@@ -1203,6 +1203,7 @@ function monoConfig(input: {
     },
     artifacts: {
       dir: input.artifactDir,
+      retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false },
     },
     traceability: {
       registryDir: join(input.dir, "trace-sources"),
