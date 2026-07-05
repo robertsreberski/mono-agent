@@ -67,6 +67,10 @@ export function readGraph(root: string): { entities: EntityRecord[]; relations: 
 
 /** Append a single entity record to `<root>/graph.jsonl` (mkdir root if needed). */
 export function appendEntity(root: string, record: EntityRecord): void {
+  const current = readGraph(root).entities.find((entity) => entity.id === record.id);
+  if (current !== undefined && entityRecordsEqual(current, record)) {
+    return;
+  }
   mkdirSync(root, { recursive: true });
   const line: GraphLine = { kind: "entity", ...record };
   appendFileSync(graphPath(root), `${JSON.stringify(line)}\n`, "utf8");
@@ -74,7 +78,25 @@ export function appendEntity(root: string, record: EntityRecord): void {
 
 /** Append a single relation record to `<root>/graph.jsonl` (mkdir root if needed). */
 export function appendRelation(root: string, record: EntityRelationRecord): void {
+  const exists = readGraph(root).relations.some(
+    (relation) =>
+      relation.src === record.src &&
+      relation.dst === record.dst &&
+      relation.relation === record.relation,
+  );
+  if (exists) {
+    return;
+  }
   mkdirSync(root, { recursive: true });
   const line: GraphLine = { kind: "relation", ...record };
   appendFileSync(graphPath(root), `${JSON.stringify(line)}\n`, "utf8");
+}
+
+function entityRecordsEqual(a: EntityRecord, b: EntityRecord): boolean {
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.type === b.type &&
+    a.summary === b.summary
+  );
 }
