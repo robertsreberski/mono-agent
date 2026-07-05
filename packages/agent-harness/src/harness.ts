@@ -1368,7 +1368,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Derives a run's `source` (and optional `sourceDetail`) from its request
  * metadata, for the recorder factory input. Priority order mirrors how each
  * channel/trigger stamps `request.metadata`:
- *  1. `metadata.source === "tui"` (the tui-adapter injects this) → "tui"
+ *  1. `metadata.source === "tui"` (the operator-adapter TUI endpoint injects this) → "tui"
  *  2. `metadata.cron` present → "cron", detail = `metadata.cron.jobId` (string)
  *  3. `metadata.webhook` present → "webhook", detail = `metadata.webhook.endpointName` (string)
  *  4. `metadata.slack` / `metadata.telegram` present → that channel name

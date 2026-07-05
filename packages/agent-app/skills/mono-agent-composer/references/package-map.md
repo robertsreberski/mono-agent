@@ -98,6 +98,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Slack | `@mono-agent/slack-adapter` | Allowed channel or DM gets a streamed reply |
 | WhatsApp | `@mono-agent/whatsapp-adapter` | Allowed sender/group trigger produces a reply |
 | OpenAI-compatible API | `@mono-agent/openai-api-adapter` | `curl /v1/models` and `/v1/chat/completions` |
+| Operator endpoints | `@mono-agent/operator-adapter` | `mono-agent tui` connects; `mono-agent web` observes live runs |
 | A2A provider/consumer | `@mono-agent/a2a-adapter` | Send text to the Agent Card URL |
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
@@ -109,7 +110,7 @@ Adapters must not import the harness, runtime adapter, memory package (`@mono-ag
 Use:
 
 - `@mono-agent/tui` for the pi-tui operator console (`mono-agent tui`): live chat with full stream-event insight, recorded-run replay, config view.
-- `@mono-agent/tui-adapter` for the loopback NDJSON stream endpoint the console connects to (`tui` config section, on by default).
+- `@mono-agent/operator-adapter` for the loopback NDJSON stream endpoint the console connects to (`tui` config section, on by default) and the live SSE endpoint `mono-agent web` observes (`live` config section, on by default).
 - `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and the `@mono-agent/observability/otel` Phoenix OTLP exporter configured via `observability.exporters`.
 
 Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; local JSONL artifacts are the fallback otherwise.

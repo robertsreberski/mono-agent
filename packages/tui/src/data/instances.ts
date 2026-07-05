@@ -30,7 +30,7 @@ export interface DiscoverInstancesOptions {
 
 export interface DiscoveredInstance {
   readonly source: TraceSourceListItem;
-  /** The tui-adapter base URL published by the agent's tui channel, when running. */
+  /** The operator-adapter TUI base URL published by the agent's tui channel, when running. */
   readonly tuiBaseUrl?: string;
   /** dirname(configPath): where replay/config data lives relative to. */
   readonly agentDir?: string;

@@ -42,12 +42,12 @@ import type {
   TuiAdapterInfo,
   TuiAdapterOptions,
   TuiAdapterStartResult,
-} from "@mono-agent/tui-adapter";
+} from "@mono-agent/operator-adapter";
 import type {
   LiveAdapterConfig,
   LiveAdapterHandle,
   LiveAdapterOptions,
-} from "@mono-agent/live-adapter";
+} from "@mono-agent/operator-adapter";
 import type {
   WebhookAdapterConfig,
   WebhookAdapterOptions,
@@ -124,7 +124,7 @@ type WebhookAdapterModule = typeof import("@mono-agent/webhook-adapter");
 type OpenAIApiAdapterModule = typeof import("@mono-agent/openai-api-adapter");
 type CronAdapterModule = typeof import("@mono-agent/cron-adapter");
 type WhatsAppAdapterModule = typeof import("@mono-agent/whatsapp-adapter");
-type TuiAdapterModule = typeof import("@mono-agent/tui-adapter");
+type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
 
 let telegramModule: TelegramAdapterModule | undefined;
 let slackModule: SlackAdapterModule | undefined;
@@ -150,12 +150,12 @@ const loadCronModule = async (): Promise<CronAdapterModule> =>
 const loadWhatsAppModule = async (): Promise<WhatsAppAdapterModule> =>
   (whatsappModule ??= await import("@mono-agent/whatsapp-adapter"));
 const loadTuiModule = async (): Promise<TuiAdapterModule> =>
-  (tuiModule ??= await import("@mono-agent/tui-adapter"));
+  (tuiModule ??= await import("@mono-agent/operator-adapter"));
 
-type LiveAdapterModule = typeof import("@mono-agent/live-adapter");
+type LiveAdapterModule = typeof import("@mono-agent/operator-adapter");
 let liveModule: LiveAdapterModule | undefined;
 const loadLiveModule = async (): Promise<LiveAdapterModule> =>
-  (liveModule ??= await import("@mono-agent/live-adapter"));
+  (liveModule ??= await import("@mono-agent/operator-adapter"));
 
 const TELEGRAM_GATE: ChannelGateSpec = { jsonKey: "telegram", envPrefix: "MONO_AGENT_TELEGRAM_" };
 const SLACK_GATE: ChannelGateSpec = { jsonKey: "slack", envPrefix: "MONO_AGENT_SLACK_" };

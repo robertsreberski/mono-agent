@@ -7,7 +7,7 @@ import { loadCronAdapterConfig } from "@mono-agent/cron-adapter";
 import { loadOpenAIApiAdapterConfig } from "@mono-agent/openai-api-adapter";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { loadTelegramAdapterConfig } from "@mono-agent/telegram-adapter";
-import { loadTuiAdapterConfig } from "@mono-agent/tui-adapter";
+import { loadTuiAdapterConfig } from "@mono-agent/operator-adapter";
 import { loadWebhookAdapterConfig } from "@mono-agent/webhook-adapter";
 import { loadWhatsAppAdapterConfig } from "@mono-agent/whatsapp-adapter";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

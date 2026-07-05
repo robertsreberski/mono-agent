@@ -20,11 +20,10 @@ flowchart TB
   subgraph Communication["communication"]
     A2A["@mono-agent/a2a-adapter"]
     Cron["@mono-agent/cron-adapter"]
-    LiveAdapter["@mono-agent/live-adapter"]
     OpenAIApi["@mono-agent/openai-api-adapter"]
+    OperatorAdapter["@mono-agent/operator-adapter"]
     Slack["@mono-agent/slack-adapter"]
     Telegram["@mono-agent/telegram-adapter"]
-    TuiAdapter["@mono-agent/tui-adapter"]
     WhatsApp["@mono-agent/whatsapp-adapter"]
     Webhook["@mono-agent/webhook-adapter"]
   end
@@ -58,11 +57,10 @@ flowchart TB
 
   AgentApp --> A2A
   AgentApp --> Cron
-  AgentApp --> LiveAdapter
   AgentApp --> OpenAIApi
+  AgentApp --> OperatorAdapter
   AgentApp --> Slack
   AgentApp --> Telegram
-  AgentApp --> TuiAdapter
   AgentApp --> WhatsApp
   AgentApp --> Webhook
   AgentApp --> SessionWeb
@@ -79,9 +77,9 @@ flowchart TB
   A2A --> Contracts
   Cron --> Contracts
   OpenAIApi --> Contracts
+  OperatorAdapter --> Contracts
   Slack --> Contracts
   Telegram --> Contracts
-  TuiAdapter --> Contracts
   WhatsApp --> Contracts
   Webhook --> Contracts
 
@@ -113,7 +111,7 @@ flowchart TB
 | `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |
-| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
+| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |
 

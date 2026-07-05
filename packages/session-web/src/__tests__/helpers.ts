@@ -102,7 +102,7 @@ export interface TinySseServer {
 }
 
 /**
- * A minimal SSE server replicating the `live-adapter` `/v1/events` contract
+ * A minimal SSE server replicating the operator-adapter live `/v1/events` contract
  * (replay the ring buffer, then stream every published frame as `data: <json>`).
  * Stands in for the real adapter, which this operator-surface package may not
  * import — the live client reaches it over HTTP exactly as it would the real one.

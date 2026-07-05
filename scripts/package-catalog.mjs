@@ -92,14 +92,6 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "live-adapter",
-    name: "@mono-agent/live-adapter",
-    category: "communication",
-    responsibility: "Relays an agent's in-process live run-event bus to read-only operator surfaces over a loopback SSE endpoint.",
-    allowedDependencyCategories: ["core"],
-    publishable: true,
-  },
-  {
     dir: "memory",
     name: "@mono-agent/memory",
     category: "context",
@@ -132,6 +124,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "operator-adapter",
+    name: "@mono-agent/operator-adapter",
+    category: "communication",
+    responsibility: "Exposes local operator endpoints: full-fidelity TUI NDJSON turns and read-only live SSE run-event streams.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
     dir: "runtime-adapter",
     name: "@mono-agent/runtime-adapter",
     category: "runtime",
@@ -159,7 +159,7 @@ export const packageCatalog = [
     dir: "session-web",
     name: "@mono-agent/session-web",
     category: "operator-surface",
-    responsibility: "Discovers local agent instances and serves a read-only web PWA that visualises their runs live, aggregating recorded-run history and live-adapter sub-run streams.",
+    responsibility: "Discovers local agent instances and serves a read-only web PWA that visualises their runs live, aggregating recorded-run history and operator-adapter live sub-run streams.",
     allowedDependencyCategories: ["core", "observability"],
     publishable: true,
   },
@@ -169,14 +169,6 @@ export const packageCatalog = [
     category: "operator-surface",
     responsibility: "pi-tui operator console: live chat with full stream-event insight, recorded-run replay, and read-only config view for running agents.",
     allowedDependencyCategories: ["core", "observability"],
-    publishable: true,
-  },
-  {
-    dir: "tui-adapter",
-    name: "@mono-agent/tui-adapter",
-    category: "communication",
-    responsibility: "Streams full-fidelity AgentStreamEvent NDJSON turns to TUI clients over a loopback HTTP endpoint.",
-    allowedDependencyCategories: ["core"],
     publishable: true,
   },
   {

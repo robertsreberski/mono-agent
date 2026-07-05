@@ -1,7 +1,7 @@
 {
-  "name": "@mono-agent/live-adapter",
+  "name": "@mono-agent/operator-adapter",
   "version": "0.4.0",
-  "description": "Loopback SSE adapter that relays an agent's in-process live run-event bus to read-only operator surfaces (the mono-agent web PWA) at sub-run granularity.",
+  "description": "Loopback operator adapters for mono-agent: full-fidelity TUI NDJSON turns and read-only live SSE run-event streams.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,

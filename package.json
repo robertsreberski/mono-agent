@@ -48,7 +48,7 @@
     "@mono-agent/slack-adapter": "workspace:0.4.0",
     "@mono-agent/telegram-adapter": "workspace:0.4.0",
     "@mono-agent/tui": "workspace:0.4.0",
-    "@mono-agent/tui-adapter": "workspace:0.4.0",
+    "@mono-agent/operator-adapter": "workspace:0.4.0",
     "@mono-agent/webhook-adapter": "workspace:0.4.0",
     "@mono-agent/whatsapp-adapter": "workspace:0.4.0",
     "typescript": "^5.8.3",
