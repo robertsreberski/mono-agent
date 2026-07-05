@@ -20,6 +20,10 @@ import type {
   WhatsAppSocketFactory,
 } from "../start.js";
 
+type StartAdapter = (
+  options: StartWhatsAppAdapterOptions,
+) => Promise<WhatsAppAdapterStartResult>;
+
 let dir: string;
 
 beforeEach(async () => {
@@ -32,7 +36,7 @@ afterEach(async () => {
 
 describe("createWhatsAppChannelDriver", () => {
   it("loads disabled config without touching the start seams", async () => {
-    const startAdapter = vi.fn(async () => fakeStartResult());
+    const startAdapter = vi.fn<StartAdapter>(async () => fakeStartResult());
     const socketFactory = vi.fn() as unknown as WhatsAppSocketFactory;
     const driver = createWhatsAppChannelDriver({ startAdapter, socketFactory });
 
@@ -70,7 +74,7 @@ describe("createWhatsAppChannelDriver", () => {
 
   it("wires start options, default authDir, socket seam, QR logging, and stop", async () => {
     const stop = vi.fn(async () => undefined);
-    const startAdapter = vi.fn(async () => fakeStartResult(stop));
+    const startAdapter = vi.fn<StartAdapter>(async () => fakeStartResult(stop));
     const socketFactory = vi.fn() as unknown as WhatsAppSocketFactory;
     const driver = createWhatsAppChannelDriver({ startAdapter, socketFactory });
     const config = enabledConfig();
@@ -81,7 +85,7 @@ describe("createWhatsAppChannelDriver", () => {
 
     expect(running.summary).toEqual({});
     expect(startAdapter).toHaveBeenCalledTimes(1);
-    const options = startAdapter.mock.calls[0]?.[0] as StartWhatsAppAdapterOptions;
+    const options = firstStartAdapterOptions(startAdapter);
     expect(options.authDir).toBe(resolve(dir, ".mono-agent", "whatsapp-auth"));
     expect(options.config).toBe(config);
     expect(options.responder).toBe(responder);
@@ -99,7 +103,7 @@ describe("createWhatsAppChannelDriver", () => {
   });
 
   it("honors authDir overrides", async () => {
-    const startAdapter = vi.fn(async () => fakeStartResult());
+    const startAdapter = vi.fn<StartAdapter>(async () => fakeStartResult());
     const driver = createWhatsAppChannelDriver({
       authDir: "/custom/whatsapp-auth",
       startAdapter,
@@ -107,7 +111,7 @@ describe("createWhatsAppChannelDriver", () => {
 
     await driver.start(startInput({ config: enabledConfig() }));
 
-    expect(startAdapter.mock.calls[0]?.[0].authDir).toBe("/custom/whatsapp-auth");
+    expect(firstStartAdapterOptions(startAdapter).authDir).toBe("/custom/whatsapp-auth");
   });
 
   it("loads plugin-style raw config and still lets env override it", async () => {
@@ -222,6 +226,16 @@ function fakeLogger(): ChannelLogger {
   return {
     info: vi.fn(),
   };
+}
+
+function firstStartAdapterOptions(
+  startAdapter: ReturnType<typeof vi.fn<StartAdapter>>,
+): StartWhatsAppAdapterOptions {
+  const call = startAdapter.mock.calls[0];
+  if (call === undefined) {
+    throw new Error("Expected startAdapter to be called.");
+  }
+  return call[0];
 }
 
 function fakeStartResult(stop = vi.fn(async () => undefined)): WhatsAppAdapterStartResult {
