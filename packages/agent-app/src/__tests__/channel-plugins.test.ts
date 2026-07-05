@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { startMonoAgentApp } from "../app.js";
 import { collectChannelConfigViews } from "../channel-config-view.js";
+import { ChannelPluginConfigError } from "../channel-plugins.js";
 import { resolveChannelDrivers } from "../channels.js";
 import type { ChannelDriver } from "../channels.js";
 import { validateMonoAgentFolder } from "../doctor.js";
@@ -126,7 +127,7 @@ describe("channel plugins", () => {
     expect(validation.details.join("\n")).toContain("must export createChannelDriver(options)");
   });
 
-  it("delegates legacy top-level A2A config through the external package seam", async () => {
+  it("does not register legacy top-level A2A config without an explicit plugin", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),
       a2a: { provider: { enabled: false } },
@@ -136,9 +137,103 @@ describe("channel plugins", () => {
     const views = await collectChannelConfigViews(drivers, { env: {}, cwd: dir, configPath });
     const a2a = views.find((section) => section.id === "a2a");
 
-    expect(a2a?.fields.some((field) => field.id === "a2a.provider.enabled")).toBe(true);
+    expect(a2a).toBeUndefined();
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
-    expect(sectionById(report, "channel:a2a").status).toBe("disabled");
+    expect(report.sections.some((section) => section.id === "channel:a2a")).toBe(false);
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {} });
+    expect(app.channelStatus("a2a")).toEqual({
+      kind: "disabled",
+      reason: "Channel a2a is not registered with this app.",
+    });
+    await app.stop();
+  });
+
+  it("reports a built-in id collision without shadowing the built-in driver", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      channels: {
+        plugins: [
+          {
+            package: "@mono-agent/a2a-adapter",
+            id: "telegram",
+            label: "Telegram Collision",
+            config: { provider: { enabled: false } },
+          },
+        ],
+      },
+    });
+
+    const drivers = await resolveChannelDrivers({ env: {}, cwd: dir, configPath });
+    expect(drivers.filter((driver) => driver.id === "telegram")).toHaveLength(1);
+    expect(drivers.some((driver) => driver.id === "channel-plugin-1")).toBe(true);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(report, "channel:telegram").status).toBe("disabled");
+    const collision = sectionById(report, "channel:channel-plugin-1");
+    expect(collision.status).toBe("waiting");
+    expect(collision.details.join("\n")).toContain("collides with a built-in channel");
+  });
+
+  it("reports duplicate plugin ids without shadowing the first plugin", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      channels: {
+        plugins: [
+          {
+            package: "@mono-agent/a2a-adapter",
+            id: "a2a-extra",
+            label: "A2A Extra",
+            config: { provider: { enabled: false } },
+          },
+          {
+            package: "@mono-agent/a2a-adapter",
+            id: "a2a-extra",
+            label: "Duplicate A2A",
+            config: { provider: { enabled: false } },
+          },
+        ],
+      },
+    });
+
+    const drivers = await resolveChannelDrivers({ env: {}, cwd: dir, configPath });
+    expect(drivers.filter((driver) => driver.id === "a2a-extra")).toHaveLength(1);
+    expect(drivers.some((driver) => driver.id === "channel-plugin-2")).toBe(true);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(report, "channel:a2a-extra").status).toBe("disabled");
+    const collision = sectionById(report, "channel:channel-plugin-2");
+    expect(collision.status).toBe("waiting");
+    expect(collision.details.join("\n")).toContain("collides with an earlier channel plugin");
+  });
+
+  it("marks parser-produced malformed plugin config as invalid_plugin_config", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      channels: {
+        plugins: [
+          {
+            package: "@mono-agent/a2a-adapter",
+            config: "not-an-object",
+          },
+        ],
+      },
+    });
+
+    const drivers = await resolveChannelDrivers({ env: {}, cwd: dir, configPath });
+    const driver = drivers.find((candidate) => candidate.id === "a2a");
+    expect(driver).toBeDefined();
+
+    const error = await driver!.loadConfig({ env: {}, cwd: dir, configPath }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ChannelPluginConfigError);
+    expect(error).toMatchObject({
+      code: "invalid_plugin_config",
+      details: {
+        code: "invalid_plugin_config",
+        packageName: "@mono-agent/a2a-adapter",
+        pluginId: "a2a",
+      },
+    });
   });
 
   it("respects an explicit drivers override without appending config plugins", async () => {

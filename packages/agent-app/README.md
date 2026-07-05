@@ -15,7 +15,8 @@ Category: `app`
 Turn a folder's `mono-agent.config.json` into a running agent host:
 
 - Aggregate the adapter-neutral core config and every channel section
-  (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`).
+  (`telegram`, `slack`, `webhook`, `openaiApi`, `cron`) plus configured
+  external channel plugins from `channels.plugins[]`.
 - Build the shared runtime/responder/memory stack through app-owned configured
   composition
   (including `runtime.fallbackModels` backup chains).
@@ -57,7 +58,7 @@ await app.stop();
 
 - `startMonoAgentApp(options)` → `MonoAgentApp` (statuses, `applyConfigChange`,
   `startChannelIfConfigured`, `stop`).
-- `defaultChannelDrivers(overrides)` plus per-channel
+- `defaultChannelDrivers(overrides)` plus built-in per-channel
   `create<Channel>ChannelDriver(overrides)` factories with test seams.
 - `createConfiguredAgentRuntime`, `createConfiguredAgentHarness`,
   `createConfiguredAgentResponder`, and `createConfiguredMemory` for

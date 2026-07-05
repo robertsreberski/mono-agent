@@ -66,7 +66,6 @@ import { isChannelConfigured } from "./channel-gate.js";
 import type { ChannelGateSpec } from "./channel-gate.js";
 import { buildChannelConfigView } from "./channel-config-view.js";
 import {
-  createExternalPackageChannelDriver,
   resolveConfiguredChannelPlugins,
 } from "./channel-plugins.js";
 import { findTriggerOverrideIssues } from "./trigger-overrides.js";
@@ -91,11 +90,9 @@ export type ChannelDriver<TConfig = unknown> = ContractChannelDriver<TConfig, Mo
 export const BUILTIN_CHANNEL_IDS = [
   "telegram",
   "slack",
-  "a2a",
   "webhook",
   "openai-api",
   "cron",
-  "whatsapp",
   "tui",
   "live",
 ] as const;
@@ -106,7 +103,8 @@ export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
  * passes the {@link isChannelConfigured} gate (JSON section present, a prefixed
  * env var set, or the jobs/endpoints folder existing). A webhook-only agent
  * therefore never loads the chat SDKs. A2A and WhatsApp are external channel
- * plugins; the app reaches them only through dynamic package-name imports.
+ * plugins; the app reaches them only when declared in `channels.plugins[]` or
+ * supplied directly by programmatic callers.
  *
  * For an unconfigured channel the driver answers with the adapter loader's own
  * empty-input output (the UNCONFIGURED_* constants below) — a drift-guard test
@@ -146,11 +144,9 @@ const loadLiveModule = async (): Promise<LiveAdapterModule> =>
 
 const TELEGRAM_GATE: ChannelGateSpec = { jsonKey: "telegram", envPrefix: "MONO_AGENT_TELEGRAM_" };
 const SLACK_GATE: ChannelGateSpec = { jsonKey: "slack", envPrefix: "MONO_AGENT_SLACK_" };
-const A2A_GATE: ChannelGateSpec = { jsonKey: "a2a", envPrefix: "MONO_AGENT_A2A_" };
 const WEBHOOK_GATE: ChannelGateSpec = { jsonKey: "webhook", envPrefix: "MONO_AGENT_WEBHOOK_", dir: "webhook" };
 const OPENAI_API_GATE: ChannelGateSpec = { jsonKey: "openaiApi", envPrefix: "MONO_AGENT_OPENAI_API_" };
 const CRON_GATE: ChannelGateSpec = { jsonKey: "cron", envPrefix: "MONO_AGENT_CRON_", dir: "cron" };
-const WHATSAPP_GATE: ChannelGateSpec = { jsonKey: "whatsapp", envPrefix: "MONO_AGENT_WHATSAPP_" };
 
 const UNCONFIGURED_TELEGRAM_CONFIG: TelegramAdapterConfig = {
   enabled: false,
@@ -169,10 +165,6 @@ const UNCONFIGURED_SLACK_CONFIG: SlackAdapterConfig = {
   stripMentionText: false,
   shortcuts: [],
   homeTab: { enabled: false, buttons: [] },
-};
-const UNCONFIGURED_A2A_CONFIG = {
-  provider: { enabled: false, host: "127.0.0.1", port: 0, allowNonLoopback: false, requireBearer: false },
-  consumer: { remoteAgentUrls: [], timeoutMs: 30_000 },
 };
 const UNCONFIGURED_WEBHOOK_CONFIG: WebhookAdapterConfig = {
   enabled: false,
@@ -194,12 +186,6 @@ const UNCONFIGURED_OPENAI_API_CONFIG: OpenAIApiAdapterConfig = {
   modelId: "agent",
 };
 const UNCONFIGURED_CRON_CONFIG: CronAdapterConfig = { jobs: [] };
-const UNCONFIGURED_WHATSAPP_CONFIG = {
-  enabled: false,
-  allowedChatJids: [],
-  allowAllChats: false,
-  trigger: { groupMode: "mention", botJids: [], mentionTextAliases: [], stripMentionText: false },
-};
 
 /** Config-view section for a channel the gate found no intent for (no fields to annotate). */
 function unconfiguredChannelView(id: string, label: string): ChannelConfigViewSection {
@@ -492,24 +478,6 @@ export function slackTargetFromConversation(
     return undefined;
   }
   return { channelId, threadTs };
-}
-
-export interface A2AChannelOverrides {
-  readonly [key: string]: unknown;
-}
-
-export function createA2AChannelDriver(
-  overrides: A2AChannelOverrides = {},
-): ChannelDriver {
-  return createExternalPackageChannelDriver({
-    packageName: "@mono-agent/a2a-adapter",
-    id: "a2a",
-    label: "A2A",
-    gate: A2A_GATE,
-    unconfiguredConfig: UNCONFIGURED_A2A_CONFIG,
-    unconfiguredDisabledReason: "A2A provider is disabled.",
-    factoryOptions: overrides,
-  });
 }
 
 export interface WebhookChannelOverrides {
@@ -1248,32 +1216,12 @@ async function resolveNativeWebhookNotifyDestination(input: {
   return destinations[0]?.conversationId;
 }
 
-export interface WhatsAppChannelOverrides {
-  readonly [key: string]: unknown;
-}
-
-export function createWhatsAppChannelDriver(
-  overrides: WhatsAppChannelOverrides = {},
-): ChannelDriver {
-  return createExternalPackageChannelDriver({
-    packageName: "@mono-agent/whatsapp-adapter",
-    id: "whatsapp",
-    label: "WhatsApp",
-    gate: WHATSAPP_GATE,
-    unconfiguredConfig: UNCONFIGURED_WHATSAPP_CONFIG,
-    unconfiguredDisabledReason: "WhatsApp is disabled.",
-    factoryOptions: overrides,
-  });
-}
-
 export interface ChannelDriverOverrides {
   readonly telegram?: TelegramChannelOverrides;
   readonly slack?: SlackChannelOverrides;
-  readonly a2a?: A2AChannelOverrides;
   readonly webhook?: WebhookChannelOverrides;
   readonly openaiApi?: OpenAIApiChannelOverrides;
   readonly cron?: CronChannelOverrides;
-  readonly whatsapp?: WhatsAppChannelOverrides;
   readonly tui?: TuiChannelOverrides;
   readonly live?: LiveChannelOverrides;
 }
@@ -1283,11 +1231,9 @@ export function defaultChannelDrivers(overrides: ChannelDriverOverrides = {}): r
   return [
     createTelegramChannelDriver(overrides.telegram),
     createSlackChannelDriver(overrides.slack),
-    createA2AChannelDriver(overrides.a2a),
     createWebhookChannelDriver(overrides.webhook),
     createOpenAIApiChannelDriver(overrides.openaiApi),
     createCronChannelDriver(overrides.cron),
-    createWhatsAppChannelDriver(overrides.whatsapp),
     createTuiChannelDriver(overrides.tui),
     createLiveChannelDriver(overrides.live),
   ] as readonly ChannelDriver[];
@@ -1298,7 +1244,7 @@ export async function resolveChannelDrivers(
   overrides: ChannelDriverOverrides = {},
 ): Promise<readonly ChannelDriver[]> {
   const drivers = [...defaultChannelDrivers(overrides)];
-  const plugins = await resolveConfiguredChannelPlugins(input);
+  const plugins = await resolveConfiguredChannelPlugins(input, { reservedIds: BUILTIN_CHANNEL_IDS });
   for (const plugin of plugins) {
     const existing = drivers.findIndex((driver) => driver.id === plugin.id);
     if (existing >= 0) {

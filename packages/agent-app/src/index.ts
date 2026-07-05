@@ -25,18 +25,15 @@ export type {
 export { createBroadcastRunRecorder } from "./broadcast-recorder.js";
 export type { BroadcastRunContext } from "./broadcast-recorder.js";
 export {
-  createA2AChannelDriver,
   createCronChannelDriver,
   createOpenAIApiChannelDriver,
   createSlackChannelDriver,
   createTelegramChannelDriver,
   createWebhookChannelDriver,
-  createWhatsAppChannelDriver,
   defaultChannelDrivers,
   resolveChannelDrivers,
 } from "./channels.js";
 export type {
-  A2AChannelOverrides,
   ChannelDriver,
   ChannelDriverOverrides,
   ChannelId,
@@ -49,7 +46,6 @@ export type {
   SlackChannelOverrides,
   TelegramChannelOverrides,
   WebhookChannelOverrides,
-  WhatsAppChannelOverrides,
 } from "./channels.js";
 export { startMonoAgentApp } from "./app.js";
 export type {

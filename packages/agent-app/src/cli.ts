@@ -761,7 +761,7 @@ function resolveWithChannels(args: ParsedCliArgs): readonly WithChannel[] | unde
   const invalid = args.withChannels.filter((channel) => !isWithChannel(channel));
   if (invalid.length > 0) {
     process.stderr.write(ui.errorLine(`Unknown --with channel(s): ${invalid.join(", ")}.`));
-    process.stderr.write(ui.hint("Valid channels: telegram, slack, whatsapp, a2a, webhook, openaiApi, cron."));
+    process.stderr.write(ui.hint("Valid channels: telegram, slack, webhook, openaiApi, cron."));
     return "invalid";
   }
   return args.withChannels.filter(isWithChannel);

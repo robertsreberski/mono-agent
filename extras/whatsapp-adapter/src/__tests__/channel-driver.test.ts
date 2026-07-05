@@ -236,6 +236,57 @@ describe("createWhatsAppChannelDriver", () => {
     });
     expect(driver.disabledReason?.(config)).toBeUndefined();
   });
+
+  it("reports config view fields with file and env provenance", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        whatsapp: {
+          enabled: true,
+          allowedChatJids: ["file@s.whatsapp.net"],
+          allowAllChats: false,
+          groupMode: "mention",
+          botJids: ["bot@s.whatsapp.net"],
+        },
+      })}\n`,
+      "utf8",
+    );
+    const driver = createWhatsAppChannelDriver();
+
+    const section = await driver.configView!({
+      env: { MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS: "true" },
+      cwd: dir,
+      configPath,
+    });
+
+    expect(section).toMatchObject({ id: "whatsapp", label: "WhatsApp", status: "active" });
+    const fields = new Map(section.fields.map((field) => [field.id, field]));
+    expect(fields.get("whatsapp.enabled")).toMatchObject({ value: "true", source: "json" });
+    expect(fields.get("whatsapp.allowedChatJids")).toMatchObject({ value: "file@s.whatsapp.net", source: "json" });
+    expect(fields.get("whatsapp.allowAllChats")).toMatchObject({ value: "true", source: "env" });
+    expect(fields.get("whatsapp.stripMentionText")).toMatchObject({ value: "\u2014", source: "default" });
+  });
+
+  it("reports config view fields from plugin-style raw config", async () => {
+    const driver = createChannelDriver({
+      id: "custom-whatsapp",
+      label: "Custom WhatsApp",
+      config: {
+        enabled: false,
+        allowedChatJids: ["plugin@s.whatsapp.net"],
+        allowAllChats: false,
+        groupMode: "mention",
+      },
+    });
+
+    const section = await driver.configView!(configInput());
+
+    expect(section).toMatchObject({ id: "custom-whatsapp", label: "Custom WhatsApp", status: "disabled" });
+    const fields = new Map(section.fields.map((field) => [field.id, field]));
+    expect(fields.get("whatsapp.enabled")).toMatchObject({ value: "false", source: "json" });
+    expect(fields.get("whatsapp.allowedChatJids")).toMatchObject({ value: "plugin@s.whatsapp.net", source: "json" });
+  });
 });
 
 const invalidRawConfigCases: readonly {

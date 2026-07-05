@@ -84,7 +84,7 @@ describe("validateMonoAgentFolder", () => {
     expect(runtime.status).toBe("ok");
     expect(runtime.details.join("\n")).toContain("Fallback model claude:claude-sonnet-4-6");
     expect(sectionById(report, "channel:webhook").status).toBe("ok");
-    expect(sectionById(report, "channel:a2a").status).toBe("disabled");
+    expect(report.sections.some((section) => section.id === "channel:a2a")).toBe(false);
     expect(sectionById(report, "channel:telegram").status).toBe("disabled");
   });
 

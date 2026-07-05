@@ -46,11 +46,17 @@ type RawPluginConfig = Readonly<Record<string, SettingsJsonValue>>;
 interface InvalidChannelPluginEntry {
   readonly id: string;
   readonly label: string;
+  readonly code: ChannelPluginConfigErrorCode;
   readonly packageName?: string;
+  readonly pluginId?: string;
   readonly message: string;
 }
 
 type ParsedChannelPluginEntry = ChannelPluginEntry | InvalidChannelPluginEntry;
+
+export interface ResolveConfiguredChannelPluginsOptions {
+  readonly reservedIds?: Iterable<string>;
+}
 
 interface ChannelPluginFactoryInput {
   readonly id?: string;
@@ -73,10 +79,12 @@ interface ExternalPackageChannelDriverOptions {
 
 export async function resolveConfiguredChannelPlugins(
   input: MonoAgentAppConfigInput,
+  options: ResolveConfiguredChannelPluginsOptions = {},
 ): Promise<readonly ChannelDriver[]> {
   const entries = await readConfiguredChannelPluginEntries(input.configPath);
+  const checkedEntries = rejectChannelPluginIdCollisions(entries, options.reservedIds ?? []);
   const drivers: ChannelDriver[] = [];
-  for (const entry of entries) {
+  for (const entry of checkedEntries) {
     drivers.push(await resolveChannelPlugin(entry));
   }
   return drivers;
@@ -160,6 +168,7 @@ async function readConfiguredChannelPluginEntries(
       {
         id: "channel-plugin",
         label: "Channel plugin",
+        code: "invalid_plugin_config",
         message: "channels must be an object when channel plugins are configured.",
       },
     ];
@@ -173,6 +182,7 @@ async function readConfiguredChannelPluginEntries(
       {
         id: "channel-plugin",
         label: "Channel plugin",
+        code: "invalid_plugin_config",
         message: "channels.plugins must be an array.",
       },
     ];
@@ -187,6 +197,7 @@ function parseChannelPluginEntry(entry: SettingsJsonValue, index: number): Parse
     return {
       id: fallbackId,
       label: "Channel plugin",
+      code: "invalid_plugin_config",
       message: `channels.plugins[${index}] must be an object.`,
     };
   }
@@ -201,6 +212,7 @@ function parseChannelPluginEntry(entry: SettingsJsonValue, index: number): Parse
     return {
       id,
       label,
+      code: "invalid_plugin_config",
       message: `channels.plugins[${index}].package must be a non-empty package name.`,
     };
   }
@@ -212,6 +224,8 @@ function parseChannelPluginEntry(entry: SettingsJsonValue, index: number): Parse
         id,
         label,
         packageName,
+        pluginId: id,
+        code: "invalid_plugin_config",
         message: `channels.plugins[${index}].config must be an object.`,
       };
     }
@@ -226,9 +240,71 @@ function parseChannelPluginEntry(entry: SettingsJsonValue, index: number): Parse
   };
 }
 
+function rejectChannelPluginIdCollisions(
+  entries: readonly ParsedChannelPluginEntry[],
+  reservedIds: Iterable<string>,
+): readonly ParsedChannelPluginEntry[] {
+  const reserved = new Set(reservedIds);
+  const seen = new Set(reserved);
+  return entries.map((entry, index) => {
+    const id = pluginEntryId(entry);
+    if (!seen.has(id)) {
+      seen.add(id);
+      return entry;
+    }
+
+    const collisionTarget = reserved.has(id) ? "a built-in channel" : "an earlier channel plugin";
+    const sectionId = uniqueInvalidPluginId(index, seen);
+    const label = `${pluginEntryLabel(entry)} plugin`;
+    const packageName = pluginEntryPackageName(entry);
+    return {
+      id: sectionId,
+      label,
+      ...(packageName === undefined ? {} : { packageName }),
+      pluginId: id,
+      code: "invalid_plugin_config",
+      message: `channels.plugins[${index}] resolves to channel id "${id}", which collides with ${collisionTarget}. Choose a unique plugin id.`,
+    };
+  });
+}
+
+function uniqueInvalidPluginId(index: number, seen: Set<string>): string {
+  const base = `channel-plugin-${index + 1}`;
+  let candidate = base;
+  let suffix = 2;
+  while (seen.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  seen.add(candidate);
+  return candidate;
+}
+
+function pluginEntryId(entry: ParsedChannelPluginEntry): string {
+  if ("message" in entry) {
+    return entry.pluginId ?? entry.id;
+  }
+  return entry.id ?? channelIdFromPackageName(entry.packageName);
+}
+
+function pluginEntryLabel(entry: ParsedChannelPluginEntry): string {
+  if ("message" in entry) {
+    return entry.label;
+  }
+  return entry.label ?? labelFromChannelId(pluginEntryId(entry));
+}
+
+function pluginEntryPackageName(entry: ParsedChannelPluginEntry): string | undefined {
+  return "packageName" in entry ? entry.packageName : undefined;
+}
+
 async function resolveChannelPlugin(entry: ParsedChannelPluginEntry): Promise<ChannelDriver> {
   if ("message" in entry) {
-    return createUnavailablePluginDriver(entry.id, entry.label, entry.message, entry.packageName);
+    return createUnavailablePluginDriver(entry.id, entry.label, entry.message, {
+      ...(entry.packageName === undefined ? {} : { packageName: entry.packageName }),
+      pluginId: entry.pluginId ?? entry.id,
+      code: entry.code,
+    });
   }
   try {
     return await loadChannelPluginDriver(entry);
@@ -239,7 +315,11 @@ async function resolveChannelPlugin(entry: ParsedChannelPluginEntry): Promise<Ch
       ? error.message
       : `Cannot load channel plugin ${entry.packageName}: ${reasonOf(error)}. Install the package or remove it from channels.plugins.`;
     const code = error instanceof ChannelPluginConfigError ? error.code : "plugin_import_failed";
-    return createUnavailablePluginDriver(id, label, message, entry.packageName, code);
+    return createUnavailablePluginDriver(id, label, message, {
+      packageName: entry.packageName,
+      pluginId: id,
+      code,
+    });
   }
 }
 
@@ -294,13 +374,20 @@ function createUnavailablePluginDriver(
   id: string,
   label: string,
   message: string,
-  packageName?: string,
-  code: ChannelPluginConfigErrorCode = packageName === undefined ? "invalid_plugin_config" : "plugin_import_failed",
+  options: {
+    readonly packageName?: string;
+    readonly pluginId?: string;
+    readonly code?: ChannelPluginConfigErrorCode;
+  } = {},
 ): ChannelDriver {
+  const code = options.code ?? (options.packageName === undefined ? "invalid_plugin_config" : "plugin_import_failed");
   const error = new ChannelPluginConfigError(
     code,
     message,
-    { ...(packageName === undefined ? {} : { packageName }), pluginId: id },
+    {
+      ...(options.packageName === undefined ? {} : { packageName: options.packageName }),
+      pluginId: options.pluginId ?? id,
+    },
   );
   return {
     id,

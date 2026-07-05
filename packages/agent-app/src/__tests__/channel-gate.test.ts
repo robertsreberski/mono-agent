@@ -64,15 +64,9 @@ describe("unconfigured drivers answer with the adapter loader's own empty-input 
     const input = { env: {}, cwd: dir, configPath };
     const drivers = new Map(defaultChannelDrivers().map((driver) => [driver.id, driver]));
     const empty = { env: {}, json: {}, cwd: dir };
-    const [{ loadWhatsAppAdapterConfig }, { loadA2AAdapterConfig }] = await Promise.all([
-      import("@mono-agent/whatsapp-adapter"),
-      import("@mono-agent/a2a-adapter"),
-    ]);
 
     expect(await drivers.get("telegram")!.loadConfig(input)).toEqual(await loadTelegramAdapterConfig(empty));
     expect(await drivers.get("slack")!.loadConfig(input)).toEqual(await loadSlackAdapterConfig(empty));
-    expect(await drivers.get("whatsapp")!.loadConfig(input)).toEqual(await loadWhatsAppAdapterConfig(empty));
-    expect(await drivers.get("a2a")!.loadConfig(input)).toEqual(await loadA2AAdapterConfig(empty));
     expect(await drivers.get("webhook")!.loadConfig(input)).toEqual(await loadWebhookAdapterConfig(empty));
     expect(await drivers.get("openai-api")!.loadConfig(input)).toEqual(await loadOpenAIApiAdapterConfig(empty));
     expect(await drivers.get("cron")!.loadConfig(input)).toEqual(await loadCronAdapterConfig(empty));
