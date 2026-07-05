@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { failClosedSandboxPolicy, mergeSandboxPolicies, networkPolicyAllowsUrl } from "@mono-agent/sandbox";
+import {
+  createSandboxPolicy,
+  failClosedSandboxPolicy,
+  mergeSandboxPolicies,
+  networkPolicyAllowsUrl,
+  prepareSandboxedCommand,
+} from "@mono-agent/sandbox";
 
 import { monoSandboxImpl } from "../sandbox-impl.js";
 
@@ -33,6 +39,28 @@ describe("monoSandboxImpl (real sandbox package injected into createMonoRuntime)
     await expect(monoSandboxImpl.prepareCommand({ policy, command })).rejects.toMatchObject({
       code: "sandbox_unavailable",
     });
+  });
+
+  it("prepareCommand preserves an explicit unsafe host-process fallback", async () => {
+    const policy = createSandboxPolicy({
+      root: "/repo/workspace",
+      fallback: "unsafe-host-process",
+      unsafeAllowHostProcess: true,
+    });
+    const command = { command: "/bin/echo", args: ["hi"], cwd: "/repo/workspace" };
+    const engine = {
+      id: "fake",
+      async isAvailable() {
+        return false;
+      },
+      async prepareCommand() {
+        throw new Error("should not prepare");
+      },
+    };
+
+    const direct = await prepareSandboxedCommand({ policy, command, engine });
+    await expect(monoSandboxImpl.prepareCommand({ policy, command, engine })).resolves.toEqual(direct);
+    expect(direct).toMatchObject({ command: "/bin/echo", args: ["hi"], cwd: "/repo/workspace", sandboxed: false });
   });
 
   it("networkAllowsUrl delegates to networkPolicyAllowsUrl", () => {

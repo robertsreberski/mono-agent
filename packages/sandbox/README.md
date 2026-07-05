@@ -52,6 +52,29 @@ closed when the sandbox engine is unavailable. An unsafe host-process fallback
 requires both `fallback: "unsafe-host-process"` and
 `unsafeAllowHostProcess: true`.
 
+Hosts that want to surface the runtime consequence before executing commands
+can resolve the effective state:
+
+```ts
+import {
+  describeSandboxEffectiveState,
+  resolveSandboxEffectiveState,
+  sandboxEffectiveStateWarning,
+} from "@mono-agent/sandbox";
+
+const state = await resolveSandboxEffectiveState({ policy });
+console.info(describeSandboxEffectiveState(state));
+
+const warning = sandboxEffectiveStateWarning(state);
+if (warning !== undefined) {
+  console.warn(warning);
+}
+```
+
+When the native engine is unavailable and the policy explicitly opts into
+`unsafe-host-process`, the warning names the consequence: all sandbox
+roots/denyWrite entries are inert; commands run unsandboxed.
+
 ## Policy Semantics
 
 - `readableRoots` / `writableRoots` default to `[root]`; everything outside is
@@ -76,6 +99,9 @@ requires both `fallback: "unsafe-host-process"` and
 - `mergeSandboxPolicies`
 - `sandboxRequired`
 - `sandboxPolicyToRuntimeOptions`
+- `resolveSandboxEffectiveState`
+- `sandboxEffectiveStateWarning`
+- `describeSandboxEffectiveState`
 - `createSrtSandboxEngine`
 - `prepareSandboxedCommand`
 - `srtSettingsForPolicy`
