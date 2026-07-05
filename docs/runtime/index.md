@@ -41,7 +41,7 @@ The `runtime.model` string is always `<backend>:<...>` — `claude:*`, `codex:*`
 
 - [Model backends](/runtime/backends/) — the four backends (claude sdk/cli, codex cli, pi sdk with 15+ providers, opencode cli), the `<backend>:<model>` syntax, and `sdk` vs `cli` execution modes.
 - [Execution effort & permissions](/runtime/execution-effort-permissions/) — tune reasoning depth with `runtime.effort` and the tool-permission posture for CLI backends with `runtime.permissionMode`.
-- [Fallback chains](/runtime/fallback/) — `runtime.fallbackModels`: an ordered list of backup models the fallback router tries on retryable provider failures, with transcript-tail resume; failover is reported in run results, never silent.
+- [Fallback chains](/runtime/fallback/) — `runtime.fallbackModels`: an ordered list of backup models the fallback router tries on fallback-eligible provider failures, including provider auth failures, with transcript-tail resume; failover is reported in run results, never silent.
 - [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint via `providers.local[]` for `pi:<provider>:<model>` references, plus pi-native transport tuning and OAuth credential resolution.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
 - [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the bundled Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch tools and the automatic guards (tool-output bloat truncation, WebFetch retry, cost tracking, context compaction).

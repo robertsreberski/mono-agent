@@ -24,7 +24,7 @@
 // Result:
 //   The success run's result, with `failoverHistory` appended describing every
 //   prior attempt: [{ model, failureKind, requestId, retryableSubkind }].
-//   If every eligible retryable entry in the chain fails, returns the last
+//   If every eligible retryable/auth entry in the chain fails, returns the last
 //   result with `failureKind: "provider_unavailable_exhausted"`. Terminal
 //   non-retryable failures are returned as-is with their failover history.
 
@@ -180,9 +180,11 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
         });
         lastResult = result;
 
-        // Bail early on non-retryable failures (auth, billing, cancellation,
-        // invalid_result). Only retryable provider errors trigger fallback.
-        const shouldFallback = retryability.retryable && !result.cancelled;
+        // Provider auth is terminal for one provider, but chain-retryable: a
+        // fallback provider may have working credentials. Other non-retryable
+        // provider/request errors remain terminal.
+        const shouldFallback = (retryability.retryable || result.failureKind === "provider_auth")
+          && !result.cancelled;
         if (!shouldFallback) {
           return { ...result, failoverHistory };
         }

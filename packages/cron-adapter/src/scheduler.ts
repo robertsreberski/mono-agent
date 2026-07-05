@@ -72,6 +72,7 @@ export type CronJobResult =
       readonly startedAt: string;
       readonly completedAt: string;
       readonly error: string;
+      readonly failureKind?: string;
     }
   | {
       readonly kind: "skipped";
@@ -438,6 +439,7 @@ function startRun(
     .catch((error: unknown) => {
       finalize(async () => {
         const cancelled = controller.signal.aborted || isAgentResponseCancelledError(error);
+        const failureKind = failureKindFromUnknown(error);
         const result: CronJobResult = {
           kind: cancelled ? "cancelled" : "failed",
           jobId: job.id,
@@ -445,6 +447,7 @@ function startRun(
           startedAt,
           completedAt: (options.now?.() ?? new Date()).toISOString(),
           error: errorToMessage(error),
+          ...(failureKind === undefined ? {} : { failureKind }),
         };
         options.logger?.[cancelled ? "warn" : "error"]?.("Cron job responder failed.", {
           jobId: job.id,
@@ -541,4 +544,27 @@ function assertFiveFieldExpression(job: CronJob): void {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function failureKindFromUnknown(error: unknown): string | undefined {
+  if (!isRecord(error)) {
+    return undefined;
+  }
+  const direct = normalizedString(error.failureKind);
+  if (direct !== undefined) {
+    return direct;
+  }
+  const failure = error.failure;
+  if (isRecord(failure)) {
+    return normalizedString(failure.kind);
+  }
+  return undefined;
+}
+
+function normalizedString(value: unknown): string | undefined {
+  return typeof value === "string" ? normalizeOptionalString(value) : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

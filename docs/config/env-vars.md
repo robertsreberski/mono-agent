@@ -30,7 +30,7 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 | --- | --- | --- |
 | `MONO_AGENT_MODEL` | `runtime.model` | Backend-prefixed model, e.g. `claude:claude-sonnet-4-6`, `codex:gpt-5.5`, `pi:openai:gpt-5.5`. Required. |
 | `MONO_AGENT_EXECUTION_MODE` | `runtime.executionMode` | `sdk` vs `cli`; default inferred from model. |
-| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Ordered backup models on retryable failure. See [../runtime/fallback.md](/runtime/fallback/). |
+| `MONO_AGENT_FALLBACK_MODELS` | `runtime.fallbackModels` | Ordered backup models on fallback-eligible provider failure, including provider auth failures. See [../runtime/fallback.md](/runtime/fallback/). |
 | `MONO_AGENT_EFFORT` | `runtime.effort` | `none` / `low` / `medium` / `high` / `xhigh` / `max`. See [../runtime/execution-effort-permissions.md](/runtime/execution-effort-permissions/). |
 | `MONO_AGENT_PERMISSION_MODE` | `runtime.permissionMode` | `default` / `plan` / `acceptEdits` / `bypassPermissions` (CLI backends). |
 | `MONO_AGENT_MAX_TURNS` | `runtime.maxTurns` | Turn cap per run; omitted or `0` means unlimited. |
@@ -258,7 +258,8 @@ All Slack resilience vars are optional integers (`0`–`3600000`); omit to use t
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
-| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (id, expression, timezone, prompt, conversationId, notify, notifyConversationId, model, effort). |
+| `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | `cron.notifyFailureCooldownHours` | Single-job cooldown, in hours, for all-models-failed error notices on `notify: true` cron jobs; default `6`. |
+| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (id, expression, timezone, prompt, conversationId, notify, notifyConversationId, notifyFailureCooldownHours, model, effort). |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [../channels/cron.md](/channels/cron/). |
 
 ## Evals

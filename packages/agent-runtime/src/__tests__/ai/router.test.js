@@ -133,10 +133,10 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("does not fall back on non-retryable failures (e.g. invalid api key)", async () => {
+  it("does not fall back on non-retryable provider request failures", async () => {
     executeMock.mockResolvedValueOnce({
       text: null,
-      error: "401 invalid api key — authentication failed",
+      error: "invalid_request_error: Unknown parameter: prompt_cache_retention",
       failureKind: "provider_unavailable",
       events: [],
       cancelled: false,
@@ -149,13 +149,68 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const result = await router.run("sys", { messages: [] });
     expect(result.failoverHistory).toHaveLength(1);
-    expect(result.failureKind).toBe("provider_auth");
-    expect(result.failoverHistory[0].failureKind).toBe("provider_auth");
+    expect(result.failureKind).toBe("provider_unavailable");
+    expect(result.failoverHistory[0].failureKind).toBe("provider_unavailable");
+    expect(result.failoverHistory[0].retryableSubkind).toBe("non_retryable");
     expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves provider_auth terminal failures instead of reporting failover exhaustion", async () => {
-    executeMock.mockResolvedValueOnce({
+  it("falls back on provider_auth failures and preserves the attempt detail", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "No API key for provider: openai-codex",
+        failureKind: "provider_auth",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({
+        text: "recovered",
+        events: [],
+        failureKind: null,
+      });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "pi", model: "openai-codex:gpt-5.5" },
+        { sdk: "pi", model: "opencode-go:kimi-k2.6" },
+      ],
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("recovered");
+    expect(result.failoverHistory).toHaveLength(1);
+    expect(result.failoverHistory[0].failureKind).toBe("provider_auth");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("normalizes auth-shaped provider_unavailable failures before falling back", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "No API key for provider: openai-codex",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({
+        text: "recovered",
+        events: [],
+        failureKind: null,
+      });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "pi", model: "openai-codex:gpt-5.5" },
+        { sdk: "pi", model: "opencode-go:kimi-k2.6" },
+      ],
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("recovered");
+    expect(result.failoverHistory).toHaveLength(1);
+    expect(result.failoverHistory[0].failureKind).toBe("provider_auth");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports chain exhaustion when every eligible entry fails with provider_auth", async () => {
+    executeMock.mockResolvedValue({
       text: null,
       error: "No API key for provider: openai-codex",
       failureKind: "provider_auth",
@@ -169,9 +224,13 @@ describe("createRouterRuntime — fallback on retryable", () => {
       ],
     });
     const result = await router.run("sys", { messages: [] });
-    expect(result.failureKind).toBe("provider_auth");
-    expect(result.failoverHistory).toHaveLength(1);
-    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+    expect(result.failoverHistory).toHaveLength(2);
+    expect(result.failoverHistory.map((entry) => entry.failureKind)).toEqual([
+      "provider_auth",
+      "provider_auth",
+    ]);
+    expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not fall back when the run was cancelled", async () => {

@@ -35,6 +35,7 @@ describe("parseCronJobMarkdown", () => {
         "maxRunMs: 2700000",
         "notify: true",
         "notifyConversationId: telegram:42",
+        "notifyFailureCooldownHours: 4",
         "---",
         "",
         "Summarize yesterday and post the digest.",
@@ -52,6 +53,7 @@ describe("parseCronJobMarkdown", () => {
       maxRunMs: 2_700_000,
       notify: true,
       notifyConversationId: "telegram:42",
+      notifyFailureCooldownHours: 4,
     });
   });
 

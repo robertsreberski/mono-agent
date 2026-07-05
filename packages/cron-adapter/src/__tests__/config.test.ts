@@ -73,6 +73,7 @@ describe("loadCronAdapterConfig", () => {
               maxRunMs: 2_700_000,
               notify: true,
               notifyConversationId: "telegram:42",
+              notifyFailureCooldownHours: 2,
             },
             { id: "weekly", enabled: false, expression: "0 9 * * 1", prompt: "Weekly recap.", conversationId: "cron-weekly" },
           ],
@@ -93,6 +94,7 @@ describe("loadCronAdapterConfig", () => {
         maxRunMs: 2_700_000,
         notify: true,
         notifyConversationId: "telegram:42",
+        notifyFailureCooldownHours: 2,
       },
       { id: "weekly", enabled: false, expression: "0 9 * * 1", timezone: "UTC", prompt: "Weekly recap.", conversationId: "cron-weekly" },
     ]);
@@ -144,6 +146,19 @@ describe("loadCronAdapterConfig", () => {
     });
   });
 
+  it("rejects a cron.jobs notifyFailureCooldownHours that is not a positive integer", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({ cron: { jobs: [{ id: "broken", expression: "0 9 * * *", prompt: "run", notifyFailureCooldownHours: 0 }] } })}\n`,
+      "utf8",
+    );
+
+    await expect(loadCronAdapterConfig({ env: {}, jsonPath: path })).rejects.toMatchObject({
+      code: "invalid_config",
+    });
+  });
+
   it("loads multiple cron jobs from JSON env", async () => {
     const config = await loadCronAdapterConfig({
       env: {
@@ -168,6 +183,7 @@ describe("loadCronAdapterConfig", () => {
         MONO_AGENT_CRON_PROMPT: "brief",
         MONO_AGENT_CRON_NOTIFY: "true",
         MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID: "telegram:42",
+        MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS: "3",
       },
     });
 
@@ -180,8 +196,20 @@ describe("loadCronAdapterConfig", () => {
         prompt: "brief",
         notify: true,
         notifyConversationId: "telegram:42",
+        notifyFailureCooldownHours: 3,
       },
     ]);
+  });
+
+  it("rejects an invalid notify failure cooldown from single-job env fields", async () => {
+    await expect(loadCronAdapterConfig({
+      env: {
+        MONO_AGENT_CRON_ENABLED: "true",
+        MONO_AGENT_CRON_EXPRESSION: "0 8 * * *",
+        MONO_AGENT_CRON_PROMPT: "brief",
+        MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS: "0",
+      },
+    })).rejects.toMatchObject({ code: "invalid_config" });
   });
 
   it("loads per-job model and effort overrides from the cron.jobs JSON array", async () => {

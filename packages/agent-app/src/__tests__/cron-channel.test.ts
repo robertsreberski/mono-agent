@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { CronAdapterConfig, CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
 
-import type { ChannelStartInput } from "../channels.js";
+import type { ChannelStartInput, CronChannelOverrides } from "../channels.js";
 import { createCronChannelDriver } from "../channels.js";
 
 const noopResponder: AgentResponder = {
@@ -33,9 +33,28 @@ function succeededResult(text?: string) {
   };
 }
 
-async function startCapturingCron(input: unknown): Promise<CronAdapterOptions> {
+function failedResult(
+  error = "No API key for provider: openai-codex",
+  failureKind = "provider_unavailable_exhausted",
+) {
+  return {
+    kind: "failed" as const,
+    jobId: "j",
+    scheduledAt: "2026-01-01T00:00:00.000Z",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    completedAt: "2026-01-01T00:00:01.000Z",
+    error,
+    failureKind,
+  };
+}
+
+async function startCapturingCron(
+  input: unknown,
+  overrides: CronChannelOverrides = {},
+): Promise<CronAdapterOptions> {
   let captured: CronAdapterOptions | undefined;
   const driver = createCronChannelDriver({
+    ...overrides,
     adapterFactory: (options): CronAdapterStartResult => {
       captured = options;
       return { jobs: options.jobs, activeJobCount: 0, stop: () => {} };
@@ -319,5 +338,121 @@ describe("cron channel driver — native notification delivery", () => {
 
     await vi.waitFor(() => expect(warn).toHaveBeenCalled());
     expect(warn.mock.calls.at(-1)?.[1]).toMatchObject({ jobId: "j", reason: "blocked" });
+  });
+
+  it("delivers one verbatim model-exhaustion failure notice and rate-limits repeats", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+          },
+        ],
+      },
+    });
+
+    const result = failedResult("No API key for provider: openai-codex\nretry failed");
+    await captured.onResult?.(result);
+    await captured.onResult?.(result);
+
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(1));
+    expect(notifyDestination).toHaveBeenCalledWith(
+      "telegram:42",
+      'Cron job "j" failed: all configured models failed. Latest error: No API key for provider: openai-codex retry failed',
+      { verbatim: true },
+    );
+    const deliveredText = (notifyDestination.mock.calls[0] as [string, string, unknown] | undefined)?.[1];
+    expect(deliveredText).not.toContain("\n");
+  });
+
+  it("uses a job-specific failure notice cooldown", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const captured = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+            notifyFailureCooldownHours: 1,
+          },
+        ],
+      },
+    }, { now: () => now });
+
+    await captured.onResult?.(failedResult());
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(1));
+
+    now = new Date("2026-01-01T00:59:00.000Z");
+    await captured.onResult?.(failedResult());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(notifyDestination).toHaveBeenCalledTimes(1);
+
+    now = new Date("2026-01-01T01:01:00.000Z");
+    await captured.onResult?.(failedResult());
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not send failure notices for non-exhausted failures or missing explicit destinations", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const listNotifyDestinations = vi.fn(async () => [
+      { conversationId: "telegram:42", channelId: "telegram" as const },
+    ]);
+    const nonExhausted = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+          },
+        ],
+      },
+    });
+    await nonExhausted.onResult?.(failedResult("provider unavailable", "provider_unavailable"));
+
+    const missingDestination = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      listNotifyDestinations,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+          },
+        ],
+      },
+    });
+    await missingDestination.onResult?.(failedResult());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(notifyDestination).not.toHaveBeenCalled();
   });
 });
