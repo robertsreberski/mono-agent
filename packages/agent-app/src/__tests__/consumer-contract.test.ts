@@ -98,6 +98,10 @@ describe("golden consumer config contracts", () => {
           "id": "channel:tui",
           "status": "ok",
         },
+        {
+          "id": "channel:live",
+          "status": "ok",
+        },
       ]
     `);
   });
@@ -176,6 +180,10 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "channel:tui",
+          "status": "ok",
+        },
+        {
+          "id": "channel:live",
           "status": "ok",
         },
       ]

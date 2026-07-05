@@ -32,6 +32,8 @@ export type RunSummaryStatus = "running" | "succeeded" | "failed" | "cancelled" 
 export type KnownArtifactFailureKind =
   | "provider_unavailable"
   | "provider_unavailable_exhausted"
+  | "provider_auth"
+  | "skipped_capability_mismatch"
   | "usage_limit"
   | "process_death"
   | "runtime_error"

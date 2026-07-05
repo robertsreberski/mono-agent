@@ -14,6 +14,8 @@ export const RUN_SUMMARY_STATUSES = [
 export const KNOWN_ARTIFACT_FAILURE_KINDS = [
   "provider_unavailable",
   "provider_unavailable_exhausted",
+  "provider_auth",
+  "skipped_capability_mismatch",
   "usage_limit",
   "process_death",
   "runtime_error",

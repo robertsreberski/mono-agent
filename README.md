@@ -85,10 +85,10 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
-| `observability` | `@mono-agent/observability` | `core` | JSONL run recorder, local artifact reader, and file-backed trace source registry. |
+| `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` | `core`, `observability` where needed | JSONL run recorder, local artifact reader, file-backed trace source registry, and OTLP trace export. |
 | `evaluation` | `@mono-agent/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
-| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
-| `operator-surface` | `@mono-agent/tui` | `core`, `observability` | Local terminal operator surface. Reads registered source runs but does not own runtime hosting or communication transport. |
+| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
+| `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
 | `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
 | `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
 
@@ -99,6 +99,7 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ agent-app ── all of the below; config-first host + mono-agent CLI
   ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
   ├─ cron-adapter ── agent-contracts, settings, cron-parser
+  ├─ live-adapter ── agent-contracts, settings, express
   ├─ openai-api-adapter ── agent-contracts, settings, express
   ├─ slack-adapter ── agent-contracts, settings, ws
   ├─ telegram-adapter ── agent-contracts, settings
@@ -115,6 +116,8 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   ├─ agent-orchestrator ── agent-contracts, MCP SDK
   ├─ agent-evals ── agent-contracts, agent-harness, observability, agentevals
   ├─ config ── settings, runtime-adapter, sandbox
+  ├─ observability-otel ── observability
+  ├─ session-web ── observability, settings
   ├─ tui ── config
   └─ core leaf packages as needed
 ```

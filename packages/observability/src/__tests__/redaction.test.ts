@@ -45,6 +45,24 @@ describe("redactJsonValue", () => {
     }
     expect(cursor).toBe("[max-depth]");
   });
+
+  it("truncates Error messages through the same string budget", () => {
+    const redacted = redactJsonValue(new Error("x".repeat(80)), 16) as { message?: unknown };
+
+    expect(redacted.message).toBe(`${"x".repeat(16)}…[truncated 64 bytes]`);
+  });
+
+  it("bounds broad arrays and objects", () => {
+    const redacted = redactJsonValue({
+      entries: Array.from({ length: 2_000 }, (_, index) => ({ index, value: "x".repeat(4) })),
+      object: Object.fromEntries(Array.from({ length: 2_000 }, (_, index) => [`k${index}`, index])),
+    }) as { entries: unknown[]; object: Record<string, unknown> };
+
+    expect(redacted.entries).toHaveLength(1_001);
+    expect(redacted.entries.at(-1)).toEqual("[max-items]");
+    expect(Object.keys(redacted.object)).toHaveLength(1_001);
+    expect(redacted.object.__truncated__).toBe("[max-keys]");
+  });
 });
 
 describe("truncateString", () => {

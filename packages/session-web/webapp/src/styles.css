@@ -1,0 +1,169 @@
+/* Base + atmosphere + the hover utilities inline styles can't express.
+   Colours mirror the Session Recorder mock exactly. */
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #0a0b0e;
+  /* Never let a stray fixed-width child produce a horizontal scrollbar / rubber-band
+     on mobile — the layout is fluid and should always fit the viewport width. */
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* Only vertical rubber-band; avoids horizontal overscroll revealing the page edge. */
+  overscroll-behavior-x: none;
+}
+
+#root {
+  /* 100vh over-reports on mobile (counts the retracting URL bar) → content is too tall
+     and jumps. 100dvh tracks the *visible* viewport. Keep 100vh as the older fallback. */
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+a {
+  color: inherit;
+}
+
+/* custom scrollbar (from the mock) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  border: 2px solid #0a0b0e;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+@keyframes rec-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes rec-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ---- hover utilities (inline styles can't do :hover) ----
+   Per-element accent colours are passed in via the --glow / --color
+   CSS custom properties, set inline on each element. */
+
+.rec-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--glow);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  box-shadow: 0 14px 34px -18px var(--glow);
+}
+
+.inst-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(111, 191, 142, 0.4);
+  box-shadow: 0 16px 40px -20px rgba(111, 191, 142, 0.5);
+}
+
+/* Activity bars own their centring transform in CSS so :hover can extend it
+   (inline transform would otherwise win by specificity). */
+.rec-bar {
+  transform: translateX(-50%);
+}
+.rec-bar-visual {
+  transition: transform 0.16s, box-shadow 0.16s;
+}
+.rec-bar:hover .rec-bar-visual {
+  transform: translateX(-50%) scaleY(1.08);
+  box-shadow: 0 0 14px var(--color);
+}
+
+.rec-btn:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.back-btn:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
+}
+
+.call-head:hover {
+  background: rgba(79, 182, 166, 0.05);
+}
+
+.link-btn:hover {
+  color: #c9cbd1 !important;
+}
+
+.think-btn:hover {
+  color: #c9a8ed !important;
+}
+
+.rec-chip {
+  transition: all 0.15s;
+}
+.rec-chip:hover {
+  filter: brightness(1.13);
+}
+
+/* ---- keyboard focus ring (focus-visible only, so mouse clicks stay quiet) ----
+   Div-based targets that are now role="button" tabIndex=0 have no UA ring, so
+   give every interactive surface a shared, visible outline for keyboard users. */
+:focus-visible {
+  outline: 2px solid #6fa8dc;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.rec-card:focus-visible,
+.inst-card:focus-visible,
+.rec-bar:focus-visible,
+.rec-chip:focus-visible,
+.rec-btn:focus-visible,
+.menu-item:focus-visible,
+.call-head:focus-visible,
+.back-btn:focus-visible,
+.think-btn:focus-visible,
+.link-btn:focus-visible {
+  outline: 2px solid #6fa8dc;
+  outline-offset: 2px;
+}
+
+/* respect reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

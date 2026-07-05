@@ -24,6 +24,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--follow` / `-f`, `--lines <n>` |
+| `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--config <path>` |
 | `install-skill` | Copy the bundled `mono-agent-composer` skill into the agent skill folders. | `--target claude\|codex\|both`, `--force` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
@@ -267,6 +268,26 @@ mono-agent tui --conversation ops       # chat under a stable conversation id
 | `--config <path>` | Resolve a custom `traceability.registryDir` from this config (for agents registered outside the global registry). |
 
 The live-chat connection uses the agent's [`tui` channel](/channels/tui/) (on by default); an agent with the channel disabled still gets replay and config views.
+
+## `web`
+
+Serves the read-only [Session Recorder web PWA](/observability/) from any directory. It discovers running agents through the same trace-source registries as `mono-agent tui`, reads their recorded run artifacts, connects to each agent's default-on `live` event relay when available, and streams session updates to the browser.
+
+```bash
+mono-agent web
+mono-agent web --port 4599 --no-open
+mono-agent web --host 0.0.0.0 --allow-non-loopback
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--host <addr>` | Bind address for the PWA backend (default `127.0.0.1`). |
+| `--port <n>` | Bind port (default `0`, an ephemeral port printed on start). |
+| `--no-open` | Do not launch the browser after the backend starts. |
+| `--allow-non-loopback` | Permit a non-loopback bind. The command generates a bearer token and prints/opens a tokenized URL; `/api/*` and `/api/stream` require it. |
+| `--config <path>` | Resolve a custom `traceability.registryDir` from this config, in addition to the global registry. |
+
+Loopback mode prints a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
 
 ## `install-skill`
 

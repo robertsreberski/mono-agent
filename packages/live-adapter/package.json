@@ -1,0 +1,36 @@
+{
+  "name": "@mono-agent/live-adapter",
+  "version": "0.4.0",
+  "description": "Loopback SSE adapter that relays an agent's in-process live run-event bus to read-only operator surfaces (the mono-agent web PWA) at sub-run granularity.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@mono-agent/agent-contracts": "workspace:0.4.0",
+    "@mono-agent/settings": "workspace:0.4.0",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

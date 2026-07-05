@@ -159,7 +159,7 @@ The interaction bridge starts automatically when `ask_user` is in `tools.allowed
 
 ## Channels
 
-Every channel is opt-in via its `enabled` flag (default off) and every field has a `MONO_AGENT_<CHANNEL>_*` env var. The tables below cover the commonly overridden keys; consult [blueprint.md](/config/blueprint/) for the complete per-channel shape.
+Most channels are opt-in via their `enabled` flag (default off). The operator surfaces `tui` and `live` default on so `mono-agent tui` and `mono-agent web` can discover running agents without per-agent edits. Every field has a `MONO_AGENT_<CHANNEL>_*` env var. The tables below cover the commonly overridden keys; consult [blueprint.md](/config/blueprint/) for the complete per-channel shape.
 
 ### Telegram
 
@@ -227,9 +227,23 @@ All Slack resilience vars are optional integers (`0`–`3600000`); omit to use t
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_TUI_ENABLED` | `tui.enabled` | **Default `true`** — the one channel on by default (loopback operator surface for `mono-agent tui`). |
+| `MONO_AGENT_TUI_ENABLED` | `tui.enabled` | **Default `true`** — default-on loopback operator surface for `mono-agent tui`. |
+| `MONO_AGENT_TUI_HOST` | `tui.host` | Default `127.0.0.1`. |
 | `MONO_AGENT_TUI_PORT` | `tui.port` | Default `0` (ephemeral; published to the trace-source registry). |
+| `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` | Default `/tui`. |
+| `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` | Required to bind a non-loopback host. |
 | `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. See [../channels/tui.md](/channels/tui/). |
+
+### Live event relay
+
+| Env var | JSON key it overrides | Notes |
+| --- | --- | --- |
+| `MONO_AGENT_LIVE_ENABLED` | `live.enabled` | **Default `true`** — default-on read-only SSE relay for `mono-agent web`. |
+| `MONO_AGENT_LIVE_HOST` | `live.host` | Default `127.0.0.1`. |
+| `MONO_AGENT_LIVE_PORT` | `live.port` | Default `0` (ephemeral; published to the trace-source registry). |
+| `MONO_AGENT_LIVE_BASE_PATH` | `live.basePath` | Default `/live`. |
+| `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` | Required to bind a non-loopback host. |
+| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` | Optional bearer token for `/v1/info` and `/v1/events`. `mono-agent web` reads it from the agent config and only sends it to trusted loopback live URLs. |
 
 ### A2A
 

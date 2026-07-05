@@ -2,7 +2,7 @@
 node_modules/
 dist/
 coverage/
-.workflow/ultracode/
+.workflow/
 .ultrawork/
 .env
 .env.*
