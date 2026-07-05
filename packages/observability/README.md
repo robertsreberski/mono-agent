@@ -27,6 +27,13 @@ import {
 } from "@mono-agent/observability";
 ```
 
+The Phoenix OTLP exporter is available from the `./otel` subpath so ordinary
+observability imports do not load OpenTelemetry or network transport code:
+
+```ts
+import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
+```
+
 ## Public API
 
 - `createJsonlRunRecorder`, `JsonlRunRecorder`
@@ -39,6 +46,23 @@ import {
 - `buildRootSpanAttributes`, `buildEventSpanAttributes`, `countRuntimeWarnings`, `spanKindHint` and the exporter-config types (`PhoenixExporterConfig`, `ObservabilityExporterConfig`)
 - `ObservabilityError`, `ObservabilityReadError`
 - Recorder, summary, list, detail, event, trace source, and trace run types
+
+## OTLP / Phoenix Subpath
+
+`@mono-agent/observability/otel` exposes the optional network exporter:
+
+- `createPhoenixRunExporter(config, deps?)`
+- `DEFAULT_PHOENIX_ENDPOINT`
+- `buildRunReadableSpans(input)`
+- `serializeTraceSpans(spans)`
+- `createDeterministicIdFactory(runId)` / `idToHex(bytes)`
+- `postOtlpProtobuf(input)`
+
+The subpath maps a mono-agent run and events into OpenInference-flavored OTLP
+spans, serializes them with `@opentelemetry/otlp-transformer`, and posts binary
+protobuf (`application/x-protobuf`) to a Phoenix OTLP HTTP traces endpoint.
+Hosts compose it through `createCompositeRunRecorder`; export stays additive,
+best-effort, and isolated from the JSONL recorder.
 
 ## Timeline Display
 
@@ -56,15 +80,15 @@ The package defines the `RunExporter` contract (`start`/`onEvent`/`finish`/`fail
 
 The `./run-export` subpath exposes the pure, node-free event-to-span attribute mapping (`buildRootSpanAttributes`, `buildEventSpanAttributes`, `countRuntimeWarnings`, `spanKindHint`) plus the exporter-config types. It imports only node-free helpers (guards, redaction, event-classify, content) so it is safe for browser graphs, exactly like `./event-timeline`.
 
-Privacy default is metadata-only: when `includeSensitiveData` is `false`, raw payloads are omitted and only summaries/labels are mapped; when `true`, `redactJsonValue` still runs over the payload before it leaves the process. The actual network transport (OTLP/HTTP+JSON, the Phoenix preset) lives in the separate `@mono-agent/observability-otel` package, not here.
+Privacy default is metadata-only: when `includeSensitiveData` is `false`, raw payloads are omitted and only summaries/labels are mapped; when `true`, `redactJsonValue` still runs over the payload before it leaves the process. The actual network transport (OTLP/HTTP protobuf, the Phoenix preset) lives behind the `@mono-agent/observability/otel` subpath.
 
 ## Dependency Boundary
 
-This package writes and reads local artifact and registry files only. It has no runtime, adapter, UI, database, queue, or network dependency. The exporter contract and pure span mapping live here, but the OTLP network transport is out-of-package (in `@mono-agent/observability-otel`), keeping this package free of any network dependency.
+The root import writes and reads local artifact and registry files only. It has no runtime, adapter, UI, database, queue, or network dependency. The exporter contract and pure span mapping live at the root / `./run-export`; the OTLP network transport is subpath-only in `./otel`, keeping normal observability imports free of OpenTelemetry runtime loading.
 
 ## What This Package Does Not Own
 
-It does not provide a hosted trace backend, metrics service, durable database, UI, LangSmith export, OpenTelemetry exporter, or model-specific telemetry collector.
+It does not provide a hosted trace backend, metrics service, durable database, UI, LangSmith export, or model-specific telemetry collector.
 
 ## Verification
 

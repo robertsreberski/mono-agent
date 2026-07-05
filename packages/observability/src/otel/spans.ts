@@ -5,19 +5,20 @@ import {
   countRuntimeWarnings,
   spanKindHint,
   spanStatusFor,
-} from "@mono-agent/observability/run-export";
-import type { SpanAttributes } from "@mono-agent/observability/run-export";
+} from "../run-export-mapping.js";
+import type { SpanAttributes } from "../run-export-mapping.js";
 import type {
   RecordedRunEventCategory,
   RunExportContext,
   RunSummary,
   RuntimeEventLike,
-} from "@mono-agent/observability";
+} from "../types.js";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 
 import { idToHex } from "./ids.js";
 import type { DeterministicIdFactory } from "./ids.js";
 
+// Keep the original instrumentation scope stable for existing Phoenix dashboards.
 const SCOPE_NAME = "@mono-agent/observability-otel";
 
 // JS SDK SpanKind values (NOT proto values): INTERNAL=0, CLIENT=2. The protobuf

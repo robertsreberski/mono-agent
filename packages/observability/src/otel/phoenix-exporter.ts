@@ -5,7 +5,7 @@ import type {
   RunExporter,
   RunSummary,
   RuntimeEventLike,
-} from "@mono-agent/observability";
+} from "../types.js";
 
 import { createDeterministicIdFactory } from "./ids.js";
 import type { DeterministicIdFactory } from "./ids.js";

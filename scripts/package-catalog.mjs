@@ -143,16 +143,8 @@ export const packageCatalog = [
     dir: "observability",
     name: "@mono-agent/observability",
     category: "observability",
-    responsibility: "Records and reads local JSONL run artifacts, summaries, and trace source manifests.",
+    responsibility: "Records and reads local JSONL run artifacts, summaries, trace source manifests, and exposes the OTLP/Phoenix exporter through the ./otel subpath.",
     allowedDependencyCategories: ["core"],
-    publishable: true,
-  },
-  {
-    dir: "observability-otel",
-    name: "@mono-agent/observability-otel",
-    category: "observability",
-    responsibility: "OTLP HTTP protobuf trace exporter (Phoenix preset) that maps mono-agent run lifecycles to OTLP spans.",
-    allowedDependencyCategories: ["core", "observability"],
     publishable: true,
   },
   {

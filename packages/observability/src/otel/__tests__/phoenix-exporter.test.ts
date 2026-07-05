@@ -4,7 +4,7 @@ import type {
   RunExportContext,
   RunExportEventContext,
   RunSummary,
-} from "@mono-agent/observability";
+} from "../../types.js";
 
 import { createPhoenixRunExporter } from "../phoenix-exporter.js";
 

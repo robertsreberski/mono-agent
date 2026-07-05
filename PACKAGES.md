@@ -46,7 +46,6 @@ flowchart TB
 
   subgraph ObservabilityLayer["observability"]
     Observability["@mono-agent/observability"]
-    ObservabilityOtel["@mono-agent/observability-otel"]
   end
 
   subgraph Core["core"]
@@ -77,13 +76,11 @@ flowchart TB
   AgentApp --> Host
   AgentApp --> Config
   AgentApp --> Observability
-  AgentApp --> ObservabilityOtel
 
   Tui --> Contracts
   Tui --> Config
   Tui --> Observability
   SessionWeb --> Observability
-  ObservabilityOtel --> Observability
 
   A2A --> Contracts
   Cron --> Contracts
@@ -133,7 +130,7 @@ flowchart TB
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store`, `@mono-agent/memory-supermemory` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
-| `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` |
+| `observability` | `@mono-agent/observability` |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |

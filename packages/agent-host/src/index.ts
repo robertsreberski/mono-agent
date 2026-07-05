@@ -24,7 +24,7 @@ import type {
   RunExporter,
   RunRecorder,
 } from "@mono-agent/observability";
-import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
+import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import { createBroadcastRunRecorder } from "./broadcast-recorder.js";
 import {
   assertExecutionModeCompatible,

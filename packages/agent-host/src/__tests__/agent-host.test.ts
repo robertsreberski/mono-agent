@@ -15,7 +15,7 @@ import type {
   RuntimeEventLike,
 } from "@mono-agent/observability";
 import type { RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
-import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
+import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunExportContext, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
+import type { RunExportContext, RunSummary, RuntimeEventLike } from "../../types.js";
 
 import { createDeterministicIdFactory } from "../ids.js";
 import { serializeTraceSpans } from "../serialize.js";
