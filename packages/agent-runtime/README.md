@@ -319,8 +319,9 @@ console.log(result.failoverHistory);
 Behaviour:
 
 - Successful run on entry N → returns the result with `failoverHistory` set to attempts 0..N-1.
-- Retryable failure → emits `provider_failover_started`, builds a transcript snapshot, and retries on the next entry.
-- Non-retryable failure (auth, billing, invalid request) → returns immediately with `failoverHistory` containing the one attempt.
+- Retryable provider failure → emits `provider_failover_started`, builds a transcript snapshot, and retries on the next entry.
+- Provider auth failure → retries the next chain entry and preserves `failureKind: "provider_auth"` in `failoverHistory` for the failed attempt.
+- Malformed request/config/billing-type non-retryable failure → returns immediately with `failoverHistory` containing the one attempt.
 - Cancellation → returns immediately.
 - Chain exhausted → `failureKind: "provider_unavailable_exhausted"`, `failoverHistory` lists every attempt.
 

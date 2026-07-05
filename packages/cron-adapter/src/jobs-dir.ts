@@ -90,6 +90,12 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
   const maxRunMs = readOptionalPositiveInteger(meta.maxRunMs, `${fileName} frontmatter \`maxRunMs\``, fileName);
   const notify = readBoolean(meta.notify, `${fileName} frontmatter \`notify\``, false, invalidConfig);
   const notifyConversationId = normalizeOptionalString(meta.notifyConversationId);
+  const notifyFailureCooldownHours = readOptionalPositiveInteger(
+    meta.notifyFailureCooldownHours,
+    `${fileName} frontmatter \`notifyFailureCooldownHours\``,
+    fileName,
+    "hours",
+  );
   const model = normalizeOptionalString(meta.model);
   const effort = normalizeOptionalString(meta.effort);
 
@@ -103,6 +109,7 @@ export function parseCronJobMarkdown(fileName: string, content: string): CronJob
     ...(maxRunMs === undefined ? {} : { maxRunMs }),
     ...(notify ? { notify } : {}),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(notifyFailureCooldownHours === undefined ? {} : { notifyFailureCooldownHours }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
   };
@@ -151,17 +158,22 @@ function stripMarkdownExtension(fileName: string): string {
   return fileName.replace(/\.md$/iu, "");
 }
 
-function readOptionalPositiveInteger(value: string | undefined, field: string, fileName: string): number | undefined {
+function readOptionalPositiveInteger(
+  value: string | undefined,
+  field: string,
+  fileName: string,
+  unit = "milliseconds",
+): number | undefined {
   const normalized = normalizeOptionalString(value);
   if (normalized === undefined) {
     return undefined;
   }
   if (!/^\d+$/u.test(normalized)) {
-    throw invalidConfig(`${field} must be a positive integer number of milliseconds.`, { file: fileName, value });
+    throw invalidConfig(`${field} must be a positive integer number of ${unit}.`, { file: fileName, value });
   }
   const parsed = Number(normalized);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw invalidConfig(`${field} must be a positive integer number of milliseconds.`, { file: fileName, value });
+    throw invalidConfig(`${field} must be a positive integer number of ${unit}.`, { file: fileName, value });
   }
   return parsed;
 }

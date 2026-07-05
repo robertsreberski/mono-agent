@@ -115,6 +115,47 @@ describe("Cron adapter", () => {
     }
   });
 
+  it("preserves a harness-like failure kind on failed results", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const failure = new Error("No API key for provider: openai-codex") as Error & {
+      failure: { kind: string };
+    };
+    failure.failure = { kind: "provider_unavailable_exhausted" };
+    const responder: AgentResponder = {
+      async respond() {
+        throw failure;
+      },
+    };
+    const results: unknown[] = [];
+
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "morning", expression: "* * * * *", timezone: "UTC", prompt: "brief" }],
+      now: () => new Date(Date.now()),
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect
+        .poll(() => results)
+        .toContainEqual(
+          expect.objectContaining({
+            kind: "failed",
+            jobId: "morning",
+            error: "No API key for provider: openai-codex",
+            failureKind: "provider_unavailable_exhausted",
+          }),
+        );
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("lets a job-specific maxRunMs override the adapter watchdog limit", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

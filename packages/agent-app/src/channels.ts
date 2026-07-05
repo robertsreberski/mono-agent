@@ -937,6 +937,8 @@ export function createLiveChannelDriver(
 
 export interface CronChannelOverrides {
   readonly adapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
+  /** Test seam for cooldown decisions; production uses the system clock. */
+  readonly now?: () => Date;
   /**
    * Watchdog: max wall-clock a single cron run may take before it is aborted and its slot
    * reclaimed. Defaults to {@link DEFAULT_CRON_MAX_RUN_MS}. Without this, a wedged responder
@@ -951,6 +953,8 @@ export interface CronChannelOverrides {
  * hung run is reclaimed rather than blocking the job indefinitely.
  */
 const DEFAULT_CRON_MAX_RUN_MS = 20 * 60 * 1000;
+const DEFAULT_CRON_FAILURE_NOTICE_COOLDOWN_HOURS = 6;
+const MAX_CRON_FAILURE_NOTICE_ERROR_CHARS = 180;
 
 /**
  * Whether a notify-enabled turn's final text should suppress delivery: empty /
@@ -972,6 +976,7 @@ function isDeliverableConversation(conversationId: string): boolean {
 export function createCronChannelDriver(
   overrides: CronChannelOverrides = {},
 ): ChannelDriver<CronAdapterConfig> {
+  const failureNoticeLastSentMsByJobId = new Map<string, number>();
   return {
     id: "cron",
     label: "Cron",
@@ -1039,6 +1044,14 @@ export function createCronChannelDriver(
         onResult: (result) => {
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
           input.logger?.[level]?.("Cron job finished.", { result });
+          void deliverCronModelExhaustionFailureNotice({
+            job: jobById.get(result.jobId),
+            result,
+            cooldowns: failureNoticeLastSentMsByJobId,
+            now: overrides.now ?? (() => new Date()),
+            ...(input.notifyDestination === undefined ? {} : { notifyDestination: input.notifyDestination }),
+            ...(input.logger === undefined ? {} : { logger: input.logger }),
+          });
           void deliverNativeCronNotification({
             job: jobById.get(result.jobId),
             result,
@@ -1057,6 +1070,92 @@ export function createCronChannelDriver(
       };
     },
   };
+}
+
+async function deliverCronModelExhaustionFailureNotice(input: {
+  readonly job: CronJobConfig | undefined;
+  readonly result: CronJobResult;
+  readonly cooldowns: Map<string, number>;
+  readonly now: () => Date;
+  readonly notifyDestination?: (
+    conversationId: string,
+    text: string,
+    options?: { readonly verbatim?: boolean },
+  ) => Promise<NotifyDeliveryResult>;
+  readonly logger?: MonoAgentAppLogger;
+}): Promise<void> {
+  const job = input.job;
+  if (
+    job?.notify !== true ||
+    input.result.kind !== "failed" ||
+    input.result.failureKind !== "provider_unavailable_exhausted"
+  ) {
+    return;
+  }
+  if (job.notifyConversationId === undefined) {
+    input.logger?.warn?.("Cron failure notice skipped: notifyConversationId is required.", { jobId: job.id });
+    return;
+  }
+  if (input.notifyDestination === undefined) {
+    input.logger?.warn?.("Cron failure notice skipped: no delivery hook is available.", { jobId: job.id });
+    return;
+  }
+
+  const nowMs = input.now().getTime();
+  const cooldownHours = job.notifyFailureCooldownHours ?? DEFAULT_CRON_FAILURE_NOTICE_COOLDOWN_HOURS;
+  const cooldownMs = cooldownHours * 60 * 60 * 1000;
+  const lastSentMs = input.cooldowns.get(job.id);
+  if (lastSentMs !== undefined && nowMs - lastSentMs < cooldownMs) {
+    input.logger?.info?.("Cron failure notice skipped: cooldown is active.", {
+      jobId: job.id,
+      cooldownHours,
+    });
+    return;
+  }
+
+  const destination = job.notifyConversationId;
+  const text = buildCronModelExhaustionFailureNotice(job, input.result);
+  input.cooldowns.set(job.id, nowMs);
+  try {
+    const delivery = await input.notifyDestination(destination, text, { verbatim: true });
+    if (!delivery.delivered) {
+      input.logger?.warn?.("Cron failure notice was not delivered.", {
+        jobId: job.id,
+        conversationId: destination,
+        ...(delivery.reason === undefined ? {} : { reason: delivery.reason }),
+      });
+      return;
+    }
+    input.logger?.info?.("Cron failure notice delivered.", { jobId: job.id, conversationId: destination });
+  } catch (error) {
+    input.logger?.warn?.("Cron failure notice failed.", {
+      jobId: job.id,
+      conversationId: destination,
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function buildCronModelExhaustionFailureNotice(
+  job: CronJobConfig,
+  result: { readonly error: string },
+): string {
+  const jobId = oneLine(job.id);
+  const latestError = truncateOneLine(result.error, MAX_CRON_FAILURE_NOTICE_ERROR_CHARS);
+  const prefix = `Cron job "${jobId}" failed: all configured models failed.`;
+  return latestError.length === 0 ? prefix : `${prefix} Latest error: ${latestError}`;
+}
+
+function truncateOneLine(value: string, maxChars: number): string {
+  const collapsed = oneLine(value);
+  if (collapsed.length <= maxChars) {
+    return collapsed;
+  }
+  return `${collapsed.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function oneLine(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
 }
 
 async function deliverNativeCronNotification(input: {

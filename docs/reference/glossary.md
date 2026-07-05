@@ -50,7 +50,7 @@ The default-deny posture: an empty tool allowlist means **no** tools are exposed
 
 ## Fallback router
 
-The retry layer that, on a retryable provider failure, walks an ordered list of backup models and resumes from the transcript tail. Configured via `runtime.fallbackModels` (`MONO_AGENT_FALLBACK_MODELS`).
+The retry layer that, on a fallback-eligible provider failure (including provider authentication failures), walks an ordered list of backup models and resumes from the transcript tail. Configured via `runtime.fallbackModels` (`MONO_AGENT_FALLBACK_MODELS`).
 
 ```json
 {

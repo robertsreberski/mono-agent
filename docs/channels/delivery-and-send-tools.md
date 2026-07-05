@@ -112,6 +112,8 @@ For scheduled cron jobs and webhook endpoints, set `notify: true` (optionally `n
 
 This is AI-native: the operator just writes the cron/webhook prompt, and its final answer reaches the user. On a notify turn the harness **auto-injects guidance** telling the agent that its final reply is delivered verbatim and how to stay silent. The operator and the agent never configure or call an internal notify tool — there is no agent-facing notify tool.
 
+Cron has one failure-side notification path as well: if a `notify: true` cron job fails because **all configured models failed** (`provider_unavailable_exhausted`), the app can send a short one-line error notice to the job's explicit `notifyConversationId`. This notice is verbatim, never starts another model turn, never infers a destination, and is rate-limited per job by `notifyFailureCooldownHours` (default `6` hours).
+
 `conversationId` / `notifyConversationId` is a channel-scoped id such as `telegram:42`, `slack:C123`, or `slack:C123:1718.99` (a Slack thread).
 
 ### Destination resolution
@@ -119,6 +121,7 @@ This is AI-native: the operator just writes the cron/webhook prompt, and its fin
 - If `notifyConversationId` is set, it is the destination.
 - Otherwise the app infers it **only when exactly one** notify-capable (Telegram/Slack) candidate exists — drawn from seen conversations plus the adapter allowlist.
 - With **0 or 2+** candidates the app skips delivery with a warning rather than guessing.
+- Cron model-exhaustion failure notices are stricter: they require explicit `notifyConversationId` and never use inference.
 
 The owning channel's allowlist is the destination boundary: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAllChats` / `allowAllChannels`) is refused. WhatsApp is not notify-capable. Delivery is best-effort — a skipped or failed notification does not change the cron job result or the webhook's HTTP response / async stored status.
 
