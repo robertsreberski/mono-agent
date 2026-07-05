@@ -42,7 +42,6 @@ export default defineConfig({
         { label: 'Tools, MCP & Sandbox', autogenerate: { directory: 'tools' } },
         { label: 'Observability & CLI', autogenerate: { directory: 'observability' } },
         { label: 'Programmatic', autogenerate: { directory: 'programmatic' } },
-        { label: 'Evals', autogenerate: { directory: 'evals' } },
         { label: 'Playbooks', autogenerate: { directory: 'playbooks' } },
         { label: 'Reference', autogenerate: { directory: 'reference' } },
       ],

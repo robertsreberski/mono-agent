@@ -12,8 +12,8 @@ import {
   readSettingsJson,
   readString,
   redactedSecret,
-} from "@mono-agent/settings";
-import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
+import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/agent-contracts";
 
 import type { A2AAgentSkillOptions } from "./card.js";
 import { A2AProviderError } from "./errors.js";

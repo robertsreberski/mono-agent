@@ -1,4 +1,4 @@
-import type { MemoryBlock } from "@mono-agent/memory-store";
+import type { MemoryBlock } from "@mono-agent/agent-contracts";
 
 import type { SupermemoryHit } from "./client.js";
 

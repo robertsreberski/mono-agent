@@ -19,7 +19,7 @@ import {
   listen,
   normalizeOptionalString,
   readAuthorizationBearer,
-} from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { DEFAULT_BASE_PATH, DEFAULT_HOST, DEFAULT_PORT, MAX_FRAME_BYTES, TUI_WIRE_SCHEMA } from "./constants.js";

@@ -8,8 +8,8 @@ import {
   readInteger,
   readJsonSection,
   readSettingsJson,
-} from "@mono-agent/settings";
-import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
+import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/agent-contracts";
 
 import { loadCronJobsFromDirectory } from "./jobs-dir.js";
 import { CronAdapterError, type CronJob } from "./scheduler.js";

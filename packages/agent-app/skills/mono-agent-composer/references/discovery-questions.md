@@ -90,7 +90,7 @@ Should the agent remember anything between conversations?
    reflection/migration; requires embeddings AND a chat model
 ```
 
-All tiers share the same `@mono-agent/memory-bujo` substrate. Fills: `memory.mode`
+All tiers share the same `@mono-agent/memory/bujo` substrate. Fills: `memory.mode`
 (`lite`/`journal`/`bujo`), `memory.path`, `memory.writeMode`
 (`disabled`/`append-host-summary`/`capture`), and tier-specific blocks below.
 

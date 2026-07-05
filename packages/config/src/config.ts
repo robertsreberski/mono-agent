@@ -25,8 +25,8 @@ import {
   readCsv,
   readInteger,
   redactedSecret,
-} from "@mono-agent/settings";
-import type { ConfigErrorFactory } from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
+import type { ConfigErrorFactory } from "@mono-agent/agent-contracts";
 
 import { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
 import type { EffortLevel, MemoryBackend, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
@@ -59,7 +59,7 @@ export class MonoAgentConfigError extends Error {
 
 /**
  * Error factory bound to the `invalid_env` code, handed to the shared
- * `@mono-agent/settings` coercers so their fail-closed throws keep config's
+ * `@mono-agent/agent-contracts` coercers so their fail-closed throws keep config's
  * typed error shape (code + env/reason details) verbatim.
  */
 const invalidEnv: ConfigErrorFactory = (message, details) =>

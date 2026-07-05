@@ -12,7 +12,7 @@ import { dirname, resolve } from "node:path";
 
 import { listTraceSources, mergeTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
-import { isLoopbackHost } from "@mono-agent/settings";
+import { isLoopbackHost } from "@mono-agent/agent-contracts";
 
 import type { WebInstance } from "./session-model.js";
 

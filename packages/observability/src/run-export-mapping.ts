@@ -16,8 +16,8 @@ import type {
  * surface. Imports ONLY node-free modules (event-classify/guards/redaction/
  * types) so the built `dist/run-export-mapping.js` stays browser-safe and can be
  * imported through the './run-export' subpath without dragging node:fs/node:path
- * into a browser graph. The concrete network transport lives in
- * @mono-agent/observability-otel; this module only shapes attribute bags.
+ * into a browser graph. The concrete network transport lives behind the
+ * './otel' subpath; this module only shapes attribute bags.
  */
 
 export type SpanAttributeValue = string | number | boolean;

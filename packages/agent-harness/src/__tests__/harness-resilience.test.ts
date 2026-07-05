@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { MemoryStore } from "@mono-agent/agent-contracts";
 import type { RuntimeResult } from "@mono-agent/runtime-adapter";
-import type { MemoryStore } from "@mono-agent/memory-store";
 import type { SkillsCache } from "@mono-agent/skills";
 
 import { createAgentHarness } from "../index.js";

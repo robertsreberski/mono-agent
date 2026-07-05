@@ -8,7 +8,7 @@ sidebar:
 
 This page covers wiring one agent (the *orchestrator*) so its model can delegate to other agents (*collaborators*) at its own discretion, using `createCollaboratorToolRuntimeExtension` from `@mono-agent/agent-orchestrator`. Delegation is model-directed: the extension publishes a single loopback MCP tool, `ask_collaborator`, and the orchestrator model decides whether, when, and how often to call it before producing the final answer.
 
-This is a **code**-only capability — there is no config key for it. See the feature row `orchestrator.ask-collaborator` in [../reference/feature-matrix.md](/reference/feature-matrix/). For the end-to-end recipe see [../playbooks/multi-agent-orchestration.md](/playbooks/multi-agent-orchestration/), and for the runnable source see `demos/multi-agent` in the repo.
+This is a **code**-only capability — there is no config key for it. See the feature row `orchestrator.ask-collaborator` in [../reference/feature-matrix.md](/reference/feature-matrix/) and the end-to-end recipe in [../playbooks/multi-agent-orchestration.md](/playbooks/multi-agent-orchestration/).
 
 ## How it works
 
@@ -101,9 +101,9 @@ const orchestrator = createConfiguredAgentResponder({
 :::
 Do not reuse one extension across requests. A new server is created per turn and `cleanup` closes it; returning `cleanup` from `runtimeOptionsForRequest` lets the host close it deterministically even if the turn errors or is aborted.
 
-## Demo topology
+## Example topology
 
-`demos/multi-agent` runs three roles, each built from `@mono-agent/agent-host`, where the orchestrator reaches the other two over **loopback A2A**:
+A typical local setup runs three roles, each built from `@mono-agent/agent-host`, where the orchestrator reaches the other two over **loopback A2A**:
 
 | Role | Transport | Tool policy | Trace name |
 | --- | --- | --- | --- |
@@ -113,7 +113,7 @@ Do not reuse one extension across requests. A new server is created per turn and
 
 The orchestrator's `ask_collaborator` tool fronts two `createA2AConsumerResponder` collaborators (`researcher`, `worker`). The model may ask one, both, or either repeatedly before answering; a successful turn that uses both records three JSONL runs (and Phoenix spans when an OTLP exporter is configured — see [../observability/phoenix-and-backfill.md](/observability/phoenix-and-backfill/)). Distinct per-role tool policies ([../tools/policy.md](/tools/policy/)) keep the researcher and worker scoped to their jobs.
 
-The demo's generated orchestrator config uses a 300s collaborator timeout because local Ollama collaborators (default model `gemma4:31b`) can take longer than the 60s A2A consumer default when running web or workspace tools before synthesis.
+Local Ollama collaborators can take longer than the 60s A2A consumer default when running web or workspace tools before synthesis, so host code can set a longer per-collaborator timeout for those responders.
 
 ## Related
 

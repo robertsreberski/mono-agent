@@ -55,7 +55,7 @@ detail view opens.
 ## Dependency Boundary
 
 Depends only on `core` + `observability`: `@mono-agent/agent-contracts`,
-`@mono-agent/settings`, `@mono-agent/observability`. Plus `express`. It reaches
+`@mono-agent/observability`. Plus `express`. It reaches
 `live-adapter` endpoints **over HTTP only** — it does not (and, per the
 architecture rule, may not) depend on that `communication` package. The browser
 SPA lives in the isolated `webapp/` sub-project (its own lockfile), built to

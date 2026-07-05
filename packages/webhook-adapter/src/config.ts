@@ -10,8 +10,8 @@ import {
   readJsonSection,
   readSettingsJson,
   readString,
-} from "@mono-agent/settings";
-import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
+import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/agent-contracts";
 
 import { loadWebhookEndpointsFromDirectory } from "./endpoints-dir.js";
 import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "./server.js";

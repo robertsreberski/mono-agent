@@ -89,8 +89,8 @@ Preferred package shape:
 - Add exporter contracts and pure mapping helpers to `@mono-agent/observability`.
 - Keep the actual network exporter in the same package only if dependencies stay
   small and Node-only imports do not leak into browser-safe subpath exports.
-- If OTLP dependencies materially expand the package boundary, add a flat
-  workspace package named `@mono-agent/observability-otel`.
+- Keep OTLP dependencies behind the explicit `@mono-agent/observability/otel`
+  subpath so Node-only exporter code does not leak into browser-safe exports.
 
 The public API should make the boundary explicit:
 
@@ -264,8 +264,8 @@ Update:
 
 These are not product unknowns; they are checks to resolve while planning:
 
-- Whether OTLP dependencies should live inside `@mono-agent/observability` or a
-  new `@mono-agent/observability-otel` package.
+- Whether OTLP dependencies can stay isolated behind the
+  `@mono-agent/observability/otel` subpath.
 - Whether the existing config loader style supports structured env overrides
   cleanly enough for exporter arrays.
 - Whether first export should stream events or batch on run finish.

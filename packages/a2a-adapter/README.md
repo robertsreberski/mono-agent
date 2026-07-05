@@ -118,7 +118,7 @@ Important env names:
 
 ## Dependency Boundary
 
-This package depends only on core agent contracts/settings plus the pinned A2A SDK and Express transport surface. It does not depend on the agent harness, config package, operator surfaces, or other communication adapters.
+This package depends only on `@mono-agent/agent-contracts` plus the pinned A2A SDK and Express transport surface. It does not depend on the agent harness, config package, operator surfaces, or other communication adapters.
 
 ## What This Package Does Not Own
 

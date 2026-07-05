@@ -58,8 +58,7 @@ false }` to opt out.
 ## Dependency Boundary
 
 Depends only on `core` packages: `@mono-agent/agent-contracts` (frame/bus types,
-via HTTP-neutral opaque payloads) and `@mono-agent/settings` (safe bind/listen/
-close/bearer). Plus `express`. No dependency on `@mono-agent/observability` — the
+HTTP-neutral opaque payloads, safe bind/listen/close/bearer). Plus `express`. No dependency on `@mono-agent/observability` — the
 frame payloads are opaque here; interpretation belongs to the consumer.
 
 ## What This Package Does Not Own

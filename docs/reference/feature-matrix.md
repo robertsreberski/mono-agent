@@ -43,7 +43,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.webfetch-retry` | auto | (built into WebFetch) | — | [Tools & guards](/runtime/tools-and-guards/) | — |
 | `runtime.context-compaction` | provider + settings | `agent_compaction_*` (pi-native settings) | — | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |
 | `runtime.tool-bloat-guard` | auto | (artifacts land in `artifacts.dir`) | `MONO_AGENT_ARTIFACT_DIR` | [Tools & guards](/runtime/tools-and-guards/) | — |
-| `runtime.cost-tracking` | auto | (recorded in JSONL artifacts) | — | [Artifacts & traces](/observability/artifacts-and-traces/) | [Eval suite: trajectory & cost](/playbooks/eval-suite-trajectory-cost/) |
+| `runtime.cost-tracking` | auto | (recorded in JSONL artifacts) | — | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `runtime.builtin-tools` | config | `tools.allowedTools`, `tools.disallowedTools` | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Tools & guards](/runtime/tools-and-guards/) | — |
 | `runtime.structured-output` | code | `runtimeOptions.outputSchema` | — | [Approval & structured output](/programmatic/approval-and-structured-output/) | — |
 | `runtime.live-input` | code | `runtimeOptions.liveInput` | — | [Composition](/programmatic/composition/) | — |
@@ -157,8 +157,6 @@ All channels are independent JSON sections. Most are opt-in via an `enabled` fla
 | `harness.failure-handling` | auto | (built into every run) | — | [Composition](/programmatic/composition/) | — |
 | `harness.request-runtime-options` | code | `createConfiguredAgentResponder({ runtimeOptionsForRequest })` | — | [Composition](/programmatic/composition/) | — |
 | `orchestrator.ask-collaborator` | code | `createCollaboratorToolRuntimeExtension` + `runtimeOptionsForRequest` | — | [Multi-agent](/programmatic/multi-agent/) | [Multi-agent orchestration](/playbooks/multi-agent-orchestration/) |
-| `evals.scenarios` | dev | `@mono-agent/agent-evals` (`defineAgentEvalScenario`, `runAgentEvalSuite`) | `MONO_AGENT_EVAL_LIVE=1` | [Evals](/evals/) | [Eval suite: trajectory & cost](/playbooks/eval-suite-trajectory-cost/) |
-
 ## Notes on coverage types
 
 A `code`-only feature has no `mono-agent.config.json` key — you reach it through `startMonoAgentApp` options or lower-level packages. See [Programmatic API](/programmatic/) for the entry points referenced above (`createConfiguredAgentResponder`, `createMonoRuntime`, `createCollaboratorToolRuntimeExtension`, custom `ChannelDriver`/`runtime`/`memory`/`historyStore` injection).

@@ -74,7 +74,7 @@ my-agent/
   },
 
   // Memory strategy. Omit the section for no memory.
-  // Three tiers over one substrate (memory-store + memory-bujo):
+  // Three tiers over one substrate (@mono-agent/memory store + bujo subpaths):
   //   lite    — FTS keyword recall + rapid-log; no external deps.
   //   journal — + hybrid recall (BM25+vector) + decay; needs embeddings.
   //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled

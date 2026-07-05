@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory-search";
+import type { CircuitBreakerEmbeddingOptions, EmbeddingProviderConfig } from "@mono-agent/memory/search";
 import * as z from "zod/v4";
 
 /**
@@ -359,7 +359,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
       ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
     });
   }
-  const { createBujoMemoryStore } = await import("@mono-agent/memory-bujo");
+  const { createBujoMemoryStore } = await import("@mono-agent/memory/bujo");
   const { embeddings } = settings;
   if (embeddings === undefined) {
     // FTS-only recall: no embedding provider, no dim (mirrors the lite-tier store shape).
@@ -378,7 +378,7 @@ export async function createRecallStore(settings: MemoryRecallSettings): Promise
       : { failureThreshold: embeddings.circuitBreaker.failureThreshold }),
     ...(embeddings.circuitBreaker?.cooldownMs === undefined ? {} : { cooldownMs: embeddings.circuitBreaker.cooldownMs }),
   };
-  const { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } = await import("@mono-agent/memory-search");
+  const { createCircuitBreakerEmbeddingProvider, createEmbeddingProvider } = await import("@mono-agent/memory/search");
   return createBujoMemoryStore({
     root: settings.root,
     embeddings: createCircuitBreakerEmbeddingProvider(createEmbeddingProvider(providerConfig), breakerOptions),

@@ -34,7 +34,7 @@ With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live
 
 ## Dependency Boundary
 
-The harness may depend on core building blocks: agent-contracts, context, memory-store, observability, runtime-adapter, sandbox, skills, and tool-policy. It must not depend on communication adapters or host/demo code.
+The harness may depend on core building blocks: agent-contracts, context, observability, runtime-adapter, sandbox, skills, and tool-policy. It accepts the `MemoryStore` contract from `@mono-agent/agent-contracts` without depending on a concrete memory backend. It must not depend on communication adapters or host/demo code.
 
 ## What This Package Does Not Own
 

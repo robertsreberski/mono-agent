@@ -98,7 +98,7 @@ small summary, excluding full image URLs and data payloads.
 
 ## Dependency Boundary
 
-This adapter depends on Express plus shared contracts/settings primitives. It must not depend on the agent harness, runtime adapter, operator surfaces, memory, observability, other communication adapters, or host/demo code. Hosts compose it with a structural responder.
+This adapter depends on Express plus shared `@mono-agent/agent-contracts` primitives. It must not depend on the agent harness, runtime adapter, operator surfaces, memory, observability, other communication adapters, or host/demo code. Hosts compose it with a structural responder.
 
 ## What This Package Does Not Own
 

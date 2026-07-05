@@ -25,7 +25,6 @@
   "dependencies": {
     "@a2a-js/sdk": "1.0.0-alpha.0",
     "@mono-agent/agent-contracts": "workspace:0.4.0",
-    "@mono-agent/settings": "workspace:0.4.0",
     "express": "^5.1.0"
   },
   "devDependencies": {

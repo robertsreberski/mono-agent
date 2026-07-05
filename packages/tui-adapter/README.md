@@ -65,7 +65,7 @@ const adapter = await startTuiAdapter({
 
 ## Dependency Boundary
 
-This adapter depends on Express plus shared contracts/settings primitives. It
+This adapter depends on Express plus shared `@mono-agent/agent-contracts` primitives. It
 must not depend on the agent harness, runtime adapter, operator surfaces
 (including `@mono-agent/tui` — the client speaks the shared wire contract, not
 this package), memory, observability, other communication adapters, or

@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { normalizeOptionalString, readBoolean } from "@mono-agent/settings";
+import { normalizeOptionalString, readBoolean } from "@mono-agent/agent-contracts";
 
 import type { WebhookEndpointConfig } from "./config.js";
 import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "./server.js";

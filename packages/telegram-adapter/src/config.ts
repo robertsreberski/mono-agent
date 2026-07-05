@@ -10,12 +10,12 @@ import {
   readRequired,
   readSettingsJson,
   redactedSecret,
-} from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
 import type {
   JsonEnvFieldSpec,
   RedactedSecretValue,
   SettingsJson,
-} from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
 
 /**
  * A daily window during which proactive notifications (cron/webhook deliveries)

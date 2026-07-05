@@ -1,5 +1,6 @@
 export type AgentRequestMetadata = Record<string, unknown>;
 export type AgentResponseMetadata = Record<string, unknown>;
+export type { MemoryBlock, MemoryStore, MemoryWriteResult } from "./memory.js";
 
 /**
  * Reserved final-text token a notify-enabled cron/webhook turn emits to suppress
@@ -251,3 +252,53 @@ export {
   createLiveEventBus,
 } from "./live-events.js";
 export type { RunEventFrame, RunEventSink, RunEventBus, CreateLiveEventBusOptions } from "./live-events.js";
+export {
+  encodeJsonEnvValue,
+  fieldSpecMappings,
+  layerJsonOntoEnv,
+  normalizeOptionalString,
+  readBoolean,
+  readChoice,
+  readCsv,
+  readInteger,
+  readJsonSection,
+  readRecord,
+  readRequired,
+  readString,
+  redactedSecret,
+} from "./config-loader.js";
+export type {
+  ConfigErrorFactory,
+  EnvEncodeKind,
+  JsonEnvFieldSpec,
+  JsonEnvMapping,
+  RedactedSecretValue,
+} from "./config-loader.js";
+export {
+  assertSafeBind,
+  close,
+  hostForUrl,
+  isLoopbackHost,
+  listen,
+} from "./host-safety.js";
+export type { ListenErrorFactories } from "./host-safety.js";
+export {
+  bearerTokensEqual,
+  generateBearerToken,
+  readAuthorizationBearer,
+} from "./bearer.js";
+export {
+  SettingsJsonError,
+  readSettingsJson,
+  writeSettingsJson,
+} from "./json-source.js";
+export type {
+  ReadSettingsJsonResult,
+  SettingsJsonErrorCode,
+  SettingsJsonErrorDetails,
+} from "./json-source.js";
+export type {
+  SettingsJson,
+  SettingsJsonValue,
+  SettingsPrimitive,
+} from "./types.js";

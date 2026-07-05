@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildRunReadableSpans, createDeterministicIdFactory } from "@mono-agent/observability-otel";
+import { buildRunReadableSpans, createDeterministicIdFactory } from "@mono-agent/observability/otel";
 import type { RunSummary } from "@mono-agent/observability";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 

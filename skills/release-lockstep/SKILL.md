@@ -5,7 +5,7 @@ description: Cut a lockstep npm release of all @mono-agent packages (version bum
 
 # Lockstep npm release
 
-All 31 packages release in lockstep: `scripts/release/validate-release.mjs`
+All catalog-publishable packages release in lockstep: `scripts/release/validate-release.mjs`
 requires every `packages/*/package.json` version to equal the tag version and
 every internal dep (including root devDependencies) to be `workspace:<version>`.
 Publishing happens in CI on tag push (`.github/workflows/npm-release.yml`) —

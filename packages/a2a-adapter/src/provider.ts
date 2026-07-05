@@ -41,7 +41,7 @@ import {
   isLoopbackHost,
   listen,
   readAuthorizationBearer,
-} from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {

@@ -7,7 +7,7 @@ import {
   createDeterministicIdFactory,
   postOtlpProtobuf,
   serializeTraceSpans,
-} from "@mono-agent/observability-otel";
+} from "@mono-agent/observability/otel";
 import type {
   RunExportContext,
   RunSummary,

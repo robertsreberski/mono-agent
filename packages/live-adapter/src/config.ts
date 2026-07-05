@@ -8,8 +8,8 @@ import {
   readSettingsJson,
   readString,
   redactedSecret,
-} from "@mono-agent/settings";
-import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
+import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/agent-contracts";
 
 import { DEFAULT_LIVE_BASE_PATH, DEFAULT_LIVE_HOST, DEFAULT_LIVE_PORT } from "./constants.js";
 import { LiveAdapterError } from "./errors.js";
