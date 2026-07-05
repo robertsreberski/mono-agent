@@ -321,7 +321,8 @@ describe("validateMonoAgentFolder", () => {
     const sandbox = sectionById(report, "sandbox");
     expect(sandbox.status).toBe("waiting");
     const text = sandbox.details.join("\n");
-    expect(text).toContain("[WARN]");
+    expect(text).not.toContain("[WARN] WARNING:");
+    expect(text).toContain("WARNING: Unsafe sandbox fallback is active");
     expect(text).toContain("Unsafe sandbox fallback is active");
     expect(text).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
   });

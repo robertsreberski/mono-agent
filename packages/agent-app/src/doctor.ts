@@ -576,7 +576,7 @@ async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): 
   const details = [
     `Mode: ${config.sandbox.mode}, network: ${config.sandbox.network.mode}, fallback: ${config.sandbox.fallback}.`,
     describeSandboxEffectiveState(state),
-    ...(warning === undefined ? [] : [`[WARN] ${warning}`]),
+    ...(warning === undefined ? [] : [warning]),
   ];
   const status: ValidationStatus = warning !== undefined
     ? "waiting"

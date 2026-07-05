@@ -1,9 +1,9 @@
-import type { SandboxPolicy } from "@mono-agent/sandbox";
+import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "@mono-agent/sandbox";
 
 export interface MonoRuntimeSandboxEngine {
   readonly id?: string;
   isAvailable(): Promise<boolean>;
-  prepareCommand(command: any, policy: any): Promise<any>;
+  prepareCommand(command: SandboxCommandSpec, policy: SandboxPolicy): Promise<PreparedSandboxCommand>;
 }
 
 export type RuntimeExecutionMode = "sdk" | "cli";

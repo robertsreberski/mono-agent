@@ -1078,7 +1078,7 @@ function colorDetail(status: ValidationStatus, detail: string): string {
   if (status === "error") {
     return ui.style.red(detail);
   }
-  if (detail.startsWith("[WARN]")) {
+  if (detail.startsWith("[WARN]") || detail.startsWith("WARNING:")) {
     return ui.style.yellow(detail);
   }
   return ui.style.dim(detail);
@@ -1362,7 +1362,7 @@ function describeSandboxStatus(status: SandboxStatus): string {
     `engine: ${status.engine ?? "none"} (${engineAvailability})`,
     ...(status.fallback === undefined ? [] : [`fallback: ${status.fallback}`]),
     `fallback active: ${status.fallbackActive ? "yes" : "no"}`,
-    status.resolutionError === undefined ? describeSandboxEffectiveState(status) : status.detail,
+    status.detail,
   ];
   const warning = status.warning ?? sandboxEffectiveStateWarning(status);
   if (warning !== undefined) {
