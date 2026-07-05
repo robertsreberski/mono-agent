@@ -55,7 +55,7 @@ Memory tiers, `writeMode`, embeddings, and rituals are covered in [Memory](/memo
 | Shape | Recipe |
 | --- | --- |
 | Single agent, one channel | most recipes above |
-| Fully local / air-gapped (no cloud, no outbound network) | [Local-Only Ollama](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio](/playbooks/local-only-lmstudio-agent/) · [Sandboxed Code Agent](/playbooks/sandboxed-code-agent/) |
+| Fully local / air-gapped (no cloud, no outbound network) | [Local-Only Ollama](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio](/playbooks/local-only-lmstudio-agent/) |
 | Reliability-hardened (ordered model fallback) | [Multi-Model Fallback Chain](/playbooks/multi-model-fallback-chain/) |
 | Composed / multi-agent (delegation) | [Multi-Agent Orchestration](/playbooks/multi-agent-orchestration/) · [A2A Pair](/playbooks/a2a-provider-and-consumer/) |
 | Observed (tracing + dashboards) | [Phoenix-Observed Agent](/playbooks/phoenix-observed-agent/) · [Backfill Historical Runs](/playbooks/backfill-historical-runs/) |
@@ -74,7 +74,7 @@ Memory tiers, `writeMode`, embeddings, and rituals are covered in [Memory](/memo
 | [Cron Digest with Native Notify](/playbooks/cron-digest-proactive-notify/) | Data analyst wanting a scheduled briefing pushed to a chat | Timezone-aware cron job that builds a daily digest with shared history and delivers the final answer through native Telegram/Slack notification. |
 | [A2A Provider + Consumer Pair](/playbooks/a2a-provider-and-consumer/) | Platform integrator connecting two agents over A2A | Publish agent A as an A2A provider (Agent Card discovery, bearer) and configure agent B to discover and call it. |
 | [Multi-Agent Orchestration (ask_collaborator)](/playbooks/multi-agent-orchestration/) | Workflow designer composing specialist agents | One orchestrator delegates subtasks to named collaborator responders via the loopback `ask_collaborator` MCP tool. |
-| [Sandboxed Code Agent (No Internet, Deny .env)](/playbooks/sandboxed-code-agent/) | Security team deploying an internal code assistant | Agent that reads repos and runs Bash inside the native sandbox with no network and protected secrets, recalling local context. |
+| [Sandboxed Code Agent (Loopback Only, Deny .env)](/playbooks/sandboxed-code-agent/) | Security team deploying an internal code assistant | Agent that reads repos and runs Bash inside the native sandbox with loopback-only network access and protected secrets, recalling local context. |
 | [Phoenix-Observed Agent with TUI](/playbooks/phoenix-observed-agent/) | Agent builder evaluating runs in a tracing dashboard | Run an agent with the TUI and stream every run lifecycle to Phoenix as OpenInference spans, with local JSONL as fallback. |
 | [Backfill Historical Runs to Phoenix](/playbooks/backfill-historical-runs/) | Operations engineer onboarding observability after the fact | Retroactively export already-recorded JSONL run artifacts to Phoenix with original timestamps, idempotently. |
 | [Eval Suite with Trajectory + Cost Budgets](/playbooks/eval-suite-trajectory-cost/) | Agent product owner gating quality in CI | Run scenarios against the composed responder asserting required tool calls, trajectory, and per-run cost ceilings. |

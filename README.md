@@ -46,7 +46,7 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 
 ### Recipes: executable example configs
 
-Thirteen recipes cover the common shapes — personal Telegram assistant with tiered memory, Slack team bot, OpenAI-compatible gateway, cron digest, A2A provider, fully local model setups, sandboxed code agent, safe/full blueprints, and more. Each generates a working config with secrets externalized to `.env.example`, and each mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
+Thirteen recipes cover the common shapes — personal Telegram assistant with tiered memory, Slack team bot, OpenAI-compatible gateway, cron digest, A2A provider, fully local model setups, sandboxed code agent, safe/full blueprints, and more. Each generates a working config with secrets externalized to `.env.example`, and most mirror a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
 
 ```bash
 mono-agent recipes list

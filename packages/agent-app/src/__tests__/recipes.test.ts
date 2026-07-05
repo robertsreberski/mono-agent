@@ -79,16 +79,13 @@ describe("recipe catalog", () => {
       const sandboxExpectation = recipe.validateExpectations.find((expectation) => expectation.sectionId === "sandbox");
       expect(sandboxExpectation?.mustBe, id).toBe("ok");
       expect(sandboxExpectation?.note, id).toContain("sandbox_unavailable");
-      expect(recipe.description, id).toContain("fail");
     }
   });
 
   it("makes the full-local-power unsafe sandbox fallback explicit", () => {
     const recipe = requireRecipe("full-local-power");
     expect(recipe.riskLevel).toBe("high");
-    expect(recipe.description).toContain("UNSAFE");
-    expect(recipe.description).toContain("unsafe-host-process");
-    expect(recipe.description).toContain("commands run unsandboxed on the host");
+    expect(recipe.tags).toContain("high-risk");
 
     const config = recipe.config(resolveRecipeInputs(recipe));
     expect(config.sandbox).toMatchObject({

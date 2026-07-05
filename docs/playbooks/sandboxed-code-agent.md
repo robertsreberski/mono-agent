@@ -1,10 +1,10 @@
 ---
-title: "Sandboxed Code Agent (No Internet, Deny .env)"
+title: "Sandboxed Code Agent (Loopback Only, Deny .env)"
 sidebar:
   order: 9
 ---
 
-# Sandboxed Code Agent (No Internet, Deny .env)
+# Sandboxed Code Agent (Loopback Only, Deny .env)
 
 This playbook builds a code-reading assistant that can run `Bash` inside the native `srt` sandbox with loopback-only network access and protected secrets, while recalling prior context from local journal memory. Every capability here is `config`-driven — no code required.
 
@@ -35,12 +35,12 @@ An agent that can read repos and run Bash inside the native `srt` sandbox with l
     "model": "claude:claude-sonnet-4-6"
   },
   "tools": {
-    "allowedTools": ["Read", "Grep", "Bash"]
+    "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
   },
   "sandbox": {
     "mode": "native",
     "network": {
-      "mode": "none"
+      "mode": "localhost"
     },
     "readableRoots": ["."],
     "writableRoots": ["."],
@@ -60,7 +60,7 @@ Keep `fallback` at `fail-closed`. Setting `fallback: "unsafe-host-process"` plus
 
 1. `mono-agent init --model claude:claude-sonnet-4-6 --memory journal`
 2. Run `command -v srt && srt --version`; install/fix `srt` before treating the sandbox as available.
-3. Set `tools.allowedTools` to `Read`/`Grep`/`Bash`; configure `sandbox.mode` native + `network.mode` localhost + the deny-write defaults.
+3. Set `tools.allowedTools` to `Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`; configure `sandbox.mode` native + `network.mode` localhost + the deny-write defaults.
 4. Keep `fallback` at `fail-closed` (do NOT set `unsafe-host-process`).
 5. `mono-agent validate --recipe sandboxed-code-agent`; the `Sandbox` section should be `ok`. If it is `waiting` with `sandbox_unavailable`, `start` will not silently relax the policy — sandboxed commands will fail closed until `srt` is available.
 6. `mono-agent start`, then `mono-agent status`; confirm the sandbox line reports `effective: native`, the `srt` engine present, and `fallback active: no`.
