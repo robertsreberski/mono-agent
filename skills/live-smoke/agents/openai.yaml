@@ -1,0 +1,4 @@
+interface:
+  display_name: "Live Smoke"
+  short_description: "Smoke-test real mono-agent surfaces"
+  default_prompt: "Use $live-smoke to verify a mono-agent runtime, TUI, or web surface end to end."

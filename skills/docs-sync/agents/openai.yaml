@@ -1,0 +1,4 @@
+interface:
+  display_name: "Docs Sync"
+  short_description: "Keep docs and website in sync"
+  default_prompt: "Use $docs-sync to update mono-agent docs after a shipped change."

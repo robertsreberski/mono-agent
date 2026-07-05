@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fleet Deploy"
+  short_description: "Deploy and restart live agents"
+  default_prompt: "Use $fleet-deploy to deploy mono-agent changes to the live launchd fleet."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worktree Feature"
+  short_description: "Start isolated mono-agent feature work"
+  default_prompt: "Use $worktree-feature to start isolated mono-agent feature work in a git worktree."

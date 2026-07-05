@@ -28,6 +28,7 @@ describe("verify-all", () => {
     expect(labels).toEqual([
       "check:secrets",
       "check:oss-hygiene",
+      "check:codex-discoverability",
       "check:architecture",
       "build",
       "typecheck",
