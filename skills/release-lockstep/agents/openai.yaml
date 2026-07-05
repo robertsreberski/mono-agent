@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Lockstep"
+  short_description: "Cut lockstep npm releases"
+  default_prompt: "Use $release-lockstep to cut a verified lockstep @mono-agent npm release."

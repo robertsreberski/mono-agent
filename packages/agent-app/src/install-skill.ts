@@ -27,12 +27,12 @@ const BUNDLED_SKILL_DIR = fileURLToPath(new URL(`../skills/${COMPOSER_SKILL_NAME
 
 const TARGET_HARNESS_DIRS: Readonly<Record<Exclude<InstallSkillTarget, "both">, string>> = {
   claude: ".claude",
-  codex: ".codex",
+  codex: ".agents",
 };
 
 /**
  * Copies the bundled mono-agent-composer skill into the harness skill folders
- * (~/.claude/skills and/or ~/.codex/skills) so Claude Code and Codex can use
+ * (~/.claude/skills and/or ~/.agents/skills) so Claude Code and Codex can use
  * it to compose new agents.
  */
 export async function installComposerSkill(options: InstallSkillOptions): Promise<InstallSkillResult> {

@@ -153,7 +153,7 @@ also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | `app.cli-stop` | Stop the background instance for this config and remove its LaunchAgent (macOS background mode) | `cli` | `mono-agent stop [--config]` |
 | `app.cli-logs` | Print (and optionally follow) the background instance's log files | `cli` | `mono-agent logs [--config] [--follow\|-f] [--lines <n>]` |
 | `app.cli-restart-clean` | Restart the background instance (starts it if stopped). `--force` first purges the persisted pi-session store (`providers.piNative.piSessionsRoot`) so the agent resumes nothing — a fresh start. Durable memory under `memory.path` is untouched; a no-op when sessions are in-memory | `cli` | `mono-agent restart [--config] [--force]` |
-| `app.cli-install-skill` | Copy the composer skill into `~/.claude/skills` / `~/.codex/skills` | `cli` | `mono-agent install-skill [--target claude\|codex\|both] [--force]` |
+| `app.cli-install-skill` | Copy the composer skill into `~/.claude/skills` / `~/.agents/skills` | `cli` | `mono-agent install-skill [--target claude\|codex\|both] [--force]` |
 | `app.cli-web` | Serve the read-only Session Recorder web PWA from any directory, resolving the config-local and global trace-source registries, opening the browser by default, and printing Tailscale/non-loopback reachability hints | `cli` | `mono-agent web [--host] [--port] [--no-open] [--allow-non-loopback] [--config]` |
 | `app.env-file` | `.env` auto-load (exported shell vars win) | `cli` | automatic; `--env-file <path>` to override |
 | `harness.failure-handling` | Explicit failure objects (never fake success) | `auto` | Built into every run |

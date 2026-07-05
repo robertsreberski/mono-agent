@@ -9,3 +9,6 @@ Install it into Claude Code and Codex with:
 ```bash
 mono-agent install-skill
 ```
+
+The Codex target installs to `~/.agents/skills`; the Claude target installs to
+`~/.claude/skills`.

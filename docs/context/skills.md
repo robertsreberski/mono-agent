@@ -58,7 +58,7 @@ To make the composer available to Claude Code or Codex on your machine, copy it 
 mono-agent install-skill --target both
 ```
 
-`--target` accepts `claude`, `codex`, or `both` (default: `both`). It copies the skill into `~/.claude/skills` and/or `~/.codex/skills`. The command refuses to overwrite an existing destination unless you pass `--force`:
+`--target` accepts `claude`, `codex`, or `both` (default: `both`). It copies the skill into `~/.claude/skills` and/or `~/.agents/skills`. The command refuses to overwrite an existing destination unless you pass `--force`:
 
 ```bash
 mono-agent install-skill --target claude --force

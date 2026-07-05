@@ -2,7 +2,11 @@
 
 These are **project-level engineering skills** for Claude Code / Codex sessions
 working on this repository. They are loaded via the `.claude/skills` and
-`.codex/skills` symlinks at the repo root.
+`.agents/skills` symlinks at the repo root.
+
+Each skill also carries `agents/openai.yaml` metadata so Codex can show concise
+UI labels, descriptions, and default prompts while keeping `SKILL.md` as the
+agent-facing workflow.
 
 They are **NOT runtime skills for mono-agent instances** — those live in each
 agent's own folder (e.g. `~/personal-agent/skills/`) and are selected via

@@ -12,6 +12,7 @@
     "build": "pnpm -r --sort run build && pnpm run build:demo",
     "check:secrets": "node scripts/check-secrets.mjs",
     "check:oss-hygiene": "node scripts/check-oss-hygiene.mjs",
+    "check:codex-discoverability": "node scripts/check-codex-discoverability.mjs",
     "check:architecture": "node scripts/check-package-architecture.mjs",
     "verify:consumers": "node scripts/verify-consumers.mjs",
     "verify:all": "node scripts/verify-all.mjs",

@@ -12,7 +12,7 @@ ships it — and check the LATEST version's API, never memory of an old one.
 ## Locate the vendored source
 
 ```bash
-cd "${MONO_AGENT_REPO:-$HOME/Personal_Repositories/mono-agent}"
+cd "$(git rev-parse --show-toplevel)"
 PIAI=$(ls -d node_modules/.pnpm/@earendil-works+pi-ai@*/node_modules/@earendil-works/pi-ai | head -1)
 grep -m1 version "$PIAI/package.json"
 sed -n '1,60p' "$PIAI/dist/types.d.ts"
