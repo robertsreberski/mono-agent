@@ -55,10 +55,10 @@ The returned `CollaboratorToolRuntimeExtension` has:
 
 ## Wiring into the orchestrator
 
-Build the orchestrator responder with `createConfiguredAgentResponder` (from `@mono-agent/agent-host`, see [composition.md](/programmatic/composition/)) and supply `runtimeOptionsForRequest`. This per-request hook — feature row `harness.request-runtime-options` — is where you create the extension and hand back its `runtimeOptions` and `cleanup`:
+Build the orchestrator responder with `createConfiguredAgentResponder` (from `@mono-agent/agent-app`, see [composition.md](/programmatic/composition/)) and supply `runtimeOptionsForRequest`. This per-request hook — feature row `harness.request-runtime-options` — is where you create the extension and hand back its `runtimeOptions` and `cleanup`:
 
 ```ts
-import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 import {
   createCollaboratorToolRuntimeExtension,
   type OrchestratorCollaborator,
@@ -103,7 +103,7 @@ Do not reuse one extension across requests. A new server is created per turn and
 
 ## Example topology
 
-A typical local setup runs three roles, each built from `@mono-agent/agent-host`, where the orchestrator reaches the other two over **loopback A2A**:
+A typical local setup runs three roles, each built from `@mono-agent/agent-app`, where the orchestrator reaches the other two over **loopback A2A**:
 
 | Role | Transport | Tool policy | Trace name |
 | --- | --- | --- | --- |
@@ -117,7 +117,7 @@ Local Ollama collaborators can take longer than the 60s A2A consumer default whe
 
 ## Related
 
-- [composition.md](/programmatic/composition/) — building responders from config with `@mono-agent/agent-host`.
+- [composition.md](/programmatic/composition/) — building responders from config with `@mono-agent/agent-app`.
 - [a2a-consumer.md](/programmatic/a2a-consumer/) — consuming remote agents as responders/collaborators.
 - [../channels/a2a.md](/channels/a2a/) — exposing an agent as an A2A provider.
 - [../tools/mcp.md](/tools/mcp/) — how MCP servers (like the loopback collaborator server) are wired.

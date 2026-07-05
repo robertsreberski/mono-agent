@@ -200,8 +200,8 @@ describe("current launch manifest", () => {
     expect(publishable).toHaveLength(expectedPublishablePackageCount);
     expect([...publishableNames].sort()).toEqual(expectedPublishablePackageNames);
     expect(publishableNames).toContain("@mono-agent/tui");
-    expect(publishableNames).toContain("@mono-agent/agent-host");
     expect(publishableNames).toContain("@mono-agent/memory-supermemory");
+    expect(publishableNames).not.toContain(`@mono-agent/${"agent"}-${"host"}`);
     // memory-mcp was retired: the BuJo recall tool is now auto-provisioned in-app
     // from the single config.memory block (no separate stdio MCP package).
     expect(publishableNames).not.toContain("@mono-agent/memory-mcp");

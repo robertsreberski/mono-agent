@@ -25,7 +25,7 @@ Depends on external provider SDKs only (`@anthropic-ai/claude-agent-sdk`, `@eare
 
 - runtime contracts and backend descriptors (`@mono-agent/runtime-adapter`)
 - Conversation history, context building, or host-side session TTL policy (`@mono-agent/agent-harness`)
-- Host configuration (`@mono-agent/config`, `@mono-agent/agent-host`)
+- Host configuration (`@mono-agent/config`, `@mono-agent/agent-app`)
 
 ## Verification
 

@@ -23,9 +23,6 @@ importers:
       '@mono-agent/agent-harness':
         specifier: workspace:0.4.0
         version: link:packages/agent-harness
-      '@mono-agent/agent-host':
-        specifier: workspace:0.4.0
-        version: link:packages/agent-host
       '@mono-agent/agent-orchestrator':
         specifier: workspace:0.4.0
         version: link:packages/agent-orchestrator
@@ -105,9 +102,9 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/agent-host':
+      '@mono-agent/agent-harness':
         specifier: workspace:0.4.0
-        version: link:../agent-host
+        version: link:../agent-harness
       '@mono-agent/config':
         specifier: workspace:0.4.0
         version: link:../config
@@ -161,30 +158,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/observability':
-        specifier: workspace:0.4.0
-        version: link:../observability
-      '@mono-agent/runtime-adapter':
-        specifier: workspace:0.4.0
-        version: link:../runtime-adapter
-
-  packages/agent-host:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.0
-        version: link:../agent-contracts
-      '@mono-agent/agent-harness':
-        specifier: workspace:0.4.0
-        version: link:../agent-harness
-      '@mono-agent/config':
-        specifier: workspace:0.4.0
-        version: link:../config
-      '@mono-agent/memory':
-        specifier: workspace:0.4.0
-        version: link:../memory
-      '@mono-agent/memory-supermemory':
-        specifier: workspace:0.4.0
-        version: link:../memory-supermemory
       '@mono-agent/observability':
         specifier: workspace:0.4.0
         version: link:../observability

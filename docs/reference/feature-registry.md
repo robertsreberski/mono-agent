@@ -138,7 +138,7 @@ also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | `tui.chat` | pi-tui operator console: live chat with full stream-event insight (collapsed-expandable thinking, tool panels with args/progress/result/duration, usage/cost/failover status bar), recorded-run replay from the artifact dir, source-annotated config view, running-instance picker. Connects remotely to any running agent via the trace-source registry + `tui.stream-endpoint`, or embeds in-process against an `AgentResponderLike` | `cli` | `mono-agent tui [--agent <label\|sourceId>] [--conversation <id>]`; low-level `mono-agent-tui [--responder <file> \| --url <baseUrl>] [--config <path>]` (ships with `@mono-agent/tui`) |
 | `session-web.pwa` | Browser Session Recorder operator surface: discovers all running agents via trace-source registries, serves the built PWA plus read-only JSON/SSE APIs, folds local run artifacts with each trusted `live` relay, and shows run prompts/reasoning/tools/usage/cost. Loopback by default; `mono-agent web --allow-non-loopback` generates a bearer token and protects `/api/*` plus `/api/stream` | `cli` | `mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--config <path>]` |
 
-## Execution & composition (`agent-harness`, `agent-host`, `agent-orchestrator`, `agent-app`)
+## Execution & composition (`agent-harness`, `agent-orchestrator`, `agent-app`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |

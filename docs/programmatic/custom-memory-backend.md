@@ -24,7 +24,7 @@ Pass your store to the composition layer via the `memory` option — it wins ove
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 import { myVectorStore } from "./my-vector-store.js";
 
 const config = await loadMonoAgentConfigWithSources({

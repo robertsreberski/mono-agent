@@ -30,7 +30,6 @@ flowchart TB
 
   subgraph Execution["execution"]
     Harness["@mono-agent/agent-harness"]
-    Host["@mono-agent/agent-host"]
     Orchestrator["@mono-agent/agent-orchestrator"]
   end
 
@@ -65,9 +64,12 @@ flowchart TB
   AgentApp --> Webhook
   AgentApp --> SessionWeb
   AgentApp --> Tui
-  AgentApp --> Host
+  AgentApp --> Harness
   AgentApp --> Config
+  AgentApp --> Memory
+  AgentApp -. optional backend .-> MemorySupermemory
   AgentApp --> Observability
+  AgentApp --> RuntimeAdapter
 
   Tui --> Contracts
   Tui --> Config
@@ -83,12 +85,6 @@ flowchart TB
   WhatsApp --> Contracts
   Webhook --> Contracts
 
-  Host --> Harness
-  Host --> Config
-  Host --> Memory
-  Host -. optional backend .-> MemorySupermemory
-  Host --> Observability
-  Host --> RuntimeAdapter
   Harness --> Contracts
   Harness --> Observability
   Harness --> RuntimeAdapter
@@ -109,7 +105,7 @@ flowchart TB
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` |
 | `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` |
-| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
+| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` |

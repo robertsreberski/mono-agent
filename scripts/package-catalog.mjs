@@ -23,7 +23,7 @@ export const packageCatalog = [
     dir: "agent-app",
     name: "@mono-agent/agent-app",
     category: "app",
-    responsibility: "Runs a config-first agent host: loads mono-agent.config.json, builds the responder, and starts every configured channel and traceability.",
+    responsibility: "Runs a config-first agent host: loads mono-agent.config.json, owns configured responder/harness/runtime/memory composition, and starts every configured channel and traceability.",
     allowedDependencyCategories: [
       "core",
       "context",
@@ -49,14 +49,6 @@ export const packageCatalog = [
     category: "execution",
     responsibility: "Composes prompt context, selected skills, runtime, memory, history, tool policy, and observability for one request.",
     allowedDependencyCategories: ["core", "context", "runtime", "observability"],
-    publishable: true,
-  },
-  {
-    dir: "agent-host",
-    name: "@mono-agent/agent-host",
-    category: "execution",
-    responsibility: "Builds configured agent harnesses and responders from adapter-neutral host config.",
-    allowedDependencyCategories: ["core", "context", "runtime", "observability", "execution"],
     publishable: true,
   },
   {

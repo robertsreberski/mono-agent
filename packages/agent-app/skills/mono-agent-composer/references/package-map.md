@@ -4,7 +4,7 @@ Use this map to select the smallest mono-agent package set for a host. Package c
 
 ## App Join (default)
 
-`@mono-agent/agent-app` is the config-first host: it loads `mono-agent.config.json`, builds the responder through `agent-host`, and drives every configured channel plus traceability and any configured observability exporters. It ships the `mono-agent` CLI (`init`, `validate`, `start`) and is the only publishable package allowed to compose communication adapters.
+`@mono-agent/agent-app` is the config-first host: it loads `mono-agent.config.json`, owns configured runtime/harness/responder/memory composition, and drives every configured channel plus traceability and any configured observability exporters. It ships the `mono-agent` CLI (`init`, `validate`, `start`) and is the only publishable package allowed to compose communication adapters.
 
 ```ts
 import { startMonoAgentApp } from "@mono-agent/agent-app";
@@ -23,13 +23,13 @@ Every real host needs these concepts:
 | Shared request/response shape | `@mono-agent/agent-contracts` | `AgentResponder`, request, response, stream, cancellation contracts | Prompt building, runtime execution, transport |
 | Core config | `@mono-agent/config` | Runtime, context, memory, tools, artifact, traceability settings | Adapter credentials, chat allowlists |
 | Runtime facade | `@mono-agent/runtime-adapter` | Model refs, execution-mode validation, local provider runtime options | Prompts, adapters, memory |
-| Configured responder | `@mono-agent/agent-host` | Turns `MonoAgentConfig` into runtime, harness, and responder | Polling chats, serving APIs, adapter settings |
+| Configured responder | `@mono-agent/agent-app` | Turns `MonoAgentConfig` into runtime, memory, harness, and responder | Polling chats, serving APIs, adapter settings |
 
 Minimal local host:
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
 const config = await loadMonoAgentConfigWithSources({
   env: process.env,
@@ -57,7 +57,7 @@ Mono-agent selected skills are not auto-selected by description. The host choose
 
 ## Execution Join
 
-Use `@mono-agent/agent-harness` directly when a host needs custom runtime, memory, history, recorder, or request-scoped runtime options. Use `@mono-agent/agent-host` when config-driven composition is enough.
+Use `@mono-agent/agent-harness` directly when a host needs custom prompt/runtime/memory/history/recorder wiring below the config layer. Use `@mono-agent/agent-app` when config-driven composition is enough.
 
 `@mono-agent/agent-harness` owns:
 
