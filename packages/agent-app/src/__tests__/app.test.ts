@@ -858,19 +858,26 @@ describe("startMonoAgentApp", () => {
       },
     };
     const drivers = defaultChannelDrivers().map((driver) => (driver.id === "telegram" ? wrapped : driver));
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
 
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers });
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers, logger });
     expect(app.channelStatus("telegram").kind).toBe("running");
 
     // Transient poll crash → degraded, and crucially the responder is NOT disposed
     // (the adapter self-restarts and must deliver into a live harness).
     captured?.onPollingError?.(new Error("connect ENETUNREACH"));
     expect(app.channelStatus("telegram").kind).toBe("degraded");
+    expect(logger.warn.mock.calls.filter(([message]) => message === "Telegram channel degraded; transport is recovering.")).toHaveLength(1);
     expect(disposeSpy).not.toHaveBeenCalled();
+    captured?.onPollingError?.(new Error("connect ENETUNREACH again"));
+    expect(logger.warn.mock.calls.filter(([message]) => message === "Telegram channel degraded; transport is recovering.")).toHaveLength(1);
 
     // The adapter's restart stays up → recovered → back to running.
     captured?.onPollingRecovered?.();
     expect(app.channelStatus("telegram").kind).toBe("running");
+    expect(logger.info.mock.calls.filter(([message]) => message === "Telegram channel recovered.")).toHaveLength(1);
+    captured?.onPollingRecovered?.();
+    expect(logger.info.mock.calls.filter(([message]) => message === "Telegram channel recovered.")).toHaveLength(1);
 
     // A genuine stop still disposes the responder exactly once.
     await app.stop();

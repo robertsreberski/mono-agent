@@ -1361,15 +1361,17 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (stopped) {
       return;
     }
-    logger?.error?.("Telegram polling stopped with an error; scheduling restart.", {
-      error: errorMessage(error),
-      restartInMs: restartBackoffMs,
-    });
-    // Mark degraded so the stability-window callback fires onPollingRecovered once a
-    // restarted runner stays up. The adapter always restarts (capped backoff), so a
-    // crash is "degraded, recovering" to the host — never terminal.
-    pollingDegraded = true;
-    options.onPollingError?.(error);
+    if (!pollingDegraded) {
+      logger?.error?.("Telegram polling stopped with an error; scheduling restart.", {
+        error: errorMessage(error),
+        restartInMs: restartBackoffMs,
+      });
+      // Mark degraded so the stability-window callback fires onPollingRecovered once a
+      // restarted runner stays up. The adapter always restarts (capped backoff), so a
+      // crash is "degraded, recovering" to the host — never terminal.
+      pollingDegraded = true;
+      options.onPollingError?.(error);
+    }
     scheduleRestart();
   }
 

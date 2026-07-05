@@ -317,6 +317,7 @@ describe("startTelegramAdapter polling auto-restart", () => {
     try {
       const { bot } = recordingBot();
       const errors: unknown[] = [];
+      const errorLogs: string[] = [];
       // Every spawned runner crashes, so each restart triggers the next backoff.
       const spawned: CrashingRunner[] = [];
       const runnerFactory = vi.fn(() => {
@@ -330,6 +331,7 @@ describe("startTelegramAdapter polling auto-restart", () => {
         allowAllChats: true,
         responder: { respond: vi.fn() } satisfies AgentResponder,
         deleteWebhookOnStart: false,
+        logger: { error: (message: string) => { errorLogs.push(message); } },
         onPollingError: (error) => { errors.push(error); },
         botFactory: () => bot,
         runnerFactory,
@@ -339,6 +341,7 @@ describe("startTelegramAdapter polling auto-restart", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(runnerFactory).toHaveBeenCalledTimes(1);
       expect(errors).toHaveLength(1);
+      expect(errorLogs).toHaveLength(1);
 
       // First restart fires after the INITIAL backoff (500ms). Just-before does not.
       await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS - 1);
@@ -360,8 +363,10 @@ describe("startTelegramAdapter polling auto-restart", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(runnerFactory).toHaveBeenCalledTimes(4);
 
-      // Every crash was surfaced to the host's onPollingError.
-      expect(errors).toHaveLength(4);
+      // The restart loop kept running, but the degraded notification/log line was
+      // emitted only once for the whole degraded period.
+      expect(errors).toHaveLength(1);
+      expect(errorLogs).toHaveLength(1);
 
       await result.stop();
     } finally {

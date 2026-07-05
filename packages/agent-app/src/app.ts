@@ -809,6 +809,9 @@ class MonoAgentAppController implements MonoAgentApp {
         // for the restarted transport to deliver into, and a later stop/reload still
         // finds the entry and disposes it exactly once.
         onDegraded: (reason) => {
+          if (this.statuses.get(driver.id)?.kind === "degraded") {
+            return;
+          }
           this.setStatus(driver.id, { kind: "degraded", reason });
           this.logger?.warn?.(`${driver.label} channel degraded; transport is recovering.`, { reason });
         },
@@ -818,6 +821,9 @@ class MonoAgentAppController implements MonoAgentApp {
         onRecovered: () => {
           const entry = this.running.get(driver.id);
           if (entry === undefined) {
+            return;
+          }
+          if (this.statuses.get(driver.id)?.kind !== "degraded") {
             return;
           }
           this.setStatus(driver.id, { kind: "running", summary: entry.summary });
