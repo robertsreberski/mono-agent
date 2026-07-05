@@ -1,7 +1,0 @@
-id,angle,scope
-oauth-store,OAuth credential-store compatibility,"Review pi-auth.js and pi-native.js for Pi 0.80 CredentialStore compatibility, OAuth shape preservation, refresh persistence, legacy api-key fallback, and edge cases."
-router-failover,Router failover semantics,"Review ai/runtime/router.js plus ai/failure.js/result-builder.js for correct terminal auth behavior, retryable availability fallback, exhaustion labeling, and artifact failover history."
-observability,Observability taxonomy,"Review observability failure-kind and artifact-audit changes for provider_auth compatibility, operator-facing messaging, known-kind histograms, and persisted summary contract risks."
-tests-validation,Tests and verification coverage,"Review added/updated tests and verification claims for real behavior coverage, red-green validity, missing negative cases, and whether live verification proves the original personal-agent issue."
-api-compat,Backward compatibility and public API,"Review public host/runtime API compatibility around resolvePiApiKey, added function properties, JSDoc/type contract drift, package boundaries, and downstream host impact."
-security-concurrency,Security and concurrency,"Review auth file handling, credential secrecy, clone/write semantics, locking/serialization, race conditions, and whether logs/artifacts could expose secrets."
