@@ -22,6 +22,7 @@ import {
   combineRecordedRunEvents,
   listRecordedRuns,
   listTraceRuns,
+  pruneRunArtifacts,
   readRecordedRun,
 } from "@mono-agent/observability";
 ```
@@ -30,7 +31,7 @@ import {
 
 - `createJsonlRunRecorder`, `JsonlRunRecorder`
 - `auditRecordedRuns`
-- `listRecordedRuns`, `readRecordedRun`, `classifyRecordedRunEvent`
+- `listRecordedRuns`, `readRecordedRun`, `pruneRunArtifacts`, `classifyRecordedRunEvent`
 - `combineRecordedRunEvents`
 - `registerTraceSource`, `listTraceSources`, `listTraceRuns`, `readTraceRun`
 - `redactJsonValue`

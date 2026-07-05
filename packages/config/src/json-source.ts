@@ -8,6 +8,13 @@ import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";
 
+/** JSON-serialisable shape for run-artifact retention. */
+export type MonoAgentArtifactRetentionJson = {
+  readonly maxAgeDays?: number;
+  readonly maxCount?: number;
+  readonly dryRun?: boolean;
+};
+
 /** JSON-serialisable shape for the embeddings circuit-breaker block. */
 export type MonoAgentMemoryEmbeddingsCircuitBreakerJson = {
   readonly failureThreshold?: number;
@@ -162,6 +169,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
   };
   readonly artifacts?: {
     readonly dir?: string;
+    readonly retention?: MonoAgentArtifactRetentionJson;
   };
   readonly traceability?: {
     readonly registryDir?: string;

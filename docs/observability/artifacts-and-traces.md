@@ -21,15 +21,27 @@ Artifacts are written for every run regardless of whether any exporter is config
 
 ```json
 {
-  "artifacts": { "dir": "./.mono-agent/artifacts" }
+  "artifacts": {
+    "dir": "./.mono-agent/artifacts",
+    "retention": {
+      "maxAgeDays": 365,
+      "maxCount": 50000,
+      "dryRun": false
+    }
+  }
 }
 ```
 
 | Key | Default | Env var | Coverage |
 | --- | --- | --- | --- |
 | `artifacts.dir` | `./.mono-agent/artifacts` | `MONO_AGENT_ARTIFACT_DIR` | config |
+| `artifacts.retention.maxAgeDays` | `365` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS` | config |
+| `artifacts.retention.maxCount` | `50000` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT` | config |
+| `artifacts.retention.dryRun` | `false` | `MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN` | config |
 
 These files are exactly what the [backfill command](/observability/phoenix-and-backfill/) replays into Phoenix after the fact — `run-*.summary.json` plus `run-*.events.jsonl` are read back and exported with their original historical timestamps. The `error` / `failoverHistory` fields are written into the live record *and* re-canonicalized by the recorded-runs list reader, so they surface for both freshly-failed runs and re-read artifacts (artifacts written before this field was added carry no source data to recover).
+
+The host applies artifact retention once at startup, after stale-run reconciliation, and then on a periodic in-app sweep. Retention deletes only terminal run summaries and their matching top-level event files; summaries still marked `running` are never deleted by the retention pass. Set `dryRun: true` to log which runs would be pruned without removing files.
 
 ### Run status and stale-run reconciliation
 

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";
 
@@ -101,6 +101,8 @@ export interface BackgroundDeps {
   readonly writeFile: (path: string, data: string) => Promise<void>;
   readonly mkdir: (path: string) => Promise<void>;
   readonly rm: (path: string) => Promise<void>;
+  readonly stat: (path: string) => Promise<{ readonly size: number }>;
+  readonly rename: (oldPath: string, newPath: string) => Promise<void>;
   /** True when a pid is still alive (or alive but owned by another user). */
   readonly isAlive: (pid: number) => boolean;
   readonly stdout: (text: string) => void;
@@ -120,6 +122,8 @@ export function defaultBackgroundDeps(): BackgroundDeps {
     writeFile: (path, data) => writeFile(path, data, "utf8"),
     mkdir: (path) => mkdir(path, { recursive: true }).then(() => undefined),
     rm: (path) => rm(path, { force: true }),
+    stat,
+    rename,
     isAlive: (pid) => {
       try {
         process.kill(pid, 0);
@@ -152,6 +156,8 @@ export interface ReadyPollOptions extends PollOptions {
 
 const DEFAULT_POLL: PollOptions = { timeoutMs: 18_000, intervalMs: 400 };
 const SINCE_SKEW_MS = 2_000;
+export const LAUNCHD_LOG_MAX_BYTES = 5 * 1024 * 1024;
+export const LAUNCHD_LOG_ROTATION_COUNT = 3;
 
 export async function startBackground(
   target: InstanceTarget,
@@ -173,6 +179,7 @@ export async function restartBackground(
 async function launchBackground(target: InstanceTarget, deps: BackgroundDeps, poll: PollOptions): Promise<number> {
   const uid = deps.getuid();
   await writePlist(target, deps);
+  await rotateLaunchdLogs(target.paths, deps);
   const sinceMs = deps.now();
   const outcome = await bootstrapOrRestart(target, deps, uid);
   if (!outcome.ok) {
@@ -204,6 +211,36 @@ async function writePlist(target: InstanceTarget, deps: BackgroundDeps): Promise
     pathEnv: target.pathEnv,
   });
   await deps.writeFile(target.paths.plistPath, xml);
+}
+
+async function rotateLaunchdLogs(paths: LaunchdPaths, deps: BackgroundDeps): Promise<void> {
+  await Promise.all([
+    rotateLaunchdLog(paths.stdoutPath, deps),
+    rotateLaunchdLog(paths.stderrPath, deps),
+  ]);
+}
+
+async function rotateLaunchdLog(path: string, deps: BackgroundDeps): Promise<void> {
+  let size: number;
+  try {
+    size = (await deps.stat(path)).size;
+  } catch {
+    return;
+  }
+  if (size <= LAUNCHD_LOG_MAX_BYTES) {
+    return;
+  }
+
+  await deps.rm(`${path}.${LAUNCHD_LOG_ROTATION_COUNT}`);
+  for (let index = LAUNCHD_LOG_ROTATION_COUNT; index >= 1; index -= 1) {
+    const source = index === 1 ? path : `${path}.${index - 1}`;
+    const destination = `${path}.${index}`;
+    try {
+      await deps.rename(source, destination);
+    } catch {
+      // Missing or locked rotation segment: leave it for the next launch cycle.
+    }
+  }
 }
 
 interface LaunchOutcome {

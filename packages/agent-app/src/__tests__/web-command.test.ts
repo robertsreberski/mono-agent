@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,24 @@ async function testConfig(): Promise<string> {
   const configPath = join(dir, "mono-agent.config.json");
   await writeFile(configPath, JSON.stringify({ traceability: { registryDir: "./trace-sources" } }), "utf8");
   return configPath;
+}
+
+async function writeStaleTraceManifest(registryDir: string, sourceId: string): Promise<void> {
+  const updatedAt = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+  await mkdir(registryDir, { recursive: true });
+  await writeFile(
+    join(registryDir, `${sourceId}.json`),
+    JSON.stringify({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId,
+      label: sourceId,
+      artifactDir: join(registryDir, "..", `${sourceId}-artifacts`),
+      status: "stopped",
+      startedAt: updatedAt,
+      updatedAt,
+    }),
+    "utf8",
+  );
 }
 
 describe("runWeb", () => {
@@ -137,5 +155,37 @@ describe("runWeb", () => {
     expect(capturedOptions?.authToken).toMatch(/^[a-f0-9]{64}$/u);
     expect(output).toContain(`token=${capturedOptions?.authToken}`);
     expect(openUrl).toHaveBeenCalledWith(expect.stringContaining(`token=${capturedOptions?.authToken}`));
+  });
+
+  it("prunes stale manifests from configured and global registries before serving", async () => {
+    const configPath = await testConfig();
+    const configuredRegistryDir = join(dir!, "trace-sources");
+    const globalRegistryDir = join(dir!, "global-trace-sources");
+    await writeStaleTraceManifest(configuredRegistryDir, "configured-old");
+    await writeStaleTraceManifest(globalRegistryDir, "global-old");
+    const startServer = vi.fn(async (): Promise<SessionWebServerHandle> => {
+      expect(await readdir(configuredRegistryDir)).toEqual([]);
+      expect(await readdir(globalRegistryDir)).toEqual([]);
+      return { url: "http://127.0.0.1:4599", stop: vi.fn(async () => undefined) };
+    });
+
+    const code = await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: globalRegistryDir },
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: () => undefined },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({
+      registryDirs: [configuredRegistryDir, globalRegistryDir],
+    }));
   });
 });

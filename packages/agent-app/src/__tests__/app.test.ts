@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -116,6 +116,78 @@ describe("startMonoAgentApp", () => {
       expect(app.exporterStatus.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
       expect(app.exporterStatus.includeSensitiveData).toBe(false);
     }
+    await app.stop();
+  });
+
+  it("applies artifact retention once on startup", async () => {
+    const artifactDir = join(dir, "artifacts");
+    await mkdir(artifactDir, { recursive: true });
+    const oldUpdatedAt = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    await writeFile(
+      join(artifactDir, "old-run.summary.json"),
+      `${JSON.stringify({
+        runId: "old-run",
+        conversationId: "chat",
+        status: "succeeded",
+        startedAt: oldUpdatedAt,
+        endedAt: oldUpdatedAt,
+        updatedAt: oldUpdatedAt,
+        artifactPaths: [],
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(join(artifactDir, "old-run.events.jsonl"), "{}\n", "utf8");
+    await writeConfig({
+      ...baseConfig(),
+      artifacts: {
+        dir: "./artifacts",
+        retention: { maxAgeDays: 30, maxCount: 5000, dryRun: false },
+      },
+    });
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+
+    await vi.waitFor(() => {
+      expect(existsSync(join(artifactDir, "old-run.summary.json"))).toBe(false);
+      expect(existsSync(join(artifactDir, "old-run.events.jsonl"))).toBe(false);
+    });
+    await app.stop();
+  });
+
+  it("applies artifact retention even when trace-source registration fails", async () => {
+    const artifactDir = join(dir, "artifacts");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(dir, "trace-sources"), "not a directory", "utf8");
+    const oldUpdatedAt = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    await writeFile(
+      join(artifactDir, "old-run.summary.json"),
+      `${JSON.stringify({
+        runId: "old-run",
+        conversationId: "chat",
+        status: "succeeded",
+        startedAt: oldUpdatedAt,
+        endedAt: oldUpdatedAt,
+        updatedAt: oldUpdatedAt,
+        artifactPaths: [],
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(join(artifactDir, "old-run.events.jsonl"), "{}\n", "utf8");
+    await writeConfig({
+      ...baseConfig(),
+      artifacts: {
+        dir: "./artifacts",
+        retention: { maxAgeDays: 30, maxCount: 5000, dryRun: false },
+      },
+    });
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+
+    expect(app.traceabilityStatus.kind).toBe("failed");
+    await vi.waitFor(() => {
+      expect(existsSync(join(artifactDir, "old-run.summary.json"))).toBe(false);
+      expect(existsSync(join(artifactDir, "old-run.events.jsonl"))).toBe(false);
+    });
     await app.stop();
   });
 
@@ -786,19 +858,26 @@ describe("startMonoAgentApp", () => {
       },
     };
     const drivers = defaultChannelDrivers().map((driver) => (driver.id === "telegram" ? wrapped : driver));
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
 
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers });
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers, logger });
     expect(app.channelStatus("telegram").kind).toBe("running");
 
     // Transient poll crash → degraded, and crucially the responder is NOT disposed
     // (the adapter self-restarts and must deliver into a live harness).
     captured?.onPollingError?.(new Error("connect ENETUNREACH"));
     expect(app.channelStatus("telegram").kind).toBe("degraded");
+    expect(logger.warn.mock.calls.filter(([message]) => message === "Telegram channel degraded; transport is recovering.")).toHaveLength(1);
     expect(disposeSpy).not.toHaveBeenCalled();
+    captured?.onPollingError?.(new Error("connect ENETUNREACH again"));
+    expect(logger.warn.mock.calls.filter(([message]) => message === "Telegram channel degraded; transport is recovering.")).toHaveLength(1);
 
     // The adapter's restart stays up → recovered → back to running.
     captured?.onPollingRecovered?.();
     expect(app.channelStatus("telegram").kind).toBe("running");
+    expect(logger.info.mock.calls.filter(([message]) => message === "Telegram channel recovered.")).toHaveLength(1);
+    captured?.onPollingRecovered?.();
+    expect(logger.info.mock.calls.filter(([message]) => message === "Telegram channel recovered.")).toHaveLength(1);
 
     // A genuine stop still disposes the responder exactly once.
     await app.stop();

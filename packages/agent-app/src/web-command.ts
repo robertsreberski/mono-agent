@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 
+import { pruneTraceSources } from "@mono-agent/observability";
 import { startSessionWebServer } from "@mono-agent/session-web";
 import type { SessionWebServerHandle } from "@mono-agent/session-web";
 import { generateBearerToken, isLoopbackHost } from "@mono-agent/settings";
@@ -49,6 +50,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   });
   const globalRegistryDir = resolveGlobalTraceRegistryDir(options.env);
   const registryDirs = dedupePaths([configuredRegistryDir, globalRegistryDir]);
+  await Promise.all(registryDirs.map((registryDir) => pruneTraceSources({ registryDir })));
   const authToken = requiresServerAuth(options.host) ? generateBearerToken() : undefined;
   const port = options.port ?? DEFAULT_WEB_PORT;
 

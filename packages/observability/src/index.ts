@@ -54,6 +54,13 @@ export type {
   AuditRecordedRunsOptions,
 } from "./artifact-audit.js";
 export {
+  pruneRunArtifacts,
+} from "./artifact-retention.js";
+export type {
+  PruneRunArtifactsOptions,
+  PruneRunArtifactsResult,
+} from "./artifact-retention.js";
+export {
   summarizeRecordedRunMetrics,
 } from "./metrics.js";
 export type {

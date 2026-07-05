@@ -29,6 +29,17 @@ async function attachmentsDirFixture(): Promise<string> {
   return dir;
 }
 
+async function waitForAttachmentFiles(dir: string, expectedCount: number): Promise<string[]> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const files = await readdir(dir);
+    if (files.length === expectedCount) {
+      return files;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return readdir(dir);
+}
+
 function attachmentRequest(conversationId: string) {
   const bytes = Buffer.from(`bytes-for-${conversationId}`);
   return {
@@ -81,7 +92,7 @@ describe("AgentHarness backpressure (maxPendingRuns)", () => {
 
     // Run 2: admitted (pending=1), parks waiting for the concurrency slot.
     const second = harness.run(attachmentRequest("c2"));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitForAttachmentFiles(attachmentsDir, 2);
 
     // Run 3: arrives while pending is already at the bound -> fails fast.
     const third = await harness.run(attachmentRequest("c3"));

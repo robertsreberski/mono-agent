@@ -43,6 +43,8 @@ import { loadInteractionSettings, startInteractionBridge } from "./interaction-b
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import { startMemoryRituals } from "./memory-rituals.js";
 import type { RunningRituals } from "./memory-rituals.js";
+import { startArtifactRetentionScheduler } from "./artifact-retention.js";
+import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js";
 import {
   createMemoryRecallRuntimeExtension,
   resolveMemoryRecallSettings,
@@ -186,6 +188,8 @@ class MonoAgentAppController implements MonoAgentApp {
   // `startTraceability`). Kept in lockstep with `traceSource` on every
   // refresh/stop so both manifests describe the same instance identically.
   private globalTraceSource: TraceSourceHandle | undefined;
+  private artifactRetentionScheduler: RunningArtifactRetentionScheduler | undefined;
+  private artifactRetentionGeneration = 0;
   private memoryRituals: RunningRituals | undefined;
   // One shared memory store across all channel responders + the ritual scheduler, so there is a single
   // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
@@ -259,6 +263,7 @@ class MonoAgentAppController implements MonoAgentApp {
         await this.stopChannel(driver.id, `${reason}:reload`);
       }
       this.stopMemoryRituals();
+      this.stopArtifactRetentionScheduler();
       await this.resetSharedMemory();
       await this.stopTraceSource(`${reason}:reload`);
       await this.startTraceability(reason);
@@ -304,6 +309,7 @@ class MonoAgentAppController implements MonoAgentApp {
     if (this.stopped) {
       return this.traceabilityStatusValue;
     }
+    let artifactDirForRetention: string | undefined;
     try {
       const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
       await this.refreshSelectedSkillsSnapshot(reason);
@@ -315,6 +321,7 @@ class MonoAgentAppController implements MonoAgentApp {
         resolveAppTraceHeartbeatMs(input),
         resolveAppTraceGlobalDiscovery(input),
       ]);
+      artifactDirForRetention = artifactDir;
       const registerOptions = {
         registryDir,
         sourceId,
@@ -349,13 +356,17 @@ class MonoAgentAppController implements MonoAgentApp {
         this.globalTraceSource = undefined;
       }
 
-      // Fire-and-forget: orphan reclamation is best-effort cleanup and must not gate startup
-      // readiness (it scans the whole artifacts dir, which grows unbounded over time).
-      void this.reconcileStaleRunsOnce(artifactDir);
     } catch (error) {
       const failure = reasonOf(error);
       this.traceabilityStatusValue = { kind: "failed", reason: failure };
       this.logger?.error?.("Traceability source registration failed.", { reason: failure });
+    } finally {
+      if (artifactDirForRetention !== undefined) {
+        // Fire-and-forget: orphan reclamation and retention are best-effort cleanup
+        // and must not gate startup readiness. Keep them independent from trace
+        // source registration; a broken registry should not disable artifact GC.
+        this.restartArtifactRetentionScheduler(artifactDirForRetention, reason);
+      }
     }
     return this.traceabilityStatusValue;
   }
@@ -534,6 +545,7 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     await this.stopInteractionBridge();
     this.stopMemoryRituals();
+    this.stopArtifactRetentionScheduler();
     await this.resetSharedMemory();
     await this.stopTraceSource("stop");
     for (const runtime of this.activeRuntimes.splice(0)) {
@@ -614,6 +626,50 @@ class MonoAgentAppController implements MonoAgentApp {
     this.memoryRituals = undefined;
     rituals.stop();
     this.logger?.info?.("Memory ritual scheduler stopped.");
+  }
+
+  private restartArtifactRetentionScheduler(artifactDir: string, reason: string): void {
+    this.stopArtifactRetentionScheduler();
+    const generation = ++this.artifactRetentionGeneration;
+    void (async () => {
+      let coreConfig: MonoAgentConfig;
+      try {
+        const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+        coreConfig = await loadAppCoreConfig(input);
+        this.rememberSelectedSkills(coreConfig);
+      } catch (error) {
+        this.logger?.warn?.("Artifact retention scheduler skipped until core config loads.", { reason: reasonOf(error) });
+        void this.reconcileStaleRunsOnce(artifactDir);
+        return;
+      }
+      if (this.stopped || generation !== this.artifactRetentionGeneration) {
+        return;
+      }
+      this.artifactRetentionScheduler = startArtifactRetentionScheduler({
+        artifactDir,
+        retention: coreConfig.artifacts.retention,
+        ...(this.logger === undefined ? {} : { logger: this.logger }),
+        beforeFirstRun: () => this.reconcileStaleRunsOnce(artifactDir),
+      });
+      this.logger?.info?.("Artifact retention scheduler started.", {
+        reason,
+        artifactDir,
+        maxAgeDays: coreConfig.artifacts.retention.maxAgeDays,
+        maxCount: coreConfig.artifacts.retention.maxCount,
+        dryRun: coreConfig.artifacts.retention.dryRun,
+      });
+    })();
+  }
+
+  private stopArtifactRetentionScheduler(): void {
+    this.artifactRetentionGeneration += 1;
+    const scheduler = this.artifactRetentionScheduler;
+    if (scheduler === undefined) {
+      return;
+    }
+    this.artifactRetentionScheduler = undefined;
+    scheduler.stop();
+    this.logger?.info?.("Artifact retention scheduler stopped.");
   }
 
   /**
@@ -753,6 +809,9 @@ class MonoAgentAppController implements MonoAgentApp {
         // for the restarted transport to deliver into, and a later stop/reload still
         // finds the entry and disposes it exactly once.
         onDegraded: (reason) => {
+          if (this.statuses.get(driver.id)?.kind === "degraded") {
+            return;
+          }
           this.setStatus(driver.id, { kind: "degraded", reason });
           this.logger?.warn?.(`${driver.label} channel degraded; transport is recovering.`, { reason });
         },
@@ -762,6 +821,9 @@ class MonoAgentAppController implements MonoAgentApp {
         onRecovered: () => {
           const entry = this.running.get(driver.id);
           if (entry === undefined) {
+            return;
+          }
+          if (this.statuses.get(driver.id)?.kind !== "degraded") {
             return;
           }
           this.setStatus(driver.id, { kind: "running", summary: entry.summary });

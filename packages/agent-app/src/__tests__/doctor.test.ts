@@ -419,6 +419,24 @@ describe("validateMonoAgentFolder — runs health section", () => {
     return { artifactDir, configPath };
   }
 
+  it("reports effective artifact retention settings", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+      context: { identityPath: "./IDENTITY.md" },
+      artifacts: {
+        dir: "./artifacts",
+        retention: { maxAgeDays: 12, maxCount: 34, dryRun: true },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const runs = sectionById(report, "runs");
+    expect(runs.details[0]).toBe("Artifact retention: maxAgeDays=12, maxCount=34, dryRun=true.");
+    expect(report.ok).toBe(true);
+  });
+
   it("reports recent status counts and a failure-kind breakdown from summaries", async () => {
     const { artifactDir, configPath } = await writeRunsConfig();
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
