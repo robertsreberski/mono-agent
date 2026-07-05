@@ -282,12 +282,12 @@ mono-agent web --host 0.0.0.0 --allow-non-loopback
 | Flag | Effect |
 | --- | --- |
 | `--host <addr>` | Bind address for the PWA backend (default `127.0.0.1`). |
-| `--port <n>` | Bind port (default `0`, an ephemeral port printed on start). |
+| `--port <n>` | Bind port (default `4599`, printed on start for reverse-proxy targets). |
 | `--no-open` | Do not launch the browser after the backend starts. |
 | `--allow-non-loopback` | Permit a non-loopback bind. The command generates a bearer token and prints/opens a tokenized URL; `/api/*` and `/api/stream` require it. |
 | `--config <path>` | Resolve a custom `traceability.registryDir` from this config, in addition to the global registry. |
 
-Loopback mode prints a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
+Loopback mode prints both the exact reverse-proxy target and a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
 
 ## `install-skill`
 

@@ -25,7 +25,7 @@ import type { SessionAggregatorLogger } from "./aggregator.js";
 import type { BrowserStreamFrame } from "./session-model.js";
 
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 0;
+const DEFAULT_PORT = 4599;
 const DEFAULT_MAX_RUNS_PER_INSTANCE = 200;
 /** Browser SSE heartbeat interval — a comment frame that keeps the connection warm through proxies. */
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -114,7 +114,7 @@ export async function startSessionWebServer(
 
   app.get("/api/sessions", (req, res) => {
     const instance = firstString(req.query.instance) ?? "all";
-    const sessions = aggregator.getSessions(instance);
+    const sessions = aggregator.getSessionSummaries(instance);
     const limit = parseLimit(firstString(req.query.limit));
     res.json({ sessions: limit === undefined ? sessions : sessions.slice(0, limit) });
   });
@@ -344,7 +344,7 @@ function handleStream(
   // through the same backpressure-aware queue; the aggregator's per-instance
   // eviction cap bounds how large the snapshot can grow.
   enqueue({ t: "instances", instances: aggregator.getInstances() });
-  for (const session of aggregator.getSessions("all")) {
+  for (const session of aggregator.getSessionSummaries("all")) {
     enqueue({ t: "session_upsert", session });
   }
 

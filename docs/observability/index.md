@@ -101,7 +101,7 @@ mono-agent web
 mono-agent web --port 4599 --no-open
 ```
 
-The backend binds loopback by default. `--allow-non-loopback` generates a tokenized URL and protects `/api/*` plus `/api/stream`; use it only on a trusted network boundary.
+The backend binds loopback on the stable default port `4599`. Startup prints the exact URL for reverse proxies plus a Tailscale serve hint. Run lists and the initial browser stream are summary-only; a run's full timeline is loaded lazily from its detail endpoint when opened. `--allow-non-loopback` generates a tokenized URL and protects `/api/*` plus `/api/stream`; use it only on a trusted network boundary.
 
 ## Related
 

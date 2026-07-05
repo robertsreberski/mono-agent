@@ -38,9 +38,14 @@ await server.stop();
 ```
 
 The `mono-agent web` CLI command wraps this with registry resolution + browser open.
-Loopback is the default. A non-loopback bind requires `allowNonLoopback: true`
+Loopback on port `4599` is the default. Startup prints the exact URL to target
+from reverse proxies. A non-loopback bind requires `allowNonLoopback: true`
 and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
 <token>` (or `?token=<token>` for browser `EventSource`).
+
+Run lists and the initial browser SSE snapshot are summary-only and step-less.
+Full run timelines are read lazily from `/api/sessions/:sourceId/:runId` when a
+detail view opens.
 
 ## Public API
 

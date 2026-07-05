@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { RunEventBus, RunEventFrame } from "@mono-agent/agent-contracts";
-import { createJsonlRunRecorder, registerTraceSource } from "@mono-agent/observability";
+import { createJsonlRunRecorder, registerTraceSource, type RunSummary } from "@mono-agent/observability";
 
 export async function makeTmpDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `session-web-${prefix}-`));
@@ -55,7 +55,7 @@ export interface SeedRunInput {
 }
 
 /** Write one real recorded run (summary + events) via the JSONL recorder. */
-export async function seedRun(input: SeedRunInput): Promise<void> {
+export async function seedRun(input: SeedRunInput): Promise<RunSummary> {
   await mkdir(input.artifactDir, { recursive: true });
   const recorder = createJsonlRunRecorder({
     runId: input.runId,
@@ -70,11 +70,11 @@ export async function seedRun(input: SeedRunInput): Promise<void> {
     timestamp: new Date(input.at).toISOString(),
     message: { content: [{ type: "text", text: input.text }] },
   });
-  await recorder.finish({ usage: { input_tokens: 10, output_tokens: 5 }, model: "pi:ollama:qwen" });
+  return await recorder.finish({ usage: { input_tokens: 10, output_tokens: 5 }, model: "pi:ollama:qwen" });
 }
 
 /** Write one real recorded run that is still marked running on disk. */
-export async function seedRunningRun(input: SeedRunInput): Promise<void> {
+export async function seedRunningRun(input: SeedRunInput): Promise<RunSummary> {
   await mkdir(input.artifactDir, { recursive: true });
   const recorder = createJsonlRunRecorder({
     runId: input.runId,
@@ -89,7 +89,11 @@ export async function seedRunningRun(input: SeedRunInput): Promise<void> {
     timestamp: new Date(input.at).toISOString(),
     message: { content: [{ type: "text", text: input.text }] },
   });
-  await recorder.start?.();
+  const summary = await recorder.start?.();
+  if (summary === undefined) {
+    throw new Error("JSONL run recorder did not expose start().");
+  }
+  return summary;
 }
 
 export interface TinySseServer {

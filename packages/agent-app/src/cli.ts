@@ -110,7 +110,7 @@ interface ParsedCliArgs {
   readonly json?: boolean;
   /** web: bind host (default 127.0.0.1). */
   readonly host?: string;
-  /** web: bind port (default 0 → ephemeral). */
+  /** web: bind port (default 4599). */
   readonly port?: number;
   /** web: `--no-open` sets this false to suppress the browser launch. */
   readonly open?: boolean;

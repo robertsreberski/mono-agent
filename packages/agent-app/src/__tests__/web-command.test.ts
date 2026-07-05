@@ -50,10 +50,36 @@ describe("runWeb", () => {
     );
 
     expect(code).toBe(0);
-    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ host: "0.0.0.0", allowNonLoopback: true }));
+    expect(startServer).toHaveBeenCalledWith(expect.objectContaining({ host: "0.0.0.0", port: 4599, allowNonLoopback: true }));
     expect(output).toContain("Loopback only.");
+    expect(output).toContain("Reverse proxies should target http://127.0.0.1:4599/");
     expect(output).not.toContain("Bound non-loopback");
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the stable default web port when --port is omitted", async () => {
+    const configPath = await testConfig();
+    let capturedOptions: StartSessionWebServerOptions | undefined;
+    const startServer = vi.fn(async (options: StartSessionWebServerOptions): Promise<SessionWebServerHandle> => {
+      capturedOptions = options;
+      return { url: "http://127.0.0.1:4599/", stop: vi.fn(async () => undefined) };
+    });
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources") },
+        open: false,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: () => undefined },
+      },
+    );
+
+    expect(capturedOptions?.port).toBe(4599);
   });
 
   it("prints a non-loopback hint when the server actually binds a non-loopback URL", async () => {
