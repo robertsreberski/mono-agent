@@ -159,8 +159,6 @@ also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | `harness.failure-handling` | Explicit failure objects (never fake success) | `auto` | Built into every run |
 | `harness.request-runtime-options` | Per-request runtime option extensions | `code` | `createConfiguredAgentResponder({ runtimeOptionsForRequest })` |
 | `orchestrator.ask-collaborator` | Loopback MCP tool delegating to named collaborator responders (call caps, per-collaborator timeout) | `code` | `createCollaboratorToolRuntimeExtension` + `runtimeOptionsForRequest` (see multi-agent demo) |
-| `evals.scenarios` | End-to-end eval scenarios/suites with trajectory + judge assertions, local artifacts | `dev` | `@mono-agent/agent-evals` (`defineAgentEvalScenario`, `runAgentEvalSuite`; live runs gated by `MONO_AGENT_EVAL_LIVE=1`) |
-
 ## Maintenance rules
 
 - A new option in any package is **not done** until it has a row here, a

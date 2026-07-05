@@ -108,4 +108,3 @@ The backend binds loopback on the stable default port `4599`. Startup prints the
 - [Configuration blueprint](/config/blueprint/) — every key in context, including `artifacts`, `traceability`, and `observability`.
 - [Environment variables](/config/env-vars/) — the `MONO_AGENT_*` overrides for the keys above.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — what a "run" is and how sessions roll over.
-- [Eval suites](/evals/) — trajectory and cost assertions over recorded runs (`@mono-agent/agent-evals`, code-only/`dev`). See [programmatic](/programmatic/).

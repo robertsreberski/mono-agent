@@ -43,15 +43,12 @@ flowchart TB
     MemoryBujo["@mono-agent/memory-bujo"]
     MemorySearch["@mono-agent/memory-search"]
     MemoryStore["@mono-agent/memory-store"]
+    MemorySupermemory["@mono-agent/memory-supermemory"]
   end
 
   subgraph ObservabilityLayer["observability"]
     Observability["@mono-agent/observability"]
     ObservabilityOtel["@mono-agent/observability-otel"]
-  end
-
-  subgraph EvaluationLayer["evaluation"]
-    AgentEvals["@mono-agent/agent-evals"]
   end
 
   subgraph Core["core"]
@@ -117,6 +114,7 @@ flowchart TB
   Host --> Harness
   Host --> Config
   Host --> MemoryBujo
+  Host -. optional backend .-> MemorySupermemory
   Host --> Observability
   Host --> RuntimeAdapter
   Host --> Sandbox
@@ -131,16 +129,13 @@ flowchart TB
   Harness --> ToolPolicy
   Orchestrator --> Contracts
   Orchestrator -.->|request-scoped MCP runtime options| Harness
-  AgentEvals --> Contracts
-  AgentEvals --> Harness
-  AgentEvals --> Observability
-
   Config --> Settings
   Config --> RuntimeAdapter
   Config --> Sandbox
   Skills --> Context
   MemoryBujo --> MemoryStore
   MemoryBujo --> MemorySearch
+  MemorySupermemory --> MemoryStore
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Sandbox
   AgentRuntime --> Sandbox
@@ -153,10 +148,9 @@ flowchart TB
 | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store`, `@mono-agent/memory-supermemory` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` |
-| `evaluation` | `@mono-agent/agent-evals` |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |

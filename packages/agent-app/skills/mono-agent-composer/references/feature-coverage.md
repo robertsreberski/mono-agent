@@ -85,4 +85,3 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Explicit failure objects (no fake success) | auto | harness |
 | Per-request runtime options, custom memory/history stores | code | `createConfiguredAgentResponder` options |
 | Multi-agent delegation (`ask_collaborator` loopback MCP tool) | code | `@mono-agent/agent-orchestrator` |
-| Eval scenarios/suites (trajectory + judge assertions) | dev | `@mono-agent/agent-evals`, live runs via `MONO_AGENT_EVAL_LIVE=1` |

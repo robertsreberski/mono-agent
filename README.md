@@ -1,6 +1,6 @@
 # Agent Framework Packages
 
-This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
+This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, settings, skills, memory, observability, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
 
 ## Documentation
 
@@ -83,10 +83,9 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-supermemory` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` | `core`, `observability` where needed | JSONL run recorder, local artifact reader, file-backed trace source registry, and OTLP trace export. |
-| `evaluation` | `@mono-agent/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
 | `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
@@ -114,7 +113,6 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   │   ├─ observability
   │   └─ tool-policy
   ├─ agent-orchestrator ── agent-contracts, MCP SDK
-  ├─ agent-evals ── agent-contracts, agent-harness, observability, agentevals
   ├─ config ── settings, runtime-adapter, sandbox
   ├─ observability-otel ── observability
   ├─ session-web ── observability, settings
@@ -324,6 +322,7 @@ flowchart TB
     MemoryStore["`@mono-agent/memory-store`\nSQLite substrate + MemoryStore contract"]
     MemoryBujo["`@mono-agent/memory-bujo`\nbujo engine (journal/bujo tiers)"]
     MemorySearch["`@mono-agent/memory-search`\nOllama/OpenAI embeddings + cosine index"]
+    MemorySupermemory["`@mono-agent/memory-supermemory`\nSupermemory-backed store"]
   end
 
   subgraph Execution["Execution layer"]
@@ -379,6 +378,7 @@ flowchart TB
   AgentHost --> MemoryStore
   AgentHost --> MemoryBujo
   AgentHost --> MemorySearch
+  AgentHost -. optional backend .-> MemorySupermemory
   AgentHost --> Policy
   AgentHost --> Sandbox
   AgentHost --> RuntimeAdapter
@@ -389,6 +389,7 @@ flowchart TB
   Harness --> Contracts
   Harness --> Context
   Harness --> Skills
+  MemorySupermemory --> MemoryStore
   Harness --> MemoryStore
   Harness --> Policy
   Harness --> Sandbox

@@ -44,14 +44,6 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "agent-evals",
-    name: "@mono-agent/agent-evals",
-    category: "evaluation",
-    responsibility: "Runs local-first end-to-end eval scenarios against agent responders and harnesses.",
-    allowedDependencyCategories: ["core", "execution", "observability", "evaluation"],
-    publishable: true,
-  },
-  {
     dir: "agent-harness",
     name: "@mono-agent/agent-harness",
     category: "execution",

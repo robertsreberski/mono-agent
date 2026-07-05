@@ -194,25 +194,8 @@ const ext = createCollaboratorToolRuntimeExtension({
 **Steps:** ensure `run-*.summary.json` + `run-*.events.jsonl` exist and Phoenix is reachable → `mono-agent backfill --all --since <iso> --until <iso> --dry-run` → `mono-agent backfill --all --since <iso>`.
 **Smoke:** dry-run then real export; historical timestamps preserved in Phoenix and a second run does not duplicate spans (deterministic ids).
 
-## 12. Eval suite with trajectory + cost budgets — dev
-**For:** an agent product owner gating quality in CI.
-**Goal:** assert required tool calls, trajectory, and per-run cost ceilings against the composed responder.
-**Features:** `evals.scenarios`, `runtime.cost-tracking`, `observability.jsonl-artifacts`.
 
-```ts
-defineAgentEvalScenario({
-  id, input, target: { responder },
-  assertions: {
-    finalText: { includes: ["..."] }, requiredTools: ["WebSearch"],
-    maxCostUsd: 0.05, maxTurns: 5,
-    trajectory: { expectedToolCalls: [{ name: "WebSearch" }], mode: "superset" },
-  },
-});
-// runAgentEvalSuite(..., { live: true }) — or env MONO_AGENT_EVAL_LIVE=1
-```
-**Smoke:** run with `MONO_AGENT_EVAL_LIVE=1`; `eval-result.json` shows pass/fail per assertion and `report.md` is written, cost recorded under `maxCostUsd`.
-
-## 13. Multi-model fallback chain with transcript resume
+## 12. Multi-model fallback chain with transcript resume
 **For:** a reliability-minded builder who can't afford a single-provider outage.
 **Goal:** a primary model with ordered backups the native failover router tries on retryable failures, resuming from the transcript tail — reported, never silent.
 **Features:** `runtime.multi-backend`, `runtime.fallback-models`, `runtime.pi-native-tuning`, `runtime.provider-sessions`.

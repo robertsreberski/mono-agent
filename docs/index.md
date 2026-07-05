@@ -39,7 +39,6 @@ Equivalent env override: `MONO_AGENT_MODEL=claude:claude-sonnet-4-6`. See [Envir
 - **[Tools](/tools/)** — the tool policy (allow/deny), MCP integration, and the native sandbox.
 - **[Observability](/observability/)** — JSONL artifacts and traces, Phoenix/OTLP export and backfill, the CLI, and the TUI.
 - **[Programmatic](/programmatic/)** — the `code`-only escape hatches: composition, approval gates, structured output, multi-agent, A2A consumers, and custom channels.
-- **[Evals](/evals/)** — trajectory, cost, and quality evaluation harnesses.
 - **[Playbooks](/playbooks/)** — end-to-end recipes (Telegram BuJo assistant, Slack MCP bot, local-only Ollama, sandboxed code agent, and more).
 - **[Reference](/reference/)** — the feature matrix and glossary.
 

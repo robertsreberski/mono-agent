@@ -114,10 +114,6 @@ Use:
 
 Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; local JSONL artifacts are the fallback otherwise.
 
-## Evaluation Join
-
-Use `@mono-agent/agent-evals` to define end-to-end scenarios against a responder or harness: final-text assertions, trajectory/tool-call matching, cost/turn/duration budgets, and custom judges, with local JSON/markdown artifacts. Live-provider scenarios are skipped unless `MONO_AGENT_EVAL_LIVE=1`.
-
 ## Multi-Agent Join
 
 Use `@mono-agent/agent-orchestrator` when one runtime should call named collaborator responders through a bounded MCP tool. Keep collaborator selection in the orchestrator layer, not inside A2A. A2A remains direct discovery and text/task communication.

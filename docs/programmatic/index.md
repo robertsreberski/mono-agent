@@ -116,5 +116,3 @@ This corresponds to the **Core Join** in the package map: `agent-contracts` (req
 - [Multi-Agent](/programmatic/multi-agent/) — `@mono-agent/agent-orchestrator`: one runtime calling named collaborator responders through a bounded MCP tool.
 - [A2A Consumer](/programmatic/a2a-consumer/) — calling another agent's Agent Card from your host with `@mono-agent/a2a-adapter`.
 - [Custom Channels](/programmatic/custom-channels/) — writing a `ChannelDriver` (or composing an edge adapter directly) to feed your own transport into a responder.
-
-See also [Evals](/evals/) for `@mono-agent/agent-evals`, which runs end-to-end scenarios (final-text, trajectory, cost/turn/duration budgets, custom judges) against any responder or harness you build here.
