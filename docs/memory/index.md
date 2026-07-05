@@ -171,6 +171,8 @@ How the **host** persists each completed turn (independent of the tier's recall)
 - `append-host-summary` — append a deterministic, single-line rapid-log of the turn to today's daily file (fast, no LLM). Available in every tier.
 - `capture` — **bujo only.** A superset of `append-host-summary`: it still writes the deterministic rapid-log synchronously (durable), and *additionally* runs the intelligent capture pipeline (distil → reconcile → entity extraction) in the background. Capture is **async and non-blocking** (reply latency is unchanged), serialized per store, and **drained on graceful shutdown** (nothing queued is lost on stop; the canonical markdown rapid-log survives even if a capture is interrupted). Because it needs a chat LLM, `writeMode: "capture"` requires `mode: "bujo"` and fails config validation otherwise — no silent fallback.
 
+Low-signal successful turns are skipped in every write mode: the `NOTHING_TO_REPORT` no-op sentinel and tiny explicit test/ping probes such as `test` / `test ok`. Cron and webhook writes are assistant-answer-only, so trigger prompts and webhook pre-instructions do not enter memory.
+
 ```jsonc
 { "memory": { "mode": "bujo", "writeMode": "capture", "path": "./.mono-agent/memory" /* + embeddings + llm */ } }
 ```

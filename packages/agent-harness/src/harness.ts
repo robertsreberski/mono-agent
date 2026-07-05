@@ -846,6 +846,9 @@ export class MonoAgentHarness implements AgentHarness {
 
     const mode = this.options.memoryWriteMode;
     if (this.options.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
+      if (shouldSkipMemoryPersistence(userMessage, assistantText, options)) {
+        return;
+      }
       // Always write the deterministic rapid-log line (sync, durable).
       await this.options.memory.appendHostSummary(
         conversationId,
@@ -1222,6 +1225,53 @@ function captureTurnText(
 
 function isTriggerSource(source: string | undefined): boolean {
   return source === "cron" || source === "webhook";
+}
+
+const MAX_TRIVIAL_MEMORY_TURN_CHARS = 48;
+const TRIVIAL_MEMORY_ANCHOR_TOKENS = new Set([
+  "ping",
+  "pong",
+  "test",
+  "testing",
+]);
+const TRIVIAL_MEMORY_FILLER_TOKENS = new Set([
+  "ok",
+  "okay",
+  "works",
+]);
+
+function shouldSkipMemoryPersistence(
+  userMessage: string,
+  assistantText: string,
+  options: { readonly source?: string } = {},
+): boolean {
+  return isNothingToReportSentinel(assistantText) || isTrivialMemoryTurn(userMessage, assistantText, options);
+}
+
+function isNothingToReportSentinel(assistantText: string): boolean {
+  return assistantText.trim().toUpperCase() === NOTHING_TO_REPORT_SENTINEL;
+}
+
+function isTrivialMemoryTurn(
+  userMessage: string,
+  assistantText: string,
+  options: { readonly source?: string } = {},
+): boolean {
+  const candidate = isTriggerSource(options.source) ? assistantText : `${userMessage} ${assistantText}`;
+  const compact = candidate.replace(/\s+/gu, " ").trim();
+  if (compact.length === 0 || compact.length > MAX_TRIVIAL_MEMORY_TURN_CHARS) {
+    return false;
+  }
+  const tokens = compact
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .filter((token) => token.length > 0);
+  return (
+    tokens.some((token) => TRIVIAL_MEMORY_ANCHOR_TOKENS.has(token)) &&
+    tokens.every((token) => TRIVIAL_MEMORY_ANCHOR_TOKENS.has(token) || TRIVIAL_MEMORY_FILLER_TOKENS.has(token))
+  );
 }
 
 function compactOneLine(value: string, maxChars: number): string {
