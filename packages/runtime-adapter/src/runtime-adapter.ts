@@ -18,6 +18,11 @@ import type {
   RuntimeToolOptions,
 } from "./types.js";
 
+type KernelRuntimeInstance = ReturnType<typeof createRuntime>;
+type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
+type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
+type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
+
 export type RuntimeAdapterErrorCode =
   | "invalid_model_reference"
   | "invalid_execution_mode"
@@ -174,7 +179,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   // agent/sandbox-seam.js) — this is the ONE place the real @mono-agent/sandbox
   // implementation gets injected, so every mono-agent host's sandbox policy is
   // actually enforced without the kernel depending on that package itself.
-  const hostWithSandbox = { sandbox: monoSandboxImpl, ...hostOptions };
+  const hostWithSandbox = { sandbox: monoSandboxImpl, ...hostOptions } as unknown as KernelHostOptions;
   const runtime = chain === undefined
     ? createRuntime(hostWithSandbox)
     : createRouterRuntime({ host: hostWithSandbox, chain });
@@ -195,11 +200,11 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       const result = await runtime.run(systemPrompt, {
         ...runOptions,
         executionMode,
-      });
+      } as unknown as KernelRunOptions);
       return result as RuntimeResult;
     },
     configureTools(next?: RuntimeToolOptions): void {
-      runtime.configureTools?.(next === undefined ? undefined : { ...next });
+      runtime.configureTools?.(next === undefined ? undefined : ({ ...next } as unknown as KernelToolOptions));
     },
     async disposeSession(providerSessionId: string): Promise<boolean | void> {
       return runtime.disposeSession?.(providerSessionId);

@@ -8,10 +8,13 @@ import {
   SandboxUnavailableError,
   createSandboxPolicy,
   createSrtSandboxEngine,
+  describeSandboxEffectiveState,
   failClosedSandboxPolicy,
   mergeSandboxPolicies,
   networkPolicyAllowsUrl,
   prepareSandboxedCommand,
+  resolveSandboxEffectiveState,
+  sandboxEffectiveStateWarning,
   sandboxPolicyToRuntimeOptions,
   sandboxRequired,
   srtSettingsForPolicy,
@@ -43,6 +46,11 @@ describe("sandbox policy", () => {
       writableRoots: ["/repo/workspace"],
     });
     expect(sandboxRequired(policy)).toBe(true);
+
+    expect(createSandboxPolicy({ root: "/repo/workspace" })).toMatchObject({
+      fallback: "fail-closed",
+      unsafeAllowHostProcess: false,
+    });
   });
 
   it("requires an explicit unsafe host-process opt-in before fallback is allowed", () => {
@@ -71,6 +79,145 @@ describe("sandbox policy", () => {
     expect(sandboxPolicyToRuntimeOptions(policy)).toEqual({
       sandboxPolicy: policy,
     });
+  });
+});
+
+describe("sandbox effective state", () => {
+  it("reports no policy as off without a warning", async () => {
+    const state = await resolveSandboxEffectiveState({});
+
+    expect(state).toMatchObject({
+      configured: false,
+      configuredMode: undefined,
+      effective: "off",
+      engine: undefined,
+      engineAvailable: undefined,
+      fallback: undefined,
+      fallbackActive: false,
+      unsafeAllowHostProcess: false,
+    });
+    expect(sandboxEffectiveStateWarning(state)).toBeUndefined();
+    expect(describeSandboxEffectiveState(state)).toContain("Sandbox is off");
+  });
+
+  it("reports mode off as configured false and effective off", async () => {
+    const policy = createSandboxPolicy({ mode: "off", root: "/repo" });
+    const state = await resolveSandboxEffectiveState({ policy });
+
+    expect(state).toMatchObject({
+      configured: false,
+      configuredMode: "off",
+      effective: "off",
+      engine: "srt",
+      engineAvailable: undefined,
+      fallbackActive: false,
+    });
+    expect(sandboxEffectiveStateWarning(state)).toBeUndefined();
+  });
+
+  it("reports native as effective when the engine is available", async () => {
+    const policy = failClosedSandboxPolicy({ root: "/repo" });
+    const state = await resolveSandboxEffectiveState({
+      policy,
+      engine: {
+        id: "fake",
+        async isAvailable() {
+          return true;
+        },
+        async prepareCommand() {
+          throw new Error("should not prepare");
+        },
+      },
+    });
+
+    expect(state).toMatchObject({
+      configured: true,
+      configuredMode: "native",
+      effective: "native",
+      engine: "fake",
+      engineAvailable: true,
+      fallback: "fail-closed",
+      fallbackActive: false,
+      unsafeAllowHostProcess: false,
+    });
+    expect(sandboxEffectiveStateWarning(state)).toBeUndefined();
+    expect(describeSandboxEffectiveState(state)).toContain("commands run sandboxed");
+  });
+
+  it("reports fail-closed native policies as blocked when the engine is unavailable", async () => {
+    const policy = failClosedSandboxPolicy({ root: "/repo" });
+    const state = await resolveSandboxEffectiveState({
+      policy,
+      engine: {
+        id: "fake",
+        async isAvailable() {
+          return false;
+        },
+        async prepareCommand() {
+          throw new Error("should not prepare");
+        },
+      },
+    });
+
+    expect(state).toMatchObject({
+      configured: true,
+      configuredMode: "native",
+      effective: "blocked",
+      engine: "fake",
+      engineAvailable: false,
+      fallback: "fail-closed",
+      fallbackActive: false,
+    });
+    expect(sandboxEffectiveStateWarning(state)).toBeUndefined();
+    expect(describeSandboxEffectiveState(state)).toContain("commands fail closed with sandbox_unavailable");
+  });
+
+  it("warns when unavailable native sandbox falls back to an unsafe host process", async () => {
+    const policy = createSandboxPolicy({
+      root: "/repo",
+      fallback: "unsafe-host-process",
+      unsafeAllowHostProcess: true,
+    });
+    const state = await resolveSandboxEffectiveState({
+      policy,
+      engine: {
+        id: "fake",
+        async isAvailable() {
+          return false;
+        },
+        async prepareCommand() {
+          throw new Error("should not prepare");
+        },
+      },
+    });
+
+    const consequence = "all sandbox roots/denyWrite entries are inert; commands run unsandboxed";
+    expect(state).toMatchObject({
+      configured: true,
+      configuredMode: "native",
+      effective: "unsafe-host-process",
+      engine: "fake",
+      engineAvailable: false,
+      fallback: "unsafe-host-process",
+      fallbackActive: true,
+      unsafeAllowHostProcess: true,
+    });
+    expect(sandboxEffectiveStateWarning(state)).toBe(`WARNING: Unsafe sandbox fallback is active: ${consequence}.`);
+    expect(describeSandboxEffectiveState(state)).toContain(consequence);
+  });
+
+  it("treats an unknown default engine as unavailable", async () => {
+    const policy = createSandboxPolicy({ root: "/repo", engine: "bubblewrap" });
+    const state = await resolveSandboxEffectiveState({ policy });
+
+    expect(state).toMatchObject({
+      configured: true,
+      effective: "blocked",
+      engine: "bubblewrap",
+      engineAvailable: false,
+      fallbackActive: false,
+    });
+    expect(sandboxEffectiveStateWarning(state)).toBeUndefined();
   });
 });
 

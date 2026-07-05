@@ -123,6 +123,7 @@
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
+ * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
  * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
@@ -260,6 +261,7 @@
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
+ * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine]
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Sandbox seam implementation (see agent/sandbox-seam.js); defaults to the zero-dependency passthroughSandbox. Real hosts inject the workspace's sandbox package via the runtime-adapter package.
  * @property {RuntimePromptOverrides} [prompts] Host-level prompt-fragment override defaults; a per-run `options.prompts` field wins over these (see resolvePrompts, runtime.js).
  * @property {ReadonlyArray<*>} [observers] Observer instances (see RuntimeObserver); loose because observer.js is not a kernel seam file.
@@ -284,6 +286,7 @@
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy]
+ * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine]
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox]
  */
 

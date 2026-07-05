@@ -7,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listTraceSources } from "@mono-agent/observability";
 import type { AgentResponder, ChannelInteractionHub, ChannelInteractionSink } from "@mono-agent/agent-contracts";
+import type { SandboxEngine } from "@mono-agent/sandbox";
 import type {
   TelegramAdapterErrorText,
   TelegramAdapterStartOptions,
 } from "@mono-agent/telegram-adapter";
 import type { SlackAdapterStartOptions } from "@mono-agent/slack-adapter";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { startMonoAgentApp } from "../app.js";
 import {
@@ -47,6 +49,16 @@ function baseConfig(): Record<string, unknown> {
     traceability: { registryDir: "./trace-sources", sourceId: "app-test", sourceLabel: "App Test" },
   };
 }
+
+const unavailableSandboxEngine: SandboxEngine = {
+  id: "fake-srt",
+  async isAvailable() {
+    return false;
+  },
+  async prepareCommand() {
+    throw new Error("not used by app startup status");
+  },
+};
 
 describe("startMonoAgentApp", () => {
   it("starts configured channels, reports waiting/disabled for the rest, and stops cleanly", async () => {
@@ -207,6 +219,89 @@ describe("startMonoAgentApp", () => {
     const context = sources[0]?.metadata?.context as { selectedSkills?: readonly string[] } | undefined;
     expect(context?.selectedSkills).toEqual(["context-example", "todoist-cli"]);
 
+    await app.stop();
+  });
+
+  it("logs and persists unsafe sandbox fallback status at startup", async () => {
+    const warnings: string[] = [];
+    await writeConfig({
+      ...baseConfig(),
+      sandbox: {
+        mode: "native",
+        fallback: "unsafe-host-process",
+        unsafeAllowHostProcess: true,
+        denyWrite: [".env", "secrets/**"],
+      },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      sandboxEngine: unavailableSandboxEngine,
+      logger: {
+        warn(message: string) {
+          warnings.push(message);
+        },
+      },
+    });
+
+    expect(app.sandboxStatus.effective).toBe("unsafe-host-process");
+    expect(app.sandboxStatus.fallbackActive).toBe(true);
+    expect(warnings.join("\n")).toContain("WARNING: Unsafe sandbox fallback is active");
+    expect(warnings.join("\n")).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
+
+    const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+    const sandbox = sources[0]?.metadata?.sandbox as
+      | { effective?: string; engineAvailable?: boolean; fallbackActive?: boolean; warning?: string }
+      | undefined;
+    expect(sandbox?.effective).toBe("unsafe-host-process");
+    expect(sandbox?.engineAvailable).toBe(false);
+    expect(sandbox?.fallbackActive).toBe(true);
+    expect(sandbox?.warning).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
+
+    await app.stop();
+  });
+
+  it("threads the status sandbox engine into responder runtime execution", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+    const runtimeCalls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCalls.push(options);
+        return { text: "ok" };
+      },
+    };
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig() {
+        return { enabled: true };
+      },
+      isConfigError() {
+        return false;
+      },
+      async start(input) {
+        await input.responder.respond(
+          { conversationId: "probe-conversation", text: "ping", abortSignal: new AbortController().signal },
+          { append: async () => undefined },
+        );
+        return { summary: { status: "probed" }, stop: async () => undefined };
+      },
+    };
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [driver],
+      runtime,
+      sandboxEngine: unavailableSandboxEngine,
+    });
+
+    expect(app.sandboxStatus.engine).toBe("fake-srt");
+    expect(runtimeCalls[0]?.sandboxEngine).toBe(unavailableSandboxEngine);
     await app.stop();
   });
 

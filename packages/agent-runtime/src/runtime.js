@@ -60,6 +60,7 @@ const TOOL_RUNTIME_KEYS = [
   "ripgrepPath",
   "qaOutputDir",
   "sandboxPolicy",
+  "sandboxEngine",
   "sandbox",
 ];
 

@@ -152,20 +152,20 @@ const ext = createCollaboratorToolRuntimeExtension({
 ```
 **Smoke:** give a compound task ("research X then write a summary"); confirm the artifact shows `ask_collaborator` delegating to both, and `cleanup()` closes the MCP port.
 
-## 9. Sandboxed code agent (no internet, deny .env)
+## 9. Sandboxed code agent (loopback only, deny .env)
 **For:** a security team deploying an internal code assistant.
-**Goal:** read repos + run Bash inside the native srt sandbox with no network and protected secrets.
+**Goal:** read repos + run Bash inside the native srt sandbox with loopback-only network access and protected secrets.
 **Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allowlist`, `memory.journal`.
 
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
-  "tools": { "allowedTools": ["Read", "Grep", "Bash"] },
-  "sandbox": { "mode": "native", "network": { "mode": "none" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
+  "tools": { "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] },
+  "sandbox": { "mode": "native", "network": { "mode": "localhost" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
 }
 ```
-**Steps:** `mono-agent init --memory journal` → allow Read/Grep/Bash → `sandbox.mode native` + `network none` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
-**Smoke:** ask it to read a file + run Bash (works), then fetch a URL or write `.env` (both blocked in the artifact). Note: provider CLI bridges run their own tool loops and may not be srt-wrapped — pair with provider sandboxing.
+**Steps:** `mono-agent init --memory journal` → allow Read/Write/Edit/Glob/Grep/Bash → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
+**Smoke:** ask it to read a file + run Bash (works), then fetch an external URL or write `.env` (both blocked in the artifact). Note: provider CLI bridges run their own tool loops and may not be srt-wrapped — pair with provider sandboxing.
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.

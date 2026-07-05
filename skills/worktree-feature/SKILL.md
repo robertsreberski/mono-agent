@@ -12,7 +12,7 @@ tree and **never `git stash` WIP on it**.
 ## Create
 
 ```bash
-cd /Users/example/Personal_Repositories/mono-agent
+cd "${MONO_AGENT_REPO:-$HOME/Personal_Repositories/mono-agent}"
 git worktree add .claude/worktrees/<name> -b <branch> origin/main
 # or branch from current work: git worktree add .claude/worktrees/<name> -b <branch> HEAD
 ```
@@ -49,7 +49,7 @@ resolution hits this.
 ```bash
 pnpm -C website install
 # or:
-ln -sfn /Users/example/Personal_Repositories/mono-agent/website/node_modules website/node_modules
+ln -sfn "${MONO_AGENT_REPO:-$HOME/Personal_Repositories/mono-agent}/website/node_modules" website/node_modules
 ```
 
 ## Ship

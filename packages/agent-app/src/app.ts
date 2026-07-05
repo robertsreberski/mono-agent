@@ -12,6 +12,12 @@ import { pruneTraceSources, reconcileStaleRunArtifacts, registerTraceSource } fr
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import { modelReferenceKey } from "@mono-agent/runtime-adapter";
 import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import {
+  describeSandboxEffectiveState,
+  resolveSandboxEffectiveState,
+  sandboxEffectiveStateWarning,
+} from "@mono-agent/sandbox";
+import type { SandboxEffectiveState, SandboxEngine } from "@mono-agent/sandbox";
 
 import {
   isAppCoreConfigError,
@@ -73,6 +79,8 @@ export interface MonoAgentAppOptions {
   readonly drivers?: readonly ChannelDriver[];
   /** Shared runtime override (testing / advanced composition). */
   readonly runtime?: MonoRuntimeLike;
+  /** Sandbox engine override (testing / advanced composition). */
+  readonly sandboxEngine?: SandboxEngine;
   readonly traceDefaults?: AppTraceDefaults;
 }
 
@@ -103,10 +111,17 @@ export type ExporterStatus =
   | { readonly kind: "disabled"; readonly reason: string }
   | { readonly kind: "failed"; readonly reason: string };
 
+export interface SandboxStatus extends SandboxEffectiveState {
+  readonly detail: string;
+  readonly warning?: string;
+  readonly resolutionError?: string;
+}
+
 export interface MonoAgentApp {
   readonly configPath: string;
   readonly traceabilityStatus: TraceabilityStatus;
   readonly exporterStatus: ExporterStatus;
+  readonly sandboxStatus: SandboxStatus;
   readonly selectedSkills: readonly string[] | undefined;
   channelStatus(id: ChannelId): ChannelStatus;
   channelStatuses(): ReadonlyMap<ChannelId, ChannelStatus>;
@@ -134,9 +149,11 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
     drivers,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
+    ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
     ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
   });
 
+  await controller.refreshSandboxStatus("startup");
   await controller.startTraceability("startup");
   await controller.startExporters("startup");
   await Promise.all(drivers.map((driver) => controller?.startChannelIfConfigured(driver.id, "startup")));
@@ -152,8 +169,20 @@ interface MonoAgentAppControllerInput {
   readonly drivers: readonly ChannelDriver[];
   readonly logger?: MonoAgentAppLogger;
   readonly runtime?: MonoRuntimeLike;
+  readonly sandboxEngine?: SandboxEngine;
   readonly traceDefaults?: AppTraceDefaults;
 }
+
+const DEFAULT_SANDBOX_STATUS: SandboxStatus = sandboxStatusFromState({
+  configured: false,
+  configuredMode: undefined,
+  effective: "off",
+  engine: undefined,
+  engineAvailable: undefined,
+  fallback: undefined,
+  fallbackActive: false,
+  unsafeAllowHostProcess: false,
+});
 
 class MonoAgentAppController implements MonoAgentApp {
   readonly configPath: string;
@@ -163,6 +192,7 @@ class MonoAgentAppController implements MonoAgentApp {
   private readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
   private readonly logger: MonoAgentAppLogger | undefined;
   private readonly runtime: MonoRuntimeLike | undefined;
+  private readonly sandboxEngine: SandboxEngine | undefined;
   private readonly traceDefaults: AppTraceDefaults | undefined;
   private readonly activeRuntimes: MonoRuntimeLike[] = [];
   private readonly statuses = new Map<ChannelId, ChannelStatus>();
@@ -179,6 +209,7 @@ class MonoAgentAppController implements MonoAgentApp {
     kind: "disabled",
     reason: "No observability exporter configured.",
   };
+  private sandboxStatusValue: SandboxStatus = DEFAULT_SANDBOX_STATUS;
   private selectedSkillsValue: readonly string[] | undefined;
   /** The exporter the responder threads into agent-host (first configured exporter). */
   private resolvedExporter: ResolvedExporter | undefined;
@@ -217,6 +248,7 @@ class MonoAgentAppController implements MonoAgentApp {
     this.driversById = new Map(input.drivers.map((driver) => [driver.id, driver]));
     this.logger = input.logger;
     this.runtime = input.runtime;
+    this.sandboxEngine = input.sandboxEngine;
     this.traceDefaults = input.traceDefaults;
     for (const driver of input.drivers) {
       this.statuses.set(driver.id, {
@@ -232,6 +264,10 @@ class MonoAgentAppController implements MonoAgentApp {
 
   get exporterStatus(): ExporterStatus {
     return this.exporterStatusValue;
+  }
+
+  get sandboxStatus(): SandboxStatus {
+    return this.sandboxStatusValue;
   }
 
   get selectedSkills(): readonly string[] | undefined {
@@ -266,6 +302,7 @@ class MonoAgentAppController implements MonoAgentApp {
       this.stopArtifactRetentionScheduler();
       await this.resetSharedMemory();
       await this.stopTraceSource(`${reason}:reload`);
+      await this.refreshSandboxStatus(reason);
       await this.startTraceability(reason);
       await this.startExporters(reason);
       await Promise.all(this.drivers.map((driver) => this.startChannelIfConfigured(driver.id, reason)));
@@ -369,6 +406,33 @@ class MonoAgentAppController implements MonoAgentApp {
       }
     }
     return this.traceabilityStatusValue;
+  }
+
+  async refreshSandboxStatus(reason: string): Promise<SandboxStatus> {
+    try {
+      const input: MonoAgentAppConfigInput = { env: this.env, cwd: this.cwd, configPath: this.configPath };
+      const coreConfig = await loadAppCoreConfig(input);
+      const state = await resolveSandboxEffectiveState({
+        ...(coreConfig.sandbox === undefined ? {} : { policy: coreConfig.sandbox }),
+        ...(this.sandboxEngine === undefined ? {} : { engine: this.sandboxEngine }),
+      });
+      const status = sandboxStatusFromState(state);
+      this.sandboxStatusValue = status;
+      if (status.warning !== undefined) {
+        this.logger?.warn?.(status.warning, { reason, detail: status.detail });
+      }
+      return status;
+    } catch (error) {
+      const resolutionError = reasonOf(error);
+      const status = {
+        ...DEFAULT_SANDBOX_STATUS,
+        detail: `Sandbox status unavailable until agent config loads: ${resolutionError}`,
+        resolutionError,
+      };
+      this.sandboxStatusValue = status;
+      this.logger?.info?.("Sandbox status unavailable until agent config loads.", { reason, detail: resolutionError });
+      return status;
+    }
   }
 
   /**
@@ -571,7 +635,10 @@ class MonoAgentAppController implements MonoAgentApp {
       return;
     }
 
-    const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+    const runtime = this.runtime ?? createConfiguredAgentRuntime({
+      config: coreConfig,
+      ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
+    });
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
@@ -900,6 +967,7 @@ class MonoAgentAppController implements MonoAgentApp {
       config: coreConfig,
       runtime,
       ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
+      ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
       ...(memory !== undefined && { memory }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
       // Thread run-identifying context onto exported spans and surface per-run
@@ -951,6 +1019,7 @@ class MonoAgentAppController implements MonoAgentApp {
         config: coreConfig,
         model,
         ...(executionMode === undefined ? {} : { executionMode }),
+        ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
       });
       cache.set(key, runtime);
       this.activeRuntimes.push(runtime);
@@ -1223,6 +1292,21 @@ class MonoAgentAppController implements MonoAgentApp {
             },
           }
         : {}),
+      sandbox: {
+        configured: this.sandboxStatusValue.configured,
+        configuredMode: this.sandboxStatusValue.configuredMode,
+        effective: this.sandboxStatusValue.effective,
+        engine: this.sandboxStatusValue.engine,
+        engineAvailable: this.sandboxStatusValue.engineAvailable,
+        fallback: this.sandboxStatusValue.fallback,
+        fallbackActive: this.sandboxStatusValue.fallbackActive,
+        unsafeAllowHostProcess: this.sandboxStatusValue.unsafeAllowHostProcess,
+        detail: this.sandboxStatusValue.detail,
+        ...(this.sandboxStatusValue.warning === undefined ? {} : { warning: this.sandboxStatusValue.warning }),
+        ...(this.sandboxStatusValue.resolutionError === undefined
+          ? {}
+          : { resolutionError: this.sandboxStatusValue.resolutionError }),
+      },
       ...(this.selectedSkillsValue === undefined
         ? {}
         : {
@@ -1233,6 +1317,15 @@ class MonoAgentAppController implements MonoAgentApp {
       channels,
     };
   }
+}
+
+function sandboxStatusFromState(state: SandboxEffectiveState): SandboxStatus {
+  const warning = sandboxEffectiveStateWarning(state);
+  return {
+    ...state,
+    detail: describeSandboxEffectiveState(state),
+    ...(warning === undefined ? {} : { warning }),
+  };
 }
 
 function reasonOf(error: unknown): string {

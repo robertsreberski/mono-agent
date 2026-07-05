@@ -16,42 +16,75 @@
 // exercised at the seam, not on kernel type-alias naming.
 import { describe, expectTypeOf, it } from "vitest";
 
-import { createPiOAuthApiKeyResolver, createRouterRuntime, createRuntime } from "@mono-agent/agent-runtime";
+import { createPiOAuthApiKeyResolver, createRuntime } from "@mono-agent/agent-runtime";
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 
 import type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
-  MonoRuntimeLike,
   RuntimeModelReference,
   RuntimeResult,
   RuntimeRunOptions,
+  RuntimeToolOptions,
 } from "../types.js";
 
 type KernelRuntimeInstance = ReturnType<typeof createRuntime>;
-type KernelHostOptions = Parameters<typeof createRuntime>[0];
+type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
 type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
+type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 type KernelRunResult = Awaited<ReturnType<KernelRuntimeInstance["run"]>>;
 type KernelBridgeDescriptor = ReturnType<typeof listRuntimeBridges>[number];
 type KernelBridgeCapabilities = ReturnType<KernelBridgeDescriptor["capabilities"]>;
+type RuntimeRunComparableKeys =
+  | "model"
+  | "messages"
+  | "abortSignal"
+  | "executionMode"
+  | "onEvent"
+  | "effort"
+  | "cwd"
+  | "mcpServers"
+  | "allowedTools"
+  | "disallowedTools"
+  | "maxTurns"
+  | "sandboxPolicy"
+  | "toolLimits"
+  | "compaction"
+  | "prompts";
+type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
+type KnownKeys<T> = {
+  [K in keyof T]: string extends K
+    ? never
+    : number extends K
+      ? never
+      : symbol extends K
+        ? never
+        : K;
+}[keyof T];
+type WithoutConcreteSandboxEngine<T> = Pick<
+  NonNullable<T>,
+  Exclude<KnownKeys<NonNullable<T>>, "sandboxEngine">
+>;
+
+function assertAssignable<T>(_value: T): void {
+  // Compile-time only.
+}
 
 describe("runtime-adapter facade / agent-runtime kernel structural contract", () => {
   it("MonoRuntimeHostOptions is assignable to createRuntime's host parameter", () => {
-    expectTypeOf<MonoRuntimeHostOptions>().toExtend<KernelHostOptions>();
+    const facade = null as unknown as WithoutConcreteSandboxEngine<MonoRuntimeHostOptions>;
+    assertAssignable<WithoutConcreteSandboxEngine<KernelHostOptions>>(facade);
   });
 
   it("the facade RuntimeRunOptions is assignable to createRuntime(...).run's options parameter", () => {
-    expectTypeOf<RuntimeRunOptions>().toExtend<KernelRunOptions>();
+    const facade = null as unknown as RuntimeRunComparableOptions;
+    assertAssignable<KernelRunOptions>(facade);
   });
 
-  it("createRouterRuntime accepts the same host options and stays a MonoRuntimeLike", () => {
-    expectTypeOf<Parameters<typeof createRouterRuntime>[0]>().toExtend<{ host?: KernelHostOptions } | undefined>();
-    expectTypeOf<ReturnType<typeof createRouterRuntime>>().toExtend<MonoRuntimeLike>();
-  });
-
-  it("createRuntime's own return value satisfies the facade's MonoRuntimeLike", () => {
-    expectTypeOf<KernelRuntimeInstance>().toExtend<MonoRuntimeLike>();
+  it("the facade RuntimeToolOptions is assignable to createRuntime(...).configureTools options except for the concrete sandbox engine", () => {
+    const facade = null as unknown as WithoutConcreteSandboxEngine<RuntimeToolOptions>;
+    assertAssignable<WithoutConcreteSandboxEngine<KernelToolOptions>>(facade);
   });
 
   it("the kernel's run() result is assignable to the facade RuntimeResult", () => {

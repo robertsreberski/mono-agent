@@ -14,8 +14,9 @@ the touched packages first: `pnpm --filter @mono-agent/<pkg>... build`.
 ## A. Throwaway agent e2e (CLI-level)
 
 ```bash
+MONO_AGENT_REPO=${MONO_AGENT_REPO:-$HOME/Personal_Repositories/mono-agent}
 SMOKE=$(mktemp -d /tmp/mono-agent-smoke.XXXX) && cd "$SMOKE"
-CLI=/Users/example/Personal_Repositories/mono-agent/packages/agent-app/dist/cli.js
+CLI="$MONO_AGENT_REPO/packages/agent-app/dist/cli.js"
 node $CLI init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
 # or hand-write a minimal IDENTITY.md + mono-agent.config.json with a real pi model
 # (e.g. pi:openai-codex:gpt-5.5), sandbox {"mode":"native","network":{"mode":"none"}},

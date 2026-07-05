@@ -68,6 +68,7 @@ export type {
   MonoRuntimeLike,
   MonoRuntimeParsedPricingModel,
   MonoRuntimePricing,
+  MonoRuntimeSandboxEngine,
   MonoRuntimeSelectionEntry,
   MonoRuntimeSupportDescription,
   RuntimeCompactionPolicy,

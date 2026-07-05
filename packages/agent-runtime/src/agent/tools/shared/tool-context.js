@@ -26,6 +26,8 @@
 //   qaOutputDir      — fallback for normalizeMcpToolParams when the per-call
 //                      runArtifactDir isn't supplied.
 //   sandboxPolicy    — optional strict filesystem/process/network sandbox policy.
+//   sandboxEngine    — optional concrete engine handed to the injected sandbox
+//                      implementation when it prepares subprocess commands.
 //   sandbox          — RuntimeSandbox implementation the policy is enforced
 //                      through (see ../../sandbox-seam.js). Always resolved,
 //                      like runtimeBrand: defaults to passthroughSandbox when
@@ -41,6 +43,7 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-bra
 
 /** @typedef {import('../../../runtime-brand.js').RuntimeBrand} RuntimeBrand */
 /** @typedef {import('../../sandbox-seam.js').SandboxPolicy} SandboxPolicy */
+/** @typedef {import('../../sandbox-seam.js').RuntimeSandboxEngine} RuntimeSandboxEngine */
 /** @typedef {import('../../sandbox-seam.js').RuntimeSandbox} RuntimeSandbox */
 
 /**
@@ -52,6 +55,7 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-bra
  * @property {string} [ripgrepPath]
  * @property {string} [qaOutputDir]
  * @property {SandboxPolicy} [sandboxPolicy]
+ * @property {RuntimeSandboxEngine} [sandboxEngine]
  * @property {RuntimeSandbox} sandbox
  * @property {RuntimeBrand} runtimeBrand
  */
@@ -67,6 +71,7 @@ const TOOL_CONTEXT_KEYS = /** @type {const} */ ([
   "ripgrepPath",
   "qaOutputDir",
   "sandboxPolicy",
+  "sandboxEngine",
 ]);
 
 /**
@@ -86,6 +91,7 @@ export function createToolContext(input = {}) {
     ripgrepPath: undefined,
     qaOutputDir: undefined,
     sandboxPolicy: undefined,
+    sandboxEngine: undefined,
     sandbox: passthroughSandbox,
     runtimeBrand: { ...DEFAULT_RUNTIME_BRAND },
   };

@@ -56,7 +56,7 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "sandbox",
-          "status": "ok",
+          "status": "waiting",
         },
         {
           "id": "observability",
@@ -140,7 +140,7 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "sandbox",
-          "status": "ok",
+          "status": "waiting",
         },
         {
           "id": "observability",
