@@ -128,7 +128,7 @@ wrapped in a circuit breaker so a slow or failing embedding service cannot stall
 
 :::note
 These timeout and breaker thresholds are not exposed as config keys — they are code-level
-defaults in `@mono-agent/memory-search`. If you embed the provider programmatically you can
+defaults in `@mono-agent/memory/search`. If you embed the provider programmatically you can
 tune them via `createEmbeddingProvider` / `createCircuitBreakerEmbeddingProvider`; see
 [../programmatic/index.md](/programmatic/).
 :::

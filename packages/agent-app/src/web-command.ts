@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { pruneTraceSources } from "@mono-agent/observability";
 import { startSessionWebServer } from "@mono-agent/session-web";
 import type { SessionWebServerHandle } from "@mono-agent/session-web";
-import { generateBearerToken, isLoopbackHost } from "@mono-agent/settings";
+import { generateBearerToken, isLoopbackHost } from "@mono-agent/agent-contracts";
 
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
 

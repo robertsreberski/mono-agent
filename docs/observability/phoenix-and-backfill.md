@@ -21,7 +21,7 @@ When you add a `phoenix` entry to `observability.exporters[]`, the host exports 
 Export is **metadata-only by default**: span inputs/outputs are exported, but raw message/tool payloads are withheld unless you opt in (see `includeSensitiveData`). Failures are bounded by `timeoutMs` and are swallowed — a Phoenix outage cannot fail or stall a run.
 
 :::note
-The transport lives in `@mono-agent/observability-otel` (built on `@opentelemetry/otlp-transformer`). Coverage: **config**.
+The transport lives in the `@mono-agent/observability/otel` subpath (built on `@opentelemetry/otlp-transformer`). Coverage: **config**.
 :::
 
 ### Per-run attributes

@@ -1,6 +1,6 @@
 import type { ConfigViewField, ConfigViewSection } from "@mono-agent/config";
-import { encodeJsonEnvValue, normalizeOptionalString, readJsonSection, readSettingsJson } from "@mono-agent/settings";
-import type { JsonEnvFieldSpec } from "@mono-agent/settings";
+import { encodeJsonEnvValue, normalizeOptionalString, readJsonSection, readSettingsJson } from "@mono-agent/agent-contracts";
+import type { JsonEnvFieldSpec } from "@mono-agent/agent-contracts";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelDriver } from "./channels.js";

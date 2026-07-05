@@ -86,14 +86,14 @@ Everything below runs in the user's agent folder, not the workspace.
 
 ## When Config Is Not Enough
 
-Config-first covers one responder served over any combination of the seven channels (webhook, OpenAI-compatible API, Telegram, Slack, WhatsApp, A2A, cron) plus sandbox, memory (lite with FTS-only recall, journal with hybrid BM25+vector recall + configured embeddings, or bujo with SQLite-indexed hybrid recall + LLM capture/reconcile + entity graph + auto-scheduled reflection/migration), and traceability. Drop to programmatic composition only for: custom `MonoRuntimeLike` implementations, request-scoped runtime extensions, tool approval gates, structured output schemas, multi-agent orchestration (`@mono-agent/agent-orchestrator`), custom channel message texts, or bespoke transports — `references/feature-coverage.md` lists which features are config keys and which are code-only. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue. For eval suites over the composed agent, use `@mono-agent/agent-evals`.
+Config-first covers one responder served over any combination of the seven channels (webhook, OpenAI-compatible API, Telegram, Slack, WhatsApp, A2A, cron) plus sandbox, memory (lite with FTS-only recall, journal with hybrid BM25+vector recall + configured embeddings, or bujo with SQLite-indexed hybrid recall + LLM capture/reconcile + entity graph + auto-scheduled reflection/migration), and traceability. Drop to programmatic composition only for: custom `MonoRuntimeLike` implementations, request-scoped runtime extensions, tool approval gates, structured output schemas, multi-agent orchestration (`@mono-agent/agent-orchestrator`), custom channel message texts, or bespoke transports — `references/feature-coverage.md` lists which features are config keys and which are code-only. Read `references/package-map.md` for the package boundaries, and start from `startMonoAgentApp({ drivers, runtime, ... })` or `@mono-agent/agent-host` rather than re-writing lifecycle glue.
 
 ## Implementation References
 
 - `references/discovery-questions.md` — the question sequence and which config keys each answer fills.
 - `references/config-blueprint.md` — annotated `mono-agent.config.json` covering every section, plus the folder layout and programmatic escape hatch.
 - `references/feature-coverage.md` — every framework feature mapped to config / CLI / code / dev-tooling coverage; the answer to "can the config do X?".
-- `references/playbooks.md` — 13 end-to-end recipes (persona → config block → `init`/`validate`/`start`/smoke). Check for a matching recipe before hand-assembling a config.
+- `references/playbooks.md` — end-to-end recipes (persona → config block → `init`/`validate`/`start`/smoke). Check for a matching recipe before hand-assembling a config.
 - `references/package-map.md` — which package owns what, for programmatic composition and troubleshooting.
 - `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
 

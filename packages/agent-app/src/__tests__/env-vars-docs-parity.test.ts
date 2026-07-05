@@ -24,12 +24,11 @@ function envKeysIn(source: string): string[] {
   return [...source.matchAll(ENV_KEY_PATTERN)].map((match) => match[0]);
 }
 
-/** Every `MONO_AGENT_*` literal the loader + all adapters + evals actually read. */
+/** Every `MONO_AGENT_*` literal the loader + all adapters actually read. */
 function codeEnvKeys(root: string): Set<string> {
   const files: string[] = [
     join(root, "packages/config/src/config.ts"),
     join(root, "packages/config/src/layered-loader.ts"),
-    join(root, "packages/agent-evals/src/index.ts"),
     // App-level loaders that read their own MONO_AGENT_* keys outside the core config.
     join(root, "packages/agent-app/src/interaction-bridge.ts"),
     join(root, "packages/agent-app/src/adapter-send-tools.ts"),

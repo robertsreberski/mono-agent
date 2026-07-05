@@ -11,7 +11,7 @@ import { SLACK_CONFIG_FIELDS } from "@mono-agent/slack-adapter";
 import { TELEGRAM_CONFIG_FIELDS } from "@mono-agent/telegram-adapter";
 import { WEBHOOK_CONFIG_FIELDS } from "@mono-agent/webhook-adapter";
 import { WHATSAPP_CONFIG_FIELDS } from "@mono-agent/whatsapp-adapter";
-import type { JsonEnvFieldSpec } from "@mono-agent/settings";
+import type { JsonEnvFieldSpec } from "@mono-agent/agent-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { collectChannelConfigViews } from "../channel-config-view.js";

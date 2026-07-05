@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Provides a `MemoryStore` (from `@mono-agent/memory-store`) backed by an external
+Provides a `MemoryStore` (from `@mono-agent/agent-contracts`) backed by an external
 [Supermemory](https://supermemory.ai) instance — a local OSS binary
 (`supermemory-server`, MIT) or the hosted cloud — reached over its REST API. Selected via
 `config.memory.backend: "supermemory"`; the built-in BuJo engine remains the default.
@@ -51,7 +51,7 @@ const block = await store.load("conv-1", "preferences");
 
 ## Dependency Boundary
 
-Depends only on `@mono-agent/memory-store` (for the `MemoryStore` contract types) and the
+Depends only on `@mono-agent/agent-contracts` (for the `MemoryStore` contract types) and the
 Fetch API. No native build, no SDK dependency — the REST client uses raw `fetch` behind an
 injectable seam (`SupermemoryFetch`) so the store is fully unit-testable without a network.
 

@@ -12,11 +12,10 @@ import type {
 } from "@mono-agent/agent-harness";
 import { resolve as resolvePath } from "node:path";
 
-import type { AgentResponder, RunEventSink } from "@mono-agent/agent-contracts";
+import type { AgentResponder, MemoryStore, RunEventSink } from "@mono-agent/agent-contracts";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { LlmComplete } from "@mono-agent/memory-bujo";
-import type { MemoryStore } from "@mono-agent/memory-store";
+import type { LlmComplete } from "@mono-agent/memory/bujo";
 import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
 import type {
   PhoenixExporterConfig,
@@ -24,7 +23,7 @@ import type {
   RunExporter,
   RunRecorder,
 } from "@mono-agent/observability";
-import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
+import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import { createBroadcastRunRecorder } from "./broadcast-recorder.js";
 import {
   assertExecutionModeCompatible,
@@ -271,16 +270,16 @@ function fallbackChainForConfig(
  * never pays for the other backend. This is what makes the configured
  * composition functions async.
  */
-type MemoryBujoModule = typeof import("@mono-agent/memory-bujo");
-type MemorySearchModule = typeof import("@mono-agent/memory-search");
+type MemoryBujoModule = typeof import("@mono-agent/memory/bujo");
+type MemorySearchModule = typeof import("@mono-agent/memory/search");
 
 let memoryBujoModule: MemoryBujoModule | undefined;
 let memorySearchModule: MemorySearchModule | undefined;
 
 const loadMemoryBujoModule = async (): Promise<MemoryBujoModule> =>
-  (memoryBujoModule ??= await import("@mono-agent/memory-bujo"));
+  (memoryBujoModule ??= await import("@mono-agent/memory/bujo"));
 const loadMemorySearchModule = async (): Promise<MemorySearchModule> =>
-  (memorySearchModule ??= await import("@mono-agent/memory-search"));
+  (memorySearchModule ??= await import("@mono-agent/memory/search"));
 
 export async function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): Promise<AgentHarness> {
   const config = options.config;

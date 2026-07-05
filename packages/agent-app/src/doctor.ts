@@ -3,7 +3,7 @@ import { access, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { listRecordedRuns } from "@mono-agent/observability";
-import { serializeTraceSpans } from "@mono-agent/observability-otel";
+import { serializeTraceSpans } from "@mono-agent/observability/otel";
 import { describeMonoRuntimeSupport, modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import {

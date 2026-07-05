@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { readSettingsJson } from "@mono-agent/settings";
+import { readSettingsJson } from "@mono-agent/agent-contracts";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 

@@ -1,6 +1,6 @@
 # Agent Framework Packages
 
-This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, settings, skills, memory, observability, evaluation, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
+This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, skills, memory, observability, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
 
 ## Documentation
 
@@ -84,42 +84,39 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
-| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers, adapter-neutral core config, and fail-closed tool/MCP policy normalization. |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
-| `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` | `core`, `observability` where needed | JSONL run recorder, local artifact reader, file-backed trace source registry, and OTLP trace export. |
-| `evaluation` | `@mono-agent/agent-evals` | `core`, `execution`, `observability` | Local-first E2E eval scenarios for responders and harnesses, with deterministic checks and trajectory scoring. |
+| `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
 | `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
-| `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
+| `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
 
 ## Dependency Direction
 
 ```text
-demos/final-agent and demos/multi-agent (not workspace packages)
+demos/final-agent (not a workspace package)
   ├─ agent-app ── all of the below; config-first host + mono-agent CLI
-  ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
-  ├─ cron-adapter ── agent-contracts, settings, cron-parser
-  ├─ live-adapter ── agent-contracts, settings, express
-  ├─ openai-api-adapter ── agent-contracts, settings, express
-  ├─ slack-adapter ── agent-contracts, settings, ws
-  ├─ telegram-adapter ── agent-contracts, settings
-  ├─ webhook-adapter ── agent-contracts, settings, express
-  ├─ whatsapp-adapter ── agent-contracts, settings, baileys
+  ├─ a2a-adapter ── agent-contracts, @a2a-js/sdk, express
+  ├─ cron-adapter ── agent-contracts, cron-parser
+  ├─ live-adapter ── agent-contracts, express
+  ├─ openai-api-adapter ── agent-contracts, express
+  ├─ slack-adapter ── agent-contracts, ws
+  ├─ telegram-adapter ── agent-contracts
+  ├─ webhook-adapter ── agent-contracts, express
+  ├─ whatsapp-adapter ── agent-contracts, baileys
   ├─ agent-host
   │   ├─ config
-  │   ├─ agent-harness ── agent-contracts, context, skills, memory-store, observability, runtime-adapter, sandbox, tool-policy
+  │   ├─ agent-harness ── agent-contracts, context, skills, observability, runtime-adapter, sandbox, tool-policy
   │   ├─ runtime-adapter ── @mono-agent/agent-runtime, sandbox types
   │   ├─ sandbox ── agent-contracts
-  │   ├─ memory-store, memory-bujo, memory-search
+  │   ├─ memory (./store, ./search, ./bujo)
   │   ├─ observability
   │   └─ tool-policy
-  ├─ agent-orchestrator ── agent-contracts, MCP SDK
-  ├─ agent-evals ── agent-contracts, agent-harness, observability, agentevals
-  ├─ config ── settings, runtime-adapter, sandbox
-  ├─ observability-otel ── observability
-  ├─ session-web ── observability, settings
+  ├─ config ── agent-contracts, runtime-adapter, sandbox
+  ├─ observability
+  ├─ session-web ── agent-contracts, observability
   ├─ tui ── config
   └─ core leaf packages as needed
 ```
@@ -131,7 +128,7 @@ Rules for future packages:
 - Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
 - Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.
 - Operator surfaces register field groups from other packages; they do not hardcode adapter settings.
-- Demos compose packages but are not publishable packages.
+- The final demo composes packages but is not a publishable package.
 
 ## Final Demo
 
@@ -176,39 +173,17 @@ The workspace now has a local host traceability path. Each running host register
 
 This is local-first. It is not a LangSmith dependency, database, or cloud collector.
 
-Phoenix is the recommended trace viewer for local development. When an `observability.exporters` entry (currently the `phoenix` preset) is configured, the host additively exports each run lifecycle to Phoenix's OTLP HTTP traces endpoint as binary protobuf (`application/x-protobuf`) via `@mono-agent/observability-otel`. Spans use OpenInference semantics (AGENT/LLM/TOOL/CHAIN kinds with input/output) and land in a named project (`projectName`, defaulting to the trace source label/id). Export is best-effort and bounded by a timeout — it never changes the run outcome and never suppresses JSONL writes. Raw prompts, reasoning, and tool I/O are metadata-only by default (`includeSensitiveData: false`). The local JSONL artifacts remain the local fallback and source of truth. `mono-agent start`, `mono-agent status`, and `mono-agent validate` report the configured exporter endpoint (validate POSTs an empty protobuf to confirm Phoenix will accept exports, not just that the port is open). Use `mono-agent backfill --all` to retroactively export already-recorded runs with their historical timestamps; deterministic per-run ids make re-exports idempotent.
+Phoenix is the recommended trace viewer for local development. When an `observability.exporters` entry (currently the `phoenix` preset) is configured, the host additively exports each run lifecycle to Phoenix's OTLP HTTP traces endpoint as binary protobuf (`application/x-protobuf`) via `@mono-agent/observability/otel`. Spans use OpenInference semantics (AGENT/LLM/TOOL/CHAIN kinds with input/output) and land in a named project (`projectName`, defaulting to the trace source label/id). Export is best-effort and bounded by a timeout — it never changes the run outcome and never suppresses JSONL writes. Raw prompts, reasoning, and tool I/O are metadata-only by default (`includeSensitiveData: false`). The local JSONL artifacts remain the local fallback and source of truth. `mono-agent start`, `mono-agent status`, and `mono-agent validate` report the configured exporter endpoint (validate POSTs an empty protobuf to confirm Phoenix will accept exports, not just that the port is open). Use `mono-agent backfill --all` to retroactively export already-recorded runs with their historical timestamps; deterministic per-run ids make re-exports idempotent.
 
 See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
 
-## Multi-Agent Demo
-
-The multi-agent demo lives at `demos/multi-agent/`. It starts a Telegram-connected orchestrator plus three loopback A2A providers: the orchestrator itself for smoke tests, a researcher with web-oriented tools, and a worker with read-only local inspection tools. The orchestrator receives one `ask_collaborator` MCP tool from `@mono-agent/agent-orchestrator`, so the model decides whether to ask the researcher, the worker, or both multiple times before producing the final answer.
-
-The preferred deployment path writes ignored role configs and local state under `.mono-agent/multi-agent/`, checks the configured Ollama model, starts traceability, and starts the role A2A providers:
-
-```bash
-pnpm run deploy:multi -- \
-  --port 5417 \
-  --orchestrator-a2a-port 5418 \
-  --researcher-a2a-port 5419 \
-  --worker-a2a-port 5420
-```
-
-Stop the older final demo before enabling Telegram here so only one process owns the bot token. Telegram credentials stay outside git and are read from the orchestrator config or `MONO_AGENT_TELEGRAM_BOT_TOKEN` plus `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS`.
-
-See [`demos/multi-agent/README.md`](./demos/multi-agent/README.md) for topology, safe tool policies, Telegram ownership, and smoke checks.
-
-## Downloads Curator Demo
-
-The third demo lives at `demos/downloads-curator/`. It starts a TUI-connected agent scoped to the user's Downloads folder with a curated MCP server for listing, proposing, and applying cleanup actions — every move/trash action is approval-gated and nothing is ever permanently deleted. See [`demos/downloads-curator/README.md`](./demos/downloads-curator/README.md).
-
-### A2A Inter-Agent Discovery
+## A2A Inter-Agent Discovery
 
 `@mono-agent/a2a-adapter` exposes a Mono responder over the A2A v1 protocol using the pinned `@a2a-js/sdk@1.0.0-alpha.0`. Provider mode serves the public Agent Card at `/.well-known/agent-card.json` and message/task endpoints under `/a2a/json-rpc` and `/a2a/rest`. Consumer mode discovers direct Agent Card URLs and sends text messages to remote agents.
 
 The A2A adapter remains deliberately text/task only: no central registry, gRPC hosting, push notifications, signed cards, file exchange, or adapter-owned delegation policy. Dynamic collaborator selection is composed above A2A by `@mono-agent/agent-orchestrator`. Provider binds to loopback by default; non-loopback bind or advertised public URLs require explicit config and should be deployed behind HTTPS with bearer auth.
 
-### Local Providers
+## Local Providers
 
 Hosts can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime` through the Pi adapter. Ollama is the primary supported local path:
 
@@ -313,9 +288,8 @@ flowchart TB
     WhatsApp["`@mono-agent/whatsapp-adapter`\nBaileys socket + group trigger policy"]
   end
 
-  subgraph Core["Core contracts and settings"]
-    Contracts["`@mono-agent/agent-contracts`\nrequest/response/stream/cancel"]
-    Settings["`@mono-agent/settings`\nfield groups + redaction"]
+  subgraph Core["Core contracts and config"]
+    Contracts["`@mono-agent/agent-contracts`\nrequest/response/stream/settings helpers"]
     Config["`@mono-agent/config`\ncore runtime/context settings"]
     Policy["`@mono-agent/tool-policy`\nfail-closed tools + MCP"]
   end
@@ -323,9 +297,8 @@ flowchart TB
   subgraph PromptContext["Context layer"]
     Context["`@mono-agent/context`\nprompt assembly"]
     Skills["`@mono-agent/skills`\nselected skill blocks"]
-    MemoryStore["`@mono-agent/memory-store`\nSQLite substrate + MemoryStore contract"]
-    MemoryBujo["`@mono-agent/memory-bujo`\nbujo engine (journal/bujo tiers)"]
-    MemorySearch["`@mono-agent/memory-search`\nOllama/OpenAI embeddings + cosine index"]
+    Memory["`@mono-agent/memory`\n./store SQLite, ./search embeddings, ./bujo engine"]
+    MemorySupermemory["`@mono-agent/memory-supermemory`\nSupermemory-backed store"]
   end
 
   subgraph Execution["Execution layer"]
@@ -360,38 +333,30 @@ flowchart TB
   Tui --> Contracts
   Tui --> Config
   Telegram --> Contracts
-  Telegram --> Settings
   A2A --> Contracts
-  A2A --> Settings
   Cron --> Contracts
-  Cron --> Settings
   OpenAIApi --> Contracts
-  OpenAIApi --> Settings
   Slack --> Contracts
-  Slack --> Settings
   Webhook --> Contracts
-  Webhook --> Settings
   WhatsApp --> Contracts
-  WhatsApp --> Settings
 
   Orchestrator --> Contracts
   Orchestrator -.->|runtime extension| Harness
   AgentHost --> Config
   AgentHost --> Harness
-  AgentHost --> MemoryStore
-  AgentHost --> MemoryBujo
-  AgentHost --> MemorySearch
+  AgentHost --> Memory
+  AgentHost -. optional backend .-> MemorySupermemory
   AgentHost --> Policy
   AgentHost --> Sandbox
   AgentHost --> RuntimeAdapter
   AgentHost --> Observability
-  Config --> Settings
+  Config --> Contracts
   Config --> RuntimeAdapter
   Config --> Sandbox
   Harness --> Contracts
   Harness --> Context
   Harness --> Skills
-  Harness --> MemoryStore
+  MemorySupermemory --> Contracts
   Harness --> Policy
   Harness --> Sandbox
   Harness --> RuntimeAdapter

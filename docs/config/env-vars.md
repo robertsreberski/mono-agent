@@ -264,11 +264,3 @@ All Slack resilience vars are optional integers (`0`–`3600000`); omit to use t
 | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | `cron.notifyFailureCooldownHours` | Single-job cooldown, in hours, for all-models-failed error notices on `notify: true` cron jobs; default `6`. |
 | `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (id, expression, timezone, prompt, conversationId, notify, notifyConversationId, notifyFailureCooldownHours, model, effort). |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [../channels/cron.md](/channels/cron/). |
-
-## Evals
-
-The eval harness is dev/code coverage, not a runtime channel. Live eval runs are gated by an env flag:
-
-| Env var | Notes |
-| --- | --- |
-| `MONO_AGENT_EVAL_LIVE` | Set to `1` to run live eval scenarios via `@mono-agent/agent-evals`. See [../evals/index.md](/evals/). |
