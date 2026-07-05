@@ -13,9 +13,13 @@ import {
 } from "@mono-agent/config";
 import type { ConfigViewSection } from "@mono-agent/config";
 import { listRecordedRuns } from "@mono-agent/observability";
+import {
+  describeSandboxEffectiveState,
+  sandboxEffectiveStateWarning,
+} from "@mono-agent/sandbox";
 
 import { startMonoAgentApp } from "./app.js";
-import type { ExporterStatus, MonoAgentApp } from "./app.js";
+import type { ExporterStatus, MonoAgentApp, SandboxStatus } from "./app.js";
 import {
   describeSensitiveDataExportWarning,
   isAppCoreConfigError,
@@ -1272,6 +1276,8 @@ export async function printAppStatus(app: MonoAgentApp, options: PrintAppStatusO
     ),
   );
   const artifactDir = app.traceabilityStatus.kind === "running" ? app.traceabilityStatus.artifactDir : undefined;
+  process.stdout.write(ui.rule("sandbox"));
+  process.stdout.write(`  ${describeSandboxStatus(app.sandboxStatus)}\n`);
   process.stdout.write(ui.rule("observability"));
   process.stdout.write(`  ${describeExporter(app.exporterStatus, artifactDir)}\n`);
   const channels = [...app.channelStatuses()];
@@ -1342,6 +1348,26 @@ function describeExporter(status: ExporterStatus, artifactDir: string | undefine
   parts.push(artifactDir === undefined
     ? "JSONL artifacts remain local"
     : `JSONL artifacts remain local at ${artifactDir}`);
+  return parts.join("; ");
+}
+
+function describeSandboxStatus(status: SandboxStatus): string {
+  const engineAvailability = status.engineAvailable === true
+    ? "present"
+    : status.engineAvailable === false
+      ? "absent"
+      : "not checked";
+  const parts = [
+    `effective: ${status.effective}`,
+    `engine: ${status.engine ?? "none"} (${engineAvailability})`,
+    ...(status.fallback === undefined ? [] : [`fallback: ${status.fallback}`]),
+    `fallback active: ${status.fallbackActive ? "yes" : "no"}`,
+    status.resolutionError === undefined ? describeSandboxEffectiveState(status) : status.detail,
+  ];
+  const warning = status.warning ?? sandboxEffectiveStateWarning(status);
+  if (warning !== undefined) {
+    parts.push(ui.style.yellow(warning));
+  }
   return parts.join("; ");
 }
 

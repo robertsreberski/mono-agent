@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listTraceSources } from "@mono-agent/observability";
 import type { AgentResponder, ChannelInteractionHub, ChannelInteractionSink } from "@mono-agent/agent-contracts";
+import type { SandboxEngine } from "@mono-agent/sandbox";
 import type {
   TelegramAdapterErrorText,
   TelegramAdapterStartOptions,
@@ -47,6 +48,16 @@ function baseConfig(): Record<string, unknown> {
     traceability: { registryDir: "./trace-sources", sourceId: "app-test", sourceLabel: "App Test" },
   };
 }
+
+const unavailableSandboxEngine: SandboxEngine = {
+  id: "fake-srt",
+  async isAvailable() {
+    return false;
+  },
+  async prepareCommand() {
+    throw new Error("not used by app startup status");
+  },
+};
 
 describe("startMonoAgentApp", () => {
   it("starts configured channels, reports waiting/disabled for the rest, and stops cleanly", async () => {
@@ -134,6 +145,46 @@ describe("startMonoAgentApp", () => {
     const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
     const context = sources[0]?.metadata?.context as { selectedSkills?: readonly string[] } | undefined;
     expect(context?.selectedSkills).toEqual(["context-example", "todoist-cli"]);
+
+    await app.stop();
+  });
+
+  it("logs and persists unsafe sandbox fallback status at startup", async () => {
+    const warnings: string[] = [];
+    await writeConfig({
+      ...baseConfig(),
+      sandbox: {
+        mode: "native",
+        fallback: "unsafe-host-process",
+        unsafeAllowHostProcess: true,
+        denyWrite: [".env", "secrets/**"],
+      },
+    });
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      sandboxEngine: unavailableSandboxEngine,
+      logger: {
+        warn(message: string) {
+          warnings.push(message);
+        },
+      },
+    });
+
+    expect(app.sandboxStatus.effective).toBe("unsafe-host-process");
+    expect(app.sandboxStatus.fallbackActive).toBe(true);
+    expect(warnings.join("\n")).toContain("WARNING: Unsafe sandbox fallback is active");
+    expect(warnings.join("\n")).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
+
+    const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+    const sandbox = sources[0]?.metadata?.sandbox as
+      | { effective?: string; engineAvailable?: boolean; fallbackActive?: boolean; warning?: string }
+      | undefined;
+    expect(sandbox?.effective).toBe("unsafe-host-process");
+    expect(sandbox?.engineAvailable).toBe(false);
+    expect(sandbox?.fallbackActive).toBe(true);
+    expect(sandbox?.warning).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
 
     await app.stop();
   });

@@ -3,13 +3,26 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RecordedRunListItem } from "@mono-agent/observability";
 
 import { printAppStatus } from "../cli.js";
-import type { ExporterStatus, MonoAgentApp, TraceabilityStatus } from "../app.js";
+import type { ExporterStatus, MonoAgentApp, SandboxStatus, TraceabilityStatus } from "../app.js";
 import type { ChannelId, ChannelStatus } from "../channels.js";
+
+const OFF_SANDBOX_STATUS: SandboxStatus = {
+  configured: false,
+  configuredMode: undefined,
+  effective: "off",
+  engine: undefined,
+  engineAvailable: undefined,
+  fallback: undefined,
+  fallbackActive: false,
+  unsafeAllowHostProcess: false,
+  detail: "Sandbox is off; commands run without mono-agent sandbox wrapping.",
+};
 
 function fakeApp(
   exporterStatus: ExporterStatus,
   traceabilityStatus?: TraceabilityStatus,
   selectedSkills: readonly string[] = [],
+  sandboxStatus: SandboxStatus = OFF_SANDBOX_STATUS,
 ): MonoAgentApp {
   return {
     configPath: "/work/demo/mono-agent.config.json",
@@ -20,6 +33,7 @@ function fakeApp(
       artifactDir: "/work/demo/.mono-agent/artifacts",
     },
     exporterStatus,
+    sandboxStatus,
     selectedSkills,
     channelStatus: () => ({ kind: "disabled", reason: "n/a" }),
     channelStatuses: () => new Map<ChannelId, ChannelStatus>(),
@@ -83,6 +97,37 @@ describe("printAppStatus exporter line", () => {
     const out = await captureStatus(fakeApp({ kind: "disabled", reason: "No observability exporter configured." }));
     expect(out).toContain("observability");
     expect(out).toContain("disabled: No observability exporter configured.");
+  });
+
+  it("prints effective sandbox state and unsafe fallback warning", async () => {
+    const out = await captureStatus(
+      fakeApp(
+        { kind: "disabled", reason: "No observability exporter configured." },
+        undefined,
+        [],
+        {
+          configured: true,
+          configuredMode: "native",
+          effective: "unsafe-host-process",
+          engine: "srt",
+          engineAvailable: false,
+          fallback: "unsafe-host-process",
+          fallbackActive: true,
+          unsafeAllowHostProcess: true,
+          detail:
+            "Sandbox unsafe-host-process fallback is active because engine \"srt\" is unavailable; all sandbox roots/denyWrite entries are inert; commands run unsandboxed.",
+          warning:
+            "WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.",
+        },
+      ),
+    );
+
+    expect(out).toContain("sandbox");
+    expect(out).toContain("effective: unsafe-host-process");
+    expect(out).toContain("engine: srt (absent)");
+    expect(out).toContain("fallback active: yes");
+    expect(out).toContain("WARNING: Unsafe sandbox fallback is active");
+    expect(out).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
   });
 
   it("prints active skills and compact recent runs for foreground status", async () => {

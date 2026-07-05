@@ -14,6 +14,12 @@ import {
   resolveSupermemoryContainer,
 } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
+import {
+  describeSandboxEffectiveState,
+  resolveSandboxEffectiveState,
+  sandboxEffectiveStateWarning,
+} from "@mono-agent/sandbox";
+import type { SandboxEngine } from "@mono-agent/sandbox";
 
 import {
   describeSensitiveDataExportWarning,
@@ -47,6 +53,8 @@ export interface ValidationReport {
 
 export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput {
   readonly drivers?: readonly ChannelDriver[];
+  /** Optional sandbox engine override for deterministic validation tests. */
+  readonly sandboxEngine?: SandboxEngine;
   /**
    * When false, validation must not create directories or otherwise mutate the
    * target filesystem. This is used for downstream consumer validation from a
@@ -107,7 +115,7 @@ export async function validateMonoAgentFolder(
     sections.push(await contextSection(coreConfig));
     sections.push(await memorySection(coreConfig, liveness, allowFilesystemWrites));
     sections.push(await toolsSection(coreConfig, options));
-    sections.push(sandboxSection(coreConfig));
+    sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
 
   sections.push(await exporterSection(options, liveness));
@@ -556,17 +564,30 @@ async function toolsSection(config: MonoAgentConfig, input: MonoAgentAppConfigIn
   return { id: "tools", label: "Tools & MCP", status, details };
 }
 
-function sandboxSection(config: MonoAgentConfig): ValidationSection {
+async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): Promise<ValidationSection> {
   if (config.sandbox === undefined) {
     return { id: "sandbox", label: "Sandbox", status: "disabled", details: ["No sandbox policy configured."] };
   }
+  const state = await resolveSandboxEffectiveState({
+    policy: config.sandbox,
+    ...(engine === undefined ? {} : { engine }),
+  });
+  const warning = sandboxEffectiveStateWarning(state);
+  const details = [
+    `Mode: ${config.sandbox.mode}, network: ${config.sandbox.network.mode}, fallback: ${config.sandbox.fallback}.`,
+    describeSandboxEffectiveState(state),
+    ...(warning === undefined ? [] : [`[WARN] ${warning}`]),
+  ];
+  const status: ValidationStatus = warning !== undefined
+    ? "waiting"
+    : state.effective === "off"
+      ? "disabled"
+      : "ok";
   return {
     id: "sandbox",
     label: "Sandbox",
-    status: "ok",
-    details: [
-      `Mode: ${config.sandbox.mode}, network: ${config.sandbox.network.mode}, fallback: ${config.sandbox.fallback}.`,
-    ],
+    status,
+    details,
   };
 }
 
