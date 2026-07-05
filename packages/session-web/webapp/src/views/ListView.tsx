@@ -13,19 +13,28 @@ import {
   channelLabel,
   segsFor,
   outcomeInfo,
-  tz,
 } from "../lib/format";
-import { FONT_MONO, FONT_UI, TEXT, MUTED, DIM, DIMMER, AMBER, BLUE, TEAL, VIOLET, CHANNEL_ORDER, type Style } from "../lib/tokens";
+import { FONT_MONO, FONT_UI, TEXT, MUTED, DIM, DIMMER, AMBER, BLUE, TEAL, VIOLET, type Style } from "../lib/tokens";
 import { sessionStoreKey } from "../lib/store";
 import { useIsMobile } from "../lib/useIsMobile";
+import {
+  activityBucketLimit,
+  buildActivityBuckets,
+  buildChannelChips,
+  clearExcludedChannels,
+  filterSessionsForList,
+  orderedChannelsForSessions,
+  sourceFor,
+  toggleExcludedChannel,
+} from "./list-model";
 
 interface Props {
   sessions: Session[];
   instances: WebInstance[];
-  fChannel: string;
+  excludedChannels: ReadonlySet<string>;
   fOut: string;
   fInstance: string;
-  setFChannel: (v: string) => void;
+  setExcludedChannels: (v: ReadonlySet<string>) => void;
   setFOut: (v: string) => void;
   setFInstance: (v: string) => void;
   onOpen: (id: string) => void;
@@ -50,9 +59,11 @@ function instanceHealthInfo(instance?: Pick<WebInstance, "health" | "liveConnect
 }
 
 export function ListView(props: Props) {
-  const { sessions, instances: discoveredInstances, fChannel, fOut, fInstance, setFChannel, setFOut, setFInstance, onOpen } = props;
+  const { sessions, instances: discoveredInstances, excludedChannels, fOut, fInstance, setExcludedChannels, setFOut, setFInstance, onOpen } = props;
   const [instOpen, setInstOpen] = useState(false);
+  const [selectedBucketId, setSelectedBucketId] = useState<string | null>(null);
   const isMobile = useIsMobile();
+  const excludedChannelKey = [...excludedChannels].sort().join("|");
 
   useEffect(() => {
     if (!instOpen) return;
@@ -63,9 +74,12 @@ export function ListView(props: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [instOpen]);
 
+  useEffect(() => {
+    setSelectedBucketId(null);
+  }, [excludedChannelKey, fOut, fInstance]);
+
   const m = useMemo(() => {
     // ---- instances (over all sessions) ----
-    const sourceFor = (s: Session) => s.sourceId ?? s.instance;
     const instMap: Record<string, { count: number; cwd: string; label: string }> = {};
     sessions.forEach((s) => {
       const key = sourceFor(s);
@@ -120,12 +134,21 @@ export function ListView(props: Props) {
     const activeCount = fInstance === "all" ? sessions.length : instMap[fInstance]?.count || 0;
 
     // ---- filtered set ----
-    const list = sessions.filter(
-      (s) =>
-        (fChannel === "all" || channelOf(s) === fChannel) &&
-        (fOut === "all" || s.outcome === fOut) &&
-        (fInstance === "all" || sourceFor(s) === fInstance),
-    );
+    const baseList = filterSessionsForList(sessions, {
+      excludedChannels,
+      outcome: fOut,
+      instance: fInstance,
+    });
+    const activity = buildActivityBuckets(baseList, { maxBuckets: activityBucketLimit(isMobile) });
+    const selectedBucket = selectedBucketId ? activity.find((bucket) => bucket.id === selectedBucketId) : undefined;
+    const list = selectedBucket
+      ? filterSessionsForList(sessions, {
+          excludedChannels,
+          outcome: fOut,
+          instance: fInstance,
+          selectedBucket,
+        })
+      : baseList;
 
     // ---- aggregates over filtered ----
     let cost = 0,
@@ -151,30 +174,10 @@ export function ListView(props: Props) {
     ];
 
     // ---- channel + outcome filter chips ----
-    // Channel chips describe what's pickable/how many within the OTHER active
-    // filters (instance + outcome), NOT fChannel itself — otherwise picking
-    // instance A still offers channels only in B and shows global counts.
-    const chanBase = sessions.filter(
-      (s) => (fOut === "all" || s.outcome === fOut) && (fInstance === "all" || sourceFor(s) === fInstance),
-    );
-    const present: string[] = CHANNEL_ORDER.filter((c) => chanBase.some((s) => channelOf(s) === c));
-    if (fChannel !== "all" && !present.includes(fChannel)) {
-      present.push(fChannel);
-    }
-    const chKeys = ["all", ...present];
-    const kindChips = chKeys.map((k) => {
-      const active = fChannel === k;
-      const col = k === "all" ? TEXT : channelColor(k);
-      const nn = k === "all" ? chanBase.length : chanBase.filter((s) => channelOf(s) === k).length;
-      return {
-        key: k,
-        label: k === "all" ? "All" : channelLabel(k),
-        active,
-        n: nn,
-        bg: active ? (k === "all" ? "rgba(255,255,255,.14)" : hexA(col, 0.16)) : "rgba(255,255,255,.03)",
-        border: active ? hexA(col, 0.5) : "rgba(255,255,255,.1)",
-        color: active ? col : MUTED,
-      };
+    const kindChips = buildChannelChips(sessions, {
+      excludedChannels,
+      outcome: fOut,
+      instance: fInstance,
     });
     const outs: [string, string][] = [
       ["all", "All"],
@@ -226,139 +229,15 @@ export function ListView(props: Props) {
       };
     });
 
-    // ---- activity timeline ----
-    const times = list.map((s) => +new Date(s.startTs));
-    const amin = times.length ? Math.min(...times) : 0;
-    const amax = times.length ? Math.max(...times) : 1;
-    const span = Math.max(1, amax - amin);
-    // When every filtered run shares a timestamp (or there's just one), the
-    // time axis collapses and everything pins to left:0%. Fall back to an even
-    // spread by index so bars/points stay laid out across the strip.
-    const degenerate = list.length <= 1 || amax === amin;
-    // A bar per run reads fine at a handful of runs but smears into a cluttered
-    // solid block at hundreds. Above a cap, bucket by time (one bar per slot:
-    // height ∝ total cost, dominant-channel colour, filled if any run notified)
-    // so the strip stays legible regardless of volume.
-    type ActBar = { id: string; left: number; h: number; color: string; fill: string; tip: string; count: number };
-    const MAX_BARS = isMobile ? 6 : 96;
-    let activity: ActBar[];
-    if (list.length <= MAX_BARS) {
-      const maxC = Math.max(...[0.001, ...list.map((s) => s.totals.cost)]);
-      activity = list.map((s) => {
-        const ch = channelOf(s);
-        const c = channelColor(ch);
-        const sil = s.outcome === "silent";
-        return {
-          id: sessionStoreKey(s),
-          left: ((+new Date(s.startTs) - amin) / span) * 100,
-          h: Math.round(12 + (s.totals.cost / maxC) * 52),
-          color: c,
-          fill: sil ? hexA(c, 0.14) : c,
-          count: 1,
-          tip:
-            channelLabel(ch) + " · " + dateStr(s.startTs) + " " + timeStr(s.startTs) + " · " + fmtCost(s.totals.cost) + (sil ? " · silent" : " · notified"),
-        };
-      });
-    } else {
-      type Bucket = { idx: number; cost: number; count: number; notified: number; chCost: Record<string, number>; repId: string; repCost: number };
-      const buckets = new Map<number, Bucket>();
-      list.forEach((s) => {
-        const idx = Math.max(0, Math.min(MAX_BARS - 1, Math.floor(((+new Date(s.startTs) - amin) / span) * MAX_BARS)));
-        let b = buckets.get(idx);
-        if (!b) {
-          b = { idx, cost: 0, count: 0, notified: 0, chCost: {}, repId: sessionStoreKey(s), repCost: -1 };
-          buckets.set(idx, b);
-        }
-        b.cost += s.totals.cost;
-        b.count += 1;
-        if (s.outcome !== "silent") b.notified += 1;
-        const ch = channelOf(s);
-        b.chCost[ch] = (b.chCost[ch] ?? 0) + s.totals.cost + 1e-4;
-        if (s.totals.cost > b.repCost) {
-          b.repCost = s.totals.cost;
-          b.repId = sessionStoreKey(s);
-        }
-      });
-      const arr = [...buckets.values()].sort((a, b) => a.idx - b.idx);
-      const maxBucket = Math.max(0.001, ...arr.map((b) => b.cost));
-      activity = arr.map((b) => {
-        const domCh = Object.entries(b.chCost).sort((x, y) => y[1] - x[1])[0]?.[0] ?? "other";
-        const c = channelColor(domCh);
-        const sil = b.notified === 0;
-        const start = amin + (b.idx / MAX_BARS) * span;
-        return {
-          id: b.repId,
-          left: ((b.idx + 0.5) / MAX_BARS) * 100,
-          h: Math.round(12 + (b.cost / maxBucket) * 52),
-          color: c,
-          fill: sil ? hexA(c, 0.14) : c,
-          count: b.count,
-          tip: b.count + (b.count > 1 ? " runs" : " run") + " · " + dateStr(start) + " · " + fmtCost(b.cost) + (sil ? " · all silent" : " · " + b.notified + " notified"),
-        };
-      });
-    }
-    if (degenerate) {
-      const nBars = activity.length;
-      activity = activity.map((a, i) => ({ ...a, left: nBars <= 1 ? 50 : ((i + 0.5) / nBars) * 100 }));
-    } else if (isMobile && activity.length > 1 && list.length <= MAX_BARS) {
-      activity = [...activity]
-        .sort((a, b) => a.left - b.left)
-        .map((a, i) => ({ ...a, left: ((i + 0.5) / activity.length) * 100 }));
-    }
-    const dayTicks: { left: number; label: string }[] = [];
-    if (list.length > 0) {
-      const dayMs = 86400000;
-      const d0 = new Date(amin);
-      d0.setUTCHours(0, 0, 0, 0);
-      const daySpan = Math.max(1, Math.ceil((amax - amin) / dayMs));
-      const maxTicks = isMobile ? 4 : 8;
-      const tickStep = dayMs * Math.max(1, Math.ceil(daySpan / Math.max(1, maxTicks - 1)));
-      for (let t = +d0; t <= amax + dayMs; t += tickStep) {
-        const x = ((t - amin) / span) * 100;
-        if (x < -3 || x > 103) continue;
-        const label = daySpan > 7 ? tz(t, { day: "2-digit", month: "short" }) : tz(t, { day: "2-digit" });
-        dayTicks.push({ left: Math.max(0, Math.min(100, x)), label });
-      }
-    }
-    const legendKeys = CHANNEL_ORDER.filter((c) => list.some((s) => channelOf(s) === c));
+    // ---- activity rhythm ----
+    const legendKeys = orderedChannelsForSessions(baseList);
     const legend = legendKeys.map((k) => ({ label: channelLabel(k), color: channelColor(k) }));
-
-    // ---- cumulative spend ----
-    const sorted = [...list].sort((a, b) => +new Date(a.startTs) - +new Date(b.startTs));
-    const totC = sorted.reduce((a, x) => a + x.totals.cost, 0) || 0.0001;
-    let cc = 0;
-    const pts = sorted.map((s, i) => {
-      cc += s.totals.cost;
-      const x = degenerate
-        ? sorted.length <= 1
-          ? 50
-          : (i / (sorted.length - 1)) * 100
-        : ((+new Date(s.startTs) - amin) / span) * 100;
-      return { x, y: (cc / totC) * 100 };
-    });
-    let costChart: {
-      has: boolean;
-      line?: string;
-      area?: string;
-      total?: string;
-      startLabel?: string;
-      endLabel?: string;
-      gridY?: number[];
-    } = { has: false };
-    if (pts.length > 1) {
-      let line = "M " + pts[0].x.toFixed(2) + " " + (100 - pts[0].y).toFixed(2);
-      for (let i = 1; i < pts.length; i++) line += " L " + pts[i].x.toFixed(2) + " " + (100 - pts[i].y).toFixed(2);
-      const area = line + " L " + pts[pts.length - 1].x.toFixed(2) + " 100 L " + pts[0].x.toFixed(2) + " 100 Z";
-      costChart = {
-        has: true,
-        line,
-        area,
-        total: fmtCost(totC),
-        startLabel: dateStr(sorted[0].startTs),
-        endLabel: dateStr(sorted[sorted.length - 1].startTs),
-        gridY: [25, 50, 75],
-      };
-    }
+    const activityNotified = baseList.filter((s) => s.outcome !== "silent").length;
+    const activitySilent = baseList.length - activityNotified;
+    const activityPeak = activity.length ? Math.max(...activity.map((bucket) => bucket.runCount)) : 0;
+    const bucketStatus = selectedBucket
+      ? `${list.length} ${list.length === 1 ? "run" : "runs"} in ${selectedBucket.rangeLabel}`
+      : `${baseList.length} ${baseList.length === 1 ? "run" : "runs"} across ${activity.length} active ${activity.length === 1 ? "bucket" : "buckets"}`;
 
     return {
       instances,
@@ -370,11 +249,15 @@ export function ListView(props: Props) {
       outcomeChips,
       cards,
       activity,
-      dayTicks,
+      selectedBucket,
+      bucketStatus,
+      activityNotified,
+      activitySilent,
+      activityPeak,
       legend,
-      costChart,
+      emptyMessage: sessions.length === 0 ? "No runs recorded yet." : "No sessions match this filter.",
     };
-  }, [sessions, discoveredInstances, fChannel, fOut, fInstance, isMobile]);
+  }, [sessions, discoveredInstances, excludedChannels, fOut, fInstance, isMobile, selectedBucketId]);
 
   return (
     <>
@@ -572,19 +455,75 @@ export function ListView(props: Props) {
         ))}
       </div>
 
-      {/* activity timeline */}
+      {/* activity rhythm */}
       <div
         style={{
           marginTop: 16,
           background: "linear-gradient(180deg,rgba(255,255,255,.032),rgba(255,255,255,.006))",
           border: "1px solid rgba(255,255,255,.08)",
           borderRadius: 16,
-          padding: "18px 22px 30px",
+          padding: isMobile ? "16px 14px 18px" : "18px 22px 20px",
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
-          <span style={label9}>Activity &nbsp;·&nbsp; height = cost &nbsp;·&nbsp; hollow = stayed silent</span>
-          <div style={{ display: "flex", gap: 15, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={label9}>Activity rhythm</div>
+            <div style={{ marginTop: 6, fontFamily: FONT_MONO, fontSize: 11, color: DIM, lineHeight: 1.45 }}>
+              {m.bucketStatus}
+              {m.activityPeak > 0 ? ` · peak ${m.activityPeak}` : ""}
+            </div>
+          </div>
+          {m.selectedBucket && (
+            <button
+              className="rec-btn"
+              type="button"
+              onClick={() => setSelectedBucketId(null)}
+              style={{
+                cursor: "pointer",
+                minHeight: 38,
+                borderRadius: 9,
+                border: "1px solid rgba(255,255,255,.12)",
+                background: "rgba(255,255,255,.045)",
+                color: "#C9CBD1",
+                fontFamily: FONT_MONO,
+                fontSize: 11,
+                padding: "8px 11px",
+              }}
+            >
+              Clear bucket
+            </button>
+          )}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 15 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {[
+              { label: "Runs", value: String(m.activity.reduce((sum, bucket) => sum + bucket.runCount, 0)), color: TEXT },
+              { label: "Notified", value: String(m.activityNotified), color: AMBER },
+              { label: "Silent", value: String(m.activitySilent), color: "#8b8d94" },
+            ].map((item) => (
+              <span
+                key={item.label}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 7,
+                  minHeight: 30,
+                  borderRadius: 8,
+                  border: "1px solid rgba(255,255,255,.08)",
+                  background: "rgba(255,255,255,.03)",
+                  padding: "5px 9px",
+                  fontFamily: FONT_MONO,
+                  fontSize: 11,
+                  color: DIM,
+                }}
+              >
+                <span style={{ color: item.color, fontWeight: 700 }}>{item.value}</span>
+                {item.label}
+              </span>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
             {m.legend.map((lg) => (
               <span key={lg.label} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: FONT_MONO, fontSize: 11, color: MUTED }}>
                 <span style={{ width: 8, height: 8, borderRadius: 2, background: lg.color }} />
@@ -593,116 +532,175 @@ export function ListView(props: Props) {
             ))}
           </div>
         </div>
-        <div style={{ position: "relative", height: 78 }}>
-          {m.dayTicks.map((tk, i) => (
-            <div key={i}>
-              <div style={{ position: "absolute", top: 0, bottom: 14, left: `${tk.left}%`, width: 1, background: "rgba(255,255,255,.045)" }} />
-              <div
-                style={{
-                  position: "absolute",
-                  bottom: -6,
-                  left: `${tk.left}%`,
-                  transform: "translateX(-50%)",
-                  fontFamily: FONT_MONO,
-                  fontSize: 9,
-                  color: DIMMER,
-                }}
-              >
-                {tk.label}
-              </div>
-            </div>
-          ))}
-          <div style={{ position: "absolute", left: 0, right: 0, bottom: 14, height: 1, background: "rgba(255,255,255,.1)" }} />
-          {m.activity.map((a, i) => (
-            <div
-              key={a.id + i}
-              className="rec-bar"
-              role={a.count === 1 ? "button" : "img"}
-              tabIndex={a.count === 1 ? 0 : undefined}
-              onClick={a.count === 1 ? () => onOpen(a.id) : undefined}
-              onKeyDown={(e) => {
-                if (a.count === 1 && (e.key === "Enter" || e.key === " ")) {
-                  e.preventDefault();
-                  onOpen(a.id);
-                }
-              }}
-              title={a.tip}
-              aria-label={a.tip}
-              style={
-                {
-                  position: "absolute",
-                  bottom: 14,
-                  left: `${a.left}%`,
-                  width: 44,
-                  height: Math.max(44, a.h),
-                  background: "transparent",
-                  border: "none",
-                  cursor: a.count === 1 ? "pointer" : "default",
-                  "--color": a.color,
-                } as Style
-              }
-            >
-              <span
-                className="rec-bar-visual"
-                style={{
-                  position: "absolute",
-                  left: "50%",
-                  bottom: 0,
-                  transform: "translateX(-50%)",
-                  width: 8,
-                  height: a.h,
-                  borderRadius: 3,
-                  background: a.fill,
-                  border: `1.5px solid ${a.color}`,
-                }}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
 
-      {/* cumulative spend */}
-      {m.costChart.has && (
-        <div
-          style={{
-            marginTop: 12,
-            background: "linear-gradient(180deg,rgba(255,255,255,.032),rgba(255,255,255,.006))",
-            border: "1px solid rgba(255,255,255,.08)",
-            borderRadius: 16,
-            padding: "18px 22px 14px",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-            <span style={label9}>Cumulative spend over time</span>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 13, color: AMBER, fontWeight: 600 }}>{m.costChart.total} total</span>
+        {m.activity.length > 0 ? isMobile ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {m.activity.map((bucket) => {
+              const selected = m.selectedBucket?.id === bucket.id;
+              const intensityWidth = Math.max(12, bucket.intensityPct);
+              return (
+                <button
+                  key={bucket.id}
+                  className="rec-btn"
+                  type="button"
+                  aria-pressed={selected}
+                  aria-label={bucket.ariaLabel}
+                  title={bucket.title}
+                  onClick={() => setSelectedBucketId(selected ? null : bucket.id)}
+                  style={{
+                    cursor: "pointer",
+                    width: "100%",
+                    minHeight: 76,
+                    borderRadius: 10,
+                    border: `1px solid ${selected ? hexA(bucket.dominantColor, 0.72) : "rgba(255,255,255,.1)"}`,
+                    background: selected ? hexA(bucket.dominantColor, 0.14) : "rgba(255,255,255,.026)",
+                    color: TEXT,
+                    padding: "10px 11px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "stretch",
+                    gap: 8,
+                    boxShadow: selected ? `0 0 0 1px ${hexA(bucket.dominantColor, 0.2)}` : "none",
+                    textAlign: "left",
+                  }}
+                >
+                  <span style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 18, fontWeight: 700, color: TEXT, lineHeight: 1, flex: "none" }}>{bucket.runCount}</span>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: bucket.dominantColor, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                      {bucket.dominantLabel}
+                    </span>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIM, marginLeft: "auto", whiteSpace: "nowrap" }}>{timeStr(bucket.startMs)}</span>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>{bucket.costLabel}</span>
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      height: 13,
+                      borderRadius: 999,
+                      background: "rgba(0,0,0,.24)",
+                      border: "1px solid rgba(255,255,255,.07)",
+                      overflow: "hidden",
+                      display: "flex",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: `${intensityWidth}%`,
+                        minWidth: 24,
+                        maxWidth: "100%",
+                        display: "flex",
+                        borderRadius: 999,
+                        overflow: "hidden",
+                        boxShadow: `0 0 12px ${hexA(bucket.dominantColor, 0.18)}`,
+                      }}
+                    >
+                      {bucket.channelSegments.map((segment) => (
+                        <span key={segment.key} style={{ flex: `${segment.pct} 1 0`, minWidth: 3, background: segment.color }} />
+                      ))}
+                    </span>
+                  </span>
+                  <span style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0, fontFamily: FONT_MONO, fontSize: 10, color: DIM }}>
+                    <span style={{ whiteSpace: "nowrap" }}>{bucket.notifiedCount} notified</span>
+                    <span style={{ whiteSpace: "nowrap" }}>{bucket.silentCount} silent</span>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{bucket.rangeLabel}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
-          <div style={{ position: "relative", height: 132 }}>
-            {m.costChart.gridY!.map((gy) => (
-              <div key={gy} style={{ position: "absolute", left: 0, right: 0, top: `${gy}%`, height: 1, background: "rgba(255,255,255,.04)" }} />
-            ))}
-            <svg
-              role="img"
-              aria-label={`Cumulative spend trend from ${m.costChart.startLabel} to ${m.costChart.endLabel}, ending at ${m.costChart.total}.`}
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              style={{ width: "100%", height: "100%", display: "block", overflow: "visible" }}
+        ) : (
+          <div style={{ overflowX: "auto", overflowY: "hidden", paddingBottom: 3, margin: isMobile ? "0 -4px" : 0, maxWidth: "100%" }}>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${m.activity.length}, minmax(48px, 1fr))`,
+                gap: 8,
+                minWidth: 0,
+              }}
             >
-              <defs>
-                <linearGradient id="cgspend" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stopColor={AMBER} stopOpacity="0.34" />
-                  <stop offset="1" stopColor={AMBER} stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              <path d={m.costChart.area} fill="url(#cgspend)" />
-              <path d={m.costChart.line} fill="none" stroke={AMBER} strokeWidth={2} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-            </svg>
+              {m.activity.map((bucket) => {
+                const selected = m.selectedBucket?.id === bucket.id;
+                const barHeight = Math.max(14, Math.round(bucket.intensityPct * 0.58));
+                return (
+                  <button
+                    key={bucket.id}
+                    className="rec-btn"
+                    type="button"
+                    aria-pressed={selected}
+                    aria-label={bucket.ariaLabel}
+                    title={bucket.title}
+                    onClick={() => setSelectedBucketId(selected ? null : bucket.id)}
+                    style={{
+                      cursor: "pointer",
+                      minHeight: 128,
+                      borderRadius: 10,
+                      border: `1px solid ${selected ? hexA(bucket.dominantColor, 0.72) : "rgba(255,255,255,.1)"}`,
+                      background: selected ? hexA(bucket.dominantColor, 0.14) : "rgba(255,255,255,.026)",
+                      color: TEXT,
+                      padding: "9px 8px",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "stretch",
+                      gap: 7,
+                      boxShadow: selected ? `0 0 0 1px ${hexA(bucket.dominantColor, 0.2)}, 0 12px 30px -22px ${bucket.dominantColor}` : "none",
+                    }}
+                  >
+                    <span style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 5, minWidth: 0 }}>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 700, color: TEXT, lineHeight: 1 }}>{bucket.runCount}</span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: DIM, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{timeStr(bucket.startMs)}</span>
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        flex: 1,
+                        minHeight: 58,
+                        display: "flex",
+                        alignItems: "flex-end",
+                        justifyContent: "center",
+                        borderRadius: 8,
+                        background: "rgba(0,0,0,.22)",
+                        padding: "7px 5px",
+                      }}
+                    >
+                      <span
+                        style={{
+                          width: "100%",
+                          height: `${barHeight}%`,
+                          minHeight: 12,
+                          borderRadius: 6,
+                          overflow: "hidden",
+                          border: `1px solid ${hexA(bucket.dominantColor, 0.48)}`,
+                          display: "flex",
+                          flexDirection: "column-reverse",
+                          boxShadow: `0 0 14px ${hexA(bucket.dominantColor, 0.22)}`,
+                        }}
+                      >
+                        {bucket.channelSegments.map((segment) => (
+                          <span key={segment.key} style={{ flex: `${segment.pct} 1 0`, minHeight: 3, background: segment.color }} />
+                        ))}
+                      </span>
+                    </span>
+                    <span aria-hidden="true" style={{ display: "flex", height: 4, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,.06)" }}>
+                      <span style={{ width: `${(bucket.notifiedCount / bucket.runCount) * 100}%`, background: AMBER }} />
+                      <span style={{ width: `${(bucket.silentCount / bucket.runCount) * 100}%`, background: "#8b8d94" }} />
+                    </span>
+                    <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 5, minWidth: 0 }}>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: bucket.dominantColor, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {bucket.dominantLabel}
+                      </span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: AMBER, flex: "none" }}>{bucket.costLabel}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontFamily: FONT_MONO, fontSize: 10, color: DIMMER }}>
-            <span>{m.costChart.startLabel}</span>
-            <span>{m.costChart.endLabel}</span>
+        ) : (
+          <div style={{ border: "1px dashed rgba(255,255,255,.1)", borderRadius: 10, padding: "18px 14px", color: DIM, fontFamily: FONT_MONO, fontSize: 12 }}>
+            No activity in this filter.
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* filters */}
       <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 26, alignItems: "center" }}>
@@ -712,7 +710,10 @@ export function ListView(props: Props) {
               key={c.key}
               className="rec-chip"
               aria-pressed={c.active}
-              onClick={() => setFChannel(c.key)}
+              onClick={() => {
+                setSelectedBucketId(null);
+                setExcludedChannels(c.key === "all" ? clearExcludedChannels() : toggleExcludedChannel(excludedChannels, c.key));
+              }}
               style={{
                 cursor: "pointer",
                 display: "inline-flex",
@@ -903,7 +904,7 @@ export function ListView(props: Props) {
 
       {m.cards.length === 0 && (
         <div style={{ textAlign: "center", color: DIM, padding: 50, fontFamily: FONT_MONO, fontSize: 13 }}>
-          {fChannel === "all" && fOut === "all" && fInstance === "all" ? "No runs recorded yet." : "No sessions match this filter."}
+          {m.emptyMessage}
         </div>
       )}
 

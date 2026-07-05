@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createLiveEventBus, LIVE_EVENT_SCHEMA, type RunEventBus, type RunEventFrame } from "@mono-agent/agent-contracts";
@@ -275,6 +275,51 @@ describe("SessionAggregator live fold", () => {
     await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
       status: "succeeded",
       finalText: "live answer",
+    });
+  });
+
+  it("keeps rich live terminal detail when a terminal disk reread is missing events", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+    });
+    await aggregator.start();
+
+    bus.publish(runStarted());
+    bus.publish(assistantEvent());
+    bus.publish(runFinished());
+    await waitFor(() => aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.status === "succeeded"));
+
+    await seedRun({
+      artifactDir,
+      runId: RUN_ID,
+      conversationId: "cron:live",
+      text: "disk answer",
+      source: "cron",
+      at: Date.parse(STARTED_AT),
+    });
+    await rm(join(artifactDir, `${RUN_ID}.events.jsonl`));
+
+    const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get(SOURCE_ID);
+    await (aggregator as unknown as { rereadArtifactRun(state: unknown, runId: string): Promise<void> })
+      .rereadArtifactRun(state, RUN_ID);
+
+    await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
+      status: "succeeded",
+      outcome: "notified",
+      finalText: "live answer",
+      totals: expect.objectContaining({ steps: 1 }),
     });
   });
 

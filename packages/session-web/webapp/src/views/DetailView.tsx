@@ -69,6 +69,11 @@ const secLabel = (color: string) => ({
   color,
 });
 
+export function timelineEmptyMessage(status: string, itemCount: number): string | undefined {
+  if (itemCount > 0) return undefined;
+  return status === "running" ? "Waiting for live events..." : "No timeline events captured.";
+}
+
 export function DetailView({ id, onBack }: Props) {
   const { sessions, detailStatus, retryDetail } = useRecorder();
   const isMobile = useIsMobile();
@@ -261,6 +266,7 @@ export function DetailView({ id, onBack }: Props) {
   const { isChat, outcome, eff, vitals, toolBars, toolEntries, steps } = d;
   const t = s.totals;
   const terminalStatus = ["failed", "cancelled", "interrupted"].includes(s.status);
+  const emptyTimelineMessage = timelineEmptyMessage(s.status, steps.length);
   const detail = detailStatus[id];
   const outputSubtitle = outcome.running
     ? "Running · streaming live"
@@ -715,6 +721,35 @@ export function DetailView({ id, onBack }: Props) {
                 )}
               </div>
             ))}
+            {emptyTimelineMessage !== undefined && (
+              <div
+                role={s.status === "running" ? "status" : undefined}
+                style={{
+                  position: "relative",
+                  background: "rgba(255,255,255,.025)",
+                  border: "1px dashed rgba(255,255,255,.12)",
+                  borderRadius: 12,
+                  padding: "14px 16px",
+                  color: DIM,
+                  fontFamily: FONT_MONO,
+                  fontSize: 12,
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    left: -32,
+                    top: 15,
+                    width: 12,
+                    height: 12,
+                    borderRadius: "50%",
+                    background: DIMMER,
+                    boxShadow: "0 0 0 4px #0a0b0e",
+                  }}
+                />
+                {emptyTimelineMessage}
+              </div>
+            )}
           </div>
         </div>
 

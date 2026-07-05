@@ -455,10 +455,15 @@ export class SessionAggregator {
     session: SourceStampedSession,
     options: { readonly emit: boolean },
   ): void {
-    if (session.status !== "running") {
+    const existing = state.sessions.get(runId);
+    const nextSession =
+      existing !== undefined && state.liveFinished.has(runId)
+        ? mergeSessionPreservingVisibleDetail(existing, session)
+        : session;
+    if (nextSession.status !== "running") {
       state.artifactFinished.add(runId);
     }
-    this.insertSession(state, runId, session, options);
+    this.insertSession(state, runId, nextSession, options);
   }
 
   private insertSession(
@@ -909,6 +914,43 @@ function coerceRunSummary(value: unknown): RunSummary | undefined {
 
 function coerceRuntimeEvent(value: unknown): RuntimeEventLike {
   return isRecord(value) ? (value as RuntimeEventLike) : { type: "unknown" };
+}
+
+function mergeSessionPreservingVisibleDetail(
+  existing: SourceStampedSession,
+  incoming: SourceStampedSession,
+): SourceStampedSession {
+  const preserveTimeline =
+    existing.steps.length > 0 &&
+    (incoming.steps.length < existing.steps.length || incoming.totals.steps < existing.totals.steps);
+  const preserveFinalText = existing.finalText.trim().length > 0 && incoming.finalText.trim().length === 0;
+  if (!preserveTimeline && !preserveFinalText) {
+    return incoming;
+  }
+
+  return {
+    ...incoming,
+    ...(preserveTimeline
+      ? {
+          steps: existing.steps,
+          toolCounts: existing.toolCounts,
+          totals: {
+            ...incoming.totals,
+            asst: Math.max(incoming.totals.asst, existing.totals.asst),
+            tcalls: Math.max(incoming.totals.tcalls, existing.totals.tcalls),
+            think: Math.max(incoming.totals.think, existing.totals.think),
+            steps: Math.max(incoming.totals.steps, existing.totals.steps),
+          },
+        }
+      : {}),
+    ...(preserveFinalText
+      ? {
+          finalText: existing.finalText,
+          outcome: existing.outcome,
+          ...(existing.finalTr === undefined ? {} : { finalTr: existing.finalTr }),
+        }
+      : {}),
+  };
 }
 
 function liveEventKey(frame: Extract<RunEventFrame, { t: "event" }>): string | undefined {

@@ -61,10 +61,48 @@ export function applySessionOps(prev: readonly Session[], ops: readonly SessionS
     if (op.type === "remove") {
       map.delete(sessionStoreKeyParts(op.sourceId, op.runId));
     } else {
-      map.set(sessionStoreKey(op.session), op.session);
+      const key = sessionStoreKey(op.session);
+      map.set(key, mergeSessionUpsert(map.get(key), op.session));
     }
   }
   return [...map.values()].sort(byNewest);
+}
+
+function mergeSessionUpsert(existing: Session | undefined, incoming: Session): Session {
+  if (existing === undefined) {
+    return incoming;
+  }
+  const preserveTimeline =
+    existing.steps.length > 0 &&
+    (incoming.steps.length < existing.steps.length || incoming.totals.steps < existing.totals.steps);
+  const preserveFinalText = existing.finalText.trim().length > 0 && incoming.finalText.trim().length === 0;
+  if (!preserveTimeline && !preserveFinalText) {
+    return incoming;
+  }
+
+  return {
+    ...incoming,
+    ...(preserveTimeline
+      ? {
+          steps: existing.steps,
+          toolCounts: existing.toolCounts,
+          totals: {
+            ...incoming.totals,
+            asst: Math.max(incoming.totals.asst, existing.totals.asst),
+            tcalls: Math.max(incoming.totals.tcalls, existing.totals.tcalls),
+            think: Math.max(incoming.totals.think, existing.totals.think),
+            steps: Math.max(incoming.totals.steps, existing.totals.steps),
+          },
+        }
+      : {}),
+    ...(preserveFinalText
+      ? {
+          finalText: existing.finalText,
+          outcome: existing.outcome,
+          ...(existing.finalTr === undefined ? {} : { finalTr: existing.finalTr }),
+        }
+      : {}),
+  };
 }
 
 export function shouldUseFixtureFallback(error: unknown, isDev = import.meta.env.DEV): boolean {

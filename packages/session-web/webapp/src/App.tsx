@@ -6,6 +6,7 @@ import { PAGE_BG, TEXT, FONT_UI, FONT_MONO, DIM } from "./lib/tokens";
 import { ListView } from "./views/ListView";
 import { InstancesView } from "./views/InstancesView";
 import { DetailView } from "./views/DetailView";
+import { makeDefaultExcludedChannels } from "./views/list-model";
 
 type View = "list" | "instances" | "detail";
 
@@ -61,7 +62,7 @@ export function App() {
   const isMobile = useIsMobile();
   const [view, setView] = useState<View>("list");
   const [selId, setSelId] = useState<string | null>(null);
-  const [fChannel, setFChannel] = useState("all");
+  const [excludedChannels, setExcludedChannels] = useState<ReadonlySet<string>>(() => makeDefaultExcludedChannels());
   const [fOut, setFOut] = useState("all");
   const [fInstance, setFInstance] = useState("all");
   const [tokenInput, setTokenInput] = useState("");
@@ -79,7 +80,7 @@ export function App() {
 
   const openInstance = useCallback((name: string) => {
     setFInstance(name);
-    setFChannel("all");
+    setExcludedChannels(makeDefaultExcludedChannels());
     setFOut("all");
     setView("list");
     window.scrollTo?.(0, 0);
@@ -270,10 +271,10 @@ export function App() {
           <ListView
             sessions={sessions}
             instances={instances}
-            fChannel={fChannel}
+            excludedChannels={excludedChannels}
             fOut={fOut}
             fInstance={fInstance}
-            setFChannel={setFChannel}
+            setExcludedChannels={setExcludedChannels}
             setFOut={setFOut}
             setFInstance={setFInstance}
             onOpen={open}
