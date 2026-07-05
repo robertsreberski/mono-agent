@@ -4,10 +4,8 @@
 
 ```mermaid
 flowchart TB
-  subgraph HostDemos["Host/demo composition"]
+  subgraph HostDemos["Demo composition"]
     FinalDemo["demos/final-agent"]
-    MultiDemo["demos/multi-agent"]
-    DownloadsCurator["demos/downloads-curator"]
   end
 
   subgraph App["app"]
@@ -81,12 +79,6 @@ flowchart TB
   AgentApp --> Config
   AgentApp --> Observability
   AgentApp --> ObservabilityOtel
-
-  MultiDemo --> A2A
-  MultiDemo --> Telegram
-  MultiDemo --> Orchestrator
-  MultiDemo --> Host
-  MultiDemo --> Config
 
   Tui --> Contracts
   Tui --> Config

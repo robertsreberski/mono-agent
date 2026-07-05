@@ -89,12 +89,12 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
 | `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
-| `host-demo` | `demos/final-agent`, `demos/multi-agent` | All packages by explicit host composition | Non-publishable proofs of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
+| `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
 
 ## Dependency Direction
 
 ```text
-demos/final-agent and demos/multi-agent (not workspace packages)
+demos/final-agent (not a workspace package)
   ├─ agent-app ── all of the below; config-first host + mono-agent CLI
   ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
   ├─ cron-adapter ── agent-contracts, settings, cron-parser
@@ -112,7 +112,6 @@ demos/final-agent and demos/multi-agent (not workspace packages)
   │   ├─ memory-store, memory-bujo, memory-search
   │   ├─ observability
   │   └─ tool-policy
-  ├─ agent-orchestrator ── agent-contracts, MCP SDK
   ├─ config ── settings, runtime-adapter, sandbox
   ├─ observability-otel ── observability
   ├─ session-web ── observability, settings
@@ -127,7 +126,7 @@ Rules for future packages:
 - Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
 - Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.
 - Operator surfaces register field groups from other packages; they do not hardcode adapter settings.
-- Demos compose packages but are not publishable packages.
+- The final demo composes packages but is not a publishable package.
 
 ## Final Demo
 
@@ -176,35 +175,13 @@ Phoenix is the recommended trace viewer for local development. When an `observab
 
 See [`demos/final-agent/README.md`](./demos/final-agent/README.md) for config shape and CLI options.
 
-## Multi-Agent Demo
-
-The multi-agent demo lives at `demos/multi-agent/`. It starts a Telegram-connected orchestrator plus three loopback A2A providers: the orchestrator itself for smoke tests, a researcher with web-oriented tools, and a worker with read-only local inspection tools. The orchestrator receives one `ask_collaborator` MCP tool from `@mono-agent/agent-orchestrator`, so the model decides whether to ask the researcher, the worker, or both multiple times before producing the final answer.
-
-The preferred deployment path writes ignored role configs and local state under `.mono-agent/multi-agent/`, checks the configured Ollama model, starts traceability, and starts the role A2A providers:
-
-```bash
-pnpm run deploy:multi -- \
-  --port 5417 \
-  --orchestrator-a2a-port 5418 \
-  --researcher-a2a-port 5419 \
-  --worker-a2a-port 5420
-```
-
-Stop the older final demo before enabling Telegram here so only one process owns the bot token. Telegram credentials stay outside git and are read from the orchestrator config or `MONO_AGENT_TELEGRAM_BOT_TOKEN` plus `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS`.
-
-See [`demos/multi-agent/README.md`](./demos/multi-agent/README.md) for topology, safe tool policies, Telegram ownership, and smoke checks.
-
-## Downloads Curator Demo
-
-The third demo lives at `demos/downloads-curator/`. It starts a TUI-connected agent scoped to the user's Downloads folder with a curated MCP server for listing, proposing, and applying cleanup actions — every move/trash action is approval-gated and nothing is ever permanently deleted. See [`demos/downloads-curator/README.md`](./demos/downloads-curator/README.md).
-
-### A2A Inter-Agent Discovery
+## A2A Inter-Agent Discovery
 
 `@mono-agent/a2a-adapter` exposes a Mono responder over the A2A v1 protocol using the pinned `@a2a-js/sdk@1.0.0-alpha.0`. Provider mode serves the public Agent Card at `/.well-known/agent-card.json` and message/task endpoints under `/a2a/json-rpc` and `/a2a/rest`. Consumer mode discovers direct Agent Card URLs and sends text messages to remote agents.
 
 The A2A adapter remains deliberately text/task only: no central registry, gRPC hosting, push notifications, signed cards, file exchange, or adapter-owned delegation policy. Dynamic collaborator selection is composed above A2A by `@mono-agent/agent-orchestrator`. Provider binds to loopback by default; non-loopback bind or advertised public URLs require explicit config and should be deployed behind HTTPS with bearer auth.
 
-### Local Providers
+## Local Providers
 
 Hosts can pass local OpenAI-compatible providers into `@mono-agent/agent-runtime` through the Pi adapter. Ollama is the primary supported local path:
 

@@ -158,7 +158,7 @@ also has a `MONO_AGENT_<CHANNEL>_*` env var.
 | `app.env-file` | `.env` auto-load (exported shell vars win) | `cli` | automatic; `--env-file <path>` to override |
 | `harness.failure-handling` | Explicit failure objects (never fake success) | `auto` | Built into every run |
 | `harness.request-runtime-options` | Per-request runtime option extensions | `code` | `createConfiguredAgentResponder({ runtimeOptionsForRequest })` |
-| `orchestrator.ask-collaborator` | Loopback MCP tool delegating to named collaborator responders (call caps, per-collaborator timeout) | `code` | `createCollaboratorToolRuntimeExtension` + `runtimeOptionsForRequest` (see multi-agent demo) |
+| `orchestrator.ask-collaborator` | Loopback MCP tool delegating to named collaborator responders (call caps, per-collaborator timeout) | `code` | `createCollaboratorToolRuntimeExtension` + `runtimeOptionsForRequest` (see programmatic multi-agent docs) |
 ## Maintenance rules
 
 - A new option in any package is **not done** until it has a row here, a
