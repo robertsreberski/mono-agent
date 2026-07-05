@@ -363,9 +363,9 @@ describe("startTelegramAdapter polling auto-restart", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(runnerFactory).toHaveBeenCalledTimes(4);
 
-      // The restart loop kept running, but the degraded notification/log line was
-      // emitted only once for the whole degraded period.
-      expect(errors).toHaveLength(1);
+      // The restart loop kept running and still surfaced each crash to the host,
+      // while the degraded log line was emitted only once for the whole degraded period.
+      expect(errors).toHaveLength(4);
       expect(errorLogs).toHaveLength(1);
 
       await result.stop();

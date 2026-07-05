@@ -195,6 +195,29 @@ describe("pruneRunArtifacts", () => {
     expect(result.warnings).toEqual([`Artifact directory does not exist: ${dir}.`]);
   });
 
+  it("returns before scanning when no retention limit is configured", async () => {
+    const dir = join(await tempDir(), "missing");
+
+    const result = await pruneRunArtifacts({
+      artifactDir: dir,
+      clock: () => NOW,
+    });
+
+    expect(result).toMatchObject({
+      artifactDir: dir,
+      dryRun: false,
+      scannedSummaryFiles: 0,
+      parsedSummaryFiles: 0,
+      eligibleRunCount: 0,
+      skippedRunningCount: 0,
+      prunedRunCount: 0,
+      removedFileCount: 0,
+      prunedRunIds: [],
+      removedFilePaths: [],
+    });
+    expect(result.warnings).toEqual(["No retention limit provided; set maxAgeDays or maxCount to prune run artifacts."]);
+  });
+
   it("does not recurse into memory or session directories and ignores untrusted artifactPaths", async () => {
     const dir = await tempDir();
     const memoryDir = join(dir, "memory");

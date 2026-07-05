@@ -275,6 +275,7 @@ function normalizeRetentionOptions(
   const maxCount = normalizeMaxCount(options.maxCount, warnings);
   if (maxAgeMs === undefined && maxCount === undefined) {
     warnings.push("No retention limit provided; set maxAgeDays or maxCount to prune run artifacts.");
+    return undefined;
   }
 
   return {

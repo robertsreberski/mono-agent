@@ -1370,8 +1370,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // restarted runner stays up. The adapter always restarts (capped backoff), so a
       // crash is "degraded, recovering" to the host — never terminal.
       pollingDegraded = true;
-      options.onPollingError?.(error);
     }
+    options.onPollingError?.(error);
     scheduleRestart();
   }
 
