@@ -20,14 +20,15 @@ code until restarted.
 ## Clean deploy while main has WIP (never stash)
 
 ```bash
+MONO_AGENT_REPO=${MONO_AGENT_REPO:-$HOME/Personal_Repositories/mono-agent}
 git worktree add --detach /tmp/deploy-<sha> <commit>
 cd /tmp/deploy-<sha> && pnpm install --frozen-lockfile && pnpm -r --sort run build
 for pkg in <changed packages>; do
   rsync -a --delete /tmp/deploy-<sha>/packages/$pkg/dist/ \
-    /Users/example/Personal_Repositories/mono-agent/packages/$pkg/dist/
+    "$MONO_AGENT_REPO/packages/$pkg/dist/"
 done
-chmod +x /Users/example/Personal_Repositories/mono-agent/packages/agent-app/dist/cli.js \
-         /Users/example/Personal_Repositories/mono-agent/packages/tui/dist/bin/mono-agent-tui.js
+chmod +x "$MONO_AGENT_REPO/packages/agent-app/dist/cli.js" \
+         "$MONO_AGENT_REPO/packages/tui/dist/bin/mono-agent-tui.js"
 git worktree remove /tmp/deploy-<sha>
 ```
 
