@@ -1,5 +1,11 @@
 import type { SandboxPolicy } from "@mono-agent/sandbox";
 
+export interface MonoRuntimeSandboxEngine {
+  readonly id?: string;
+  isAvailable(): Promise<boolean>;
+  prepareCommand(command: any, policy: any): Promise<any>;
+}
+
 export type RuntimeExecutionMode = "sdk" | "cli";
 
 export interface RuntimeModelReference {
@@ -165,6 +171,7 @@ export interface RuntimeRunOptions {
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
   readonly sandboxPolicy?: SandboxPolicy;
+  readonly sandboxEngine?: MonoRuntimeSandboxEngine;
   /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
   readonly toolLimits?: RuntimeToolLimits;
   /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
@@ -193,6 +200,7 @@ export interface RuntimeToolOptions {
   readonly ripgrepPath?: string;
   readonly qaOutputDir?: string;
   readonly sandboxPolicy?: SandboxPolicy;
+  readonly sandboxEngine?: MonoRuntimeSandboxEngine;
   readonly [key: string]: unknown;
 }
 

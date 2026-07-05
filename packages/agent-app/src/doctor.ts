@@ -582,6 +582,8 @@ async function sandboxSection(config: MonoAgentConfig, engine?: SandboxEngine): 
     ? "waiting"
     : state.effective === "off"
       ? "disabled"
+      : state.effective === "blocked"
+        ? "waiting"
       : "ok";
   return {
     id: "sandbox",

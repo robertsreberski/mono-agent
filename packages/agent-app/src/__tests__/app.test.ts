@@ -13,6 +13,7 @@ import type {
   TelegramAdapterStartOptions,
 } from "@mono-agent/telegram-adapter";
 import type { SlackAdapterStartOptions } from "@mono-agent/slack-adapter";
+import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { startMonoAgentApp } from "../app.js";
 import {
@@ -186,6 +187,49 @@ describe("startMonoAgentApp", () => {
     expect(sandbox?.fallbackActive).toBe(true);
     expect(sandbox?.warning).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
 
+    await app.stop();
+  });
+
+  it("threads the status sandbox engine into responder runtime execution", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+    const runtimeCalls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCalls.push(options);
+        return { text: "ok" };
+      },
+    };
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig() {
+        return { enabled: true };
+      },
+      isConfigError() {
+        return false;
+      },
+      async start(input) {
+        await input.responder.respond(
+          { conversationId: "probe-conversation", text: "ping", abortSignal: new AbortController().signal },
+          { append: async () => undefined },
+        );
+        return { summary: { status: "probed" }, stop: async () => undefined };
+      },
+    };
+
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [driver],
+      runtime,
+      sandboxEngine: unavailableSandboxEngine,
+    });
+
+    expect(app.sandboxStatus.engine).toBe("fake-srt");
+    expect(runtimeCalls[0]?.sandboxEngine).toBe(unavailableSandboxEngine);
     await app.stop();
   });
 

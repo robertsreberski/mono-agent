@@ -623,7 +623,10 @@ class MonoAgentAppController implements MonoAgentApp {
       return;
     }
 
-    const runtime = this.runtime ?? createConfiguredAgentRuntime(coreConfig);
+    const runtime = this.runtime ?? createConfiguredAgentRuntime({
+      config: coreConfig,
+      ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
+    });
     if (!this.activeRuntimes.includes(runtime)) {
       this.activeRuntimes.push(runtime);
     }
@@ -902,6 +905,7 @@ class MonoAgentAppController implements MonoAgentApp {
       config: coreConfig,
       runtime,
       ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
+      ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
       ...(memory !== undefined && { memory }),
       ...(runtimeOptionsForRequest === undefined ? {} : { runtimeOptionsForRequest }),
       // Thread run-identifying context onto exported spans and surface per-run
@@ -953,6 +957,7 @@ class MonoAgentAppController implements MonoAgentApp {
         config: coreConfig,
         model,
         ...(executionMode === undefined ? {} : { executionMode }),
+        ...(this.sandboxEngine === undefined ? {} : { sandboxEngine: this.sandboxEngine }),
       });
       cache.set(key, runtime);
       this.activeRuntimes.push(runtime);

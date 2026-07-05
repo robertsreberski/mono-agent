@@ -344,7 +344,7 @@ describe("validateMonoAgentFolder", () => {
 
     expect(report.ok).toBe(true);
     const sandbox = sectionById(report, "sandbox");
-    expect(sandbox.status).toBe("ok");
+    expect(sandbox.status).toBe("waiting");
     expect(sandbox.details.join("\n")).toContain("commands fail closed with sandbox_unavailable");
   });
 
