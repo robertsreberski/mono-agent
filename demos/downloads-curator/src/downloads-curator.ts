@@ -7,7 +7,11 @@ import type { AgentResponder } from "@mono-agent/agent-contracts";
 import {
   createConfiguredAgentResponder,
 } from "@mono-agent/agent-host";
-import type { MonoAgentConfigJson } from "@mono-agent/config";
+import {
+  DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS,
+  DEFAULT_ARTIFACT_RETENTION_MAX_COUNT,
+  type MonoAgentConfigJson,
+} from "@mono-agent/config";
 import type {
   MonoRuntimeLike,
   RuntimeModelReference,
@@ -87,6 +91,11 @@ export function buildDownloadsCuratorConfig(input: DownloadsCuratorConfigInput):
       },
       artifacts: {
         dir: artifactDir,
+        retention: {
+          maxAgeDays: DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS,
+          maxCount: DEFAULT_ARTIFACT_RETENTION_MAX_COUNT,
+          dryRun: false,
+        },
       },
       traceability: {
         registryDir: traceRegistryDir,
