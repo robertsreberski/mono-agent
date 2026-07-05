@@ -2,6 +2,8 @@ import {
   createAgentHarness,
   createAgentResponder,
   createInMemoryHistoryStore,
+  createToolPolicy,
+  loadToolPolicyFromJsonFileSync,
 } from "@mono-agent/agent-harness";
 import type {
   AgentHarness,
@@ -10,6 +12,7 @@ import type {
   AgentHarnessRuntimeOptionsInput,
   ConversationHistoryStore,
 } from "@mono-agent/agent-harness";
+import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import { resolve as resolvePath } from "node:path";
 
 import type { AgentResponder, MemoryStore, RunEventSink } from "@mono-agent/agent-contracts";
@@ -43,8 +46,6 @@ import type {
   RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
-import { createToolPolicy, loadToolPolicyFromJsonFileSync } from "@mono-agent/tool-policy";
-import type { ToolPolicyInput } from "@mono-agent/tool-policy";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
 

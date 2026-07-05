@@ -1,5 +1,5 @@
-import { ContextValidationError, loadSkillFilesFromDirectory, normalizeInlineText } from "@mono-agent/context";
-import type { LoadedSkillFile, MarkdownContextBlock, SkillIndexEntry } from "@mono-agent/context";
+import { ContextValidationError, loadSkillFilesFromDirectory, normalizeInlineText } from "../context/index.js";
+import type { LoadedSkillFile, MarkdownContextBlock, SkillIndexEntry } from "../context/index.js";
 
 export interface LoadedSkill {
   readonly name: string;

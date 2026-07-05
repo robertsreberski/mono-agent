@@ -32,9 +32,6 @@ importers:
       '@mono-agent/config':
         specifier: workspace:0.4.0
         version: link:packages/config
-      '@mono-agent/context':
-        specifier: workspace:0.4.0
-        version: link:packages/context
       '@mono-agent/cron-adapter':
         specifier: workspace:0.4.0
         version: link:packages/cron-adapter
@@ -56,9 +53,6 @@ importers:
       '@mono-agent/telegram-adapter':
         specifier: workspace:0.4.0
         version: link:packages/telegram-adapter
-      '@mono-agent/tool-policy':
-        specifier: workspace:0.4.0
-        version: link:packages/tool-policy
       '@mono-agent/tui':
         specifier: workspace:0.4.0
         version: link:packages/tui
@@ -170,21 +164,12 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/context':
-        specifier: workspace:0.4.0
-        version: link:../context
       '@mono-agent/observability':
         specifier: workspace:0.4.0
         version: link:../observability
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/skills':
-        specifier: workspace:0.4.0
-        version: link:../skills
-      '@mono-agent/tool-policy':
-        specifier: workspace:0.4.0
-        version: link:../tool-policy
 
   packages/agent-host:
     dependencies:
@@ -209,9 +194,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/tool-policy':
-        specifier: workspace:0.4.0
-        version: link:../tool-policy
 
   packages/agent-orchestrator:
     dependencies:
@@ -254,8 +236,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-
-  packages/context: {}
 
   packages/cron-adapter:
     dependencies:
@@ -351,12 +331,6 @@ importers:
         specifier: ^5.0.2
         version: 5.0.6
 
-  packages/skills:
-    dependencies:
-      '@mono-agent/context':
-        specifier: workspace:0.4.0
-        version: link:../context
-
   packages/slack-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
@@ -384,8 +358,6 @@ importers:
       telegramify-markdown:
         specifier: ^1.3.3
         version: 1.3.3
-
-  packages/tool-policy: {}
 
   packages/tui:
     dependencies:

@@ -195,7 +195,7 @@ const FRONTMATTER_PATTERN = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/u;
  * summary (often the "use when…" trigger text). Prefer it for the index; the
  * first body paragraph is only a fallback for skills authored without
  * frontmatter. Flat single-line scalars only, mirroring the cron/webhook job
- * parsers, so `@mono-agent/context` stays dependency-free.
+ * parsers, so the context builder stays dependency-free.
  */
 function readFrontmatterField(markdown: string, field: string): string {
   const normalized = markdown.replace(/\r\n?/g, '\n');

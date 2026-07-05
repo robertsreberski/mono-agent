@@ -46,8 +46,8 @@ Use this path when the agent needs identity, selected skills, history, and optio
 
 | Need | Package | Use |
 | --- | --- | --- |
-| Prompt assembly | `@mono-agent/context` | Load identity/SOUL/skills/history/memory into deterministic prompt context |
-| Selected skill bodies | `@mono-agent/skills` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
+| Prompt assembly | `@mono-agent/agent-harness` | Load identity/SOUL/skills/history/memory into deterministic prompt context |
+| Selected skill bodies | `@mono-agent/agent-harness` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
 | Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` from `@mono-agent/agent-contracts` |
 | Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + decay (journal), LLM capture/reconcile + entity graph + reflection/migration + auto-scheduler (bujo) |
 | Embedding providers | `@mono-agent/memory/search` | Ollama/OpenAI embedding providers used by the store subpath for vector recall |
@@ -72,10 +72,10 @@ Use `@mono-agent/agent-harness` directly when a host needs custom runtime, memor
 
 ## Tools And MCP Join
 
-Use `@mono-agent/tool-policy` for fail-closed tool/MCP policy normalization:
+Use `@mono-agent/agent-harness` for fail-closed tool/MCP policy normalization:
 
 ```ts
-import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/tool-policy";
+import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/agent-harness";
 
 const policy = createToolPolicy({
   allowedTools: ["Read", "Grep"],

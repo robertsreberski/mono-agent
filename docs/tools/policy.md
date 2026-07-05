@@ -94,4 +94,4 @@ The same fail-closed, deny-wins, and overlap-rejection rules apply to values pro
 
 ## Programmatic use
 
-The policy is also available as a library for code-defined agents: `createToolPolicy()`, `failClosedToolPolicy()`, `loadToolPolicyFromJsonFile()`, and `toolPolicyToRuntimeOptions()` from `@mono-agent/tool-policy`. Errors are thrown as `ToolPolicyError` with codes `invalid_tool_policy` and `tool_policy_read_failed`. See [Programmatic API](/programmatic/).
+The policy is also available as a library for code-defined agents: `createToolPolicy()`, `failClosedToolPolicy()`, `loadToolPolicyFromJsonFile()`, and `toolPolicyToRuntimeOptions()` from `@mono-agent/agent-harness`. Errors are thrown as `ToolPolicyError` with codes `invalid_tool_policy` and `tool_policy_read_failed`. See [Programmatic API](/programmatic/).

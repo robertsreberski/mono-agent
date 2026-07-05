@@ -60,7 +60,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `sandbox.fallback` | fail-closed vs unsafe-host-process when srt is unavailable | `config` | `sandbox.fallback` (`MONO_AGENT_SANDBOX_FALLBACK`), `sandbox.unsafeAllowHostProcess` (`MONO_AGENT_SANDBOX_UNSAFE_ALLOW_HOST_PROCESS`) |
 | `sandbox.monotonic-merge` | Request-scoped policies can only tighten, never widen | `auto` | Harness merges configured + request policies |
 
-## Context, skills, memory (`@mono-agent/context`, `skills`, `memory-*`)
+## Context, skills, memory (`@mono-agent/agent-harness`, `memory-*`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |
@@ -82,7 +82,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `memory.llm-timeout` | Per-call timeout for the **in-app** memory LLM (per-turn capture + in-app rituals), distinct from the standalone CLI's timeout. A timeout now reports `agent-host memory LLM timed out after <ms>ms (provider too slow or unavailable)` instead of a generic `cancelled` | `config` | `memory.llm.timeoutMs` (`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`, 1000–600000, **default 60000**; the `memory-bujo` CLI reads the same var but defaults to 120000) |
 | `memory.custom-store` | Any `MemoryStore` implementation | `code` | `await createConfiguredAgentResponder({ memory })` (async since the lazy-backend change; see [custom memory backend](../programmatic/custom-memory-backend.md)) |
 
-## Tools & MCP (`@mono-agent/tool-policy`)
+## Tools & MCP (`@mono-agent/agent-harness`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |

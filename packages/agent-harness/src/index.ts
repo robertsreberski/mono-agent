@@ -30,3 +30,51 @@ export type {
   InMemoryHistoryStoreOptions,
   MemoryWriteMode,
 } from "./types.js";
+export { buildAgentContext } from "./context/context-builder.js";
+export { DEFAULT_SOUL_TEXT } from "./context/default-soul.js";
+export { ContextValidationError } from "./context/errors.js";
+export type { ContextValidationErrorCode, ContextValidationErrorDetails } from "./context/errors.js";
+export { loadContextFromFiles } from "./context/file-loader.js";
+export { buildSkillIndex, loadSkillFilesFromDirectory, loadSkillIndexFromDirectory } from "./context/skill-index.js";
+export type { LoadedSkillFile } from "./context/skill-index.js";
+export { normalizeInlineText } from "./context/text.js";
+export type {
+  BuildContextInput,
+  BuiltAgentContext,
+  ContextBlockInput,
+  ContextRole,
+  ContextSection,
+  ContextSectionId,
+  FileContextInput,
+  HistoryMessage,
+  MarkdownContextBlock,
+  SkillIndexEntry,
+} from "./context/types.js";
+export {
+  loadSelectedSkills,
+  SkillActivationError,
+  skillInstructionsToContextBlocks,
+} from "./skills/skills.js";
+export type { LoadedSkill, LoadedSkillContext, LoadSelectedSkillsInput } from "./skills/skills.js";
+export { createSkillsCache } from "./skills/skills-cache.js";
+export type {
+  CreateSkillsCacheOptions,
+  SkillsCache,
+  SkillsLoader,
+  SkillsStat,
+} from "./skills/skills-cache.js";
+export {
+  createToolPolicy,
+  failClosedToolPolicy,
+  loadToolPolicyFromJsonFile,
+  loadToolPolicyFromJsonFileSync,
+  ToolPolicyError,
+  toolPolicyToRuntimeOptions,
+} from "./tool-policy/policy.js";
+export type {
+  ToolPolicy,
+  ToolPolicyErrorCode,
+  ToolPolicyErrorDetails,
+  ToolPolicyInput,
+  ToolPolicyRuntimeOptions,
+} from "./tool-policy/policy.js";

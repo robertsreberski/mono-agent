@@ -84,9 +84,9 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
-| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers, adapter-neutral core config, and fail-closed tool/MCP policy normalization. |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
-| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers with adapter-neutral core config. |
+| `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
+| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, fail-closed tool/MCP policy normalization, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
@@ -108,11 +108,11 @@ demos/final-agent (not a workspace package)
   ├─ whatsapp-adapter ── agent-contracts, baileys
   ├─ agent-host
   │   ├─ config
-  │   ├─ agent-harness ── agent-contracts, context, skills, observability, runtime-adapter, tool-policy
+  │   ├─ agent-harness ── agent-contracts, observability, runtime-adapter (owns context assembly, selected skills, tool policy)
   │   ├─ runtime-adapter ── agent-contracts, @mono-agent/agent-runtime, sandbox policy/types
   │   ├─ memory (./store, ./search, ./bujo)
   │   ├─ observability
-  │   └─ tool-policy
+  │   └─ tool policy normalization via agent-harness
   ├─ config ── agent-contracts, runtime-adapter
   ├─ observability
   ├─ session-web ── agent-contracts, observability
@@ -290,19 +290,16 @@ flowchart TB
   subgraph Core["Core contracts and config"]
     Contracts["`@mono-agent/agent-contracts`\nrequest/response/stream/settings helpers"]
     Config["`@mono-agent/config`\ncore runtime/context settings"]
-    Policy["`@mono-agent/tool-policy`\nfail-closed tools + MCP"]
   end
 
   subgraph PromptContext["Context layer"]
-    Context["`@mono-agent/context`\nprompt assembly"]
-    Skills["`@mono-agent/skills`\nselected skill blocks"]
     Memory["`@mono-agent/memory`\n./store SQLite, ./search embeddings, ./bujo engine"]
     MemorySupermemory["`@mono-agent/memory-supermemory`\nSupermemory-backed store"]
   end
 
   subgraph Execution["Execution layer"]
     AgentHost["`@mono-agent/agent-host`\nconfig to responder"]
-    Harness["`@mono-agent/agent-harness`\nrequest to runtime run"]
+    Harness["`@mono-agent/agent-harness`\nrequest to runtime run\ncontext + skills + tool policy"]
     Orchestrator["`@mono-agent/agent-orchestrator`\ncollaborator MCP tool"]
     Observability["`@mono-agent/observability`\nJSONL events + summaries + trace registry"]
   end
@@ -344,16 +341,12 @@ flowchart TB
   AgentHost --> Harness
   AgentHost --> Memory
   AgentHost -. optional backend .-> MemorySupermemory
-  AgentHost --> Policy
   AgentHost --> RuntimeAdapter
   AgentHost --> Observability
   Config --> Contracts
   Config --> RuntimeAdapter
   Harness --> Contracts
-  Harness --> Context
-  Harness --> Skills
   MemorySupermemory --> Contracts
-  Harness --> Policy
   Harness --> RuntimeAdapter
   Harness --> Observability
 
