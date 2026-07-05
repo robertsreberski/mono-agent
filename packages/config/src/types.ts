@@ -1,6 +1,6 @@
 import type { LocalProviderDefinition, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/sandbox";
-import type { RedactedSecretValue } from "@mono-agent/settings";
+import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 
 import type { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
 

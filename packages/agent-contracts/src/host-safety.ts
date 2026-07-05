@@ -1,6 +1,6 @@
 /**
- * Fail-closed host-binding helpers shared by every HTTP-serving adapter
- * (openai-api, webhook, a2a) and operator surfaces. Single-sourcing
+ * Fail-closed host-binding helpers shared by HTTP-serving adapters and
+ * operator surfaces. Single-sourcing
  * {@link isLoopbackHost} and {@link assertSafeBind} closes the drift where the
  * loopback predicate had been re-implemented (weaker) in several places and the
  * safe-bind guard was missing entirely in others.

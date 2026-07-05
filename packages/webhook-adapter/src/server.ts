@@ -15,7 +15,7 @@ import {
   close,
   hostForUrl,
   listen,
-} from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 export type WebhookInvocationMode = "sync" | "async";

@@ -25,7 +25,7 @@
   "dependencies": {
     "@mono-agent/runtime-adapter": "workspace:0.4.0",
     "@mono-agent/sandbox": "workspace:0.4.0",
-    "@mono-agent/settings": "workspace:0.4.0"
+    "@mono-agent/agent-contracts": "workspace:0.4.0"
   },
   "publishConfig": {
     "access": "public"

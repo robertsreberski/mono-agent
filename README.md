@@ -1,6 +1,6 @@
 # Agent Framework Packages
 
-This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, settings, skills, memory, observability, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
+This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, skills, memory, observability, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
 
 ## Documentation
 
@@ -82,7 +82,7 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
-| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts, adapter-neutral core config, generic settings JSON/schema helpers, and fail-closed tool/MCP policy normalization. |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers, adapter-neutral core config, and fail-closed tool/MCP policy normalization. |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-supermemory` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` | `core`, `observability` where needed | JSONL run recorder, local artifact reader, file-backed trace source registry, and OTLP trace export. |
@@ -96,14 +96,14 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 ```text
 demos/final-agent (not a workspace package)
   ├─ agent-app ── all of the below; config-first host + mono-agent CLI
-  ├─ a2a-adapter ── agent-contracts, settings, @a2a-js/sdk, express
-  ├─ cron-adapter ── agent-contracts, settings, cron-parser
-  ├─ live-adapter ── agent-contracts, settings, express
-  ├─ openai-api-adapter ── agent-contracts, settings, express
-  ├─ slack-adapter ── agent-contracts, settings, ws
-  ├─ telegram-adapter ── agent-contracts, settings
-  ├─ webhook-adapter ── agent-contracts, settings, express
-  ├─ whatsapp-adapter ── agent-contracts, settings, baileys
+  ├─ a2a-adapter ── agent-contracts, @a2a-js/sdk, express
+  ├─ cron-adapter ── agent-contracts, cron-parser
+  ├─ live-adapter ── agent-contracts, express
+  ├─ openai-api-adapter ── agent-contracts, express
+  ├─ slack-adapter ── agent-contracts, ws
+  ├─ telegram-adapter ── agent-contracts
+  ├─ webhook-adapter ── agent-contracts, express
+  ├─ whatsapp-adapter ── agent-contracts, baileys
   ├─ agent-host
   │   ├─ config
   │   ├─ agent-harness ── agent-contracts, context, skills, memory-store, observability, runtime-adapter, sandbox, tool-policy
@@ -112,9 +112,9 @@ demos/final-agent (not a workspace package)
   │   ├─ memory-store, memory-bujo, memory-search
   │   ├─ observability
   │   └─ tool-policy
-  ├─ config ── settings, runtime-adapter, sandbox
+  ├─ config ── agent-contracts, runtime-adapter, sandbox
   ├─ observability-otel ── observability
-  ├─ session-web ── observability, settings
+  ├─ session-web ── agent-contracts, observability
   ├─ tui ── config
   └─ core leaf packages as needed
 ```
@@ -286,9 +286,8 @@ flowchart TB
     WhatsApp["`@mono-agent/whatsapp-adapter`\nBaileys socket + group trigger policy"]
   end
 
-  subgraph Core["Core contracts and settings"]
-    Contracts["`@mono-agent/agent-contracts`\nrequest/response/stream/cancel"]
-    Settings["`@mono-agent/settings`\nfield groups + redaction"]
+  subgraph Core["Core contracts and config"]
+    Contracts["`@mono-agent/agent-contracts`\nrequest/response/stream/settings helpers"]
     Config["`@mono-agent/config`\ncore runtime/context settings"]
     Policy["`@mono-agent/tool-policy`\nfail-closed tools + MCP"]
   end
@@ -334,19 +333,12 @@ flowchart TB
   Tui --> Contracts
   Tui --> Config
   Telegram --> Contracts
-  Telegram --> Settings
   A2A --> Contracts
-  A2A --> Settings
   Cron --> Contracts
-  Cron --> Settings
   OpenAIApi --> Contracts
-  OpenAIApi --> Settings
   Slack --> Contracts
-  Slack --> Settings
   Webhook --> Contracts
-  Webhook --> Settings
   WhatsApp --> Contracts
-  WhatsApp --> Settings
 
   Orchestrator --> Contracts
   Orchestrator -.->|runtime extension| Harness
@@ -360,7 +352,7 @@ flowchart TB
   AgentHost --> Sandbox
   AgentHost --> RuntimeAdapter
   AgentHost --> Observability
-  Config --> Settings
+  Config --> Contracts
   Config --> RuntimeAdapter
   Config --> Sandbox
   Harness --> Contracts

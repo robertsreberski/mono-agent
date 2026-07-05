@@ -162,7 +162,7 @@ export interface JsonEnvMapping {
  * drift apart.
  */
 export interface JsonEnvFieldSpec {
-  /** Stable dotted field id mirroring the JSON path, e.g. `telegram.botToken`. */
+  /** Stable dotted field id mirroring the JSON path, e.g. `channel.botToken`. */
   readonly id: string;
   readonly env: string;
   readonly kind?: EnvEncodeKind;

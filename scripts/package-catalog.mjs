@@ -39,7 +39,7 @@ export const packageCatalog = [
     dir: "agent-contracts",
     name: "@mono-agent/agent-contracts",
     category: "core",
-    responsibility: "Defines shared structural request, response, stream, responder, and cancellation contracts.",
+    responsibility: "Defines shared structural request/response contracts plus adapter-neutral settings JSON, env, safe-bind, and bearer helpers.",
     allowedDependencyCategories: ["core"],
     publishable: true,
   },
@@ -177,14 +177,6 @@ export const packageCatalog = [
     category: "runtime",
     responsibility: "Normalizes fail-closed sandbox policy and prepares native sandboxed command execution.",
     allowedDependencyCategories: ["core", "runtime"],
-    publishable: true,
-  },
-  {
-    dir: "settings",
-    name: "@mono-agent/settings",
-    category: "core",
-    responsibility: "Defines generic field groups, patch validation, redaction, and JSON settings storage.",
-    allowedDependencyCategories: ["core"],
     publishable: true,
   },
   {

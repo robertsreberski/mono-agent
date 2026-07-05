@@ -8,8 +8,8 @@ import {
   readString,
   normalizeOptionalString,
   redactedSecret,
-} from "@mono-agent/settings";
-import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
+import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/agent-contracts";
 
 import { DEFAULT_BASE_PATH, DEFAULT_HOST, DEFAULT_PORT } from "./constants.js";
 import { TuiAdapterError } from "./errors.js";

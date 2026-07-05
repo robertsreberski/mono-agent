@@ -2,8 +2,8 @@ import {
   readSettingsJson,
   SettingsJsonError,
   writeSettingsJson,
-} from "@mono-agent/settings";
-import type { SettingsJson, SettingsJsonValue } from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
+import type { SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contracts";
 
 import { MonoAgentConfigError } from "./config.js";
 import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, MemoryMode, MemoryWriteMode } from "./types.js";

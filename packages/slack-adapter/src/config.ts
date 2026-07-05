@@ -9,12 +9,12 @@ import {
   readRequired,
   readSettingsJson,
   redactedSecret,
-} from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
 import type {
   JsonEnvFieldSpec,
   RedactedSecretValue,
   SettingsJson,
-} from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
 
 /** A Slack shortcut binding: invoking `callbackId` runs `prompt` as a turn. */
 export interface SlackShortcutConfig {

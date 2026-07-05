@@ -125,7 +125,7 @@ Supported network modes are `none`, `localhost`, `allowlist`, and `all`. `allowl
 
 ## Dependency Boundary
 
-`@mono-agent/config` may depend on `@mono-agent/settings`, `@mono-agent/runtime-adapter`, and `@mono-agent/sandbox`. It must not depend on communication adapters, agent harness, or UI packages.
+`@mono-agent/config` may depend on `@mono-agent/agent-contracts`, `@mono-agent/runtime-adapter`, and `@mono-agent/sandbox`. It must not depend on communication adapters, agent harness, or UI packages.
 
 ## What This Package Does Not Own
 

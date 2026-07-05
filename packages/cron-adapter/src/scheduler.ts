@@ -8,7 +8,7 @@ import {
   type AgentResponder,
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
-import { normalizeOptionalString } from "@mono-agent/settings";
+import { normalizeOptionalString } from "@mono-agent/agent-contracts";
 
 export interface CronRequestMetadata {
   readonly jobId: string;

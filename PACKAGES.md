@@ -51,7 +51,6 @@ flowchart TB
 
   subgraph Core["core"]
     Contracts["@mono-agent/agent-contracts"]
-    Settings["@mono-agent/settings"]
     Config["@mono-agent/config"]
     ToolPolicy["@mono-agent/tool-policy"]
   end
@@ -87,21 +86,13 @@ flowchart TB
   ObservabilityOtel --> Observability
 
   A2A --> Contracts
-  A2A --> Settings
   Cron --> Contracts
-  Cron --> Settings
   OpenAIApi --> Contracts
-  OpenAIApi --> Settings
   Slack --> Contracts
-  Slack --> Settings
   Telegram --> Contracts
-  Telegram --> Settings
   TuiAdapter --> Contracts
-  TuiAdapter --> Settings
   WhatsApp --> Contracts
-  WhatsApp --> Settings
   Webhook --> Contracts
-  Webhook --> Settings
 
   Host --> Harness
   Host --> Config
@@ -121,7 +112,7 @@ flowchart TB
   Harness --> ToolPolicy
   Orchestrator --> Contracts
   Orchestrator -.->|request-scoped MCP runtime options| Harness
-  Config --> Settings
+  Config --> Contracts
   Config --> RuntimeAdapter
   Config --> Sandbox
   Skills --> Context
@@ -139,7 +130,7 @@ flowchart TB
 | Layer | Packages |
 | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` |
-| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store`, `@mono-agent/memory-supermemory` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` |

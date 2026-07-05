@@ -62,9 +62,6 @@ importers:
       '@mono-agent/sandbox':
         specifier: workspace:0.4.0
         version: link:packages/sandbox
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:packages/settings
       '@mono-agent/slack-adapter':
         specifier: workspace:0.4.0
         version: link:packages/slack-adapter
@@ -107,9 +104,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -165,9 +159,6 @@ importers:
       '@mono-agent/session-web':
         specifier: workspace:0.4.0
         version: link:../session-web
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       '@mono-agent/slack-adapter':
         specifier: workspace:0.4.0
         version: link:../slack-adapter
@@ -266,9 +257,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -296,15 +284,15 @@ importers:
 
   packages/config:
     dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.4.0
+        version: link:../agent-contracts
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
       '@mono-agent/sandbox':
         specifier: workspace:0.4.0
         version: link:../sandbox
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
 
   packages/context: {}
 
@@ -313,9 +301,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       cron-parser:
         specifier: ^5.5.0
         version: 5.5.0
@@ -325,9 +310,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -393,9 +375,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -430,9 +409,6 @@ importers:
       '@mono-agent/observability':
         specifier: workspace:0.4.0
         version: link:../observability
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -440,8 +416,6 @@ importers:
       '@types/express':
         specifier: ^5.0.2
         version: 5.0.6
-
-  packages/settings: {}
 
   packages/skills:
     dependencies:
@@ -454,9 +428,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       ws:
         specifier: ^8.20.1
         version: 8.20.1
@@ -473,9 +444,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       grammy:
         specifier: ^1.44.0
         version: 1.44.0
@@ -509,9 +477,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -525,9 +490,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       express:
         specifier: ^5.1.0
         version: 5.2.1
@@ -541,9 +503,6 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
-      '@mono-agent/settings':
-        specifier: workspace:0.4.0
-        version: link:../settings
       '@whiskeysockets/baileys':
         specifier: ^7.0.0-rc11
         version: 7.0.0-rc11(sharp@0.34.5)
