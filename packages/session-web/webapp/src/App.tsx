@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRecorder } from "./lib/store";
+import { clearAuthToken, saveAuthToken } from "./lib/api";
 import { useIsMobile } from "./lib/useIsMobile";
 import { PAGE_BG, TEXT, FONT_UI, FONT_MONO, DIM } from "./lib/tokens";
 import { ListView } from "./views/ListView";
@@ -56,14 +57,14 @@ function TopNav({
 }
 
 export function App() {
-  const { sessions, instances, status, error } = useRecorder();
+  const { sessions, instances, status, error, ensureDetail, reload } = useRecorder();
   const isMobile = useIsMobile();
   const [view, setView] = useState<View>("list");
   const [selId, setSelId] = useState<string | null>(null);
   const [fChannel, setFChannel] = useState("all");
   const [fOut, setFOut] = useState("all");
   const [fInstance, setFInstance] = useState("all");
-  const { ensureDetail } = useRecorder();
+  const [tokenInput, setTokenInput] = useState("");
   const pageRef = useRef<HTMLDivElement>(null);
 
   const open = useCallback(
@@ -132,6 +133,26 @@ export function App() {
       >
         demo data
       </span>
+    ) : status === "reconnecting" ? (
+      <span
+        title="Loaded latest snapshot — reconnecting to live updates"
+        aria-label="Loaded latest snapshot — reconnecting to live updates"
+        style={{
+          fontFamily: FONT_MONO,
+          fontSize: 10,
+          letterSpacing: ".12em",
+          textTransform: "uppercase",
+          color: "#E8A24A",
+          border: "1px solid rgba(232,162,74,.32)",
+          borderRadius: 999,
+          padding: "5px 11px",
+          background: "rgba(232,162,74,.09)",
+          whiteSpace: "nowrap",
+          flex: "none",
+        }}
+      >
+        reconnecting
+      </span>
     ) : status === "error" ? (
       <span
         title={error || "Session web backend unavailable"}
@@ -153,6 +174,7 @@ export function App() {
         backend error
       </span>
     ) : null;
+  const isAuthError = status === "error" && /(?:^|[^0-9])40[13](?:[^0-9]|$)/.test(error || "");
 
   return (
     <div ref={pageRef} tabIndex={-1} style={page}>
@@ -170,9 +192,77 @@ export function App() {
         <TopNav view={view} onNav={setView} statusPill={statusPill} />
         {status === "error" ? (
           <div style={{ margin: "48px auto", maxWidth: 640, border: "1px solid rgba(224,104,91,.24)", borderRadius: 14, padding: 24, background: "rgba(224,104,91,.06)" }}>
-            <div style={{ fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".16em", color: "#E0685B", textTransform: "uppercase", marginBottom: 10 }}>Backend error</div>
-            <div style={{ color: TEXT, fontSize: 20, fontWeight: 600, marginBottom: 8 }}>Session data could not be loaded.</div>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".16em", color: "#E0685B", textTransform: "uppercase", marginBottom: 10 }}>{isAuthError ? "Authentication required" : "Backend error"}</div>
+            <div style={{ color: TEXT, fontSize: 20, fontWeight: 600, marginBottom: 8 }}>{isAuthError ? "Enter the session-web token." : "Session data could not be loaded."}</div>
             <div style={{ color: DIM, fontSize: 14, lineHeight: 1.55, overflowWrap: "anywhere" }}>{error || "The session-web API returned an error."}</div>
+            {isAuthError && (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  saveAuthToken(tokenInput);
+                  reload();
+                }}
+                style={{ display: "flex", gap: 9, flexWrap: "wrap", marginTop: 16 }}
+              >
+                <input
+                  value={tokenInput}
+                  onChange={(event) => setTokenInput(event.currentTarget.value)}
+                  placeholder="Bearer token"
+                  aria-label="Session-web bearer token"
+                  style={{
+                    flex: "1 1 220px",
+                    minWidth: 0,
+                    minHeight: 44,
+                    borderRadius: 9,
+                    border: "1px solid rgba(255,255,255,.16)",
+                    background: "rgba(0,0,0,.28)",
+                    color: TEXT,
+                    fontFamily: FONT_MONO,
+                    fontSize: 13,
+                    padding: "10px 12px",
+                  }}
+                />
+                <button
+                  className="rec-btn"
+                  type="submit"
+                  style={{
+                    cursor: "pointer",
+                    minHeight: 44,
+                    borderRadius: 9,
+                    border: "1px solid rgba(232,162,74,.36)",
+                    background: "rgba(232,162,74,.12)",
+                    color: "#F0BE73",
+                    fontFamily: FONT_MONO,
+                    fontSize: 12,
+                    padding: "10px 14px",
+                  }}
+                >
+                  Retry
+                </button>
+                <button
+                  className="rec-btn"
+                  type="button"
+                  onClick={() => {
+                    clearAuthToken();
+                    setTokenInput("");
+                    reload();
+                  }}
+                  style={{
+                    cursor: "pointer",
+                    minHeight: 44,
+                    borderRadius: 9,
+                    border: "1px solid rgba(255,255,255,.12)",
+                    background: "rgba(255,255,255,.04)",
+                    color: "#C9CBD1",
+                    fontFamily: FONT_MONO,
+                    fontSize: 12,
+                    padding: "10px 14px",
+                  }}
+                >
+                  Clear
+                </button>
+              </form>
+            )}
           </div>
         ) : view === "instances" ? (
           <InstancesView instances={instances} sessions={sessions} onOpenInstance={openInstance} />

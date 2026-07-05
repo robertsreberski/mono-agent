@@ -39,6 +39,16 @@ const label9: Style = {
   textTransform: "uppercase",
 };
 
+function instanceHealthInfo(instance?: Pick<WebInstance, "health" | "liveConnected">): { label: string; color: string } {
+  if (!instance) return { label: "unknown", color: DIM };
+  if (instance.liveConnected) return { label: "live", color: "#6FBF8E" };
+  const health = instance.health.toLowerCase();
+  if (health === "running" || health === "ok") return { label: "running", color: "#6FBF8E" };
+  if (health === "stale") return { label: "stale", color: AMBER };
+  if (health === "failed" || health === "error" || health === "stopped") return { label: health, color: "#E0685B" };
+  return { label: health || "unknown", color: DIM };
+}
+
 export function ListView(props: Props) {
   const { sessions, instances: discoveredInstances, fChannel, fOut, fInstance, setFChannel, setFOut, setFInstance, onOpen } = props;
   const [instOpen, setInstOpen] = useState(false);
@@ -64,10 +74,10 @@ export function ListView(props: Props) {
     });
     const instRecords = discoveredInstances.length > 0
       ? [...discoveredInstances]
-          .map((inst) => ({ sourceId: inst.sourceId, label: inst.label, cwd: inst.cwd }))
+          .map((inst) => ({ sourceId: inst.sourceId, label: inst.label, cwd: inst.cwd, health: inst.health, liveConnected: inst.liveConnected }))
           .sort((a, b) => a.label.localeCompare(b.label) || a.sourceId.localeCompare(b.sourceId))
       : Object.entries(instMap)
-          .map(([sourceId, value]) => ({ sourceId, label: value.label, cwd: value.cwd }))
+          .map(([sourceId, value]) => ({ sourceId, label: value.label, cwd: value.cwd, health: "unknown", liveConnected: false }))
           .sort((a, b) => a.label.localeCompare(b.label) || a.sourceId.localeCompare(b.sourceId));
     const instances = [
       {
@@ -75,26 +85,35 @@ export function ListView(props: Props) {
         label: "All instances",
         count: sessions.length,
         cwd: `${instRecords.length} instance${instRecords.length !== 1 ? "s" : ""} on this machine`,
+        healthLabel: "all",
+        healthColor: DIMMER,
         active: fInstance === "all",
       },
     ]
       .concat(
-        instRecords.map((inst) => ({
-          key: inst.sourceId,
-          label: inst.label,
-          count: instMap[inst.sourceId]?.count ?? 0,
-          cwd: inst.cwd,
-          active: fInstance === inst.sourceId,
-        })),
+        instRecords.map((inst) => {
+          const health = instanceHealthInfo(inst);
+          return {
+            key: inst.sourceId,
+            label: inst.label,
+            count: instMap[inst.sourceId]?.count ?? 0,
+            cwd: inst.cwd,
+            healthLabel: health.label,
+            healthColor: health.color,
+            active: fInstance === inst.sourceId,
+          };
+        }),
       )
       .map((o) => ({
         key: o.key,
         label: o.label,
         count: o.count,
         cwd: o.cwd,
+        healthLabel: o.healthLabel,
+        healthColor: o.healthColor,
         bg: o.active ? "rgba(255,255,255,.07)" : "transparent",
         fg: o.active ? TEXT : "#C9CBD1",
-        dot: o.active ? "#6FBF8E" : DIMMER,
+        dot: o.key === "all" ? (o.active ? "#6FBF8E" : DIMMER) : o.healthColor,
       }));
     const activeRecord = instRecords.find((inst) => inst.sourceId === fInstance);
     const activeInst = fInstance === "all" ? "All instances" : activeRecord?.label ?? instMap[fInstance]?.label ?? fInstance;
@@ -197,7 +216,7 @@ export function ListView(props: Props) {
         think: s.totals.think,
         durStr: fmtDur(s.durMs),
         costStr: fmtCost(s.totals.cost),
-        showOutcome: !isChat || oi.running,
+        showOutcome: !isChat || oi.running || ["failed", "cancelled", "interrupted"].includes(s.status),
         outcomeLabel: oi.label,
         outcomeColor: oi.color,
         outcomeBg: hexA(oi.color, 0.12),
@@ -220,8 +239,8 @@ export function ListView(props: Props) {
     // solid block at hundreds. Above a cap, bucket by time (one bar per slot:
     // height ∝ total cost, dominant-channel colour, filled if any run notified)
     // so the strip stays legible regardless of volume.
-    type ActBar = { id: string; left: number; h: number; color: string; fill: string; tip: string };
-    const MAX_BARS = isMobile ? 44 : 96;
+    type ActBar = { id: string; left: number; h: number; color: string; fill: string; tip: string; count: number };
+    const MAX_BARS = isMobile ? 6 : 96;
     let activity: ActBar[];
     if (list.length <= MAX_BARS) {
       const maxC = Math.max(...[0.001, ...list.map((s) => s.totals.cost)]);
@@ -235,6 +254,7 @@ export function ListView(props: Props) {
           h: Math.round(12 + (s.totals.cost / maxC) * 52),
           color: c,
           fill: sil ? hexA(c, 0.14) : c,
+          count: 1,
           tip:
             channelLabel(ch) + " · " + dateStr(s.startTs) + " " + timeStr(s.startTs) + " · " + fmtCost(s.totals.cost) + (sil ? " · silent" : " · notified"),
         };
@@ -272,6 +292,7 @@ export function ListView(props: Props) {
           h: Math.round(12 + (b.cost / maxBucket) * 52),
           color: c,
           fill: sil ? hexA(c, 0.14) : c,
+          count: b.count,
           tip: b.count + (b.count > 1 ? " runs" : " run") + " · " + dateStr(start) + " · " + fmtCost(b.cost) + (sil ? " · all silent" : " · " + b.notified + " notified"),
         };
       });
@@ -279,19 +300,28 @@ export function ListView(props: Props) {
     if (degenerate) {
       const nBars = activity.length;
       activity = activity.map((a, i) => ({ ...a, left: nBars <= 1 ? 50 : ((i + 0.5) / nBars) * 100 }));
+    } else if (isMobile && activity.length > 1 && list.length <= MAX_BARS) {
+      activity = [...activity]
+        .sort((a, b) => a.left - b.left)
+        .map((a, i) => ({ ...a, left: ((i + 0.5) / activity.length) * 100 }));
     }
     const dayTicks: { left: number; label: string }[] = [];
     if (list.length > 0) {
       const dayMs = 86400000;
       const d0 = new Date(amin);
       d0.setUTCHours(0, 0, 0, 0);
-      for (let t = +d0; t <= amax + dayMs; t += dayMs) {
+      const daySpan = Math.max(1, Math.ceil((amax - amin) / dayMs));
+      const maxTicks = isMobile ? 4 : 8;
+      const tickStep = dayMs * Math.max(1, Math.ceil(daySpan / Math.max(1, maxTicks - 1)));
+      for (let t = +d0; t <= amax + dayMs; t += tickStep) {
         const x = ((t - amin) / span) * 100;
         if (x < -3 || x > 103) continue;
-        dayTicks.push({ left: Math.max(0, Math.min(100, x)), label: tz(t, { day: "2-digit" }) });
+        const label = daySpan > 7 ? tz(t, { day: "2-digit", month: "short" }) : tz(t, { day: "2-digit" });
+        dayTicks.push({ left: Math.max(0, Math.min(100, x)), label });
       }
     }
-    const legend = present.map((k) => ({ label: channelLabel(k), color: channelColor(k) }));
+    const legendKeys = CHANNEL_ORDER.filter((c) => list.some((s) => channelOf(s) === c));
+    const legend = legendKeys.map((k) => ({ label: channelLabel(k), color: channelColor(k) }));
 
     // ---- cumulative spend ----
     const sorted = [...list].sort((a, b) => +new Date(a.startTs) - +new Date(b.startTs));
@@ -397,7 +427,7 @@ export function ListView(props: Props) {
           </p>
         </div>
 
-        <div style={{ position: "relative", textAlign: "right" }}>
+        <div style={{ position: "relative", textAlign: isMobile ? "left" : "right", width: isMobile ? "100%" : undefined, maxWidth: "100%", minWidth: 0 }}>
           <div style={{ fontFamily: FONT_MONO, fontSize: 9, letterSpacing: ".18em", color: DIMMER, textTransform: "uppercase", marginBottom: 7 }}>
             Instance
           </div>
@@ -419,6 +449,7 @@ export function ListView(props: Props) {
               color: TEXT,
               fontFamily: FONT_MONO,
               transition: "border-color .15s",
+              maxWidth: "100%",
             }}
           >
             <span
@@ -431,7 +462,7 @@ export function ListView(props: Props) {
                 animation: "rec-blink 2.4s ease-in-out infinite",
               }}
             />
-            <span style={{ fontSize: 14, fontWeight: 600 }}>{m.activeInst}</span>
+            <span style={{ fontSize: 14, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.activeInst}</span>
             <span style={{ fontSize: 11, color: "#8b8d94", background: "rgba(255,255,255,.06)", padding: "2px 7px", borderRadius: 5 }}>
               {m.activeCount}
             </span>
@@ -472,6 +503,7 @@ export function ListView(props: Props) {
                   className="menu-item"
                   role="menuitemradio"
                   aria-checked={ins.key === fInstance}
+                  aria-label={`${ins.label}, ${ins.count} runs, ${ins.healthLabel}`}
                   onClick={() => {
                     setFInstance(ins.key);
                     setInstOpen(false);
@@ -490,9 +522,9 @@ export function ListView(props: Props) {
                     textAlign: "left",
                   }}
                 >
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: ins.dot, flex: "none" }} />
+                  <span title={ins.healthLabel} style={{ width: 7, height: 7, borderRadius: "50%", background: ins.dot, flex: "none" }} />
                   <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: "block", fontFamily: FONT_UI, fontSize: 14, fontWeight: 600, color: ins.fg }}>{ins.label}</span>
+                    <span style={{ display: "block", fontFamily: FONT_UI, fontSize: 14, fontWeight: 600, color: ins.fg, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ins.label}</span>
                     <span
                       style={{
                         display: "block",
@@ -508,6 +540,9 @@ export function ListView(props: Props) {
                     </span>
                   </span>
                   <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: "#8b8d94" }}>{ins.count}</span>
+                  {ins.key !== "all" && (
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: ins.healthColor, textTransform: "uppercase", whiteSpace: "nowrap" }}>{ins.healthLabel}</span>
+                  )}
                 </button>
               ))}
             </div>
@@ -582,11 +617,11 @@ export function ListView(props: Props) {
             <div
               key={a.id + i}
               className="rec-bar"
-              role="button"
-              tabIndex={0}
-              onClick={() => onOpen(a.id)}
+              role={a.count === 1 ? "button" : "img"}
+              tabIndex={a.count === 1 ? 0 : undefined}
+              onClick={a.count === 1 ? () => onOpen(a.id) : undefined}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
+                if (a.count === 1 && (e.key === "Enter" || e.key === " ")) {
                   e.preventDefault();
                   onOpen(a.id);
                 }
@@ -602,7 +637,7 @@ export function ListView(props: Props) {
                   height: Math.max(44, a.h),
                   background: "transparent",
                   border: "none",
-                  cursor: "pointer",
+                  cursor: a.count === 1 ? "pointer" : "default",
                   "--color": a.color,
                 } as Style
               }
@@ -645,7 +680,13 @@ export function ListView(props: Props) {
             {m.costChart.gridY!.map((gy) => (
               <div key={gy} style={{ position: "absolute", left: 0, right: 0, top: `${gy}%`, height: 1, background: "rgba(255,255,255,.04)" }} />
             ))}
-            <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ width: "100%", height: "100%", display: "block", overflow: "visible" }}>
+            <svg
+              role="img"
+              aria-label={`Cumulative spend trend from ${m.costChart.startLabel} to ${m.costChart.endLabel}, ending at ${m.costChart.total}.`}
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+              style={{ width: "100%", height: "100%", display: "block", overflow: "visible" }}
+            >
               <defs>
                 <linearGradient id="cgspend" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0" stopColor={AMBER} stopOpacity="0.34" />
@@ -746,7 +787,7 @@ export function ListView(props: Props) {
                 border: "1px solid rgba(255,255,255,.08)",
                 borderLeft: `3px solid ${card.accent}`,
                 borderRadius: 15,
-                padding: "17px 20px",
+                padding: isMobile ? "16px 16px" : "17px 20px",
                 transition: "transform .16s,border-color .16s,background .16s,box-shadow .16s",
                 "--glow": card.glow,
               } as Style
@@ -759,7 +800,7 @@ export function ListView(props: Props) {
                   {card.dow} {card.dateStr}
                 </div>
               </div>
-              <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={{ flex: "1 1 220px", minWidth: isMobile ? 0 : 220 }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 7 }}>
                   <span
                     style={{
@@ -777,7 +818,7 @@ export function ListView(props: Props) {
                     {card.kindLabel}
                   </span>
                 </div>
-                <div style={{ fontSize: 15.5, color: "#E4E2DB", lineHeight: 1.4, fontWeight: 500, maxWidth: "60ch", textWrap: "pretty" } as Style}>
+                <div style={{ fontSize: 15.5, color: "#E4E2DB", lineHeight: 1.4, fontWeight: 500, maxWidth: "60ch", overflowWrap: "anywhere", wordBreak: "break-word", textWrap: "pretty" } as Style}>
                   {card.title}
                 </div>
                 <div
@@ -799,7 +840,7 @@ export function ListView(props: Props) {
                   ))}
                 </div>
               </div>
-              <div style={{ minWidth: 158, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12 }}>
+              <div style={{ minWidth: isMobile ? 0 : 158, flex: isMobile ? "1 1 100%" : "0 0 auto", display: "flex", flexDirection: "column", alignItems: isMobile ? "flex-start" : "flex-end", gap: 12 }}>
                 {card.showOutcome && (
                   <span
                     style={{

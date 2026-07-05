@@ -18,15 +18,25 @@ import type { Session, WebInstance } from "./types";
 import { ApiError, fetchInstances, fetchSessions, fetchSessionDetail, openStream } from "./api";
 import { FIXTURE_INSTANCES, FIXTURE_SESSIONS } from "./fixture";
 
-export type ConnStatus = "loading" | "live" | "fixture" | "error";
+export type ConnStatus = "loading" | "live" | "reconnecting" | "fixture" | "error";
+
+export interface DetailStatus {
+  loading?: boolean;
+  error?: string;
+}
 
 export interface RecorderStore {
   instances: WebInstance[];
   sessions: Session[];
   status: ConnStatus;
   error?: string;
+  detailStatus: Record<string, DetailStatus>;
   /** Trigger a lazy detail fetch for a run if its steps aren't loaded yet. */
   ensureDetail: (key: string) => void;
+  /** Retry a failed detail fetch for a run. */
+  retryDetail: (key: string) => void;
+  /** Retry the initial API/SSE connection after credentials or network state change. */
+  reload: () => void;
 }
 
 const RecorderContext = createContext<RecorderStore | null>(null);
@@ -83,6 +93,8 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   const [sessions, setSessions] = useState<Session[]>([]);
   const [status, setStatus] = useState<ConnStatus>("loading");
   const [error, setError] = useState<string | undefined>(undefined);
+  const [detailStatus, setDetailStatus] = useState<Record<string, DetailStatus>>({});
+  const [reloadToken, setReloadToken] = useState(0);
 
   const instancesRef = useRef<WebInstance[]>([]);
   instancesRef.current = instances;
@@ -140,16 +152,40 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   useEffect(() => {
     let disposed = false;
     let closeStream: (() => void) | null = null;
+    let streamErrorTimer: number | undefined;
+
+    const clearStreamErrorTimer = () => {
+      if (streamErrorTimer !== undefined) {
+        window.clearTimeout(streamErrorTimer);
+        streamErrorTimer = undefined;
+      }
+    };
+
+    const markReconnectingSoon = () => {
+      clearStreamErrorTimer();
+      streamErrorTimer = window.setTimeout(() => {
+        if (!disposed) setStatus("reconnecting");
+      }, 800);
+    };
 
     (async () => {
       try {
+        setStatus("loading");
+        setError(undefined);
         const [ins, ses] = await Promise.all([fetchInstances(), fetchSessions("all", 2000)]);
         if (disposed) return;
         setInstances(ins);
         setSessions([...ses].sort(byNewest));
-        setStatus("live");
+        setStatus("reconnecting");
 
         closeStream = openStream({
+          onOpen: () => {
+            clearStreamErrorTimer();
+            if (!disposed) setStatus("live");
+          },
+          onError: () => {
+            if (!disposed) markReconnectingSoon();
+          },
           onMessage: (msg) => {
             if (msg.t === "instances") setInstances(msg.instances);
             else if (msg.t === "session_upsert") queueUpsert(msg.session);
@@ -175,28 +211,63 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
 
     return () => {
       disposed = true;
+      clearStreamErrorTimer();
       closeStream?.();
     };
-  }, [queueUpsert, queueRemove]);
+  }, [queueUpsert, queueRemove, reloadToken]);
 
-  const ensureDetail = useCallback(
-    (key: string) => {
-      if (statusRef.current !== "live") return; // fixture already carries steps
+  const loadDetail = useCallback(
+    (key: string, force = false) => {
+      if (statusRef.current !== "live" && statusRef.current !== "reconnecting") return; // fixture already carries steps
       if (inflight.current.has(key) || loadedDetail.current.has(key)) return; // in-flight or already attempted
       const s = sessionsRef.current.find((x) => sessionStoreKey(x) === key);
       if (!s) return;
-      loadedDetail.current.add(key);
+      if (!force && (s.steps?.length ?? 0) > 0) {
+        loadedDetail.current.add(key);
+        setDetailStatus((prev) => {
+          if (prev[key] === undefined) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+        return;
+      }
       inflight.current.add(key);
+      setDetailStatus((prev) => ({ ...prev, [key]: { loading: true } }));
       const sourceId = resolveSourceId(s, instancesRef.current);
       fetchSessionDetail(sourceId, s.id)
-        .then((full) => queueUpsert(full))
-        .catch(() => {})
+        .then((full) => {
+          loadedDetail.current.add(key);
+          queueUpsert(full);
+          setDetailStatus((prev) => {
+            if (prev[key] === undefined) return prev;
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
+        })
+        .catch((error_) => {
+          loadedDetail.current.delete(key);
+          setDetailStatus((prev) => ({
+            ...prev,
+            [key]: { error: error_ instanceof Error ? error_.message : String(error_) },
+          }));
+        })
         .finally(() => inflight.current.delete(key));
     },
     [queueUpsert],
   );
 
-  const value: RecorderStore = { instances, sessions, status, error, ensureDetail };
+  const ensureDetail = useCallback((key: string) => loadDetail(key, false), [loadDetail]);
+  const retryDetail = useCallback((key: string) => {
+    loadedDetail.current.delete(key);
+    loadDetail(key, true);
+  }, [loadDetail]);
+  const reload = useCallback(() => {
+    setReloadToken((n) => n + 1);
+  }, []);
+
+  const value: RecorderStore = { instances, sessions, status, error, detailStatus, ensureDetail, retryDetail, reload };
   return createElement(RecorderContext.Provider, { value }, children);
 }
 

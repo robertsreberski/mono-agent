@@ -7,6 +7,8 @@ import type { Session, WebInstance, StreamMessage } from "./types";
 
 const AUTH_TOKEN_PARAM = "token";
 const AUTH_TOKEN_STORAGE_KEY = "mono-agent.session-web.authToken";
+const AUTH_TOKEN_PERSIST_KEY = "mono-agent.session-web.authToken.persisted";
+let cachedAuthToken: string | undefined;
 
 export class ApiError extends Error {
   readonly status: number | undefined;
@@ -21,13 +23,12 @@ export class ApiError extends Error {
 }
 
 async function getJSON<T>(url: string): Promise<T> {
-  const requestUrl = withAuthToken(url);
   const headers: Record<string, string> = { accept: "application/json" };
   const token = currentAuthToken();
   if (token !== undefined) {
     headers.authorization = `Bearer ${token}`;
   }
-  const res = await fetch(requestUrl, { headers });
+  const res = await fetch(url, { headers });
   if (!res.ok) throw new ApiError(url, String(res.status), { status: res.status, contentType: res.headers.get("content-type") || undefined });
   const ct = res.headers.get("content-type") || "";
   // A dev server SPA-fallback returns index.html (200) for unknown routes; guard
@@ -66,7 +67,7 @@ export interface StreamHandlers {
 export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () => void {
   let es: EventSource | null = null;
   try {
-    es = new EventSource(withAuthToken("/api/stream"));
+    es = new EventSource(withQueryAuthToken("/api/stream"));
   } catch {
     onError?.();
     return () => {};
@@ -83,7 +84,7 @@ export function openStream({ onMessage, onOpen, onError }: StreamHandlers): () =
   return () => es?.close();
 }
 
-function withAuthToken(path: string): string {
+function withQueryAuthToken(path: string): string {
   const token = currentAuthToken();
   if (token === undefined || typeof window === "undefined") {
     return path;
@@ -99,17 +100,72 @@ function currentAuthToken(): string | undefined {
   }
   const fromUrl = new URLSearchParams(window.location.search).get(AUTH_TOKEN_PARAM)?.trim();
   if (fromUrl !== undefined && fromUrl.length > 0) {
-    try {
-      window.sessionStorage.setItem(AUTH_TOKEN_STORAGE_KEY, fromUrl);
-    } catch {
-      /* ignore storage failures; the URL token still works for this load */
-    }
+    saveAuthToken(fromUrl);
+    stripAuthTokenFromUrl();
     return fromUrl;
   }
+  if (cachedAuthToken !== undefined) return cachedAuthToken;
   try {
     const stored = window.sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim();
-    return stored === undefined || stored.length === 0 ? undefined : stored;
+    if (stored !== undefined && stored.length > 0) {
+      cachedAuthToken = stored;
+      return stored;
+    }
+  } catch {
+    /* ignore storage failures */
+  }
+  try {
+    const stored = window.localStorage.getItem(AUTH_TOKEN_PERSIST_KEY)?.trim();
+    if (stored === undefined || stored.length === 0) return undefined;
+    cachedAuthToken = stored;
+    return stored;
   } catch {
     return undefined;
+  }
+}
+
+export function saveAuthToken(token: string): void {
+  if (typeof window === "undefined") return;
+  const trimmed = token.trim();
+  if (!trimmed) return;
+  cachedAuthToken = trimmed;
+  try {
+    window.sessionStorage.setItem(AUTH_TOKEN_STORAGE_KEY, trimmed);
+  } catch {
+    /* ignore storage failures; caller may still use URL token */
+  }
+  try {
+    window.localStorage.setItem(AUTH_TOKEN_PERSIST_KEY, trimmed);
+  } catch {
+    /* ignore storage failures */
+  }
+}
+
+export function clearAuthToken(): void {
+  cachedAuthToken = undefined;
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    /* ignore storage failures */
+  }
+  try {
+    window.localStorage.removeItem(AUTH_TOKEN_PERSIST_KEY);
+  } catch {
+    /* ignore storage failures */
+  }
+  stripAuthTokenFromUrl();
+}
+
+function stripAuthTokenFromUrl(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has(AUTH_TOKEN_PARAM)) return;
+    url.searchParams.delete(AUTH_TOKEN_PARAM);
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", next);
+  } catch {
+    /* ignore history failures; storage fallback still works */
   }
 }

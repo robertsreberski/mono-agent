@@ -149,6 +149,28 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
     const result = await router.run("sys", { messages: [] });
     expect(result.failoverHistory).toHaveLength(1);
+    expect(result.failureKind).toBe("provider_auth");
+    expect(result.failoverHistory[0].failureKind).toBe("provider_auth");
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves provider_auth terminal failures instead of reporting failover exhaustion", async () => {
+    executeMock.mockResolvedValueOnce({
+      text: null,
+      error: "No API key for provider: openai-codex",
+      failureKind: "provider_auth",
+      events: [],
+      cancelled: false,
+    });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "pi", model: "openai-codex:gpt-5.5" },
+        { sdk: "pi", model: "opencode-go:kimi-k2.6" },
+      ],
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.failureKind).toBe("provider_auth");
+    expect(result.failoverHistory).toHaveLength(1);
     expect(executeMock).toHaveBeenCalledTimes(1);
   });
 
@@ -219,6 +241,20 @@ describe("createRouterRuntime — capability filtering", () => {
     expect(result.text).toBe("ok");
     expect(result.failoverHistory).toHaveLength(1);
     expect(result.failoverHistory[0].failureKind).toBe("skipped_capability_mismatch");
+  });
+
+  it("does not report provider availability exhaustion when no provider entry executed", async () => {
+    const router = createRouterRuntime({
+      chain: [
+        { model: { sdk: "claude", model: "x" }, requires: { kind: "does-not-exist" } },
+        { model: { sdk: "pi", model: "openai-gpt-4" }, requires: { kind: "also-missing" } },
+      ],
+    });
+    const result = await router.run("sys", { messages: [] });
+
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(result.failureKind).toBe("skipped_capability_mismatch");
+    expect(result.failoverHistory).toHaveLength(2);
   });
 
   it("skips a pi fallback when native-subagent teammates are required (F1)", async () => {

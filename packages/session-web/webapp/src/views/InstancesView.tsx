@@ -21,13 +21,15 @@ export interface InstanceCard {
   healthLabel: string;
   healthColor: string;
   stats: { label: string; value: string; color: string }[];
-  chSegs: { label: string; color: string; n: number; w: number }[];
+  chSegs: { label: string; color: string; n: number }[];
+  statusBadges: { label: string; n: number; color: string }[];
   noti: number;
   sil: number;
   last: string;
+  ariaSummary: string;
 }
 
-function healthInfo(instance: Pick<WebInstance, "health" | "liveConnected">): { label: string; color: string } {
+export function healthInfo(instance: Pick<WebInstance, "health" | "liveConnected">): { label: string; color: string } {
   if (instance.liveConnected) {
     return { label: "live", color: "#6FBF8E" };
   }
@@ -42,6 +44,14 @@ function healthInfo(instance: Pick<WebInstance, "health" | "liveConnected">): { 
     return { label: health, color: "#E0685B" };
   }
   return { label: health || "unknown", color: DIM };
+}
+
+function statusInfo(status: string): { label: string; color: string } {
+  const normalized = status.toLowerCase();
+  if (normalized === "running") return { label: "running", color: TEAL };
+  if (normalized === "failed" || normalized === "error") return { label: "failed", color: "#E0685B" };
+  if (normalized === "cancelled" || normalized === "interrupted") return { label: normalized, color: AMBER };
+  return { label: normalized || "unknown", color: DIM };
 }
 
 export function buildInstanceCards(instances: readonly WebInstance[], sessions: readonly Session[]): InstanceCard[] {
@@ -76,6 +86,7 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
         sil = 0,
         noti = 0;
       const chCount: Record<string, number> = {};
+      const statusCount: Record<string, number> = {};
       arr.forEach((s) => {
         cost += s.totals.cost;
         tok += s.totals.tokIn + s.totals.tokOut;
@@ -85,18 +96,38 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
         else noti++;
         const ch = channelOf(s);
         chCount[ch] = (chCount[ch] || 0) + 1;
+        const status = s.status || "unknown";
+        if (!["succeeded", "success", "completed", "done"].includes(status.toLowerCase())) {
+          statusCount[status] = (statusCount[status] || 0) + 1;
+        }
       });
       const times = arr.map((s) => +new Date(s.startTs));
       const last = times.length > 0 ? Math.max(...times) : undefined;
       const health = healthInfo(instance);
-      const chSegs = chOrder
-        .filter((c) => chCount[c])
-        .map((c) => ({
-          label: channelLabel(c),
-          color: channelColor(c),
-          n: chCount[c],
-          w: Math.round((chCount[c] / Math.max(1, arr.length)) * 100),
-        }));
+      const orderedChannels = [
+        ...chOrder.filter((c) => chCount[c]),
+        ...Object.keys(chCount).filter((c) => !chOrder.includes(c as (typeof chOrder)[number])).sort(),
+      ];
+      const chSegs = orderedChannels.map((c) => ({
+        label: channelLabel(c),
+        color: channelColor(c),
+        n: chCount[c] ?? 0,
+      }));
+      const statusBadges = Object.entries(statusCount)
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([status, n]) => {
+          const info = statusInfo(status);
+          return { label: info.label, n, color: info.color };
+        });
+      const lastLabel = last === undefined ? "no runs" : dateStr(last) + " · " + timeStr(last);
+      const stats = [
+        { label: "Cost", value: fmtCost(cost), color: AMBER },
+        { label: "Tokens", value: fmtTok(tok), color: BLUE },
+        { label: "Tool calls", value: "" + tools, color: TEAL },
+        { label: "Reasoning", value: "" + think, color: VIOLET },
+      ];
+      const channelSummary = chSegs.length ? chSegs.map((c) => `${c.label} ${c.n}`).join(", ") : "no channels";
+      const statusSummary = statusBadges.length ? statusBadges.map((b) => `${b.label} ${b.n}`).join(", ") : "no active or failed statuses";
       return {
         sourceId: instance.sourceId,
         name: instance.label,
@@ -106,16 +137,13 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
         liveConnected: instance.liveConnected,
         healthLabel: health.label,
         healthColor: health.color,
-        stats: [
-          { label: "Cost", value: fmtCost(cost), color: AMBER },
-          { label: "Tokens", value: fmtTok(tok), color: BLUE },
-          { label: "Tool calls", value: "" + tools, color: TEAL },
-          { label: "Reasoning", value: "" + think, color: VIOLET },
-        ],
+        stats,
         chSegs,
+        statusBadges,
         noti,
         sil,
-        last: last === undefined ? "no runs" : dateStr(last) + " · " + timeStr(last),
+        last: lastLabel,
+        ariaSummary: `${instance.label}: ${arr.length} runs, ${health.label}. ${stats.map((s) => `${s.label} ${s.value}`).join(", ")}. ${channelSummary}. ${statusSummary}. ${noti} notified, ${sil} silent. Last ${lastLabel}.`,
       };
     });
 }
@@ -153,7 +181,7 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
             className="inst-card"
             role="button"
             tabIndex={0}
-            aria-label={`Open instance ${ic.name}: ${ic.count} runs, ${ic.healthLabel}`}
+            aria-label={`Open instance ${ic.ariaSummary}`}
             onClick={() => onOpenInstance(ic.sourceId)}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
@@ -232,7 +260,7 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
             </div>
             <div style={{ display: "flex", height: 8, borderRadius: 5, overflow: "hidden", background: "rgba(255,255,255,.05)", marginBottom: 10 }}>
               {ic.chSegs.map((cs) => (
-                <div key={cs.label} title={cs.label} style={{ width: `${cs.w}%`, background: cs.color }} />
+                <div key={cs.label} title={`${cs.label} ${cs.n}`} style={{ flex: cs.n, minWidth: 3, background: cs.color }} />
               ))}
             </div>
             <div style={{ display: "flex", gap: 13, flexWrap: "wrap" }}>
@@ -257,8 +285,15 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
                 fontSize: 11,
               }}
             >
-              <span style={{ color: MUTED, whiteSpace: "nowrap" }}>
-                <span style={{ color: AMBER }}>{ic.noti}</span> notified · <span style={{ color: "#8b8d94" }}>{ic.sil}</span> silent
+              <span style={{ color: MUTED, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {ic.statusBadges.map((badge) => (
+                  <span key={badge.label} style={{ whiteSpace: "nowrap" }}>
+                    <span style={{ color: badge.color }}>{badge.n}</span> {badge.label}
+                  </span>
+                ))}
+                <span style={{ whiteSpace: "nowrap" }}>
+                  <span style={{ color: AMBER }}>{ic.noti}</span> notified · <span style={{ color: "#8b8d94" }}>{ic.sil}</span> silent
+                </span>
               </span>
               <span style={{ color: DIM, whiteSpace: "nowrap" }}>last {ic.last}</span>
             </div>

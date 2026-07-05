@@ -70,7 +70,7 @@ const secLabel = (color: string) => ({
 });
 
 export function DetailView({ id, onBack }: Props) {
-  const { sessions } = useRecorder();
+  const { sessions, detailStatus, retryDetail } = useRecorder();
   const isMobile = useIsMobile();
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [showRecall, setShowRecall] = useState(false);
@@ -260,6 +260,13 @@ export function DetailView({ id, onBack }: Props) {
 
   const { isChat, outcome, eff, vitals, toolBars, toolEntries, steps } = d;
   const t = s.totals;
+  const terminalStatus = ["failed", "cancelled", "interrupted"].includes(s.status);
+  const detail = detailStatus[id];
+  const outputSubtitle = outcome.running
+    ? "Running · streaming live"
+    : terminalStatus
+      ? `${outcome.label.toLowerCase()} · ${channelLabel(channelOf(s))}`
+      : `${channelLabel(channelOf(s))} · delivered`;
 
   return (
     <div style={{ maxWidth: 920, margin: "0 auto", padding: "0 0 calc(48px + env(safe-area-inset-bottom))" }}>
@@ -294,7 +301,7 @@ export function DetailView({ id, onBack }: Props) {
               {s.instance} · {dow(s.startTs)} {dateStr(s.startTs)} · {timeStr(s.startTs)}
             </div>
           </div>
-          {(!isChat || outcome.running) && (
+          {(!isChat || outcome.running || terminalStatus) && (
             <span
               style={{
                 display: "inline-flex",
@@ -331,6 +338,35 @@ export function DetailView({ id, onBack }: Props) {
       </div>
 
       <div style={{ padding: "22px max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left))" }}>
+        {detail?.error && (
+          <div role="alert" style={{ marginBottom: 16, border: "1px solid rgba(224,104,91,.28)", borderRadius: 12, padding: "13px 14px", background: "rgba(224,104,91,.07)" }}>
+            <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: ".14em", color: "#E0685B", textTransform: "uppercase", marginBottom: 7 }}>Detail load failed</div>
+            <div style={{ color: DIM, fontSize: 13, lineHeight: 1.5, overflowWrap: "anywhere" }}>{detail.error}</div>
+            <button
+              className="rec-btn"
+              onClick={() => retryDetail(id)}
+              style={{
+                cursor: "pointer",
+                marginTop: 11,
+                minHeight: 44,
+                borderRadius: 9,
+                border: "1px solid rgba(224,104,91,.32)",
+                background: "rgba(224,104,91,.1)",
+                color: "#F0988F",
+                fontFamily: FONT_MONO,
+                fontSize: 12,
+                padding: "10px 13px",
+              }}
+            >
+              Retry detail
+            </button>
+          </div>
+        )}
+        {detail?.loading && (
+          <div role="status" aria-live="polite" style={{ marginBottom: 16, border: "1px solid rgba(232,162,74,.22)", borderRadius: 12, padding: "11px 14px", background: "rgba(232,162,74,.06)", color: "#D7B278", fontFamily: FONT_MONO, fontSize: 11, letterSpacing: ".08em", textTransform: "uppercase" }}>
+            Loading full detail
+          </div>
+        )}
         {/* engine strip */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 9, marginBottom: 16 }}>
           {[
@@ -707,7 +743,7 @@ export function DetailView({ id, onBack }: Props) {
                 <div style={{ lineHeight: 1.1 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: TEXT }}>{s.instance}</div>
                   <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: "#c39a5e" }}>
-                    {outcome.running ? "Running · streaming live" : `${channelLabel(channelOf(s))} · delivered`}
+                    {outputSubtitle}
                   </div>
                 </div>
               </div>
@@ -737,6 +773,8 @@ const backBtnStyle: React.CSSProperties = {
   fontFamily: FONT_MONO,
   fontSize: 12,
   minHeight: 44,
+  minWidth: 44,
+  justifyContent: "center",
   padding: "10px 13px",
   borderRadius: 9,
   transition: "all .15s",

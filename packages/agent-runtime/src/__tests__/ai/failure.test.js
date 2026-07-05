@@ -71,6 +71,11 @@ describe("classifyFailure", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "Codex SSE response headers timed out after 10000ms" })).toBe("provider_unavailable");
   });
 
+  it("classifies provider credential failures separately from availability", () => {
+    expect(classifyFailure({ exitCode: 1, errorText: "No API key for provider: openai-codex" })).toBe("provider_auth");
+    expect(classifyFailure({ exitCode: 1, errorText: "OAuth refresh failed for openai-codex" })).toBe("provider_auth");
+  });
+
   // I14: classifyFailure is a separate code path from retryableProviderFailureInfo
   // (hosts like worklab's coordinator call it directly), so the terse-connection-error
   // fix landed on RETRYABLE_PROVIDER_RE/retryableProviderSubkind needs the same
@@ -99,6 +104,8 @@ describe("classifyFailure", () => {
   it("FAILURE_KINDS distinguishes provider_unavailable from provider_unavailable_exhausted", () => {
     expect(FAILURE_KINDS).toContain("provider_unavailable");
     expect(FAILURE_KINDS).toContain("provider_unavailable_exhausted");
+    expect(FAILURE_KINDS).toContain("provider_auth");
+    expect(FAILURE_KINDS).toContain("skipped_capability_mismatch");
   });
 });
 
@@ -217,5 +224,12 @@ describe("retryableProviderFailureInfo", () => {
       failureKind: "provider_unavailable",
       errorText: "invalid api key for connection",
     })).toMatchObject({ retryable: false, subkind: "non_retryable" });
+  });
+
+  it("keeps explicit provider auth failures terminal", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "provider_auth",
+      errorText: "No API key for provider: openai-codex",
+    })).toMatchObject({ retryable: false, subkind: null });
   });
 });
