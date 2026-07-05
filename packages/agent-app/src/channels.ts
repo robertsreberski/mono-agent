@@ -1,5 +1,3 @@
-import { resolve } from "node:path";
-
 import type {
   AgentResponder,
   ChannelConfigViewSection,
@@ -11,7 +9,6 @@ import type {
 } from "@mono-agent/agent-contracts";
 import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { A2AAdapterConfig, A2AProviderOptions, A2AProviderStartResult } from "@mono-agent/a2a-adapter";
 import type {
   CronAdapterConfig,
   CronAdapterOptions,
@@ -63,17 +60,15 @@ import {
   resolveModelEffortLevels,
 } from "@mono-agent/runtime-adapter";
 import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
-import type {
-  StartWhatsAppAdapterOptions,
-  WhatsAppAdapterConfig,
-  WhatsAppAdapterStartResult,
-  WhatsAppSocketFactory,
-} from "@mono-agent/whatsapp-adapter";
 
 import { isAdapterSendToolAllowed } from "./adapter-send-tools.js";
 import { isChannelConfigured } from "./channel-gate.js";
 import type { ChannelGateSpec } from "./channel-gate.js";
 import { buildChannelConfigView } from "./channel-config-view.js";
+import {
+  createExternalPackageChannelDriver,
+  resolveConfiguredChannelPlugins,
+} from "./channel-plugins.js";
 import { findTriggerOverrideIssues } from "./trigger-overrides.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { NotifyDestination } from "./notify-destinations.js";
@@ -110,8 +105,8 @@ export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
  * Built-in adapters load lazily: each module is imported only once its channel
  * passes the {@link isChannelConfigured} gate (JSON section present, a prefixed
  * env var set, or the jobs/endpoints folder existing). A webhook-only agent
- * therefore never loads the chat SDKs. Type-only imports above are erased at
- * compile time and cost nothing at runtime.
+ * therefore never loads the chat SDKs. A2A and WhatsApp are external channel
+ * plugins; the app reaches them only through dynamic package-name imports.
  *
  * For an unconfigured channel the driver answers with the adapter loader's own
  * empty-input output (the UNCONFIGURED_* constants below) — a drift-guard test
@@ -119,36 +114,28 @@ export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
  */
 type TelegramAdapterModule = typeof import("@mono-agent/telegram-adapter");
 type SlackAdapterModule = typeof import("@mono-agent/slack-adapter");
-type A2AAdapterModule = typeof import("@mono-agent/a2a-adapter");
 type WebhookAdapterModule = typeof import("@mono-agent/webhook-adapter");
 type OpenAIApiAdapterModule = typeof import("@mono-agent/openai-api-adapter");
 type CronAdapterModule = typeof import("@mono-agent/cron-adapter");
-type WhatsAppAdapterModule = typeof import("@mono-agent/whatsapp-adapter");
 type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
 
 let telegramModule: TelegramAdapterModule | undefined;
 let slackModule: SlackAdapterModule | undefined;
-let a2aModule: A2AAdapterModule | undefined;
 let webhookModule: WebhookAdapterModule | undefined;
 let openaiApiModule: OpenAIApiAdapterModule | undefined;
 let cronModule: CronAdapterModule | undefined;
-let whatsappModule: WhatsAppAdapterModule | undefined;
 let tuiModule: TuiAdapterModule | undefined;
 
 const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
   (telegramModule ??= await import("@mono-agent/telegram-adapter"));
 const loadSlackModule = async (): Promise<SlackAdapterModule> =>
   (slackModule ??= await import("@mono-agent/slack-adapter"));
-const loadA2AModule = async (): Promise<A2AAdapterModule> =>
-  (a2aModule ??= await import("@mono-agent/a2a-adapter"));
 const loadWebhookModule = async (): Promise<WebhookAdapterModule> =>
   (webhookModule ??= await import("@mono-agent/webhook-adapter"));
 const loadOpenAIApiModule = async (): Promise<OpenAIApiAdapterModule> =>
   (openaiApiModule ??= await import("@mono-agent/openai-api-adapter"));
 const loadCronModule = async (): Promise<CronAdapterModule> =>
   (cronModule ??= await import("@mono-agent/cron-adapter"));
-const loadWhatsAppModule = async (): Promise<WhatsAppAdapterModule> =>
-  (whatsappModule ??= await import("@mono-agent/whatsapp-adapter"));
 const loadTuiModule = async (): Promise<TuiAdapterModule> =>
   (tuiModule ??= await import("@mono-agent/operator-adapter"));
 
@@ -183,7 +170,7 @@ const UNCONFIGURED_SLACK_CONFIG: SlackAdapterConfig = {
   shortcuts: [],
   homeTab: { enabled: false, buttons: [] },
 };
-const UNCONFIGURED_A2A_CONFIG: A2AAdapterConfig = {
+const UNCONFIGURED_A2A_CONFIG = {
   provider: { enabled: false, host: "127.0.0.1", port: 0, allowNonLoopback: false, requireBearer: false },
   consumer: { remoteAgentUrls: [], timeoutMs: 30_000 },
 };
@@ -207,7 +194,7 @@ const UNCONFIGURED_OPENAI_API_CONFIG: OpenAIApiAdapterConfig = {
   modelId: "agent",
 };
 const UNCONFIGURED_CRON_CONFIG: CronAdapterConfig = { jobs: [] };
-const UNCONFIGURED_WHATSAPP_CONFIG: WhatsAppAdapterConfig = {
+const UNCONFIGURED_WHATSAPP_CONFIG = {
   enabled: false,
   allowedChatJids: [],
   allowAllChats: false,
@@ -508,84 +495,21 @@ export function slackTargetFromConversation(
 }
 
 export interface A2AChannelOverrides {
-  readonly providerFactory?: (options: A2AProviderOptions) => Promise<A2AProviderStartResult>;
+  readonly [key: string]: unknown;
 }
 
 export function createA2AChannelDriver(
   overrides: A2AChannelOverrides = {},
-): ChannelDriver<A2AAdapterConfig> {
-  return {
+): ChannelDriver {
+  return createExternalPackageChannelDriver({
+    packageName: "@mono-agent/a2a-adapter",
     id: "a2a",
     label: "A2A",
-    async configView(input) {
-      if (!(await isChannelConfigured(input, A2A_GATE))) {
-        return unconfiguredChannelView("a2a", "A2A");
-      }
-      const adapter = await loadA2AModule();
-      return await buildChannelConfigView(this, adapter.A2A_CONFIG_FIELDS, input);
-    },
-    async loadConfig(input) {
-      if (!(await isChannelConfigured(input, A2A_GATE))) {
-        return UNCONFIGURED_A2A_CONFIG;
-      }
-      const adapter = await loadA2AModule();
-      return await adapter.loadA2AAdapterConfig({ env: input.env, jsonPath: input.configPath });
-    },
-    isConfigError(error) {
-      return (
-        a2aModule !== undefined &&
-        (error instanceof a2aModule.A2AProviderError || error instanceof a2aModule.A2AConsumerError)
-      );
-    },
-    disabledReason(config) {
-      return config.provider.enabled ? undefined : "A2A provider is disabled.";
-    },
-    waitingReason(config) {
-      if (!config.provider.enabled) {
-        return undefined;
-      }
-      if (config.agent === undefined || config.skill === undefined) {
-        return "A2A provider requires agent and skill configuration.";
-      }
-      return undefined;
-    },
-    async start(input) {
-      const adapter = await loadA2AModule();
-      const config = input.config;
-      if (config.agent === undefined || config.skill === undefined) {
-        throw new adapter.A2AProviderError("missing_required_config", "A2A provider requires agent and skill configuration.");
-      }
-      const providerFactory = overrides.providerFactory ?? adapter.startA2AProvider;
-      const provider = await providerFactory({
-        host: config.provider.host,
-        port: config.provider.port,
-        ...(config.provider.publicBaseUrl === undefined ? {} : { publicBaseUrl: config.provider.publicBaseUrl }),
-        allowNonLoopback: config.provider.allowNonLoopback,
-        requireBearer: config.provider.requireBearer,
-        ...(config.provider.bearerToken === undefined ? {} : { bearerToken: config.provider.bearerToken }),
-        responder: input.responder,
-        agent: {
-          name: config.agent.name,
-          description: config.agent.description,
-          version: config.agent.version,
-          ...(config.agent.providerOrganization === undefined || config.agent.providerUrl === undefined
-            ? {}
-            : {
-                provider: {
-                  organization: config.agent.providerOrganization,
-                  url: config.agent.providerUrl,
-                },
-              }),
-        },
-        skill: config.skill,
-        ...(input.logger === undefined ? {} : { logger: input.logger }),
-      });
-      return {
-        summary: { agentCardUrl: provider.agentCardUrl },
-        stop: () => provider.stop(),
-      };
-    },
-  };
+    gate: A2A_GATE,
+    unconfiguredConfig: UNCONFIGURED_A2A_CONFIG,
+    unconfiguredDisabledReason: "A2A provider is disabled.",
+    factoryOptions: overrides,
+  });
 }
 
 export interface WebhookChannelOverrides {
@@ -1325,57 +1249,21 @@ async function resolveNativeWebhookNotifyDestination(input: {
 }
 
 export interface WhatsAppChannelOverrides {
-  /** Baileys multi-file auth state directory. Defaults to .mono-agent/whatsapp-auth. */
-  readonly authDir?: string;
-  readonly socketFactory?: WhatsAppSocketFactory;
-  readonly startAdapter?: (options: StartWhatsAppAdapterOptions) => Promise<WhatsAppAdapterStartResult>;
+  readonly [key: string]: unknown;
 }
 
 export function createWhatsAppChannelDriver(
   overrides: WhatsAppChannelOverrides = {},
-): ChannelDriver<WhatsAppAdapterConfig> {
-  return {
+): ChannelDriver {
+  return createExternalPackageChannelDriver({
+    packageName: "@mono-agent/whatsapp-adapter",
     id: "whatsapp",
     label: "WhatsApp",
-    async configView(input) {
-      if (!(await isChannelConfigured(input, WHATSAPP_GATE))) {
-        return unconfiguredChannelView("whatsapp", "WhatsApp");
-      }
-      const adapter = await loadWhatsAppModule();
-      return await buildChannelConfigView(this, adapter.WHATSAPP_CONFIG_FIELDS, input);
-    },
-    async loadConfig(input) {
-      if (!(await isChannelConfigured(input, WHATSAPP_GATE))) {
-        return UNCONFIGURED_WHATSAPP_CONFIG;
-      }
-      const adapter = await loadWhatsAppModule();
-      return await adapter.loadWhatsAppAdapterConfig({ env: input.env, jsonPath: input.configPath });
-    },
-    isConfigError(error) {
-      return whatsappModule !== undefined && error instanceof whatsappModule.WhatsAppAdapterConfigError;
-    },
-    disabledReason(config) {
-      return config.enabled ? undefined : "WhatsApp is disabled.";
-    },
-    async start(input) {
-      const adapter = await loadWhatsAppModule();
-      const startAdapter = overrides.startAdapter ?? adapter.startWhatsAppAdapter;
-      const result = await startAdapter({
-        authDir: overrides.authDir ?? resolve(input.cwd, ".mono-agent", "whatsapp-auth"),
-        config: input.config,
-        responder: input.responder,
-        ...(input.logger === undefined ? {} : { logger: input.logger }),
-        onQr: (qr) => {
-          input.logger?.info?.("WhatsApp login QR code received; scan it with the WhatsApp app.", { qr });
-        },
-        ...(overrides.socketFactory === undefined ? {} : { createSocket: overrides.socketFactory }),
-      });
-      return {
-        summary: {},
-        stop: () => result.stop(),
-      };
-    },
-  };
+    gate: WHATSAPP_GATE,
+    unconfiguredConfig: UNCONFIGURED_WHATSAPP_CONFIG,
+    unconfiguredDisabledReason: "WhatsApp is disabled.",
+    factoryOptions: overrides,
+  });
 }
 
 export interface ChannelDriverOverrides {
@@ -1403,6 +1291,23 @@ export function defaultChannelDrivers(overrides: ChannelDriverOverrides = {}): r
     createTuiChannelDriver(overrides.tui),
     createLiveChannelDriver(overrides.live),
   ] as readonly ChannelDriver[];
+}
+
+export async function resolveChannelDrivers(
+  input: MonoAgentAppConfigInput,
+  overrides: ChannelDriverOverrides = {},
+): Promise<readonly ChannelDriver[]> {
+  const drivers = [...defaultChannelDrivers(overrides)];
+  const plugins = await resolveConfiguredChannelPlugins(input);
+  for (const plugin of plugins) {
+    const existing = drivers.findIndex((driver) => driver.id === plugin.id);
+    if (existing >= 0) {
+      drivers[existing] = plugin;
+    } else {
+      drivers.push(plugin);
+    }
+  }
+  return drivers;
 }
 
 function telegramStartOptions(

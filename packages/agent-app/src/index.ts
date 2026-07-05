@@ -33,6 +33,7 @@ export {
   createWebhookChannelDriver,
   createWhatsAppChannelDriver,
   defaultChannelDrivers,
+  resolveChannelDrivers,
 } from "./channels.js";
 export type {
   A2AChannelOverrides,

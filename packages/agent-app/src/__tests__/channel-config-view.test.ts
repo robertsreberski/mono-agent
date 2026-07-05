@@ -4,13 +4,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { A2A_CONFIG_FIELDS } from "@mono-agent/a2a-adapter";
 import { CRON_CONFIG_FIELDS } from "@mono-agent/cron-adapter";
 import { OPENAI_API_CONFIG_FIELDS } from "@mono-agent/openai-api-adapter";
 import { SLACK_CONFIG_FIELDS } from "@mono-agent/slack-adapter";
 import { TELEGRAM_CONFIG_FIELDS } from "@mono-agent/telegram-adapter";
 import { WEBHOOK_CONFIG_FIELDS } from "@mono-agent/webhook-adapter";
-import { WHATSAPP_CONFIG_FIELDS } from "@mono-agent/whatsapp-adapter";
 import type { JsonEnvFieldSpec } from "@mono-agent/agent-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -111,38 +109,44 @@ describe("adapter field registries", () => {
     throw new Error("could not locate pnpm-workspace.yaml above the test file");
   }
 
-  const REGISTRIES: readonly [pkg: string, fields: readonly JsonEnvFieldSpec[]][] = [
-    ["telegram-adapter", TELEGRAM_CONFIG_FIELDS],
-    ["slack-adapter", SLACK_CONFIG_FIELDS],
-    ["whatsapp-adapter", WHATSAPP_CONFIG_FIELDS],
-    ["a2a-adapter", A2A_CONFIG_FIELDS],
-    ["webhook-adapter", WEBHOOK_CONFIG_FIELDS],
-    ["openai-api-adapter", OPENAI_API_CONFIG_FIELDS],
-    ["cron-adapter", CRON_CONFIG_FIELDS],
-  ];
+  async function registryEntries(): Promise<readonly [pkgPath: string, fields: readonly JsonEnvFieldSpec[]][]> {
+    const [whatsapp, a2a] = await Promise.all([
+      import("@mono-agent/whatsapp-adapter"),
+      import("@mono-agent/a2a-adapter"),
+    ]);
+    return [
+      ["packages/telegram-adapter", TELEGRAM_CONFIG_FIELDS],
+      ["packages/slack-adapter", SLACK_CONFIG_FIELDS],
+      ["extras/whatsapp-adapter", whatsapp.WHATSAPP_CONFIG_FIELDS],
+      ["extras/a2a-adapter", a2a.A2A_CONFIG_FIELDS],
+      ["packages/webhook-adapter", WEBHOOK_CONFIG_FIELDS],
+      ["packages/openai-api-adapter", OPENAI_API_CONFIG_FIELDS],
+      ["packages/cron-adapter", CRON_CONFIG_FIELDS],
+    ];
+  }
 
-  it("only names env keys the owning adapter's loader actually reads", () => {
+  it("only names env keys the owning adapter's loader actually reads", async () => {
     const root = repoRoot();
-    for (const [pkg, fields] of REGISTRIES) {
-      const source = readFileSync(join(root, "packages", pkg, "src/config.ts"), "utf8");
+    for (const [pkgPath, fields] of await registryEntries()) {
+      const source = readFileSync(join(root, pkgPath, "src/config.ts"), "utf8");
       const literals = new Set([...source.matchAll(/MONO_AGENT_[A-Z0-9_]+/gu)].map((match) => match[0]));
       for (const field of fields) {
-        expect(literals, `${pkg} loader does not read ${field.env}`).toContain(field.env);
+        expect(literals, `${pkgPath} loader does not read ${field.env}`).toContain(field.env);
       }
     }
   });
 
-  it("uses unique field ids and env keys per registry", () => {
-    for (const [pkg, fields] of REGISTRIES) {
+  it("uses unique field ids and env keys per registry", async () => {
+    for (const [pkgPath, fields] of await registryEntries()) {
       const ids = fields.map((field) => field.id);
       const envs = fields.map((field) => field.env);
-      expect(new Set(ids).size, `${pkg} duplicate ids`).toBe(ids.length);
-      expect(new Set(envs).size, `${pkg} duplicate env keys`).toBe(envs.length);
+      expect(new Set(ids).size, `${pkgPath} duplicate ids`).toBe(ids.length);
+      expect(new Set(envs).size, `${pkgPath} duplicate env keys`).toBe(envs.length);
     }
   });
 
-  it("marks every beginner-critical credential field as secret", () => {
-    const secretIds = REGISTRIES.flatMap(([, fields]) => fields.filter((field) => field.secret === true).map((field) => field.id));
+  it("marks every beginner-critical credential field as secret", async () => {
+    const secretIds = (await registryEntries()).flatMap(([, fields]) => fields.filter((field) => field.secret === true).map((field) => field.id));
     expect(secretIds.sort()).toEqual(
       [
         "a2a.consumer.bearerToken",

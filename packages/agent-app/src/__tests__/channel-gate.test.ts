@@ -2,14 +2,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadA2AAdapterConfig } from "@mono-agent/a2a-adapter";
 import { loadCronAdapterConfig } from "@mono-agent/cron-adapter";
 import { loadOpenAIApiAdapterConfig } from "@mono-agent/openai-api-adapter";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { loadTelegramAdapterConfig } from "@mono-agent/telegram-adapter";
 import { loadTuiAdapterConfig } from "@mono-agent/operator-adapter";
 import { loadWebhookAdapterConfig } from "@mono-agent/webhook-adapter";
-import { loadWhatsAppAdapterConfig } from "@mono-agent/whatsapp-adapter";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { isChannelConfigured } from "../channel-gate.js";
@@ -66,6 +64,10 @@ describe("unconfigured drivers answer with the adapter loader's own empty-input 
     const input = { env: {}, cwd: dir, configPath };
     const drivers = new Map(defaultChannelDrivers().map((driver) => [driver.id, driver]));
     const empty = { env: {}, json: {}, cwd: dir };
+    const [{ loadWhatsAppAdapterConfig }, { loadA2AAdapterConfig }] = await Promise.all([
+      import("@mono-agent/whatsapp-adapter"),
+      import("@mono-agent/a2a-adapter"),
+    ]);
 
     expect(await drivers.get("telegram")!.loadConfig(input)).toEqual(await loadTelegramAdapterConfig(empty));
     expect(await drivers.get("slack")!.loadConfig(input)).toEqual(await loadSlackAdapterConfig(empty));
