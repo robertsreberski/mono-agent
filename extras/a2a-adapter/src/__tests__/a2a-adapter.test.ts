@@ -1,3 +1,7 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
@@ -12,6 +16,7 @@ import {
   A2AProviderError,
   createA2AAgentCard,
   createA2AChannelDriver,
+  createChannelDriver,
   createA2AConsumer,
   createA2AConsumerResponder,
   loadA2AAdapterConfig,
@@ -503,7 +508,69 @@ describe("A2A adapter contract", () => {
     expect(driver.label).toBe("A2A");
     expect(config.provider.enabled).toBe(false);
     expect(driver.disabledReason?.(config)).toBe("A2A provider is disabled.");
+    expect(driver.waitingReason?.(config)).toBeUndefined();
     expect(providerCalls).toBe(0);
+  });
+
+  it("exports the generic channel-driver alias from the package root", () => {
+    const driver = createChannelDriver({ config: { enabled: false } });
+
+    expect(driver.id).toBe("a2a");
+    expect(driver.label).toBe("A2A");
+  });
+
+  it("loads channel-driver config from an existing configPath when inline config is absent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-a2a-driver-"));
+    const configPath = join(dir, "mono-agent.config.json");
+    try {
+      await writeFile(configPath, JSON.stringify({
+        a2a: {
+          enabled: true,
+          provider: {
+            host: "127.0.0.1",
+            port: 4305,
+            publicBaseUrl: "http://127.0.0.1:4305",
+          },
+          agent: {
+            name: "File Mono",
+            description: "File provider",
+            version: "0.1.0",
+          },
+          skill: {
+            id: "file",
+            name: "File",
+            description: "File skill",
+            tags: ["file"],
+          },
+          consumer: {
+            remoteAgentUrls: ["http://127.0.0.1:7000"],
+            timeoutMs: 4321,
+          },
+        },
+      }), "utf8");
+
+      const driver = createA2AChannelDriver();
+      const config = await driver.loadConfig({
+        env: {},
+        cwd: dir,
+        configPath,
+      });
+
+      expect(config.provider).toMatchObject({
+        enabled: true,
+        host: "127.0.0.1",
+        port: 4305,
+        publicBaseUrl: "http://127.0.0.1:4305",
+      });
+      expect(config.agent).toMatchObject({ name: "File Mono" });
+      expect(config.skill).toMatchObject({ tags: ["file"] });
+      expect(config.consumer).toMatchObject({
+        remoteAgentUrls: ["http://127.0.0.1:7000"],
+        timeoutMs: 4321,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("reports enabled-but-incomplete channel-driver config as typed or waiting config", async () => {
@@ -673,6 +740,55 @@ describe("A2A adapter contract", () => {
       remoteAgentUrls: ["http://127.0.0.1:8000"],
       timeoutMs: 1234,
     });
+  });
+
+  it("rejects wrong-typed plugin-style raw config fields as A2A config errors", async () => {
+    const cases = [
+      {
+        name: "boolean",
+        config: { provider: { requireBearer: "true" } },
+        path: "a2a.provider.requireBearer",
+      },
+      {
+        name: "integer",
+        config: { provider: { port: "4300" } },
+        path: "a2a.provider.port",
+      },
+      {
+        name: "skill csv",
+        config: { skill: { tags: "a,b" } },
+        path: "a2a.skill.tags",
+      },
+      {
+        name: "consumer csv",
+        config: { consumer: { remoteAgentUrls: "http://127.0.0.1:7000" } },
+        path: "a2a.consumer.remoteAgentUrls",
+      },
+      {
+        name: "section",
+        config: { agent: ["not", "an", "object"] },
+        path: "a2a.agent",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const driver = createA2AChannelDriver({ config: testCase.config });
+      const error = await driver.loadConfig({
+        env: {},
+        cwd: "/repo",
+        configPath: "/repo/this-file-is-not-read.json",
+      }).catch((caught: unknown) => caught);
+
+      expect(error, testCase.name).toBeInstanceOf(A2AProviderError);
+      expect(error, testCase.name).toMatchObject({
+        code: "invalid_config",
+        details: {
+          code: "invalid_config",
+          path: testCase.path,
+        },
+      });
+      expect(driver.isConfigError(error)).toBe(true);
+    }
   });
 });
 

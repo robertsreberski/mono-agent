@@ -55,12 +55,14 @@ const response = await sendA2AMessage({
 ## Public API
 
 - `startA2AProvider`
+- `createA2AChannelDriver`
+- `createChannelDriver`
 - `createA2AAgentCard`
 - `createA2AConsumer`
 - `discoverA2AAgent`
 - `sendA2AMessage`
 - `createA2AConsumerResponder`
-- `a2aFieldGroup`
+- `A2A_CONFIG_FIELDS`
 - `loadA2AAdapterConfig`
 - `redactA2AAdapterConfig`
 

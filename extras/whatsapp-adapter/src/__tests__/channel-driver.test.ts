@@ -12,8 +12,13 @@ import type { AgentResponder } from "../adapter.js";
 import {
   createChannelDriver,
   createWhatsAppChannelDriver,
+  type WhatsAppChannelDriverConfig,
 } from "../channel-driver.js";
-import type { WhatsAppAdapterConfig } from "../config.js";
+import {
+  WhatsAppAdapterConfigError,
+  type WhatsAppAdapterConfig,
+} from "../config.js";
+import { createChannelDriver as createChannelDriverFromIndex } from "../index.js";
 import type {
   StartWhatsAppAdapterOptions,
   WhatsAppAdapterStartResult,
@@ -35,6 +40,26 @@ afterEach(async () => {
 });
 
 describe("createWhatsAppChannelDriver", () => {
+  it("uses the default channel id and label and honors overrides", () => {
+    const driver = createWhatsAppChannelDriver();
+    const custom = createWhatsAppChannelDriver({
+      id: "custom-whatsapp",
+      label: "Custom WhatsApp",
+    });
+
+    expect(driver.id).toBe("whatsapp");
+    expect(driver.label).toBe("WhatsApp");
+    expect(custom.id).toBe("custom-whatsapp");
+    expect(custom.label).toBe("Custom WhatsApp");
+  });
+
+  it("exports the createChannelDriver alias through the package barrel", () => {
+    const driver = createChannelDriverFromIndex();
+
+    expect(driver.id).toBe("whatsapp");
+    expect(driver.label).toBe("WhatsApp");
+  });
+
   it("loads disabled config without touching the start seams", async () => {
     const startAdapter = vi.fn<StartAdapter>(async () => fakeStartResult());
     const socketFactory = vi.fn() as unknown as WhatsAppSocketFactory;
@@ -46,6 +71,39 @@ describe("createWhatsAppChannelDriver", () => {
     expect(driver.disabledReason?.(config)).toBe("WhatsApp is disabled.");
     expect(startAdapter).not.toHaveBeenCalled();
     expect(socketFactory).not.toHaveBeenCalled();
+  });
+
+  it("loads adapter config from a present configPath when raw config is absent", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        whatsapp: {
+          enabled: true,
+          allowAllChats: true,
+          groupMode: "any",
+          botJids: ["bot@s.whatsapp.net"],
+          mentionTextAliases: ["@mono"],
+          stripMentionText: false,
+        },
+      })}\n`,
+      "utf8",
+    );
+    const driver = createWhatsAppChannelDriver();
+
+    const config = await driver.loadConfig(configInput({ configPath }));
+
+    expect(config).toEqual({
+      enabled: true,
+      allowedChatJids: [],
+      allowAllChats: true,
+      trigger: {
+        groupMode: "any",
+        botJids: ["bot@s.whatsapp.net"],
+        mentionTextAliases: ["@mono"],
+        stripMentionText: false,
+      },
+    });
   });
 
   it("classifies enabled incomplete config as a WhatsApp config error", async () => {
@@ -71,6 +129,22 @@ describe("createWhatsAppChannelDriver", () => {
       details: { env: "MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS" },
     });
   });
+
+  it.each(invalidRawConfigCases)(
+    "rejects wrong-typed raw plugin config field $name",
+    async ({ config, field }) => {
+      const driver = createWhatsAppChannelDriver({ config });
+
+      const error = await driver.loadConfig(configInput()).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(WhatsAppAdapterConfigError);
+      expect(driver.isConfigError(error)).toBe(true);
+      expect(error).toMatchObject({
+        code: "invalid_config",
+        details: { field },
+      });
+    },
+  );
 
   it("wires start options, default authDir, socket seam, QR logging, and stop", async () => {
     const stop = vi.fn(async () => undefined);
@@ -130,7 +204,7 @@ describe("createWhatsAppChannelDriver", () => {
 
     const driver = createChannelDriver({
       config: {
-        enabled: true,
+        enabled: false,
         allowedChatJids: ["plugin@s.whatsapp.net"],
         allowAllChats: false,
         groupMode: "mention",
@@ -141,7 +215,9 @@ describe("createWhatsAppChannelDriver", () => {
       configInput({
         configPath,
         env: {
+          MONO_AGENT_WHATSAPP_ENABLED: "true",
           MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS: "env@s.whatsapp.net",
+          MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS: "true",
           MONO_AGENT_WHATSAPP_GROUP_MODE: "any",
         },
       }),
@@ -150,7 +226,7 @@ describe("createWhatsAppChannelDriver", () => {
     expect(config).toEqual({
       enabled: true,
       allowedChatJids: ["env@s.whatsapp.net"],
-      allowAllChats: false,
+      allowAllChats: true,
       trigger: {
         groupMode: "any",
         botJids: [],
@@ -161,6 +237,38 @@ describe("createWhatsAppChannelDriver", () => {
     expect(driver.disabledReason?.(config)).toBeUndefined();
   });
 });
+
+const invalidRawConfigCases: readonly {
+  readonly name: string;
+  readonly config: WhatsAppChannelDriverConfig;
+  readonly field: string;
+}[] = [
+  {
+    name: "enabled",
+    config: { enabled: "true" },
+    field: "whatsapp.enabled",
+  },
+  {
+    name: "allowAllChats",
+    config: { allowAllChats: "true" },
+    field: "whatsapp.allowAllChats",
+  },
+  {
+    name: "allowedChatJids",
+    config: { allowedChatJids: "jid@s.whatsapp.net" },
+    field: "whatsapp.allowedChatJids",
+  },
+  {
+    name: "botJids",
+    config: { botJids: "bot@s.whatsapp.net" },
+    field: "whatsapp.botJids",
+  },
+  {
+    name: "mentionTextAliases",
+    config: { mentionTextAliases: "@mono" },
+    field: "whatsapp.mentionTextAliases",
+  },
+];
 
 function configInput(overrides: {
   readonly env?: Record<string, string | undefined>;
