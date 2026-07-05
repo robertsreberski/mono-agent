@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { discoverWebInstances } from "../discovery.js";
 import type { DiscoveredWebInstance } from "../discovery.js";
-import { listInstanceSessions, readInstanceSession } from "../history.js";
+import { listInstanceSessionSummaries, listInstanceSessions, readInstanceSession } from "../history.js";
 import { makeTmpDir, registerSource, removeDir, seedRun } from "./helpers.js";
 
 const tmpDirs: string[] = [];
@@ -31,7 +31,7 @@ async function discoverOne(artifactDir: string): Promise<DiscoveredWebInstance> 
 }
 
 describe("listInstanceSessions", () => {
-  it("maps recorded runs to sessions, newest-first, with full steps", async () => {
+  it("maps recorded summaries to step-less sessions, newest-first", async () => {
     const agentDir = await tmp("agent");
     const artifactDir = join(agentDir, "runs");
     await seedRun({
@@ -64,12 +64,37 @@ describe("listInstanceSessions", () => {
     expect(newer?.sourceId).toBe(discovered.instance.sourceId);
     expect(newer?.instance).toBe("History Agent");
     expect(newer?.source).toBe("chat");
-    expect(newer?.finalText).toBe("Newer answer.");
+    expect(newer?.finalText).toBe("");
     expect(newer?.outcome).toBe("notified");
     expect(newer?.status).toBe("succeeded");
-    // A prompt step + an assistant step at minimum.
-    expect((newer?.steps.length ?? 0)).toBeGreaterThanOrEqual(2);
-    expect(newer?.instr).toBe("What is the weather?");
+    expect(newer?.steps).toEqual([]);
+    expect(newer?.toolCounts).toEqual({});
+    expect(newer?.totals.steps).toBeGreaterThan(0);
+    expect(newer?.instr).toBe("");
+    expect(newer?.title).toBe("What is the weather?");
+  });
+
+  it("returns summary signatures for reconcile short-circuiting", async () => {
+    const agentDir = await tmp("agent");
+    const artifactDir = join(agentDir, "runs");
+    await seedRun({
+      artifactDir,
+      runId: "run-signature",
+      conversationId: "chat:signature",
+      userInput: "Read the summary",
+      text: "Summary answer.",
+      source: "chat",
+      at: 4_000_000,
+    });
+    const discovered = await discoverOne(artifactDir);
+
+    const [entry] = await listInstanceSessionSummaries(discovered, { maxRuns: 50 });
+
+    expect(entry?.session.id).toBe("run-signature");
+    expect(entry?.session.steps).toEqual([]);
+    expect(entry?.signature.summaryMtimeMs).toBeGreaterThan(0);
+    expect(entry?.signature.status).toBe("succeeded");
+    expect(entry?.signature.eventCount).toBeGreaterThan(0);
   });
 });
 
@@ -91,6 +116,7 @@ describe("readInstanceSession", () => {
     expect(session?.id).toBe("run-solo");
     expect(session?.sourceId).toBe(discovered.instance.sourceId);
     expect(session?.finalText).toBe("General Kenobi.");
+    expect((session?.steps.length ?? 0)).toBeGreaterThanOrEqual(2);
     expect(session?.cwd).toBe(discovered.instance.cwd);
 
     expect(await readInstanceSession(discovered, "run-does-not-exist")).toBeUndefined();

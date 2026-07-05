@@ -1,11 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startSessionWebServer } from "../server.js";
 import type { SessionWebServerHandle } from "../server.js";
-import { makeTmpDir, registerSource, removeDir, seedRun } from "./helpers.js";
+import { makeTmpDir, readSseFrames, registerSource, removeDir, seedRun } from "./helpers.js";
 
 const tmpDirs: string[] = [];
 let server: SessionWebServerHandle | undefined;
@@ -60,8 +60,15 @@ describe("startSessionWebServer", () => {
     expect(instances.instances[0]?.sourceId).toBe("http-agent");
     expect(instances.instances[0]?.counts.runs).toBe(1);
 
-    const all = (await (await fetch(`${server.url}api/sessions`)).json()) as { sessions: { id: string }[] };
+    const all = (await (await fetch(`${server.url}api/sessions`)).json()) as {
+      sessions: { id: string; finalText: string; steps: unknown[]; totals: { steps: number } }[];
+    };
     expect(all.sessions.map((session) => session.id)).toContain("run-http-1");
+    const listed = all.sessions.find((session) => session.id === "run-http-1");
+    expect(listed?.finalText).toBe("");
+    expect((listed as { instr?: string } | undefined)?.instr).toBe("");
+    expect(listed?.steps).toEqual([]);
+    expect(listed?.totals.steps).toBeGreaterThan(0);
 
     const limited = (await (await fetch(`${server.url}api/sessions?instance=${fix.sourceId}&limit=0`)).json()) as {
       sessions: unknown[];
@@ -69,11 +76,12 @@ describe("startSessionWebServer", () => {
     expect(limited.sessions).toHaveLength(0);
 
     const one = (await (await fetch(`${server.url}api/sessions/${fix.sourceId}/${fix.runId}`)).json()) as {
-      session: { id: string; sourceId: string; finalText: string };
+      session: { id: string; sourceId: string; finalText: string; steps: unknown[] };
     };
     expect(one.session.id).toBe("run-http-1");
     expect(one.session.sourceId).toBe(fix.sourceId);
     expect(one.session.finalText).toBe("Pong.");
+    expect(one.session.steps.length).toBeGreaterThan(0);
 
     const missing = await fetch(`${server.url}api/sessions/${fix.sourceId}/nope`);
     expect(missing.status).toBe(404);
@@ -90,7 +98,7 @@ describe("startSessionWebServer", () => {
       throw new Error("stream had no body");
     }
     const decoder = new TextDecoder();
-    const frames: { t: string }[] = [];
+    const frames: ({ t: "instances" } | { t: "session_upsert"; session: { steps: unknown[]; finalText: string } })[] = [];
     let buffer = "";
     try {
       while (frames.length < 2) {
@@ -101,7 +109,11 @@ describe("startSessionWebServer", () => {
           const chunk = buffer.slice(0, boundary).trim();
           buffer = buffer.slice(boundary + 2);
           if (chunk.startsWith("data:")) {
-            frames.push(JSON.parse(chunk.slice("data:".length).trim()) as { t: string });
+            frames.push(
+              JSON.parse(chunk.slice("data:".length).trim()) as
+                | { t: "instances" }
+                | { t: "session_upsert"; session: { steps: unknown[]; finalText: string } },
+            );
           }
           boundary = buffer.indexOf("\n\n");
         }
@@ -116,6 +128,49 @@ describe("startSessionWebServer", () => {
 
     expect(frames[0]?.t).toBe("instances");
     expect(frames[1]?.t).toBe("session_upsert");
+    expect(frames[1]?.t === "session_upsert" ? frames[1].session.steps : undefined).toEqual([]);
+    expect(frames[1]?.t === "session_upsert" ? frames[1].session.finalText : undefined).toBe("");
+  });
+
+  it("does not drop the initial SSE snapshot for a run with oversized detail", async () => {
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    const staticDir = await tmp("static");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>session-web</title><div id=app></div>", "utf8");
+    await seedRun({
+      artifactDir,
+      runId: "run-large-detail",
+      conversationId: "chat:large",
+      userInput: "Summarize the large artifact",
+      text: "x".repeat(1_100_000),
+      source: "chat",
+      at: 1_700_000_100_000,
+    });
+    await registerSource({ registryDir, sourceId: "large-agent", label: "Large Agent", artifactDir });
+    const warn = vi.fn();
+    server = await startSessionWebServer({
+      registryDirs: [registryDir],
+      port: 0,
+      staticDir,
+      logger: { warn },
+    });
+
+    const frames = await readSseFrames(`${server.url}api/stream`, 2) as (
+      | { t: "instances" }
+      | { t: "session_upsert"; session: { id: string; finalText: string; instr: string; steps: unknown[] } }
+    )[];
+
+    expect(frames[0]?.t).toBe("instances");
+    expect(frames[1]?.t).toBe("session_upsert");
+    expect(frames[1]?.t === "session_upsert" ? frames[1].session.id : undefined).toBe("run-large-detail");
+    expect(frames[1]?.t === "session_upsert" ? frames[1].session.finalText : undefined).toBe("");
+    expect(frames[1]?.t === "session_upsert" ? frames[1].session.instr : undefined).toBe("");
+    expect(frames[1]?.t === "session_upsert" ? frames[1].session.steps : undefined).toEqual([]);
+    expect(warn).not.toHaveBeenCalledWith(
+      "Dropped oversized browser SSE frame.",
+      expect.objectContaining({ frameType: "session_upsert" }),
+    );
   });
 
   it("stops promptly with an open browser SSE stream", async () => {

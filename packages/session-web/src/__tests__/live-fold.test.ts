@@ -294,6 +294,8 @@ describe("SessionAggregator live fold", () => {
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
     });
+    const frames: BrowserStreamFrame[] = [];
+    aggregator.subscribe((frame) => frames.push(frame));
     await aggregator.start();
 
     bus.publish(runStarted());
@@ -311,6 +313,7 @@ describe("SessionAggregator live fold", () => {
     });
     await rm(join(artifactDir, `${RUN_ID}.events.jsonl`));
 
+    const frameCountBeforeReread = frames.length;
     const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get(SOURCE_ID);
     await (aggregator as unknown as { rereadArtifactRun(state: unknown, runId: string): Promise<void> })
       .rereadArtifactRun(state, RUN_ID);
@@ -321,6 +324,14 @@ describe("SessionAggregator live fold", () => {
       finalText: "live answer",
       totals: expect.objectContaining({ steps: 1 }),
     });
+    const rereadUpsert = frames
+      .slice(frameCountBeforeReread)
+      .find(
+        (frame): frame is Extract<BrowserStreamFrame, { t: "session_upsert" }> =>
+          frame.t === "session_upsert" && frame.session.id === RUN_ID,
+      );
+    expect(rereadUpsert?.session.finalText).toBe("");
+    expect(rereadUpsert?.session.steps).toEqual([]);
   });
 
   it("reconciles artifacts that appear after discovery and lets terminal disk replace live", async () => {
@@ -405,7 +416,7 @@ describe("SessionAggregator live fold", () => {
     expect(frames.some((frame) => frame.t === "session_upsert" && frame.session.id === "run-new")).toBe(true);
   });
 
-  it("routes on-demand disk detail through eviction and subscriber upsert", async () => {
+  it("routes on-demand disk detail through eviction without broadcasting full detail", async () => {
     const registryDir = await tmp("reg");
     const artifactDir = join(await tmp("agent"), "runs");
     await seedRun({
@@ -443,7 +454,7 @@ describe("SessionAggregator live fold", () => {
 
     expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-old"]);
     expect(frames).toContainEqual({ t: "session_removed", sourceId: SOURCE_ID, runId: "run-new" });
-    expect(frames.some((frame) => frame.t === "session_upsert" && frame.session.id === "run-old")).toBe(true);
+    expect(frames.some((frame) => frame.t === "session_upsert" && frame.session.id === "run-old")).toBe(false);
   });
 
   it("emits an instances frame when registry metadata changes without endpoint changes", async () => {

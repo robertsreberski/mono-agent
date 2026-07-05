@@ -24,8 +24,8 @@ import type { RunSummary, RunSummaryStatus, RuntimeEventLike } from "@mono-agent
 
 import { discoverWebInstances, resolveLiveApiKey } from "./discovery.js";
 import type { DiscoveredWebInstance } from "./discovery.js";
-import { listInstanceSessions, readInstanceSession } from "./history.js";
-import type { SourceStampedSession } from "./history.js";
+import { listInstanceSessionSummaries, readInstanceSession } from "./history.js";
+import type { DiskRunSignature, SourceStampedSession, SourceStampedSessionSummary } from "./history.js";
 import { connectLiveStream } from "./live-client.js";
 import type { LiveStreamConnection, LiveStreamStatus } from "./live-client.js";
 import type { BrowserStreamFrame, WebInstance } from "./session-model.js";
@@ -87,6 +87,10 @@ interface InstanceState {
   live: LiveState | undefined;
   artifactWatcher: FSWatcher | undefined;
   readonly artifactTimers: Map<string, ReturnType<typeof setTimeout>>;
+  /** Last observed summary-file signature per retained disk run. */
+  readonly diskRunSignatures: Map<string, DiskRunSignature>;
+  /** Runs whose cached session contains full detail read from the disk artifact. */
+  readonly detailLoaded: Set<string>;
   /** Per-instance cap on retained sessions (mirrors {@link SessionAggregator.maxRunsPerInstance}). */
   readonly maxRunsPerInstance: number;
   /**
@@ -170,6 +174,15 @@ export class SessionAggregator {
 
   /** Sessions for one instance (by sourceId) or all ("all"), newest-first by `startTs`. */
   getSessions(filter: string): SourceStampedSession[] {
+    return this.collectSessions(filter);
+  }
+
+  /** Step-less list projection for `/api/sessions` and browser SSE snapshots. */
+  getSessionSummaries(filter: string): SourceStampedSession[] {
+    return this.collectSessions(filter).map((session) => toBrowserListSession(session));
+  }
+
+  private collectSessions(filter: string): SourceStampedSession[] {
     const states =
       filter === "all"
         ? [...this.states.values()]
@@ -189,7 +202,13 @@ export class SessionAggregator {
       return undefined;
     }
     const existing = state.sessions.get(runId);
-    if (existing !== undefined) {
+    const diskSignature = state.diskRunSignatures.get(runId);
+    if (
+      existing !== undefined &&
+      (state.detailLoaded.has(runId) ||
+        diskSignature === undefined ||
+        (diskSignature.status === "running" && state.liveFinished.has(runId)))
+    ) {
       return existing;
     }
     let session: SourceStampedSession | undefined;
@@ -197,12 +216,13 @@ export class SessionAggregator {
       session = await readInstanceSession(state.discovered, runId);
     } catch (error) {
       this.logger?.warn?.("Failed to read session on demand.", { sourceId, runId, error: errorMessage(error) });
-      return undefined;
+      return existing;
     }
     if (session !== undefined && this.isCurrentState(state)) {
-      this.insertDiskSession(state, runId, session, { emit: true });
+      this.insertDiskSession(state, runId, session, { emit: false, detailLoaded: true });
+      return state.sessions.get(runId) ?? session;
     }
-    return session;
+    return session ?? existing;
   }
 
   /** Subscribe to the browser frame fan-out. Returns an unsubscribe function. */
@@ -260,6 +280,8 @@ export class SessionAggregator {
       live: undefined,
       artifactWatcher: undefined,
       artifactTimers: new Map(),
+      diskRunSignatures: new Map(),
+      detailLoaded: new Set(),
       maxRunsPerInstance: this.maxRunsPerInstance,
       artifactFinished: new Set(),
       liveFinished: new Set(),
@@ -453,7 +475,7 @@ export class SessionAggregator {
     state: InstanceState,
     runId: string,
     session: SourceStampedSession,
-    options: { readonly emit: boolean },
+    options: { readonly emit: boolean; readonly detailLoaded: boolean },
   ): void {
     const existing = state.sessions.get(runId);
     const nextSession =
@@ -463,7 +485,33 @@ export class SessionAggregator {
     if (nextSession.status !== "running") {
       state.artifactFinished.add(runId);
     }
+    if (options.detailLoaded || sessionHasVisibleDetail(nextSession)) {
+      state.detailLoaded.add(runId);
+    }
     this.insertSession(state, runId, nextSession, options);
+  }
+
+  private insertDiskSummarySession(
+    state: InstanceState,
+    entry: SourceStampedSessionSummary,
+    options: { readonly emit: boolean },
+  ): void {
+    const runId = entry.session.id;
+    const previousSignature = state.diskRunSignatures.get(runId);
+    const existing = state.sessions.get(runId);
+    const nextSession =
+      existing !== undefined ? mergeSessionPreservingVisibleDetail(existing, entry.session) : entry.session;
+    if (!diskRunSignatureEquals(previousSignature, entry.signature)) {
+      state.detailLoaded.delete(runId);
+    }
+    state.diskRunSignatures.set(runId, entry.signature);
+    if (nextSession.status !== "running") {
+      state.artifactFinished.add(runId);
+    }
+    this.insertSession(state, runId, nextSession, { emit: false });
+    if (options.emit) {
+      this.emit({ t: "session_upsert", session: toBrowserListSession(nextSession) });
+    }
   }
 
   private insertSession(
@@ -509,6 +557,8 @@ export class SessionAggregator {
         break;
       }
       state.sessions.delete(oldestId);
+      state.diskRunSignatures.delete(oldestId);
+      state.detailLoaded.delete(oldestId);
       state.artifactFinished.delete(oldestId);
       state.liveFinished.delete(oldestId);
       this.emit({ t: "session_removed", sourceId: state.discovered.instance.sourceId, runId: oldestId });
@@ -559,23 +609,23 @@ export class SessionAggregator {
     if (!this.isCurrentState(state)) {
       return;
     }
-    let session: SourceStampedSession | undefined;
+    let entry: SourceStampedSessionSummary | undefined;
     try {
-      session = await readInstanceSession(state.discovered, runId);
+      entry = await this.readDiskSummary(state, runId);
     } catch (error) {
       this.logger?.warn?.("Failed to re-read changed run artifact.", { runId, error: errorMessage(error) });
       return;
     }
-    if (session === undefined || !this.isCurrentState(state)) {
+    if (entry === undefined || !this.isCurrentState(state)) {
       return;
     }
-    if (session.status === "running" && state.liveFinished.has(runId)) {
+    if (entry.session.status === "running" && state.liveFinished.has(runId)) {
       // A debounced artifact watch can read the start-time "running" summary after
       // live SSE already delivered the terminal frame. Keep the terminal live fold
       // until the disk artifact itself becomes terminal.
       return;
     }
-    this.insertDiskSession(state, runId, session, { emit: true });
+    this.insertDiskSummarySession(state, entry, { emit: true });
   }
 
   private setupRegistryWatchers(): void {
@@ -640,18 +690,18 @@ export class SessionAggregator {
           changed = true;
         }
         if (this.isCurrentState(existing, generation)) {
-          try {
-            if (await this.refreshDiskState(existing, { emitSessions: true })) {
-              changed = true;
-            }
-            if (existing.artifactWatcher === undefined) {
+          if (existing.artifactWatcher === undefined) {
+            try {
+              if (await this.refreshDiskState(existing, { emitSessions: true })) {
+                changed = true;
+              }
               this.watchArtifacts(existing);
+            } catch (error) {
+              this.logger?.warn?.("Failed to refresh instance history.", {
+                sourceId: existing.discovered.instance.sourceId,
+                error: errorMessage(error),
+              });
             }
-          } catch (error) {
-            this.logger?.warn?.("Failed to refresh instance history.", {
-              sourceId: existing.discovered.instance.sourceId,
-              error: errorMessage(error),
-            });
           }
         }
       }
@@ -687,6 +737,8 @@ export class SessionAggregator {
       state.artifactTimers.clear();
       const removedRunIds = [...state.sessions.keys()];
       state.sessions.clear();
+      state.diskRunSignatures.clear();
+      state.detailLoaded.clear();
       state.artifactFinished.clear();
       state.liveFinished.clear();
       for (const runId of removedRunIds) {
@@ -727,6 +779,8 @@ export class SessionAggregator {
       clearTimeout(timer);
     }
     state.artifactTimers.clear();
+    state.diskRunSignatures.clear();
+    state.detailLoaded.clear();
     state.artifactFinished.clear();
     state.liveFinished.clear();
     state.sessions.clear();
@@ -771,20 +825,26 @@ export class SessionAggregator {
   }
 
   private async refreshDiskState(state: InstanceState, options: { readonly emitSessions: boolean }): Promise<boolean> {
-    const sessions = await listInstanceSessions(state.discovered, { maxRuns: state.maxRunsPerInstance });
+    const sessions = await listInstanceSessionSummaries(state.discovered, { maxRuns: state.maxRunsPerInstance });
     let changed = false;
-    for (const session of sessions) {
-      if (session.status === "running" && state.liveFinished.has(session.id)) {
+    for (const entry of sessions) {
+      if (entry.session.status === "running" && state.liveFinished.has(entry.session.id)) {
         continue;
       }
-      const existing = state.sessions.get(session.id);
-      if (existing !== undefined && JSON.stringify(existing) === JSON.stringify(session)) {
+      const existing = state.sessions.get(entry.session.id);
+      const previousSignature = state.diskRunSignatures.get(entry.session.id);
+      if (existing !== undefined && diskRunSignatureEquals(previousSignature, entry.signature)) {
         continue;
       }
-      this.insertDiskSession(state, session.id, session, { emit: options.emitSessions });
+      this.insertDiskSummarySession(state, entry, { emit: options.emitSessions });
       changed = true;
     }
     return changed;
+  }
+
+  private async readDiskSummary(state: InstanceState, runId: string): Promise<SourceStampedSessionSummary | undefined> {
+    const summaries = await listInstanceSessionSummaries(state.discovered, { maxRuns: state.maxRunsPerInstance });
+    return summaries.find((entry) => entry.session.id === runId);
   }
 
   private isActive(generation = this.lifecycleGeneration): boolean {
@@ -951,6 +1011,50 @@ function mergeSessionPreservingVisibleDetail(
         }
       : {}),
   };
+}
+
+function toBrowserListSession(session: SourceStampedSession): SourceStampedSession {
+  const {
+    instrTr: _instrTr,
+    recalled: _recalled,
+    finalTr: _finalTr,
+    ...withoutDetailText
+  } = session;
+  return {
+    ...withoutDetailText,
+    instr: "",
+    hasRecall: false,
+    finalText: "",
+    toolCounts: {},
+    totals: {
+      ...session.totals,
+      asst: 0,
+      tcalls: 0,
+      think: 0,
+    },
+    steps: [],
+  };
+}
+
+function sessionHasVisibleDetail(session: SourceStampedSession): boolean {
+  return (
+    session.steps.length > 0 ||
+    session.finalText.trim().length > 0 ||
+    Object.keys(session.toolCounts).length > 0
+  );
+}
+
+function diskRunSignatureEquals(
+  left: DiskRunSignature | undefined,
+  right: DiskRunSignature,
+): boolean {
+  return (
+    left !== undefined &&
+    left.summaryMtimeMs === right.summaryMtimeMs &&
+    left.updatedAt === right.updatedAt &&
+    left.status === right.status &&
+    left.eventCount === right.eventCount
+  );
 }
 
 function liveEventKey(frame: Extract<RunEventFrame, { t: "event" }>): string | undefined {

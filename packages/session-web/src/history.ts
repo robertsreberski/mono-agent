@@ -4,16 +4,27 @@
  * model via `mapRunToSession` — the exact same mapping the TUI replay uses, so
  * both surfaces decompose a run identically.
  */
-import {
-  listRecordedRuns,
-  mapRunToSession,
-  readRecordedRun,
-} from "@mono-agent/observability";
+import { stat } from "node:fs/promises";
+import { join } from "node:path";
+
+import { listRecordedRuns, mapRunToSession, readRecordedRun } from "@mono-agent/observability";
 import type { RecordedRunListItem, RunSummary, RuntimeEventLike, Session } from "@mono-agent/observability";
 
 import type { DiscoveredWebInstance } from "./discovery.js";
 
 export type SourceStampedSession = Session & { readonly sourceId: string };
+
+export interface DiskRunSignature {
+  readonly summaryMtimeMs: number;
+  readonly updatedAt: string;
+  readonly status: string;
+  readonly eventCount: number;
+}
+
+export interface SourceStampedSessionSummary {
+  readonly session: SourceStampedSession;
+  readonly signature: DiskRunSignature;
+}
 
 /**
  * Matches the TUI replay's detail read (`REPLAY_MAX_STRING_BYTES`). observability's
@@ -27,25 +38,40 @@ export interface ListInstanceSessionsOptions {
 }
 
 /**
- * Newest-first sessions for an instance. `listRecordedRuns` yields the run list
- * (already newest-first); each run is then read in full (`readRecordedRun`) and
- * mapped to a {@link Session} with complete steps. A run missing from disk between
- * the list and the read (rotated out mid-scan) is simply skipped.
+ * Newest-first summary rows for an instance. This intentionally reads only
+ * `*.summary.json` metadata via `listRecordedRuns` plus summary-file stats; it
+ * never touches the events JSONL. Full timelines are loaded by
+ * {@link readInstanceSession} on the detail endpoint.
+ */
+export async function listInstanceSessionSummaries(
+  instance: DiscoveredWebInstance,
+  options: ListInstanceSessionsOptions,
+): Promise<readonly SourceStampedSessionSummary[]> {
+  const artifactDir = instance.instance.artifactDir;
+  const { runs } = await listRecordedRuns({ artifactDir, maxRuns: options.maxRuns });
+  const sessions: SourceStampedSessionSummary[] = [];
+  for (const run of runs) {
+    const signature = await diskRunSignature(artifactDir, run);
+    if (signature === undefined) {
+      continue;
+    }
+    sessions.push({
+      session: mapListItemToSession(instance, run),
+      signature,
+    });
+  }
+  return sessions;
+}
+
+/**
+ * Back-compat alias for callers that only need list rows. These rows are
+ * deliberately step-less; use {@link readInstanceSession} for full detail.
  */
 export async function listInstanceSessions(
   instance: DiscoveredWebInstance,
   options: ListInstanceSessionsOptions,
 ): Promise<readonly SourceStampedSession[]> {
-  const artifactDir = instance.instance.artifactDir;
-  const { runs } = await listRecordedRuns({ artifactDir, maxRuns: options.maxRuns });
-  const sessions: SourceStampedSession[] = [];
-  for (const run of runs) {
-    const session = await readInstanceSession(instance, run.runId);
-    if (session !== undefined) {
-      sessions.push(session);
-    }
-  }
-  return sessions;
+  return (await listInstanceSessionSummaries(instance, options)).map((entry) => entry.session);
 }
 
 /** A single run read in full and mapped to a {@link Session}; `undefined` when the run isn't on disk. */
@@ -83,4 +109,63 @@ function toRuntimeEvent(payload: unknown): RuntimeEventLike {
  */
 function runSummaryFromListItem(item: RecordedRunListItem): RunSummary {
   return { ...item, artifactPaths: [] };
+}
+
+function mapListItemToSession(instance: DiscoveredWebInstance, item: RecordedRunListItem): SourceStampedSession {
+  const summary = runSummaryFromListItem(item);
+  const session = mapRunToSession(summary, [], {
+    instanceLabel: instance.instance.label,
+    sourceId: instance.instance.sourceId,
+    ...(instance.instance.cwd.length === 0 ? {} : { cwd: instance.instance.cwd }),
+  });
+  const base = stripSessionDetailText(session);
+  return {
+    ...base,
+    sourceId: instance.instance.sourceId,
+    // Keep list/SSE snapshots compatible with the existing Session wire shape
+    // while leaving timelines and delivered output to the lazy detail endpoint.
+    outcome: summary.status === "succeeded" && summary.eventCount > 0 ? "notified" : session.outcome,
+    instr: "",
+    hasRecall: false,
+    finalText: "",
+    toolCounts: {},
+    totals: {
+      ...session.totals,
+      asst: 0,
+      tcalls: 0,
+      think: 0,
+      steps: summary.eventCount,
+    },
+    steps: [],
+  };
+}
+
+function stripSessionDetailText(
+  session: Session,
+): Omit<Session, "instrTr" | "recalled" | "finalTr"> {
+  const {
+    instrTr: _instrTr,
+    recalled: _recalled,
+    finalTr: _finalTr,
+    ...base
+  } = session;
+  return base;
+}
+
+async function diskRunSignature(
+  artifactDir: string,
+  item: RecordedRunListItem,
+): Promise<DiskRunSignature | undefined> {
+  try {
+    const summaryPath = join(artifactDir, `${item.runId}.summary.json`);
+    const summaryStat = await stat(summaryPath);
+    return {
+      summaryMtimeMs: summaryStat.mtimeMs,
+      updatedAt: item.updatedAt,
+      status: item.status,
+      eventCount: item.eventCount,
+    };
+  } catch {
+    return undefined;
+  }
 }
