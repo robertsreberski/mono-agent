@@ -490,7 +490,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     signature: "mono-agent install-skill [--target claude|codex|both] [--force]",
     lines: [
       "Copy the bundled mono-agent-composer skill into ~/.claude/skills and",
-      "~/.codex/skills (default: both). Refuses to overwrite without --force.",
+      "~/.agents/skills (default: both). Refuses to overwrite without --force.",
     ],
   },
   {

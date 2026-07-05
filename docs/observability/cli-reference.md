@@ -291,7 +291,7 @@ Loopback mode prints a `tailscale serve` hint for HTTPS/PWA installation. Non-lo
 
 ## `install-skill`
 
-Copies the bundled `mono-agent-composer` skill into the agent skill folders (`~/.claude/skills` and/or `~/.codex/skills`). Refuses to overwrite an existing copy unless `--force` is passed.
+Copies the bundled `mono-agent-composer` skill into the agent skill folders (`~/.claude/skills` and/or `~/.agents/skills`). Refuses to overwrite an existing copy unless `--force` is passed.
 
 | Flag | Effect |
 | --- | --- |

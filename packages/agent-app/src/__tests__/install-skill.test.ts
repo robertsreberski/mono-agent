@@ -33,10 +33,11 @@ describe("installComposerSkill", () => {
     const result = await installComposerSkill({ target: "both", force: false, homeDir });
 
     const claudeDir = join(homeDir, ".claude", "skills", "mono-agent-composer");
-    const codexDir = join(homeDir, ".codex", "skills", "mono-agent-composer");
+    const codexDir = join(homeDir, ".agents", "skills", "mono-agent-composer");
     expect(result.installed).toEqual([claudeDir, codexDir]);
     for (const dir of [claudeDir, codexDir]) {
       expect(await readFile(join(dir, "SKILL.md"), "utf8")).toContain("mono-agent-composer");
+      expect(await exists(join(dir, "agents", "openai.yaml"))).toBe(true);
       expect(await exists(join(dir, "references", "config-blueprint.md"))).toBe(true);
       expect(await exists(join(dir, "references", "validation.md"))).toBe(true);
     }
@@ -47,7 +48,7 @@ describe("installComposerSkill", () => {
     await installComposerSkill({ target: "claude", force: false, homeDir });
 
     expect(await exists(join(homeDir, ".claude", "skills", "mono-agent-composer", "SKILL.md"))).toBe(true);
-    expect(await exists(join(homeDir, ".codex"))).toBe(false);
+    expect(await exists(join(homeDir, ".agents"))).toBe(false);
   });
 
   it("refuses to overwrite an existing install without force", async () => {

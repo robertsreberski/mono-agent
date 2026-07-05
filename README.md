@@ -66,7 +66,7 @@ The repo includes a composer skill that walks an agent (in mono-agent itself, Cl
 The skill asks discovery questions (runtime + backup models, channels incl. crons and webhooks, skills, MCP, memory strategy incl. semantic search, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) is the source of truth mapping every framework feature to its config/CLI/programmatic surface; the skill ships a condensed copy as `references/feature-coverage.md`. The skill ships with `@mono-agent/agent-app`; install it into Claude Code and Codex with:
 
 ```bash
-mono-agent install-skill   # copies into ~/.claude/skills and ~/.codex/skills
+mono-agent install-skill   # copies into ~/.claude/skills and ~/.agents/skills
 ```
 
 To use it as a selected mono-agent skill instead, point `context.skillsRoot` at `./packages/agent-app/skills` and add `mono-agent-composer` to `context.selectedSkills`.
