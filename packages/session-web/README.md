@@ -38,9 +38,14 @@ await server.stop();
 ```
 
 The `mono-agent web` CLI command wraps this with registry resolution + browser open.
-Loopback is the default. A non-loopback bind requires `allowNonLoopback: true`
+Loopback on port `4599` is the default. Startup prints the exact URL to target
+from reverse proxies. A non-loopback bind requires `allowNonLoopback: true`
 and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
 <token>` (or `?token=<token>` for browser `EventSource`).
+
+Run lists and the initial browser SSE snapshot are summary-only and step-less.
+Full run timelines are read lazily from `/api/sessions/:sourceId/:runId` when a
+detail view opens.
 
 ## Public API
 
@@ -50,7 +55,7 @@ and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
 ## Dependency Boundary
 
 Depends only on `core` + `observability`: `@mono-agent/agent-contracts`,
-`@mono-agent/settings`, `@mono-agent/observability`. Plus `express`. It reaches
+`@mono-agent/observability`. Plus `express`. It reaches
 `live-adapter` endpoints **over HTTP only** — it does not (and, per the
 architecture rule, may not) depend on that `communication` package. The browser
 SPA lives in the isolated `webapp/` sub-project (its own lockfile), built to

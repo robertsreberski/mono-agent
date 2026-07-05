@@ -39,6 +39,16 @@ The whole block is **config** coverage (`@mono-agent/sandbox`). Omit `sandbox` e
 
 The engine id is `srt` (the only built-in engine); `srt` must be on `PATH` for `mode: "native"` to take effect.
 
+Check the engine before trusting a sandboxed recipe:
+
+```bash
+command -v srt
+srt --version
+mono-agent validate --recipe sandboxed-code-agent
+```
+
+`validate` reports the `Sandbox` section as `ok` only when the native engine is available. If `srt` is missing, a fail-closed policy reports `waiting` with `sandbox_unavailable`; an unsafe fallback reports `waiting` with a warning. The overall config can still validate because `waiting` is not a syntax error, so read the sandbox section and the recipe completeness block before starting.
+
 ## Mode
 
 - **`native`** — every sandboxed command is rewritten to `srt --settings <generated-file> <command> ...`. The generated settings file encodes the network and filesystem policy below.
@@ -106,8 +116,10 @@ If `mode: "native"` but no `srt` engine is available (not installed, or `srt --v
 ```
 
 :::caution
-The `unsafe-host-process` fallback runs tool commands directly on the host with no isolation if the sandbox engine is missing. Use it only in trusted, controlled environments (e.g. CI you own end to end). Prefer `fail-closed` for anything handling untrusted input or running untrusted code.
+The `unsafe-host-process` fallback runs tool commands directly on the host with no isolation if the sandbox engine is missing. When it is active, mono-agent reports: `WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.` Use it only in trusted, controlled environments (e.g. CI you own end to end). Prefer `fail-closed` for anything handling untrusted input or running untrusted code.
 :::
+
+`mono-agent start` does not silently relax a fail-closed policy. It records the effective sandbox state at startup; `mono-agent status` prints `effective`, `engine`, `fallback`, and whether the fallback is active. For a fail-closed missing engine, sandboxed commands fail with `sandbox_unavailable`. For an unsafe fallback, `start`/`status` include the unsafe warning above so the operator can see that filesystem roots and `denyWrite` entries are not protecting the host process.
 
 ## Monotonic merge
 

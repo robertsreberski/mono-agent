@@ -244,6 +244,15 @@ export function layerJsonOntoEnv(
   if (json.artifacts?.dir !== undefined) {
     fromJson.MONO_AGENT_ARTIFACT_DIR = json.artifacts.dir;
   }
+  if (json.artifacts?.retention?.maxAgeDays !== undefined) {
+    fromJson.MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS = String(json.artifacts.retention.maxAgeDays);
+  }
+  if (json.artifacts?.retention?.maxCount !== undefined) {
+    fromJson.MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT = String(json.artifacts.retention.maxCount);
+  }
+  if (json.artifacts?.retention?.dryRun !== undefined) {
+    fromJson.MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN = String(json.artifacts.retention.dryRun);
+  }
   if (json.traceability?.registryDir !== undefined) {
     fromJson.MONO_AGENT_TRACE_REGISTRY_DIR = json.traceability.registryDir;
   }

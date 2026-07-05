@@ -1,4 +1,6 @@
 export {
+  DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS,
+  DEFAULT_ARTIFACT_RETENTION_MAX_COUNT,
   loadMonoAgentConfig,
   MonoAgentConfigError,
   redactMonoAgentConfig,
@@ -10,6 +12,7 @@ export type {
   MonoAgentConfigErrorDetails,
 } from "./config.js";
 export type {
+  ArtifactRetentionConfig,
   EffortLevel,
   MemoryBackend,
   MemoryEmbeddingsCircuitBreakerConfig,
@@ -46,6 +49,7 @@ export {
   writeMonoAgentConfigJson,
 } from "./json-source.js";
 export type {
+  MonoAgentArtifactRetentionJson,
   MonoAgentLocalProviderJson,
   MonoAgentLocalProviderModelJson,
   MonoAgentMemoryEmbeddingsCircuitBreakerJson,

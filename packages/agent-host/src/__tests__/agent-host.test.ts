@@ -15,16 +15,27 @@ import type {
   RuntimeEventLike,
 } from "@mono-agent/observability";
 import type { RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
-import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
-import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
-import type { EmbeddingProvider } from "@mono-agent/memory-search";
+import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
+import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { createSandboxPolicy } from "@mono-agent/sandbox";
+import type { SandboxEngine } from "@mono-agent/sandbox";
 
 /** Deterministic non-zero fake embeddings (dim 64) — keeps journal/bujo-tier tests hermetic (no Ollama). */
 const fakeEmbeddings: EmbeddingProvider = {
   id: "fake",
   embed: async (texts) => texts.map(() => Array.from({ length: 64 }, () => 0.01)),
+};
+
+const fakeSandboxEngine: SandboxEngine = {
+  id: "fake-srt",
+  async isAvailable() {
+    return true;
+  },
+  async prepareCommand() {
+    throw new Error("not used by host composition tests");
+  },
 };
 
 import {
@@ -694,6 +705,7 @@ describe("agent host composition helpers", () => {
         }),
       },
       runtime: fake.runtime,
+      sandboxEngine: fakeSandboxEngine,
     });
 
     await harness.run({
@@ -707,6 +719,7 @@ describe("agent host composition helpers", () => {
       fallback: "fail-closed",
       network: { mode: "none", allowlist: [] },
     });
+    expect(fake.calls[0]?.options.sandboxEngine).toBe(fakeSandboxEngine);
   });
 
   it("forwards continuous session config so consecutive requests resume the provider session", async () => {
@@ -1203,6 +1216,7 @@ function monoConfig(input: {
     },
     artifacts: {
       dir: input.artifactDir,
+      retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false },
     },
     traceability: {
       registryDir: join(input.dir, "trace-sources"),

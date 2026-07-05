@@ -205,13 +205,14 @@ describe("current launch manifest", () => {
     // memory-mcp was retired: the BuJo recall tool is now auto-provisioned in-app
     // from the single config.memory block (no separate stdio MCP package).
     expect(publishableNames).not.toContain("@mono-agent/memory-mcp");
-    // operator-console was retired: Phoenix (observability-otel) is the trace
-    // viewer and config is JSON-first, applied on `mono-agent restart`.
+    // operator-console was retired: Phoenix export is exposed from
+    // @mono-agent/observability/otel and config is JSON-first, applied on
+    // `mono-agent restart`.
     expect(publishableNames).not.toContain("@mono-agent/operator-console");
     expect(publishableNames).toContain("@mono-agent/agent-runtime");
     expect(publishableNames).toContain("@mono-agent/sandbox");
     expect(publishableNames).toContain("@mono-agent/agent-app");
-    expect(publishableNames).toContain("@mono-agent/observability-otel");
+    expect(publishableNames).toContain("@mono-agent/observability");
   });
 
   test("validates the repository for its current release tag", async () => {

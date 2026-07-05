@@ -6,8 +6,8 @@ import {
   readCsv,
   readJsonSection,
   readSettingsJson,
-} from "@mono-agent/settings";
-import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
+import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/agent-contracts";
 
 import type { WhatsAppGroupTriggerMode } from "./adapter.js";
 import type { WhatsAppJid } from "./types.js";

@@ -154,6 +154,9 @@ The interaction bridge starts automatically when `ask_user` is in `tools.allowed
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_ARTIFACT_DIR` | `artifacts.dir` | Append-only run JSONL + summaries. See [../observability/artifacts-and-traces.md](/observability/artifacts-and-traces/). |
+| `MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS` | `artifacts.retention.maxAgeDays` | Delete terminal run artifacts older than this many days (default `365`; bounds `1..3650`). |
+| `MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT` | `artifacts.retention.maxCount` | Keep at most this many newest terminal run artifacts (default `50000`; bounds `1..1000000`). |
+| `MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN` | `artifacts.retention.dryRun` | Log what retention would delete without unlinking files. |
 | `MONO_AGENT_TRACE_*` | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs,globalDiscovery}` | Heartbeat manifest for dashboard discovery. |
 | `MONO_AGENT_OBSERVABILITY_EXPORTERS` | `observability.exporters[]` | JSON array; Phoenix OTLP exporter entries. See [../observability/phoenix-and-backfill.md](/observability/phoenix-and-backfill/). |
 
@@ -261,11 +264,3 @@ All Slack resilience vars are optional integers (`0`–`3600000`); omit to use t
 | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | `cron.notifyFailureCooldownHours` | Single-job cooldown, in hours, for all-models-failed error notices on `notify: true` cron jobs; default `6`. |
 | `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (id, expression, timezone, prompt, conversationId, notify, notifyConversationId, notifyFailureCooldownHours, model, effort). |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [../channels/cron.md](/channels/cron/). |
-
-## Evals
-
-The eval harness is dev/code coverage, not a runtime channel. Live eval runs are gated by an env flag:
-
-| Env var | Notes |
-| --- | --- |
-| `MONO_AGENT_EVAL_LIVE` | Set to `1` to run live eval scenarios via `@mono-agent/agent-evals`. See [../evals/index.md](/evals/). |

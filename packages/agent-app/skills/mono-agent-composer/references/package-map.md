@@ -48,9 +48,9 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | --- | --- | --- |
 | Prompt assembly | `@mono-agent/context` | Load identity/SOUL/skills/history/memory into deterministic prompt context |
 | Selected skill bodies | `@mono-agent/skills` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
-| Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory-store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` contract |
-| Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory-bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + decay (journal), LLM capture/reconcile + entity graph + reflection/migration + auto-scheduler (bujo) |
-| Embedding providers | `@mono-agent/memory-search` | Ollama/OpenAI embedding providers used by memory-store for vector recall |
+| Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` from `@mono-agent/agent-contracts` |
+| Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + decay (journal), LLM capture/reconcile + entity graph + reflection/migration + auto-scheduler (bujo) |
+| Embedding providers | `@mono-agent/memory/search` | Ollama/OpenAI embedding providers used by the store subpath for vector recall |
 | Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions a read-only `memory_recall` tool (hybrid keyword+semantic search) from `config.memory.recallTool.enabled`; spawns the bundled `mono-agent-memory` stdio child using the same memory root + embeddings as the in-app memory |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
@@ -102,7 +102,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
 
-Adapters must not import the harness, runtime adapter, memory packages (`memory-store`, `memory-bujo`, `memory-search`), or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
+Adapters must not import the harness, runtime adapter, memory package (`@mono-agent/memory` subpaths), or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
 
 ## Observability Join
 
@@ -110,13 +110,9 @@ Use:
 
 - `@mono-agent/tui` for the pi-tui operator console (`mono-agent tui`): live chat with full stream-event insight, recorded-run replay, config view.
 - `@mono-agent/tui-adapter` for the loopback NDJSON stream endpoint the console connects to (`tui` config section, on by default).
-- `@mono-agent/observability` for JSONL event artifacts, summaries, and trace-source registration; add `@mono-agent/observability-otel` for the Phoenix OTLP exporter configured via `observability.exporters`.
+- `@mono-agent/observability` for JSONL event artifacts, summaries, trace-source registration, and the `@mono-agent/observability/otel` Phoenix OTLP exporter configured via `observability.exporters`.
 
 Traceability is local-first. A running host registers a source manifest; `mono-agent status` reads the trace-source registry to report live sources, and artifacts are keyed by `(sourceId, runId)` so duplicate run ids do not collide. Phoenix is the recommended trace viewer when an `observability.exporters` (phoenix) entry is configured; local JSONL artifacts are the fallback otherwise.
-
-## Evaluation Join
-
-Use `@mono-agent/agent-evals` to define end-to-end scenarios against a responder or harness: final-text assertions, trajectory/tool-call matching, cost/turn/duration budgets, and custom judges, with local JSON/markdown artifacts. Live-provider scenarios are skipped unless `MONO_AGENT_EVAL_LIVE=1`.
 
 ## Multi-Agent Join
 

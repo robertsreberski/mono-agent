@@ -20,7 +20,7 @@ It connects to agents two ways:
   `@mono-agent/tui-adapter`). One running agent connects directly; several
   open a picker.
 - **In-process (embedded)**: hosts pass an `AgentResponder` to
-  `startMonoAgentTui({ responder, … })` (see `demos/downloads-curator`), or
+  `startMonoAgentTui({ responder, … })`, or
   run the `mono-agent-tui` bin with `--responder <module>`.
 
 ## Install / Usage

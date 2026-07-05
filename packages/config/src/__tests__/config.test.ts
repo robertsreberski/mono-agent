@@ -31,6 +31,9 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_MEMORY_WRITE_MODE: "append-host-summary",
         MONO_AGENT_MEMORY_MAX_BYTES: "2048",
         MONO_AGENT_ARTIFACT_DIR: "artifacts",
+        MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS: "14",
+        MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT: "250",
+        MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN: "true",
         MONO_AGENT_TRACE_REGISTRY_DIR: "trace-registry",
         MONO_AGENT_TRACE_SOURCE_ID: "agent-one",
         MONO_AGENT_TRACE_SOURCE_LABEL: "Agent One",
@@ -60,6 +63,7 @@ describe("loadMonoAgentConfig", () => {
       mcpCallMaxTotalTimeoutMs: 2700000,
     });
     expect(config.artifacts.dir).toBe("/repo/artifacts");
+    expect(config.artifacts.retention).toEqual({ maxAgeDays: 14, maxCount: 250, dryRun: true });
     expect(config.providers?.piAuthPath).toBe(join(homedir(), ".pi", "agent", "auth.json"));
     expect(config.traceability).toEqual({
       registryDir: "/repo/trace-registry",
@@ -69,6 +73,27 @@ describe("loadMonoAgentConfig", () => {
       staleAfterMs: 15000,
       globalDiscovery: false,
     });
+  });
+
+  it("uses finite artifact retention defaults", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+
+    expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
+  });
+
+  it("rejects invalid artifact retention values", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS: "0" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT: "-1" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
   it("loads permission mode from env", () => {

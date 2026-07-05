@@ -152,20 +152,20 @@ const ext = createCollaboratorToolRuntimeExtension({
 ```
 **Smoke:** give a compound task ("research X then write a summary"); confirm the artifact shows `ask_collaborator` delegating to both, and `cleanup()` closes the MCP port.
 
-## 9. Sandboxed code agent (no internet, deny .env)
+## 9. Sandboxed code agent (loopback only, deny .env)
 **For:** a security team deploying an internal code assistant.
-**Goal:** read repos + run Bash inside the native srt sandbox with no network and protected secrets.
+**Goal:** read repos + run Bash inside the native srt sandbox with loopback-only network access and protected secrets.
 **Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allowlist`, `memory.journal`.
 
 ```json
 {
   "runtime": { "model": "claude:claude-sonnet-4-6" },
-  "tools": { "allowedTools": ["Read", "Grep", "Bash"] },
-  "sandbox": { "mode": "native", "network": { "mode": "none" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
+  "tools": { "allowedTools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] },
+  "sandbox": { "mode": "native", "network": { "mode": "localhost" }, "readableRoots": ["."], "writableRoots": ["."], "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], "fallback": "fail-closed" }
 }
 ```
-**Steps:** `mono-agent init --memory journal` → allow Read/Grep/Bash → `sandbox.mode native` + `network none` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
-**Smoke:** ask it to read a file + run Bash (works), then fetch a URL or write `.env` (both blocked in the artifact). Note: provider CLI bridges run their own tool loops and may not be srt-wrapped — pair with provider sandboxing.
+**Steps:** `mono-agent init --memory journal` → allow Read/Write/Edit/Glob/Grep/Bash → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
+**Smoke:** ask it to read a file + run Bash (works), then fetch an external URL or write `.env` (both blocked in the artifact). Note: provider CLI bridges run their own tool loops and may not be srt-wrapped — pair with provider sandboxing.
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.
@@ -194,25 +194,8 @@ const ext = createCollaboratorToolRuntimeExtension({
 **Steps:** ensure `run-*.summary.json` + `run-*.events.jsonl` exist and Phoenix is reachable → `mono-agent backfill --all --since <iso> --until <iso> --dry-run` → `mono-agent backfill --all --since <iso>`.
 **Smoke:** dry-run then real export; historical timestamps preserved in Phoenix and a second run does not duplicate spans (deterministic ids).
 
-## 12. Eval suite with trajectory + cost budgets — dev
-**For:** an agent product owner gating quality in CI.
-**Goal:** assert required tool calls, trajectory, and per-run cost ceilings against the composed responder.
-**Features:** `evals.scenarios`, `runtime.cost-tracking`, `observability.jsonl-artifacts`.
 
-```ts
-defineAgentEvalScenario({
-  id, input, target: { responder },
-  assertions: {
-    finalText: { includes: ["..."] }, requiredTools: ["WebSearch"],
-    maxCostUsd: 0.05, maxTurns: 5,
-    trajectory: { expectedToolCalls: [{ name: "WebSearch" }], mode: "superset" },
-  },
-});
-// runAgentEvalSuite(..., { live: true }) — or env MONO_AGENT_EVAL_LIVE=1
-```
-**Smoke:** run with `MONO_AGENT_EVAL_LIVE=1`; `eval-result.json` shows pass/fail per assertion and `report.md` is written, cost recorded under `maxCostUsd`.
-
-## 13. Multi-model fallback chain with transcript resume
+## 12. Multi-model fallback chain with transcript resume
 **For:** a reliability-minded builder who can't afford a single-provider outage.
 **Goal:** a primary model with ordered backups the native failover router tries on retryable failures, resuming from the transcript tail — reported, never silent.
 **Features:** `runtime.multi-backend`, `runtime.fallback-models`, `runtime.pi-native-tuning`, `runtime.provider-sessions`.

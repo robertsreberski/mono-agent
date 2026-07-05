@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
 import {
+  LAUNCHD_LOG_MAX_BYTES,
   restartBackground,
   startBackground,
   statusBackground,
@@ -116,6 +117,7 @@ interface Harness {
   readonly err: string[];
   readonly written: { path: string; data: string }[];
   readonly removed: string[];
+  readonly renamed: { from: string; to: string }[];
   readonly mkdirs: string[];
   readonly tailCalls: string[][];
 }
@@ -125,13 +127,16 @@ function makeHarness(opts: {
   list: BackgroundDeps["listTraceSources"];
   listRecordedRuns?: BackgroundDeps["listRecordedRuns"];
   isAlive?: (pid: number) => boolean;
+  fileSizes?: Record<string, number>;
 }): Harness {
   const out: string[] = [];
   const err: string[] = [];
   const written: { path: string; data: string }[] = [];
   const removed: string[] = [];
+  const renamed: { from: string; to: string }[] = [];
   const mkdirs: string[] = [];
   const tailCalls: string[][] = [];
+  const fileSizes = new Map(Object.entries(opts.fileSizes ?? {}));
   let clock = CLOCK_START;
   const deps: BackgroundDeps = {
     runner: opts.runner,
@@ -150,6 +155,23 @@ function makeHarness(opts: {
     },
     rm: async (path) => {
       removed.push(path);
+      fileSizes.delete(path);
+    },
+    stat: async (path) => {
+      const size = fileSizes.get(path);
+      if (size === undefined) {
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+      return { size };
+    },
+    rename: async (from, to) => {
+      const size = fileSizes.get(from);
+      if (size === undefined) {
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      }
+      renamed.push({ from, to });
+      fileSizes.delete(from);
+      fileSizes.set(to, size);
     },
     isAlive: opts.isAlive ?? (() => false),
     stdout: (text) => out.push(text),
@@ -159,7 +181,7 @@ function makeHarness(opts: {
       return 0;
     },
   };
-  return { deps, out, err, written, removed, mkdirs, tailCalls };
+  return { deps, out, err, written, removed, renamed, mkdirs, tailCalls };
 }
 
 describe("startBackground", () => {
@@ -182,6 +204,32 @@ describe("startBackground", () => {
     expect(stdout).toContain("started in the background");
     expect(stdout).toContain("4321");
     expect(stdout).toContain(target.label);
+  });
+
+  it("rotates oversized launchd stdout and stderr logs before bootstrap", async () => {
+    const { runner, calls } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [makeSource(target)]),
+      fileSizes: {
+        [target.paths.stdoutPath]: LAUNCHD_LOG_MAX_BYTES + 1,
+        [target.paths.stderrPath]: LAUNCHD_LOG_MAX_BYTES + 1,
+      },
+    });
+
+    const code = await startBackground(target, harness.deps, POLL);
+
+    expect(code).toBe(0);
+    expect(harness.removed).toEqual(expect.arrayContaining([
+      `${target.paths.stdoutPath}.3`,
+      `${target.paths.stderrPath}.3`,
+    ]));
+    expect(harness.renamed).toEqual(expect.arrayContaining([
+      { from: target.paths.stdoutPath, to: `${target.paths.stdoutPath}.1` },
+      { from: target.paths.stderrPath, to: `${target.paths.stderrPath}.1` },
+    ]));
+    expect(calls.map((call) => call[0])).toContain("bootstrap");
   });
 
   it("tolerates a bootstrap that reports already-loaded", async () => {
@@ -363,6 +411,41 @@ describe("statusBackground", () => {
     expect(stdout).toContain("assistant replies");
     expect(stdout).toContain("tool args/results");
     expect(stdout).toContain("system prompt");
+  });
+
+  it("prints effective sandbox state from persisted metadata", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target, {
+      metadata: {
+        reason: "startup-complete",
+        sandbox: {
+          configured: true,
+          configuredMode: "native",
+          effective: "unsafe-host-process",
+          engine: "srt",
+          engineAvailable: false,
+          fallback: "unsafe-host-process",
+          fallbackActive: true,
+          unsafeAllowHostProcess: true,
+          detail:
+            "Sandbox unsafe-host-process fallback is active because engine \"srt\" is unavailable; all sandbox roots/denyWrite entries are inert; commands run unsandboxed.",
+          warning:
+            "WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.",
+        },
+      },
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
+
+    await statusBackground(target, harness.deps);
+
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("sandbox");
+    expect(stdout).toContain("effective: unsafe-host-process");
+    expect(stdout).toContain("engine: srt (absent)");
+    expect(stdout).toContain("fallback active: yes");
+    expect(stdout).toContain("WARNING: Unsafe sandbox fallback is active");
+    expect(stdout).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
   });
 
   it("prints runs-health explanations from recent local summaries", async () => {

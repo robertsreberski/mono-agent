@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/memory-store";
+import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
 
 import type { SupermemoryClient } from "./client.js";
 import { formatHitsAsBlock, SUPERMEMORY_SOURCE } from "./format.js";

@@ -44,7 +44,7 @@ Load adapter settings separately from core config, then pass a structural `Agent
 
 ## Dependency Boundary
 
-This adapter depends only on shared contracts and settings primitives inside the workspace. It does not depend on the harness, core config, memory, runtime package, or other adapters. Hosts compose those pieces outside the adapter.
+This adapter depends only on shared `@mono-agent/agent-contracts` primitives inside the workspace. It does not depend on the harness, core config, memory, runtime package, or other adapters. Hosts compose those pieces outside the adapter.
 
 ## What This Package Does Not Own
 

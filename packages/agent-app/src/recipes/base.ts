@@ -34,6 +34,11 @@ export function baseConfig(input: RecipeInputValues): MonoAgentConfigJson {
     },
     artifacts: {
       dir: "./.mono-agent/artifacts",
+      retention: {
+        maxAgeDays: 365,
+        maxCount: 50000,
+        dryRun: false,
+      },
     },
     traceability: {
       registryDir: "./.mono-agent/trace-sources",

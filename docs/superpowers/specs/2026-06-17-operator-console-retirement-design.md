@@ -89,10 +89,11 @@ The console bundles three capabilities (from the dependency map):
 
 ### 5.3 Demos
 
-- `demos/final-agent` and `demos/multi-agent`: remove console wiring from `cli.ts`,
-  `deploy-cli.ts`, and the `*-demo.ts` files (the `operatorConsoleFactory` override and
-  the custom `applyConfigWrite`/restart-notice paths). Update affected demo tests
-  (`final-demo.test.ts`, `deployment.test.ts`, etc.).
+- `demos/final-agent`: remove console wiring from `cli.ts`, `deploy-cli.ts`, and
+  `final-demo.ts` (the `operatorConsoleFactory` override and the custom
+  `applyConfigWrite`/restart-notice paths). Update affected demo tests
+  (`final-demo.test.ts`, `deployment.test.ts`, etc.). Historical note: the former
+  multi-agent source demo has since been removed.
 
 ### 5.4 TUI
 

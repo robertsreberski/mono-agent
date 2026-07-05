@@ -10,10 +10,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { EmbeddingProvider } from "@mono-agent/memory-search";
+import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
+import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type {
   PhoenixExporterConfig,
   RunExportContext,
@@ -420,7 +420,7 @@ function bujoConfig(input: {
       ...(input.llm === undefined ? {} : { llm: input.llm }),
     },
     tools: { allowedTools: [], disallowedTools: [] },
-    artifacts: { dir: join(input.dir, "artifacts") },
+    artifacts: { dir: join(input.dir, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false } },
     traceability: { registryDir: join(input.dir, "trace-sources") },
     ...(input.observabilityExporters === undefined
       ? {}

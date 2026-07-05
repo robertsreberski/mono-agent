@@ -4,10 +4,8 @@
 
 ```mermaid
 flowchart TB
-  subgraph HostDemos["Host/demo composition"]
+  subgraph HostDemos["Demo composition"]
     FinalDemo["demos/final-agent"]
-    MultiDemo["demos/multi-agent"]
-    DownloadsCurator["demos/downloads-curator"]
   end
 
   subgraph App["app"]
@@ -40,23 +38,16 @@ flowchart TB
   subgraph ContextLayer["context"]
     Context["@mono-agent/context"]
     Skills["@mono-agent/skills"]
-    MemoryBujo["@mono-agent/memory-bujo"]
-    MemorySearch["@mono-agent/memory-search"]
-    MemoryStore["@mono-agent/memory-store"]
+    Memory["@mono-agent/memory\n./store ./search ./bujo"]
+    MemorySupermemory["@mono-agent/memory-supermemory"]
   end
 
   subgraph ObservabilityLayer["observability"]
     Observability["@mono-agent/observability"]
-    ObservabilityOtel["@mono-agent/observability-otel"]
-  end
-
-  subgraph EvaluationLayer["evaluation"]
-    AgentEvals["@mono-agent/agent-evals"]
   end
 
   subgraph Core["core"]
     Contracts["@mono-agent/agent-contracts"]
-    Settings["@mono-agent/settings"]
     Config["@mono-agent/config"]
     ToolPolicy["@mono-agent/tool-policy"]
   end
@@ -83,47 +74,31 @@ flowchart TB
   AgentApp --> Host
   AgentApp --> Config
   AgentApp --> Observability
-  AgentApp --> ObservabilityOtel
-
-  MultiDemo --> A2A
-  MultiDemo --> Telegram
-  MultiDemo --> Orchestrator
-  MultiDemo --> Host
-  MultiDemo --> Config
 
   Tui --> Contracts
   Tui --> Config
   Tui --> Observability
   SessionWeb --> Observability
-  ObservabilityOtel --> Observability
 
   A2A --> Contracts
-  A2A --> Settings
   Cron --> Contracts
-  Cron --> Settings
   OpenAIApi --> Contracts
-  OpenAIApi --> Settings
   Slack --> Contracts
-  Slack --> Settings
   Telegram --> Contracts
-  Telegram --> Settings
   TuiAdapter --> Contracts
-  TuiAdapter --> Settings
   WhatsApp --> Contracts
-  WhatsApp --> Settings
   Webhook --> Contracts
-  Webhook --> Settings
 
   Host --> Harness
   Host --> Config
-  Host --> MemoryBujo
+  Host --> Memory
+  Host -. optional backend .-> MemorySupermemory
   Host --> Observability
   Host --> RuntimeAdapter
   Host --> Sandbox
   Host --> ToolPolicy
   Harness --> Contracts
   Harness --> Context
-  Harness --> MemoryStore
   Harness --> Observability
   Harness --> RuntimeAdapter
   Harness --> Sandbox
@@ -131,16 +106,12 @@ flowchart TB
   Harness --> ToolPolicy
   Orchestrator --> Contracts
   Orchestrator -.->|request-scoped MCP runtime options| Harness
-  AgentEvals --> Contracts
-  AgentEvals --> Harness
-  AgentEvals --> Observability
-
-  Config --> Settings
+  Config --> Contracts
   Config --> RuntimeAdapter
   Config --> Sandbox
   Skills --> Context
-  MemoryBujo --> MemoryStore
-  MemoryBujo --> MemorySearch
+  Memory --> Contracts
+  MemorySupermemory --> Contracts
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Sandbox
   AgentRuntime --> Sandbox
@@ -152,11 +123,10 @@ flowchart TB
 | Layer | Packages |
 | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` |
-| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
+| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory`, `@mono-agent/memory-supermemory` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
-| `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` |
-| `evaluation` | `@mono-agent/agent-evals` |
+| `observability` | `@mono-agent/observability` |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |

@@ -1,10 +1,13 @@
 import { resolve } from "node:path";
 
+import { pruneTraceSources } from "@mono-agent/observability";
 import { startSessionWebServer } from "@mono-agent/session-web";
 import type { SessionWebServerHandle } from "@mono-agent/session-web";
-import { generateBearerToken, isLoopbackHost } from "@mono-agent/settings";
+import { generateBearerToken, isLoopbackHost } from "@mono-agent/agent-contracts";
 
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
+
+export const DEFAULT_WEB_PORT = 4599;
 
 export interface RunWebOptions {
   readonly configPath: string;
@@ -12,7 +15,7 @@ export interface RunWebOptions {
   readonly env: Record<string, string | undefined>;
   /** --host: bind address (default 127.0.0.1). */
   readonly host?: string;
-  /** --port: bind port (default 0 → an ephemeral port printed on start). */
+  /** --port: bind port (default 4599). */
   readonly port?: number;
   /** --no-open: suppress the browser launch (default: open). */
   readonly open?: boolean;
@@ -47,7 +50,9 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   });
   const globalRegistryDir = resolveGlobalTraceRegistryDir(options.env);
   const registryDirs = dedupePaths([configuredRegistryDir, globalRegistryDir]);
+  await Promise.all(registryDirs.map((registryDir) => pruneTraceSources({ registryDir })));
   const authToken = requiresServerAuth(options.host) ? generateBearerToken() : undefined;
+  const port = options.port ?? DEFAULT_WEB_PORT;
 
   const startServer = deps.startServer ?? startSessionWebServer;
   let handle: SessionWebServerHandle;
@@ -56,7 +61,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
       registryDirs,
       env: options.env,
       ...(options.host === undefined ? {} : { host: options.host }),
-      ...(options.port === undefined ? {} : { port: options.port }),
+      port,
       ...(options.allowNonLoopback === undefined ? {} : { allowNonLoopback: options.allowNonLoopback }),
       ...(authToken === undefined ? {} : { authToken }),
     });
@@ -70,6 +75,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
   stdout.write(
     `Watching ${registryDirs.length} registr${registryDirs.length === 1 ? "y" : "ies"} for agents. Press Ctrl-C to stop.\n`,
   );
+  stdout.write(`${reverseProxyHint(handle.url)}\n`);
   stdout.write(`${reachabilityHint(handle.url)}\n`);
 
   if (options.open ?? true) {
@@ -107,6 +113,21 @@ function reachabilityHint(url: string): string {
     return "Bound non-loopback: reachable over your LAN/Tailnet at this port (use the machine's Tailscale IP or MagicDNS name). For HTTPS + a PWA-installable URL, prefer `tailscale serve` instead.";
   }
   return `Loopback only. To reach it over Tailscale with HTTPS + your MagicDNS name (keeps the PWA installable): tailscale serve --bg ${port || "<port>"}`;
+}
+
+function reverseProxyHint(url: string): string {
+  let target = url;
+  try {
+    const parsed = new URL(url);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    target = parsed.toString();
+  } catch {
+    /* use the original URL */
+  }
+  return `Reverse proxies should target ${target} (default port ${DEFAULT_WEB_PORT}; override with --port).`;
 }
 
 function requiresServerAuth(host: string | undefined): boolean {

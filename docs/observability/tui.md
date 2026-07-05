@@ -67,15 +67,15 @@ The input editor autocompletes slash commands: `/help`, `/agents`, `/replay`, `/
 
 ## Embedded mode (custom hosts)
 
-The remote mode above is the primary surface, but the TUI still runs **in-process** against any `AgentResponder` — the same rendering drives both, because the wire protocol replays the exact stream callbacks. Hosts embed it programmatically (see `demos/downloads-curator`):
+The remote mode above is the primary surface, but the TUI still runs **in-process** against any `AgentResponder` — the same rendering drives both, because the wire protocol replays the exact stream callbacks. Custom hosts can embed it programmatically:
 
 ```ts
 import { startMonoAgentTui } from "@mono-agent/tui";
 
 const handle = startMonoAgentTui({
   responder,                       // AgentResponderLike, e.g. createAgentResponder({ harness })
-  title: "Downloads Curator",
-  conversationId: "downloads-curator",
+  title: "Local Agent",
+  conversationId: "local-agent",
   config: { path: configPath, cwd, env: { ...process.env } },
 });
 await handle.waitUntilExit();

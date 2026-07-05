@@ -9,7 +9,7 @@ import {
   listen,
   normalizeOptionalString,
   readAuthorizationBearer,
-} from "@mono-agent/settings";
+} from "@mono-agent/agent-contracts";
 import express, { type Request, type Response } from "express";
 
 import {

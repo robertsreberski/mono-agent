@@ -1,6 +1,5 @@
-import type { AgentAttachment } from "@mono-agent/agent-contracts";
+import type { AgentAttachment, MemoryStore } from "@mono-agent/agent-contracts";
 import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
-import type { MemoryStore } from "@mono-agent/memory-store";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type { SkillsCache } from "@mono-agent/skills";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";

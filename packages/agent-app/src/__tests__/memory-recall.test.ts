@@ -4,8 +4,8 @@ import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
-import type { BujoMemoryStore } from "@mono-agent/memory-bujo";
+import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import type { BujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { SupermemoryMemoryStore } from "@mono-agent/memory-supermemory";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

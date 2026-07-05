@@ -102,7 +102,7 @@ MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED=true
 | **on** | `journal` or `bujo` tier with embeddings configured |
 | off | `lite` tier (no vector recall) — or set explicitly to `false` |
 
-This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture` / `memory_note` write tools — both dropped, since in-app capture now covers durable writes). To build a recall server directly in your own code, compose `@mono-agent/memory-bujo` (`createBujoMemoryStore`) with `@mono-agent/memory-search` (`createEmbeddingProvider`) — exactly what the bundled server does. See [Programmatic composition](/programmatic/composition/).
+This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture` / `memory_note` write tools — both dropped, since in-app capture now covers durable writes). To build a recall server directly in your own code, compose `@mono-agent/memory/bujo` (`createBujoMemoryStore`) with `@mono-agent/memory/search` (`createEmbeddingProvider`) — exactly what the bundled server does. See [Programmatic composition](/programmatic/composition/).
 
 ### Recall scoring
 
