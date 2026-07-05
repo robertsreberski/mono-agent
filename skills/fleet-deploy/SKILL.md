@@ -24,10 +24,10 @@ git worktree add --detach /tmp/deploy-<sha> <commit>
 cd /tmp/deploy-<sha> && pnpm install --frozen-lockfile && pnpm -r --sort run build
 for pkg in <changed packages>; do
   rsync -a --delete /tmp/deploy-<sha>/packages/$pkg/dist/ \
-    /Users/robertsreberski/Personal_Repositories/mono-agent/packages/$pkg/dist/
+    /Users/example/Personal_Repositories/mono-agent/packages/$pkg/dist/
 done
-chmod +x /Users/robertsreberski/Personal_Repositories/mono-agent/packages/agent-app/dist/cli.js \
-         /Users/robertsreberski/Personal_Repositories/mono-agent/packages/tui/dist/bin/mono-agent-tui.js
+chmod +x /Users/example/Personal_Repositories/mono-agent/packages/agent-app/dist/cli.js \
+         /Users/example/Personal_Repositories/mono-agent/packages/tui/dist/bin/mono-agent-tui.js
 git worktree remove /tmp/deploy-<sha>
 ```
 
