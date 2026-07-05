@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listTraceSources } from "@mono-agent/observability";
 import type { AgentResponder, ChannelInteractionHub, ChannelInteractionSink } from "@mono-agent/agent-contracts";
-import type { SandboxEngine } from "@mono-agent/sandbox";
+import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import type {
   TelegramAdapterErrorText,
   TelegramAdapterStartOptions,

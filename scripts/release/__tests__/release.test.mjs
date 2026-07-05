@@ -209,8 +209,9 @@ describe("current launch manifest", () => {
     // @mono-agent/observability/otel and config is JSON-first, applied on
     // `mono-agent restart`.
     expect(publishableNames).not.toContain("@mono-agent/operator-console");
+    expect(publishableNames).not.toContain(`@mono-agent/${"sandbox"}`);
     expect(publishableNames).toContain("@mono-agent/agent-runtime");
-    expect(publishableNames).toContain("@mono-agent/sandbox");
+    expect(publishableNames).toContain("@mono-agent/runtime-adapter");
     expect(publishableNames).toContain("@mono-agent/agent-app");
     expect(publishableNames).toContain("@mono-agent/observability");
   });

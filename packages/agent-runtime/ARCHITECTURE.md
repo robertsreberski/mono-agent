@@ -177,8 +177,7 @@ Key responsibilities by subsystem:
   merge, command preparation, network-allow checks) and its zero-dependency
   `passthroughSandbox` default (no policy configured → unsandboxed, exactly as
   before; a policy configured with no implementation injected → fails closed).
-  Real hosts inject `@mono-agent/sandbox`'s implementation via
-  `@mono-agent/runtime-adapter`.
+  Real hosts inject `@mono-agent/runtime-adapter`'s sandbox implementation.
 - `agent/compaction.js`: pure helpers consumed by the pi bridge —
   `resolveAgentCompactionPolicy` (derives the context-window compaction trigger +
   tool-output payload limits from `agent_compaction_*` settings and the running

@@ -1,26 +1,26 @@
 // Injectable sandbox seam.
 //
 // agent-runtime is a provider-agnostic kernel. This module removes its last
-// workspace dependency (the workspace's `sandbox` package) by turning "how
-// commands get sandboxed" into data a host hands the kernel, not code the
-// kernel imports. A host constructs a `RuntimeSandbox` implementation and
-// passes it to `createRuntime({sandbox})` (see runtime.js); every internal
-// tool helper that used to import the `sandbox` package directly (bash.js,
-// pi-bridge.js's MCP-stdio launcher, web-fetch.js, web-search.js,
+// workspace dependency by turning "how commands get sandboxed" into data a
+// host hands the kernel, not code the kernel imports. A host constructs a
+// `RuntimeSandbox` implementation and passes it to `createRuntime({sandbox})`
+// (see runtime.js); every internal tool helper that used to import the sandbox
+// implementation directly (bash.js, pi-bridge.js's MCP-stdio launcher,
+// web-fetch.js, web-search.js,
 // tool-context.js's policy merge) now reads `ctx.sandbox` and calls through
 // this interface instead.
 //
 // `passthroughSandbox` is the zero-dependency default every ToolContext gets
 // when no host supplies one (createToolContext/resetToolContext in
-// ./tools/shared/tool-context.js). Its contract covers both no-sandbox-package
+// ./tools/shared/tool-context.js). Its contract covers both no-injected-sandbox
 // paths equally:
 //   - No policy at all (both sides of a merge undefined, or a resolved policy
 //     that is undefined): every operation is allowed, byte-identical to
-//     running with no sandbox package installed at all.
+//     running with no sandbox implementation installed at all.
 //   - A policy IS present and its `mode` demands real enforcement ("native")
 //     but nothing was injected to actually enforce it: FAIL CLOSED. This is a
 //     deliberate behavior change from before this seam existed (where the
-//     `sandbox` package was always present in agent-runtime and always did
+//     real sandbox implementation was bundled in agent-runtime and always did
 //     the enforcing) — a host that configures a policy without wiring a real
 //     RuntimeSandbox implementation used to get silent, unenforced
 //     "enforcement"; now it gets a loud, actionable error instead. See
@@ -29,16 +29,15 @@
 //     policy can only tighten, never weaken, the host-configured one) for the
 //     two axes the passthrough itself inspects (`mode`, `network.mode`). It
 //     is deliberately SHALLOW — no readable/writableRoots intersection, no
-//     denyWrite union — the real, byte-identical merge algorithm ships in
-//     the workspace's `sandbox` package (`mergeSandboxPolicies`) and is wired
-//     in by the `runtime-adapter` package, which every mono-agent host goes
-//     through.
+//     denyWrite union — the real, byte-identical merge algorithm is owned by
+//     @mono-agent/runtime-adapter in packages/runtime-adapter/src/sandbox.ts
+//     (`mergeSandboxPolicies`) and is wired in by every mono-agent host through
+//     runtime-adapter.
 //
-// Real hosts (mono-agent, via the `runtime-adapter` package) inject
+// Real hosts (mono-agent, via @mono-agent/runtime-adapter) inject
 // `{mergePolicies: mergeSandboxPolicies, prepareCommand: prepareSandboxedCommand,
-// networkAllowsUrl: networkPolicyAllowsUrl}` from the workspace's `sandbox`
-// package — that package's exports already conform to this interface
-// exactly, so the injection is a direct pass-through (see runtime-adapter's
+// networkAllowsUrl: networkPolicyAllowsUrl}` from packages/runtime-adapter/src/sandbox.ts.
+// Those exports already conform to this interface exactly, so the injection is a direct pass-through (see runtime-adapter's
 // sandbox-impl.ts for the thin TS-side adapter that satisfies the seam's
 // type shape).
 
@@ -70,8 +69,9 @@
  * readableRoots, writableRoots, denyWrite, ...) is read directly off whatever
  * the injected `mergePolicies` returns by path-resolver.js, and is opaque
  * pass-through data as far as this module is concerned. Real hosts get the
- * full, richly-typed policy from the workspace's `sandbox` package's
- * `SandboxPolicy` (a structural superset of this shape).
+ * full, richly-typed policy from @mono-agent/runtime-adapter
+ * (`packages/runtime-adapter/src/sandbox.ts`), whose `SandboxPolicy` is a
+ * structural superset of this shape.
  * @property {string} [mode]
  * @property {SandboxNetworkPolicyLike} [network]
  * @property {ReadonlyArray<string>} [readableRoots]
@@ -83,7 +83,7 @@
 /**
  * @typedef {Object} RuntimeSandboxEngine
  * Optional concrete sandboxing backend a caller can hand to `prepareCommand`
- * (matches the workspace's `sandbox` package's `SandboxEngine`). Not used by
+ * (matches @mono-agent/runtime-adapter's `SandboxEngine`). Not used by
  * `passthroughSandbox` (see module doc: adapters live in runtime-adapter, not
  * the kernel) — documented here only because it is part of the
  * `prepareCommand` input shape real implementations accept.

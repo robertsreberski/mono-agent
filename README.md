@@ -83,7 +83,7 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
-| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
+| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers, adapter-neutral core config, and fail-closed tool/MCP policy normalization. |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
@@ -108,13 +108,12 @@ demos/final-agent (not a workspace package)
   ├─ whatsapp-adapter ── agent-contracts, baileys
   ├─ agent-host
   │   ├─ config
-  │   ├─ agent-harness ── agent-contracts, context, skills, observability, runtime-adapter, sandbox, tool-policy
-  │   ├─ runtime-adapter ── @mono-agent/agent-runtime, sandbox types
-  │   ├─ sandbox ── agent-contracts
+  │   ├─ agent-harness ── agent-contracts, context, skills, observability, runtime-adapter, tool-policy
+  │   ├─ runtime-adapter ── agent-contracts, @mono-agent/agent-runtime, sandbox policy/types
   │   ├─ memory (./store, ./search, ./bujo)
   │   ├─ observability
   │   └─ tool-policy
-  ├─ config ── agent-contracts, runtime-adapter, sandbox
+  ├─ config ── agent-contracts, runtime-adapter
   ├─ observability
   ├─ session-web ── agent-contracts, observability
   ├─ tui ── config
@@ -309,8 +308,7 @@ flowchart TB
   end
 
   subgraph Runtime["Runtime backend choices"]
-    RuntimeAdapter["`@mono-agent/runtime-adapter`\nmodel refs + backend support"]
-    Sandbox["`@mono-agent/sandbox`\nfail-closed sandbox policy"]
+    RuntimeAdapter["`@mono-agent/runtime-adapter`\nmodel refs + sandbox policy"]
     AgentRuntime["`@mono-agent/agent-runtime`\nprovider/CLI implementation"]
     ClaudeSdk["Claude SDK\n`claude:<model>` + `sdk`"]
     ClaudeCli["Claude Code CLI\n`claude:<model>` + `cli`"]
@@ -347,24 +345,20 @@ flowchart TB
   AgentHost --> Memory
   AgentHost -. optional backend .-> MemorySupermemory
   AgentHost --> Policy
-  AgentHost --> Sandbox
   AgentHost --> RuntimeAdapter
   AgentHost --> Observability
   Config --> Contracts
   Config --> RuntimeAdapter
-  Config --> Sandbox
   Harness --> Contracts
   Harness --> Context
   Harness --> Skills
   MemorySupermemory --> Contracts
   Harness --> Policy
-  Harness --> Sandbox
   Harness --> RuntimeAdapter
   Harness --> Observability
 
   RuntimeAdapter --> AgentRuntime
-  RuntimeAdapter --> Sandbox
-  AgentRuntime --> Sandbox
+  RuntimeAdapter --> Contracts
   AgentRuntime --> ClaudeSdk
   AgentRuntime --> ClaudeCli
   AgentRuntime --> CodexCli

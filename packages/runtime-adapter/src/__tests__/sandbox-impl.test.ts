@@ -5,17 +5,17 @@ import {
   mergeSandboxPolicies,
   networkPolicyAllowsUrl,
   prepareSandboxedCommand,
-} from "@mono-agent/sandbox";
+} from "../sandbox.js";
 
 import { monoSandboxImpl } from "../sandbox-impl.js";
 
 // monoSandboxImpl is the thin adapter that satisfies agent-runtime's
 // RuntimeSandbox seam (see agent/sandbox-seam.js) with the real
-// @mono-agent/sandbox implementation. Its methods must behave byte-identically
-// to calling the real sandbox package functions directly — the adapter exists
+// runtime-adapter sandbox implementation. Its methods must behave byte-identically
+// to calling the functions in packages/runtime-adapter/src/sandbox.ts directly — the adapter exists
 // purely to cross a TypeScript structural-typing boundary (opaque kernel
 // SandboxPolicy vs. the package's richer one), not to change behavior.
-describe("monoSandboxImpl (real sandbox package injected into createMonoRuntime)", () => {
+describe("monoSandboxImpl (real sandbox implementation injected into createMonoRuntime)", () => {
   it("mergePolicies delegates to mergeSandboxPolicies with the same monotonic result", () => {
     const configured = failClosedSandboxPolicy({ root: "/repo/workspace" });
     const request = failClosedSandboxPolicy({ root: "/repo/workspace/sub" });

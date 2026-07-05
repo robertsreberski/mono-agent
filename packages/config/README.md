@@ -104,7 +104,7 @@ In `continuous` mode (the default) consecutive messages in a conversation reuse 
 
 ## Sandbox Policy
 
-Sandbox config is optional. When any `MONO_AGENT_SANDBOX_*` variable is present, config builds a fail-closed `@mono-agent/sandbox` policy rooted at `runtime.workspace`:
+Sandbox config is optional. When any `MONO_AGENT_SANDBOX_*` variable is present, config builds a fail-closed `@mono-agent/runtime-adapter` policy rooted at `runtime.workspace`:
 
 ```bash
 MONO_AGENT_SANDBOX_MODE=native
@@ -125,7 +125,7 @@ Supported network modes are `none`, `localhost`, `allowlist`, and `all`. `allowl
 
 ## Dependency Boundary
 
-`@mono-agent/config` may depend on `@mono-agent/agent-contracts`, `@mono-agent/runtime-adapter`, and `@mono-agent/sandbox`. It must not depend on communication adapters, agent harness, or UI packages.
+`@mono-agent/config` may depend on `@mono-agent/agent-contracts` and `@mono-agent/runtime-adapter`. It must not depend on communication adapters, agent harness, or UI packages.
 
 ## What This Package Does Not Own
 

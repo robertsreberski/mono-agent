@@ -55,7 +55,6 @@ flowchart TB
   subgraph Runtime["runtime"]
     RuntimeAdapter["@mono-agent/runtime-adapter"]
     AgentRuntime["@mono-agent/agent-runtime"]
-    Sandbox["@mono-agent/sandbox"]
   end
 
   FinalDemo --> AgentApp
@@ -95,34 +94,29 @@ flowchart TB
   Host -. optional backend .-> MemorySupermemory
   Host --> Observability
   Host --> RuntimeAdapter
-  Host --> Sandbox
   Host --> ToolPolicy
   Harness --> Contracts
   Harness --> Context
   Harness --> Observability
   Harness --> RuntimeAdapter
-  Harness --> Sandbox
   Harness --> Skills
   Harness --> ToolPolicy
   Orchestrator --> Contracts
   Orchestrator -.->|request-scoped MCP runtime options| Harness
   Config --> Contracts
   Config --> RuntimeAdapter
-  Config --> Sandbox
   Skills --> Context
   Memory --> Contracts
   MemorySupermemory --> Contracts
   RuntimeAdapter --> AgentRuntime
-  RuntimeAdapter --> Sandbox
-  AgentRuntime --> Sandbox
-  Sandbox --> Contracts
+  RuntimeAdapter --> Contracts
 ```
 
 ## Current Packages
 
 | Layer | Packages |
 | --- | --- |
-| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` |
+| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory`, `@mono-agent/memory-supermemory` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |

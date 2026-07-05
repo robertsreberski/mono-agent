@@ -50,9 +50,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:packages/runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:packages/sandbox
       '@mono-agent/slack-adapter':
         specifier: workspace:0.4.0
         version: link:packages/slack-adapter
@@ -141,9 +138,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
       '@mono-agent/session-web':
         specifier: workspace:0.4.0
         version: link:../session-web
@@ -185,9 +179,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
       '@mono-agent/skills':
         specifier: workspace:0.4.0
         version: link:../skills
@@ -218,9 +209,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
       '@mono-agent/tool-policy':
         specifier: workspace:0.4.0
         version: link:../tool-policy
@@ -266,9 +254,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
 
   packages/context: {}
 
@@ -349,15 +334,6 @@ importers:
       '@mono-agent/agent-runtime':
         specifier: workspace:0.4.0
         version: link:../agent-runtime
-      '@mono-agent/sandbox':
-        specifier: workspace:0.4.0
-        version: link:../sandbox
-
-  packages/sandbox:
-    dependencies:
-      '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.0
-        version: link:../agent-contracts
 
   packages/session-web:
     dependencies:

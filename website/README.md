@@ -5,7 +5,7 @@ The published docs at **<https://mono-agent-docs.vercel.app/>** are an [Astro St
 ## Architecture
 
 - **`../docs/` is the single source of truth.** It is kept in git, browsable on GitHub, and referenced by the `mono-agent-composer` skill. Edit docs there, not here.
-- **`website/` is an isolated app.** It has its own `pnpm-workspace.yaml` so it never enters the root `pnpm -r build` / `pnpm -r test` / `check:architecture` (which stays at 26 packages; the root release test lane guards this count). Install and build it on its own.
+- **`website/` is an isolated app.** It has its own `pnpm-workspace.yaml` so it never enters the root `pnpm -r build` / `pnpm -r test` / `check:architecture` (which stays at 25 packages; the root release test lane guards this count). Install and build it on its own.
 - **Content is *synced*, not symlinked.** `scripts/sync-content.mjs` mirrors `../docs/**` into `src/content/docs/` (gitignored) before each dev/build. Starlight only applies its Markdown features — callout asides, heading links — to files physically under `src/content/docs`, so a copy is required. The mirror preserves the `docs/` tree exactly, so the "Edit this page" link (`editLink.baseUrl` → `.../edit/main/docs/`) resolves back to the canonical file.
 - **Internal-only folders are excluded** from the published site: `docs/superpowers/` and `docs/skills/` (see `EXCLUDE_TOP` in `sync-content.mjs`).
 

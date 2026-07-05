@@ -18,8 +18,8 @@ import {
 import type { RuntimeExecutionMode, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import { createSkillsCache } from "@mono-agent/skills";
 import type { SkillsCache } from "@mono-agent/skills";
-import { mergeSandboxPolicies, sandboxPolicyToRuntimeOptions } from "@mono-agent/sandbox";
-import type { SandboxPolicy } from "@mono-agent/sandbox";
+import { mergeSandboxPolicies, sandboxPolicyToRuntimeOptions } from "@mono-agent/runtime-adapter";
+import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/tool-policy";
 
 import { NoopRunRecorder } from "./recorder.js";

@@ -121,6 +121,8 @@ for (const file of ["package.json", "README.md", "pnpm-lock.yaml"]) {
 
 const staleReferences = [
   `@mono-agent/${"comm"}/`,
+  `${packageScope}${"sandbox"}`,
+  `packages/${"sandbox"}`,
   `${"config"}-${"ui"}`,
   `${"telegram"}-${"bridge"}`,
   `${"whatsapp"}-${"bridge"}`,

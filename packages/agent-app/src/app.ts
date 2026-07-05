@@ -16,8 +16,8 @@ import {
   describeSandboxEffectiveState,
   resolveSandboxEffectiveState,
   sandboxEffectiveStateWarning,
-} from "@mono-agent/sandbox";
-import type { SandboxEffectiveState, SandboxEngine } from "@mono-agent/sandbox";
+} from "@mono-agent/runtime-adapter";
+import type { SandboxEffectiveState, SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import {
   isAppCoreConfigError,

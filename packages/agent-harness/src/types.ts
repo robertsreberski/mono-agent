@@ -3,7 +3,7 @@ import type { BuiltAgentContext, HistoryMessage } from "@mono-agent/context";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type { SkillsCache } from "@mono-agent/skills";
 import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
-import type { SandboxPolicy } from "@mono-agent/sandbox";
+import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { ToolPolicy } from "@mono-agent/tool-policy";
 
 export type MemoryWriteMode = "disabled" | "append-host-summary" | "capture";

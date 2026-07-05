@@ -42,7 +42,7 @@ import type {
   RuntimeResult,
   RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
-import type { SandboxEngine } from "@mono-agent/sandbox";
+import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import { createToolPolicy, loadToolPolicyFromJsonFileSync } from "@mono-agent/tool-policy";
 import type { ToolPolicyInput } from "@mono-agent/tool-policy";
 

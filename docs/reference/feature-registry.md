@@ -50,7 +50,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.approval-gates` | Human-in-the-loop tool approval (risk tiers, timeout, always-allow) | `code` | `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` — needs a host UI to answer; config posture is `runtime.permissionMode` |
 | `runtime.custom` | Any `MonoRuntimeLike` implementation | `code` | `startMonoAgentApp({ runtime })` or `await createConfiguredAgentResponder({ runtime })` (see [custom runtime](../programmatic/custom-runtime.md)) |
 
-## Sandbox (`@mono-agent/sandbox`)
+## Sandbox (`@mono-agent/runtime-adapter`)
 
 | Feature id | What it is | Coverage | Config / entry point |
 | --- | --- | --- | --- |
