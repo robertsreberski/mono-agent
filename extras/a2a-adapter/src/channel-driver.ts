@@ -1,10 +1,21 @@
 import type {
+  ChannelConfigInput,
+  ChannelConfigViewField,
+  ChannelConfigViewSection,
   ChannelDriver,
+  JsonEnvFieldSpec,
   SettingsJson,
   SettingsJsonValue,
 } from "@mono-agent/agent-contracts";
+import {
+  encodeJsonEnvValue,
+  normalizeOptionalString,
+  readJsonSection,
+  readSettingsJson,
+} from "@mono-agent/agent-contracts";
 
 import {
+  A2A_CONFIG_FIELDS,
   type A2AAdapterConfig,
   loadA2AAdapterConfig,
 } from "./config.js";
@@ -31,25 +42,41 @@ const DEFAULT_CHANNEL_ID = "a2a";
 const DEFAULT_CHANNEL_LABEL = "A2A";
 const DISABLED_REASON = "A2A provider is disabled.";
 const MISSING_AGENT_SKILL_REASON = "A2A provider requires agent and skill configuration.";
+const CONFIG_VIEW_PLACEHOLDER = "—";
 
 export function createA2AChannelDriver(
   options: A2AChannelDriverOptions = {},
 ): ChannelDriver<A2AAdapterConfig> {
+  const id = options.id ?? DEFAULT_CHANNEL_ID;
+  const label = options.label ?? DEFAULT_CHANNEL_LABEL;
   return {
-    id: options.id ?? DEFAULT_CHANNEL_ID,
-    label: options.label ?? DEFAULT_CHANNEL_LABEL,
-    async loadConfig(input) {
-      if (options.config !== undefined) {
-        validateA2AAdapterRawConfig(options.config);
-        return await loadA2AAdapterConfig({
-          env: input.env,
-          json: { a2a: options.config } satisfies SettingsJson,
-        });
+    id,
+    label,
+    async configView(input) {
+      const section = await readA2AConfigViewSection(options, input);
+      let status: ChannelConfigViewSection["status"] = "active";
+      try {
+        const config = await loadA2AChannelConfig(options, input);
+        if (!config.provider.enabled) {
+          status = "disabled";
+        }
+      } catch (error) {
+        if (!isA2AConfigError(error)) {
+          throw error;
+        }
       }
-      return await loadA2AAdapterConfig({ env: input.env, jsonPath: input.configPath });
+      return {
+        id,
+        label,
+        status,
+        fields: A2A_CONFIG_FIELDS.map((field) => toChannelConfigViewField(field, section, input.env)),
+      };
+    },
+    async loadConfig(input) {
+      return await loadA2AChannelConfig(options, input);
     },
     isConfigError(error) {
-      return error instanceof A2AProviderError || error instanceof A2AConsumerError;
+      return isA2AConfigError(error);
     },
     disabledReason(config) {
       return config.provider.enabled ? undefined : DISABLED_REASON;
@@ -104,6 +131,64 @@ export function createA2AChannelDriver(
 export const createChannelDriver: typeof createA2AChannelDriver = createA2AChannelDriver;
 
 type RawConfigSection = Readonly<Record<string, SettingsJsonValue>>;
+
+async function loadA2AChannelConfig(
+  options: A2AChannelDriverOptions,
+  input: ChannelConfigInput,
+): Promise<A2AAdapterConfig> {
+  if (options.config !== undefined) {
+    validateA2AAdapterRawConfig(options.config);
+    return await loadA2AAdapterConfig({
+      env: input.env,
+      json: { a2a: options.config } satisfies SettingsJson,
+    });
+  }
+  return await loadA2AAdapterConfig({ env: input.env, jsonPath: input.configPath });
+}
+
+async function readA2AConfigViewSection(
+  options: A2AChannelDriverOptions,
+  input: ChannelConfigInput,
+): Promise<Record<string, unknown>> {
+  if (options.config !== undefined) {
+    return options.config as Record<string, unknown>;
+  }
+  const { json } = await readSettingsJson(input.configPath);
+  return readJsonSection(json, DEFAULT_CHANNEL_ID);
+}
+
+function isA2AConfigError(error: unknown): boolean {
+  return error instanceof A2AProviderError || error instanceof A2AConsumerError;
+}
+
+function toChannelConfigViewField(
+  field: JsonEnvFieldSpec,
+  section: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+): ChannelConfigViewField {
+  const envValue = normalizeOptionalString(env[field.env]);
+  const jsonValue = encodeJsonEnvValue(field.fromJson(section), field.kind ?? "string");
+  const resolved = envValue ?? jsonValue;
+  const source = envValue !== undefined ? "env" : jsonValue !== undefined ? "json" : "default";
+  return {
+    id: field.id,
+    label: labelForFieldId(field.id),
+    value: field.secret === true ? (resolved === undefined ? "unset" : "set") : resolved ?? CONFIG_VIEW_PLACEHOLDER,
+    source,
+    ...(field.secret === true ? { redacted: true } : {}),
+    envKey: field.env,
+  };
+}
+
+function labelForFieldId(id: string): string {
+  const words = id
+    .split(".")
+    .slice(1)
+    .join(" ")
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 function validateA2AAdapterRawConfig(config: A2AAdapterRawConfig): void {
   validateRawBoolean(config, "enabled", "a2a.enabled");

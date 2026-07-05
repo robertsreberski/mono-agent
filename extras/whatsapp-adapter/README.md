@@ -22,7 +22,7 @@ import {
   WhatsAppEventRunner,
   createBaileysWhatsAppSocket,
   loadWhatsAppAdapterConfig,
-  whatsappFieldGroup,
+  WHATSAPP_CONFIG_FIELDS,
 } from "@mono-agent/whatsapp-adapter";
 ```
 
@@ -35,8 +35,8 @@ Hosts provide a Baileys socket, adapter options, and a structural `AgentResponde
 - `createBaileysWhatsAppSocket`
 - `createWhatsAppChannelDriver`, `createChannelDriver`
 - `normalizeWhatsAppMessage`, `isGroupJid`
-- `WhatsAppMessageStream`, `splitWhatsAppText`
-- `loadWhatsAppAdapterConfig`, `redactWhatsAppAdapterConfig`, `whatsappFieldGroup`
+- `WhatsAppMessageStream`
+- `loadWhatsAppAdapterConfig`, `redactWhatsAppAdapterConfig`, `WHATSAPP_CONFIG_FIELDS`
 - WhatsApp socket, message, trigger, config, channel-driver, and event-runner types
 
 ## Dependency Boundary

@@ -519,6 +519,53 @@ describe("A2A adapter contract", () => {
     expect(driver.label).toBe("A2A");
   });
 
+  it("marks JSON bearer tokens as redacted config-view fields for secret-placement warnings", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-a2a-driver-view-"));
+    const configPath = join(dir, "mono-agent.config.json");
+    try {
+      await writeFile(configPath, JSON.stringify({
+        a2a: {
+          enabled: false,
+          provider: {
+            bearerToken: "provider-json-secret",
+          },
+          consumer: {
+            bearerToken: "consumer-json-secret",
+          },
+        },
+      }), "utf8");
+
+      const driver = createA2AChannelDriver();
+      const section = await driver.configView?.({
+        env: {},
+        cwd: dir,
+        configPath,
+      });
+
+      if (section === undefined) {
+        throw new Error("Expected A2A driver to expose configView.");
+      }
+      expect(section.status).toBe("disabled");
+      const fields = new Map(section.fields.map((field) => [field.id, field]));
+      expect(fields.get("a2a.provider.bearerToken")).toMatchObject({
+        value: "set",
+        source: "json",
+        redacted: true,
+        envKey: "MONO_AGENT_A2A_BEARER_TOKEN",
+      });
+      expect(fields.get("a2a.consumer.bearerToken")).toMatchObject({
+        value: "set",
+        source: "json",
+        redacted: true,
+        envKey: "MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN",
+      });
+      expect(JSON.stringify(section)).not.toContain("provider-json-secret");
+      expect(JSON.stringify(section)).not.toContain("consumer-json-secret");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("loads channel-driver config from an existing configPath when inline config is absent", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-a2a-driver-"));
     const configPath = join(dir, "mono-agent.config.json");

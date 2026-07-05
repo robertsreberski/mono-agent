@@ -541,6 +541,9 @@ export function createA2AChannelDriver(
       return config.provider.enabled ? undefined : "A2A provider is disabled.";
     },
     waitingReason(config) {
+      if (!config.provider.enabled) {
+        return undefined;
+      }
       if (config.agent === undefined || config.skill === undefined) {
         return "A2A provider requires agent and skill configuration.";
       }
