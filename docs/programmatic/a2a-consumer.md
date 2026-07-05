@@ -6,7 +6,7 @@ sidebar:
 
 # A2A consumer
 
-This page covers calling a remote [A2A](https://a2a-protocol.org/) agent from your own mono-agent: discovering its Agent Card, sending messages, and wiring a remote agent in as a responder. The settings live under `a2a.consumer` in config, but **invocation is code-only** — there is no channel that auto-dials remote agents for you. For the inbound (provider) side that exposes *your* agent over A2A, see [A2A channel](/channels/a2a/).
+This page covers calling a remote [A2A](https://a2a-protocol.org/) agent from your own mono-agent: discovering its Agent Card, sending messages, and wiring a remote agent in as a responder. The settings live under the A2A plugin entry's `config.consumer`, but **invocation is code-only** — there is no channel that auto-dials remote agents for you. For the inbound (provider) side that exposes *your* agent over A2A, see [A2A channel](/channels/a2a/).
 
 Coverage: **config + code**. Config holds the connection settings; you call `createA2AConsumerResponder` (or the lower-level helpers) yourself, typically from a multi-agent host. See [Multi-agent](/programmatic/multi-agent/) and [Composition](/programmatic/composition/).
 
@@ -14,19 +14,27 @@ Coverage: **config + code**. Config holds the connection settings; you call `cre
 
 Use the consumer when your agent needs to delegate to another A2A-speaking agent — for example a multi-agent host that routes some requests to a specialized remote agent. The remote agent can be another mono-agent running the A2A provider, or any third-party A2A server.
 
-## Config: `a2a.consumer`
+## Config: plugin `config.consumer`
 
-The `a2a.consumer` block stores the remote endpoint(s), auth, and timeout. It does not start anything on its own; your code reads it and constructs a responder.
+The A2A plugin entry's `config.consumer` block stores the remote endpoint(s), auth, and timeout. It does not start anything on its own; your code reads it and constructs a responder.
 
 ```json
 {
-  "a2a": {
-    "consumer": {
-      "remoteAgentUrls": ["http://127.0.0.1:4202"],
-      "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
-      "bearerToken": "...",
-      "timeoutMs": 30000
-    }
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/a2a-adapter",
+        "id": "a2a",
+        "config": {
+          "consumer": {
+            "remoteAgentUrls": ["http://127.0.0.1:4202"],
+            "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
+            "bearerToken": "...",
+            "timeoutMs": 30000
+          }
+        }
+      }
+    ]
   }
 }
 ```
@@ -42,7 +50,7 @@ Keep tokens out of committed config — reference them through environment varia
 
 :::caution
 :::
-There is no auto-wired A2A consumer channel. If you set `a2a.consumer` but never call `createA2AConsumerResponder` (or `sendA2AMessage`), nothing connects to the remote agent.
+There is no auto-wired A2A consumer channel. If you set plugin `config.consumer` but never call `createA2AConsumerResponder` (or `sendA2AMessage`), nothing connects to the remote agent.
 
 ## `createA2AConsumerResponder`
 
@@ -74,7 +82,7 @@ On each `respond()`, the responder maps the incoming request onto the remote `se
 
 ## Dynamic remote-agent selection
 
-The responder you create from `createA2AConsumerResponder` is bound to a single `agentUrl`. To pick a remote agent **per request**, read `a2a.consumer.remoteAgentUrls` / `defaultRemoteAgentUrl` from config and construct (or look up a cached) responder for the chosen URL at routing time. A simple pattern is a small map keyed by URL:
+The responder you create from `createA2AConsumerResponder` is bound to a single `agentUrl`. To pick a remote agent **per request**, read plugin `config.consumer.remoteAgentUrls` / `defaultRemoteAgentUrl` from config and construct (or look up a cached) responder for the chosen URL at routing time. A simple pattern is a small map keyed by URL:
 
 ```ts
 import { createA2AConsumerResponder } from "@mono-agent/a2a-adapter";
@@ -114,7 +122,7 @@ For lower-level use, the adapter also exposes discovery and a fire-and-forget se
 
 ## Related
 
-- [A2A channel](/channels/a2a/) — the provider side: exposing your agent over A2A (`a2a.provider`, `a2a.agent`, `a2a.skill`).
+- [A2A channel](/channels/a2a/) — the provider side: exposing your agent over A2A with plugin `config.provider`, `config.agent`, and `config.skill`.
 - [A2A provider and consumer playbook](/playbooks/a2a-provider-and-consumer/) — end-to-end walkthrough wiring both halves together.
 - [Multi-agent](/programmatic/multi-agent/) — composing remote responders into a routing host.
 - [Composition](/programmatic/composition/) — how responders are assembled programmatically.

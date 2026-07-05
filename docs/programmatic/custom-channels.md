@@ -1,16 +1,82 @@
 ---
-title: "Custom channel drivers"
+title: "Write your own channel adapter"
 sidebar:
   order: 5
 ---
 
-This page covers writing your own channel driver and registering it with `startMonoAgentApp`, plus overriding the stream and message-text behaviour of the built-in channels (welcome/help/error text, edit debounce, max chars, interim streaming). Custom drivers are a **code-only** capability — there is no `mono-agent.config.json` key that adds a transport, so this lives in your host program. For config-driven channels see [Channels overview](/channels/).
+This page covers writing your own channel adapter package, loading it from `mono-agent.config.json` with `channels.plugins[]`, and registering drivers programmatically with `startMonoAgentApp`. It also covers overriding stream and message-text behavior of the core channels (welcome/help/error text, edit debounce, max chars, interim streaming). For built-in and external channel options, see [Channels overview](/channels/).
 
 ## When you need a driver
 
-The built-in drivers (Telegram, Slack, WhatsApp, A2A, Webhook, OpenAI-compatible API, Cron) cover every channel the `mono-agent` CLI runs from config. Write a custom `ChannelDriver` only when you need a transport that ships nothing — for example an in-house message bus, an SMS gateway, an email poller, or a test harness. A driver is thin: it reuses an adapter's config loader plus its `start` function and adds the wiring the app host would otherwise copy by hand.
+The core drivers (Telegram, Slack, Webhook, OpenAI-compatible API, Cron, TUI, Live) plus the external WhatsApp and A2A packages cover the channels mono-agent ships today. Write a custom `ChannelDriver` when you need a transport that ships nothing — for example an in-house message bus, an SMS gateway, an email poller, or a test harness. A driver is thin: it reuses an adapter's config loader plus its `start` function and adds the wiring the app host would otherwise copy by hand.
 
 The driver contract lives in **`@mono-agent/agent-contracts`** — a dependency-free contracts package — so a channel author does not need the host package at all. `@mono-agent/agent-app` re-exports every type below (with the core-config parameter bound to `MonoAgentConfig`), so existing imports keep working.
+
+## Loading a package from config
+
+The external-channel seam is only a loading mechanism. The app reads `channels.plugins[]`, resolves each `package` by name at startup, calls the package's `createChannelDriver(options)` export (or the package default export), and treats the returned object as a normal `ChannelDriver`. There is no plugin registry, version negotiation, lifecycle hook API, or extra contract beyond `ChannelDriver`.
+
+```json
+{
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/whatsapp-adapter",
+        "id": "whatsapp",
+        "label": "WhatsApp",
+        "config": {
+          "enabled": true,
+          "allowedChatJids": ["123@s.whatsapp.net"]
+        }
+      }
+    ]
+  }
+}
+```
+
+A package can expose a factory like this:
+
+```ts
+import type { ChannelDriver } from "@mono-agent/agent-contracts";
+
+export interface MyChannelPluginOptions {
+  readonly id?: string;
+  readonly label?: string;
+  readonly config?: Record<string, unknown>;
+}
+
+export function createChannelDriver(options: MyChannelPluginOptions = {}): ChannelDriver {
+  const id = options.id ?? "my-channel";
+  const label = options.label ?? "My channel";
+  const inlineConfig = options.config ?? {};
+
+  return {
+    id,
+    label,
+    async loadConfig({ env }) {
+      return {
+        enabled: inlineConfig.enabled === true || env.MONO_AGENT_MY_CHANNEL_ENABLED === "true",
+      };
+    },
+    isConfigError(error) {
+      return error instanceof Error && error.name === "MyChannelConfigError";
+    },
+    disabledReason(config) {
+      return config.enabled ? undefined : `${label} is disabled.`;
+    },
+    async start(input) {
+      return {
+        summary: { id },
+        stop: async () => {
+          // stop your socket, poller, or subscription here
+        },
+      };
+    },
+  };
+}
+```
+
+Missing packages, malformed exports, invalid plugin entries, and duplicate channel ids are reported as `waiting_for_config` validate/start sections so the rest of the host can still run. Plugin ids must not collide with the core `BUILTIN_CHANNEL_IDS`.
 
 ## The ChannelDriver interface
 
@@ -141,7 +207,7 @@ await startMonoAgentApp({
 });
 ```
 
-`defaultChannelDrivers()` returns every built-in driver in startup/status order. Spread it and append yours; pass an empty-spread-plus-yours array to run **only** your driver. See [Composition](/programmatic/composition/) for assembling the responder/runtime that backs every channel.
+`defaultChannelDrivers()` returns every core built-in driver in startup/status order. App startup normally calls `resolveChannelDrivers(...)`, which returns those core drivers plus any configured `channels.plugins[]` packages. For a programmatic host, spread `defaultChannelDrivers()` and append yours; pass an empty-spread-plus-yours array to run **only** your driver. See [Composition](/programmatic/composition/) for assembling the responder/runtime that backs every channel.
 
 ## Overriding built-in stream and message text
 
@@ -228,7 +294,7 @@ Your driver talks to the agent through `input.responder`. For replying back into
 
 ## Related pages
 
-- [Channels overview](/channels/) — the config-driven built-in transports.
+- [Channels overview](/channels/) — core transports and external channel packages.
 - [Delivery and send tools](/channels/delivery-and-send-tools/) — replying, proactive notify, allowlists.
 - [Composition](/programmatic/composition/) — building the responder/runtime each driver receives.
 - [Sessions and concurrency](/runtime/sessions-concurrency/) — how warm sessions and queued turns are managed behind a channel.

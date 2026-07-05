@@ -66,17 +66,18 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `tools` | Fail-closed allow/deny policy, MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
 | `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](/observability/) |
-| `telegram`, `slack`, `whatsapp` | Chat channels (opt-in via `enabled`) | [Channels](/channels/) |
-| `webhook`, `openaiApi`, `a2a`, `cron` | HTTP, OpenAI-compatible, agent-to-agent, scheduled | [Channels](/channels/) |
+| `telegram`, `slack` | Built-in chat channels (opt-in via `enabled`) | [Channels](/channels/) |
+| `webhook`, `openaiApi`, `cron` | Built-in HTTP, OpenAI-compatible, and scheduled channels | [Channels](/channels/) |
+| `channels.plugins[]` | External channel packages such as WhatsApp and A2A | [Write your own channel adapter](/programmatic/custom-channels/) |
 
-Every channel section is independent. An unconfigured channel reports `waiting_for_config` (or `disabled` when `enabled` is false) and never blocks the others.
+Every registered channel is independent. An unconfigured channel reports `waiting_for_config` (or `disabled` when `enabled` is false) and never blocks the others.
 
 ## How sections activate
 
 There are two activation idioms, split by what the section controls:
 
 - **Core sections activate by presence.** Adding a `memory`, `sandbox`, `observability`, `concurrency`, or `providers` key turns that capability on with the values you set; omitting the key means the capability is off. These sections configure in-process behavior, so there is nothing to "wait for" — presence is intent.
-- **Channels activate by `enabled: true` (default off).** `telegram`, `slack`, `whatsapp`, `a2a`, `webhook`, and `openaiApi` all require the explicit flag; a section that exists without `enabled: true` stays `disabled`. Channels open sockets and talk to the outside world, so a copy-pasted section must never go live by accident. `cron` follows the same spirit per job: it runs when at least one job is `enabled` (from `cron.jobs`, the single-job env form, or `cron/*.md` files).
+- **Channels activate by `enabled: true` (default off).** `telegram`, `slack`, `webhook`, and `openaiApi` all require the explicit flag; a section that exists without `enabled: true` stays `disabled`. External channels such as WhatsApp and A2A also need a `channels.plugins[]` entry naming the package, with `enabled` inside that entry's `config`. Channels open sockets and talk to the outside world, so a copy-pasted section must never go live by accident. `cron` follows the same spirit per job: it runs when at least one job is `enabled` (from `cron.jobs`, the single-job env form, or `cron/*.md` files).
 
 If a channel section seems ignored, check `enabled` first — `mono-agent validate` reports it as `disabled` rather than `waiting`.
 
@@ -108,7 +109,7 @@ mono-agent start     # traceability + every configured channel
 On `start`, each channel prints one status line: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
 
 :::note
-The **secret placement** section is advisory and non-fatal: it surfaces a `waiting` warning when a secret-marked field is resolved from the committed `mono-agent.config.json` instead of `.env`, naming the `MONO_AGENT_*` variable to move it to. It covers core secrets (e.g. `memory.embeddings.apiKey`) and every channel credential (`telegram.botToken`, `slack.botToken`/`slack.appToken`, `openaiApi.apiKey`, the A2A bearer tokens). The secret value is never printed, and the warning never blocks `start`. The same warnings are also emitted by `mono-agent config`, which additionally shows every channel section field-by-field with the same `[env]`/`[json]`/`[default]` provenance as the core sections. See [Environment Variables](/config/env-vars/) for the variable map.
+The **secret placement** section is advisory and non-fatal: it surfaces a `waiting` warning when a secret-marked field is resolved from the committed `mono-agent.config.json` instead of `.env`, naming the `MONO_AGENT_*` variable to move it to. It covers core secrets (e.g. `memory.embeddings.apiKey`) and every channel credential (`telegram.botToken`, `slack.botToken`/`slack.appToken`, `openaiApi.apiKey`, the A2A plugin bearer tokens). The secret value is never printed, and the warning never blocks `start`. The same warnings are also emitted by `mono-agent config`, which additionally shows every channel section field-by-field with the same `[env]`/`[json]`/`[default]` provenance as the core sections. See [Environment Variables](/config/env-vars/) for the variable map.
 :::
 
 ## Related pages

@@ -10,10 +10,12 @@ Communication adapter.
 
 Expose a agent responder as an A2A provider and call remote A2A agents through direct Agent Card discovery.
 
+This is a private extras package, not part of the publishable app closure. `@mono-agent/agent-app` loads its provider channel only when a host declares it under `channels.plugins[]`.
+
 ## Install / Usage
 
 ```bash
-pnpm add @mono-agent/a2a-adapter
+pnpm --filter @mono-agent/a2a-adapter run build
 ```
 
 Provider usage starts a loopback HTTP server by default and serves the Agent Card at `/.well-known/agent-card.json`. Message/task endpoints are available under `/a2a/json-rpc` and `/a2a/rest`.
@@ -66,39 +68,48 @@ const response = await sendA2AMessage({
 - `loadA2AAdapterConfig`
 - `redactA2AAdapterConfig`
 
-Config can be loaded from nested JSON under `a2a` or explicit environment variables:
+Config can be loaded from a `channels.plugins[]` entry or explicit environment variables:
 
 ```json
 {
-  "a2a": {
-    "provider": {
-      "enabled": true,
-      "host": "127.0.0.1",
-      "port": 4300,
-      "requireBearer": true,
-      "bearerToken": "redacted-value"
-    },
-    "agent": {
-      "name": "Agent A",
-      "description": "Local A2A provider.",
-      "version": "0.1.0"
-    },
-    "skill": {
-      "id": "agent-a",
-      "name": "Agent A",
-      "description": "Answers text prompts.",
-      "tags": ["mono-agent", "a2a"]
-    },
-    "consumer": {
-      "remoteAgentUrls": ["http://127.0.0.1:4300/.well-known/agent-card.json"],
-      "timeoutMs": 30000
-    }
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/a2a-adapter",
+        "id": "a2a",
+        "config": {
+          "enabled": true,
+          "provider": {
+            "host": "127.0.0.1",
+            "port": 4300,
+            "requireBearer": true,
+            "bearerToken": "redacted-value"
+          },
+          "agent": {
+            "name": "Agent A",
+            "description": "Local A2A provider.",
+            "version": "0.1.0"
+          },
+          "skill": {
+            "id": "agent-a",
+            "name": "Agent A",
+            "description": "Answers text prompts.",
+            "tags": ["mono-agent", "a2a"]
+          },
+          "consumer": {
+            "remoteAgentUrls": ["http://127.0.0.1:4300/.well-known/agent-card.json"],
+            "timeoutMs": 30000
+          }
+        }
+      }
+    ]
   }
 }
 ```
 
 Important env names:
 
+- `MONO_AGENT_A2A_ENABLED`
 - `MONO_AGENT_A2A_PROVIDER_ENABLED`
 - `MONO_AGENT_A2A_HOST`
 - `MONO_AGENT_A2A_PORT`

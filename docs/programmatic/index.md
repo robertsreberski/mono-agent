@@ -22,7 +22,7 @@ All three still read the same `MonoAgentConfig`. The escape hatch is in *composi
 
 ## `startMonoAgentApp` — the full host, your way
 
-`startMonoAgentApp` is the same host the CLI's `mono-agent start` runs. Called with no options it resolves `mono-agent.config.json` from `cwd`, starts traceability, then every built-in channel in parallel.
+`startMonoAgentApp` is the same host the CLI's `mono-agent start` runs. Called with no options it resolves `mono-agent.config.json` from `cwd`, starts traceability, then the core built-in channels plus any configured `channels.plugins[]` packages in parallel.
 
 ```ts
 import { startMonoAgentApp } from "@mono-agent/agent-app";
@@ -38,7 +38,7 @@ The options that make this an escape hatch:
 | --- | --- | --- |
 | `cwd` | `string` | Root for resolving `configPath` and relative config paths. Defaults to `process.cwd()`. |
 | `configPath` | `string` | Path to the config file; defaults to `<cwd>/mono-agent.config.json`. |
-| `drivers` | `readonly ChannelDriver[]` | The channel drivers to run. Defaults to every built-in channel. Pass a subset to run, say, only Telegram and Cron. |
+| `drivers` | `readonly ChannelDriver[]` | The channel drivers to run. Defaults to core built-ins plus configured `channels.plugins[]` packages. Pass a subset to run, say, only Telegram and Cron. |
 | `runtime` | `MonoRuntimeLike` | A shared runtime override (testing or advanced composition). When omitted the host builds the runtime from `runtime.model` / `runtime.fallbackModels`. |
 | `env` | `Record<string, string \| undefined>` | Environment used for `MONO_AGENT_*` resolution; defaults to `process.env`. |
 | `logger` | `MonoAgentAppLogger` | Structured logger for channel/trace lifecycle. |
@@ -115,4 +115,4 @@ This corresponds to the **Core Join** in the package map: `agent-contracts` (req
 - [Approval and Structured Output](/programmatic/approval-and-structured-output/) — gating tool calls and returning typed results from a responder.
 - [Multi-Agent](/programmatic/multi-agent/) — `@mono-agent/agent-orchestrator`: one runtime calling named collaborator responders through a bounded MCP tool.
 - [A2A Consumer](/programmatic/a2a-consumer/) — calling another agent's Agent Card from your host with `@mono-agent/a2a-adapter`.
-- [Custom Channels](/programmatic/custom-channels/) — writing a `ChannelDriver` (or composing an edge adapter directly) to feed your own transport into a responder.
+- [Write your own channel adapter](/programmatic/custom-channels/) — writing a `ChannelDriver` package or composing an edge adapter directly to feed your own transport into a responder.

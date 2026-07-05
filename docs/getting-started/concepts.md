@@ -37,10 +37,10 @@ There is exactly one agent responder — the thing that turns an incoming prompt
 | --- | --- | --- |
 | Telegram | `telegram` | long-polling bot |
 | Slack | `slack` | Socket Mode bot |
-| WhatsApp | `whatsapp` | Baileys socket (QR login) |
+| WhatsApp | `channels.plugins[]` (`@mono-agent/whatsapp-adapter`) | Baileys socket (QR login) |
 | Webhook | `webhook` | HTTP POST, sync/async |
 | OpenAI API | `openaiApi` | OpenAI-compatible `/v1/chat/completions` |
-| A2A | `a2a` | Agent-to-Agent provider |
+| A2A | `channels.plugins[]` (`@mono-agent/a2a-adapter`) | Agent-to-Agent provider |
 | Cron | `cron` | scheduled prompts |
 
 Each channel is its own JSON section and runs independently — one failing or waiting on config never blocks the others. See [Channels](/channels/) for per-channel setup.
@@ -94,7 +94,7 @@ mono-agent ships locked down. You opt into capability; nothing dangerous is on b
 
 - **No memory writes.** `memory.writeMode` defaults to `disabled` — the agent records nothing until you choose `append-host-summary` or (bujo only) `capture`. See [Memory → Capture and Recall](/memory/capture-and-recall/).
 
-- **Loopback-only network.** HTTP channels (`webhook`, `openaiApi`, `a2a`) bind to localhost and refuse non-loopback callers until you set `allowNonLoopback: true`. The native sandbox likewise starts with network `mode: "none"` and a deny-by-default filesystem (`.env*`, `.git/config`, `.git/hooks/**` are denied even when you widen the roots). See [Tools → Sandbox](/tools/sandbox/).
+- **Loopback-only network.** HTTP channels (`webhook`, `openaiApi`, and the A2A plugin) bind to localhost and refuse non-loopback callers until you set `allowNonLoopback: true`. The native sandbox likewise starts with network `mode: "none"` and a deny-by-default filesystem (`.env*`, `.git/config`, `.git/hooks/**` are denied even when you widen the roots). See [Tools → Sandbox](/tools/sandbox/).
 
 :::caution
 :::

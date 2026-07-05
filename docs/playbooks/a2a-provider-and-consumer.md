@@ -6,7 +6,7 @@ sidebar:
 
 # A2A Provider + Consumer Pair
 
-This playbook stands up two mono-agents that talk to each other over the Agent-to-Agent (A2A) protocol: agent A publishes an Agent Card with bearer auth (the **provider**), and agent B discovers and calls it (the **consumer**). The provider side is fully config-driven; the consumer side stores its settings in config but invokes remote agents programmatically.
+This playbook stands up two mono-agents that talk to each other over the Agent-to-Agent (A2A) protocol: agent A publishes an Agent Card with bearer auth (the **provider**), and agent B discovers and calls it (the **consumer**). A2A is loaded through `channels.plugins[]`; the provider side is config-driven, while the consumer side stores its settings in plugin config but invokes remote agents programmatically.
 
 ## Who this is for
 
@@ -18,56 +18,64 @@ Publish agent A as an A2A provider (Agent Card discovery, bearer) and configure 
 
 ## Features used
 
-- [`a2a.provider`](/channels/a2a/) — A2A provider with Agent Card discovery, JSON-RPC + REST, streaming, optional bearer (`config`).
-- [`a2a.consumer`](/programmatic/a2a-consumer/) — calling remote A2A agents (discovery + sendMessage); settings live in config, invocation is `code` via `createA2AConsumerResponder` / `sendA2AMessage`.
-- [`channel.enabled-flag-opt-in`](/channels/) — every channel (including A2A) is off until you set its `enabled` flag.
+- [`a2a.provider`](/channels/a2a/) — A2A provider with Agent Card discovery, JSON-RPC + REST, streaming, optional bearer (`channels.plugins[]` config).
+- [`a2a.consumer`](/programmatic/a2a-consumer/) — calling remote A2A agents (discovery + sendMessage); settings live in plugin config, invocation is `code` via `createA2AConsumerResponder` / `sendA2AMessage`.
+- [`channel.plugins`](/programmatic/custom-channels/) — external channel packages loaded by name.
 
 ## Configuration
 
-The block below is a single `mono-agent.config.json` carrying **both** sides for illustration; in practice the provider keys go in agent A's config and the `consumer` keys go in agent B's config. All keys are from [`a2a.provider`](/channels/a2a/), [`a2a.agent`, `a2a.skill`], and [`a2a.consumer`](/programmatic/a2a-consumer/).
+The block below is a single `mono-agent.config.json` carrying **both** sides for illustration; in practice the provider keys go in agent A's plugin entry and the `consumer` keys go in agent B's plugin entry. The provider keys are plugin `config.provider`, `config.agent`, and `config.skill`; the consumer keys are plugin `config.consumer`.
 
 ```json
 {
-  "a2a": {
-    "enabled": true,
-    "provider": {
-      "host": "127.0.0.1",
-      "port": 4201,
-      "requireBearer": true,
-      "bearerToken": "..."
-    },
-    "agent": {
-      "name": "Research Agent",
-      "description": "Does research.",
-      "version": "0.1.0"
-    },
-    "skill": {
-      "id": "research",
-      "name": "Research",
-      "description": "Web research",
-      "tags": ["research"]
-    },
-    "consumer": {
-      "remoteAgentUrls": ["http://127.0.0.1:4201"],
-      "defaultRemoteAgentUrl": "http://127.0.0.1:4201",
-      "bearerToken": "...",
-      "timeoutMs": 30000
-    }
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/a2a-adapter",
+        "id": "a2a",
+        "config": {
+          "enabled": true,
+          "provider": {
+            "host": "127.0.0.1",
+            "port": 4201,
+            "requireBearer": true,
+            "bearerToken": "..."
+          },
+          "agent": {
+            "name": "Research Agent",
+            "description": "Does research.",
+            "version": "0.1.0"
+          },
+          "skill": {
+            "id": "research",
+            "name": "Research",
+            "description": "Web research",
+            "tags": ["research"]
+          },
+          "consumer": {
+            "remoteAgentUrls": ["http://127.0.0.1:4201"],
+            "defaultRemoteAgentUrl": "http://127.0.0.1:4201",
+            "bearerToken": "...",
+            "timeoutMs": 30000
+          }
+        }
+      }
+    ]
   }
 }
 ```
 
-Keep the bearer token out of the file in production by supplying it via env var: `MONO_AGENT_A2A_BEARER_TOKEN=...` maps to `a2a.provider.bearerToken`, and `MONO_AGENT_A2A_ENABLED=true` maps to `a2a.enabled` (the legacy `MONO_AGENT_A2A_PROVIDER_ENABLED` / `a2a.provider.enabled` form is still honored; the root flag wins when both are set). See [../config/env-vars.md](/config/env-vars/).
+Keep the bearer token out of the file in production by supplying it via env var: `MONO_AGENT_A2A_BEARER_TOKEN=...` maps to plugin `config.provider.bearerToken`, and `MONO_AGENT_A2A_ENABLED=true` maps to plugin `config.enabled` (the legacy `MONO_AGENT_A2A_PROVIDER_ENABLED` / `config.provider.enabled` form is still honored; the root flag wins when both are set). See [../config/env-vars.md](/config/env-vars/).
 
 :::caution
-When the provider sits behind a proxy or is reached from another host, set `a2a.provider.publicBaseUrl` so the Agent Card advertises the right URL, and `a2a.provider.allowNonLoopback: true` to bind beyond `127.0.0.1`. Always pair non-loopback exposure with `requireBearer: true`.
+When the provider sits behind a proxy or is reached from another host, set plugin `config.provider.publicBaseUrl` so the Agent Card advertises the right URL, and `config.provider.allowNonLoopback: true` to bind beyond `127.0.0.1`. Always pair non-loopback exposure with `requireBearer: true`.
 :::
 
 ## Steps
 
-1. Provider: run `mono-agent init`, add `a2a.provider`, `a2a.agent`, and `a2a.skill`, set `requireBearer: true` and a `bearerToken`, then `mono-agent validate` and `mono-agent start`.
+1. Provider: run `mono-agent init`, add an `@mono-agent/a2a-adapter` entry under `channels.plugins[]` with `config.provider`, `config.agent`, and `config.skill`, set `requireBearer: true` and a `bearerToken`, then `mono-agent validate` and `mono-agent start`.
 2. Confirm the Agent Card is reachable at the provider port (e.g. `http://127.0.0.1:4201`).
-3. Consumer: configure `a2a.consumer.remoteAgentUrls` (and `defaultRemoteAgentUrl`/`bearerToken`/`timeoutMs`), or compose `createA2AConsumerResponder` programmatically — invoking remote agents is code-only, see [../programmatic/a2a-consumer.md](/programmatic/a2a-consumer/).
+3. Consumer: configure plugin `config.consumer.remoteAgentUrls` (and `defaultRemoteAgentUrl`/`bearerToken`/`timeoutMs`), or compose `createA2AConsumerResponder` programmatically — invoking remote agents is code-only, see [../programmatic/a2a-consumer.md](/programmatic/a2a-consumer/).
 4. From the consumer, send text to the provider's Agent Card URL with the bearer token.
 5. Confirm the provider responds and the consumer surfaces the result.
 
