@@ -258,6 +258,10 @@ export interface RecordedRunListItem {
   readonly sourceDetail?: string;
   /** The user's prompt for this run, persisted so backfill/replay can show it as input. */
   readonly userInput?: string;
+  /** Summary artifact filename under the artifact dir, when the list item came from disk. */
+  readonly summaryFileName?: string;
+  /** Summary artifact mtime in milliseconds, when the list item came from disk. */
+  readonly summaryMtimeMs?: number;
 }
 
 export interface RecordedRunEvent {

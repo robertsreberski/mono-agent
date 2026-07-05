@@ -4,9 +4,6 @@
  * model via `mapRunToSession` — the exact same mapping the TUI replay uses, so
  * both surfaces decompose a run identically.
  */
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
-
 import { listRecordedRuns, mapRunToSession, readRecordedRun } from "@mono-agent/observability";
 import type { RecordedRunListItem, RunSummary, RuntimeEventLike, Session } from "@mono-agent/observability";
 
@@ -15,6 +12,7 @@ import type { DiscoveredWebInstance } from "./discovery.js";
 export type SourceStampedSession = Session & { readonly sourceId: string };
 
 export interface DiskRunSignature {
+  readonly summaryFileName: string;
   readonly summaryMtimeMs: number;
   readonly updatedAt: string;
   readonly status: string;
@@ -51,7 +49,7 @@ export async function listInstanceSessionSummaries(
   const { runs } = await listRecordedRuns({ artifactDir, maxRuns: options.maxRuns });
   const sessions: SourceStampedSessionSummary[] = [];
   for (const run of runs) {
-    const signature = await diskRunSignature(artifactDir, run);
+    const signature = diskRunSignature(run);
     if (signature === undefined) {
       continue;
     }
@@ -61,6 +59,15 @@ export async function listInstanceSessionSummaries(
     });
   }
   return sessions;
+}
+
+export async function readInstanceSessionSummaryByFileName(
+  instance: DiscoveredWebInstance,
+  summaryFileName: string,
+  options: ListInstanceSessionsOptions,
+): Promise<SourceStampedSessionSummary | undefined> {
+  const summaries = await listInstanceSessionSummaries(instance, options);
+  return summaries.find((entry) => entry.signature.summaryFileName === summaryFileName);
 }
 
 /**
@@ -152,20 +159,15 @@ function stripSessionDetailText(
   return base;
 }
 
-async function diskRunSignature(
-  artifactDir: string,
-  item: RecordedRunListItem,
-): Promise<DiskRunSignature | undefined> {
-  try {
-    const summaryPath = join(artifactDir, `${item.runId}.summary.json`);
-    const summaryStat = await stat(summaryPath);
-    return {
-      summaryMtimeMs: summaryStat.mtimeMs,
-      updatedAt: item.updatedAt,
-      status: item.status,
-      eventCount: item.eventCount,
-    };
-  } catch {
+function diskRunSignature(item: RecordedRunListItem): DiskRunSignature | undefined {
+  if (item.summaryFileName === undefined || item.summaryMtimeMs === undefined) {
     return undefined;
   }
+  return {
+    summaryFileName: item.summaryFileName,
+    summaryMtimeMs: item.summaryMtimeMs,
+    updatedAt: item.updatedAt,
+    status: item.status,
+    eventCount: item.eventCount,
+  };
 }

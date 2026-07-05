@@ -96,6 +96,27 @@ describe("listInstanceSessions", () => {
     expect(entry?.signature.status).toBe("succeeded");
     expect(entry?.signature.eventCount).toBeGreaterThan(0);
   });
+
+  it("keeps runs whose artifact filename is sanitized from the runId", async () => {
+    const agentDir = await tmp("agent");
+    const artifactDir = join(agentDir, "runs");
+    await seedRun({
+      artifactDir,
+      runId: "Run:Detail",
+      conversationId: "chat:sanitized",
+      userInput: "Read sanitized summary",
+      text: "Sanitized answer.",
+      source: "chat",
+      at: 5_000_000,
+    });
+    const discovered = await discoverOne(artifactDir);
+
+    const [entry] = await listInstanceSessionSummaries(discovered, { maxRuns: 50 });
+
+    expect(entry?.session.id).toBe("Run:Detail");
+    expect(entry?.signature.summaryFileName).toBe("run-detail.summary.json");
+    expect(entry?.session.steps).toEqual([]);
+  });
 });
 
 describe("readInstanceSession", () => {

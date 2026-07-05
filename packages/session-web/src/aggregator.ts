@@ -24,7 +24,7 @@ import type { RunSummary, RunSummaryStatus, RuntimeEventLike } from "@mono-agent
 
 import { discoverWebInstances, resolveLiveApiKey } from "./discovery.js";
 import type { DiscoveredWebInstance } from "./discovery.js";
-import { listInstanceSessionSummaries, readInstanceSession } from "./history.js";
+import { listInstanceSessionSummaries, readInstanceSession, readInstanceSessionSummaryByFileName } from "./history.js";
 import type { DiskRunSignature, SourceStampedSession, SourceStampedSessionSummary } from "./history.js";
 import { connectLiveStream } from "./live-client.js";
 import type { LiveStreamConnection, LiveStreamStatus } from "./live-client.js";
@@ -577,9 +577,8 @@ export class SessionAggregator {
         if (!name.endsWith(SUMMARY_SUFFIX)) {
           return;
         }
-        const runId = name.slice(0, name.length - SUMMARY_SUFFIX.length);
-        if (runId.length > 0) {
-          this.scheduleArtifactReread(state, runId);
+        if (name.length > SUMMARY_SUFFIX.length) {
+          this.scheduleArtifactReread(state, name);
         }
       });
     } catch (error) {
@@ -592,33 +591,36 @@ export class SessionAggregator {
     state.artifactWatcher = watcher;
   }
 
-  private scheduleArtifactReread(state: InstanceState, runId: string): void {
-    const existing = state.artifactTimers.get(runId);
+  private scheduleArtifactReread(state: InstanceState, summaryFileName: string): void {
+    const existing = state.artifactTimers.get(summaryFileName);
     if (existing !== undefined) {
       clearTimeout(existing);
     }
     const timer = setTimeout(() => {
-      state.artifactTimers.delete(runId);
-      void this.rereadArtifactRun(state, runId);
+      state.artifactTimers.delete(summaryFileName);
+      void this.rereadArtifactSummaryFile(state, summaryFileName);
     }, this.artifactDebounceMs);
     timer.unref?.();
-    state.artifactTimers.set(runId, timer);
+    state.artifactTimers.set(summaryFileName, timer);
   }
 
-  private async rereadArtifactRun(state: InstanceState, runId: string): Promise<void> {
+  private async rereadArtifactSummaryFile(state: InstanceState, summaryFileName: string): Promise<void> {
     if (!this.isCurrentState(state)) {
       return;
     }
     let entry: SourceStampedSessionSummary | undefined;
     try {
-      entry = await this.readDiskSummary(state, runId);
+      entry = await readInstanceSessionSummaryByFileName(state.discovered, summaryFileName, {
+        maxRuns: state.maxRunsPerInstance,
+      });
     } catch (error) {
-      this.logger?.warn?.("Failed to re-read changed run artifact.", { runId, error: errorMessage(error) });
+      this.logger?.warn?.("Failed to re-read changed run artifact.", { summaryFileName, error: errorMessage(error) });
       return;
     }
     if (entry === undefined || !this.isCurrentState(state)) {
       return;
     }
+    const runId = entry.session.id;
     if (entry.session.status === "running" && state.liveFinished.has(runId)) {
       // A debounced artifact watch can read the start-time "running" summary after
       // live SSE already delivered the terminal frame. Keep the terminal live fold
@@ -842,11 +844,6 @@ export class SessionAggregator {
     return changed;
   }
 
-  private async readDiskSummary(state: InstanceState, runId: string): Promise<SourceStampedSessionSummary | undefined> {
-    const summaries = await listInstanceSessionSummaries(state.discovered, { maxRuns: state.maxRunsPerInstance });
-    return summaries.find((entry) => entry.session.id === runId);
-  }
-
   private isActive(generation = this.lifecycleGeneration): boolean {
     return !this.stopped && generation === this.lifecycleGeneration;
   }
@@ -1050,6 +1047,7 @@ function diskRunSignatureEquals(
 ): boolean {
   return (
     left !== undefined &&
+    left.summaryFileName === right.summaryFileName &&
     left.summaryMtimeMs === right.summaryMtimeMs &&
     left.updatedAt === right.updatedAt &&
     left.status === right.status &&

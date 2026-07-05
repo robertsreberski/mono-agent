@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -16,7 +16,7 @@ vi.mock("@mono-agent/observability", async (importOriginal) => {
 });
 
 import { SessionAggregator } from "../aggregator.js";
-import { makeTmpDir, registerSource, removeDir, seedRun } from "./helpers.js";
+import { makeTmpDir, registerSource, removeDir, seedRun, seedRunningRun } from "./helpers.js";
 
 const tmpDirs: string[] = [];
 let aggregator: SessionAggregator | undefined;
@@ -67,6 +67,50 @@ describe("SessionAggregator summary reconcile", () => {
     await (aggregator as unknown as { reconcile(): Promise<void> }).reconcile();
 
     expect(listRecordedRunsMock).not.toHaveBeenCalled();
+    expect(readRecordedRunMock).not.toHaveBeenCalled();
+  });
+
+  it("rereads watched summary files using the real runId from the summary", async () => {
+    readRecordedRunMock.mockRejectedValue(new Error("readRecordedRun must stay lazy"));
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await seedRunningRun({
+      artifactDir,
+      runId: "Run:Watched",
+      conversationId: "chat:watched",
+      userInput: "Watch this summary",
+      text: "Running answer.",
+      source: "chat",
+      at: 1_700_000_000_000,
+    });
+    await registerSource({ registryDir, sourceId: "summary-agent", label: "Summary Agent", artifactDir });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      instancesDebounceMs: 5,
+    });
+    await aggregator.start();
+    expect(aggregator.getSessionSummaries("all")[0]).toMatchObject({ id: "Run:Watched", status: "running" });
+
+    const finished = await seedRun({
+      artifactDir,
+      runId: "Run:Watched",
+      conversationId: "chat:watched",
+      userInput: "Watch this summary",
+      text: "Finished answer.",
+      source: "chat",
+      at: 1_700_000_005_000,
+    });
+    const summaryFileName = basename(finished.artifactPaths[1] ?? "");
+
+    const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get("summary-agent");
+    await (aggregator as unknown as { rereadArtifactSummaryFile(state: unknown, summaryFileName: string): Promise<void> })
+      .rereadArtifactSummaryFile(state, summaryFileName);
+
+    expect(aggregator.getSessionSummaries("all")[0]).toMatchObject({ id: "Run:Watched", status: "succeeded" });
+    expect(aggregator.getSessionSummaries("all").some((session) => session.id === "run-watched")).toBe(false);
     expect(readRecordedRunMock).not.toHaveBeenCalled();
   });
 });

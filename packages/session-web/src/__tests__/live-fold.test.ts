@@ -28,6 +28,7 @@ afterEach(async () => {
 
 const SOURCE_ID = "live-agent";
 const RUN_ID = "run-live-1";
+const SUMMARY_FILE = `${RUN_ID}.summary.json`;
 const STARTED_AT = "2026-07-04T00:00:00.000Z";
 
 function runStarted(): RunEventFrame {
@@ -269,8 +270,8 @@ describe("SessionAggregator live fold", () => {
     await waitFor(() => aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.status === "succeeded"));
 
     const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get(SOURCE_ID);
-    await (aggregator as unknown as { rereadArtifactRun(state: unknown, runId: string): Promise<void> })
-      .rereadArtifactRun(state, RUN_ID);
+    await (aggregator as unknown as { rereadArtifactSummaryFile(state: unknown, summaryFileName: string): Promise<void> })
+      .rereadArtifactSummaryFile(state, SUMMARY_FILE);
 
     await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
       status: "succeeded",
@@ -315,8 +316,8 @@ describe("SessionAggregator live fold", () => {
 
     const frameCountBeforeReread = frames.length;
     const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get(SOURCE_ID);
-    await (aggregator as unknown as { rereadArtifactRun(state: unknown, runId: string): Promise<void> })
-      .rereadArtifactRun(state, RUN_ID);
+    await (aggregator as unknown as { rereadArtifactSummaryFile(state: unknown, summaryFileName: string): Promise<void> })
+      .rereadArtifactSummaryFile(state, SUMMARY_FILE);
 
     await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
       status: "succeeded",
