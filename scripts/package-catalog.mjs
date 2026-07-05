@@ -14,10 +14,11 @@ export const packageCatalog = [
   {
     dir: "a2a-adapter",
     name: "@mono-agent/a2a-adapter",
+    path: "extras/a2a-adapter",
     category: "communication",
     responsibility: "Exposes agent responders over A2A and consumes remote A2A agents through direct discovery.",
     allowedDependencyCategories: ["core"],
-    publishable: true,
+    publishable: false,
   },
   {
     dir: "agent-app",
@@ -54,10 +55,11 @@ export const packageCatalog = [
   {
     dir: "agent-orchestrator",
     name: "@mono-agent/agent-orchestrator",
+    path: "extras/agent-orchestrator",
     category: "execution",
     responsibility: "Exposes named collaborator responders to an orchestrator runtime through a bounded MCP tool.",
     allowedDependencyCategories: ["core"],
-    publishable: true,
+    publishable: false,
   },
   {
     dir: "agent-runtime",
@@ -166,10 +168,11 @@ export const packageCatalog = [
   {
     dir: "whatsapp-adapter",
     name: "@mono-agent/whatsapp-adapter",
+    path: "extras/whatsapp-adapter",
     category: "communication",
     responsibility: "Adapts WhatsApp messages to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
-    publishable: true,
+    publishable: false,
   },
   {
     dir: "webhook-adapter",
@@ -187,4 +190,12 @@ export function packageByName() {
 
 export function packageByDir() {
   return new Map(packageCatalog.map((entry) => [entry.dir, entry]));
+}
+
+export function packageRelativePath(entry) {
+  return entry.path ?? `packages/${entry.dir}`;
+}
+
+export function packageByPath() {
+  return new Map(packageCatalog.map((entry) => [packageRelativePath(entry), entry]));
 }

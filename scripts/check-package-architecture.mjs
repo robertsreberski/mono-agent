@@ -6,6 +6,7 @@ import {
   PACKAGE_CATEGORIES,
   packageByName,
   packageCatalog,
+  packageRelativePath,
 } from "./package-catalog.mjs";
 
 const root = process.cwd();
@@ -22,60 +23,58 @@ const requiredReadmeSections = [
 
 const errors = [];
 const catalogByName = packageByName();
-const catalogDirs = new Set(packageCatalog.map((entry) => entry.dir));
-const packageDirs = readdirSync(join(root, "packages"), { withFileTypes: true })
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => entry.name)
-  .filter((packageDir) => isPackageDirectory(join(root, "packages", packageDir)) || catalogDirs.has(packageDir))
+const catalogPaths = new Set(packageCatalog.map((entry) => packageRelativePath(entry)));
+const packagePaths = workspacePackagePaths()
   .sort();
 
-for (const packageDir of packageDirs) {
-  if (!catalogDirs.has(packageDir)) {
-    errors.push(`packages/${packageDir} is missing from scripts/package-catalog.mjs.`);
+for (const packagePath of packagePaths) {
+  if (!catalogPaths.has(packagePath)) {
+    errors.push(`${packagePath} is missing from scripts/package-catalog.mjs.`);
   }
 }
 
 for (const catalogEntry of packageCatalog) {
+  const packagePath = packageRelativePath(catalogEntry);
   if (!PACKAGE_CATEGORIES.includes(catalogEntry.category)) {
-    errors.push(`packages/${catalogEntry.dir} has unknown category ${catalogEntry.category}.`);
+    errors.push(`${packagePath} has unknown category ${catalogEntry.category}.`);
   }
   for (const allowed of catalogEntry.allowedDependencyCategories) {
     if (!PACKAGE_CATEGORIES.includes(allowed)) {
-      errors.push(`packages/${catalogEntry.dir} allows unknown dependency category ${allowed}.`);
+      errors.push(`${packagePath} allows unknown dependency category ${allowed}.`);
     }
   }
 }
 
 for (const catalogEntry of packageCatalog) {
-  const packageDir = catalogEntry.dir;
-  const dir = join(root, "packages", packageDir);
+  const packagePath = packageRelativePath(catalogEntry);
+  const dir = join(root, packagePath);
   const packageJsonPath = join(dir, "package.json");
   const readmePath = join(dir, "README.md");
   if (!existsSync(packageJsonPath)) {
-    errors.push(`Missing package.json for packages/${packageDir}.`);
+    errors.push(`Missing package.json for ${packagePath}.`);
     continue;
   }
   if (!existsSync(readmePath)) {
-    errors.push(`Missing README.md for packages/${packageDir}.`);
+    errors.push(`Missing README.md for ${packagePath}.`);
   } else {
     const readme = readFileSync(readmePath, "utf8");
     for (const section of requiredReadmeSections) {
       if (!readme.includes(section)) {
-        errors.push(`packages/${packageDir}/README.md missing section ${section}.`);
+        errors.push(`${packagePath}/README.md missing section ${section}.`);
       }
     }
     if (!readme.includes(`Category: \`${catalogEntry.category}\``)) {
-      errors.push(`packages/${packageDir}/README.md missing catalog category line: Category: \`${catalogEntry.category}\`.`);
+      errors.push(`${packagePath}/README.md missing catalog category line: Category: \`${catalogEntry.category}\`.`);
     }
   }
 
   const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8"));
   const packageName = manifest.name;
   if (packageName !== catalogEntry.name) {
-    errors.push(`packages/${packageDir}/package.json has unexpected name ${packageName}.`);
+    errors.push(`${packagePath}/package.json has unexpected name ${packageName}.`);
   }
   if (!packageName.startsWith(packageScope)) {
-    errors.push(`packages/${packageDir}/package.json name must use the ${packageScope} scope.`);
+    errors.push(`${packagePath}/package.json name must use the ${packageScope} scope.`);
   }
   const deps = {
     ...manifest.dependencies,
@@ -90,17 +89,17 @@ for (const catalogEntry of packageCatalog) {
     const depEntry = catalogByName.get(depName);
     if (depEntry === undefined) {
       if (String(deps[depName]).startsWith("workspace:")) {
-        errors.push(`packages/${packageDir} depends on uncatalogued workspace package ${depName}.`);
+        errors.push(`${packagePath} depends on uncatalogued workspace package ${depName}.`);
       }
       continue;
     }
     if (!catalogEntry.allowedDependencyCategories.includes(depEntry.category)) {
       errors.push(
-        `packages/${packageDir} (${catalogEntry.category}) may not depend on ${depName} (${depEntry.category}).`,
+        `${packagePath} (${catalogEntry.category}) may not depend on ${depName} (${depEntry.category}).`,
       );
     }
     if (depEntry.category === "communication" && catalogEntry.category !== "app") {
-      errors.push(`packages/${packageDir} may not depend on communication adapter ${depName}; compose adapters only in app hosts/demos.`);
+      errors.push(`${packagePath} may not depend on communication adapter ${depName}; compose adapters only in app hosts/demos.`);
     }
   }
 }
@@ -167,6 +166,27 @@ if (errors.length > 0) {
 }
 
 console.log(`Package architecture check passed for ${packageCatalog.length} workspace packages.`);
+
+function workspacePackagePaths() {
+  const workspaceRoots = ["packages", "extras"];
+  const paths = [];
+  for (const workspaceRoot of workspaceRoots) {
+    const workspaceRootPath = join(root, workspaceRoot);
+    if (!existsSync(workspaceRootPath)) {
+      continue;
+    }
+    for (const entry of readdirSync(workspaceRootPath, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const packagePath = `${workspaceRoot}/${entry.name}`;
+      if (isPackageDirectory(join(root, packagePath)) || catalogPaths.has(packagePath)) {
+        paths.push(packagePath);
+      }
+    }
+  }
+  return paths;
+}
 
 function walkTextFiles(dir) {
   const ignoredDirs = new Set([
