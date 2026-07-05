@@ -68,6 +68,7 @@ function monoConfig(
     },
     artifacts: {
       dir: "/repo/.mono-agent/artifacts",
+      retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false },
     },
     traceability: {
       registryDir: "/repo/.mono-agent/trace",

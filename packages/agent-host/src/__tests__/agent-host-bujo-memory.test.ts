@@ -420,7 +420,7 @@ function bujoConfig(input: {
       ...(input.llm === undefined ? {} : { llm: input.llm }),
     },
     tools: { allowedTools: [], disallowedTools: [] },
-    artifacts: { dir: join(input.dir, "artifacts") },
+    artifacts: { dir: join(input.dir, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false } },
     traceability: { registryDir: join(input.dir, "trace-sources") },
     ...(input.observabilityExporters === undefined
       ? {}

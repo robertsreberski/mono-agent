@@ -15,7 +15,7 @@ import {
   registerTraceSource,
   TraceSourceRegistryError,
 } from "../index.js";
-import type { TraceSourceListItem } from "../index.js";
+import type { TraceSourceListItem, TraceSourceStatus } from "../index.js";
 
 const tempDirs: string[] = [];
 
@@ -168,7 +168,7 @@ describe("pruneTraceSources", () => {
   async function writeRawManifest(
     registryDir: string,
     sourceId: string,
-    overrides: { readonly updatedAt: string; readonly pid?: number },
+    overrides: { readonly updatedAt: string; readonly pid?: number; readonly status?: TraceSourceStatus },
   ): Promise<string> {
     await mkdir(registryDir, { recursive: true });
     const path = join(registryDir, `${sourceId}.json`);
@@ -179,7 +179,7 @@ describe("pruneTraceSources", () => {
         sourceId,
         label: sourceId,
         artifactDir: join(registryDir, "..", `${sourceId}-artifacts`),
-        status: "running",
+        status: overrides.status ?? "running",
         startedAt: overrides.updatedAt,
         updatedAt: overrides.updatedAt,
         ...(overrides.pid === undefined ? {} : { pid: overrides.pid }),
@@ -193,17 +193,17 @@ describe("pruneTraceSources", () => {
     expect(DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS).toBe(7 * 24 * 60 * 60 * 1000);
   });
 
-  it("removes an old manifest whose pid is dead, keeps an old-but-alive one, and keeps a fresh-but-dead one", async () => {
+  it("removes old dead, stopped, and failed manifests while keeping live or fresh ones", async () => {
     const dir = await tempDir();
     const registryDir = join(dir, "registry");
     const oldIso = new Date(NOW - EIGHT_DAYS_MS).toISOString();
     const freshIso = new Date(NOW - ONE_HOUR_MS).toISOString();
 
-    await writeRawManifest(registryDir, "old-dead", { updatedAt: oldIso, pid: 111 });
+    await writeRawManifest(registryDir, "old-running-dead", { updatedAt: oldIso, pid: 111 });
+    await writeRawManifest(registryDir, "old-stopped", { updatedAt: oldIso, status: "stopped" });
+    await writeRawManifest(registryDir, "old-failed", { updatedAt: oldIso, pid: 444, status: "failed" });
     await writeRawManifest(registryDir, "old-alive", { updatedAt: oldIso, pid: 222 });
-    await writeRawManifest(registryDir, "fresh-dead", { updatedAt: freshIso, pid: 333 });
-    // No pid recorded at all: treated like "dead" for age-based pruning purposes.
-    await writeRawManifest(registryDir, "old-no-pid", { updatedAt: oldIso });
+    await writeRawManifest(registryDir, "fresh-stopped", { updatedAt: freshIso, pid: 333, status: "stopped" });
 
     const result = await pruneTraceSources({
       registryDir,
@@ -211,9 +211,9 @@ describe("pruneTraceSources", () => {
       isAlive: (pid) => pid === 222,
     });
 
-    expect(result).toEqual({ removed: 2 });
+    expect(result).toEqual({ removed: 3 });
     const remaining = (await readdir(registryDir)).sort();
-    expect(remaining).toEqual(["fresh-dead.json", "old-alive.json"]);
+    expect(remaining).toEqual(["fresh-stopped.json", "old-alive.json"]);
   });
 
   it("never deletes a manifest with a live pid regardless of age", async () => {
@@ -233,17 +233,18 @@ describe("pruneTraceSources", () => {
     expect(await readdir(registryDir)).toEqual(["ancient-alive.json"]);
   });
 
-  it("tolerates malformed manifest files without throwing", async () => {
+  it("tolerates malformed manifest files and leaves non-json files untouched", async () => {
     const dir = await tempDir();
     const registryDir = join(dir, "registry");
     const oldIso = new Date(NOW - EIGHT_DAYS_MS).toISOString();
     await writeRawManifest(registryDir, "old-dead", { updatedAt: oldIso, pid: 111 });
     await writeFile(join(registryDir, "corrupt.json"), "{not valid json", "utf8");
+    await writeFile(join(registryDir, "README.txt"), "not a manifest", "utf8");
 
     await expect(
       pruneTraceSources({ registryDir, clock: () => NOW, isAlive: () => false }),
     ).resolves.toEqual({ removed: 1 });
-    expect(await readdir(registryDir)).toEqual(["corrupt.json"]);
+    expect((await readdir(registryDir)).sort()).toEqual(["README.txt", "corrupt.json"]);
   });
 
   it("never throws when the registry directory does not exist", async () => {

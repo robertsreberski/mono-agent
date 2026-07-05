@@ -115,7 +115,7 @@ function memoryModelConfig(dir: string): MonoAgentConfig {
       llm: { provider: "agent-host", model: MEMORY_MODEL_REF, executionMode: "sdk" },
     },
     tools: { allowedTools: [], disallowedTools: [] },
-    artifacts: { dir: join(dir, "artifacts") },
+    artifacts: { dir: join(dir, "artifacts"), retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false } },
     traceability: { registryDir: join(dir, "trace-sources") },
   };
 }

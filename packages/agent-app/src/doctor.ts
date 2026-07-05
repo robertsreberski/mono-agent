@@ -111,7 +111,7 @@ export async function validateMonoAgentFolder(
   }
 
   sections.push(await exporterSection(options, liveness));
-  sections.push(await runsSection(options));
+  sections.push(await runsSection(options, coreConfig));
 
   for (const driver of drivers) {
     sections.push(await channelSection(driver, options));
@@ -571,11 +571,16 @@ function sandboxSection(config: MonoAgentConfig): ValidationSection {
 }
 
 
-async function runsSection(input: MonoAgentAppConfigInput): Promise<ValidationSection> {
+async function runsSection(input: MonoAgentAppConfigInput, config: MonoAgentConfig | undefined): Promise<ValidationSection> {
   const artifactDir = await resolveAppArtifactDir(input);
   const { totalRuns, runs, warnings } = await listRecordedRuns({ artifactDir, maxRuns: RUNS_HEALTH_MAX_RUNS });
   const display = buildRunsHealthDisplay({ artifactDir, totalRuns, runs, warnings });
-  return { id: "runs", label: "Runs health", status: display.status, details: display.details };
+  const retentionDetails = config === undefined
+    ? []
+    : [
+        `Artifact retention: maxAgeDays=${config.artifacts.retention.maxAgeDays}, maxCount=${config.artifacts.retention.maxCount}, dryRun=${config.artifacts.retention.dryRun ? "true" : "false"}.`,
+      ];
+  return { id: "runs", label: "Runs health", status: display.status, details: [...retentionDetails, ...display.details] };
 }
 
 const LOCAL_ARTIFACTS_NOTE = "JSONL artifacts remain local (the exporter is additive; export failures never affect them).";

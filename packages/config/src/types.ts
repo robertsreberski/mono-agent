@@ -134,6 +134,15 @@ export type SkillDisclosureMode = "index" | "full";
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
+export interface ArtifactRetentionConfig {
+  /** Delete terminal run artifacts older than this many days. */
+  readonly maxAgeDays: number;
+  /** Keep at most this many newest terminal runs after age pruning. */
+  readonly maxCount: number;
+  /** Report what would be deleted without unlinking files. */
+  readonly dryRun: boolean;
+}
+
 export interface MonoAgentConfig {
   readonly runtime: {
     readonly model: RuntimeModelReference;
@@ -239,6 +248,7 @@ export interface MonoAgentConfig {
   readonly sandbox?: SandboxPolicy;
   readonly artifacts: {
     readonly dir: string;
+    readonly retention: ArtifactRetentionConfig;
   };
   readonly traceability: {
     readonly registryDir: string;

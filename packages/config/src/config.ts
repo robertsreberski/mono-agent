@@ -76,6 +76,8 @@ const DEFAULT_EMBEDDINGS_MODELS: Record<MemoryEmbeddingsProvider, string> = {
   ollama: "nomic-embed-text",
   openai: "text-embedding-3-small",
 };
+export const DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS = 365;
+export const DEFAULT_ARTIFACT_RETENTION_MAX_COUNT = 50_000;
 const DEFAULT_TRACE_HEARTBEAT_MS = 10_000;
 const DEFAULT_TRACE_STALE_AFTER_MS = 30_000;
 const OBSERVABILITY_EXPORTER_TYPES = ["phoenix"] as const;
@@ -106,6 +108,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const mcpConfigPath = readOptionalPath(input.env.MONO_AGENT_MCP_CONFIG_PATH, cwd);
   const sandbox = readSandboxConfig(input.env, workspace);
   const artifactDir = readPath(input.env.MONO_AGENT_ARTIFACT_DIR, cwd, resolve(cwd, ".mono-agent", "artifacts"));
+  const artifactRetention = readArtifactRetentionConfig(input.env);
   const traceability = readTraceabilityConfig(input.env, cwd);
   const observability = readObservabilityConfig(input.env);
   const piAuthPath = readPath(input.env.MONO_AGENT_PI_AUTH_PATH, cwd, DEFAULT_PI_AUTH_PATH);
@@ -158,6 +161,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     ...(sandbox === undefined ? {} : { sandbox }),
     artifacts: {
       dir: artifactDir,
+      retention: artifactRetention,
     },
     traceability,
     ...(observability === undefined ? {} : { observability }),
@@ -267,6 +271,31 @@ function readOptionalTimeoutMs(raw: string | undefined, name: string): number | 
 function readMaxTurns(raw: string | undefined): number | undefined {
   const maxTurns = readInteger(raw, "MONO_AGENT_MAX_TURNS", 0, invalidEnv, { min: 0, max: 100 });
   return maxTurns === 0 ? undefined : maxTurns;
+}
+
+function readArtifactRetentionConfig(env: Record<string, string | undefined>): MonoAgentConfig["artifacts"]["retention"] {
+  return {
+    maxAgeDays: readInteger(
+      env.MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS,
+      "MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS",
+      DEFAULT_ARTIFACT_RETENTION_MAX_AGE_DAYS,
+      invalidEnv,
+      { min: 1, max: 3_650 },
+    ),
+    maxCount: readInteger(
+      env.MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT,
+      "MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT",
+      DEFAULT_ARTIFACT_RETENTION_MAX_COUNT,
+      invalidEnv,
+      { min: 1, max: 1_000_000 },
+    ),
+    dryRun: readBoolean(
+      env.MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN,
+      "MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN",
+      false,
+      invalidEnv,
+    ),
+  };
 }
 
 function parseExecutionMode(raw: string | undefined, model: MonoAgentConfig["runtime"]["model"]): RuntimeExecutionMode {
