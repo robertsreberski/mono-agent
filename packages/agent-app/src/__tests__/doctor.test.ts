@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { SandboxEngine } from "@mono-agent/sandbox";
+import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import { validateMonoAgentFolder } from "../doctor.js";
 

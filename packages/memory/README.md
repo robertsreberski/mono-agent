@@ -50,7 +50,7 @@ This package may depend on core contracts and local persistence/search dependenc
 
 ## What This Package Does Not Own
 
-It does not own host configuration, backend selection, automatic `memory_recall` MCP wiring, external Supermemory storage, model runtime execution, communication channels, or run artifact persistence. `@mono-agent/agent-host` chooses which memory backend to build, `@mono-agent/agent-app` wires the recall tool, and `@mono-agent/memory-supermemory` owns the external Supermemory backend.
+It does not own host configuration, backend selection, automatic `memory_recall` MCP wiring, external Supermemory storage, model runtime execution, communication channels, or run artifact persistence. `@mono-agent/agent-app` chooses which memory backend to build and wires the recall tool, while `@mono-agent/memory-supermemory` owns the external Supermemory backend.
 
 ## Verification
 

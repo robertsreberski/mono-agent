@@ -1,9 +1,9 @@
-import { mergeSandboxPolicies, networkPolicyAllowsUrl, prepareSandboxedCommand } from "@mono-agent/sandbox";
+import { mergeSandboxPolicies, networkPolicyAllowsUrl, prepareSandboxedCommand } from "./sandbox.js";
 
 /**
  * The real sandbox implementation, wired into every runtime this façade
  * creates (see `createMonoRuntime` in runtime-adapter.ts). agent-runtime's
- * kernel has no dependency on `@mono-agent/sandbox` — it defines an
+ * kernel has no dependency on this package — it defines an
  * injectable `RuntimeSandbox` seam (`agent/sandbox-seam.js`) and ships only a
  * fail-closed `passthroughSandbox` default. This module is the ONE place a
  * mono-agent host's sandbox policy actually gets enforced: every
@@ -12,13 +12,12 @@ import { mergeSandboxPolicies, networkPolicyAllowsUrl, prepareSandboxedCommand }
  *
  * The kernel's `RuntimeSandbox` methods are typed with an intentionally
  * opaque `SandboxPolicy` (it only inspects `mode`/`network.mode` itself); the
- * real `@mono-agent/sandbox` `SandboxPolicy` is a richer, structurally
+ * real runtime-adapter `SandboxPolicy` is a richer, structurally
  * compatible superset. Assigning the real functions directly as the kernel's
  * property types would fail TypeScript's (correct) contravariant parameter
  * check — the kernel's interface promises to call `mergePolicies` with any
  * opaque-shaped policy, which the real, stricter function doesn't accept.
- * These are thin adapters that cross that boundary; @mono-agent/sandbox
- * itself is untouched.
+ * These are thin adapters that cross that boundary.
  */
 export const monoSandboxImpl = {
   mergePolicies(configured: any, request: any): any {

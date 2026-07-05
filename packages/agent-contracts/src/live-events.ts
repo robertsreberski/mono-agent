@@ -12,8 +12,8 @@
  * `event`/`summary` payloads are carried as opaque JSON (`unknown`). The producer
  * side (the agent) stamps them from its runtime/observability types; the consumer
  * side (the web operator surface, which may depend on `@mono-agent/observability`)
- * re-interprets them. Neither the neutral pipe (`live-adapter`, a `communication`
- * package) nor this core contract may depend on observability.
+ * re-interprets them. Neither the neutral operator-adapter live pipe (a
+ * `communication` package) nor this core contract may depend on observability.
  */
 
 /** Wire/schema version for {@link RunEventFrame}. Bump on a breaking shape change. */

@@ -9,12 +9,12 @@ import {
   type AgentStreamEvent,
   type AgentStreamWireFrame,
 } from "@mono-agent/agent-contracts";
-import { startTuiAdapter, type TuiAdapterStartResult } from "@mono-agent/tui-adapter";
+import { startTuiAdapter, type TuiAdapterStartResult } from "@mono-agent/operator-adapter";
 
 import { RemoteAgentResponder, RemoteAgentResponderError } from "../remote/client.js";
 
 /**
- * Round-trip tests against the REAL tui-adapter server: the client half of the
+ * Round-trip tests against the real operator-adapter TUI server: the client half of the
  * wire contract is exercised against the exact server that agent-app runs.
  */
 async function withAdapter(

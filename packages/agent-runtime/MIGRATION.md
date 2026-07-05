@@ -108,12 +108,12 @@ run reports exhausted instead of degrading silently.
 
 ## 7. Sandbox enforcement is now an injectable seam (agent-runtime has zero workspace-package dependencies)
 
-`@mono-agent/agent-runtime` no longer depends on `@mono-agent/sandbox`. Sandbox
+`@mono-agent/agent-runtime` does not depend on `@mono-agent/runtime-adapter`. Sandbox
 enforcement (command sandboxing, network-policy checks, and monotonic policy
 merging) is now driven through an injectable `RuntimeSandbox` seam
 (`agent/sandbox-seam.js`): `createRuntime({sandbox})` / `createRouterRuntime({host: {sandbox}})`
 accept an implementation. `@mono-agent/runtime-adapter` injects the real
-`@mono-agent/sandbox` implementation automatically for every
+sandbox implementation automatically for every
 `createMonoRuntime(...)` call, so behavior is **byte-identical** for existing
 mono-agent hosts — no action needed if you build your runtime through
 `@mono-agent/runtime-adapter`.
@@ -125,10 +125,10 @@ mono-agent hosts — no action needed if you build your runtime through
   `createRuntime` directly, bypassing `@mono-agent/runtime-adapter`): **this
   now fails closed** with a `sandbox_unavailable` error instead of silently
   running the command unsandboxed. Previously `@mono-agent/agent-runtime`
-  always bundled the real sandbox package and always enforced the policy; a
+  always bundled the real sandbox implementation and always enforced the policy; a
   host that built on `createRuntime` directly and relied on that implicit
   availability must now also inject a `RuntimeSandbox` implementation (the
-  real one from `@mono-agent/sandbox`, or a custom one) to keep policies
+  real one from `@mono-agent/runtime-adapter`, or a custom one) to keep policies
   enforced. **Action:** if you configure `sandboxPolicy` and call
   `createRuntime`/`createRouterRuntime` directly instead of going through
   `@mono-agent/runtime-adapter`, also pass a `sandbox` implementation, or drop

@@ -18,8 +18,8 @@ import {
   describeSandboxEffectiveState,
   resolveSandboxEffectiveState,
   sandboxEffectiveStateWarning,
-} from "@mono-agent/sandbox";
-import type { SandboxEngine } from "@mono-agent/sandbox";
+} from "@mono-agent/runtime-adapter";
+import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import {
   describeSensitiveDataExportWarning,

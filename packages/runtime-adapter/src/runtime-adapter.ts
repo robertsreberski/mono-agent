@@ -176,9 +176,9 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
   const { fallbackChain, ...hostOptions } = options;
   const chain = normalizeFallbackChain(fallbackChain);
   // agent-runtime's kernel ships only a fail-closed passthrough sandbox (see
-  // agent/sandbox-seam.js) — this is the ONE place the real @mono-agent/sandbox
+  // agent/sandbox-seam.js) — this is the ONE place the real sandbox
   // implementation gets injected, so every mono-agent host's sandbox policy is
-  // actually enforced without the kernel depending on that package itself.
+  // actually enforced without the kernel depending on this package itself.
   const hostWithSandbox = { sandbox: monoSandboxImpl, ...hostOptions } as unknown as KernelHostOptions;
   const runtime = chain === undefined
     ? createRuntime(hostWithSandbox)

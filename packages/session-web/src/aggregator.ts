@@ -6,7 +6,7 @@
  *
  *  - **Recorded history**: seeded from each instance's artifact dir on discovery,
  *    then refreshed by watching that dir for changed `*.summary.json` files.
- *  - **Live sub-runs**: streamed from each running instance's `live-adapter` SSE
+ *  - **Live sub-runs**: streamed from each running instance's operator-adapter live SSE
  *    endpoint (over HTTP) and folded frame-by-frame into a provisional session
  *    that firms up when the run finishes.
  *

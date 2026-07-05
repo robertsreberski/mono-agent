@@ -16,7 +16,7 @@ import { listRecordedRuns } from "@mono-agent/observability";
 import {
   describeSandboxEffectiveState,
   sandboxEffectiveStateWarning,
-} from "@mono-agent/sandbox";
+} from "@mono-agent/runtime-adapter";
 
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp, SandboxStatus } from "./app.js";

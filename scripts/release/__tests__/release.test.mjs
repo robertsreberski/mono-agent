@@ -200,8 +200,8 @@ describe("current launch manifest", () => {
     expect(publishable).toHaveLength(expectedPublishablePackageCount);
     expect([...publishableNames].sort()).toEqual(expectedPublishablePackageNames);
     expect(publishableNames).toContain("@mono-agent/tui");
-    expect(publishableNames).toContain("@mono-agent/agent-host");
     expect(publishableNames).toContain("@mono-agent/memory-supermemory");
+    expect(publishableNames).not.toContain(`@mono-agent/${"agent"}-${"host"}`);
     // memory-mcp was retired: the BuJo recall tool is now auto-provisioned in-app
     // from the single config.memory block (no separate stdio MCP package).
     expect(publishableNames).not.toContain("@mono-agent/memory-mcp");
@@ -209,8 +209,12 @@ describe("current launch manifest", () => {
     // @mono-agent/observability/otel and config is JSON-first, applied on
     // `mono-agent restart`.
     expect(publishableNames).not.toContain("@mono-agent/operator-console");
+    expect(publishableNames).not.toContain(`@mono-agent/${"sandbox"}`);
+    expect(publishableNames).not.toContain(`@mono-agent/${"tui"}-${"adapter"}`);
+    expect(publishableNames).not.toContain(`@mono-agent/${"live"}-${"adapter"}`);
+    expect(publishableNames).toContain("@mono-agent/operator-adapter");
     expect(publishableNames).toContain("@mono-agent/agent-runtime");
-    expect(publishableNames).toContain("@mono-agent/sandbox");
+    expect(publishableNames).toContain("@mono-agent/runtime-adapter");
     expect(publishableNames).toContain("@mono-agent/agent-app");
     expect(publishableNames).toContain("@mono-agent/observability");
   });

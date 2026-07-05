@@ -5,7 +5,7 @@
  * plus a JSON API and a browser SSE stream.
  *
  * `operator-surface` category: depends only on `core` + `observability`. It reaches
- * running agents' `live-adapter` endpoints over HTTP only — never importing that
+ * running agents' operator-adapter live endpoints over HTTP only — never importing that
  * (or any) `communication` adapter.
  */
 export { startSessionWebServer } from "./server.js";

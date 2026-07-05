@@ -1,7 +1,7 @@
 {
-  "name": "@mono-agent/sandbox",
+  "name": "@mono-agent/operator-adapter",
   "version": "0.4.0",
-  "description": "Fail-closed sandbox policy and native process wrapping for Mono Agent runtimes.",
+  "description": "Loopback operator adapters for mono-agent: full-fidelity TUI NDJSON turns and read-only live SSE run-event streams.",
   "type": "module",
   "license": "UNLICENSED",
   "private": false,
@@ -23,7 +23,11 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.4.0"
+    "@mono-agent/agent-contracts": "workspace:0.4.0",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.2"
   },
   "publishConfig": {
     "access": "public"

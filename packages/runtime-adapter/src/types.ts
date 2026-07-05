@@ -1,4 +1,4 @@
-import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "@mono-agent/sandbox";
+import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
 
 export interface MonoRuntimeSandboxEngine {
   readonly id?: string;

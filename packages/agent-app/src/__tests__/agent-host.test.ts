@@ -19,8 +19,8 @@ import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
-import { createSandboxPolicy } from "@mono-agent/sandbox";
-import type { SandboxEngine } from "@mono-agent/sandbox";
+import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
+import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 /** Deterministic non-zero fake embeddings (dim 64) — keeps journal/bujo-tier tests hermetic (no Ollama). */
 const fakeEmbeddings: EmbeddingProvider = {

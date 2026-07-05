@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
-import { createSandboxPolicy } from "@mono-agent/sandbox";
+import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 
 import {
   AgentHarnessFailureError,

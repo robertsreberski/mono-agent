@@ -9,7 +9,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 export interface RemoteAgentResponderOptions {
-  /** The running agent's tui-adapter base URL, e.g. http://127.0.0.1:52341/tui */
+  /** The running agent's operator-adapter TUI base URL, e.g. http://127.0.0.1:52341/tui */
   readonly baseUrl: string;
   readonly apiKey?: string;
   readonly fetchImpl?: typeof fetch;
@@ -28,7 +28,7 @@ export class RemoteAgentResponderError extends Error {
 }
 
 /**
- * AgentResponder over the tui-adapter NDJSON wire: one POST per turn, each
+ * AgentResponder over the operator-adapter TUI NDJSON wire: one POST per turn, each
  * received frame replayed onto the local AgentMessageStream in order. Because
  * it implements the same contract as an in-process responder, every UI surface
  * works identically in embedded (`--responder`) and remote (`mono-agent tui`)

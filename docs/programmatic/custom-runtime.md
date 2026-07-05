@@ -29,7 +29,7 @@ const app = await startMonoAgentApp({ cwd, configPath, runtime: myRuntime });
 ```
 
 ```ts
-import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
 // Bare responder (async — see Composition): you own the transport.
 const responder = await createConfiguredAgentResponder({ config, runtime: myRuntime });

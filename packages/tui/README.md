@@ -17,7 +17,7 @@ It connects to agents two ways:
 - **Remote (primary)**: `mono-agent tui` from any directory discovers running
   agents via the trace-source registry (`~/.mono-agent/trace-sources`) and
   chats over the agent's `tui` channel (NDJSON stream served by
-  `@mono-agent/tui-adapter`). One running agent connects directly; several
+  `@mono-agent/operator-adapter`). One running agent connects directly; several
   open a picker.
 - **In-process (embedded)**: hosts pass an `AgentResponder` to
   `startMonoAgentTui({ responder, … })`, or
@@ -64,7 +64,7 @@ commands: `/help /agents /replay /config /cancel /thinking /quit`.
 ## Public API
 
 - `startMonoAgentTui`, `MonoAgentTuiApp`
-- `RemoteAgentResponder` (AgentResponder over the tui-adapter NDJSON wire)
+- `RemoteAgentResponder` (AgentResponder over the operator-adapter TUI NDJSON wire)
 - `discoverInstances` / `resolveInstanceApiKey` / `defaultTraceRegistryDir`
 - `listReplayRuns` / `readReplayRun`
 - `TurnPresenter` (AgentMessageStream → transcript cells)
@@ -75,7 +75,7 @@ commands: `/help /agents /replay /config /cancel /thinking /quit`.
 Depends on `@earendil-works/pi-tui` plus `@mono-agent/agent-contracts`,
 `@mono-agent/config`, and `@mono-agent/observability` (replay + discovery
 readers). It must not depend on the agent harness, runtime adapter, memory,
-communication adapters (`@mono-agent/tui-adapter` is a **dev**-only dependency
+communication adapters (`@mono-agent/operator-adapter` is a **dev**-only dependency
 for wire round-trip tests — the runtime client speaks the shared
 `stream-wire` contract from agent-contracts), or host/demo code.
 
@@ -83,7 +83,7 @@ for wire round-trip tests — the runtime client speaks the shared
 
 It does not boot a harness, run models, persist conversations (its history
 store is display-only), serve the stream endpoint (that is
-`@mono-agent/tui-adapter`), write run artifacts, or register agents in the
+`@mono-agent/operator-adapter`), write run artifacts, or register agents in the
 trace-source registry. Editing config is out of scope — the config view is
 read-only.
 

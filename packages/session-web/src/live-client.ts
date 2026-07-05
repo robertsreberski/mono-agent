@@ -1,5 +1,5 @@
 /**
- * A read-only client for a running agent's `live-adapter` SSE endpoint
+ * A read-only client for a running agent's operator-adapter live SSE endpoint
  * (`GET <baseUrl>/v1/events`). Modeled on the TUI's `RemoteAgentResponder` reader
  * loop (`packages/tui/src/remote/client.ts`): `fetch` with a streaming body,
  * consumed via `res.body.getReader()` + `TextDecoder`, split into SSE frames on

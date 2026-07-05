@@ -15,8 +15,8 @@ Most agents never need this section. The config-first host (`@mono-agent/agent-a
 | Altitude | Package | Entry point | Use when |
 | --- | --- | --- | --- |
 | App (default) | `@mono-agent/agent-app` | `startMonoAgentApp({ cwd, configPath, drivers, runtime })` | You want the full config-first host but need to override the channel driver set, inject a runtime, or embed it in a larger process. |
-| Responder | `@mono-agent/agent-host` | `createConfiguredAgentResponder({ config, memory, historyStore, runtimeOptions, runtimeOptionsForRequest })` | You want config-driven runtime/harness/memory composition but you own the transport (your own server, queue, or test harness). |
-| Bare | `@mono-agent/agent-host` + `@mono-agent/config` | `loadMonoAgentConfigWithSources(...)` → `createConfiguredAgentResponder({ config })` | You want the smallest possible responder from a loaded config, with no channels, rituals, or exporters wired up. |
+| Responder | `@mono-agent/agent-app` | `createConfiguredAgentResponder({ config, memory, historyStore, runtimeOptions, runtimeOptionsForRequest })` | You want config-driven runtime/harness/memory composition but you own the transport (your own server, queue, or test harness). |
+| Bare | `@mono-agent/agent-app` + `@mono-agent/config` | `loadMonoAgentConfigWithSources(...)` → `createConfiguredAgentResponder({ config })` | You want the smallest possible responder from a loaded config, with no channels, rituals, or exporters wired up. |
 
 All three still read the same `MonoAgentConfig`. The escape hatch is in *composition and request handling*, not in re-implementing runtime, prompt assembly, or memory.
 
@@ -53,11 +53,11 @@ Channels with incomplete config report `waiting_for_config` instead of throwing,
 
 ## `createConfiguredAgentResponder` — bring your own transport
 
-When you own the transport but still want config-driven runtime, harness, and memory, build a responder directly with `@mono-agent/agent-host`. This is the layer `agent-app` itself calls internally.
+When you own the transport but still want config-driven runtime, harness, and memory, build a responder directly with `@mono-agent/agent-app`. This is the layer `agent-app` itself calls internally.
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
 const config = await loadMonoAgentConfigWithSources({
   env: process.env,
@@ -86,13 +86,13 @@ Notable options on `createConfiguredAgentResponder`:
 
 Session rollover (`runtime.session.rollover` / `runtime.session.rolloverTimezone`) is honored automatically by the responder. See [Sessions and Concurrency](/runtime/sessions-concurrency/).
 
-## A bare responder — `@mono-agent/agent-host` + `@mono-agent/config`
+## A bare responder — `@mono-agent/agent-app` + `@mono-agent/config`
 
 The minimal local host is just two packages: load a config, build a responder. No channels, no rituals, no exporters.
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
-import { createConfiguredAgentResponder } from "@mono-agent/agent-host";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
 
 const config = await loadMonoAgentConfigWithSources({
   env: process.env,
@@ -103,7 +103,7 @@ const config = await loadMonoAgentConfigWithSources({
 const responder = await createConfiguredAgentResponder({ config });
 ```
 
-This corresponds to the **Core Join** in the package map: `agent-contracts` (request/response shape), `config` (settings), `runtime-adapter` (model refs and execution-mode validation), and `agent-host` (turns config into a responder). For finer control of runtime, memory, history, recorder, or request-scoped options, drop to `@mono-agent/agent-harness` directly — that is the **Execution Join** and is fully code-only.
+This corresponds to the **Core Join** in the package map: `agent-contracts` (request/response shape), `config` (settings), `runtime-adapter` (model refs and execution-mode validation), and `agent-app` (turns config into a responder). For finer control of runtime, memory, history, recorder, or request-scoped options, drop to `@mono-agent/agent-harness` directly — that is the **Execution Join** and is fully code-only.
 
 :::note
 `MONO_AGENT_*` environment variables still apply: the same env that overrides config for the CLI host overrides it here, because `loadMonoAgentConfigWithSources` reads `env`. See [Environment Variables](/config/env-vars/).

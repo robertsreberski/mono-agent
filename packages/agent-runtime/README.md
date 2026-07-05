@@ -6,7 +6,7 @@ Category: `runtime`
 
 ## Responsibility
 
-Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts, and it enforces an optional sandbox policy for runtime-owned tools through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real `@mono-agent/sandbox` implementation for mono-agent hosts).
+Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, Pi SDK) with provider session support. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts, and it enforces an optional sandbox policy for runtime-owned tools through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real sandbox implementation for mono-agent hosts).
 
 ## Public API
 
@@ -15,17 +15,17 @@ Provides the multi-backend agent runtime bridges (Claude SDK, Claude Code CLI, C
 - `ai/runtime/registry.js` — `listRuntimeBridges`
 - Provider bridges for `claude` (SDK + CLI), `codex` (app-server), `pi` (Pi SDK), and `opencode`
 - Provider session support: bridges accept `sessionId` in run options and report `provider_session_id`; the runtime exposes `disposeSession` / `disposeAllSessions`
-- Sandbox-aware built-in tools and stdio MCP startup through an injectable `RuntimeSandbox` seam (`agent/sandbox-seam.js`) — no direct dependency on `@mono-agent/sandbox`
+- Sandbox-aware built-in tools and stdio MCP startup through an injectable `RuntimeSandbox` seam (`agent/sandbox-seam.js`) — no direct dependency on `@mono-agent/runtime-adapter`
 
 ## Dependency Boundary
 
-Depends on external provider SDKs only (`@anthropic-ai/claude-agent-sdk`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `zod`) — **zero `@mono-agent/*` workspace-package dependencies**. Sandbox enforcement for runtime-owned command preparation and network/path policy checks is an injectable `RuntimeSandbox` seam; `@mono-agent/runtime-adapter` wires in the real `@mono-agent/sandbox` implementation automatically for mono-agent hosts.
+Depends on external provider SDKs only (`@anthropic-ai/claude-agent-sdk`, `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, `@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `zod`) — **zero `@mono-agent/*` workspace-package dependencies**. Sandbox enforcement for runtime-owned command preparation and network/path policy checks is an injectable `RuntimeSandbox` seam; `@mono-agent/runtime-adapter` wires in the real sandbox implementation automatically for mono-agent hosts.
 
 ## What This Package Does Not Own
 
 - runtime contracts and backend descriptors (`@mono-agent/runtime-adapter`)
 - Conversation history, context building, or host-side session TTL policy (`@mono-agent/agent-harness`)
-- Host configuration (`@mono-agent/config`, `@mono-agent/agent-host`)
+- Host configuration (`@mono-agent/config`, `@mono-agent/agent-app`)
 
 ## Verification
 
@@ -157,7 +157,7 @@ createRuntime({
                            // through the injectable RuntimeSandbox seam, not a bundled dep)
   sandbox,                 // optional RuntimeSandbox implementation override (defaults to
                            // the zero-dependency passthroughSandbox; runtime-adapter injects
-                           // the real @mono-agent/sandbox implementation for mono-agent hosts)
+                           // the real runtime-adapter sandbox implementation for mono-agent hosts)
 
   // -- observers (multi-subscriber telemetry) --
   // Optional. Each observer receives every event the runtime emits.

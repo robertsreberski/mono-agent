@@ -5,7 +5,7 @@ This is the final agent demo. It is intentionally **not** an npm package: there 
 ## What it wires together
 
 - `@mono-agent/config` loads adapter-neutral core JSON plus environment overrides.
-- `@mono-agent/agent-host` turns the core config into a runtime-backed responder.
+- `@mono-agent/agent-app` turns the core config into a runtime-backed responder.
 - `@mono-agent/observability` registers this host in the local trace source registry.
 - `@mono-agent/telegram-adapter` owns Telegram settings, Bot API handling, and long polling.
 - `@mono-agent/a2a-adapter` owns A2A Agent Card discovery, loopback provider hosting, bearer auth, and remote text-task calls.

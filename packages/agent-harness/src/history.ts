@@ -1,4 +1,4 @@
-import type { HistoryMessage } from "@mono-agent/context";
+import type { HistoryMessage } from "./context/index.js";
 
 import type { ConversationHistoryStore, InMemoryHistoryStoreOptions } from "./types.js";
 

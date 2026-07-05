@@ -35,7 +35,7 @@ agent's configured skills root, e.g. `./skills`):
 
 ```bash
 node --input-type=module - <<'EOF'
-import { loadSkillIndexFromDirectory } from '@mono-agent/context';
+import { loadSkillIndexFromDirectory } from '@mono-agent/agent-harness';
 
 const skills = await loadSkillIndexFromDirectory('<skillsRoot>');
 console.log(JSON.stringify(skills, null, 2));

@@ -4,8 +4,6 @@ import { join } from "node:path";
 
 import type { AgentAttachment } from "@mono-agent/agent-contracts";
 import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
-import { loadContextFromFiles, loadSkillIndexFromDirectory } from "@mono-agent/context";
-import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "@mono-agent/context";
 import { deriveRunSource } from "@mono-agent/observability";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import {
@@ -16,12 +14,11 @@ import {
   parseMonoRuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 import type { RuntimeExecutionMode, RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
-import { createSkillsCache } from "@mono-agent/skills";
-import type { SkillsCache } from "@mono-agent/skills";
-import { mergeSandboxPolicies, sandboxPolicyToRuntimeOptions } from "@mono-agent/sandbox";
-import type { SandboxPolicy } from "@mono-agent/sandbox";
-import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/tool-policy";
+import { mergeSandboxPolicies, sandboxPolicyToRuntimeOptions } from "@mono-agent/runtime-adapter";
+import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 
+import { loadContextFromFiles, loadSkillIndexFromDirectory } from "./context/index.js";
+import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexEntry } from "./context/index.js";
 import { NoopRunRecorder } from "./recorder.js";
 import { createLiveSessionManager } from "./live-session.js";
 import type { LiveSessionManager } from "./live-session.js";
@@ -37,6 +34,9 @@ import type {
   AgentHarnessResponse,
   AgentHarnessRuntimeOptionsExtension,
 } from "./types.js";
+import { createSkillsCache } from "./skills/index.js";
+import type { SkillsCache } from "./skills/index.js";
+import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "./tool-policy/index.js";
 
 export class AgentHarnessError extends Error {
   readonly failureKind: string;
@@ -632,7 +632,7 @@ export class MonoAgentHarness implements AgentHarness {
     };
   }
 
-  private async loadSkills(): Promise<{ readonly index: readonly import("@mono-agent/context").SkillIndexEntry[]; readonly instructions: readonly ContextBlockInput[] }> {
+  private async loadSkills(): Promise<{ readonly index: readonly SkillIndexEntry[]; readonly instructions: readonly ContextBlockInput[] }> {
     if (this.options.selectedSkills === undefined || this.options.selectedSkills.length === 0) {
       return { index: [], instructions: [] };
     }
@@ -1368,7 +1368,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Derives a run's `source` (and optional `sourceDetail`) from its request
  * metadata, for the recorder factory input. Priority order mirrors how each
  * channel/trigger stamps `request.metadata`:
- *  1. `metadata.source === "tui"` (the tui-adapter injects this) → "tui"
+ *  1. `metadata.source === "tui"` (the operator-adapter TUI endpoint injects this) → "tui"
  *  2. `metadata.cron` present → "cron", detail = `metadata.cron.jobId` (string)
  *  3. `metadata.webhook` present → "webhook", detail = `metadata.webhook.endpointName` (string)
  *  4. `metadata.slack` / `metadata.telegram` present → that channel name

@@ -1,11 +1,6 @@
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import {
-  createConfiguredAgentResponder,
-  createConfiguredAgentRuntime,
-  createConfiguredMemory,
-} from "@mono-agent/agent-host";
 import { createLiveEventBus } from "@mono-agent/agent-contracts";
 import type { AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
 import { pruneTraceSources, reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
@@ -16,8 +11,8 @@ import {
   describeSandboxEffectiveState,
   resolveSandboxEffectiveState,
   sandboxEffectiveStateWarning,
-} from "@mono-agent/sandbox";
-import type { SandboxEffectiveState, SandboxEngine } from "@mono-agent/sandbox";
+} from "@mono-agent/runtime-adapter";
+import type { SandboxEffectiveState, SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import {
   isAppCoreConfigError,
@@ -35,6 +30,11 @@ import {
   shouldMirrorTraceSourceGlobally,
 } from "./app-config.js";
 import type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
+import {
+  createConfiguredAgentResponder,
+  createConfiguredAgentRuntime,
+  createConfiguredMemory,
+} from "./configured-agent.js";
 import { defaultChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import { routeProactiveNotification } from "./proactive-notify.js";

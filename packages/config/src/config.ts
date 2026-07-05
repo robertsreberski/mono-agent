@@ -16,8 +16,8 @@ import {
   SANDBOX_NETWORK_MODES,
   SandboxPolicyError,
   createSandboxPolicy,
-} from "@mono-agent/sandbox";
-import type { SandboxFallback, SandboxMode, SandboxNetworkMode } from "@mono-agent/sandbox";
+} from "@mono-agent/runtime-adapter";
+import type { SandboxFallback, SandboxMode, SandboxNetworkMode } from "@mono-agent/runtime-adapter";
 import {
   normalizeOptionalString,
   readBoolean,

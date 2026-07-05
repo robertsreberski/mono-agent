@@ -36,10 +36,7 @@ function codeEnvKeys(root: string): Set<string> {
   const packagesDir = join(root, "packages");
   for (const entry of readdirSync(packagesDir)) {
     if (entry.endsWith("-adapter")) {
-      const configPath = join(packagesDir, entry, "src/config.ts");
-      if (existsSync(configPath)) {
-        files.push(configPath);
-      }
+      files.push(...adapterConfigFiles(join(packagesDir, entry, "src")));
     }
   }
   const keys = new Set<string>();
@@ -49,6 +46,24 @@ function codeEnvKeys(root: string): Set<string> {
     }
   }
   return keys;
+}
+
+function adapterConfigFiles(dir: string): string[] {
+  if (!existsSync(dir)) {
+    return [];
+  }
+  const files: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...adapterConfigFiles(path));
+      continue;
+    }
+    if (entry.isFile() && entry.name === "config.ts") {
+      files.push(path);
+    }
+  }
+  return files;
 }
 
 describe("env-vars.md <-> code parity", () => {

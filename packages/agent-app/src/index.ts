@@ -12,6 +12,19 @@ export {
 } from "./app-config.js";
 export type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
 export {
+  createConfiguredAgentHarness,
+  createConfiguredAgentResponder,
+  createConfiguredAgentRuntime,
+  createConfiguredMemory,
+} from "./configured-agent.js";
+export type {
+  ConfiguredAgentHarnessOptions,
+  ConfiguredAgentResponderOptions,
+  ConfiguredAgentRuntimeOptions,
+} from "./configured-agent.js";
+export { createBroadcastRunRecorder } from "./broadcast-recorder.js";
+export type { BroadcastRunContext } from "./broadcast-recorder.js";
+export {
   createA2AChannelDriver,
   createCronChannelDriver,
   createOpenAIApiChannelDriver,
