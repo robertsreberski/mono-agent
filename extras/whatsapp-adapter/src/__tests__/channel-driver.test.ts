@@ -1,0 +1,234 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+import type {
+  ChannelLogger,
+  ChannelStartInput,
+} from "@mono-agent/agent-contracts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { AgentResponder } from "../adapter.js";
+import {
+  createChannelDriver,
+  createWhatsAppChannelDriver,
+} from "../channel-driver.js";
+import type { WhatsAppAdapterConfig } from "../config.js";
+import type {
+  StartWhatsAppAdapterOptions,
+  WhatsAppAdapterStartResult,
+  WhatsAppSocketFactory,
+} from "../start.js";
+
+let dir: string;
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "mono-agent-whatsapp-channel-"));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+describe("createWhatsAppChannelDriver", () => {
+  it("loads disabled config without touching the start seams", async () => {
+    const startAdapter = vi.fn(async () => fakeStartResult());
+    const socketFactory = vi.fn() as unknown as WhatsAppSocketFactory;
+    const driver = createWhatsAppChannelDriver({ startAdapter, socketFactory });
+
+    const config = await driver.loadConfig(configInput());
+
+    expect(config).toEqual(disabledConfig());
+    expect(driver.disabledReason?.(config)).toBe("WhatsApp is disabled.");
+    expect(startAdapter).not.toHaveBeenCalled();
+    expect(socketFactory).not.toHaveBeenCalled();
+  });
+
+  it("classifies enabled incomplete config as a WhatsApp config error", async () => {
+    const driver = createWhatsAppChannelDriver();
+    let caught: unknown;
+
+    try {
+      await driver.loadConfig(
+        configInput({
+          env: {
+            MONO_AGENT_WHATSAPP_ENABLED: "true",
+            MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS: "false",
+          },
+        }),
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(driver.isConfigError(caught)).toBe(true);
+    expect(caught).toMatchObject({
+      code: "missing_required_config",
+      details: { env: "MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS" },
+    });
+  });
+
+  it("wires start options, default authDir, socket seam, QR logging, and stop", async () => {
+    const stop = vi.fn(async () => undefined);
+    const startAdapter = vi.fn(async () => fakeStartResult(stop));
+    const socketFactory = vi.fn() as unknown as WhatsAppSocketFactory;
+    const driver = createWhatsAppChannelDriver({ startAdapter, socketFactory });
+    const config = enabledConfig();
+    const responder = fakeResponder();
+    const logger = fakeLogger();
+
+    const running = await driver.start(startInput({ config, responder, logger }));
+
+    expect(running.summary).toEqual({});
+    expect(startAdapter).toHaveBeenCalledTimes(1);
+    const options = startAdapter.mock.calls[0]?.[0] as StartWhatsAppAdapterOptions;
+    expect(options.authDir).toBe(resolve(dir, ".mono-agent", "whatsapp-auth"));
+    expect(options.config).toBe(config);
+    expect(options.responder).toBe(responder);
+    expect(options.logger).toBe(logger);
+    expect(options.createSocket).toBe(socketFactory);
+
+    await options.onQr?.("qr-payload");
+    expect(logger.info).toHaveBeenCalledWith(
+      "WhatsApp login QR code received; scan it with the WhatsApp app.",
+      { qr: "qr-payload" },
+    );
+
+    await running.stop();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors authDir overrides", async () => {
+    const startAdapter = vi.fn(async () => fakeStartResult());
+    const driver = createWhatsAppChannelDriver({
+      authDir: "/custom/whatsapp-auth",
+      startAdapter,
+    });
+
+    await driver.start(startInput({ config: enabledConfig() }));
+
+    expect(startAdapter.mock.calls[0]?.[0].authDir).toBe("/custom/whatsapp-auth");
+  });
+
+  it("loads plugin-style raw config and still lets env override it", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(
+      configPath,
+      `${JSON.stringify({
+        whatsapp: {
+          enabled: false,
+          allowedChatJids: ["file@s.whatsapp.net"],
+          groupMode: "mention",
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const driver = createChannelDriver({
+      config: {
+        enabled: true,
+        allowedChatJids: ["plugin@s.whatsapp.net"],
+        allowAllChats: false,
+        groupMode: "mention",
+      },
+    });
+
+    const config = await driver.loadConfig(
+      configInput({
+        configPath,
+        env: {
+          MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS: "env@s.whatsapp.net",
+          MONO_AGENT_WHATSAPP_GROUP_MODE: "any",
+        },
+      }),
+    );
+
+    expect(config).toEqual({
+      enabled: true,
+      allowedChatJids: ["env@s.whatsapp.net"],
+      allowAllChats: false,
+      trigger: {
+        groupMode: "any",
+        botJids: [],
+        mentionTextAliases: [],
+        stripMentionText: false,
+      },
+    });
+    expect(driver.disabledReason?.(config)).toBeUndefined();
+  });
+});
+
+function configInput(overrides: {
+  readonly env?: Record<string, string | undefined>;
+  readonly configPath?: string;
+} = {}) {
+  return {
+    env: overrides.env ?? {},
+    cwd: dir,
+    configPath: overrides.configPath ?? join(dir, "missing-config.json"),
+  };
+}
+
+function startInput(
+  overrides: {
+    readonly config: WhatsAppAdapterConfig;
+    readonly responder?: AgentResponder;
+    readonly logger?: ChannelLogger;
+  },
+): ChannelStartInput<WhatsAppAdapterConfig> {
+  return {
+    config: overrides.config,
+    coreConfig: {},
+    responder: overrides.responder ?? fakeResponder(),
+    cwd: dir,
+    ...(overrides.logger === undefined ? {} : { logger: overrides.logger }),
+    onFailure: vi.fn(),
+  };
+}
+
+function enabledConfig(): WhatsAppAdapterConfig {
+  return {
+    enabled: true,
+    allowedChatJids: ["123@s.whatsapp.net"],
+    allowAllChats: false,
+    trigger: {
+      groupMode: "mention",
+      botJids: [],
+      mentionTextAliases: [],
+      stripMentionText: false,
+    },
+  };
+}
+
+function disabledConfig(): WhatsAppAdapterConfig {
+  return {
+    enabled: false,
+    allowedChatJids: [],
+    allowAllChats: false,
+    trigger: {
+      groupMode: "mention",
+      botJids: [],
+      mentionTextAliases: [],
+      stripMentionText: false,
+    },
+  };
+}
+
+function fakeResponder(): AgentResponder {
+  return { respond: vi.fn(async () => ({ text: "ok" })) };
+}
+
+function fakeLogger(): ChannelLogger {
+  return {
+    info: vi.fn(),
+  };
+}
+
+function fakeStartResult(stop = vi.fn(async () => undefined)): WhatsAppAdapterStartResult {
+  return {
+    adapter: {} as WhatsAppAdapterStartResult["adapter"],
+    runner: {} as WhatsAppAdapterStartResult["runner"],
+    socket: {} as WhatsAppAdapterStartResult["socket"],
+    stop,
+  };
+}
