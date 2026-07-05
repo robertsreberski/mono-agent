@@ -9,6 +9,7 @@
 
 import { isContextLimitError } from "../pi-errors.js";
 import { isLikelyContextTermination } from "../../../agent/compaction.js";
+import { isProviderAuthFailureText } from "../../failure.js";
 import { structuredOutputRetryDiagnostics } from "./structured-output.js";
 
 /**
@@ -32,8 +33,8 @@ export function usageFromMessages(messages = []) {
 
 /**
  * Classify a pi error message into a runtime failure kind. Context-limit /
- * max-turns terminations map to usage_limit; everything else to
- * provider_unavailable. Null message → null.
+ * max-turns terminations map to usage_limit; credential/config auth failures
+ * map to provider_auth; everything else to provider_unavailable. Null message → null.
  * @param {string|null} message
  * @param {Record<string, unknown>} diagnostics
  * @param {{maxTurnsHit?: boolean}} [opts]
@@ -44,6 +45,7 @@ export function failureKindForPiError(message, diagnostics, { maxTurnsHit = fals
   if (maxTurnsHit || isContextLimitError(message) || isLikelyContextTermination(message, diagnostics)) {
     return "usage_limit";
   }
+  if (isProviderAuthFailureText(message)) return "provider_auth";
   return "provider_unavailable";
 }
 

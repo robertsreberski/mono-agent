@@ -42,7 +42,11 @@ function tarballPathFromPackResult(packed, packDestination) {
 
 export function assertPackResult(pkg, packed, packDestination) {
   const files = new Set((packed.files || []).map((file) => file.path));
-  const missing = ["package.json", "README.md"].filter((file) => !files.has(file));
+  const requiredFiles = ["package.json", "README.md"];
+  if (pkg.name === "@mono-agent/session-web") {
+    requiredFiles.push("webapp/dist/index.html");
+  }
+  const missing = requiredFiles.filter((file) => !files.has(file));
   if (missing.length > 0) {
     throw new Error(`${pkg.name} pack output is missing ${missing.join(", ")}`);
   }

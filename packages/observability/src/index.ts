@@ -1,6 +1,7 @@
 export {
   createJsonlRunRecorder,
   ObservabilityError,
+  redactJsonValue,
 } from "./recorder.js";
 export type {
   ObservabilityErrorCode,
@@ -19,6 +20,19 @@ export {
 export {
   segmentTimelineTurns,
 } from "./turn-segmentation.js";
+export {
+  mapRunToSession,
+} from "./session-mapping.js";
+export type {
+  MapRunToSessionOptions,
+  Session,
+  SessionOutcome,
+  SessionStep,
+  SessionStepUsage,
+  SessionThink,
+  SessionToolCall,
+  SessionTotals,
+} from "./session-mapping.js";
 export {
   buildEventSpanAttributes,
   buildRootSpanAttributes,

@@ -13,18 +13,35 @@ const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|api[_-]?key|
 
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
+const MAX_REDACTION_NODES = 10_000;
+const MAX_ARRAY_ITEMS = 1_000;
+const MAX_OBJECT_KEYS = 1_000;
 
 export function redactJsonValue(value: unknown, maxStringBytes = DEFAULT_MAX_STRING_BYTES): unknown {
-  return redact(value, maxStringBytes, 0, undefined, new WeakSet<object>());
+  return redact(value, maxStringBytes, 0, undefined, new WeakSet<object>(), { remainingNodes: MAX_REDACTION_NODES });
 }
 
-function redact(value: unknown, maxStringBytes: number, depth: number, key: string | undefined, seen: WeakSet<object>): unknown {
+interface RedactionBudget {
+  remainingNodes: number;
+}
+
+function redact(
+  value: unknown,
+  maxStringBytes: number,
+  depth: number,
+  key: string | undefined,
+  seen: WeakSet<object>,
+  budget: RedactionBudget,
+): unknown {
   // Secrets (access tokens, API keys, passwords, cookies) are always strings, so a
   // numeric value under a "sensitive" key is a count/flag — e.g. `input_tokens`,
   // `output_tokens`, `cache_read_tokens` all match /token/ but carry token COUNTS
   // we want visible for cost observability. Only redact non-numeric matches.
   if (key !== undefined && SENSITIVE_KEY_PATTERN.test(key) && typeof value !== "number") {
     return "[redacted]";
+  }
+  if (!consumeNode(budget)) {
+    return "[max-nodes]";
   }
   if (value === null || typeof value === "boolean" || typeof value === "number") {
     return value;
@@ -39,7 +56,7 @@ function redact(value: unknown, maxStringBytes: number, depth: number, key: stri
     return String(value);
   }
   if (value instanceof Error) {
-    return errorToJson(value);
+    return redact(errorToJson(value), maxStringBytes, depth + 1, key, seen, budget);
   }
   if (depth >= 12) {
     return "[max-depth]";
@@ -49,13 +66,35 @@ function redact(value: unknown, maxStringBytes: number, depth: number, key: stri
   }
   seen.add(value);
   if (Array.isArray(value)) {
-    return value.map((item) => redact(item, maxStringBytes, depth + 1, undefined, seen));
+    const limit = Math.min(value.length, MAX_ARRAY_ITEMS);
+    const out: unknown[] = [];
+    for (let index = 0; index < limit; index += 1) {
+      out.push(redact(value[index], maxStringBytes, depth + 1, undefined, seen, budget));
+    }
+    if (value.length > limit) {
+      out.push("[max-items]");
+    }
+    return out;
   }
   const out: Record<string, unknown> = {};
-  for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
-    out[entryKey] = redact(entryValue, maxStringBytes, depth + 1, entryKey, seen);
+  const entries = Object.entries(value as Record<string, unknown>);
+  const limit = Math.min(entries.length, MAX_OBJECT_KEYS);
+  for (let index = 0; index < limit; index += 1) {
+    const [entryKey, entryValue] = entries[index]!;
+    out[entryKey] = redact(entryValue, maxStringBytes, depth + 1, entryKey, seen, budget);
+  }
+  if (entries.length > limit) {
+    out.__truncated__ = "[max-keys]";
   }
   return out;
+}
+
+function consumeNode(budget: RedactionBudget): boolean {
+  if (budget.remainingNodes <= 0) {
+    return false;
+  }
+  budget.remainingNodes -= 1;
+  return true;
 }
 
 export function truncateString(value: string, maxStringBytes: number): string {

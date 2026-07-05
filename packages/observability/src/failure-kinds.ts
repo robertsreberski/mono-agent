@@ -82,6 +82,18 @@ export const KNOWN_RUN_FAILURE_KINDS = [
     nextStep: "Inspect the failover history in the artifact, verify provider health, and adjust fallback models if needed.",
   },
   {
+    kind: "provider_auth",
+    label: "Provider authentication",
+    explanation: "The selected provider or model could not authenticate because credentials were missing, invalid, or could not be refreshed.",
+    nextStep: "Inspect the artifact error and host auth configuration, refresh or repair the provider credentials, then restart the agent.",
+  },
+  {
+    kind: "skipped_capability_mismatch",
+    label: "Capability mismatch",
+    explanation: "No eligible provider/model entry matched the capabilities required by the request.",
+    nextStep: "Inspect the failover history and adjust the model chain or request options so at least one entry satisfies the required capabilities.",
+  },
+  {
     kind: "runtime_error",
     label: "Runtime error",
     explanation: "The runtime reported an internal or adapter-level error while executing the run.",

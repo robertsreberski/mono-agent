@@ -31,6 +31,7 @@ import {
   generatePiNativeResponse,
   splitPromptMessages,
 } from "../../ai/providers/pi-native.js";
+import { failureKindForPiError } from "../../ai/providers/pi-native/result-builder.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
@@ -99,6 +100,74 @@ describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
     expect(await store.read("openai")).toEqual({ type: "api_key", key: "key-for-openai" });
   });
 
+  it("preserves OAuth credentials exposed by the host resolver credential store", async () => {
+    const resolver = async () => {
+      throw new Error("legacy api-key resolver should not run for OAuth store reads");
+    };
+    resolver.readCredential = async (provider) => provider === "openai-codex"
+      ? {
+        type: "oauth",
+        access: "access-token",
+        refresh: "refresh-token",
+        expires: 4_200_000_000_000,
+      }
+      : undefined;
+
+    const store = createDynamicCredentialStore(new Map(), resolver, []);
+
+    expect(await store.read("openai-codex")).toEqual({
+      type: "oauth",
+      access: "access-token",
+      refresh: "refresh-token",
+      expires: 4_200_000_000_000,
+    });
+  });
+
+  it("rejects credential-store read failures so Pi can surface auth storage errors", async () => {
+    const resolver = async () => "legacy-key";
+    resolver.readCredential = async () => {
+      throw new Error("auth file is corrupt");
+    };
+    const warnings = [];
+    const store = createDynamicCredentialStore(new Map(), resolver, warnings);
+
+    await expect(store.read("openai-codex")).rejects.toThrow("auth file is corrupt");
+    expect(warnings).toEqual([]);
+  });
+
+  it("delegates OAuth refresh writes to the host resolver credential store", async () => {
+    let credential = {
+      type: "oauth",
+      access: "old-access",
+      refresh: "old-refresh",
+      expires: 1,
+    };
+    const resolver = async () => {
+      throw new Error("legacy api-key resolver should not run for OAuth store writes");
+    };
+    resolver.readCredential = async () => credential;
+    resolver.modifyCredential = async (_provider, fn) => {
+      const next = await fn(credential);
+      if (next !== undefined) credential = next;
+      return credential;
+    };
+
+    const store = createDynamicCredentialStore(new Map(), resolver, []);
+    const updated = await store.modify("openai-codex", async (current) => ({
+      ...current,
+      access: "new-access",
+      expires: 4_200_000_000_000,
+    }));
+
+    expect(updated).toEqual({
+      type: "oauth",
+      access: "new-access",
+      refresh: "old-refresh",
+      expires: 4_200_000_000_000,
+    });
+    expect(credential.access).toBe("new-access");
+  });
+
   it("emits a pi_auth_failed warning and proceeds keyless when resolvePiApiKey throws", async () => {
     const warnings = [];
     const store = createDynamicCredentialStore(
@@ -121,6 +190,13 @@ describe("createDynamicCredentialStore (pi 0.80 auth contract)", () => {
   it("treats an empty-string key as no credential", async () => {
     const store = createDynamicCredentialStore(new Map(), async () => "", []);
     expect(await store.read("openai")).toBeUndefined();
+  });
+});
+
+describe("failureKindForPiError", () => {
+  it("classifies Pi credential errors as provider_auth", () => {
+    expect(failureKindForPiError("No API key for provider: openai-codex", {}, {})).toBe("provider_auth");
+    expect(failureKindForPiError("OAuth refresh failed for openai-codex", {}, {})).toBe("provider_auth");
   });
 });
 

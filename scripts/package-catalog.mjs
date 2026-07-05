@@ -100,6 +100,14 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "live-adapter",
+    name: "@mono-agent/live-adapter",
+    category: "communication",
+    responsibility: "Relays an agent's in-process live run-event bus to read-only operator surfaces over a loopback SSE endpoint.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
     dir: "context",
     name: "@mono-agent/context",
     category: "context",
@@ -217,6 +225,14 @@ export const packageCatalog = [
     category: "core",
     responsibility: "Normalizes fail-closed tool and MCP policy into runtime options.",
     allowedDependencyCategories: ["core"],
+    publishable: true,
+  },
+  {
+    dir: "session-web",
+    name: "@mono-agent/session-web",
+    category: "operator-surface",
+    responsibility: "Discovers local agent instances and serves a read-only web PWA that visualises their runs live, aggregating recorded-run history and live-adapter sub-run streams.",
+    allowedDependencyCategories: ["core", "observability"],
     publishable: true,
   },
   {

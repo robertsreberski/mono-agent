@@ -10,7 +10,8 @@
 /**
  * @typedef {"spawn" | "timeout" | "stall" | "usage_limit" | "invalid_result"
  *   | "invalid_delegation" | "tool_failure" | "provider_unavailable"
- *   | "provider_unavailable_exhausted" | "cancelled" | "cancelled_user"
+ *   | "provider_unavailable_exhausted" | "provider_auth"
+ *   | "skipped_capability_mismatch" | "cancelled" | "cancelled_user"
  *   | "cancelled_shutdown" | "cancelled_signal" | "abandoned"
  *   | "session_not_found" | "session_busy" | (string & {})} FailureKind
  * OPEN string union. The literals above are the CORE taxonomy the kernel itself
@@ -46,6 +47,8 @@ export const FAILURE_KINDS = [
   "tool_failure",
   "provider_unavailable",
   "provider_unavailable_exhausted",
+  "provider_auth",
+  "skipped_capability_mismatch",
   "child_failed",
   "budget_exceeded",
   "cancelled",
@@ -67,6 +70,7 @@ export const FAILURE_KINDS = [
 ];
 
 const USAGE_LIMIT_RE = /(rate limit|usage limit|max tokens|max turns|context length|too many tokens)/i;
+const PROVIDER_AUTH_RE = /(no api key|missing api key|api key required|invalid api key|incorrect api key|authentication|authorization|not authorized|forbidden|oauth (?:refresh|auth|authentication|token).*failed|credential store (?:read|modify) failed|401|403)/i;
 // Mirrors the conservative connection-error/refused/failed alternation added to
 // RETRYABLE_PROVIDER_RE / retryableProviderSubkind below for pi 0.80's terse
 // "Connection error." — without it, classifyFailure (used directly by hosts
@@ -75,7 +79,7 @@ const USAGE_LIMIT_RE = /(rate limit|usage limit|max tokens|max turns|context len
 // "provider_unavailable".
 const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket|\bconnection (?:error|refused|failed)\b|\bcould not connect\b)/i;
 const TOOL_FAILURE_RE = /(tool .* failed|mcp tool|permission denied|EACCES|read-only file system)/i;
-const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|invalid api key|incorrect api key|authentication|authorization|not authorized|forbidden|billing|insufficient[_ ]quota|quota exceeded|model[_ ]not[_ ]found|unsupported model|permission denied|bad request|401|403|404)/i;
+const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|no api key|missing api key|api key required|invalid api key|incorrect api key|authentication|authorization|not authorized|forbidden|billing|insufficient[_ ]quota|quota exceeded|model[_ ]not[_ ]found|unsupported model|permission denied|bad request|401|403|404)/i;
 // pi 0.80's openai-client-style bridge collapses a connection-refused/unreachable
 // provider down to a terse "Connection error." with no cause text (no ECONNREFUSED,
 // no fetch failed) — the `\bconnection (?:error|refused|failed)\b|\bcould not connect\b`
@@ -83,6 +87,14 @@ const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|invalid
 // being classified as non-retryable.
 const RETRYABLE_PROVIDER_RE = /(currently overloaded|server(?:s)? (?:is |are )?overloaded|try again later|retry your request|request id|service unavailable|temporar(?:y|ily)|timed? ?out|stream disconnected|fetch failed|econnreset|econnrefused|eai_again|enotfound|etimedout|network|429|too many requests|500|502|503|504|gateway|internal server error|\bconnection (?:error|refused|failed)\b|\bcould not connect\b)/i;
 export const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|aborted before final|stream aborted|stream was aborted|stream disconnected|websocket (?:error|disconnected|closed)|socket hang up|und_err_socket|econnreset|premature close)\b/i;
+
+/**
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isProviderAuthFailureText(text = "") {
+  return PROVIDER_AUTH_RE.test(text || "");
+}
 
 function requestIdFromText(text) {
   const match = /\b(?:request[_ -]?id|req[_ -]?id)\s*[:#]?\s*([A-Za-z0-9._:-]{8,})/i.exec(text || "");
@@ -196,6 +208,7 @@ export function classifyFailure({
   const haystack = `${errorText || ""}\n${stderrTail || ""}`;
   if (USAGE_LIMIT_RE.test(haystack)) return "usage_limit";
   if (TOOL_FAILURE_RE.test(haystack)) return "tool_failure";
+  if (PROVIDER_AUTH_RE.test(haystack)) return "provider_auth";
   if (PROVIDER_UNAVAILABLE_RE.test(haystack)) return "provider_unavailable";
   if (mcpInitFailed && haystack.toLowerCase().includes("mcp")) return "tool_failure";
 

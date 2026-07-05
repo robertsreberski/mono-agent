@@ -141,6 +141,9 @@ importers:
       '@mono-agent/cron-adapter':
         specifier: workspace:0.4.0
         version: link:../cron-adapter
+      '@mono-agent/live-adapter':
+        specifier: workspace:0.4.0
+        version: link:../live-adapter
       '@mono-agent/memory-bujo':
         specifier: workspace:0.4.0
         version: link:../memory-bujo
@@ -162,6 +165,9 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.4.0
         version: link:../runtime-adapter
+      '@mono-agent/session-web':
+        specifier: workspace:0.4.0
+        version: link:../session-web
       '@mono-agent/settings':
         specifier: workspace:0.4.0
         version: link:../settings
@@ -332,6 +338,22 @@ importers:
         specifier: ^5.5.0
         version: 5.5.0
 
+  packages/live-adapter:
+    dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.4.0
+        version: link:../agent-contracts
+      '@mono-agent/settings':
+        specifier: workspace:0.4.0
+        version: link:../settings
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
+
   packages/memory-bujo:
     dependencies:
       '@mono-agent/memory-search':
@@ -365,7 +387,11 @@ importers:
         specifier: workspace:0.4.0
         version: link:../memory-store
 
-  packages/observability: {}
+  packages/observability:
+    dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.4.0
+        version: link:../agent-contracts
 
   packages/observability-otel:
     dependencies:
@@ -413,6 +439,25 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
         version: link:../agent-contracts
+
+  packages/session-web:
+    dependencies:
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.4.0
+        version: link:../agent-contracts
+      '@mono-agent/observability':
+        specifier: workspace:0.4.0
+        version: link:../observability
+      '@mono-agent/settings':
+        specifier: workspace:0.4.0
+        version: link:../settings
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
 
   packages/settings: {}
 

@@ -14,6 +14,7 @@ import type {
   RunSummary,
   RuntimeEventLike,
 } from "@mono-agent/observability";
+import type { RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
 import { createPhoenixRunExporter } from "@mono-agent/observability-otel";
 import { createBujoMemoryStore } from "@mono-agent/memory-bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory-search";
@@ -115,6 +116,50 @@ describe("agent host composition helpers", () => {
     const summaryFile = artifactFiles.find((file) => file.endsWith(".summary.json"));
     expect(summaryFile).toBeDefined();
     expect(await readFile(join(artifactDir, summaryFile as string), "utf8")).toContain("run-host");
+  });
+
+  it("publishes run_started, event, and run_finished frames from the normal responder path", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "live event" }] } });
+      return { text: "Final answer" };
+    });
+    const frames: RunEventFrame[] = [];
+    const runEventSink: RunEventSink = {
+      publish: (frame) => {
+        frames.push(frame);
+      },
+    };
+
+    const responder = await createConfiguredAgentResponder({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: fake.runtime,
+      createRunId: () => "run-live-broadcast",
+      observabilityContext: { sourceId: "src-1", sourceLabel: "Source One" },
+      runEventSink,
+    });
+
+    await responder.respond(
+      { conversationId: "conversation-live", text: "Broadcast this", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(frames[0]?.t).toBe("run_started");
+    expect(frames.at(-1)?.t).toBe("run_finished");
+    expect(frames[0]).toMatchObject({
+      sourceId: "src-1",
+      sourceLabel: "Source One",
+      runId: "run-live-broadcast",
+      conversationId: "conversation-live",
+    });
+    const eventFrames = frames.filter((frame) => frame.t === "event");
+    expect(eventFrames.length).toBeGreaterThan(0);
+    expect(eventFrames).toContainEqual(expect.objectContaining({ sourceId: "src-1", runId: "run-live-broadcast" }));
+    expect(JSON.stringify(eventFrames)).toContain("live event");
+    expect(frames.at(-1)).toMatchObject({ sourceId: "src-1", runId: "run-live-broadcast", status: "succeeded" });
   });
 
   it("forwards the request-derived source/sourceDetail into the recorded run summary", async () => {

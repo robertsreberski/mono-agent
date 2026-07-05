@@ -1,0 +1,29 @@
+{
+  "name": "session-web-webapp",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser PWA frontend for the mono-agent Session Recorder — the read-only run visualiser served by @mono-agent/session-web.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@fontsource/ibm-plex-mono": "^5.1.1",
+    "@fontsource/newsreader": "^5.1.1",
+    "@fontsource/space-grotesk": "^5.1.1",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4",
+    "vite-plugin-pwa": "^0.21.2"
+  }
+}

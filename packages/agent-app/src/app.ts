@@ -6,7 +6,8 @@ import {
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "@mono-agent/agent-host";
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { createLiveEventBus } from "@mono-agent/agent-contracts";
+import type { AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
 import { pruneTraceSources, reconcileStaleRunArtifacts, registerTraceSource } from "@mono-agent/observability";
 import type { TraceSourceHandle } from "@mono-agent/observability";
 import { modelReferenceKey } from "@mono-agent/runtime-adapter";
@@ -190,6 +191,7 @@ class MonoAgentAppController implements MonoAgentApp {
   // memory.db handle (not one per channel plus one for rituals). Rebuilt on config reload, closed on stop.
   private sharedMemory: Awaited<ReturnType<typeof createConfiguredMemory>> = undefined;
   private sharedMemoryBuilt = false;
+  private sharedMemoryBuild: Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> | undefined;
   private configApplyTail: Promise<void> = Promise.resolve();
   private stopped = false;
   // Interaction bridge (ask_user + tool progress): lazily started once, shared
@@ -197,6 +199,11 @@ class MonoAgentAppController implements MonoAgentApp {
   private interactionBridge: InteractionBridgeHandle | undefined;
   private interactionBridgeStart: Promise<InteractionBridgeHandle | undefined> | undefined;
   private interactionBridgeEnvKeys: readonly string[] = [];
+  // Shared in-process run-event bus: every run's recorder publishes to it (via the
+  // broadcast recorder threaded as `runEventSink`), and the `live` channel relays
+  // it over SSE. One instance for the app's lifetime — cheap, bounded ring buffer,
+  // and it must exist before any responder is built (like the interaction bridge).
+  private readonly liveEventBus: RunEventBus = createLiveEventBus();
 
   constructor(input: MonoAgentAppControllerInput) {
     this.cwd = input.cwd;
@@ -723,6 +730,7 @@ class MonoAgentAppController implements MonoAgentApp {
         listNotifyDestinations: () => this.listNotifyDestinations(),
         postedMessageIndexPath,
         ...(interactionBridge === undefined ? {} : { interaction: interactionBridge }),
+        liveEventBus: this.liveEventBus,
         ...(this.logger === undefined ? {} : { logger: this.logger }),
         onFailure: (failureReason) => {
           this.running.delete(driver.id);
@@ -837,6 +845,9 @@ class MonoAgentAppController implements MonoAgentApp {
       // when config.observability.exporters is non-empty).
       observabilityContext,
       exporterWarn: (warning) => this.recordExporterWarning(warning),
+      // Publish every run's start/event/finish to the shared bus so the `live`
+      // channel can relay it. Best-effort + additive (see broadcast recorder).
+      runEventSink: this.liveEventBus,
     });
     return responder;
   }
@@ -967,7 +978,13 @@ class MonoAgentAppController implements MonoAgentApp {
   private async memoryStore(
     coreConfig: MonoAgentConfig,
   ): Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> {
-    if (!this.sharedMemoryBuilt) {
+    if (this.sharedMemoryBuilt) {
+      return this.sharedMemory;
+    }
+    if (this.sharedMemoryBuild !== undefined) {
+      return await this.sharedMemoryBuild;
+    }
+    this.sharedMemoryBuild = (async () => {
       const appLogger = this.logger;
       const logger = appLogger?.warn !== undefined
         ? { warn: (message: string) => { appLogger.warn?.(message); } }
@@ -983,16 +1000,23 @@ class MonoAgentAppController implements MonoAgentApp {
       // router overrides each run's per-call model. createConfiguredMemory builds
       // the memory LLM its own fallback-free runtime when no `memoryRuntime` is set.
       const observabilityContext = await this.observabilityContext();
+      const observability = {
+        observabilityContext,
+        exporterWarn: (warning: { readonly phase: string; readonly message: string }) => this.recordExporterWarning(warning),
+        runEventSink: this.liveEventBus,
+      };
       this.sharedMemory = await createConfiguredMemory(coreConfig, {
         ...(logger === undefined ? {} : { logger }),
-        observability: {
-          observabilityContext,
-          exporterWarn: (warning) => this.recordExporterWarning(warning),
-        },
+        observability,
       });
       this.sharedMemoryBuilt = true;
+      return this.sharedMemory;
+    })();
+    try {
+      return await this.sharedMemoryBuild;
+    } finally {
+      this.sharedMemoryBuild = undefined;
     }
-    return this.sharedMemory;
   }
 
   /** Close + clear the shared memory store (on config reload or stop) so the next build is fresh. */
@@ -1002,6 +1026,7 @@ class MonoAgentAppController implements MonoAgentApp {
       | undefined;
     this.sharedMemory = undefined;
     this.sharedMemoryBuilt = false;
+    this.sharedMemoryBuild = undefined;
     if (mem?.flush !== undefined) {
       await Promise.resolve(mem.flush()).catch(() => undefined);
     }
@@ -1023,7 +1048,8 @@ class MonoAgentAppController implements MonoAgentApp {
 
   private applyResult(): ConfigApplyResult {
     const transports = this.activeTransports();
-    const statuses = [...this.statuses.values()];
+    const statusEntries = [...this.statuses.entries()];
+    const statuses = statusEntries.map(([, status]) => status);
     const failedChannel = statuses.find((status) => status.kind === "failed");
     const failure = failedChannel?.kind === "failed"
       ? failedChannel.reason
@@ -1040,7 +1066,9 @@ class MonoAgentAppController implements MonoAgentApp {
 
     // A degraded channel is still serving (transport self-recovering, harness alive),
     // so it counts as running for the "is anything live?" check.
-    const hasServingChannel = statuses.some((status) => status.kind === "running" || status.kind === "degraded");
+    const hasServingChannel = statusEntries.some(
+      ([id, status]) => id !== "live" && (status.kind === "running" || status.kind === "degraded"),
+    );
     if (!hasServingChannel && statuses.some((status) => status.kind === "waiting_for_config")) {
       return {
         kind: "waiting_for_config",

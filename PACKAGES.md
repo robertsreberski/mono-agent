@@ -15,12 +15,14 @@ flowchart TB
   end
 
   subgraph OperatorSurfaces["operator-surface"]
+    SessionWeb["@mono-agent/session-web"]
     Tui["@mono-agent/tui"]
   end
 
   subgraph Communication["communication"]
     A2A["@mono-agent/a2a-adapter"]
     Cron["@mono-agent/cron-adapter"]
+    LiveAdapter["@mono-agent/live-adapter"]
     OpenAIApi["@mono-agent/openai-api-adapter"]
     Slack["@mono-agent/slack-adapter"]
     Telegram["@mono-agent/telegram-adapter"]
@@ -45,6 +47,7 @@ flowchart TB
 
   subgraph ObservabilityLayer["observability"]
     Observability["@mono-agent/observability"]
+    ObservabilityOtel["@mono-agent/observability-otel"]
   end
 
   subgraph EvaluationLayer["evaluation"]
@@ -68,16 +71,19 @@ flowchart TB
 
   AgentApp --> A2A
   AgentApp --> Cron
+  AgentApp --> LiveAdapter
   AgentApp --> OpenAIApi
   AgentApp --> Slack
   AgentApp --> Telegram
   AgentApp --> TuiAdapter
   AgentApp --> WhatsApp
   AgentApp --> Webhook
+  AgentApp --> SessionWeb
   AgentApp --> Tui
   AgentApp --> Host
   AgentApp --> Config
   AgentApp --> Observability
+  AgentApp --> ObservabilityOtel
 
   MultiDemo --> A2A
   MultiDemo --> Telegram
@@ -88,6 +94,8 @@ flowchart TB
   Tui --> Contracts
   Tui --> Config
   Tui --> Observability
+  SessionWeb --> Observability
+  ObservabilityOtel --> Observability
 
   A2A --> Contracts
   A2A --> Settings
@@ -147,10 +155,10 @@ flowchart TB
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/settings`, `@mono-agent/tool-policy` |
 | `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
-| `observability` | `@mono-agent/observability` |
+| `observability` | `@mono-agent/observability`, `@mono-agent/observability-otel` |
 | `evaluation` | `@mono-agent/agent-evals` |
-| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
-| `operator-surface` | `@mono-agent/tui` |
+| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
+| `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |
 
 `@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). Configured hosts use this one runtime implementation path by default; programmatic hosts may still pass any custom `MonoRuntimeLike` to `createConfiguredAgentResponder({ runtime, model })` when they genuinely need a private escape hatch.

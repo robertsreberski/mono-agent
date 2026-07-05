@@ -6,17 +6,18 @@ sidebar:
 
 # Observability & CLI
 
-Every mono-agent run is recorded locally as append-only JSONL artifacts — the always-on source of truth — and optionally exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and a terminal TUI gives you an interactive chat plus a redacted config view. This page maps those surfaces and links the detail pages.
+Every mono-agent run is recorded locally as append-only JSONL artifacts — the always-on source of truth — and optionally exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and operator surfaces (`tui` and `web`) give you live views over running agents. This page maps those surfaces and links the detail pages.
 
-## The four surfaces
+## The surfaces
 
 | Surface | What it is | Coverage | Page |
 | --- | --- | --- | --- |
 | JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`, secrets redacted | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifest so dashboards discover live agents | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Phoenix exporter + backfill | Best-effort OTLP/HTTP export of run lifecycles; retroactive backfill | config / cli | [Phoenix export & backfill](/observability/phoenix-and-backfill/) |
-| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / backfill / audit-runs / metrics / install-skill | cli | [CLI reference](/observability/cli-reference/) |
+| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / backfill / audit-runs / metrics / install-skill | cli | [CLI reference](/observability/cli-reference/) |
 | TUI | Operator console: live chat with thinking/tool/telemetry insight, run replay, config view | cli | [TUI](/observability/tui/) |
+| Web PWA | Read-only Session Recorder: all discovered agents, run lists/details, live sub-run updates | cli | [CLI reference](/observability/cli-reference/#web) |
 
 ## JSONL run artifacts (always on)
 
@@ -90,6 +91,17 @@ mono-agent tui --agent personal-agent # pick one directly
 ```
 
 See the [TUI page](/observability/tui/) for details, including the embedded `--responder` mode for custom hosts.
+
+## The web PWA
+
+`mono-agent web` serves the read-only Session Recorder from any directory. It discovers every running agent via the trace-source registry, folds local run artifacts with each agent's default-on `live` relay, and streams updates to the browser.
+
+```bash
+mono-agent web
+mono-agent web --port 4599 --no-open
+```
+
+The backend binds loopback by default. `--allow-non-loopback` generates a tokenized URL and protects `/api/*` plus `/api/stream`; use it only on a trusted network boundary.
 
 ## Related
 

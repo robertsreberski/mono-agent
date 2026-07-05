@@ -11,7 +11,7 @@ This channel serves the loopback NDJSON stream the [`mono-agent tui`](/observabi
 Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
 :::note
-**This is the one channel that is ON by default.** It is an operator surface rather than an external channel: loopback-only, ephemeral port, no credentials required — and `mono-agent tui` must be able to reach any running agent without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
+**This operator surface is ON by default.** `tui` and the read-only `live` event relay are the two default-on channels: both bind loopback with ephemeral ports and need no credentials by default, so `mono-agent tui` and `mono-agent web` can reach any running agent without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out of the TUI endpoint; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
 :::
 
 ## Configuration
@@ -48,6 +48,43 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 | `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` |
 | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` |
 | `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` |
+
+## Live event relay for web PWA
+
+The `live` channel is the sibling default-on operator surface consumed by `mono-agent web`. It is read-only: it exposes run lifecycle frames over SSE, never accepts turns, and lets the web PWA show sub-run updates before the on-disk recorder flushes the final summary.
+
+```json
+{
+  "live": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 0,
+    "basePath": "/live",
+    "allowNonLoopback": false,
+    "apiKey": "optional-bearer"
+  }
+}
+```
+
+| Key | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `enabled` | boolean | **`true`** | Default-on read-only operator relay for `mono-agent web`; set `false` to opt out. |
+| `host` | string | `127.0.0.1` | Bind address. Loopback by default. |
+| `port` | integer | `0` | `0` = ephemeral. The bound `baseUrl` is published to the trace-source registry. |
+| `basePath` | string | `/live` | Path prefix for `/v1/events` and `/v1/info`. |
+| `allowNonLoopback` | boolean | `false` | Required guard before binding a non-loopback `host`. |
+| `apiKey` | string | _unset_ | Optional bearer token. `mono-agent web` resolves it from the agent config file; the registry never carries secrets. |
+
+| Env var | Maps to |
+| --- | --- |
+| `MONO_AGENT_LIVE_ENABLED` | `live.enabled` |
+| `MONO_AGENT_LIVE_HOST` | `live.host` |
+| `MONO_AGENT_LIVE_PORT` | `live.port` |
+| `MONO_AGENT_LIVE_BASE_PATH` | `live.basePath` |
+| `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` |
+| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` |
+
+`mono-agent web` trusts live relay URLs only when they resolve to loopback, and it only sends a live API key to those trusted URLs. If you deliberately expose `live` beyond loopback, put it behind a trusted network boundary; the stream contains run prompts, tool events, usage, and terminal summaries.
 
 ## Endpoints & wire protocol
 

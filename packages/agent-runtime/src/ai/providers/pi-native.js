@@ -92,34 +92,57 @@ async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnin
   }
 }
 
+async function readCredential(provider, { apiKeys, resolvePiApiKey, runtimeWarnings }) {
+  if (apiKeys?.has(provider)) {
+    const key = apiKeys.get(provider);
+    return typeof key === "string" && key.length > 0 ? { type: "api_key", key } : undefined;
+  }
+  if (typeof resolvePiApiKey?.readCredential === "function") {
+    const credential = await resolvePiApiKey.readCredential(provider);
+    return isCredential(credential) ? credential : undefined;
+  }
+  const key = await resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnings });
+  return typeof key === "string" && key.length > 0 ? { type: "api_key", key } : undefined;
+}
+
+function isCredential(credential) {
+  return credential
+    && typeof credential === "object"
+    && (credential.type === "api_key" || credential.type === "oauth");
+}
+
 // pi 0.80 removed the harness `getApiKeyAndHeaders` hook: request auth now
 // resolves through a `Models` collection's `CredentialStore`. This store keeps
 // the bridge's per-run key-resolution contract intact — an `apiKeys` map entry
-// wins, else the host `resolvePiApiKey(provider)` callback is consulted, and a
-// callback failure emits a `pi_auth_failed` runtime warning and proceeds
-// keyless. Returning no credential lets a builtin provider fall back to its own
-// env vars, exactly as returning `undefined` from the old hook did. `read`
-// never throws, so pi never escalates a soft auth miss into a hard
-// `ModelsError` stream failure.
+// wins, else an enhanced host resolver's credential-store methods are used, else
+// the legacy `resolvePiApiKey(provider)` callback is consulted. Legacy callback
+// failures remain soft (`pi_auth_failed` warning + keyless env fallback);
+// credential-store read/modify failures reject so Pi can surface them as auth
+// storage failures instead of silently treating a corrupt store as no credential.
 export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWarnings) {
-  const read = async (providerId) => {
-    const key = await resolveApiKey(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
-    return typeof key === "string" && key.length > 0 ? { type: "api_key", key } : undefined;
-  };
-  // Cast at the pi boundary: `read` resolves a `{type: "api_key", key}` literal
-  // but TS widens `type` to `string`, so the shape is not structurally assignable
-  // to pi's opaque `CredentialStore` type. The runtime shape is correct.
+  const read = async (providerId) => readCredential(providerId, { apiKeys, resolvePiApiKey, runtimeWarnings });
   return /** @type {any} */ ({
     read,
-    // api-key providers only ever `read`; pi drives `modify` for OAuth refresh
-    // (unused here). Implemented faithfully so the store honors the interface:
-    // return the post-write credential, or the current one when `fn` leaves it
-    // unchanged (resolves undefined).
     async modify(providerId, fn) {
+      if (!apiKeys?.has(providerId) && typeof resolvePiApiKey?.modifyCredential === "function") {
+        return resolvePiApiKey.modifyCredential(providerId, fn);
+      }
       const current = await read(providerId);
-      return (await fn(current)) ?? current;
+      const next = await fn(current);
+      if (apiKeys?.has(providerId) && next?.type === "api_key" && typeof next.key === "string") {
+        apiKeys.set(providerId, next.key);
+      }
+      return next ?? current;
     },
-    async delete() {},
+    async delete(providerId) {
+      if (apiKeys?.has(providerId)) {
+        apiKeys.delete(providerId);
+        return;
+      }
+      if (typeof resolvePiApiKey?.deleteCredential === "function") {
+        await resolvePiApiKey.deleteCredential(providerId);
+      }
+    },
   });
 }
 

@@ -155,6 +155,26 @@ describe("release pack validation", () => {
     }
   });
 
+  test("requires session-web to include its built PWA assets", () => {
+    const sessionWeb = packageRecord({ name: "@mono-agent/session-web" });
+    const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
+    try {
+      const tarballPath = path.join(packDestination, "mono-agent-session-web-1.2.3.tgz");
+      fs.writeFileSync(tarballPath, "tgz");
+
+      expect(() =>
+        assertPackResult(sessionWeb, {
+          name: sessionWeb.name,
+          version: "1.2.3",
+          filename: tarballPath,
+          files: [{ path: "package.json" }, { path: "README.md" }],
+        }, packDestination),
+      ).toThrow(/webapp\/dist\/index\.html/);
+    } finally {
+      fs.rmSync(packDestination, { recursive: true, force: true });
+    }
+  });
+
   test("rejects pack output without a tarball", () => {
     const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
     try {

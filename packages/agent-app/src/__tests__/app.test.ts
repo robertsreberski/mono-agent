@@ -19,6 +19,7 @@ import {
   createTelegramChannelDriver,
   defaultChannelDrivers,
 } from "../channels.js";
+import type { ChannelDriver } from "../channels.js";
 
 let dir: string;
 
@@ -295,6 +296,32 @@ describe("startMonoAgentApp", () => {
     expect(starts).toBe(2);
     await app.stop();
     expect(stops).toEqual(["start-1", "start-2"]);
+  });
+
+  it("does not report an apply as serving when only the passive live channel is running", async () => {
+    await writeConfig({ ...baseConfig() });
+    const liveDriver: ChannelDriver = {
+      id: "live",
+      label: "Live",
+      loadConfig: async () => ({}),
+      isConfigError: () => false,
+      start: async () => ({ summary: { baseUrl: "http://127.0.0.1:9999/live" }, stop: async () => undefined }),
+    };
+    const webhookDriver: ChannelDriver = {
+      id: "webhook",
+      label: "Webhook",
+      loadConfig: async () => ({}),
+      isConfigError: () => false,
+      waitingReason: () => "Webhook is missing an endpoint.",
+      start: async () => ({ summary: {}, stop: async () => undefined }),
+    };
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [liveDriver, webhookDriver] });
+    const result = await app.applyConfigChange("live-only");
+
+    expect(result.kind).toBe("waiting_for_config");
+    expect(result.transports).toEqual(["live"]);
+    await app.stop();
   });
 
   it("disposes the channel responder (not just the transport) on reload and stop", async () => {
@@ -882,6 +909,31 @@ describe("startMonoAgentApp", () => {
 
     await app.stop();
     expect(order).toEqual(["flush", "close"]);
+  });
+
+  it("builds the shared memory store once when concurrent channel startup requests it", async () => {
+    await writeConfig(baseConfig());
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+    const coreConfig = {
+      runtime: { model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" }, executionMode: "sdk", maxTurns: 4, workspace: dir, session: { mode: "per-message", idleTimeoutMs: 1_800_000 } },
+      context: { identityPath: join(dir, "IDENTITY.md"), selectedSkills: [] },
+      memory: { mode: "lite", path: join(dir, "mem"), writeMode: "disabled", maxBytes: 8_000 },
+      tools: { allowedTools: [], disallowedTools: [] },
+      artifacts: { dir: join(dir, "artifacts") },
+      traceability: { registryDir: join(dir, "trace-sources"), sourceId: "app-test", sourceLabel: "App Test" },
+    };
+
+    try {
+      const controller = app as unknown as { memoryStore(config: unknown): Promise<unknown> };
+      const [first, second] = await Promise.all([
+        controller.memoryStore(coreConfig),
+        controller.memoryStore(coreConfig),
+      ]);
+
+      expect(first).toBe(second);
+    } finally {
+      await app.stop();
+    }
   });
 });
 

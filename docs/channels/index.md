@@ -20,12 +20,13 @@ Channels are how a mono-agent receives input and delivers replies. Each is an in
 | A2A | Agent-to-Agent provider/consumer | `a2a` | [A2A](/channels/a2a/) |
 | Cron | Scheduled prompts | `cron` | [Cron](/channels/cron/) |
 | TUI stream endpoint | Loopback NDJSON stream for `mono-agent tui` | `tui` | [TUI stream endpoint](/channels/tui/) |
+| Live event relay | Loopback SSE stream of run lifecycle frames for `mono-agent web` | `live` | [Live event relay](/channels/tui/#live-event-relay-for-web-pwa) |
 
 Channels are fully independent: enabling one neither requires nor affects another, and a misconfigured channel never blocks the rest of the host from starting.
 
 ## Opt-in and the status lifecycle
 
-Every channel defaults to **off**, with one deliberate exception: the [TUI stream endpoint](/channels/tui/) defaults to **on** (it is a loopback-only operator surface, so `mono-agent tui` can reach any running agent without a config edit; `"tui": {"enabled": false}` opts out). You turn a channel on with `enabled: true` and supply its required settings. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
+Most channels default to **off**. The deliberate exceptions are the operator surfaces: the [TUI stream endpoint](/channels/tui/) and the `live` event relay both default to **on** (loopback-only, ephemeral ports, so `mono-agent tui` and `mono-agent web` can reach any running agent without a config edit). Set `"tui": {"enabled": false}` or `"live": {"enabled": false}` to opt out. You turn other channels on with `enabled: true` and supply their required settings. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
 
 | State | Meaning |
 | --- | --- |

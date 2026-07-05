@@ -160,8 +160,27 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     ]
   },
 
-  // ----- Channels: one section per channel; all independent. An unconfigured
-  // ----- channel reports waiting_for_config and never blocks the others.
+  // ----- Channels: one section per channel; all independent. Most channels are
+  // ----- opt-in; operator surfaces (`tui`, `live`) default on and can opt out.
+  // ----- A waiting/disabled channel never blocks the others.
+
+  "tui": {
+    "enabled": true,                       // default-on loopback operator console endpoint
+    "host": "127.0.0.1",
+    "port": 0,
+    "basePath": "/tui",
+    "allowNonLoopback": false,
+    "apiKey": "optional-bearer"
+  },
+
+  "live": {
+    "enabled": true,                       // default-on read-only SSE relay for mono-agent web
+    "host": "127.0.0.1",
+    "port": 0,
+    "basePath": "/live",
+    "allowNonLoopback": false,
+    "apiKey": "optional-bearer"
+  },
 
   "webhook": {
     "enabled": true,

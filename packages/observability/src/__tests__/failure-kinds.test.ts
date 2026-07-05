@@ -38,6 +38,16 @@ describe("describeRunFailureKind", () => {
       label: "Provider failover exhausted",
       known: true,
     });
+    expect(describeRunFailureKind({ failureKind: "provider_auth" })).toMatchObject({
+      kind: "provider_auth",
+      label: "Provider authentication",
+      known: true,
+    });
+    expect(describeRunFailureKind({ failureKind: "skipped_capability_mismatch" })).toMatchObject({
+      kind: "skipped_capability_mismatch",
+      label: "Capability mismatch",
+      known: true,
+    });
   });
 
   it("covers cancellation variants and provider session failures without requiring a closed enum", () => {
@@ -79,5 +89,7 @@ describe("describeRunFailureKind", () => {
   it("does not collapse provider availability kinds into a bare token", () => {
     expect(KNOWN_RUN_FAILURE_KINDS.map((entry) => entry.kind)).toContain("provider_unavailable");
     expect(KNOWN_RUN_FAILURE_KINDS.map((entry) => entry.kind)).toContain("provider_unavailable_exhausted");
+    expect(KNOWN_RUN_FAILURE_KINDS.map((entry) => entry.kind)).toContain("provider_auth");
+    expect(KNOWN_RUN_FAILURE_KINDS.map((entry) => entry.kind)).toContain("skipped_capability_mismatch");
   });
 });

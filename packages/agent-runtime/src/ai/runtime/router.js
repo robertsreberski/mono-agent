@@ -24,13 +24,14 @@
 // Result:
 //   The success run's result, with `failoverHistory` appended describing every
 //   prior attempt: [{ model, failureKind, requestId, retryableSubkind }].
-//   If every entry in the chain fails, returns the last result with
-//   `failureKind: "provider_unavailable_exhausted"`.
+//   If every eligible retryable entry in the chain fails, returns the last
+//   result with `failureKind: "provider_unavailable_exhausted"`. Terminal
+//   non-retryable failures are returned as-is with their failover history.
 
 // @ts-check
 
 import { createRuntime } from "../../runtime.js";
-import { retryableProviderFailureInfo } from "../failure.js";
+import { isProviderAuthFailureText, retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "./capabilities.js";
 import { buildTranscriptTailSnapshot, renderResumeSnapshot } from "../../agent/transcript.js";
 import { resolveRuntimeBrand } from "../../runtime-brand.js";
@@ -151,6 +152,8 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
           };
         }
 
+        result = normalizeProviderAuthFailure(result);
+
         const retryability = retryableProviderFailureInfo({
           errorText: result.error || "",
           stderrTail: result.stderrTail || "",
@@ -180,7 +183,9 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
         // Bail early on non-retryable failures (auth, billing, cancellation,
         // invalid_result). Only retryable provider errors trigger fallback.
         const shouldFallback = retryability.retryable && !result.cancelled;
-        if (!shouldFallback) break;
+        if (!shouldFallback) {
+          return { ...result, failoverHistory };
+        }
 
         // Build a transcript-tail snapshot from this run's events so the
         // next provider can continue. If the run produced no usable events,
@@ -193,13 +198,13 @@ export function createRouterRuntime({ host = {}, chain = [] } = {}) {
         text: null,
         events: [],
         error: "router chain exhausted with no executions",
-        failureKind: "provider_unavailable_exhausted",
+        failureKind: "skipped_capability_mismatch",
         cancelled: false,
         usage: {},
       };
       return {
         ...exhaustedResult,
-        failureKind: "provider_unavailable_exhausted",
+        failureKind: lastResult ? "provider_unavailable_exhausted" : exhaustedResult.failureKind,
         failoverHistory,
       };
     },
@@ -291,4 +296,17 @@ function entrySatisfiesRequirements(entry, options) {
  */
 function emit(callOptions, event) {
   try { callOptions.onEvent?.(event); } catch { /* swallow */ }
+}
+
+/**
+ * @param {RuntimeResult} result
+ * @returns {RuntimeResult}
+ */
+function normalizeProviderAuthFailure(result) {
+  if (result.cancelled) return result;
+  const failureKind = result.failureKind || null;
+  if (failureKind && failureKind !== "provider_unavailable") return result;
+  const haystack = `${result.error || ""}\n${result.stderrTail || ""}`;
+  if (!isProviderAuthFailureText(haystack)) return result;
+  return { ...result, failureKind: "provider_auth" };
 }
