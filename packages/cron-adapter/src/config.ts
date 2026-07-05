@@ -5,6 +5,7 @@ import {
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
+  readInteger,
   readJsonSection,
   readSettingsJson,
 } from "@mono-agent/settings";
@@ -23,6 +24,8 @@ export interface CronJobConfig {
   readonly maxRunMs?: number;
   readonly notify?: boolean;
   readonly notifyConversationId?: string;
+  /** Cooldown in hours for provider-exhaustion failure notices on notify jobs. */
+  readonly notifyFailureCooldownHours?: number;
   /** Per-job runtime model override (e.g. `claude:claude-opus-4-8`). Validated by the app. */
   readonly model?: string;
   /** Per-job reasoning effort override (e.g. `high`). Validated by the app. */
@@ -95,6 +98,10 @@ function loadConfigJobs(
   const conversationId = normalizeOptionalString(layered.MONO_AGENT_CRON_CONVERSATION_ID);
   const notify = readBoolean(layered.MONO_AGENT_CRON_NOTIFY, "MONO_AGENT_CRON_NOTIFY", false, invalidConfig);
   const notifyConversationId = normalizeOptionalString(layered.MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID);
+  const notifyFailureCooldownHours = readOptionalPositiveIntegerEnv(
+    layered.MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS,
+    "MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS",
+  );
   const model = normalizeOptionalString(layered.MONO_AGENT_CRON_MODEL);
   const effort = normalizeOptionalString(layered.MONO_AGENT_CRON_EFFORT);
   return [{
@@ -106,6 +113,7 @@ function loadConfigJobs(
     ...(conversationId === undefined ? {} : { conversationId }),
     ...(notify ? { notify } : {}),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(notifyFailureCooldownHours === undefined ? {} : { notifyFailureCooldownHours }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
   }];
@@ -216,6 +224,12 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
   const maxRunMs = asOptionalPositiveInteger(entry.maxRunMs, "cron.jobs[].maxRunMs", { index });
   const notify = asOptionalBoolean(entry.notify, "cron.jobs[].notify", { index });
   const notifyConversationId = asOptionalString(entry.notifyConversationId);
+  const notifyFailureCooldownHours = asOptionalPositiveInteger(
+    entry.notifyFailureCooldownHours,
+    "cron.jobs[].notifyFailureCooldownHours",
+    { index },
+    "hours",
+  );
   const model = asOptionalString(entry.model);
   const effort = asOptionalString(entry.effort);
   return {
@@ -228,6 +242,7 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
     ...(maxRunMs === undefined ? {} : { maxRunMs }),
     ...(notify === undefined ? {} : { notify }),
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
+    ...(notifyFailureCooldownHours === undefined ? {} : { notifyFailureCooldownHours }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
   };
@@ -247,6 +262,7 @@ export const CRON_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "cron.conversationId", env: "MONO_AGENT_CRON_CONVERSATION_ID", fromJson: (s) => s.conversationId },
   { id: "cron.notify", env: "MONO_AGENT_CRON_NOTIFY", kind: "boolean", fromJson: (s) => s.notify },
   { id: "cron.notifyConversationId", env: "MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID", fromJson: (s) => s.notifyConversationId },
+  { id: "cron.notifyFailureCooldownHours", env: "MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS", kind: "integer", fromJson: (s) => s.notifyFailureCooldownHours },
   { id: "cron.model", env: "MONO_AGENT_CRON_MODEL", fromJson: (s) => s.model },
   { id: "cron.effort", env: "MONO_AGENT_CRON_EFFORT", fromJson: (s) => s.effort },
 ];
@@ -267,14 +283,22 @@ function asOptionalPositiveInteger(
   value: unknown,
   field: string,
   details: Record<string, unknown>,
+  unit = "milliseconds",
 ): number | undefined {
   if (value === undefined) {
     return undefined;
   }
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    throw invalidConfig(`${field} must be a positive integer number of milliseconds.`, { ...details, value });
+    throw invalidConfig(`${field} must be a positive integer number of ${unit}.`, { ...details, value });
   }
   return value;
+}
+
+function readOptionalPositiveIntegerEnv(value: string | undefined, env: string): number | undefined {
+  if (normalizeOptionalString(value) === undefined) {
+    return undefined;
+  }
+  return readInteger(value, env, 0, invalidConfig, { min: 1, max: Number.MAX_SAFE_INTEGER });
 }
 
 function asOptionalBoolean(

@@ -18,6 +18,8 @@ Set `notify: true` on a job to deliver its successful, non-empty final answer to
 
 **Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, or `slack:C123:1718.99` for a Slack thread). If it is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist). With 0 or 2+ candidates, delivery is skipped with a warning — it never guesses. Delivery is best-effort: a failed notification does not change the cron job result.
 
+**Model-exhaustion failure notice.** For cron jobs only, `notify: true` also enables a short one-line error notice when the run fails because **all configured models failed** (`provider_unavailable_exhausted`). This notice is sent only when `notifyConversationId` is explicitly set; failure notices never infer a destination. They are delivered verbatim with no second LLM turn, best-effort, and rate-limited per job by `notifyFailureCooldownHours` (default `6`).
+
 **Staying silent.** To send nothing for this tick, have the agent produce an **empty final answer** or reply with exactly the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed, case-insensitive). In either case no notification is sent.
 
 Notifying **multiple** or **other** conversations from one trigger is not a built-in: compose it from several cron jobs, each with its own `notifyConversationId`, or from a skill.
@@ -37,7 +39,8 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
         "prompt": "Post the morning summary.",
         "conversationId": "cron-daily",
         "notify": true,
-        "notifyConversationId": "telegram:42"
+        "notifyConversationId": "telegram:42",
+        "notifyFailureCooldownHours": 6
       }
     ]
   }
@@ -57,6 +60,7 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 | `jobs[].maxRunMs` | number | no | `1200000` | Per-job watchdog in milliseconds. |
 | `jobs[].notify` | boolean | no | `false` | Deliver the successful final answer via native cron notification. |
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. |
+| `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
 | `jobs[].model` | string | no | `runtime.model` | Per-job model override (e.g. `claude:claude-opus-4-8`). Becomes this turn's primary, keeping `runtime.fallbackModels` as backups. See [Per-trigger model & effort](#per-trigger-model--effort). |
 | `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`low`/`medium`/`high`/`xhigh`/`max`). |
 
@@ -78,7 +82,8 @@ A model-override tick runs **ephemerally**: it does not resume or persist a shar
 | --- | --- | --- |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
-| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (`id`, `expression`, `timezone`, `prompt`, `conversationId`, `notify`, `notifyConversationId`, `model`, `effort`). |
+| `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | `cron.notifyFailureCooldownHours` | Single-job cooldown, in hours, for model-exhaustion failure notices; default `6`. |
+| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (`id`, `expression`, `timezone`, `prompt`, `conversationId`, `notify`, `notifyConversationId`, `notifyFailureCooldownHours`, `model`, `effort`). |
 
 See [Environment variables](/config/env-vars/) for the full precedence rules.
 
@@ -95,6 +100,7 @@ timezone: "Europe/Rome"
 conversationId: cron-digest
 notify: true
 notifyConversationId: telegram:42
+notifyFailureCooldownHours: 6
 ---
 Summarize yesterday's unread items. Your final answer is delivered verbatim; reply NOTHING_TO_REPORT if there is nothing new.
 ```
