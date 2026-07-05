@@ -48,9 +48,9 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | --- | --- | --- |
 | Prompt assembly | `@mono-agent/context` | Load identity/SOUL/skills/history/memory into deterministic prompt context |
 | Selected skill bodies | `@mono-agent/skills` | Load only configured skills from `<skillsRoot>/<name>/SKILL.md` |
-| Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory-store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` contract |
-| Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory-bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + decay (journal), LLM capture/reconcile + entity graph + reflection/migration + auto-scheduler (bujo) |
-| Embedding providers | `@mono-agent/memory-search` | Ollama/OpenAI embedding providers used by memory-store for vector recall |
+| Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` from `@mono-agent/agent-contracts` |
+| Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + decay (journal), LLM capture/reconcile + entity graph + reflection/migration + auto-scheduler (bujo) |
+| Embedding providers | `@mono-agent/memory/search` | Ollama/OpenAI embedding providers used by the store subpath for vector recall |
 | Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions a read-only `memory_recall` tool (hybrid keyword+semantic search) from `config.memory.recallTool.enabled`; spawns the bundled `mono-agent-memory` stdio child using the same memory root + embeddings as the in-app memory |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
@@ -102,7 +102,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
 
-Adapters must not import the harness, runtime adapter, memory packages (`memory-store`, `memory-bujo`, `memory-search`), or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
+Adapters must not import the harness, runtime adapter, memory package (`@mono-agent/memory` subpaths), or other adapters. `@mono-agent/agent-app` composes them from config; custom hosts and demos may compose them directly.
 
 ## Observability Join
 

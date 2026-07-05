@@ -38,15 +38,9 @@ importers:
       '@mono-agent/cron-adapter':
         specifier: workspace:0.4.0
         version: link:packages/cron-adapter
-      '@mono-agent/memory-bujo':
+      '@mono-agent/memory':
         specifier: workspace:0.4.0
-        version: link:packages/memory-bujo
-      '@mono-agent/memory-search':
-        specifier: workspace:0.4.0
-        version: link:packages/memory-search
-      '@mono-agent/memory-store':
-        specifier: workspace:0.4.0
-        version: link:packages/memory-store
+        version: link:packages/memory
       '@mono-agent/observability':
         specifier: workspace:0.4.0
         version: link:packages/observability
@@ -132,12 +126,9 @@ importers:
       '@mono-agent/live-adapter':
         specifier: workspace:0.4.0
         version: link:../live-adapter
-      '@mono-agent/memory-bujo':
+      '@mono-agent/memory':
         specifier: workspace:0.4.0
-        version: link:../memory-bujo
-      '@mono-agent/memory-search':
-        specifier: workspace:0.4.0
-        version: link:../memory-search
+        version: link:../memory
       '@mono-agent/memory-supermemory':
         specifier: workspace:0.4.0
         version: link:../memory-supermemory
@@ -185,9 +176,6 @@ importers:
       '@mono-agent/context':
         specifier: workspace:0.4.0
         version: link:../context
-      '@mono-agent/memory-store':
-        specifier: workspace:0.4.0
-        version: link:../memory-store
       '@mono-agent/observability':
         specifier: workspace:0.4.0
         version: link:../observability
@@ -215,15 +203,9 @@ importers:
       '@mono-agent/config':
         specifier: workspace:0.4.0
         version: link:../config
-      '@mono-agent/memory-bujo':
+      '@mono-agent/memory':
         specifier: workspace:0.4.0
-        version: link:../memory-bujo
-      '@mono-agent/memory-search':
-        specifier: workspace:0.4.0
-        version: link:../memory-search
-      '@mono-agent/memory-store':
-        specifier: workspace:0.4.0
-        version: link:../memory-store
+        version: link:../memory
       '@mono-agent/memory-supermemory':
         specifier: workspace:0.4.0
         version: link:../memory-supermemory
@@ -309,22 +291,11 @@ importers:
         specifier: ^5.0.2
         version: 5.0.6
 
-  packages/memory-bujo:
+  packages/memory:
     dependencies:
-      '@mono-agent/memory-search':
+      '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
-        version: link:../memory-search
-      '@mono-agent/memory-store':
-        specifier: workspace:0.4.0
-        version: link:../memory-store
-
-  packages/memory-search: {}
-
-  packages/memory-store:
-    dependencies:
-      '@mono-agent/memory-search':
-        specifier: workspace:0.4.0
-        version: link:../memory-search
+        version: link:../agent-contracts
       better-sqlite3:
         specifier: ^11.8.1
         version: 11.10.0
@@ -338,9 +309,9 @@ importers:
 
   packages/memory-supermemory:
     dependencies:
-      '@mono-agent/memory-store':
+      '@mono-agent/agent-contracts':
         specifier: workspace:0.4.0
-        version: link:../memory-store
+        version: link:../agent-contracts
 
   packages/observability:
     dependencies:

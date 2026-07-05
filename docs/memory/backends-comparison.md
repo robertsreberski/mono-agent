@@ -9,7 +9,7 @@ sidebar:
 mono-agent's memory engine is pluggable. `memory.backend` selects it:
 
 - **BuJo** (`backend: "bujo"`, the default) — the built-in engine
-  (`@mono-agent/memory-store` + `@mono-agent/memory-bujo`) across its three tiers
+  (`@mono-agent/memory/store` + `@mono-agent/memory/bujo`) across its three tiers
   (`lite` / `journal` / `bujo`). Fully local: SQLite + markdown notes, optional Ollama
   embeddings, optional local chat model.
 - **Supermemory** (`backend: "supermemory"`) — an external memory service

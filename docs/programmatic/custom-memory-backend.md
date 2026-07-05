@@ -8,15 +8,15 @@ This page covers plugging your own memory backend into the agent. Two built-in b
 
 ## The MemoryStore contract
 
-The contract lives in **`@mono-agent/memory-store`** — a small, stable package that also ships the local SQLite substrate. You only need its types:
+The contract lives in **`@mono-agent/agent-contracts`**. You only need its types:
 
 ```ts
-import type { MemoryStore } from "@mono-agent/memory-store";
+import type { MemoryStore } from "@mono-agent/agent-contracts";
 ```
 
 `MemoryStore` is structural: implement the recall/capture/lifecycle methods your backend supports. The harness treats memory as best-effort — a failing `recall` degrades to an empty result (with a `memory_degraded` diagnostic) rather than failing the turn, and `capture` runs after the reply, so a slow backend never blocks the user.
 
-The two built-in stores are reference implementations: `@mono-agent/memory-bujo` (`createBujoMemoryStore`) for the local tiered store, and `@mono-agent/memory-supermemory` (`createSupermemoryStore`) for a REST-backed external service — the latter is the best template for wrapping your own remote API.
+The two built-in stores are reference implementations: `@mono-agent/memory/bujo` (`createBujoMemoryStore`) for the local tiered store, and `@mono-agent/memory-supermemory` (`createSupermemoryStore`) for a REST-backed external service — the latter is the best template for wrapping your own remote API.
 
 ## Injecting the store
 

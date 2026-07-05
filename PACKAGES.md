@@ -38,9 +38,7 @@ flowchart TB
   subgraph ContextLayer["context"]
     Context["@mono-agent/context"]
     Skills["@mono-agent/skills"]
-    MemoryBujo["@mono-agent/memory-bujo"]
-    MemorySearch["@mono-agent/memory-search"]
-    MemoryStore["@mono-agent/memory-store"]
+    Memory["@mono-agent/memory\n./store ./search ./bujo"]
     MemorySupermemory["@mono-agent/memory-supermemory"]
   end
 
@@ -93,7 +91,7 @@ flowchart TB
 
   Host --> Harness
   Host --> Config
-  Host --> MemoryBujo
+  Host --> Memory
   Host -. optional backend .-> MemorySupermemory
   Host --> Observability
   Host --> RuntimeAdapter
@@ -101,7 +99,6 @@ flowchart TB
   Host --> ToolPolicy
   Harness --> Contracts
   Harness --> Context
-  Harness --> MemoryStore
   Harness --> Observability
   Harness --> RuntimeAdapter
   Harness --> Sandbox
@@ -113,9 +110,8 @@ flowchart TB
   Config --> RuntimeAdapter
   Config --> Sandbox
   Skills --> Context
-  MemoryBujo --> MemoryStore
-  MemoryBujo --> MemorySearch
-  MemorySupermemory --> MemoryStore
+  Memory --> Contracts
+  MemorySupermemory --> Contracts
   RuntimeAdapter --> AgentRuntime
   RuntimeAdapter --> Sandbox
   AgentRuntime --> Sandbox
@@ -128,7 +124,7 @@ flowchart TB
 | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-store`, `@mono-agent/memory-supermemory` |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory`, `@mono-agent/memory-supermemory` |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` |
 | `observability` | `@mono-agent/observability` |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |

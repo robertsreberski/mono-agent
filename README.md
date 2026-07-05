@@ -83,7 +83,7 @@ Before adding new capability surface area, use the [`Capability ladder`](./docs/
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, `@mono-agent/sandbox` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config`, `@mono-agent/tool-policy` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers, adapter-neutral core config, and fail-closed tool/MCP policy normalization. |
-| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory-store`, `@mono-agent/memory-bujo`, `@mono-agent/memory-search`, `@mono-agent/memory-supermemory` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
+| `context` | `@mono-agent/context`, `@mono-agent/skills`, `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Deterministic prompt assembly, selected-skill loading, and tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-host`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, config-to-responder host composition, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
 | `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/live-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/tui-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients. |
@@ -106,10 +106,10 @@ demos/final-agent (not a workspace package)
   ├─ whatsapp-adapter ── agent-contracts, baileys
   ├─ agent-host
   │   ├─ config
-  │   ├─ agent-harness ── agent-contracts, context, skills, memory-store, observability, runtime-adapter, sandbox, tool-policy
+  │   ├─ agent-harness ── agent-contracts, context, skills, observability, runtime-adapter, sandbox, tool-policy
   │   ├─ runtime-adapter ── @mono-agent/agent-runtime, sandbox types
   │   ├─ sandbox ── agent-contracts
-  │   ├─ memory-store, memory-bujo, memory-search
+  │   ├─ memory (./store, ./search, ./bujo)
   │   ├─ observability
   │   └─ tool-policy
   ├─ config ── agent-contracts, runtime-adapter, sandbox
@@ -295,9 +295,7 @@ flowchart TB
   subgraph PromptContext["Context layer"]
     Context["`@mono-agent/context`\nprompt assembly"]
     Skills["`@mono-agent/skills`\nselected skill blocks"]
-    MemoryStore["`@mono-agent/memory-store`\nSQLite substrate + MemoryStore contract"]
-    MemoryBujo["`@mono-agent/memory-bujo`\nbujo engine (journal/bujo tiers)"]
-    MemorySearch["`@mono-agent/memory-search`\nOllama/OpenAI embeddings + cosine index"]
+    Memory["`@mono-agent/memory`\n./store SQLite, ./search embeddings, ./bujo engine"]
     MemorySupermemory["`@mono-agent/memory-supermemory`\nSupermemory-backed store"]
   end
 
@@ -344,9 +342,7 @@ flowchart TB
   Orchestrator -.->|runtime extension| Harness
   AgentHost --> Config
   AgentHost --> Harness
-  AgentHost --> MemoryStore
-  AgentHost --> MemoryBujo
-  AgentHost --> MemorySearch
+  AgentHost --> Memory
   AgentHost -. optional backend .-> MemorySupermemory
   AgentHost --> Policy
   AgentHost --> Sandbox
@@ -358,8 +354,7 @@ flowchart TB
   Harness --> Contracts
   Harness --> Context
   Harness --> Skills
-  MemorySupermemory --> MemoryStore
-  Harness --> MemoryStore
+  MemorySupermemory --> Contracts
   Harness --> Policy
   Harness --> Sandbox
   Harness --> RuntimeAdapter
