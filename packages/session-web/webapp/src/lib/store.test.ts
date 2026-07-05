@@ -138,6 +138,51 @@ describe("session store identity", () => {
     });
     expect(merged?.steps).toEqual(terminal.steps);
   });
+
+  test("keeps opened detail when a summary reconnect upsert arrives later", () => {
+    const detailed = session("agent-a", "Detailed", {
+      finalText: "full answer",
+      status: "succeeded",
+      totals: { asst: 1, tcalls: 1, think: 0, steps: 3 },
+      toolCounts: { Bash: 1 },
+      steps: [
+        { k: "prompt", ts: "2026-07-04T10:00:00.000Z", text: "Run" },
+        {
+          k: "assistant",
+          ts: "2026-07-04T10:00:01.000Z",
+          think: [],
+          calls: [{ id: "call-1", name: "Bash", dig: "cmd", raw: "{}" }],
+          text: "full answer",
+        },
+        {
+          k: "result",
+          ts: "2026-07-04T10:00:02.000Z",
+          tcid: "call-1",
+          tool: "Bash",
+          ok: true,
+          dig: "ok",
+          text: "ok",
+        },
+      ],
+    });
+    const summary = session("agent-a", "Summary", {
+      finalText: "",
+      status: "succeeded",
+      totals: { asst: 0, tcalls: 0, think: 0, steps: 3 },
+      toolCounts: {},
+      steps: [],
+    });
+
+    const [merged] = applySessionOps([detailed], [{ type: "upsert", session: summary }]);
+
+    expect(merged).toMatchObject({
+      title: "Summary",
+      finalText: "full answer",
+      totals: expect.objectContaining({ asst: 1, tcalls: 1, steps: 3 }),
+      toolCounts: { Bash: 1 },
+    });
+    expect(merged?.steps).toEqual(detailed.steps);
+  });
 });
 
 describe("fixture sessions", () => {

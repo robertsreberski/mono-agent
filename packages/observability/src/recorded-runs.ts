@@ -83,7 +83,7 @@ export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<
           || b.summary.runId.localeCompare(a.summary.runId),
       )
       .slice(0, normalized.maxRuns)
-      .map((entry) => summaryToListItem(entry.summary, entry.updatedAt, normalized.maxStringBytes)),
+      .map((entry) => summaryToListItem(entry.summary, entry.updatedAt, normalized.maxStringBytes, entry)),
     warnings,
   };
 }
@@ -179,7 +179,7 @@ export async function readRecordedRun(
   const events = await readEventsFile(eventsPath, normalized, warnings);
 
   return {
-    summary: summaryToListItem(summary.summary, summary.updatedAt, normalized.maxStringBytes),
+    summary: summaryToListItem(summary.summary, summary.updatedAt, normalized.maxStringBytes, summary),
     events,
     warnings,
   };
@@ -362,7 +362,12 @@ function coerceRunSummary(
   return summary;
 }
 
-function summaryToListItem(summary: RunSummary, updatedAt: string, maxStringBytes: number): RecordedRunListItem {
+function summaryToListItem(
+  summary: RunSummary,
+  updatedAt: string,
+  maxStringBytes: number,
+  artifact?: Pick<ParsedSummaryFile, "fileName" | "mtimeMs">,
+): RecordedRunListItem {
   return {
     runId: summary.runId,
     conversationId: summary.conversationId,
@@ -386,6 +391,7 @@ function summaryToListItem(summary: RunSummary, updatedAt: string, maxStringByte
     ...(summary.source === undefined ? {} : { source: summary.source }),
     ...(summary.sourceDetail === undefined ? {} : { sourceDetail: summary.sourceDetail }),
     ...(summary.userInput === undefined ? {} : { userInput: summary.userInput }),
+    ...(artifact === undefined ? {} : { summaryFileName: artifact.fileName, summaryMtimeMs: artifact.mtimeMs }),
   };
 }
 

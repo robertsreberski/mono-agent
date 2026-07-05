@@ -80,6 +80,28 @@ describe("recorded run reader", () => {
     expect(detail?.summary).toMatchObject(expectedMeta);
   });
 
+  it("exposes summary artifact metadata for sanitized run filenames", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({ runId: "Run:Detail", conversationId: "chat-1", artifactDir: dir });
+    const summary = await recorder.finish({});
+
+    const list = await listRecordedRuns({ artifactDir: dir });
+
+    expect(summary.artifactPaths[1]).toMatch(/run-detail\.summary\.json$/u);
+    expect(list.runs[0]).toMatchObject({
+      runId: "Run:Detail",
+      summaryFileName: "run-detail.summary.json",
+    });
+    expect(list.runs[0]?.summaryMtimeMs).toBeGreaterThan(0);
+
+    const detail = await readRecordedRun({ artifactDir: dir }, "Run:Detail");
+    expect(detail?.summary).toMatchObject({
+      runId: "Run:Detail",
+      summaryFileName: "run-detail.summary.json",
+    });
+    expect(detail?.summary.summaryMtimeMs).toBeGreaterThan(0);
+  });
+
   it("normalizes epoch-string and epoch-number timestamps to ISO, passing ISO strings through unchanged", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({ runId: "run-epoch", conversationId: "chat-1", artifactDir: dir });
