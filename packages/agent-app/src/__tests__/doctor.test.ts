@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { SandboxEngine } from "@mono-agent/sandbox";
+
 import { validateMonoAgentFolder } from "../doctor.js";
 
 let dir: string;
@@ -41,6 +43,26 @@ async function writeRunSummary(artifactDir: string, name: string, summary: Recor
   await mkdir(artifactDir, { recursive: true });
   await writeFile(join(artifactDir, name), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 }
+
+const availableSandboxEngine: SandboxEngine = {
+  id: "fake-srt",
+  async isAvailable() {
+    return true;
+  },
+  async prepareCommand() {
+    throw new Error("not used in validation");
+  },
+};
+
+const unavailableSandboxEngine: SandboxEngine = {
+  id: "fake-srt",
+  async isAvailable() {
+    return false;
+  },
+  async prepareCommand() {
+    throw new Error("not used in validation");
+  },
+};
 
 describe("validateMonoAgentFolder", () => {
   it("reports a ready config with runtime, fallback, and channel sections", async () => {
@@ -248,6 +270,83 @@ describe("validateMonoAgentFolder", () => {
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
     expect(sectionById(report, "channel:cron").status).toBe("ok");
+  });
+
+  it("reports an effective native sandbox when the engine is available", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: availableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(true);
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("ok");
+    const text = sandbox.details.join("\n");
+    expect(text).toContain('Sandbox is effective with native engine "fake-srt"');
+    expect(text).toContain("commands run sandboxed");
+  });
+
+  it("warns non-fatally when unsafe sandbox fallback is active", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: {
+        mode: "native",
+        fallback: "unsafe-host-process",
+        unsafeAllowHostProcess: true,
+        denyWrite: [".env", "secrets/**"],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: unavailableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(true);
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("waiting");
+    const text = sandbox.details.join("\n");
+    expect(text).not.toContain("[WARN] WARNING:");
+    expect(text).toContain("WARNING: Unsafe sandbox fallback is active");
+    expect(text).toContain("Unsafe sandbox fallback is active");
+    expect(text).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
+  });
+
+  it("reports fail-closed sandbox unavailability without failing validation", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sandboxEngine: unavailableSandboxEngine,
+    });
+
+    expect(report.ok).toBe(true);
+    const sandbox = sectionById(report, "sandbox");
+    expect(sandbox.status).toBe("waiting");
+    expect(sandbox.details.join("\n")).toContain("commands fail closed with sandbox_unavailable");
   });
 
   it("does not warn about a channel secret supplied via env", async () => {

@@ -39,10 +39,11 @@ import type {
   MonoRuntimeFallbackChainEntry,
   MonoRuntimeLike,
   RuntimeExecutionMode,
+  RuntimeModelReference,
   RuntimeResult,
   RuntimeRunOptions,
-  RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
+import type { SandboxEngine } from "@mono-agent/sandbox";
 import { createToolPolicy, loadToolPolicyFromJsonFileSync } from "@mono-agent/tool-policy";
 import type { ToolPolicyInput } from "@mono-agent/tool-policy";
 
@@ -52,6 +53,7 @@ export interface ConfiguredAgentRuntimeOptions {
   readonly config: MonoAgentConfig;
   readonly model?: RuntimeModelReference;
   readonly executionMode?: string;
+  readonly sandboxEngine?: SandboxEngine;
 }
 
 export interface ConfiguredAgentHarnessOptions {
@@ -64,6 +66,7 @@ export interface ConfiguredAgentHarnessOptions {
   readonly createRunId?: AgentHarnessOptions["createRunId"];
   readonly now?: AgentHarnessOptions["now"];
   readonly runtimeOptions?: AgentHarnessOptions["runtimeOptions"];
+  readonly sandboxEngine?: SandboxEngine;
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
@@ -227,9 +230,11 @@ export function createConfiguredAgentRuntime(
   input: MonoAgentConfig | ConfiguredAgentRuntimeOptions,
 ): MonoRuntimeLike {
   const config = isRuntimeOptions(input) ? input.config : input;
+  const options = isRuntimeOptions(input) ? input : undefined;
   return createMonoRuntime({
     ...runtimeHostOptionsForConfig(config),
-    ...(fallbackChainForConfig(config, isRuntimeOptions(input) ? input : undefined)),
+    ...(options?.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
+    ...(fallbackChainForConfig(config, options)),
   });
 }
 
@@ -281,7 +286,12 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
   const config = options.config;
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
-  const runtime = options.runtime ?? createConfiguredAgentRuntime({ config, model, executionMode });
+  const runtime = options.runtime ?? createConfiguredAgentRuntime({
+    config,
+    model,
+    executionMode,
+    ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
+  });
   // The memory LLM must NOT ride the channel `runtime`: that runtime carries the
   // channel fallback chain whose primary is `config.runtime.model`, and the
   // fallback router overrides each run's per-call `model` — so reusing it would
@@ -292,6 +302,7 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),
+    options.sandboxEngine === undefined ? undefined : { sandboxEngine: options.sandboxEngine },
     options.runtimeOptions,
   );
 

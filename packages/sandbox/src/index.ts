@@ -92,6 +92,23 @@ export interface SandboxEngine {
   prepareCommand(command: SandboxCommandSpec, policy: SandboxPolicy): Promise<PreparedSandboxCommand>;
 }
 
+export type SandboxEffectiveMode =
+  | "off"
+  | "native"
+  | "blocked"
+  | "unsafe-host-process";
+
+export interface SandboxEffectiveState {
+  readonly configured: boolean;
+  readonly configuredMode: SandboxMode | undefined;
+  readonly effective: SandboxEffectiveMode;
+  readonly engine: SandboxEngineId | undefined;
+  readonly engineAvailable: boolean | undefined;
+  readonly fallback: SandboxFallback | undefined;
+  readonly fallbackActive: boolean;
+  readonly unsafeAllowHostProcess: boolean;
+}
+
 export interface PrepareSandboxedCommandInput {
   readonly policy?: SandboxPolicy;
   readonly command: SandboxCommandSpec;
@@ -251,6 +268,72 @@ function resolveDefaultEngine(policy: SandboxPolicy): SandboxEngine | undefined 
   return engine;
 }
 
+export async function resolveSandboxEffectiveState(input: {
+  readonly policy?: SandboxPolicy;
+  readonly engine?: SandboxEngine;
+}): Promise<SandboxEffectiveState> {
+  const policy = input.policy;
+  if (policy == null || policy.mode === "off") {
+    return {
+      configured: false,
+      configuredMode: policy?.mode,
+      effective: "off",
+      engine: policy?.engine,
+      engineAvailable: undefined,
+      fallback: policy?.fallback,
+      fallbackActive: false,
+      unsafeAllowHostProcess: policy?.unsafeAllowHostProcess ?? false,
+    };
+  }
+
+  const engine = input.engine ?? resolveDefaultEngine(policy);
+  const engineAvailable = engine === undefined ? false : await engine.isAvailable();
+  if (engine !== undefined && engineAvailable) {
+    return {
+      configured: true,
+      configuredMode: policy.mode,
+      effective: "native",
+      engine: engine.id,
+      engineAvailable,
+      fallback: policy.fallback,
+      fallbackActive: false,
+      unsafeAllowHostProcess: policy.unsafeAllowHostProcess,
+    };
+  }
+
+  const fallbackActive = policy.fallback === "unsafe-host-process" && policy.unsafeAllowHostProcess;
+  return {
+    configured: true,
+    configuredMode: policy.mode,
+    effective: fallbackActive ? "unsafe-host-process" : "blocked",
+    engine: engine?.id ?? policy.engine,
+    engineAvailable,
+    fallback: policy.fallback,
+    fallbackActive,
+    unsafeAllowHostProcess: policy.unsafeAllowHostProcess,
+  };
+}
+
+export function sandboxEffectiveStateWarning(state: SandboxEffectiveState): string | undefined {
+  if (state.fallbackActive && state.effective === "unsafe-host-process") {
+    return `WARNING: Unsafe sandbox fallback is active: ${UNSAFE_HOST_PROCESS_CONSEQUENCE}.`;
+  }
+  return undefined;
+}
+
+export function describeSandboxEffectiveState(state: SandboxEffectiveState): string {
+  if (!state.configured || state.effective === "off") {
+    return "Sandbox is off; commands run without mono-agent sandbox wrapping.";
+  }
+  if (state.effective === "native") {
+    return `Sandbox is effective with native engine "${state.engine ?? "unknown"}"; commands run sandboxed.`;
+  }
+  if (state.effective === "blocked") {
+    return `Sandbox engine "${state.engine ?? "unknown"}" is unavailable; commands fail closed with sandbox_unavailable.`;
+  }
+  return `Sandbox unsafe-host-process fallback is active because engine "${state.engine ?? "unknown"}" is unavailable; ${UNSAFE_HOST_PROCESS_CONSEQUENCE}.`;
+}
+
 export async function prepareSandboxedCommand(input: PrepareSandboxedCommandInput): Promise<PreparedSandboxCommand> {
   const policy = input.policy;
   const command = normalizeCommandSpec(input.command, policy?.root);
@@ -275,6 +358,8 @@ export async function prepareSandboxedCommand(input: PrepareSandboxedCommandInpu
   }
   return engine.prepareCommand(command, policy);
 }
+
+const UNSAFE_HOST_PROCESS_CONSEQUENCE = "all sandbox roots/denyWrite entries are inert; commands run unsandboxed";
 
 export function srtSettingsForPolicy(policy: SandboxPolicy): SrtSettings {
   return {

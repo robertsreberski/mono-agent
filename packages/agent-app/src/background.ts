@@ -449,6 +449,13 @@ function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget
     deps.stdout(ui.rule("observability"));
     deps.stdout(`  ${observability}\n`);
   }
+  const sandboxLines = describeSandboxMetadata(source);
+  if (sandboxLines.length > 0) {
+    deps.stdout(ui.rule("sandbox"));
+    for (const line of sandboxLines) {
+      deps.stdout(`  ${line}\n`);
+    }
+  }
   const channelLines = formatChannels(source);
   if (channelLines.length > 0) {
     deps.stdout(ui.rule("channels"));
@@ -553,6 +560,44 @@ function describeObservabilityMetadata(source: TraceSourceListItem): string | un
   }
   parts.push("JSONL artifacts remain local");
   return parts.join("; ");
+}
+
+function describeSandboxMetadata(source: TraceSourceListItem): string[] {
+  const sandbox = source.metadata?.sandbox;
+  if (sandbox === null || typeof sandbox !== "object") {
+    return [];
+  }
+  const record = sandbox as Record<string, unknown>;
+  const effective = stringField(record, "effective") ?? "unknown";
+  const engine = stringField(record, "engine") ?? "none";
+  const engineAvailability = record.engineAvailable === true
+    ? "present"
+    : record.engineAvailable === false
+      ? "absent"
+      : "not checked";
+  const fallback = stringField(record, "fallback");
+  const fallbackActive = record.fallbackActive === true ? "yes" : "no";
+  const summary = [
+    `effective: ${effective}`,
+    `engine: ${engine} (${engineAvailability})`,
+    ...(fallback === undefined ? [] : [`fallback: ${fallback}`]),
+    `fallback active: ${fallbackActive}`,
+  ].join("; ");
+  return [
+    summary,
+    ...stringFieldAsList(record, "detail"),
+    ...stringFieldAsList(record, "warning").map((warning) => ui.style.yellow(warning)),
+  ];
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function stringFieldAsList(record: Record<string, unknown>, key: string): string[] {
+  const value = stringField(record, key);
+  return value === undefined ? [] : [value];
 }
 
 /** ` --config <path>` when a non-default config is in play, else empty. */

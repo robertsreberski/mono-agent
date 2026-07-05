@@ -61,6 +61,7 @@ export async function buildTurnTools(runState, {
   const runCtx = options.sandbox
     ? { ...(options.toolContext ?? readToolRuntime()), sandbox: options.sandbox }
     : options.toolContext;
+  const sandboxEngine = options.sandboxEngine ?? runCtx?.sandboxEngine;
 
   // REUSED custom pieces: built-in tool sandboxing + allowlist/bloat filter +
   // approval gates. These are identical to the legacy bridge.
@@ -91,7 +92,7 @@ export async function buildTurnTools(runState, {
       imageInlineMaxBytes: toolLimits.imageInlineMaxBytes,
       toolPolicy: options.toolPolicy,
       sandboxPolicy: options.sandboxPolicy,
-      sandboxEngine: options.sandboxEngine,
+      sandboxEngine,
       approvalManager,
       approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
       ctx: runCtx,
@@ -115,7 +116,7 @@ export async function buildTurnTools(runState, {
       limits: toolLimits,
       toolPayloadMaxBytes: toolLimits.toolPayloadMaxBytes,
       sandboxPolicy: options.sandboxPolicy,
-      sandboxEngine: options.sandboxEngine,
+      sandboxEngine,
       ctx: runCtx,
     }));
   // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a

@@ -413,6 +413,41 @@ describe("statusBackground", () => {
     expect(stdout).toContain("system prompt");
   });
 
+  it("prints effective sandbox state from persisted metadata", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target, {
+      metadata: {
+        reason: "startup-complete",
+        sandbox: {
+          configured: true,
+          configuredMode: "native",
+          effective: "unsafe-host-process",
+          engine: "srt",
+          engineAvailable: false,
+          fallback: "unsafe-host-process",
+          fallbackActive: true,
+          unsafeAllowHostProcess: true,
+          detail:
+            "Sandbox unsafe-host-process fallback is active because engine \"srt\" is unavailable; all sandbox roots/denyWrite entries are inert; commands run unsandboxed.",
+          warning:
+            "WARNING: Unsafe sandbox fallback is active: all sandbox roots/denyWrite entries are inert; commands run unsandboxed.",
+        },
+      },
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
+
+    await statusBackground(target, harness.deps);
+
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("sandbox");
+    expect(stdout).toContain("effective: unsafe-host-process");
+    expect(stdout).toContain("engine: srt (absent)");
+    expect(stdout).toContain("fallback active: yes");
+    expect(stdout).toContain("WARNING: Unsafe sandbox fallback is active");
+    expect(stdout).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
+  });
+
   it("prints runs-health explanations from recent local summaries", async () => {
     const { runner } = makeRunner({ loaded: true });
     const target = makeTarget();
