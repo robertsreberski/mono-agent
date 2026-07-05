@@ -372,7 +372,12 @@ export class MonoAgentHarness implements AgentHarness {
 
       // Persist the ORIGINAL caption + redacted attachment metadata (persistText),
       // NOT the expanded prompt with inlined document text.
-      await this.persistSuccessfulTurn(request.conversationId, persistText, text);
+      await this.persistSuccessfulTurn(
+        request.conversationId,
+        persistText,
+        text,
+        runSource.source === undefined ? {} : { source: runSource.source },
+      );
       return {
         text,
         metadata: baseMetadata,
@@ -827,7 +832,12 @@ export class MonoAgentHarness implements AgentHarness {
    * durable history/memory prevents sensitive content leaking into future
    * prompts replayed from history or into memory recall.
    */
-  private async persistSuccessfulTurn(conversationId: string, userMessage: string, assistantText: string): Promise<void> {
+  private async persistSuccessfulTurn(
+    conversationId: string,
+    userMessage: string,
+    assistantText: string,
+    options: { readonly source?: string } = {},
+  ): Promise<void> {
     const timestamp = this.options.now?.().toISOString() ?? new Date().toISOString();
     await this.options.historyStore?.append(conversationId, [
       { role: "user", content: userMessage, timestamp },
@@ -839,11 +849,11 @@ export class MonoAgentHarness implements AgentHarness {
       // Always write the deterministic rapid-log line (sync, durable).
       await this.options.memory.appendHostSummary(
         conversationId,
-        deterministicHostSummary(userMessage, assistantText),
+        deterministicHostSummary(userMessage, assistantText, options),
       );
       // 'capture' additionally enqueues a best-effort intelligent capture (async, non-blocking).
       if (mode === "capture") {
-        this.options.memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText));
+        this.options.memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, options));
       }
     }
   }
@@ -1180,7 +1190,17 @@ function failureResponse(input: {
   };
 }
 
-function deterministicHostSummary(userMessage: string, assistantText: string): string {
+function deterministicHostSummary(
+  userMessage: string,
+  assistantText: string,
+  options: { readonly source?: string } = {},
+): string {
+  if (isTriggerSource(options.source)) {
+    return [
+      "Host-observed completed trigger turn.",
+      `Assistant: ${compactOneLine(assistantText, 240)}`,
+    ].join("\n");
+  }
   return [
     "Host-observed completed turn.",
     `User: ${compactOneLine(userMessage, 240)}`,
@@ -1188,9 +1208,20 @@ function deterministicHostSummary(userMessage: string, assistantText: string): s
   ].join("\n");
 }
 
-function captureTurnText(userMessage: string, assistantText: string): string {
+function captureTurnText(
+  userMessage: string,
+  assistantText: string,
+  options: { readonly source?: string } = {},
+): string {
   // Richer than the compacted host summary: the distiller wants the real turn content.
+  if (isTriggerSource(options.source)) {
+    return `Assistant: ${assistantText}`;
+  }
   return `User: ${userMessage}\nAssistant: ${assistantText}`;
+}
+
+function isTriggerSource(source: string | undefined): boolean {
+  return source === "cron" || source === "webhook";
 }
 
 function compactOneLine(value: string, maxChars: number): string {

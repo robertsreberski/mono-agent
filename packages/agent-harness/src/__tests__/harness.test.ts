@@ -568,6 +568,49 @@ describe("AgentHarness", () => {
     expect(calls.some((c) => c.startsWith("schedule:c1"))).toBe(true);
   });
 
+  for (const [label, metadata] of [
+    ["cron", { cron: { jobId: "focus-scan", scheduledAt: "2026-07-05T08:00:00.000Z" } }],
+    ["webhook", { webhook: { endpointName: "focus-scan", requestId: "req-1", mode: "sync" } }],
+  ] as const) {
+    it(`writeMode 'capture' captures only the assistant answer for ${label} turns`, async () => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const summaries: string[] = [];
+      const captures: string[] = [];
+      const memory = {
+        load: async () => undefined,
+        appendHostSummary: async (id: string, summary: string) => {
+          summaries.push(summary);
+          return { conversationId: id, source: "memory.md", bytesWritten: summary.length };
+        },
+        scheduleCapture: (_id: string, text: string) => {
+          captures.push(text);
+        },
+        flush: async () => {},
+      };
+      const prompt = "Run the hourly focus scan. Do not run a broad project scan.";
+      const answer = "No focus changes need your attention.";
+      const fake = createFakeRuntime(async () => ({ text: answer }));
+
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        executionMode: "sdk",
+        memory,
+        memoryWriteMode: "capture",
+        createRunId: () => `run-${label}-capture`,
+      }).run({ conversationId: `${label}:focus-scan`, userMessage: prompt, metadata, abortSignal: new AbortController().signal });
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toContain(answer);
+      expect(summaries[0]).not.toContain(prompt);
+      expect(captures).toEqual([`Assistant: ${answer}`]);
+      expect(captures[0]).not.toContain(prompt);
+    });
+  }
+
   it("writeMode 'append-host-summary' does NOT schedule a capture", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
