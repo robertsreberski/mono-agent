@@ -19,6 +19,10 @@ describe("verify-deep-imports", () => {
     expect(specifiers).toContain("@mono-agent/agent-runtime/ai/failure.js");
     expect(specifiers).toContain("@mono-agent/agent-runtime/agent/compaction.js");
     expect(specifiers).toContain("@mono-agent/agent-runtime/ai/runtime/registry.js");
+    expect(specifiers).toContain("@mono-agent/agent-runtime/ai/providers/claude-sdk.js");
+    expect(specifiers).toContain("@mono-agent/agent-runtime/ai/providers/claude-cli.js");
+    expect(specifiers).toContain("@mono-agent/agent-runtime/ai/providers/codex-app.js");
+    expect(specifiers).toContain("@mono-agent/agent-runtime/agent/tools/shared/ripgrep.js");
     // Phase 6 removed the wildcards + the pi-sdk shim; neither should be mapped.
     expect(specifiers.some((s) => s.includes("*"))).toBe(false);
     expect(specifiers).not.toContain("@mono-agent/agent-runtime/ai/providers/pi-sdk.js");
