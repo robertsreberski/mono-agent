@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { sessionStoreKey, useRecorder } from "../lib/store";
-import type { SessionStep } from "../lib/types";
+import type { SessionStep, TurnContext } from "../lib/types";
 import { Markdown } from "../lib/markdown";
 import {
   timeStr,
@@ -95,6 +95,29 @@ export function timelineEmptyMessage(status: string, itemCount: number): string 
   return status === "running" ? "Waiting for live events..." : "No timeline events captured.";
 }
 
+/**
+ * One-line summary of the context a turn was driven with. Pure so it is unit
+ * testable without rendering: "N prior messages · memory recalled (source)", or
+ * "history omitted — warm provider session" when a warm provider session already
+ * held the transcript. Falls back to a compiled-prompt-only note for old
+ * (ctx-less) recordings that still carry a system prompt.
+ */
+export function ctxSummaryLine(ctx: TurnContext | undefined, hasSysPrompt: boolean): string {
+  if (ctx === undefined) {
+    return hasSysPrompt ? "compiled system prompt only" : "";
+  }
+  const parts: string[] = [];
+  parts.push(
+    ctx.histOmitted === true
+      ? "history omitted — warm provider session"
+      : `${ctx.histCount} prior message${ctx.histCount === 1 ? "" : "s"}`,
+  );
+  if (ctx.mem !== undefined) {
+    parts.push(ctx.mem.src !== undefined && ctx.mem.src.length > 0 ? `memory recalled (${ctx.mem.src})` : "memory recalled");
+  }
+  return parts.join(" · ");
+}
+
 export function boundaryStepLabel(kind: string): string {
   if (kind === "rollover") return "Session rollover";
   if (kind === "isolated") return "Isolated session";
@@ -141,6 +164,10 @@ export function DetailView({ id, onBack }: Props) {
   const isMobile = useIsMobile();
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [showRecall, setShowRecall] = useState(false);
+  const [showCtxMem, setShowCtxMem] = useState(false);
+  // null = follow the length default (expanded when <= 4 messages); a boolean once toggled.
+  const [showCtxHist, setShowCtxHist] = useState<boolean | null>(null);
+  const [showSysPrompt, setShowSysPrompt] = useState(false);
   const toggle = (k: string) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
   const s = useMemo(() => sessions.find((x) => sessionStoreKey(x) === id), [sessions, id]);
@@ -352,6 +379,11 @@ export function DetailView({ id, onBack }: Props) {
 
   const { isChat, outcome, eff, vitals, toolBars, toolEntries, steps } = d;
   const t = s.totals;
+  const ctxHist = s.ctx?.hist ?? [];
+  // Default the history list expanded for short transcripts, collapsed for long
+  // ones; once the operator toggles, their choice sticks.
+  const histDefaultOpen = ctxHist.length <= 4;
+  const histOpen = showCtxHist ?? histDefaultOpen;
   const terminalStatus = ["failed", "cancelled", "interrupted"].includes(s.status);
   const failureDetails = [
     s.failureKind === undefined ? undefined : `kind ${s.failureKind}`,
@@ -634,6 +666,81 @@ export function DetailView({ id, onBack }: Props) {
             )}
           </div>
         </div>
+
+        {/* context (this turn) */}
+        {(s.ctx !== undefined || s.sysPrompt !== undefined) && (
+          <div style={{ marginTop: 22 }}>
+            <div style={{ ...secLabel(TEAL), marginBottom: 9 }}>▼ Context (this turn)</div>
+            <div style={{ background: "rgba(79,182,166,.05)", border: "1px solid rgba(79,182,166,.18)", borderRadius: 13, padding: "16px 18px" }}>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: MUTED, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+                {ctxSummaryLine(s.ctx, s.sysPrompt !== undefined)}
+              </div>
+
+              {s.ctx?.mem !== undefined && (
+                <div style={{ marginTop: 13 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: "#c39a5e" }}>Recalled memory</span>
+                    {s.ctx.mem.src !== undefined && s.ctx.mem.src.length > 0 && (
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: "#E0955A", padding: "2px 8px", borderRadius: 6, background: hexA("#E0955A", 0.12), border: `1px solid ${hexA("#E0955A", 0.3)}` }}>
+                        {s.ctx.mem.src}
+                      </span>
+                    )}
+                  </div>
+                  <button className="link-btn" onClick={() => setShowCtxMem((v) => !v)} aria-expanded={showCtxMem} style={ctxToggleStyle}>
+                    {showCtxMem ? "▾ hide recalled memory" : "▸ show recalled memory"}
+                  </button>
+                  {showCtxMem && <div style={ctxScrollBoxStyle}>{s.ctx.mem.text + (s.ctx.mem.tr ? "\n…" : "")}</div>}
+                </div>
+              )}
+
+              {ctxHist.length > 0 && (
+                <div style={{ marginTop: 13 }}>
+                  <button
+                    className="link-btn"
+                    onClick={() => setShowCtxHist((v) => !(v ?? histDefaultOpen))}
+                    aria-expanded={histOpen}
+                    style={ctxToggleStyle}
+                  >
+                    {histOpen ? "▾ hide conversation history" : `▸ show conversation history (${ctxHist.length})`}
+                  </button>
+                  {histOpen && (
+                    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                      {ctxHist.map((m, i) => {
+                        const r = m.role.toLowerCase();
+                        const rc = r === "user" ? BLUE : r === "assistant" ? AMBER : MUTED;
+                        return (
+                          <div key={"cm" + i} style={{ background: "rgba(0,0,0,.22)", border: "1px solid rgba(255,255,255,.06)", borderRadius: 9, padding: "10px 12px" }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                              <span style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: ".12em", textTransform: "uppercase", color: rc, fontWeight: 600 }}>
+                                {m.role}
+                                {m.name !== undefined && m.name.length > 0 ? ` · ${m.name}` : ""}
+                              </span>
+                              {m.ts !== undefined && m.ts.length > 0 && (
+                                <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIMMER, whiteSpace: "nowrap" }}>{m.ts}</span>
+                              )}
+                            </div>
+                            <div style={{ whiteSpace: "pre-wrap", fontFamily: FONT_UI, fontSize: 13, lineHeight: 1.5, color: "#CFCFD4", overflowWrap: "anywhere" }}>
+                              {m.text + (m.tr ? "\n…" : "")}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {s.sysPrompt !== undefined && (
+                <div style={{ marginTop: 13, borderTop: "1px solid rgba(255,255,255,.08)", paddingTop: 11 }}>
+                  <button className="link-btn" onClick={() => setShowSysPrompt((v) => !v)} aria-expanded={showSysPrompt} style={ctxToggleStyle}>
+                    {showSysPrompt ? "▾ hide full compiled prompt (raw)" : "▸ show full compiled prompt (raw)"}
+                  </button>
+                  {showSysPrompt && <div style={ctxScrollBoxStyle}>{s.sysPrompt + (s.sysPromptTr ? "\n…" : "")}</div>}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* tool usage */}
         {toolBars.length > 0 && (
@@ -965,6 +1072,36 @@ const backBtnStyle: React.CSSProperties = {
   padding: "10px 13px",
   borderRadius: 9,
   transition: "all .15s",
+};
+
+const ctxToggleStyle: React.CSSProperties = {
+  cursor: "pointer",
+  background: "none",
+  border: "none",
+  color: "#8b8d94",
+  fontFamily: FONT_MONO,
+  fontSize: 11,
+  letterSpacing: ".06em",
+  padding: "8px 4px",
+  margin: "0 0 0 -4px",
+  minHeight: 44,
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const ctxScrollBoxStyle: React.CSSProperties = {
+  whiteSpace: "pre-wrap",
+  fontFamily: FONT_MONO,
+  fontSize: 12,
+  lineHeight: 1.6,
+  color: "#8b8d94",
+  marginTop: 10,
+  maxHeight: 260,
+  overflow: "auto",
+  padding: 12,
+  background: "rgba(0,0,0,.25)",
+  borderRadius: 9,
 };
 
 const preStyle: React.CSSProperties = {

@@ -168,6 +168,58 @@ describe("session store identity", () => {
     expect(merged?.steps).toEqual(terminal.steps);
   });
 
+  test("keeps loaded per-turn context when a stripped upsert arrives later", () => {
+    const detailed = session("agent-a", "Detailed", {
+      finalText: "full answer",
+      status: "succeeded",
+      totals: { asst: 1, steps: 2 },
+      steps: [
+        { k: "prompt", ts: "2026-07-04T10:00:00.000Z", text: "Run" },
+        { k: "assistant", ts: "2026-07-04T10:00:01.000Z", think: [], calls: [], text: "full answer" },
+      ],
+      sysPrompt: "Compiled system prompt.",
+      sysPromptTr: true,
+      ctx: {
+        histCount: 1,
+        hist: [{ role: "user", text: "prior" }],
+        mem: { text: "recalled", src: "bujo" },
+      },
+    });
+    // A stripped SSE list upsert (same run) carries no ctx/sysPrompt.
+    const stripped = session("agent-a", "Summary", {
+      finalText: "",
+      status: "succeeded",
+      totals: { asst: 0, steps: 2 },
+      steps: [],
+    });
+
+    const [merged] = applySessionOps([detailed], [{ type: "upsert", session: stripped }]);
+
+    expect(merged?.sysPrompt).toBe("Compiled system prompt.");
+    expect(merged?.sysPromptTr).toBe(true);
+    expect(merged?.ctx).toEqual({
+      histCount: 1,
+      hist: [{ role: "user", text: "prior" }],
+      mem: { text: "recalled", src: "bujo" },
+    });
+  });
+
+  test("lets a richer upsert replace an earlier ctx/sysPrompt", () => {
+    const first = session("agent-a", "First", {
+      sysPrompt: "old prompt",
+      ctx: { histCount: 1, hist: [{ role: "user", text: "old" }] },
+    });
+    const second = session("agent-a", "Second", {
+      sysPrompt: "new prompt",
+      ctx: { histCount: 2, hist: [{ role: "user", text: "new" }] },
+    });
+
+    const [merged] = applySessionOps([first], [{ type: "upsert", session: second }]);
+
+    expect(merged?.sysPrompt).toBe("new prompt");
+    expect(merged?.ctx).toEqual({ histCount: 2, hist: [{ role: "user", text: "new" }] });
+  });
+
   test("keeps opened detail when a summary reconnect upsert arrives later", () => {
     const detailed = session("agent-a", "Detailed", {
       finalText: "full answer",

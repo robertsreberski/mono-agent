@@ -95,7 +95,11 @@ function mergeSessionUpsert(existing: Session | undefined, incoming: Session): S
     existing.steps.length > 0 &&
     (incoming.steps.length < existing.steps.length || incoming.totals.steps < existing.totals.steps);
   const preserveFinalText = existing.finalText.trim().length > 0 && incoming.finalText.trim().length === 0;
-  if (!preserveTimeline && !preserveFinalText) {
+  // Stripped SSE list upserts carry no ctx/sysPrompt (detail-only). Keep the
+  // loaded detail rather than let `...incoming` erase it.
+  const preserveCtx = existing.ctx !== undefined && incoming.ctx === undefined;
+  const preserveSysPrompt = existing.sysPrompt !== undefined && incoming.sysPrompt === undefined;
+  if (!preserveTimeline && !preserveFinalText && !preserveCtx && !preserveSysPrompt) {
     return incoming;
   }
 
@@ -119,6 +123,13 @@ function mergeSessionUpsert(existing: Session | undefined, incoming: Session): S
           finalText: existing.finalText,
           outcome: existing.outcome,
           ...(existing.finalTr === undefined ? {} : { finalTr: existing.finalTr }),
+        }
+      : {}),
+    ...(preserveCtx ? { ctx: existing.ctx } : {}),
+    ...(preserveSysPrompt
+      ? {
+          sysPrompt: existing.sysPrompt,
+          ...(existing.sysPromptTr === undefined ? {} : { sysPromptTr: existing.sysPromptTr }),
         }
       : {}),
   };

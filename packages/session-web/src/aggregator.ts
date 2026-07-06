@@ -1272,7 +1272,12 @@ function mergeSessionPreservingVisibleDetail(
     existing.steps.length > 0 &&
     (incoming.steps.length < existing.steps.length || incoming.totals.steps < existing.totals.steps);
   const preserveFinalText = existing.finalText.trim().length > 0 && incoming.finalText.trim().length === 0;
-  if (!preserveTimeline && !preserveFinalText) {
+  // A stripped list/summary upsert carries no ctx/sysPrompt (they live only on the
+  // lazy detail read). When the loaded detail already holds them, keep them rather
+  // than let `...incoming` erase them.
+  const preserveCtx = existing.ctx !== undefined && incoming.ctx === undefined;
+  const preserveSysPrompt = existing.sysPrompt !== undefined && incoming.sysPrompt === undefined;
+  if (!preserveTimeline && !preserveFinalText && !preserveCtx && !preserveSysPrompt) {
     return incoming;
   }
 
@@ -1298,6 +1303,13 @@ function mergeSessionPreservingVisibleDetail(
           ...(existing.finalTr === undefined ? {} : { finalTr: existing.finalTr }),
         }
       : {}),
+    ...(preserveCtx ? { ctx: existing.ctx } : {}),
+    ...(preserveSysPrompt
+      ? {
+          sysPrompt: existing.sysPrompt,
+          ...(existing.sysPromptTr === undefined ? {} : { sysPromptTr: existing.sysPromptTr }),
+        }
+      : {}),
   };
 }
 
@@ -1306,6 +1318,10 @@ function toBrowserListSession(session: SourceStampedSession): SourceStampedSessi
     instrTr: _instrTr,
     recalled: _recalled,
     finalTr: _finalTr,
+    // Per-turn context + compiled system prompt are detail-only; keep list rows light.
+    ctx: _ctx,
+    sysPrompt: _sysPrompt,
+    sysPromptTr: _sysPromptTr,
     ...withoutDetailText
   } = session;
   return {

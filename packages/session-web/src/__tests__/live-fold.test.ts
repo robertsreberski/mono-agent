@@ -1,5 +1,5 @@
 import { mkdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { createLiveEventBus, LIVE_EVENT_SCHEMA, type RunEventBus, type RunEventFrame } from "@mono-agent/agent-contracts";
 import { RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
@@ -66,7 +66,26 @@ function assistantEvent(): RunEventFrame {
   };
 }
 
-function runFinished(): RunEventFrame {
+function turnContextEvent(): RunEventFrame {
+  return {
+    t: "event",
+    schema: LIVE_EVENT_SCHEMA,
+    sourceId: SOURCE_ID,
+    runId: RUN_ID,
+    eventIndex: 1,
+    event: {
+      type: "turn_context",
+      timestamp: STARTED_AT,
+      historyCount: 1,
+      historyOmitted: false,
+      history: [{ role: "user", content: "prior turn" }],
+      memory: { content: "recalled note", source: "bujo" },
+    },
+    seq: 1,
+  };
+}
+
+function runFinished(withSystemPrompt = false): RunEventFrame {
   return {
     t: "run_finished",
     schema: LIVE_EVENT_SCHEMA,
@@ -85,6 +104,7 @@ function runFinished(): RunEventFrame {
       usage: { input_tokens: 12, output_tokens: 7 },
       model: "pi:ollama:qwen",
       source: "cron",
+      ...(withSystemPrompt ? { systemPrompt: "Live compiled system prompt." } : {}),
     },
     seq: 0,
   };
@@ -202,6 +222,98 @@ describe("SessionAggregator live fold", () => {
     await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({ id: RUN_ID, status: "succeeded" });
     await waitFor(() => aggregator?.getInstances().find((instance) => instance.liveConnected === true));
     expect(aggregator.getInstances()[0]?.counts.runs).toBe(1);
+  });
+
+  it("folds a turn_context event and a run_finished systemPrompt into the session ctx/sysPrompt", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
+    });
+    await aggregator.start();
+
+    bus.publish(runStarted());
+    bus.publish(assistantEvent());
+    bus.publish(turnContextEvent());
+    bus.publish(runFinished(true));
+    await waitFor(() =>
+      aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.status === "succeeded"),
+    );
+
+    await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
+      id: RUN_ID,
+      status: "succeeded",
+      sysPrompt: "Live compiled system prompt.",
+      ctx: {
+        histCount: 1,
+        hist: [{ role: "user", text: "prior turn" }],
+        mem: { text: "recalled note", src: "bujo" },
+      },
+    });
+  });
+
+  it("preserves the live-folded ctx/sysPrompt when a stripped disk summary reread arrives", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
+    });
+    await aggregator.start();
+
+    bus.publish(runStarted());
+    bus.publish(assistantEvent());
+    bus.publish(turnContextEvent());
+    bus.publish(runFinished(true));
+    await waitFor(() =>
+      aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.status === "succeeded"),
+    );
+
+    // A stripped terminal disk summary lands from the artifact watcher; its list
+    // projection carries no ctx/sysPrompt (they live only on the lazy detail read).
+    const finished = await seedRun({
+      artifactDir,
+      runId: RUN_ID,
+      conversationId: "cron:live",
+      text: "disk answer",
+      source: "cron",
+      at: Date.parse(STARTED_AT),
+    });
+    const summaryFileName = basename(finished.artifactPaths[1] ?? `${RUN_ID}.summary.json`);
+    const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get(SOURCE_ID);
+    await (aggregator as unknown as { rereadArtifactSummaryFile(state: unknown, summaryFileName: string): Promise<void> })
+      .rereadArtifactSummaryFile(state, summaryFileName);
+
+    const merged = (
+      state as { readonly sessions: Map<string, { readonly ctx?: unknown; readonly sysPrompt?: string }> }
+    ).sessions.get(RUN_ID);
+    expect(merged?.sysPrompt).toBe("Live compiled system prompt.");
+    expect(merged?.ctx).toEqual({
+      histCount: 1,
+      hist: [{ role: "user", text: "prior turn" }],
+      mem: { text: "recalled note", src: "bujo" },
+    });
   });
 
   it("dedupes replayed live event frames for an in-flight run", async () => {
