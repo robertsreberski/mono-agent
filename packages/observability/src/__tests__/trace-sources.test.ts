@@ -161,6 +161,10 @@ describe("trace source registry", () => {
     expect(all.runs.map((run) => run.runId).sort()).toEqual(["agent-run", "mem-legacy", "mem-new"]);
 
     await expect(readTraceRun({ registryDir }, "agent-memory", "mem-new")).resolves.toBeUndefined();
+    await expect(readTraceRun({ registryDir }, "agent-memory", "mem-legacy")).resolves.toMatchObject({
+      run: { summary: { runId: "mem-legacy", summaryFileName: "mem-legacy.summary.json" } },
+    });
+    await expect(readTraceRun({ registryDir, scope: "agent" }, "agent-memory", "mem-legacy")).resolves.toBeUndefined();
     await expect(readTraceRun({ registryDir, scope: "memory" }, "agent-memory", "mem-new")).resolves.toMatchObject({
       run: { summary: { runId: "mem-new", summaryFileName: "memory/mem-new.summary.json" } },
     });

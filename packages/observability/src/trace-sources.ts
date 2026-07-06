@@ -429,6 +429,7 @@ interface NormalizedRegistryOptions {
 
 interface NormalizedRunListOptions extends NormalizedRegistryOptions {
   readonly scope: "agent" | "memory" | "all";
+  readonly scopeProvided: boolean;
   readonly maxRuns: number;
   readonly maxEventsPerRun: number;
   readonly maxStringBytes: number;
@@ -442,6 +443,7 @@ function normalizeRunListOptions(options: TraceRunListOptions): NormalizedRunLis
   return {
     ...normalizeRegistryOptions(options),
     scope: normalizeRunArtifactScope(options.scope),
+    scopeProvided: options.scope !== undefined,
     maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns", raiseRegistryOption),
     maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun", raiseRegistryOption),
     maxStringBytes: minInteger(options.maxStringBytes, DEFAULT_MAX_STRING_BYTES, 64, "maxStringBytes", raiseRegistryOption),
@@ -462,7 +464,7 @@ function normalizeRegistryOptions(options: TraceSourceRegistryOptions): Normaliz
 function readerOptionsForSource(artifactDir: string, options: NormalizedRunListOptions): JsonlRunReaderOptions {
   return {
     artifactDir,
-    scope: options.scope,
+    ...(options.scopeProvided ? { scope: options.scope } : {}),
     maxRuns: options.maxRuns,
     maxEventsPerRun: options.maxEventsPerRun,
     maxStringBytes: options.maxStringBytes,
