@@ -32,6 +32,8 @@ const server = await startSessionWebServer({
   registryDirs: ["/Users/me/.mono-agent/trace-sources"],
   host: "127.0.0.1",
   port: 4599,
+  // Defaults to agent runs only. Uncomment to include memory-maintenance runs.
+  // includeMemory: true,
 });
 console.log(server.url);
 await server.stop();
@@ -46,10 +48,15 @@ and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
 Run lists and the initial browser SSE snapshot are summary-only and step-less.
 Full run timelines are read lazily from `/api/sessions/:sourceId/:runId` when a
 detail view opens.
+Memory-maintenance runs are hidden by default across disk history, watched
+updates, API responses, browser SSE frames, and live folds; pass
+`includeMemory: true` to opt them back in.
 
 ## Public API
 
-- `startSessionWebServer(options)` → `{ url, stop() }`.
+- `startSessionWebServer(options)` → `{ url, stop() }` (`includeMemory` defaults
+  to `false`; `true` includes memory-maintenance runs in history/API/SSE/live
+  frames).
 - `discoverWebInstances(options)` and the `Session`/`SessionStep`/`WebInstance` types.
 
 ## Dependency Boundary

@@ -34,6 +34,7 @@ import type { BrowserStreamFrame, WebInstance } from "./session-model.js";
 /** On-disk recorded-run summary suffix (observability's `SUMMARY_SUFFIX`, not exported). */
 const SUMMARY_SUFFIX = ".summary.json";
 const MEMORY_ARTIFACT_NAMESPACE = "memory";
+const MAX_SUPPRESSED_MEMORY_LIVE_RUNS = 512;
 
 const RUN_SUMMARY_STATUSES = new Set<RunSummaryStatus>([
   "running",
@@ -111,8 +112,8 @@ interface InstanceState {
    * {@link artifactFinished} (disk) so a later authoritative disk read still wins.
    */
   readonly liveFinished: Set<string>;
-  /** Memory runs identified on the live stream and suppressed while includeMemory is false. */
-  readonly suppressedMemoryLiveRuns: Set<string>;
+  /** Memory runs recently identified on the live stream and suppressed while includeMemory is false. */
+  readonly suppressedMemoryLiveRuns: BoundedStringFifoSet;
 }
 
 export class SessionAggregator {
@@ -295,7 +296,7 @@ export class SessionAggregator {
       maxRunsPerInstance: this.maxRunsPerInstance,
       artifactFinished: new Set(),
       liveFinished: new Set(),
-      suppressedMemoryLiveRuns: new Set(),
+      suppressedMemoryLiveRuns: new BoundedStringFifoSet(MAX_SUPPRESSED_MEMORY_LIVE_RUNS),
     };
     this.states.set(discovered.instance.sourceId, state);
 
@@ -928,6 +929,11 @@ export class SessionAggregator {
     };
   }
 
+  /** Test-only visibility for the bounded hidden-memory-run cache; not part of the public API. */
+  _testSuppressedMemoryLiveRunCount(sourceId: string): number | undefined {
+    return this.states.get(sourceId)?.suppressedMemoryLiveRuns.size;
+  }
+
   private shouldDropMemoryLiveFrame(state: InstanceState, frame: RunEventFrame): boolean {
     return state.suppressedMemoryLiveRuns.has(frame.runId) || liveFrameIsMemory(frame);
   }
@@ -949,6 +955,50 @@ export class SessionAggregator {
       this.emit({ t: "session_removed", sourceId: state.discovered.instance.sourceId, runId });
       this.scheduleInstancesEmit();
     }
+  }
+}
+
+class BoundedStringFifoSet {
+  private readonly values = new Set<string>();
+  private readonly order: string[] = [];
+
+  constructor(private readonly maxSize: number) {}
+
+  get size(): number {
+    return this.values.size;
+  }
+
+  has(value: string): boolean {
+    return this.values.has(value);
+  }
+
+  add(value: string): void {
+    if (this.values.has(value)) {
+      return;
+    }
+    this.values.add(value);
+    this.order.push(value);
+    while (this.values.size > this.maxSize) {
+      const oldest = this.order.shift();
+      if (oldest !== undefined) {
+        this.values.delete(oldest);
+      }
+    }
+  }
+
+  delete(value: string): void {
+    if (!this.values.delete(value)) {
+      return;
+    }
+    const index = this.order.indexOf(value);
+    if (index >= 0) {
+      this.order.splice(index, 1);
+    }
+  }
+
+  clear(): void {
+    this.values.clear();
+    this.order.length = 0;
   }
 }
 
