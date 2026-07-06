@@ -84,7 +84,7 @@ mono-agent setup --recipe personal-telegram-bujo --with slack,cron
 | Flag | Effect |
 | --- | --- |
 | `--recipe <id>` | Preselect a recipe and skip the recipe chooser. Use `mono-agent recipes list` to inspect ids. |
-| `--with <csv>` | Preselect add-on channels. Valid values are `telegram`, `slack`, `whatsapp`, `a2a`, `webhook`, `openaiApi`, and `cron`. |
+| `--with <csv>` | Preselect core add-on channels. Valid values are `telegram`, `slack`, `webhook`, `openaiApi`, and `cron`. External channels such as WhatsApp and A2A are declared with `channels.plugins[]` or recipe config. |
 | `--model <ref>` | Use this as the default answer for the shared model input. |
 | `--fallback-models <csv>` | Use these as the default fallback-model answer and write them into `runtime.fallbackModels`. |
 | `--memory lite\|journal\|bujo` | Seed memory in non-recipe setup fallback mode. |
@@ -165,7 +165,7 @@ The warning prints only the stable field id and env-var name — never the secre
 
 ## `config`
 
-Prints the resolved configuration read-only: every core section field-by-field, each value tagged with its origin — `[env]`, `[json]`, or `[default]` — followed by a **Channels** block with the same per-field provenance for every channel section (composed from each adapter's field registry, so it can never disagree with what the adapter actually reads), any JSON-secret placement warnings, and the channel status summary. Secret fields are shown only as `set` / `unset`, never as values.
+Prints the resolved configuration read-only: every core section field-by-field, each value tagged with its origin — `[env]`, `[json]`, or `[default]` — followed by a **Channels** block with the same per-field provenance for every built-in and configured plugin channel (composed from each adapter's field registry, so it can never disagree with what the adapter actually reads), any JSON-secret placement warnings, and the channel status summary. Secret fields are shown only as `set` / `unset`, never as values.
 
 ```bash
 mono-agent config

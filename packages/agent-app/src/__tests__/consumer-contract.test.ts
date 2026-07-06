@@ -75,10 +75,6 @@ describe("golden consumer config contracts", () => {
           "status": "disabled",
         },
         {
-          "id": "channel:a2a",
-          "status": "disabled",
-        },
-        {
           "id": "channel:webhook",
           "status": "ok",
         },
@@ -89,10 +85,6 @@ describe("golden consumer config contracts", () => {
         {
           "id": "channel:cron",
           "status": "ok",
-        },
-        {
-          "id": "channel:whatsapp",
-          "status": "disabled",
         },
         {
           "id": "channel:tui",
@@ -159,10 +151,6 @@ describe("golden consumer config contracts", () => {
           "status": "waiting",
         },
         {
-          "id": "channel:a2a",
-          "status": "disabled",
-        },
-        {
           "id": "channel:webhook",
           "status": "disabled",
         },
@@ -173,10 +161,6 @@ describe("golden consumer config contracts", () => {
         {
           "id": "channel:cron",
           "status": "ok",
-        },
-        {
-          "id": "channel:whatsapp",
-          "status": "disabled",
         },
         {
           "id": "channel:tui",

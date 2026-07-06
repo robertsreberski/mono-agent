@@ -6,13 +6,13 @@ sidebar:
 
 # A2A (Agent-to-Agent)
 
-This page covers the **provider** side of the A2A channel: how mono-agent serves your agent over the [A2A protocol](https://a2a-protocol.org) so other agents can discover and call it. The channel publishes an Agent Card, accepts messages over JSON-RPC and REST, and streams responses. Calling *remote* A2A agents (the consumer side) is programmatic — see [A2A consumer](/programmatic/a2a-consumer/).
+This page covers the **provider** side of the A2A channel: how mono-agent serves your agent over the [A2A protocol](https://a2a-protocol.org) so other agents can discover and call it. The channel is provided by the external `@mono-agent/a2a-adapter` package and loaded through `channels.plugins[]`. It publishes an Agent Card, accepts messages over JSON-RPC and REST, and streams responses. Calling *remote* A2A agents (the consumer side) is programmatic — see [A2A consumer](/programmatic/a2a-consumer/).
 
-Coverage: **config**. The provider is fully described by `a2a.provider` + `a2a.agent` + `a2a.skill` in `mono-agent.config.json`.
+Coverage: **config**. The provider is fully described by the A2A plugin entry's `config.provider`, `config.agent`, and `config.skill` settings in `mono-agent.config.json`.
 
 ## What the provider serves
 
-When `a2a.enabled` is `true` (or the legacy `a2a.provider.enabled` — the root flag wins when both are set), `mono-agent start` binds an HTTP server that exposes three endpoints relative to the bound host (or `publicBaseUrl` when fronted by a proxy):
+When the A2A plugin entry has `config.enabled` set to `true` (or the legacy `config.provider.enabled` — the root flag wins when both are set), `mono-agent start` binds an HTTP server that exposes three endpoints relative to the bound host (or `publicBaseUrl` when fronted by a proxy):
 
 | Path | Purpose |
 | --- | --- |
@@ -40,35 +40,43 @@ If you need richer transport semantics, treat the provider as a stable text gate
 
 ```json
 {
-  "a2a": {
-    "provider": {
-      "enabled": true,
-      "host": "127.0.0.1",
-      "port": 4201,
-      "publicBaseUrl": "https://agent.example.com",
-      "allowNonLoopback": false,
-      "requireBearer": false,
-      "bearerToken": "..."
-    },
-    "agent": {
-      "name": "My Agent",
-      "description": "What it does.",
-      "version": "0.1.0",
-      "providerOrganization": "Acme",
-      "providerUrl": "https://acme.example.com"
-    },
-    "skill": {
-      "id": "main",
-      "name": "Main",
-      "description": "Primary skill.",
-      "tags": ["agent"],
-      "examples": ["Summarize this thread.", "Draft a reply."]
-    }
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/a2a-adapter",
+        "id": "a2a",
+        "config": {
+          "enabled": true,
+          "provider": {
+            "host": "127.0.0.1",
+            "port": 4201,
+            "publicBaseUrl": "https://agent.example.com",
+            "allowNonLoopback": false,
+            "requireBearer": false,
+            "bearerToken": "..."
+          },
+          "agent": {
+            "name": "My Agent",
+            "description": "What it does.",
+            "version": "0.1.0",
+            "providerOrganization": "Acme",
+            "providerUrl": "https://acme.example.com"
+          },
+          "skill": {
+            "id": "main",
+            "name": "Main",
+            "description": "Primary skill.",
+            "tags": ["agent"],
+            "examples": ["Summarize this thread.", "Draft a reply."]
+          }
+        }
+      }
+    ]
   }
 }
 ```
 
-### `a2a.provider`
+### `config.provider`
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -80,7 +88,7 @@ If you need richer transport semantics, treat the provider as a stable text gate
 | `requireBearer` | boolean | `false` | Require `Authorization: Bearer <token>` on `/a2a/json-rpc` and `/a2a/rest`. |
 | `bearerToken` | string | — | The expected token. Required when `requireBearer` is `true`. |
 
-### `a2a.agent`
+### `config.agent`
 
 Populates the identity block of the Agent Card.
 
@@ -92,7 +100,7 @@ Populates the identity block of the Agent Card.
 | `providerOrganization` | no | Organization that operates the agent. |
 | `providerUrl` | no | URL for the operating organization. |
 
-### `a2a.skill`
+### `config.skill`
 
 A single advertised skill on the Agent Card.
 
@@ -110,23 +118,23 @@ Every key has a `MONO_AGENT_*` override. Strings split on commas where the value
 
 | Env var | JSON key |
 | --- | --- |
-| `MONO_AGENT_A2A_ENABLED` | `a2a.enabled` (canonical; wins over the legacy form) |
-| `MONO_AGENT_A2A_PROVIDER_ENABLED` | `a2a.provider.enabled` (legacy; still honored) |
-| `MONO_AGENT_A2A_HOST` | `a2a.provider.host` |
-| `MONO_AGENT_A2A_PORT` | `a2a.provider.port` |
-| `MONO_AGENT_A2A_PUBLIC_BASE_URL` | `a2a.provider.publicBaseUrl` |
-| `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK` | `a2a.provider.allowNonLoopback` |
-| `MONO_AGENT_A2A_REQUIRE_BEARER` | `a2a.provider.requireBearer` |
-| `MONO_AGENT_A2A_BEARER_TOKEN` | `a2a.provider.bearerToken` |
-| `MONO_AGENT_A2A_AGENT_NAME` | `a2a.agent.name` |
-| `MONO_AGENT_A2A_AGENT_DESCRIPTION` | `a2a.agent.description` |
-| `MONO_AGENT_A2A_AGENT_VERSION` | `a2a.agent.version` |
-| `MONO_AGENT_A2A_PROVIDER_ORGANIZATION` | `a2a.agent.providerOrganization` |
-| `MONO_AGENT_A2A_PROVIDER_URL` | `a2a.agent.providerUrl` |
-| `MONO_AGENT_A2A_SKILL_ID` | `a2a.skill.id` |
-| `MONO_AGENT_A2A_SKILL_NAME` | `a2a.skill.name` |
-| `MONO_AGENT_A2A_SKILL_DESCRIPTION` | `a2a.skill.description` |
-| `MONO_AGENT_A2A_SKILL_TAGS` | `a2a.skill.tags` (comma-separated) |
+| `MONO_AGENT_A2A_ENABLED` | plugin `config.enabled` (canonical; wins over the legacy form) |
+| `MONO_AGENT_A2A_PROVIDER_ENABLED` | plugin `config.provider.enabled` (legacy; still honored) |
+| `MONO_AGENT_A2A_HOST` | plugin `config.provider.host` |
+| `MONO_AGENT_A2A_PORT` | plugin `config.provider.port` |
+| `MONO_AGENT_A2A_PUBLIC_BASE_URL` | plugin `config.provider.publicBaseUrl` |
+| `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK` | plugin `config.provider.allowNonLoopback` |
+| `MONO_AGENT_A2A_REQUIRE_BEARER` | plugin `config.provider.requireBearer` |
+| `MONO_AGENT_A2A_BEARER_TOKEN` | plugin `config.provider.bearerToken` |
+| `MONO_AGENT_A2A_AGENT_NAME` | plugin `config.agent.name` |
+| `MONO_AGENT_A2A_AGENT_DESCRIPTION` | plugin `config.agent.description` |
+| `MONO_AGENT_A2A_AGENT_VERSION` | plugin `config.agent.version` |
+| `MONO_AGENT_A2A_PROVIDER_ORGANIZATION` | plugin `config.agent.providerOrganization` |
+| `MONO_AGENT_A2A_PROVIDER_URL` | plugin `config.agent.providerUrl` |
+| `MONO_AGENT_A2A_SKILL_ID` | plugin `config.skill.id` |
+| `MONO_AGENT_A2A_SKILL_NAME` | plugin `config.skill.name` |
+| `MONO_AGENT_A2A_SKILL_DESCRIPTION` | plugin `config.skill.description` |
+| `MONO_AGENT_A2A_SKILL_TAGS` | plugin `config.skill.tags` (comma-separated) |
 
 ## Network security
 
@@ -146,8 +154,8 @@ A2A speaks plaintext HTTP. Terminate **HTTPS** at a reverse proxy in front of th
 `mono-agent start` prints one status line for the A2A channel:
 
 - `running` with the bound endpoint facts (Agent Card / JSON-RPC / REST URLs) when enabled and valid.
-- `waiting_for_config` naming the exact missing setting (e.g. a required `a2a.agent.name`).
-- `disabled` when `a2a.enabled` (or the legacy `a2a.provider.enabled`) is `false`.
+- `waiting_for_config` naming the exact missing setting (e.g. a required `config.agent.name`).
+- `disabled` when plugin `config.enabled` (or the legacy `config.provider.enabled`) is `false`.
 - `failed` with the reason (e.g. non-loopback bind without `allowNonLoopback`).
 
 Run `mono-agent validate` first for a per-section report. Config is JSON-first — edit `mono-agent.config.json` and run `mono-agent restart` to apply.
@@ -158,7 +166,7 @@ Inbound A2A messages run the same turn pipeline as other channels, so [tool poli
 
 ## Calling remote agents
 
-The provider only serves *your* agent. To have your agent call *other* A2A agents, configure `a2a.consumer` and invoke them programmatically with `createA2AConsumerResponder`. This is a **code** path — see [A2A consumer](/programmatic/a2a-consumer/).
+The provider only serves *your* agent. To have your agent call *other* A2A agents, put consumer settings under the same A2A plugin entry's `config.consumer` and invoke them programmatically with `createA2AConsumerResponder`. This is a **code** path — see [A2A consumer](/programmatic/a2a-consumer/).
 
 ## Related
 

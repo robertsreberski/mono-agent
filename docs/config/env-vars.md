@@ -199,11 +199,13 @@ All Slack resilience vars are optional integers (`0`–`3600000`); omit to use t
 
 ### WhatsApp
 
+WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/whatsapp-adapter"`. These env vars override that plugin entry's `config` fields.
+
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_WHATSAPP_ENABLED` | `whatsapp.enabled` | QR login; auth state in `.mono-agent/whatsapp-auth`. |
-| `MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS` | `whatsapp.allowedChatJids` | Or `allowAllChats`. |
-| `MONO_AGENT_WHATSAPP_GROUP_MODE` | `whatsapp.groupMode` | `mention` / `any`. See [../channels/whatsapp.md](/channels/whatsapp/). |
+| `MONO_AGENT_WHATSAPP_ENABLED` | plugin `config.enabled` | QR login; auth state in `.mono-agent/whatsapp-auth`. |
+| `MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS` | plugin `config.allowedChatJids` | Or `allowAllChats`. |
+| `MONO_AGENT_WHATSAPP_GROUP_MODE` | plugin `config.groupMode` | `mention` / `any`. See [../channels/whatsapp.md](/channels/whatsapp/). |
 
 ### Webhook
 
@@ -250,11 +252,13 @@ All Slack resilience vars are optional integers (`0`–`3600000`); omit to use t
 
 ### A2A
 
+The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-agent/a2a-adapter"`. These env vars override that plugin entry's `config` fields.
+
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_A2A_ENABLED` | `a2a.enabled` | Canonical enable flag for the A2A provider, matching every other channel. Wins over the legacy form below when both are set. |
-| `MONO_AGENT_A2A_PROVIDER_ENABLED` | `a2a.provider.enabled` | Legacy enable flag (still honored). Prefer `a2a.enabled`. |
-| `MONO_AGENT_A2A_BEARER_TOKEN` | `a2a.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](/channels/a2a/). |
+| `MONO_AGENT_A2A_ENABLED` | plugin `config.enabled` | Canonical enable flag for the A2A provider, matching other channels. Wins over the legacy form below when both are set. |
+| `MONO_AGENT_A2A_PROVIDER_ENABLED` | plugin `config.provider.enabled` | Legacy enable flag (still honored). Prefer `MONO_AGENT_A2A_ENABLED`. |
+| `MONO_AGENT_A2A_BEARER_TOKEN` | plugin `config.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](/channels/a2a/). |
 
 ### Cron
 

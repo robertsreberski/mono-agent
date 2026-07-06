@@ -30,6 +30,8 @@ function packageRecord({
   privatePackage = false,
   publishConfig = { access: "public" },
   dependencies = {},
+  optionalDependencies = {},
+  peerDependencies = {},
 }) {
   return {
     name,
@@ -45,6 +47,8 @@ function packageRecord({
       private: privatePackage,
       publishConfig,
       dependencies,
+      optionalDependencies,
+      peerDependencies,
     },
   };
 }
@@ -105,6 +109,54 @@ describe("release graph validation", () => {
     ).toThrow(
       /@mono-agent\/agent-contracts publishConfig\.access must be public[\s\S]*@mono-agent\/agent-runtime version must be 1\.2\.3[\s\S]*@mono-agent\/slack-adapter dependencies\.@mono-agent\/agent-contracts must be workspace:1\.2\.3/,
     );
+  });
+
+  test("rejects publishable packages that depend on nonpublishable workspace packages", () => {
+    const a2a = packageRecord({
+      name: "@mono-agent/a2a-adapter",
+      publishable: false,
+      privatePackage: true,
+      publishConfig: null,
+    });
+    const orchestrator = packageRecord({
+      name: "@mono-agent/agent-orchestrator",
+      publishable: false,
+      privatePackage: true,
+      publishConfig: null,
+    });
+    const whatsapp = packageRecord({
+      name: "@mono-agent/whatsapp-adapter",
+      publishable: false,
+      privatePackage: true,
+      publishConfig: null,
+    });
+    const app = packageRecord({
+      name: "@mono-agent/agent-app",
+      dependencies: {
+        "@mono-agent/a2a-adapter": "workspace:1.2.3",
+      },
+      optionalDependencies: {
+        "@mono-agent/agent-orchestrator": "workspace:1.2.3",
+      },
+      peerDependencies: {
+        "@mono-agent/whatsapp-adapter": "workspace:1.2.3",
+      },
+    });
+
+    try {
+      validateRelease({
+        tag: "v1.2.3",
+        packages: [app, a2a, orchestrator, whatsapp],
+        silent: true,
+      });
+      throw new Error("validateRelease did not reject the nonpublishable workspace dependencies");
+    } catch (error) {
+      expect(error.issues).toEqual([
+        "@mono-agent/agent-app dependencies.@mono-agent/a2a-adapter points at nonpublishable workspace package @mono-agent/a2a-adapter",
+        "@mono-agent/agent-app optionalDependencies.@mono-agent/agent-orchestrator points at nonpublishable workspace package @mono-agent/agent-orchestrator",
+        "@mono-agent/agent-app peerDependencies.@mono-agent/whatsapp-adapter points at nonpublishable workspace package @mono-agent/whatsapp-adapter",
+      ]);
+    }
   });
 
   test("detects cycles before publishing", () => {

@@ -79,3 +79,12 @@ export type {
   WhatsAppAdapterStartResult,
   WhatsAppSocketFactory,
 } from "./start.js";
+
+export {
+  createChannelDriver,
+  createWhatsAppChannelDriver,
+} from "./channel-driver.js";
+export type {
+  WhatsAppChannelDriverConfig,
+  WhatsAppChannelDriverOptions,
+} from "./channel-driver.js";

@@ -37,7 +37,7 @@ await app.stop();
 | `cwd` | `string` | `process.cwd()` | Folder the config and relative paths resolve against |
 | `configPath` | `string` | `<cwd>/mono-agent.config.json` | Path to the config file |
 | `env` | `Record<string, string \| undefined>` | `process.env` | Source for `MONO_AGENT_*` overrides |
-| `drivers` | `readonly ChannelDriver[]` | `defaultChannelDrivers()` | Which channels to run (see below) |
+| `drivers` | `readonly ChannelDriver[]` | `resolveChannelDrivers(...)` | Which channels to run (see below); defaults to core built-ins plus configured `channels.plugins[]` packages |
 | `runtime` | `MonoRuntimeLike` | built from config | Inject a shared/custom runtime (see below) |
 | `logger` | `MonoAgentAppLogger` | console-backed | Structured host logging |
 
@@ -45,7 +45,7 @@ The host runs headless: config changes take effect on the next restart, not live
 
 ### Adding a custom channel driver
 
-`defaultChannelDrivers()` returns every built-in channel driver (Telegram, Slack, A2A, webhook, OpenAI API, cron, WhatsApp) in startup/status order. Spread it and append your own driver — or pass per-channel overrides for message texts and stream tuning, which are driver-level, not config keys.
+`defaultChannelDrivers()` returns the core built-in channel drivers (Telegram, Slack, webhook, OpenAI API, cron, TUI, live) in startup/status order. The CLI-equivalent default uses `resolveChannelDrivers(...)`, which appends external packages declared under `channels.plugins[]` such as WhatsApp or A2A. Spread `defaultChannelDrivers()` and append your own driver for a code-only host — or expose a package-level `createChannelDriver()` and load it from config.
 
 ```ts
 import { startMonoAgentApp, defaultChannelDrivers } from "@mono-agent/agent-app";
@@ -57,7 +57,7 @@ const app = await startMonoAgentApp({
 });
 ```
 
-For building the driver itself, see [custom channels](/programmatic/custom-channels/).
+For building the driver itself, see [Write your own channel adapter](/programmatic/custom-channels/).
 
 ## The bare responder: `createConfiguredAgentResponder`
 

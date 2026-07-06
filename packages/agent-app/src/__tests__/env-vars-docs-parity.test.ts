@@ -33,10 +33,15 @@ function codeEnvKeys(root: string): Set<string> {
     join(root, "packages/agent-app/src/interaction-bridge.ts"),
     join(root, "packages/agent-app/src/adapter-send-tools.ts"),
   ];
-  const packagesDir = join(root, "packages");
-  for (const entry of readdirSync(packagesDir)) {
-    if (entry.endsWith("-adapter")) {
-      files.push(...adapterConfigFiles(join(packagesDir, entry, "src")));
+  for (const workspaceRoot of ["packages", "extras"]) {
+    const workspaceDir = join(root, workspaceRoot);
+    if (!existsSync(workspaceDir)) {
+      continue;
+    }
+    for (const entry of readdirSync(workspaceDir)) {
+      if (entry.endsWith("-adapter")) {
+        files.push(...adapterConfigFiles(join(workspaceDir, entry, "src")));
+      }
     }
   }
   const keys = new Set<string>();

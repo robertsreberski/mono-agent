@@ -1,5 +1,4 @@
 import {
-  createA2AChannelDriver,
   createCronChannelDriver,
   createOpenAIApiChannelDriver,
   createTelegramChannelDriver,
@@ -16,6 +15,7 @@ import type {
   TraceabilityStatus as AppTraceabilityStatus,
 } from "@mono-agent/agent-app";
 import type { MonoAgentConfig } from "@mono-agent/config";
+import { createA2AChannelDriver } from "@mono-agent/a2a-adapter";
 import type { A2AProviderOptions, A2AProviderStartResult } from "@mono-agent/a2a-adapter";
 import type { CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
 import type { OpenAIApiAdapterOptions, OpenAIApiAdapterStartResult } from "@mono-agent/openai-api-adapter";

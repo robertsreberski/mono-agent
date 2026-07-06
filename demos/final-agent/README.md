@@ -97,6 +97,8 @@ Then inspect the recorded run via the local JSONL artifacts under `.mono-agent/d
 
 Use fake placeholders here only as shape examples. Do not commit real bot tokens or provider credentials.
 
+This demo is a programmatic host that passes the A2A driver directly so it can inject test and deployment seams; its A2A settings therefore live in the driver-local top-level `a2a` section. The CLI-equivalent `@mono-agent/agent-app` host loads A2A through `channels.plugins[]` instead; see the main [A2A channel docs](../../docs/channels/a2a.md).
+
 ```json
 {
   "telegram": {

@@ -32,7 +32,7 @@ import {
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
-import { defaultChannelDrivers } from "./channels.js";
+import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 
@@ -80,7 +80,7 @@ export async function validateMonoAgentFolder(
   options: ValidateMonoAgentFolderOptions,
 ): Promise<ValidationReport> {
   const sections: ValidationSection[] = [];
-  const drivers = options.drivers ?? defaultChannelDrivers();
+  const drivers = options.drivers ?? await resolveChannelDrivers(options);
   const liveness = options.liveness ?? true;
   const allowFilesystemWrites = options.allowFilesystemWrites ?? true;
 

@@ -4,7 +4,7 @@
   "description": "Reusable collaborator tool orchestration for agent runtimes.",
   "type": "module",
   "license": "UNLICENSED",
-  "private": false,
+  "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -26,8 +26,5 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@mono-agent/agent-contracts": "workspace:0.4.0",
     "zod": "^4.4.3"
-  },
-  "publishConfig": {
-    "access": "public"
   }
 }

@@ -8,7 +8,9 @@ Category: `communication`
 
 WhatsApp communication adapter for agent hosts using Baileys-compatible sockets. It normalizes WhatsApp messages, handles direct and group mention triggers, streams replies, supports cancellation, and enforces explicit chat allowlists or allow-all mode.
 
-The adapter is opt-in: `whatsapp.enabled` / `MONO_AGENT_WHATSAPP_ENABLED` defaults to `false`. While disabled the loader skips allowlist validation and the channel reports `disabled` rather than `waiting_for_config`. Set `enabled: true` to turn it on; a missing allowlist (without allow-all) then surfaces as a real `waiting_for_config` reason.
+This is a private extras package, not part of the publishable app closure. `@mono-agent/agent-app` loads it only when a host declares it under `channels.plugins[]`.
+
+The adapter is opt-in: plugin `config.enabled` / `MONO_AGENT_WHATSAPP_ENABLED` defaults to `false`. While disabled the loader skips allowlist validation and the channel reports `disabled` rather than `waiting_for_config`. Set `enabled: true` to turn it on; a missing allowlist (without allow-all) then surfaces as a real `waiting_for_config` reason.
 
 ## Install / Usage
 
@@ -22,8 +24,27 @@ import {
   WhatsAppEventRunner,
   createBaileysWhatsAppSocket,
   loadWhatsAppAdapterConfig,
-  whatsappFieldGroup,
+  WHATSAPP_CONFIG_FIELDS,
 } from "@mono-agent/whatsapp-adapter";
+```
+
+Config-loaded channel usage:
+
+```json
+{
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/whatsapp-adapter",
+        "id": "whatsapp",
+        "config": {
+          "enabled": true,
+          "allowedChatJids": ["123@s.whatsapp.net"]
+        }
+      }
+    ]
+  }
+}
 ```
 
 Hosts provide a Baileys socket, adapter options, and a structural `AgentResponder`. The base responder, stream, response, and cancellation contracts come from `@mono-agent/agent-contracts`.
@@ -33,10 +54,11 @@ Hosts provide a Baileys socket, adapter options, and a structural `AgentResponde
 - `WhatsAppAdapter`, `WhatsAppAdapterOptions`
 - `WhatsAppEventRunner`
 - `createBaileysWhatsAppSocket`
+- `createWhatsAppChannelDriver`, `createChannelDriver`
 - `normalizeWhatsAppMessage`, `isGroupJid`
-- `WhatsAppMessageStream`, `splitWhatsAppText`
-- `loadWhatsAppAdapterConfig`, `redactWhatsAppAdapterConfig`, `whatsappFieldGroup`
-- WhatsApp socket, message, trigger, config, and event-runner types
+- `WhatsAppMessageStream`
+- `loadWhatsAppAdapterConfig`, `redactWhatsAppAdapterConfig`, `WHATSAPP_CONFIG_FIELDS`
+- WhatsApp socket, message, trigger, config, channel-driver, and event-runner types
 
 ## Dependency Boundary
 

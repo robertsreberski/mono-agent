@@ -1,10 +1,10 @@
 {
-  "name": "@mono-agent/a2a-adapter",
+  "name": "@mono-agent/whatsapp-adapter",
   "version": "0.4.0",
-  "description": "A2A provider and consumer adapter for host-compatible runtimes.",
+  "description": "WhatsApp communication adapter for host-compatible runtimes using Baileys.",
   "type": "module",
   "license": "UNLICENSED",
-  "private": false,
+  "private": true,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -23,14 +23,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@a2a-js/sdk": "1.0.0-alpha.0",
     "@mono-agent/agent-contracts": "workspace:0.4.0",
-    "express": "^5.1.0"
-  },
-  "devDependencies": {
-    "@types/express": "^5.0.2"
-  },
-  "publishConfig": {
-    "access": "public"
+    "@whiskeysockets/baileys": "^7.0.0-rc11"
   }
 }

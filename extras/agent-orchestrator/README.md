@@ -8,6 +8,8 @@ Category: `execution`
 
 Reusable orchestration helpers for exposing named collaborator responders to an orchestrator runtime. The first surface is a loopback MCP tool named `ask_collaborator` that lets the orchestrator model decide which collaborator to ask, and how many times, before producing its final answer.
 
+This is a private extras package, not part of the publishable app closure.
+
 ## Install / Usage
 
 ```bash

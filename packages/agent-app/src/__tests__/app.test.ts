@@ -99,8 +99,14 @@ describe("startMonoAgentApp", () => {
     });
     expect(app.channelStatus("telegram").kind).toBe("disabled");
     expect(app.channelStatus("slack").kind).toBe("disabled");
-    expect(app.channelStatus("whatsapp").kind).toBe("disabled");
-    expect(app.channelStatus("a2a").kind).toBe("disabled");
+    expect(app.channelStatus("whatsapp")).toEqual({
+      kind: "disabled",
+      reason: "Channel whatsapp is not registered with this app.",
+    });
+    expect(app.channelStatus("a2a")).toEqual({
+      kind: "disabled",
+      reason: "Channel a2a is not registered with this app.",
+    });
     expect(app.channelStatus("openai-api").kind).toBe("disabled");
     expect(app.channelStatus("cron").kind).toBe("disabled");
     expect(app.traceabilityStatus.kind).toBe("running");

@@ -1,6 +1,8 @@
 # Package Layers
 
-`scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. The workspace layout remains flat under `packages/<package-name>`; the diagram shows logical layers, not filesystem nesting.
+`scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. Publishable packages live under `packages/<package-name>`; unpublished optional extras live under `extras/<package-name>`. The diagram shows logical layers, not filesystem nesting.
+
+Current catalog count: 17 publishable packages plus 3 unpublished extras.
 
 ```mermaid
 flowchart TB
@@ -18,19 +20,19 @@ flowchart TB
   end
 
   subgraph Communication["communication"]
-    A2A["@mono-agent/a2a-adapter"]
+    A2A["@mono-agent/a2a-adapter\nextra"]
     Cron["@mono-agent/cron-adapter"]
     OpenAIApi["@mono-agent/openai-api-adapter"]
     OperatorAdapter["@mono-agent/operator-adapter"]
     Slack["@mono-agent/slack-adapter"]
     Telegram["@mono-agent/telegram-adapter"]
-    WhatsApp["@mono-agent/whatsapp-adapter"]
+    WhatsApp["@mono-agent/whatsapp-adapter\nextra"]
     Webhook["@mono-agent/webhook-adapter"]
   end
 
   subgraph Execution["execution"]
     Harness["@mono-agent/agent-harness"]
-    Orchestrator["@mono-agent/agent-orchestrator"]
+    Orchestrator["@mono-agent/agent-orchestrator\nextra"]
   end
 
   subgraph ContextLayer["context"]
@@ -105,9 +107,9 @@ flowchart TB
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` |
 | `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` |
-| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` |
+| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) |
 | `observability` | `@mono-agent/observability` |
-| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` |
+| `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` |
 | `app` | `@mono-agent/agent-app` |
 

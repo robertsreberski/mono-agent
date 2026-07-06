@@ -207,4 +207,4 @@ See [Environment variables](/config/env-vars/) for precedence rules.
 - [Cron](/channels/cron/) — scheduled turns; shares the `*.md` authoring pattern and the `prompt` concept.
 - [Delivery and send tools](/channels/delivery-and-send-tools/) — how answers are returned and proactively delivered.
 - [Channels overview](/channels/) — all channels and the allowlist model.
-- [Custom channels](/programmatic/custom-channels/) — build your own transport (code-only).
+- [Write your own channel adapter](/programmatic/custom-channels/) — build your own transport.

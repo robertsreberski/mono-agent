@@ -55,7 +55,6 @@ type ValidationStatus = ValidationReport["sections"][number]["status"];
 type ConsumerSourceJson = MonoAgentConfigJson & {
   readonly telegram?: { readonly enabled?: boolean };
   readonly slack?: { readonly enabled?: boolean };
-  readonly a2a?: { readonly enabled?: boolean; readonly provider?: { readonly enabled?: boolean } };
   readonly webhook?: { readonly enabled?: boolean };
   readonly openaiApi?: { readonly enabled?: boolean };
 };
@@ -84,11 +83,9 @@ const expectedContracts = {
     channels: {
       telegram: "active",
       slack: "disabled",
-      a2a: "disabled",
       webhook: "active",
       "openai-api": "active",
       cron: "active",
-      whatsapp: "disabled",
       // Default-ON operator surfaces: active with no `tui`/`live` section in the fixture.
       tui: "active",
       live: "active",
@@ -96,7 +93,6 @@ const expectedContracts = {
     enabledFlags: {
       telegram: true,
       slack: false,
-      a2a: false,
       webhook: true,
       "openai-api": true,
     },
@@ -118,11 +114,9 @@ const expectedContracts = {
     channels: {
       telegram: "disabled",
       slack: "active",
-      a2a: "disabled",
       webhook: "disabled",
       "openai-api": "active",
       cron: "active",
-      whatsapp: "disabled",
       // Default-ON operator surfaces: active with no `tui`/`live` section in the fixture.
       tui: "active",
       live: "active",
@@ -130,7 +124,6 @@ const expectedContracts = {
     enabledFlags: {
       telegram: false,
       slack: true,
-      a2a: false,
       webhook: false,
       "openai-api": true,
     },
@@ -278,9 +271,6 @@ function sourceEnabledFlag(sourceJson: ConsumerSourceJson, id: string): boolean 
       return sourceJson.telegram?.enabled === true;
     case "slack":
       return sourceJson.slack?.enabled === true;
-    case "a2a":
-      // Canonical root flag wins; the legacy provider.enabled form is honored.
-      return sourceJson.a2a?.enabled ?? sourceJson.a2a?.provider?.enabled === true;
     case "webhook":
       return sourceJson.webhook?.enabled === true;
     case "openai-api":

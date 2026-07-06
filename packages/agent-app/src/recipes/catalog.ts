@@ -10,6 +10,32 @@ function withSections(
   return { ...baseConfig(input), ...extra } as MonoAgentConfigJson;
 }
 
+function a2aProviderPluginSection(): Partial<MonoAgentConfigJson> & Record<string, unknown> {
+  return {
+    channels: {
+      plugins: [
+        {
+          package: "@mono-agent/a2a-adapter",
+          config: {
+            enabled: true,
+            agent: {
+              name: "Mono Agent",
+              description: "A mono-agent provider exposed over A2A.",
+              version: "0.1.0",
+            },
+            skill: {
+              id: "default",
+              name: "Default agent skill",
+              description: "Send a task to this mono-agent and receive its response.",
+              tags: ["agent"],
+            },
+          },
+        },
+      ],
+    },
+  } as Partial<MonoAgentConfigJson> & Record<string, unknown>;
+}
+
 const SANDBOX_FAIL_CLOSED_ENGINE_NOTE =
   "Install `srt` and keep it on PATH; without it, fail-closed sandboxed commands stop with `sandbox_unavailable` instead of running unsandboxed.";
 const SANDBOX_UNSAFE_ENGINE_NOTE =
@@ -266,9 +292,7 @@ const a2aProvider: AgentRecipe = {
       envVar: "MONO_AGENT_A2A_BEARER_TOKEN",
     },
   ],
-  config: (input) => withSections(input, {
-    a2a: { enabled: true },
-  }),
+  config: (input) => withSections(input, a2aProviderPluginSection()),
   envExample: () => "# Bearer token A2A consumers must present (when requireBearer is set)\nMONO_AGENT_A2A_BEARER_TOKEN=\n",
   validateExpectations: [
     { sectionId: "channel:a2a", mustBe: "ok" },
@@ -403,7 +427,6 @@ const sandboxedCodeAgent: AgentRecipe = {
 const ALL_CHANNELS_SECTIONS = {
   telegram: { enabled: true },
   slack: { enabled: true },
-  a2a: { enabled: true },
   webhook: { enabled: true },
   openaiApi: { enabled: true },
   cron: { enabled: true },
@@ -419,6 +442,7 @@ const fullSafe: AgentRecipe = {
   inputs: [MODEL_INPUT],
   config: (input) => withSections(input, {
     ...ALL_CHANNELS_SECTIONS,
+    ...a2aProviderPluginSection(),
     memory: {
       ...memoryBlock("journal"),
       embeddings: { provider: "ollama", model: "nomic-embed-text" },
@@ -459,6 +483,7 @@ const fullLocalPower: AgentRecipe = {
   inputs: [MODEL_INPUT],
   config: (input) => withSections(input, {
     ...ALL_CHANNELS_SECTIONS,
+    ...a2aProviderPluginSection(),
     tools: { allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"], disallowedTools: [] },
     memory: {
       ...memoryBlock("bujo"),

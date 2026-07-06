@@ -10,7 +10,7 @@ Definitions of the core terms used throughout the mono-agent docs and config. Ea
 
 ## A2A
 
-The Agent-to-Agent protocol: a JSON-RPC + REST wire format (with optional streaming and bearer auth) for one agent to discover and call another over HTTP. mono-agent can act as an A2A **provider** (`a2a.provider.*`) and as an A2A **consumer** (`a2a.consumer.*`). See [A2A channel](/channels/a2a/) and the [A2A consumer (programmatic)](/programmatic/a2a-consumer/).
+The Agent-to-Agent protocol: a JSON-RPC + REST wire format (with optional streaming and bearer auth) for one agent to discover and call another over HTTP. mono-agent can act as an A2A **provider** (`config.provider.*` under the `@mono-agent/a2a-adapter` plugin entry) and as an A2A **consumer** (`config.consumer.*` under the same plugin entry). See [A2A channel](/channels/a2a/) and the [A2A consumer (programmatic)](/programmatic/a2a-consumer/).
 
 ## Adapter
 
@@ -18,7 +18,7 @@ A package that bridges one transport (Slack, Telegram, WhatsApp, etc.) to the re
 
 ## Agent Card
 
-The discovery document an A2A provider publishes describing its name, version, provider org, and advertised skill. It is populated from `a2a.agent.*` and `a2a.skill.*` config and is what remote consumers fetch before calling you. See [A2A channel](/channels/a2a/).
+The discovery document an A2A provider publishes describing its name, version, provider org, and advertised skill. It is populated from plugin `config.agent.*` and `config.skill.*` and is what remote consumers fetch before calling you. See [A2A channel](/channels/a2a/).
 
 ## Backend
 
@@ -34,7 +34,7 @@ The richest memory tier (`memory.mode: "bujo"`), modeled on the Bullet Journal m
 
 ## Channel driver
 
-The composable factory behind an adapter (e.g. `createTelegramChannelDriver`) that wires a transport's streaming, message texts, and activity indicators to the responder. Stream/message tuning is configured here (coverage: `code`). See [Custom channels](/programmatic/custom-channels/).
+The composable factory behind an adapter (e.g. `createTelegramChannelDriver`, or a package-root `createChannelDriver()` loaded from `channels.plugins[]`) that wires a transport's streaming, message texts, and activity indicators to the responder. Stream/message tuning is configured here (coverage: `code`), while external channel packages can be loaded by config. See [Write your own channel adapter](/programmatic/custom-channels/).
 
 ## Context compaction
 

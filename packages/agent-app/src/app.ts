@@ -35,7 +35,7 @@ import {
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "./configured-agent.js";
-import { defaultChannelDrivers } from "./channels.js";
+import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import { routeProactiveNotification } from "./proactive-notify.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
@@ -140,7 +140,7 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
   const cwd = resolve(options.cwd ?? process.cwd());
   const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
   const env = options.env ?? process.env;
-  const drivers = options.drivers ?? defaultChannelDrivers();
+  const drivers = options.drivers ?? await resolveChannelDrivers({ env, cwd, configPath });
 
   const controller = new MonoAgentAppController({
     cwd,

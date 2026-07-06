@@ -8,6 +8,15 @@ export type {
 } from "./card.js";
 
 export {
+  createA2AChannelDriver,
+  createChannelDriver,
+} from "./channel-driver.js";
+export type {
+  A2AAdapterRawConfig,
+  A2AChannelDriverOptions,
+} from "./channel-driver.js";
+
+export {
   startA2AProvider,
 } from "./provider.js";
 export type {

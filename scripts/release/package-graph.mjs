@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { packageCatalog } from "../package-catalog.mjs";
+import { packageCatalog, packageRelativePath } from "../package-catalog.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(SCRIPT_DIR, "../..");
@@ -19,13 +19,14 @@ function readJson(filePath) {
 }
 
 function packageRecord(catalogEntry) {
-  const dir = path.join(REPO_ROOT, "packages", catalogEntry.dir);
+  const relativeDir = packageRelativePath(catalogEntry);
+  const dir = path.join(REPO_ROOT, relativeDir);
   const manifestPath = path.join(dir, "package.json");
   const packageJson = readJson(manifestPath);
 
   return {
     dir,
-    relativeDir: path.relative(REPO_ROOT, dir),
+    relativeDir,
     manifestPath,
     location: "workspace",
     catalogEntry,
