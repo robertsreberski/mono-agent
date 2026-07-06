@@ -52,9 +52,9 @@ describe("ctxSummaryLine", () => {
     expect(ctxSummaryLine({ histCount: 0, mem: { text: "m" } }, false)).toBe("0 prior messages · memory recalled");
   });
 
-  test("uses the warm-session phrasing when history was omitted, still noting memory", () => {
+  test("uses the provider-session phrasing when history was omitted, still noting memory", () => {
     expect(ctxSummaryLine({ histCount: 0, histOmitted: true, mem: { text: "m", src: "bujo" } }, true)).toBe(
-      "history omitted — warm provider session · memory recalled (bujo)",
+      "context carried by the provider session · memory recalled (bujo)",
     );
   });
 

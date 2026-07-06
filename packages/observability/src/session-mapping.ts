@@ -54,13 +54,13 @@ export interface SessionCtxMsg {
 
 /**
  * The context a single turn was driven with: the loaded conversation history (or
- * the fact it was omitted because a warm provider session carries the transcript)
+ * the fact it was omitted because the provider session carries the transcript)
  * and the recalled long-term memory block. Mapped from the run's LAST
  * `turn_context` runtime event (resume-replay double-fires; last-wins).
  */
 export interface SessionTurnContext {
   readonly histCount: number;
-  /** Present only when true: a warm provider session already held the transcript. */
+  /** Present only when true: the provider session carried the transcript (warm in-process session, or durable cross-restart resume with no locally loaded history). */
   readonly histOmitted?: boolean;
   readonly hist?: readonly SessionCtxMsg[];
   readonly mem?: { readonly text: string; readonly src?: string; readonly tr?: boolean };

@@ -50,7 +50,7 @@ export interface CtxMsg {
 /** The context a single turn was driven with (history + recalled memory). Mirrors observability's `SessionTurnContext`. */
 export interface TurnContext {
   histCount: number;
-  /** Present only when true: a warm provider session already held the transcript. */
+  /** Present only when true: the provider session carried the transcript (warm in-process session, or durable cross-restart resume with no locally loaded history). */
   histOmitted?: boolean;
   hist?: CtxMsg[];
   mem?: { text: string; src?: string; tr?: boolean };

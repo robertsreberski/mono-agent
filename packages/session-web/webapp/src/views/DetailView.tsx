@@ -98,9 +98,10 @@ export function timelineEmptyMessage(status: string, itemCount: number): string 
 /**
  * One-line summary of the context a turn was driven with. Pure so it is unit
  * testable without rendering: "N prior messages · memory recalled (source)", or
- * "history omitted — warm provider session" when a warm provider session already
- * held the transcript. Falls back to a compiled-prompt-only note for old
- * (ctx-less) recordings that still carry a system prompt.
+ * "context carried by the provider session" when the provider session already
+ * held the transcript (a warm in-process session, or a durable cross-restart
+ * resume with no locally loaded history). Falls back to a compiled-prompt-only
+ * note for old (ctx-less) recordings that still carry a system prompt.
  */
 export function ctxSummaryLine(ctx: TurnContext | undefined, hasSysPrompt: boolean): string {
   if (ctx === undefined) {
@@ -109,7 +110,7 @@ export function ctxSummaryLine(ctx: TurnContext | undefined, hasSysPrompt: boole
   const parts: string[] = [];
   parts.push(
     ctx.histOmitted === true
-      ? "history omitted — warm provider session"
+      ? "context carried by the provider session"
       : `${ctx.histCount} prior message${ctx.histCount === 1 ? "" : "s"}`,
   );
   if (ctx.mem !== undefined) {

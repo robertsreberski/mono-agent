@@ -888,13 +888,22 @@ export class MonoAgentHarness implements AgentHarness {
       hostOnEvent?.(runConfigEvent);
       // Synthetic turn_context event: describes the context this specific turn was
       // driven with — the loaded conversation history (or the fact it was omitted
-      // because a warm provider session already carries the transcript) and the
-      // recalled long-term memory block. The user message is intentionally omitted
-      // (it is already the run's userInput). Emitted right after run_config and
-      // delivered to both sinks identically. Like run_config it double-fires on the
+      // because the provider session carries the transcript) and the recalled
+      // long-term memory block. The user message is intentionally omitted (it is
+      // already the run's userInput). Emitted right after run_config and delivered
+      // to both sinks identically. Like run_config it double-fires on the
       // resume-replay retry (the second carries the replayed history); consumers are
       // last-wins.
-      const turnContextEvent = buildTurnContextEvent(history, historyOmitted, memory);
+      //
+      // Durable cross-restart resume: a restart wipes the in-memory history store,
+      // so prepareContext loads 0 messages, but the harness still resumes the
+      // on-disk provider session (resumeSessionId set) which carries the full prior
+      // transcript. Reporting historyOmitted:false there would read as "history
+      // loaded and empty" (an empty conversation), which is wrong — the model saw
+      // the transcript via the provider session. So treat a resume with no locally
+      // loaded history as omitted too.
+      const contextCarriedByProviderSession = resumeSessionId !== undefined && history.length === 0;
+      const turnContextEvent = buildTurnContextEvent(history, historyOmitted || contextCarriedByProviderSession, memory);
       recorder.onEvent(turnContextEvent);
       hostOnEvent?.(turnContextEvent);
       // Bracket the provider call so observability can separate provider+tool+IO
@@ -1445,20 +1454,30 @@ function composeUserMessageWithMemory(userMessage: string, memory: ContextBlockI
   return `${userMessage}\n\n[Recalled long-term memory — background context for this turn, not the user's words:]\n${text}`;
 }
 
-// Per-entry display caps for the turn_context event. Kept well under the
-// downstream recorder redaction cap (redactJsonValue truncates strings at its
-// maxStringBytes, default 4096) so the clamp — not the redactor — decides where
-// content is cut, and the `truncated` flag stays meaningful.
+// Per-entry display caps for the turn_context event. These are CHARACTER caps,
+// while the downstream recorder redaction cap (redactJsonValue truncates strings
+// at its maxStringBytes, default 4096) is a BYTE cap. For single-byte content the
+// char caps bite first, so the clamp — not the redactor — decides where content
+// is cut and the `truncated` flag stays meaningful. But multibyte content can
+// still be byte-truncated downstream: e.g. 2000 chars of 3-byte CJK is ~6000
+// bytes (> 4096), so the redactor may re-truncate a history message even after
+// this clamp. Memory's 4000-char cap likewise exceeds 4096 bytes past ~1365
+// multibyte chars.
 const TURN_CONTEXT_MESSAGE_MAX_CHARS = 2_000;
 const TURN_CONTEXT_MEMORY_MAX_CHARS = 4_000;
 
 /**
  * Builds the synthetic `turn_context` event: what context THIS turn was driven
  * with. `historyCount` is the number of loaded prior messages (0 when omitted);
- * `historyOmitted` is true when a warm provider session already carries the
- * transcript so no history was replayed. The `history`/`memory` keys are omitted
- * entirely when empty. Each entry is clamped for display, flagging `truncated`.
- * The current user message is deliberately NOT included (it is the run's userInput).
+ * `historyOmitted` is true when the provider session carries the transcript (a
+ * warm in-process session, or a durable cross-restart resume with no locally
+ * loaded history) so no history was replayed here. Known accepted edge: the very
+ * first turn of a brand-new conversation with a derived durable id
+ * (create-on-miss) also reports `historyOmitted:true` with 0 history — acceptable,
+ * as the provider session is the transcript's home from that turn on. The
+ * `history`/`memory` keys are omitted entirely when empty. Each entry is clamped
+ * for display, flagging `truncated`. The current user message is deliberately NOT
+ * included (it is the run's userInput).
  */
 function buildTurnContextEvent(
   history: readonly HistoryMessage[],

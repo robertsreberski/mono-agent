@@ -161,6 +161,34 @@ describe("AgentHarness turn_context synthetic event", () => {
     expect(tc[0]!.history).toBeUndefined();
   });
 
+  it("reports historyOmitted:true on a durable resume with no locally-loaded history (restart wipe)", async () => {
+    const identityPath = await identityFixture();
+    const piSessionsRoot = await mkdtemp(join(tmpdir(), "agent-harness-turn-context-pi-"));
+    tempDirs.push(piSessionsRoot);
+    // Empty history store models a post-restart harness whose in-memory history is
+    // wiped, while the durable on-disk pi session still carries the transcript. With
+    // piSessionsRoot set the harness derives a STABLE durable resumeSessionId from
+    // the conversationId, so resumeSessionId is set even though 0 history loaded here.
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-durable" }));
+    const recorder = new SpyRecorder();
+    const harness = createAgentHarness({
+      identityPath, runtime: fake.runtime, model, executionMode: "sdk", historyStore, session,
+      piSessionsRoot, recorderFactory: () => recorder,
+    });
+
+    await harness.run(request("conv-durable", "after restart"));
+
+    const tc = turnContextEvents(recorder.events);
+    expect(tc).toHaveLength(1);
+    // A derived durable resumeSessionId is set but no history was loaded -> the
+    // provider session carries the transcript, so we must NOT report "0 prior
+    // messages" (which reads as an empty conversation).
+    expect(tc[0]!.historyOmitted).toBe(true);
+    expect(tc[0]!.historyCount).toBe(0);
+    expect(tc[0]!.history).toBeUndefined();
+  });
+
   it("double-fires on the resume-replay retry, the second carrying replayed history", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
