@@ -5,14 +5,10 @@ description: Deploy repo changes to the live launchd mono-agent fleet (~/persona
 
 # Fleet deploy
 
-> **CURRENT STATE (2026-07-06):** the fleet's deploy checkout is FROZEN as a bare
-> tree at `90b97a9d` (pre-wave-0) — it does NOT yet carry the #137 provider-auth
-> failover fix. The catch-up deploy + unfreeze decision is tracked in **issue
-> #148**. Until that resolves, deploy is NOT "build in place": use a detached
-> worktree at the target sha → `pnpm install --frozen-lockfile` → full
-> `pnpm -r --sort run build` → rsync each surviving package's `dist/` into the
-> frozen tree → `chmod +x` entry points → restart per instance (the "Clean
-> deploy while main has WIP" flow below is exactly this).
+The fleet's deploy checkout is a **normal (non-bare) checkout of `main`** again —
+deploy = update the tree, rebuild in place, restart each instance (see "Standard
+deploy"). History: it was frozen as a bare tree through waves 0–1 and restored to
+a normal checkout on 2026-07-06 (#148).
 
 ## Fleet map
 
@@ -26,7 +22,25 @@ and the global `mono-agent` CLI is an npm-global symlink to the same package.
 **Building this repo's dist IS deploying.** Running instances keep old in-memory
 code until restarted.
 
-## Clean deploy while main has WIP (never stash)
+## Standard deploy (main = normal checkout)
+
+Run from the fleet checkout (`cd "$(git rev-parse --show-toplevel)"`), working
+tree clean. Do steps 1–5 in one uninterrupted pass:
+
+```bash
+git fetch origin main && git reset --hard <sha>   # 1. or: git pull --ff-only; tree MUST be clean first
+pnpm install --frozen-lockfile                     # 2.
+pnpm run build                                     # 3.
+chmod +x packages/agent-app/dist/cli.js \
+         packages/tui/dist/bin/mono-agent-tui.js   # 4. tsc output isn't executable; the mono-agent symlink needs it
+# 5. rolling restart, orchestrator FIRST, personal-agent LAST (see "Restart + verify")
+```
+
+**Never leave the tree between install and restart.** `pnpm install` rewrites
+`node_modules` symlinks, so the old dist the running instances still exec can
+break the moment step 2 lands — rebuild (3–4) and restart (5) before walking away.
+
+## Deploy while main has WIP (fallback — never stash)
 
 ```bash
 REPO=$(git rev-parse --show-toplevel)
@@ -46,16 +60,20 @@ git worktree remove /tmp/deploy-<sha>
   the `mono-agent` symlink then fails with "permission denied" while the launchd
   `node …` execs keep working, which hides the breakage.
 
-If main is clean, a plain `pnpm -r --sort run build` in the main repo is the deploy.
+Use this only while the fleet checkout has uncommitted WIP; a clean tree uses
+"Standard deploy" above.
 
 ## Restart + verify
 
+Roll one instance at a time, **orchestrator first, personal-agent last**:
+
 ```bash
+cd ~/a8c-agents/orchestrator && mono-agent restart   # or: npm run restart
+cd ~/a8c-agents/orchestrator && mono-agent validate 2>&1 | tail -45
 cd ~/personal-agent && mono-agent restart 2>&1 | tail -25
 cd ~/personal-agent && mono-agent validate 2>&1 | tail -45
 mono-agent status
 mono-agent logs --lines 30
-cd ~/a8c-agents/orchestrator && mono-agent restart   # or: npm run restart
 ```
 
 `mono-agent restart` reuses the same service label (hash of the absolute config
@@ -83,8 +101,9 @@ rm ~/Library/LaunchAgents/<label>.plist
   moving agents onto the `live` channel is a separate config step.
 - Deploy = build + restart. Verify the restart actually picked up your change
   (e.g. a log line or behavior probe), not just that the service came back.
-- **Package layout changed (31 → 17 packages + `extras/`):** after deploying a
-  post-consolidation build into the frozen tree, retired packages' stale `dist/`
-  dirs linger there and can still be loaded. Verify the entry point actually
-  loads (`node packages/agent-app/dist/cli.js --help`) and prefer
-  `rsync -a --delete` per surviving package so removed modules are dropped.
+- **Package layout is 17 packages + `extras/`** (post-consolidation). After a
+  consolidation deploy, retired packages leave behind their git-ignored `dist/`
+  once their source is gone — remove those leftover dirs so nothing stale stays
+  loadable, and verify the entry point still comes up
+  (`node packages/agent-app/dist/cli.js --help`). The WIP fallback achieves the
+  same with `rsync -a --delete` per surviving package.
