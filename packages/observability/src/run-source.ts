@@ -5,6 +5,7 @@ const CONVERSATION_ID_PREFIX_SOURCES: ReadonlyArray<readonly [string, string]> =
   ["webhook:", "webhook"],
   ["memory:", "memory"],
   ["a2a:", "a2a"],
+  ["openai-api:", "openai-api"],
   ["openai:", "openai-api"],
   ["tui:", "tui"],
 ];

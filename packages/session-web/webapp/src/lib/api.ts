@@ -42,10 +42,49 @@ export async function fetchInstances(): Promise<WebInstance[]> {
   return data.instances || [];
 }
 
+export interface SessionPage {
+  sessions: Session[];
+  total?: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+export interface FetchSessionsOptions {
+  limit?: number;
+  offset?: number;
+}
+
 export async function fetchSessions(instance: string, limit = 200): Promise<Session[]> {
-  const q = `instance=${encodeURIComponent(instance)}&limit=${limit}`;
-  const data = await getJSON<{ sessions: Session[] }>(`/api/sessions?${q}`);
-  return data.sessions || [];
+  return (await fetchSessionPage(instance, { limit })).sessions;
+}
+
+export async function fetchSessionPage(instance: string, options: FetchSessionsOptions = {}): Promise<SessionPage> {
+  const limit = options.limit ?? 200;
+  const offset = options.offset ?? 0;
+  const params = new URLSearchParams();
+  params.set("instance", instance);
+  params.set("limit", String(limit));
+  if (offset > 0) {
+    params.set("offset", String(offset));
+  }
+  const data = await getJSON<{
+    sessions?: Session[];
+    total?: number;
+    offset?: number;
+    limit?: number;
+    hasMore?: boolean;
+  }>(`/api/sessions?${params.toString()}`);
+  const sessions = data.sessions || [];
+  const pageOffset = typeof data.offset === "number" ? data.offset : offset;
+  const pageLimit = typeof data.limit === "number" ? data.limit : limit;
+  return {
+    sessions,
+    ...(typeof data.total === "number" ? { total: data.total } : {}),
+    offset: pageOffset,
+    limit: pageLimit,
+    hasMore: data.hasMore === true,
+  };
 }
 
 export async function fetchSessionDetail(sourceId: string, runId: string): Promise<Session> {

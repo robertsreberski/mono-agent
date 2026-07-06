@@ -25,7 +25,13 @@ import type { RunSummary, RunSummaryStatus, RuntimeEventLike } from "@mono-agent
 
 import { discoverWebInstances, resolveLiveApiKey } from "./discovery.js";
 import type { DiscoveredWebInstance } from "./discovery.js";
-import { listInstanceSessionSummaries, readInstanceSession, readInstanceSessionSummaryByFileName } from "./history.js";
+import {
+  listInstanceSessionSummaries,
+  listInstanceSessionSummaryPage,
+  projectStaleRunningSession,
+  readInstanceSession,
+  readInstanceSessionSummaryByFileName,
+} from "./history.js";
 import type { DiskRunSignature, SourceStampedSession, SourceStampedSessionSummary } from "./history.js";
 import { connectLiveStream } from "./live-client.js";
 import type { LiveStreamConnection, LiveStreamStatus } from "./live-client.js";
@@ -70,6 +76,8 @@ export interface SessionAggregatorOptions {
   readonly fetchImpl?: typeof fetch;
   /** Include memory-maintenance runs in disk history and live frames. Default false. */
   readonly includeMemory?: boolean;
+  /** Injectable clock for stale-running projection. Defaults to Date.now. */
+  readonly clock?: () => number;
 }
 
 /** Per-run live-fold state: the running summary + the ordered events folded so far. */
@@ -129,6 +137,7 @@ export class SessionAggregator {
   private readonly instancesDebounceMs: number;
   private readonly fetchImpl: typeof fetch | undefined;
   private readonly includeMemory: boolean;
+  private readonly clock: () => number;
 
   private readonly states = new Map<string, InstanceState>();
   private readonly subscribers = new Set<(frame: BrowserStreamFrame) => void>();
@@ -152,6 +161,7 @@ export class SessionAggregator {
     this.instancesDebounceMs = options.instancesDebounceMs ?? 100;
     this.fetchImpl = options.fetchImpl;
     this.includeMemory = options.includeMemory === true;
+    this.clock = options.clock ?? (() => Date.now());
   }
 
   /** Discover instances, seed history, open live connections, and start watching. */
@@ -184,23 +194,59 @@ export class SessionAggregator {
 
   /** Sessions for one instance (by sourceId) or all ("all"), newest-first by `startTs`. */
   getSessions(filter: string): SourceStampedSession[] {
+    this.refreshStaleRunningSessions(filter, { emit: false });
     return this.collectSessions(filter);
   }
 
   /** Step-less list projection for `/api/sessions` and browser SSE snapshots. */
   getSessionSummaries(filter: string): SourceStampedSession[] {
+    this.refreshStaleRunningSessions(filter, { emit: false });
     return this.collectSessions(filter).map((session) => toBrowserListSession(session));
   }
 
+  async getSessionSummariesPage(
+    filter: string,
+    page: { readonly offset: number; readonly limit: number },
+  ): Promise<{ readonly sessions: readonly SourceStampedSession[]; readonly total: number; readonly offset: number; readonly limit: number; readonly hasMore: boolean }> {
+    this.refreshStaleRunningSessions(filter, { emit: false });
+    const states = this.filteredStates(filter);
+    if (states.length === 0 || page.limit === 0) {
+      const total = await this.countPagedSessions(states, Math.max(1, page.offset + page.limit));
+      return { sessions: [], total, offset: page.offset, limit: page.limit, hasMore: total > page.offset };
+    }
+    const maxRuns = page.offset + page.limit;
+    const pages = await Promise.all(
+      states.map(async (state) => {
+        const result = await listInstanceSessionSummaryPage(state.discovered, {
+          maxRuns,
+          includeMemory: this.includeMemory,
+          nowMs: this.now(),
+        });
+        return { state, result };
+      }),
+    );
+    const sessions = pages
+      .flatMap(({ state, result }) =>
+        result.summaries.map((entry) => {
+          const cached = state.sessions.get(entry.session.id);
+          return cached === undefined
+            ? entry.session
+            : projectStaleRunningSession(mergeSessionPreservingVisibleDetail(cached, entry.session), this.now());
+        }),
+      )
+      .sort((left, right) => startMs(right.startTs) - startMs(left.startTs));
+    const total = pages.reduce((sum, pageResult) => sum + pageResult.result.total, 0);
+    return {
+      sessions: sessions.slice(page.offset, page.offset + page.limit).map((session) => toBrowserListSession(session)),
+      total,
+      offset: page.offset,
+      limit: page.limit,
+      hasMore: page.offset + page.limit < total,
+    };
+  }
+
   private collectSessions(filter: string): SourceStampedSession[] {
-    const states =
-      filter === "all"
-        ? [...this.states.values()]
-        : ((): InstanceState[] => {
-            const state = this.states.get(filter);
-            return state === undefined ? [] : [state];
-          })();
-    return states
+    return this.filteredStates(filter)
       .flatMap((state) => [...state.sessions.values()])
       .sort((left, right) => startMs(right.startTs) - startMs(left.startTs));
   }
@@ -211,6 +257,7 @@ export class SessionAggregator {
     if (state === undefined) {
       return undefined;
     }
+    this.refreshStaleRunningSessionsForState(state, { emit: false });
     const existing = state.sessions.get(runId);
     const diskSignature = state.diskRunSignatures.get(runId);
     if (
@@ -223,7 +270,7 @@ export class SessionAggregator {
     }
     let session: SourceStampedSession | undefined;
     try {
-      session = await readInstanceSession(state.discovered, runId, { includeMemory: this.includeMemory });
+      session = await readInstanceSession(state.discovered, runId, { includeMemory: this.includeMemory, nowMs: this.now() });
     } catch (error) {
       this.logger?.warn?.("Failed to read session on demand.", { sourceId, runId, error: errorMessage(error) });
       return existing;
@@ -498,7 +545,7 @@ export class SessionAggregator {
       existing !== undefined && state.liveFinished.has(runId)
         ? mergeSessionPreservingVisibleDetail(existing, session)
         : session;
-    if (nextSession.status !== "running") {
+    if (isTerminalSessionStatus(nextSession.status)) {
       state.artifactFinished.add(runId);
     }
     if (options.detailLoaded || sessionHasVisibleDetail(nextSession)) {
@@ -521,7 +568,7 @@ export class SessionAggregator {
       state.detailLoaded.delete(runId);
     }
     state.diskRunSignatures.set(runId, entry.signature);
-    if (nextSession.status !== "running") {
+    if (isTerminalSessionStatus(entry.signature.status)) {
       state.artifactFinished.add(runId);
     }
     this.insertSession(state, runId, nextSession, { emit: false });
@@ -536,10 +583,11 @@ export class SessionAggregator {
     session: SourceStampedSession,
     options: { readonly emit: boolean },
   ): void {
-    state.sessions.set(runId, session);
+    const projected = projectStaleRunningSession(session, this.now());
+    state.sessions.set(runId, projected);
     this.evictSessionOverflow(state, runId);
     if (options.emit) {
-      this.emit({ t: "session_upsert", session });
+      this.emit({ t: "session_upsert", session: projected });
     }
     this.scheduleInstancesEmit();
   }
@@ -666,6 +714,7 @@ export class SessionAggregator {
       entry = await readInstanceSessionSummaryByFileName(state.discovered, summaryFileName, {
         maxRuns: state.maxRunsPerInstance,
         includeMemory: this.includeMemory,
+        nowMs: this.now(),
       });
     } catch (error) {
       this.logger?.warn?.("Failed to re-read changed run artifact.", { summaryFileName, error: errorMessage(error) });
@@ -675,7 +724,7 @@ export class SessionAggregator {
       return;
     }
     const runId = entry.session.id;
-    if (entry.session.status === "running" && state.liveFinished.has(runId)) {
+    if (entry.signature.status === "running" && state.liveFinished.has(runId)) {
       // A debounced artifact watch can read the start-time "running" summary after
       // live SSE already delivered the terminal frame. Keep the terminal live fold
       // until the disk artifact itself becomes terminal.
@@ -714,6 +763,9 @@ export class SessionAggregator {
   private async reconcile(): Promise<void> {
     if (this.stopped) {
       return;
+    }
+    for (const state of this.states.values()) {
+      this.refreshStaleRunningSessionsForState(state, { emit: true });
     }
     const generation = this.lifecycleGeneration;
     let discovered: readonly DiscoveredWebInstance[];
@@ -779,7 +831,9 @@ export class SessionAggregator {
     let changed =
       previous.instance.health !== discovered.instance.health ||
       previous.instance.label !== discovered.instance.label ||
-      previous.instance.cwd !== discovered.instance.cwd;
+      previous.instance.cwd !== discovered.instance.cwd ||
+      previous.instance.timeZone !== discovered.instance.timeZone ||
+      previous.instance.timezone !== discovered.instance.timezone;
     let liveReconnected = false;
 
     if (previous.instance.artifactDir !== discovered.instance.artifactDir) {
@@ -883,6 +937,8 @@ export class SessionAggregator {
       cwd: base.cwd,
       artifactDir: base.artifactDir,
       health: base.health,
+      ...(base.timeZone === undefined ? {} : { timeZone: base.timeZone }),
+      ...(base.timezone === undefined ? {} : { timezone: base.timezone }),
       liveConnected: state.liveConnected,
       counts: { runs: state.sessions.size },
     };
@@ -896,10 +952,11 @@ export class SessionAggregator {
     const sessions = await listInstanceSessionSummaries(state.discovered, {
       maxRuns: state.maxRunsPerInstance,
       includeMemory: this.includeMemory,
+      nowMs: this.now(),
     });
     let changed = false;
     for (const entry of sessions) {
-      if (entry.session.status === "running" && state.liveFinished.has(entry.session.id)) {
+      if (entry.signature.status === "running" && state.liveFinished.has(entry.session.id)) {
         continue;
       }
       const existing = state.sessions.get(entry.session.id);
@@ -915,6 +972,57 @@ export class SessionAggregator {
 
   private isActive(generation = this.lifecycleGeneration): boolean {
     return !this.stopped && generation === this.lifecycleGeneration;
+  }
+
+  private filteredStates(filter: string): InstanceState[] {
+    if (filter === "all") {
+      return [...this.states.values()];
+    }
+    const state = this.states.get(filter);
+    return state === undefined ? [] : [state];
+  }
+
+  private refreshStaleRunningSessions(filter: string, options: { readonly emit: boolean }): void {
+    for (const state of this.filteredStates(filter)) {
+      this.refreshStaleRunningSessionsForState(state, options);
+    }
+  }
+
+  private refreshStaleRunningSessionsForState(state: InstanceState, options: { readonly emit: boolean }): boolean {
+    let changed = false;
+    for (const [runId, session] of state.sessions) {
+      const projected = projectStaleRunningSession(session, this.now());
+      if (projected.status === session.status) {
+        continue;
+      }
+      state.sessions.set(runId, projected);
+      changed = true;
+      if (options.emit) {
+        this.emit({ t: "session_upsert", session: toBrowserListSession(projected) });
+      }
+    }
+    if (changed) {
+      this.evictSessionOverflow(state);
+      this.scheduleInstancesEmit();
+    }
+    return changed;
+  }
+
+  private async countPagedSessions(states: readonly InstanceState[], maxRuns: number): Promise<number> {
+    const pages = await Promise.all(
+      states.map((state) =>
+        listInstanceSessionSummaryPage(state.discovered, {
+          maxRuns,
+          includeMemory: this.includeMemory,
+          nowMs: this.now(),
+        }),
+      ),
+    );
+    return pages.reduce((sum, page) => sum + page.total, 0);
+  }
+
+  private now(): number {
+    return this.clock();
   }
 
   private isCurrentState(state: InstanceState, generation = this.lifecycleGeneration): boolean {
@@ -1124,6 +1232,10 @@ function finishedSummary(runId: string, status: string): RunSummary {
 
 function normalizeStatus(status: string): RunSummaryStatus {
   return RUN_SUMMARY_STATUSES.has(status as RunSummaryStatus) ? (status as RunSummaryStatus) : "failed";
+}
+
+function isTerminalSessionStatus(status: string): boolean {
+  return status !== "running" && status !== "stalled";
 }
 
 /** Accept a live `run_finished.summary` payload only when it is a plausible {@link RunSummary}. */

@@ -58,7 +58,18 @@ function TopNav({
 }
 
 export function App() {
-  const { sessions, instances, status, error, ensureDetail, reload } = useRecorder();
+  const {
+    sessions,
+    instances,
+    status,
+    error,
+    canLoadOlderFor,
+    loadingOlderFor,
+    historyErrorFor,
+    loadOlder,
+    ensureDetail,
+    reload,
+  } = useRecorder();
   const isMobile = useIsMobile();
   const [view, setView] = useState<View>("list");
   const [selId, setSelId] = useState<string | null>(null);
@@ -278,6 +289,10 @@ export function App() {
             setFOut={setFOut}
             setFInstance={setFInstance}
             onOpen={open}
+            canLoadOlder={canLoadOlderFor(fInstance)}
+            loadingOlder={loadingOlderFor(fInstance)}
+            historyError={historyErrorFor(fInstance)}
+            onLoadOlder={() => loadOlder(fInstance)}
           />
         )}
       </div>

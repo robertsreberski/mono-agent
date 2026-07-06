@@ -2,6 +2,8 @@ import { basename, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
+
 const readRecordedRunMock = vi.hoisted(() => vi.fn());
 const listRecordedRunsMock = vi.hoisted(() => vi.fn());
 
@@ -56,6 +58,7 @@ describe("SessionAggregator summary reconcile", () => {
       maxRunsPerInstance: 50,
       reconcileIntervalMs: 60_000,
       instancesDebounceMs: 5,
+      clock: () => 1_700_000_000_000,
     });
     await aggregator.start();
 
@@ -90,6 +93,7 @@ describe("SessionAggregator summary reconcile", () => {
       maxRunsPerInstance: 50,
       reconcileIntervalMs: 60_000,
       instancesDebounceMs: 5,
+      clock: () => 1_700_000_000_000,
     });
     await aggregator.start();
     expect(aggregator.getSessionSummaries("all")[0]).toMatchObject({ id: "Run:Watched", status: "running" });
@@ -111,6 +115,102 @@ describe("SessionAggregator summary reconcile", () => {
 
     expect(aggregator.getSessionSummaries("all")[0]).toMatchObject({ id: "Run:Watched", status: "succeeded" });
     expect(aggregator.getSessionSummaries("all").some((session) => session.id === "run-watched")).toBe(false);
+    expect(readRecordedRunMock).not.toHaveBeenCalled();
+  });
+
+  it("evicts stale projected running sessions while retaining fresh running sessions", async () => {
+    readRecordedRunMock.mockRejectedValue(new Error("readRecordedRun must stay lazy"));
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    const now = 1_700_200_000_000;
+    await seedRunningRun({
+      artifactDir,
+      runId: "run-stale",
+      conversationId: "chat:stale",
+      userInput: "Old running",
+      text: "stale answer",
+      source: "chat",
+      at: now - RUNS_HEALTH_STALE_RUNNING_MS - 1,
+    });
+    await seedRunningRun({
+      artifactDir,
+      runId: "run-fresh",
+      conversationId: "chat:fresh",
+      userInput: "Fresh running",
+      text: "fresh answer",
+      source: "chat",
+      at: now,
+    });
+    await registerSource({ registryDir, sourceId: "summary-agent", label: "Summary Agent", artifactDir });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 2,
+      reconcileIntervalMs: 60_000,
+      instancesDebounceMs: 5,
+      clock: () => now,
+    });
+    await aggregator.start();
+    expect(aggregator.getSessionSummaries("all").map((session) => [session.id, session.status])).toEqual([
+      ["run-fresh", "running"],
+      ["run-stale", "stalled"],
+    ]);
+
+    const newer = await seedRun({
+      artifactDir,
+      runId: "run-newer",
+      conversationId: "chat:newer",
+      userInput: "Newer complete",
+      text: "newer answer",
+      source: "chat",
+      at: now + 1,
+    });
+    const summaryFileName = basename(newer.artifactPaths[1] ?? "");
+    const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get("summary-agent");
+    await (aggregator as unknown as { rereadArtifactSummaryFile(state: unknown, summaryFileName: string): Promise<void> })
+      .rereadArtifactSummaryFile(state, summaryFileName);
+
+    expect(aggregator.getSessionSummaries("all").map((session) => [session.id, session.status])).toEqual([
+      ["run-newer", "succeeded"],
+      ["run-fresh", "running"],
+    ]);
+    expect(readRecordedRunMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the injected clock when rereading watched running summaries", async () => {
+    readRecordedRunMock.mockRejectedValue(new Error("readRecordedRun must stay lazy"));
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    const startedAt = 1_700_000_000_000;
+    let now = startedAt;
+    const summary = await seedRunningRun({
+      artifactDir,
+      runId: "run-clocked",
+      conversationId: "chat:clocked",
+      userInput: "Clocked running",
+      text: "clocked answer",
+      source: "chat",
+      at: startedAt,
+    });
+    await registerSource({ registryDir, sourceId: "summary-agent", label: "Summary Agent", artifactDir });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      instancesDebounceMs: 5,
+      clock: () => now,
+    });
+    await aggregator.start();
+    expect(aggregator.getSessionSummaries("all")[0]).toMatchObject({ id: "run-clocked", status: "running" });
+
+    now = startedAt + RUNS_HEALTH_STALE_RUNNING_MS + 1;
+    const summaryFileName = basename(summary.artifactPaths[1] ?? "run-clocked.summary.json");
+    const state = (aggregator as unknown as { states: Map<string, unknown> }).states.get("summary-agent");
+    await (aggregator as unknown as { rereadArtifactSummaryFile(state: unknown, summaryFileName: string): Promise<void> })
+      .rereadArtifactSummaryFile(state, summaryFileName);
+
+    expect(aggregator.getSessionSummaries("all")[0]).toMatchObject({ id: "run-clocked", status: "stalled" });
     expect(readRecordedRunMock).not.toHaveBeenCalled();
   });
 });

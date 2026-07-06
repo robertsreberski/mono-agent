@@ -1,12 +1,12 @@
 import {
   describeRunFailureKind,
+  RUNS_HEALTH_STALE_RUNNING_MS,
   type RecordedRunListItem,
   type RunSummaryStatus,
 } from "@mono-agent/observability";
 
 export const RUNS_HEALTH_MAX_RUNS = 50;
 export const RUNS_HEALTH_RECENT_RUNS = 5;
-export const RUNS_HEALTH_STALE_RUNNING_MS = 30 * 60_000;
 
 export type RunsHealthStatus = "ok" | "waiting" | "disabled";
 

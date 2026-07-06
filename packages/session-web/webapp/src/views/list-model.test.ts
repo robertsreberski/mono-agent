@@ -5,7 +5,9 @@ import {
   activityBucketLimit,
   buildActivityBuckets,
   buildChannelChips,
+  buildConversationDayGroups,
   clearExcludedChannels,
+  conversationBaseId,
   DEFAULT_EXCLUDED_CHANNELS,
   filterSessionsForList,
   makeDefaultExcludedChannels,
@@ -155,5 +157,49 @@ describe("activity rhythm buckets", () => {
 
     expect(narrowed.map((item) => item.title)).toEqual(["Midday"]);
     expect([...excludedChannels]).toEqual(DEFAULT_EXCLUDED_CHANNELS);
+  });
+});
+
+describe("conversation-day grouping", () => {
+  test("groups runs by viewer day and conversation lane", () => {
+    const sessions = [
+      session({
+        id: "new",
+        sourceId: "agent-a",
+        conversationId: "telegram:42#2026-07-06",
+        startTs: "2026-07-06T22:30:00.000Z",
+        providerSessionId: "provider-b",
+      }),
+      session({
+        id: "old",
+        sourceId: "agent-a",
+        conversationId: "telegram:42#2026-07-06",
+        startTs: "2026-07-06T21:45:00.000Z",
+        providerSessionId: "provider-a",
+      }),
+      session({
+        id: "other",
+        sourceId: "agent-a",
+        conversationId: "slack:C123",
+        startTs: "2026-07-05T10:00:00.000Z",
+      }),
+    ];
+
+    const groups = buildConversationDayGroups(sessions, { timeZoneForSession: () => "UTC" });
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.lanes.map((lane) => lane.key)).toEqual(["telegram:42"]);
+    expect(groups[0]?.lanes[0]?.items.map((item) => item.type)).toEqual(["session", "tick", "session"]);
+    expect(groups[0]?.lanes[0]?.items[1]).toMatchObject({
+      type: "tick",
+      tick: { from: "provider-b", to: "provider-a" },
+    });
+    expect(groups[1]?.lanes.map((lane) => lane.key)).toEqual(["slack:C123"]);
+  });
+
+  test("uses a session-key lane when a conversation id is missing", () => {
+    const item = session({ id: "no-conversation", sourceId: "agent-x", conversationId: undefined });
+
+    expect(conversationBaseId(item)).toBe("agent-x::no-conversation");
   });
 });

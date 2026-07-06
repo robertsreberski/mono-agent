@@ -4,7 +4,12 @@
  * model via `mapRunToSession` — the exact same mapping the TUI replay uses, so
  * both surfaces decompose a run identically.
  */
-import { listRecordedRuns, mapRunToSession, readRecordedRun } from "@mono-agent/observability";
+import {
+  listRecordedRuns,
+  mapRunToSession,
+  readRecordedRun,
+  RUNS_HEALTH_STALE_RUNNING_MS,
+} from "@mono-agent/observability";
 import type { RecordedRunListItem, RunArtifactScope, RunSummary, RuntimeEventLike, Session } from "@mono-agent/observability";
 
 import type { DiscoveredWebInstance } from "./discovery.js";
@@ -34,10 +39,17 @@ const DETAIL_MAX_STRING_BYTES = 32_768;
 export interface ListInstanceSessionsOptions {
   readonly maxRuns: number;
   readonly includeMemory?: boolean;
+  readonly nowMs?: number;
 }
 
 export interface ReadInstanceSessionOptions {
   readonly includeMemory?: boolean;
+  readonly nowMs?: number;
+}
+
+export interface ListInstanceSessionSummariesResult {
+  readonly total: number;
+  readonly summaries: readonly SourceStampedSessionSummary[];
 }
 
 /**
@@ -50,8 +62,15 @@ export async function listInstanceSessionSummaries(
   instance: DiscoveredWebInstance,
   options: ListInstanceSessionsOptions,
 ): Promise<readonly SourceStampedSessionSummary[]> {
+  return (await listInstanceSessionSummaryPage(instance, options)).summaries;
+}
+
+export async function listInstanceSessionSummaryPage(
+  instance: DiscoveredWebInstance,
+  options: ListInstanceSessionsOptions,
+): Promise<ListInstanceSessionSummariesResult> {
   const artifactDir = instance.instance.artifactDir;
-  const { runs } = await listRecordedRuns({
+  const { runs, totalRuns } = await listRecordedRuns({
     artifactDir,
     maxRuns: options.maxRuns,
     scope: runScope(options.includeMemory === true),
@@ -63,11 +82,11 @@ export async function listInstanceSessionSummaries(
       continue;
     }
     sessions.push({
-      session: mapListItemToSession(instance, run),
+      session: projectStaleRunningSession(mapListItemToSession(instance, run), nowMs(options)),
       signature,
     });
   }
-  return sessions;
+  return { total: totalRuns, summaries: sessions };
 }
 
 export async function readInstanceSessionSummaryByFileName(
@@ -113,7 +132,7 @@ export async function readInstanceSession(
     instanceLabel: instance.instance.label,
     ...(instance.instance.cwd.length === 0 ? {} : { cwd: instance.instance.cwd }),
   });
-  return { ...session, sourceId: instance.instance.sourceId };
+  return projectStaleRunningSession({ ...session, sourceId: instance.instance.sourceId }, nowMs(options));
 }
 
 function runScope(includeMemory: boolean): RunArtifactScope {
@@ -165,6 +184,16 @@ function mapListItemToSession(instance: DiscoveredWebInstance, item: RecordedRun
   };
 }
 
+export function projectStaleRunningSession(
+  session: SourceStampedSession,
+  now: number,
+): SourceStampedSession {
+  if (session.status !== "running" || !isStaleStartedAt(session.startTs, now)) {
+    return session;
+  }
+  return { ...session, status: "stalled" };
+}
+
 function stripSessionDetailText(
   session: Session,
 ): Omit<Session, "instrTr" | "recalled" | "finalTr"> {
@@ -188,4 +217,13 @@ function diskRunSignature(item: RecordedRunListItem): DiskRunSignature | undefin
     status: item.status,
     eventCount: item.eventCount,
   };
+}
+
+function nowMs(options: { readonly nowMs?: number }): number {
+  return options.nowMs ?? Date.now();
+}
+
+function isStaleStartedAt(startTs: string, now: number): boolean {
+  const startedAtMs = Date.parse(startTs);
+  return Number.isFinite(startedAtMs) && now - startedAtMs > RUNS_HEALTH_STALE_RUNNING_MS;
 }

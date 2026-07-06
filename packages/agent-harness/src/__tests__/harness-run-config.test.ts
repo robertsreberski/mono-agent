@@ -97,6 +97,7 @@ describe("runSourceFromRequest", () => {
     expect(runSourceFromRequest(req(undefined, "telegram:123"))).toEqual({ source: "telegram" });
     expect(runSourceFromRequest(req({ somethingElse: true }, "webhook:my-endpoint"))).toEqual({ source: "webhook" });
     expect(runSourceFromRequest(req(undefined, "tui-local"))).toEqual({ source: "tui" });
+    expect(runSourceFromRequest(req(undefined, "openai-api:resp-123"))).toEqual({ source: "openai-api" });
   });
 
   it("never throws on unusual metadata shapes", () => {

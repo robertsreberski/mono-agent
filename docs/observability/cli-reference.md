@@ -319,6 +319,12 @@ mono-agent web --include-memory
 
 Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback mode prints both the exact reverse-proxy target and a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
 
+The web API returns recent sessions first and supports paged older history with
+`instance`, `limit`, and `offset` query parameters on `/api/sessions`. The PWA
+uses those pages behind its "Load older" action, projects stale `running`
+summaries as `stalled`, shows failure/error/failover details when present, and
+formats single-instance run lists in the instance's discovered timezone.
+
 ## `install-skill`
 
 Copies the bundled `mono-agent-composer` skill into the agent skill folders (`~/.claude/skills` and/or `~/.agents/skills`). Refuses to overwrite an existing copy unless `--force` is passed.

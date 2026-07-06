@@ -54,6 +54,8 @@ export interface StartSessionWebServerOptions {
   };
   /** Include memory-maintenance runs in history, API responses, and live frames. Default false. */
   readonly includeMemory?: boolean;
+  /** Injectable clock for deterministic stale-running projection. Defaults to Date.now. */
+  readonly clock?: () => number;
 }
 
 export interface SessionWebServerHandle {
@@ -100,6 +102,7 @@ export async function startSessionWebServer(
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(logger === undefined ? {} : { logger: logger as SessionAggregatorLogger }),
     ...(options.includeMemory === undefined ? {} : { includeMemory: options.includeMemory }),
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
   });
   await aggregator.start();
 
@@ -115,11 +118,22 @@ export async function startSessionWebServer(
     res.json({ instances: aggregator.getInstances() });
   });
 
-  app.get("/api/sessions", (req, res) => {
+  app.get("/api/sessions", (req, res, next) => {
     const instance = firstString(req.query.instance) ?? "all";
-    const sessions = aggregator.getSessionSummaries(instance);
+    const offset = parseOffset(firstString(req.query.offset));
     const limit = parseLimit(firstString(req.query.limit));
-    res.json({ sessions: limit === undefined ? sessions : sessions.slice(0, limit) });
+    if (offset > 0 || limit !== undefined) {
+      const pageLimit = limit ?? maxRunsPerInstance;
+      aggregator
+        .getSessionSummariesPage(instance, { offset, limit: pageLimit })
+        .then((page) => {
+          res.json(page);
+        })
+        .catch((error: unknown) => next(error));
+      return;
+    }
+    const sessions = aggregator.getSessionSummaries(instance);
+    res.json({ sessions, total: sessions.length, offset: 0, limit: sessions.length, hasMore: false });
   });
 
   app.get("/api/sessions/:sourceId/:runId", (req, res, next) => {
@@ -392,6 +406,14 @@ function parseLimit(value: string | undefined): number | undefined {
   }
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function parseOffset(value: string | undefined): number {
+  if (value === undefined) {
+    return 0;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 function requireApiAuth(authToken: string): (req: Request, res: Response, next: NextFunction) => void {

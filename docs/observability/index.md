@@ -104,6 +104,12 @@ mono-agent web --include-memory
 
 The backend binds loopback on the stable default port `4599`. Startup prints the exact URL for reverse proxies plus a Tailscale serve hint. Run lists and the initial browser stream are summary-only; a run's full timeline is loaded lazily from its detail endpoint when opened. Memory-maintenance runs are hidden by default; pass `--include-memory` to inspect them. `--allow-non-loopback` generates a tokenized URL and protects `/api/*` plus `/api/stream`; use it only on a trusted network boundary.
 
+The Session Recorder loads recent runs first and pages older history on demand.
+The browser treats stale `running` summaries as `stalled`, shows recorded
+failure kinds/error text/failover attempts, and uses each instance's discovered
+timezone for single-instance lists and run details. Mixed-instance views fall
+back to the viewer locale/timezone.
+
 ## Related
 
 - [Configuration blueprint](/config/blueprint/) — every key in context, including `artifacts`, `traceability`, and `observability`.

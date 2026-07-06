@@ -30,6 +30,13 @@ export interface Usage {
   cost: number;
 }
 
+export interface FailoverAttempt {
+  model?: string;
+  failureKind?: string;
+  subkind?: string;
+  requestId?: string;
+}
+
 export type SessionStep =
   | { k: "prompt"; ts: string; text: string; tr?: boolean; chars?: number }
   | {
@@ -52,6 +59,32 @@ export type SessionStep =
       previousConversationId?: string;
       providerSessionId?: string;
       reason?: string;
+    }
+  | {
+      k: "runtime";
+      ts: string;
+      type: "runtime_warning";
+      severity: "warning";
+      message: string;
+      kind?: string;
+    }
+  | {
+      k: "runtime";
+      ts: string;
+      type: "provider_status";
+      kind: string;
+      model?: string;
+      from?: string;
+      to?: string;
+      attemptIndex?: number;
+      durationMs?: number;
+      cancelled?: boolean;
+    }
+  | {
+      k: "runtime";
+      ts: string;
+      type: "runtime_telemetry";
+      kind: string;
     }
   | {
       k: "result";
@@ -91,6 +124,9 @@ export interface Session {
   finalText: string;
   finalTr?: boolean;
   status: string;
+  failureKind?: string;
+  error?: string;
+  failoverHistory?: FailoverAttempt[];
   totals: Totals;
   toolCounts: Record<string, number>;
   steps: SessionStep[];
@@ -106,6 +142,7 @@ export interface WebInstance {
   health: string;
   liveConnected: boolean;
   counts: { runs: number };
+  timeZone?: string;
 }
 
 // SSE stream envelope (each `data:` line is one of these).

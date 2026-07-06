@@ -48,6 +48,16 @@ and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
 Run lists and the initial browser SSE snapshot are summary-only and step-less.
 Full run timelines are read lazily from `/api/sessions/:sourceId/:runId` when a
 detail view opens.
+`/api/sessions` supports `instance`, `limit`, and `offset` query parameters and
+returns page metadata (`total`, `offset`, `limit`, `hasMore`) so the browser can
+load older history without replaying already-loaded rows. Stale `running`
+summaries are projected as `stalled` in the web surface instead of being treated
+as live.
+Instance metadata includes the source timezone when it is discoverable; the PWA
+uses that timezone for per-instance run lists and details, and falls back to the
+viewer locale/timezone for mixed-instance views. Failure summaries preserve
+`failureKind`, error text, and provider failover attempts so failed runs are
+inspectable from the list and detail views.
 Memory-maintenance runs are hidden by default across disk history, watched
 updates, API responses, browser SSE frames, and live folds; pass
 `includeMemory: true` to opt them back in.

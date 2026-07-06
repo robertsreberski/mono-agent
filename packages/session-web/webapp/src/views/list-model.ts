@@ -1,5 +1,5 @@
 import type { Session } from "../lib/types";
-import { channelColor, channelLabel, dateStr, fmtCost, hexA, timeStr } from "../lib/format";
+import { channelColor, channelLabel, dateStr, dayKey, fmtCost, hexA, timeStr } from "../lib/format";
 import { CHANNEL_ORDER, MUTED, TEXT } from "../lib/tokens";
 import { sessionStoreKey } from "../lib/store";
 
@@ -37,6 +37,7 @@ export interface ActivityBucket {
   endMs: number;
   rangeLabel: string;
   runCount: number;
+  repliedCount: number;
   notifiedCount: number;
   silentCount: number;
   cost: number;
@@ -49,6 +50,30 @@ export interface ActivityBucket {
   runKeys: readonly string[];
   ariaLabel: string;
   title: string;
+}
+
+export interface ProviderSessionTick {
+  type: "provider_session_changed";
+  key: string;
+  from?: string;
+  to?: string;
+  label: string;
+}
+
+export type ConversationLaneItem =
+  | { type: "session"; session: Session }
+  | { type: "tick"; tick: ProviderSessionTick };
+
+export interface ConversationLane {
+  key: string;
+  label: string;
+  items: ConversationLaneItem[];
+}
+
+export interface ConversationDayGroup {
+  key: string;
+  label: string;
+  lanes: ConversationLane[];
 }
 
 export function makeDefaultExcludedChannels(): Set<string> {
@@ -75,6 +100,86 @@ export function activityBucketLimit(isMobile: boolean): number {
 
 export function sourceFor(session: Session): string {
   return session.sourceId ?? session.instance;
+}
+
+export function conversationBaseId(session: Session): string {
+  const id = session.conversationId?.trim();
+  if (id === undefined || id.length === 0) {
+    return sessionStoreKey(session);
+  }
+  const hashIndex = id.indexOf("#");
+  return hashIndex >= 0 ? id.slice(0, hashIndex) : id;
+}
+
+export function buildConversationDayGroups(
+  sessions: readonly Session[],
+  options: { timeZoneForSession?: (session: Session) => string | undefined } = {},
+): ConversationDayGroup[] {
+  const dayMap = new Map<string, { label: string; lanes: Map<string, Session[]> }>();
+
+  for (const session of sessions) {
+    const zone = options.timeZoneForSession?.(session);
+    const key = dayKey(session.startTs, zone) || dateStr(session.startTs, zone) || "unknown";
+    const label = dateStr(session.startTs, zone) || "Unknown date";
+    const day = dayMap.get(key) ?? { label, lanes: new Map<string, Session[]>() };
+    const laneKey = conversationBaseId(session);
+    const lane = day.lanes.get(laneKey) ?? [];
+    lane.push(session);
+    day.lanes.set(laneKey, lane);
+    dayMap.set(key, day);
+  }
+
+  return [...dayMap.entries()].map(([key, day]) => ({
+    key,
+    label: day.label,
+    lanes: [...day.lanes.entries()].map(([laneKey, laneSessions]) => ({
+      key: laneKey,
+      label: laneKey,
+      items: laneItemsWithProviderTicks(laneSessions),
+    })),
+  }));
+}
+
+function laneItemsWithProviderTicks(sessions: readonly Session[]): ConversationLaneItem[] {
+  const items: ConversationLaneItem[] = [];
+  let previous: Session | undefined;
+  for (const session of sessions) {
+    if (previous !== undefined) {
+      const tick = providerSessionTick(previous, session);
+      if (tick !== undefined) {
+        items.push({ type: "tick", tick });
+      }
+    }
+    items.push({ type: "session", session });
+    previous = session;
+  }
+  return items;
+}
+
+function providerSessionTick(left: Session, right: Session): ProviderSessionTick | undefined {
+  const from = normalizedProviderSessionId(left.providerSessionId);
+  const to = normalizedProviderSessionId(right.providerSessionId);
+  if (from === to || (from === undefined && to === undefined)) {
+    return undefined;
+  }
+  return {
+    type: "provider_session_changed",
+    key: `${sessionStoreKey(left)}=>${sessionStoreKey(right)}`,
+    ...(from === undefined ? {} : { from }),
+    ...(to === undefined ? {} : { to }),
+    label: `provider session ${shortProviderId(from)} -> ${shortProviderId(to)}`,
+  };
+}
+
+function normalizedProviderSessionId(value: string | null | undefined): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function shortProviderId(value: string | undefined): string {
+  if (value === undefined) return "unknown";
+  return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
 }
 
 export function orderedChannelsForSessions(sessions: readonly Session[]): string[] {
@@ -129,7 +234,7 @@ export function buildChannelChips(
 
 export function buildActivityBuckets(
   sessions: readonly Session[],
-  options: { maxBuckets: number },
+  options: { maxBuckets: number; timeZone?: string },
 ): ActivityBucket[] {
   if (sessions.length === 0) return [];
 
@@ -170,12 +275,12 @@ export function buildActivityBuckets(
     const channelEntries = [...channelCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     const dominantChannel = channelEntries[0]?.[0] ?? "other";
     const rangeLabel = startMs === endMs
-      ? `${dateStr(startMs)} ${timeStr(startMs)}`
-      : `${dateStr(startMs)} ${timeStr(startMs)} - ${dateStr(endMs)} ${timeStr(endMs)}`;
+      ? `${dateStr(startMs, options.timeZone)} ${timeStr(startMs, options.timeZone)}`
+      : `${dateStr(startMs, options.timeZone)} ${timeStr(startMs, options.timeZone)} - ${dateStr(endMs, options.timeZone)} ${timeStr(endMs, options.timeZone)}`;
     const costLabel = fmtCost(cost);
     const dominantLabel = channelLabel(dominantChannel);
     const runWord = bucket.length === 1 ? "run" : "runs";
-    const notifiedPhrase = notifiedCount === 0 ? "all silent" : `${notifiedCount} notified, ${silentCount} silent`;
+    const notifiedPhrase = notifiedCount === 0 ? "all silent" : `${notifiedCount} replied, ${silentCount} silent`;
     const channelSegments = channelEntries.map(([key, count]) => ({
       key,
       label: channelLabel(key),
@@ -191,6 +296,7 @@ export function buildActivityBuckets(
       endMs,
       rangeLabel,
       runCount: bucket.length,
+      repliedCount: notifiedCount,
       notifiedCount,
       silentCount,
       cost,

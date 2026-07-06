@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { clearAuthToken, fetchInstances, fetchSessions, openStream, saveAuthToken } from "./api";
+import { clearAuthToken, fetchInstances, fetchSessionPage, fetchSessions, openStream, saveAuthToken } from "./api";
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -92,8 +92,21 @@ describe("session-web API auth", () => {
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/instances");
     expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer session-secret");
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/sessions?instance=agent%20one&limit=10");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/sessions?instance=agent+one&limit=10");
     expect(headersFrom(fetchMock.mock.calls[1] ?? []).authorization).toBe("Bearer session-secret");
+  });
+
+  test("requests paged session history with offset metadata", async () => {
+    installWindow();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({ sessions: [{ id: "older" }], total: 240, offset: 200, limit: 40, hasMore: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const page = await fetchSessionPage("all", { limit: 40, offset: 200 });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/sessions?instance=all&limit=40&offset=200");
+    expect(page).toMatchObject({ total: 240, offset: 200, limit: 40, hasMore: false });
+    expect(page.sessions).toEqual([{ id: "older" }]);
   });
 
   test("keeps a URL token in memory after stripping it when storage is unavailable", async () => {

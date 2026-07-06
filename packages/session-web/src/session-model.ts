@@ -34,6 +34,10 @@ export interface WebInstance {
   readonly artifactDir: string;
   /** Trace-source health: "running" | "stale" | "failed" (never "stopped" — those are filtered out). */
   readonly health: string;
+  /** Best-effort instance timezone from trace metadata or runtime.session.rolloverTimezone. */
+  readonly timeZone?: string;
+  /** Back-compat spelling for clients that already probe `timezone`. */
+  readonly timezone?: string;
   readonly liveConnected: boolean;
   readonly counts: { readonly runs: number };
 }

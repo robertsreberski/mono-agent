@@ -32,6 +32,7 @@ export interface RegisterSourceInput {
   readonly artifactDir: string;
   readonly configPath?: string;
   readonly liveBaseUrl?: string;
+  readonly metadata?: Record<string, unknown>;
 }
 
 /** Write a real, running trace-source manifest (no heartbeat timer to clean up). */
@@ -42,9 +43,16 @@ export async function registerSource(input: RegisterSourceInput): Promise<void> 
     label: input.label,
     artifactDir: input.artifactDir,
     ...(input.configPath === undefined ? {} : { configPath: input.configPath }),
-    ...(input.liveBaseUrl === undefined
+    ...(input.liveBaseUrl === undefined && input.metadata === undefined
       ? {}
-      : { metadata: { channels: { live: { kind: "running", baseUrl: input.liveBaseUrl } } } }),
+      : {
+          metadata: {
+            ...(input.metadata ?? {}),
+            ...(input.liveBaseUrl === undefined
+              ? {}
+              : { channels: { live: { kind: "running", baseUrl: input.liveBaseUrl } } }),
+          },
+        }),
   });
 }
 

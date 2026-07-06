@@ -2,6 +2,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { createLiveEventBus, LIVE_EVENT_SCHEMA, type RunEventBus, type RunEventFrame } from "@mono-agent/agent-contracts";
+import { RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionAggregator } from "../aggregator.js";
@@ -30,6 +31,7 @@ const SOURCE_ID = "live-agent";
 const RUN_ID = "run-live-1";
 const SUMMARY_FILE = `${RUN_ID}.summary.json`;
 const STARTED_AT = "2026-07-04T00:00:00.000Z";
+const LIVE_TEST_NOW = Date.parse(STARTED_AT) + 1000;
 
 function runStarted(): RunEventFrame {
   return {
@@ -164,6 +166,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
 
     const frames: BrowserStreamFrame[] = [];
@@ -216,6 +219,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     await aggregator.start();
 
@@ -246,6 +250,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     await aggregator.start();
 
@@ -271,6 +276,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     const frames: BrowserStreamFrame[] = [];
     aggregator.subscribe((frame) => frames.push(frame));
@@ -301,6 +307,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     await aggregator.start();
     const internals = aggregator as unknown as {
@@ -337,6 +344,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
       includeMemory: true,
     });
     await aggregator.start();
@@ -379,6 +387,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     await aggregator.start();
 
@@ -415,6 +424,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     await aggregator.start();
 
@@ -429,6 +439,83 @@ describe("SessionAggregator live fold", () => {
 
     await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
       status: "succeeded",
+      finalText: "live answer",
+    });
+  });
+
+  it("does not let stalled disk projection block later live completion", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    const staleNow = Date.parse(STARTED_AT) + RUNS_HEALTH_STALE_RUNNING_MS + 1000;
+    await seedRunningRun({
+      artifactDir,
+      runId: RUN_ID,
+      conversationId: "cron:live",
+      userInput: "Run from disk",
+      text: "stale running disk answer",
+      source: "cron",
+      at: Date.parse(STARTED_AT),
+    });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+      clock: () => staleNow,
+    });
+    await aggregator.start();
+    expect(aggregator.getSessionSummaries("all")).toMatchObject([{ id: RUN_ID, status: "stalled" }]);
+
+    bus.publish(runStarted());
+    bus.publish(assistantEvent());
+    bus.publish(runFinished());
+
+    await waitFor(() =>
+      aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.status === "succeeded"),
+    );
+    await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
+      status: "succeeded",
+      finalText: "live answer",
+    });
+  });
+
+  it("projects cached live detail as stalled on direct detail reads", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    let now = LIVE_TEST_NOW;
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+      clock: () => now,
+    });
+    await aggregator.start();
+
+    bus.publish(runStarted());
+    bus.publish(assistantEvent());
+    await waitFor(() =>
+      aggregator?.getSessions("all").find((session) => session.id === RUN_ID && session.status === "running"),
+    );
+
+    now = Date.parse(STARTED_AT) + RUNS_HEALTH_STALE_RUNNING_MS + 1000;
+
+    await expect(aggregator.getSession(SOURCE_ID, RUN_ID)).resolves.toMatchObject({
+      id: RUN_ID,
+      status: "stalled",
       finalText: "live answer",
     });
   });
@@ -448,6 +535,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     const frames: BrowserStreamFrame[] = [];
     aggregator.subscribe((frame) => frames.push(frame));
@@ -503,6 +591,7 @@ describe("SessionAggregator live fold", () => {
       reconcileIntervalMs: 60_000,
       liveFoldDebounceMs: 10,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     await aggregator.start();
 
@@ -557,6 +646,7 @@ describe("SessionAggregator live fold", () => {
       maxRunsPerInstance: 50,
       reconcileIntervalMs: 60_000,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     const frames: BrowserStreamFrame[] = [];
     aggregator.subscribe((frame) => frames.push(frame));
@@ -599,6 +689,7 @@ describe("SessionAggregator live fold", () => {
       maxRunsPerInstance: 1,
       reconcileIntervalMs: 60_000,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     const frames: BrowserStreamFrame[] = [];
     aggregator.subscribe((frame) => frames.push(frame));
@@ -626,6 +717,7 @@ describe("SessionAggregator live fold", () => {
       maxRunsPerInstance: 50,
       reconcileIntervalMs: 60_000,
       instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
     });
     const frames: BrowserStreamFrame[] = [];
     aggregator.subscribe((frame) => frames.push(frame));
