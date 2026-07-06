@@ -80,6 +80,29 @@ mono-agent audit-runs --artifact-dir /path/to/.mono-agent/artifacts --stale-afte
 The artifacts directory is the durable record of what your agent did. Keep it out of version control (it grows per run) but back it up if you care about historical runs you might want to backfill or audit later.
 :::
 
+## Artifact metrics
+
+`mono-agent metrics` aggregates recorded run summaries into operational numbers: status rates, failure-kind rates, duration percentiles, and total plus per-run cost. It is offline and read-only. It reads `*.summary.json` files from `artifacts.dir` or an explicit artifact directory; it does not read exporter config, contact Phoenix, reconcile stale runs, or rewrite artifacts. By default it reports agent runs only; pass `--include-memory` to include memory-maintenance `mem-*` runs from the `memory/` namespace and legacy mixed directories.
+
+```bash
+mono-agent metrics --artifacts ./.mono-agent/artifacts
+mono-agent metrics --since 2026-06-01T00:00:00Z --until 2026-06-24T00:00:00Z
+mono-agent metrics --by model --json
+mono-agent metrics --include-memory --json
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--artifacts <path>` | Read this artifact directory directly. Wins over config-based `artifacts.dir` resolution. |
+| `--config <path>` | Use a non-default config file when resolving `artifacts.dir`. |
+| `--env-file <path>` | Load env overrides before resolving `MONO_AGENT_ARTIFACT_DIR`. |
+| `--since <iso>` / `--until <iso>` | Include only summaries whose `startedAt` falls inside the ISO window. Summaries with missing or unparseable timestamps are excluded once a window is active. |
+| `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. Channel grouping is derived from the `conversationId` prefix before `:` until summaries carry a first-class channel field. |
+| `--include-memory` | Include memory-maintenance summaries in addition to default agent runs. |
+| `--json` | Print the full machine-readable metrics report. |
+
+Each bucket reports `totalRuns`, status counts/rates, failure-kind counts/rates, `durationMs` p50/p90/p99/max using linear interpolation, and cost totals. Cost prefers `cost.cumulativeUsd`, then `cost.totalUsd`, then `usage.cost_usd`; non-numeric values are ignored.
+
 ## Latency attribution
 
 The event stream is annotated so you can separate model-reasoning time from time spent in tools and MCP servers (coverage: `auto` — emitted automatically into the run JSONL, nothing to enable):

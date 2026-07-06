@@ -50,7 +50,7 @@ describe("consumer docs/config consistency checker", () => {
     });
 
     const result = await runScript(["--consumer", dir]);
-    expect(result.stdout).toContain("passed for 1 consumer folder");
+    expect(result.stdout).toContain("repo doc file(s) and 1 consumer folder(s)");
     expect(result.stderr).toBe("");
   });
 
@@ -64,20 +64,18 @@ describe("consumer docs/config consistency checker", () => {
     });
 
     const result = await runScript(["--consumer", missingReadmeDir, "--consumer", validDir]);
-    expect(result.stdout).toContain("passed for 1 consumer folder");
+    expect(result.stdout).toContain("repo doc file(s) and 1 consumer folder(s)");
     expect(result.stderr).toContain("README.md missing; skipped");
   });
 
-  it("fails when every requested consumer is skipped", async () => {
+  it("warns when every requested consumer is skipped but repo docs are checked", async () => {
     const missingReadmeDir = await writeConsumer({
       config: { tools: { allowedTools: ["Read"] } },
     });
 
-    await expectScriptFailure(["--consumer", missingReadmeDir], (error) => {
-      expect(error.stderr).toContain("README.md missing; skipped");
-      expect(error.stderr).toContain("No consumer folders were checked");
-      expect(error.stdout).toBe("");
-    });
+    const result = await runScript(["--consumer", missingReadmeDir]);
+    expect(result.stdout).toContain("repo doc file(s) and 0 consumer folder(s)");
+    expect(result.stderr).toContain("README.md missing; skipped");
   });
 
   it("fails on malformed consumer config JSON", async () => {

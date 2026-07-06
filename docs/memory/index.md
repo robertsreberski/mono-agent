@@ -327,6 +327,4 @@ Under the hood `agent-app` spawns a bundled stdio MCP child named `mono-agent-me
 
 ## References
 
-- Design specs: `docs/superpowers/specs/2026-06-15-memory-bujo-design.md`, `docs/superpowers/specs/2026-06-16-memory-bujo-followups-design.md`
-- Implementation plans: `docs/superpowers/plans/2026-06-15-memory-bujo-p*.md`, `docs/superpowers/plans/2026-06-16-memory-bujo-p5-tiered-offering.md`, `docs/superpowers/plans/2026-06-16-memory-bujo-p6-followups.md`
 - Feature registry rows: `docs/reference/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`

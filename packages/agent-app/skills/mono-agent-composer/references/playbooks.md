@@ -121,16 +121,22 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 
 ```json
 {
-  "a2a": {
-    "enabled": true,
-    "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "bearerToken": "..." },
-    "agent": { "name": "Research Agent", "description": "Does research.", "version": "0.1.0" },
-    "skill": { "id": "research", "name": "Research", "description": "Web research", "tags": ["research"] },
-    "consumer": { "remoteAgentUrls": ["http://127.0.0.1:4201"], "defaultRemoteAgentUrl": "http://127.0.0.1:4201", "bearerToken": "...", "timeoutMs": 30000 }
+  "channels": {
+    "plugins": [{
+      "package": "@mono-agent/a2a-adapter",
+      "id": "a2a",
+      "config": {
+        "enabled": true,
+        "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "bearerToken": "..." },
+        "agent": { "name": "Research Agent", "description": "Does research.", "version": "0.1.0" },
+        "skill": { "id": "research", "name": "Research", "description": "Web research", "tags": ["research"] },
+        "consumer": { "remoteAgentUrls": ["http://127.0.0.1:4201"], "defaultRemoteAgentUrl": "http://127.0.0.1:4201", "bearerToken": "...", "timeoutMs": 30000 }
+      }
+    }]
   }
 }
 ```
-**Steps:** provider — `init`, add `a2a.provider/agent/skill` + bearer, `validate`, `start`, confirm the Agent Card is reachable. Consumer — set `a2a.consumer` (or compose `createA2AConsumerResponder`), send text to the provider's Agent Card URL with the bearer.
+**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + bearer, `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), send text to the provider's Agent Card URL with the bearer.
 **Smoke:** send a message to the provider's Agent Card URL with the bearer; confirm a real response.
 
 ## 8. Multi-agent orchestration (`ask_collaborator`) — code
@@ -207,3 +213,55 @@ const ext = createCollaboratorToolRuntimeExtension({
 ```
 **Steps:** `ollama pull gemma4:31b` → `mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:openai-codex:gpt-5.5,pi:ollama:gemma4:31b` → add `providers.local` + `piNative.piSessionsRoot` → `validate` → `start`.
 **Smoke:** force a retryable primary failure; confirm the run result reports failover to the next model (not silent) and the conversation resumes from the transcript tail.
+
+## 13. Personal Telegram assistant with Supermemory
+**For:** a power user trying an external memory layer while keeping the agent local.
+**Goal:** a Telegram bot captures turns into a local or hosted Supermemory instance and recalls through the same `memory_recall` tool.
+**Features:** `telegram.long-polling`, `memory.backend-supermemory`, `memory.per-turn-capture`, `memory.recall-tool`.
+
+```json
+{
+  "runtime": { "model": "claude:claude-sonnet-4-6" },
+  "telegram": { "enabled": true, "allowedChatIds": ["123456789"] },
+  "memory": {
+    "backend": "supermemory", "mode": "lite", "path": "./.mono-agent/memory",
+    "writeMode": "capture",
+    "supermemory": { "baseUrl": "http://127.0.0.1:6767", "container": "my-telegram-agent" },
+    "recallTool": { "enabled": true }
+  }
+}
+```
+**Steps:** run `supermemory-server`, save its `sm_...` key in `.env`, `mono-agent init --recipe personal-telegram-supermemory`, add Telegram token/chat id, `validate`, `start`.
+**Smoke:** send a fact, wait for ingestion, then ask a paraphrased question; confirm the run shows `memory_recall` returning Supermemory hits.
+
+## 14. Fully local LM Studio agent
+**For:** a privacy-focused user who prefers LM Studio's GUI local server.
+**Goal:** a local LM Studio model answers through the webhook channel with lite memory and no cloud calls.
+**Features:** `runtime.local-providers`, `runtime.multi-backend`, `memory.lite`, `webhook.http-invoke`.
+
+```json
+{
+  "runtime": { "model": "pi:lmstudio:qwen3.6-32b" },
+  "providers": { "local": [{ "id": "lmstudio", "type": "lmstudio", "baseUrl": "http://localhost:1234", "enabled": true }] },
+  "memory": { "mode": "lite", "path": "./.mono-agent/memory", "writeMode": "append-host-summary" },
+  "webhook": { "enabled": true }
+}
+```
+**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --recipe local-lmstudio-private` → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
+**Smoke:** `curl` the webhook invoke URL and confirm the response comes from the local LM Studio model.
+
+## 15. Interactive agent with long jobs and large media
+**For:** a builder whose Telegram agent needs to ask before acting, run multi-minute tools, and exchange large files.
+**Goal:** one Telegram agent uses `ask_user`, long-running MCP tool progress, a self-hosted Bot API server, and `telegram_send_document`.
+**Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
+
+```json
+{
+  "runtime": { "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk" },
+  "tools": { "allowedTools": ["Read", "ask_user", "telegram_send_document"], "mcpConfigPath": "./.mcp.json", "mcpCallMaxTotalTimeoutMs": 2700000 },
+  "interaction": { "bridge": { "host": "127.0.0.1", "port": 4471 }, "askUser": { "timeoutMs": 600000 }, "progress": { "enabled": true } },
+  "telegram": { "enabled": true, "allowedChatIds": ["123456789"], "apiRoot": "http://127.0.0.1:8081", "attachments": { "maxBytes": 268435456, "maxUploadBytes": 268435456 } }
+}
+```
+**Steps:** run a loopback self-hosted Bot API server if files exceed 20 MB, wire a long-running MCP tool in `.mcp.json`, `validate`, `start`.
+**Smoke:** send media with no caption, answer the `ask_user` question, watch progress update during the long job, and receive the generated file via `telegram_send_document`.

@@ -78,7 +78,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `memory.custom-store` | code | `createConfiguredAgentResponder({ memory })` | — | [Composition](/programmatic/composition/) | — |
 
 :::note
-The entity graph that BuJo capture maintains is documented separately in [Entity graph](/memory/entity-graph/).
+The entity graph that BuJo capture maintains is part of the BuJo capture pipeline; see [Capture & recall](/memory/capture-and-recall/#entity-graph-bujo-auto).
 :::
 
 ## Context & skills
@@ -102,12 +102,12 @@ The entity graph that BuJo capture maintains is documented separately in [Entity
 
 ## Channels
 
-Core channels are independent JSON sections. External channel packages are declared under `channels.plugins[]` and return the same `ChannelDriver` shape. Most are opt-in via an `enabled` flag (default off); `tui` and `live` are default-on loopback operator surfaces. An off channel reports `disabled`; an enabled channel with incomplete config reports `waiting_for_config`. Adapter fields can also have `MONO_AGENT_<CHANNEL>_*` env vars.
+Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`, `openaiApi`, `cron`, `tui`, and `live`. External channel packages are declared under `channels.plugins[]` and return the same `ChannelDriver` shape; the current cataloged channel extras are `@mono-agent/a2a-adapter` and `@mono-agent/whatsapp-adapter`. Most are opt-in via an `enabled` flag (default off); `tui` and `live` are default-on loopback operator surfaces. An off channel reports `disabled`; an enabled channel with incomplete config reports `waiting_for_config`. Adapter fields can also have `MONO_AGENT_<CHANNEL>_*` env vars.
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
 | `telegram.long-polling` | config | `telegram.enabled`, `telegram.botToken`, `telegram.allowedChatIds` / `telegram.allowAllChats`, `telegram.pollWatchdogMs` (poll-liveness watchdog, on by default; `0` disables), `telegram.transport.ipFamily` (opt-in IPv4/IPv6 pin) (+ a built-in self-healing long-poll auto-restart, on by default; code-only, no config/env key) | `MONO_AGENT_TELEGRAM_*` (incl. `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS`, `MONO_AGENT_TELEGRAM_IP_FAMILY`) | [Telegram](/channels/telegram/) | [Telegram BuJo assistant](/playbooks/telegram-personal-assistant-bujo/) |
-| `telegram.interactive` | config | `telegram.commands[]`, `telegram.reactions`, `telegram.quietHours`; `telegram_ask` / `telegram_send_document` / `telegram_send_photo` in `tools.allowedTools` | `MONO_AGENT_TELEGRAM_REACTIONS` | [Telegram](/channels/telegram/) · [Evaluation](/reference/telegram-feature-evaluation/) | — |
+| `telegram.interactive` | config | `telegram.commands[]`, `telegram.reactions`, `telegram.quietHours`; `telegram_ask` / `telegram_send_document` / `telegram_send_photo` in `tools.allowedTools` | `MONO_AGENT_TELEGRAM_REACTIONS` | [Telegram](/channels/telegram/) | — |
 | `slack.socket-mode` | config | `slack.enabled`, `slack.botToken`, `slack.appToken`, `slack.allowedChannelIds` / `slack.allowAllChannels`, `slack.botUserIds`, `slack.mentionTextAliases`, `slack.stripMentionText`; resilience tuning (all optional, on by default): `slack.heartbeatIntervalMs`, `slack.heartbeatTimeoutMs`, `slack.reconnectInitialBackoffMs`, `slack.reconnectMaxBackoffMs`, `slack.reconnectStabilityMs`, `slack.reconnectStartupGraceMs`, `slack.drainDeadlineMs` | `MONO_AGENT_SLACK_*` (incl. `MONO_AGENT_SLACK_HEARTBEAT_*`, `MONO_AGENT_SLACK_RECONNECT_*`, `MONO_AGENT_SLACK_DRAIN_DEADLINE_MS`) | [Slack](/channels/slack/) | [Slack team bot + MCP tools](/playbooks/slack-team-bot-mcp-tools/) |
 | `channel.plugins` | config | `channels.plugins[]: { package, id?, label?, config? }` | — | [Write your own channel adapter](/programmatic/custom-channels/) | — |
 | `whatsapp.baileys` | config | `channels.plugins[].package: "@mono-agent/whatsapp-adapter"` plus plugin `config.{enabled,allowedChatJids,allowAllChats,groupMode,botJids,mentionTextAliases,stripMentionText}` | `MONO_AGENT_WHATSAPP_*` | [WhatsApp](/channels/whatsapp/) | — |
@@ -134,7 +134,7 @@ Core channels are independent JSON sections. External channel packages are decla
 | `observability.phoenix-exporter` | config | `observability.exporters[]: {type:"phoenix", endpoint, projectName, includeSensitiveData, headers, timeoutMs}` | `MONO_AGENT_OBSERVABILITY_EXPORTERS` | [Phoenix & backfill](/observability/phoenix-and-backfill/) | [Phoenix-observed agent](/playbooks/phoenix-observed-agent/) |
 | `observability.backfill` | cli | `mono-agent backfill (--run <id> \| --all) [--since] [--until] [--dry-run]` | — | [Phoenix & backfill](/observability/phoenix-and-backfill/) | [Backfill historical runs](/playbooks/backfill-historical-runs/) |
 | `observability.artifact-audit` | cli / code | `auditRecordedRuns(artifactDir, { staleAfterMs })`; `mono-agent audit-runs [--artifact-dir <path> \| --consumer <path>] [--json]` | — | [Artifacts & traces](/observability/artifacts-and-traces/#run-status-and-stale-run-reconciliation) | — |
-| `observability.artifact-metrics` | cli / code | `summarizeRecordedRunMetrics({ artifactDir, since, until, groupBy })`; `mono-agent metrics [--artifacts] [--since] [--until] [--by] [--json]` | — | [Artifact metrics](/observability/artifact-metrics/) | — |
+| `observability.artifact-metrics` | cli / code | `summarizeRecordedRunMetrics({ artifactDir, since, until, groupBy })`; `mono-agent metrics [--artifacts] [--since] [--until] [--by] [--json]` | — | [Artifacts & traces](/observability/artifacts-and-traces/#artifact-metrics) | — |
 | `observability.rich-traces` | auto | (model / token counts / cost / duration on every span; system prompt gated by `includeSensitiveData`; memory runs get `span.kind=memory` + `memory.operation`) | — | [Phoenix & backfill](/observability/phoenix-and-backfill/#per-run-attributes) | — |
 | `observability.stale-run-reconciliation` | auto | (`reconcileStaleRunArtifacts()` at startup over `artifacts.dir`; rewrites orphaned `running` → `interrupted`) | — | [Artifacts & traces](/observability/artifacts-and-traces/#run-status-and-stale-run-reconciliation) | — |
 | `tui.chat` | cli | `mono-agent tui [--agent <label\|sourceId>] [--conversation <id>]`; low-level `mono-agent-tui [--responder \| --url]` | `MONO_AGENT_TUI_API_KEY` (connect key) | [TUI](/observability/tui/) | — |

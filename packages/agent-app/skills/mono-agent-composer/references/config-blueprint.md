@@ -214,38 +214,47 @@ my-agent/
     "stripMentionText": true
   },
 
-  "whatsapp": {
-    "enabled": true,                       // opt-in; defaults to false (off → "disabled")
-    "allowedChatJids": ["123@s.whatsapp.net"], // or "allowAllChats": true
-    "allowAllChats": false,
-    "groupMode": "mention",                // mention | any (group trigger rule)
-    "botJids": ["456@s.whatsapp.net"],
-    "mentionTextAliases": ["@agent"],
-    "stripMentionText": true
-    // Baileys auth state lives in .mono-agent/whatsapp-auth; the start log
-    // prints a QR code to scan on first login.
-  },
-
-  "a2a": {
-    "enabled": true,                       // canonical channel-root flag (legacy a2a.provider.enabled still honored)
-    "provider": {
-      "host": "127.0.0.1",
-      "port": 4201,
-      "publicBaseUrl": "https://agent.example.com", // Agent Card URL when fronted by a proxy
-      "allowNonLoopback": false,
-      "requireBearer": false,
-      "bearerToken": "..."
-    },
-    "agent": { "name": "My Agent", "description": "What it does.", "version": "0.1.0" },
-    "skill": { "id": "main", "name": "Main", "description": "Primary skill.", "tags": ["agent"] },
-    "consumer": {                          // settings for calling remote A2A agents
-      "remoteAgentUrls": ["http://127.0.0.1:4202"],
-      "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
-      "bearerToken": "...",
-      "timeoutMs": 30000
-      // Consumed programmatically (createA2AConsumerResponder); the app's A2A
-      // channel runs the provider side.
-    }
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/whatsapp-adapter",
+        "id": "whatsapp",
+        "config": {
+          "enabled": true,                 // opt-in; defaults to false (off → "disabled")
+          "allowedChatJids": ["123@s.whatsapp.net"], // or "allowAllChats": true
+          "allowAllChats": false,
+          "groupMode": "mention",          // mention | any (group trigger rule)
+          "botJids": ["456@s.whatsapp.net"],
+          "mentionTextAliases": ["@agent"],
+          "stripMentionText": true
+          // Baileys auth state lives in .mono-agent/whatsapp-auth; the start log
+          // prints a QR code to scan on first login.
+        }
+      },
+      {
+        "package": "@mono-agent/a2a-adapter",
+        "id": "a2a",
+        "config": {
+          "enabled": true,
+          "provider": {
+            "host": "127.0.0.1",
+            "port": 4201,
+            "publicBaseUrl": "https://agent.example.com",
+            "allowNonLoopback": false,
+            "requireBearer": false,
+            "bearerToken": "..."
+          },
+          "agent": { "name": "My Agent", "description": "What it does.", "version": "0.1.0" },
+          "skill": { "id": "main", "name": "Main", "description": "Primary skill.", "tags": ["agent"] },
+          "consumer": {                    // settings for calling remote A2A agents
+            "remoteAgentUrls": ["http://127.0.0.1:4202"],
+            "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
+            "bearerToken": "...",
+            "timeoutMs": 30000
+          }
+        }
+      }
+    ]
   },
 
   "cron": {

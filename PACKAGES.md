@@ -1,6 +1,6 @@
 # Package Layers
 
-`scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. Publishable packages live under `packages/<package-name>`; unpublished optional extras live under `extras/<package-name>`. The diagram shows logical layers, not filesystem nesting.
+`scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. Publishable packages live under `packages/<package-name>`; unpublished optional extras live under `extras/<package-name>` with `publishable: false`. Extras keep `@mono-agent/<package-name>` package names but are not part of the published core package set. The diagram shows logical layers, not filesystem nesting.
 
 Current catalog count: 17 publishable packages plus 3 unpublished extras.
 
@@ -114,3 +114,9 @@ flowchart TB
 | `app` | `@mono-agent/agent-app` |
 
 `@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). Configured hosts use this one runtime implementation path by default; programmatic hosts may still pass any custom `MonoRuntimeLike` to `createConfiguredAgentResponder({ runtime, model })` when they genuinely need a private escape hatch.
+
+Built-in channel sections are `telegram`, `slack`, `webhook`, `openaiApi`,
+`cron`, `tui`, and `live`. External channel packages such as
+`@mono-agent/a2a-adapter` and `@mono-agent/whatsapp-adapter` load through
+`channels.plugins[]` and must return the normal `ChannelDriver` shape from
+`@mono-agent/agent-contracts`.

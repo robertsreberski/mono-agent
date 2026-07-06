@@ -6,12 +6,12 @@ sidebar:
 
 # Getting Started
 
-This section takes you from an empty folder to a running agent. mono-agent is config-first: you describe one agent in a `mono-agent.config.json`, then drive it with the `mono-agent` CLI. Work through the three pages below in order.
+This section takes you from an empty folder to a validated agent folder, then to a real model reply once you provide provider credentials. mono-agent is config-first: you describe one agent in a `mono-agent.config.json`, then drive it with the `mono-agent` CLI. Work through the three pages below in order.
 
 ## The path
 
-1. **Install** — get the CLI and scaffold a project.
-2. **Quickstart** — write a minimal config and run your first turn.
+1. **Install** — get the published CLI or build the source CLI.
+2. **Quickstart** — scaffold a clean folder, run `mono-agent validate`, then start and smoke-test it when model auth is available.
 3. **Concepts** — understand the moving parts so the rest of the docs make sense.
 
 ## Pages
@@ -19,7 +19,7 @@ This section takes you from an empty folder to a running agent. mono-agent is co
 | Page | What it covers |
 | --- | --- |
 | [Install](/getting-started/install/) | Install the `mono-agent` CLI, scaffold a new project with `mono-agent init`, and confirm your toolchain is ready. |
-| [Quickstart](/getting-started/quickstart/) | Author a minimal `mono-agent.config.json`, validate it, and run your first agent turn end to end. |
+| [Quickstart](/getting-started/quickstart/) | Scaffold a minimal `mono-agent.config.json`, validate it, and run your first agent turn when model auth is available. |
 | [Concepts](/getting-started/concepts/) | The core model — agent, runtime, channels, tools, memory, and context — and how config maps onto them. |
 
 ## Where to go next

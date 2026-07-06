@@ -384,7 +384,7 @@ mono-agent metrics --by model --since 2026-06-01T00:00:00Z --json
 
 The command reports total runs, status counts/rates, failure-kind rates, `durationMs` p50/p90/p99/max, and cost totals. Cost prefers `cost.cumulativeUsd`, then `cost.totalUsd`, then `usage.cost_usd`; malformed or redacted non-numeric values are ignored. Channel grouping is derived from the `conversationId` prefix before `:`, so treat it as best-effort until summaries persist a first-class channel field.
 
-See [Artifact metrics](/observability/artifact-metrics/) for the full report contract and window semantics.
+See [Artifacts & traces](/observability/artifacts-and-traces/#artifact-metrics) for the full report contract and window semantics.
 
 ## `backfill`
 
