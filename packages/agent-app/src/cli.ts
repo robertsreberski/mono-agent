@@ -63,7 +63,7 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory"] as const;
 
 // `doctor` never reaches routing: parseCliArgs normalizes it to `validate`.
 type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor"> | "help";
@@ -115,6 +115,8 @@ interface ParsedCliArgs {
   readonly staleAfterMs?: number;
   /** audit-runs: print the full machine-readable report. */
   readonly json?: boolean;
+  /** memory: max rows for search/top/entity preview. */
+  readonly limit?: number;
   /** web: bind host (default 127.0.0.1). */
   readonly host?: string;
   /** web: bind port (default 4599). */
@@ -164,6 +166,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let conversation: string | undefined;
   let staleAfterMs: number | undefined;
   let json = false;
+  let limit: number | undefined;
   let host: string | undefined;
   let port: number | undefined;
   let open: boolean | undefined;
@@ -228,6 +231,15 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--json":
         json = true;
         break;
+      case "--limit": {
+        const raw = requireValue(rest, ++i, flag);
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+          throw new Error("--limit must be an integer between 1 and 100.");
+        }
+        limit = parsed;
+        break;
+      }
       case "--host":
         host = requireValue(rest, ++i, flag);
         break;
@@ -332,6 +344,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill" && cmd !== "web") {
     throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, `mono-agent backfill`, and `mono-agent web`.");
   }
+  if (limit !== undefined && cmd !== "memory") {
+    throw new Error("--limit is only supported for `mono-agent memory`.");
+  }
 
   return {
     command: cmd,
@@ -359,6 +374,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(consumerPath === undefined ? {} : { consumerPath }),
     ...(staleAfterMs === undefined ? {} : { staleAfterMs }),
     ...(json ? { json } : {}),
+    ...(limit === undefined ? {} : { limit }),
     ...(agent === undefined ? {} : { agent }),
     ...(conversation === undefined ? {} : { conversation }),
     ...(host === undefined ? {} : { host }),
@@ -541,6 +557,16 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "--include-memory includes memory-run artifacts.",
     ],
   },
+  {
+    signature:
+      "mono-agent memory [stats|today|show <date>|search <query>|top]\n" +
+      "                  [--limit <n>] [--json] [--config <path>] [--env-file <path>]",
+    lines: [
+      "Preview the configured memory store from an agent folder. Reads the",
+      "memory block from mono-agent.config.json, not the standalone memory-bujo",
+      "env workflow. Human-first output by default; --json is for scripts.",
+    ],
+  },
 ];
 
 const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
@@ -668,6 +694,18 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         json: args.json === true,
         includeMemory: args.includeMemory,
       });
+    case "memory": {
+      // Lazy import: the memory preview path pulls SQLite/backend clients only on demand.
+      const { runMemoryCommand } = await import("./memory-command.js");
+      return await runMemoryCommand({
+        cwd: process.cwd(),
+        env: process.env,
+        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
+        positionals: args.positionals,
+        json: args.json === true,
+        ...(args.limit === undefined ? {} : { limit: args.limit }),
+      });
+    }
   }
 }
 
