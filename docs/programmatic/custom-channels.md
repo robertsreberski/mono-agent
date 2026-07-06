@@ -76,7 +76,7 @@ export function createChannelDriver(options: MyChannelPluginOptions = {}): Chann
 }
 ```
 
-Missing packages, malformed exports, invalid plugin entries, and duplicate channel ids are reported as `waiting_for_config` validate/start sections so the rest of the host can still run. Plugin ids must not collide with the core `BUILTIN_CHANNEL_IDS`.
+Missing packages, malformed exports, invalid plugin entries, and duplicate channel ids are reported as `waiting_for_config` validate/start sections so the rest of the host can still run. Plugin ids must not collide with the core `BUILTIN_CHANNEL_IDS`. Both declared plugin ids and returned `ChannelDriver.id` values are reserved against built-ins.
 
 ## The ChannelDriver interface
 
