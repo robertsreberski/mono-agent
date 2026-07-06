@@ -11,6 +11,12 @@ every internal dep (including root devDependencies) to be `workspace:<version>`.
 Publishing happens in CI on tag push (`.github/workflows/npm-release.yml`) —
 local `npm publish` is NOT the normal path.
 
+**Lockstep set (2026-07):** the closure is the **17 publishable `packages/*`**
+(the agent-app dependency closure). The three `extras/*` packages (a2a-adapter,
+agent-orchestrator, whatsapp-adapter) are `private: true` and are NEVER version-
+bumped or published. `scripts/package-catalog.mjs` (`publishable: true`) is the
+source of truth, and `release:test`'s package-count-drift check reflects 17.
+
 ## 1. Bump
 
 Mechanically set the new version in every `packages/*/package.json`, root
