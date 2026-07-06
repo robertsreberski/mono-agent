@@ -188,7 +188,70 @@ describe("TurnPresenter", () => {
     expect(text).toContain("effort:high");
   });
 
-  it("ignores non run_config runtime_telemetry kinds (no transcript, no status bar change)", async () => {
+  it("renders session boundary telemetry as a compact transcript notice", async () => {
+    const { presenter, status, rendered } = setup();
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "session_boundary",
+      data: {
+        type: "session_boundary",
+        kind: "rollover",
+        previousConversationId: "telegram:42#2026-07-05",
+        conversationId: "telegram:42#2026-07-06",
+        reason: "daily_rollover",
+      },
+    });
+
+    const text = rendered();
+    const normalized = text.replace(/\s+/gu, " ");
+    expect(text).toContain("session boundary: rollover");
+    expect(text).toContain("daily rollover");
+    expect(normalized).toContain("telegram:42#2026-07-05 -> telegram:42#2026-07-06");
+    expect(status()).not.toContain("effort:");
+  });
+
+  it("recognizes sparse session boundary telemetry by payload kind or type without leaking raw data", async () => {
+    const byPayloadKind = setup();
+    await byPayloadKind.presenter.event({
+      type: "runtime_telemetry",
+      kind: "runtime_event",
+      data: { kind: "session_boundary" },
+    });
+    expect(byPayloadKind.rendered()).toContain("session boundary");
+    expect(byPayloadKind.rendered()).not.toContain("runtime_event");
+    expect(byPayloadKind.rendered()).not.toContain("{");
+
+    const byPayloadType = setup();
+    await byPayloadType.presenter.event({
+      type: "runtime_telemetry",
+      kind: "runtime_event",
+      data: { type: "session_boundary" },
+    });
+    expect(byPayloadType.rendered()).toContain("session boundary");
+    expect(byPayloadType.rendered()).not.toContain("runtime_event");
+    expect(byPayloadType.rendered()).not.toContain("{");
+  });
+
+  it("keeps session boundary notices chronologically between streamed text segments", async () => {
+    const { presenter, rendered } = setup();
+    await presenter.append("before boundary.");
+    await presenter.event({
+      type: "runtime_telemetry",
+      kind: "session_boundary",
+      data: { kind: "isolated", reason: "model_override" },
+    });
+    await presenter.append("after boundary.");
+    await presenter.finish("before boundary.after boundary.");
+    presenter.settle();
+
+    const text = rendered();
+    expect(text.indexOf("before boundary.")).toBeLessThan(text.indexOf("session boundary: isolated"));
+    expect(text.indexOf("session boundary: isolated")).toBeLessThan(text.indexOf("after boundary."));
+    expect(text.match(/before boundary\./gu)?.length).toBe(1);
+    expect(text.match(/after boundary\./gu)?.length).toBe(1);
+  });
+
+  it("ignores non run_config/session_boundary runtime_telemetry kinds (no transcript, no status bar change)", async () => {
     const { presenter, status, rendered } = setup();
     await presenter.event({ type: "runtime_telemetry", kind: "cache_hit", data: { tokens: 400 } });
     expect(rendered()).toBe("");

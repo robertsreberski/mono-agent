@@ -448,6 +448,73 @@ describe("statusBackground", () => {
     expect(stdout).toContain("all sandbox roots/denyWrite entries are inert; commands run unsandboxed");
   });
 
+  it("prints session status from persisted trace-source metadata", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target, {
+      metadata: {
+        reason: "session-saved",
+        session: {
+          currentBucketId: "telegram:123#2026-07-06",
+          state: "warm",
+          event: "saved",
+          providerSessionId: "ps-123",
+          createdAt: CLOCK_START - 90_000,
+          lastActivityAt: CLOCK_START - 1_000,
+          snapshot: [{
+            conversationId: "telegram:123#2026-07-06",
+            providerSessionId: "ps-123",
+            createdAt: CLOCK_START - 90_000,
+            lastActivityAt: CLOCK_START - 1_000,
+            busy: false,
+          }],
+          updatedAt: new Date(CLOCK_START).toISOString(),
+          nextRolloverAt: "2026-07-07T00:00:00.000Z",
+        },
+      },
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
+
+    await statusBackground(target, harness.deps);
+
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("session");
+    expect(stdout).toContain("bucket: telegram:123#2026-07-06");
+    expect(stdout).toContain("state: warm");
+    expect(stdout).toContain("age: 1m");
+    expect(stdout).toContain("event: saved");
+    expect(stdout).toContain("provider: ps-123");
+    expect(stdout).toContain("next rollover: 2026-07-07T00:00:00.000Z");
+  });
+
+  it("derives cold status from an empty session snapshot while preserving eviction detail", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target, {
+      metadata: {
+        reason: "session-evicted",
+        session: {
+          currentBucketId: "telegram:123#2026-07-06",
+          state: "warm",
+          event: "evicted",
+          reason: "idle_timeout",
+          providerSessionId: "ps-old",
+          snapshot: [],
+          updatedAt: new Date(CLOCK_START).toISOString(),
+        },
+      },
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [current]) });
+
+    await statusBackground(target, harness.deps);
+
+    const stdout = harness.out.join("");
+    expect(stdout).toContain("bucket: telegram:123#2026-07-06");
+    expect(stdout).toContain("state: cold");
+    expect(stdout).toContain("event: evicted");
+    expect(stdout).toContain("reason: idle_timeout");
+  });
+
   it("prints runs-health explanations from recent local summaries", async () => {
     const { runner } = makeRunner({ loaded: true });
     const target = makeTarget();

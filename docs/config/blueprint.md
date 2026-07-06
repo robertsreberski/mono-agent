@@ -46,7 +46,13 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",
-    "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } // or "per-message"
+    "session": {
+      "mode": "continuous",                // or "per-message"
+      "idleTimeoutMs": 1800000,
+      "rollover": "none",                  // none|daily; daily buckets conversation ids by day
+      "rolloverTimezone": "UTC",           // optional IANA timezone for daily rollover
+      "rolloverNotice": false              // adapter-visible new-bucket notice; default off / unset
+    }
   },
 
   // Local/self-hosted providers for pi:<provider>:<model> references.

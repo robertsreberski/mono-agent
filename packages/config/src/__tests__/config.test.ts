@@ -379,6 +379,36 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.session).toEqual({ mode: "per-message", idleTimeoutMs: 60000, rollover: "none" });
   });
 
+  it("preserves explicit session rollover notice env values while omitting the unset field", () => {
+    const defaults = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
+    expect(defaults.runtime.session.rolloverNotice).toBeUndefined();
+
+    const enabled = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_SESSION_ROLLOVER_NOTICE: "true" },
+    });
+    expect(enabled.runtime.session.rolloverNotice).toBe(true);
+
+    const disabled = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_SESSION_ROLLOVER_NOTICE: "false" },
+    });
+    expect(disabled.runtime.session.rolloverNotice).toBe(false);
+  });
+
+  it("rejects an invalid session rollover notice value", () => {
+    try {
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_SESSION_ROLLOVER_NOTICE: "sometimes" },
+      });
+    } catch (error) {
+      expect(error).toMatchObject({ code: "invalid_env", details: { env: "MONO_AGENT_SESSION_ROLLOVER_NOTICE" } });
+      return;
+    }
+    throw new Error("Expected config load to fail.");
+  });
+
   it("rejects an invalid session mode", () => {
     try {
       loadMonoAgentConfig({

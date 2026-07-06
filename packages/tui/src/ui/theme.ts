@@ -21,6 +21,7 @@ export const styles = {
   inverse: wrap("7", "27"),
 
   accent: fg(45), // cyan — interactive highlights, headers
+  info: fg(75), // blue — neutral notices
   user: fg(114), // green — user-authored text
   muted: fg(245), // gray — chrome, secondary text
   warning: fg(214), // orange — warnings, failover

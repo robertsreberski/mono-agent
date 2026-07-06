@@ -8,6 +8,14 @@ export interface RuntimeSessionRecord {
   busy: boolean;
 }
 
+export interface RuntimeSessionSnapshot {
+  readonly conversationId: string;
+  readonly providerSessionId: string;
+  readonly createdAt: number;
+  readonly lastActivityAt: number;
+  readonly busy: boolean;
+}
+
 export interface RuntimeSessionStoreOptions {
   readonly idleTimeoutMs: number;
   readonly onEvict?: (record: RuntimeSessionRecord, reason: RuntimeSessionEvictReason) => void | Promise<void>;
@@ -23,7 +31,7 @@ export interface RuntimeSessionStore {
    */
   acquire(conversationId: string): RuntimeSessionRecord | undefined;
   /** No-op unless `record` is still the conversation's live record. */
-  release(conversationId: string, record: RuntimeSessionRecord): void;
+  release(conversationId: string, record: RuntimeSessionRecord): boolean | void;
   /**
    * Upsert. A differing stored id is evicted first with reason "replaced" —
    * unless that record is busy under another run (`owner` is the caller's
@@ -37,8 +45,15 @@ export interface RuntimeSessionStore {
    * other run replaced it with.
    */
   evict(conversationId: string, reason: RuntimeSessionEvictReason, providerSessionId?: string): Promise<void>;
+  /** Read-only snapshot for detached status and diagnostics. */
+  list?(): readonly RuntimeSessionSnapshot[];
   /** Evicts everything and latches the store shut: later save/acquire no-op. */
   disposeAll(): Promise<void>;
+}
+
+export interface RuntimeSessionStoreWithSnapshot extends RuntimeSessionStore {
+  release(conversationId: string, record: RuntimeSessionRecord): boolean;
+  list(): readonly RuntimeSessionSnapshot[];
 }
 
 interface StoredRecord {
@@ -46,7 +61,7 @@ interface StoredRecord {
   timer: ReturnType<typeof setTimeout> | undefined;
 }
 
-export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): RuntimeSessionStore {
+export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): RuntimeSessionStoreWithSnapshot {
   const idleTimeoutMs = Math.max(1_000, options.idleTimeoutMs);
   const now = options.now ?? Date.now;
   const entries = new Map<string, StoredRecord>();
@@ -112,14 +127,15 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       clearTimer(stored);
       return stored.record;
     },
-    release(conversationId: string, record: RuntimeSessionRecord): void {
+    release(conversationId: string, record: RuntimeSessionRecord): boolean {
       const stored = entries.get(conversationId);
       if (stored === undefined || stored.record !== record) {
-        return;
+        return false;
       }
       stored.record.busy = false;
       stored.record.lastActivityAt = now();
       armTimer(conversationId, stored);
+      return true;
     },
     save(conversationId: string, providerSessionId: string, owner?: RuntimeSessionRecord): void {
       if (disposed) {
@@ -164,6 +180,9 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
         return;
       }
       await evictStored(conversationId, reason);
+    },
+    list(): readonly RuntimeSessionSnapshot[] {
+      return [...entries.values()].map((stored) => ({ ...stored.record }));
     },
     async disposeAll(): Promise<void> {
       disposed = true;

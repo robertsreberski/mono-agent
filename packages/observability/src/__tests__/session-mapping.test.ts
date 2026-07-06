@@ -30,6 +30,10 @@ function resultSteps(steps: readonly SessionStep[]): Extract<SessionStep, { k: "
   return steps.filter((step): step is Extract<SessionStep, { k: "result" }> => step.k === "result");
 }
 
+function boundarySteps(steps: readonly SessionStep[]): Extract<SessionStep, { k: "boundary" }>[] {
+  return steps.filter((step): step is Extract<SessionStep, { k: "boundary" }> => step.k === "boundary");
+}
+
 describe("mapRunToSession", () => {
   it("maps a real notified run with a tool call, coercing redacted token usage to 0", () => {
     const { summary, events } = loadFixture("notified");
@@ -213,6 +217,50 @@ describe("mapRunToSession", () => {
     expect(session.finalText).toBe("");
     expect(session.outcome).toBe("silent");
     expect(assistantSteps(session.steps)).toHaveLength(0);
+  });
+
+  it("maps session identity fields and session boundary events", () => {
+    const summary: RunSummary = {
+      runId: "run-boundary",
+      conversationId: "chat:next",
+      status: "succeeded",
+      startedAt: "2026-07-06T10:00:00.000Z",
+      durationMs: 1000,
+      eventCount: 2,
+      artifactPaths: [],
+      providerSessionId: "provider-next",
+      isolated: true,
+    };
+    const events: RuntimeEventLike[] = [
+      {
+        type: "session_boundary",
+        kind: "rollover",
+        previousConversationId: "chat:previous",
+        conversationId: "chat:next",
+        providerSessionId: "provider-next",
+        reason: "daily partition changed",
+        timestamp: "2026-07-06T10:00:00.500Z",
+      },
+      { type: "assistant", message: { content: [{ type: "text", text: "Ready in the new session." }] } },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+
+    expect(session.conversationId).toBe("chat:next");
+    expect(session.providerSessionId).toBe("provider-next");
+    expect(session.isolated).toBe(true);
+    expect(boundarySteps(session.steps)).toEqual([
+      {
+        k: "boundary",
+        ts: "2026-07-06T10:00:00.500Z",
+        kind: "rollover",
+        conversationId: "chat:next",
+        previousConversationId: "chat:previous",
+        providerSessionId: "provider-next",
+        reason: "daily partition changed",
+      },
+    ]);
+    expect(session.finalText).toBe("Ready in the new session.");
   });
 
   it("generates unique fallback ids for multiple anonymous tool calls in one event", () => {
