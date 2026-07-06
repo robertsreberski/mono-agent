@@ -1038,6 +1038,9 @@ describe("startMonoAgentApp", () => {
     });
 
     expect(infos.some((m) => /consolidation scheduler skipped/iu.test(m))).toBe(true);
+    expect(
+      infos.some((m) => /configured bujo mode resolved to the journal tier because memory\.llm is missing/iu.test(m)),
+    ).toBe(true);
     expect(infos.some((m) => /consolidation scheduler started/iu.test(m))).toBe(false);
     await app.stop();
   });

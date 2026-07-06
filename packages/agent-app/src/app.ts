@@ -665,7 +665,10 @@ class MonoAgentAppController implements MonoAgentApp {
     // scheduler started in that case — log an accurate skip instead.
     const tier = bujoStore.tier();
     if (tier !== "bujo") {
-      this.logger?.info?.("Memory consolidation scheduler skipped — store tier is not bujo (consolidation needs a chat LLM).", { reason, tier });
+      this.logger?.info?.(
+        "Memory consolidation scheduler skipped — configured bujo mode resolved to the journal tier because memory.llm is missing.",
+        { reason, tier },
+      );
       return;
     }
 

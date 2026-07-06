@@ -70,7 +70,7 @@ MONO_AGENT_MEMORY_WRITE_MODE=capture
 The capture pipeline swallows LLM errors (never-throw), so a too-short timeout makes a capture **silently store nothing** rather than fail loudly. Raise the in-app memory-LLM timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** in the app — for slow local chat models. (The standalone `memory-bujo` CLI reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).)
 :::
 
-The bujo chat model used by capture is the same `memory.llm` referenced for [consolidation](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.5`); the standalone legacy `reflect`/`migrate` CLI commands remain Ollama-only.
+The bujo chat model used by capture is the same `memory.llm` block that lets the app resolve the effective `bujo` tier for [scheduled consolidation](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.5`); the standalone legacy `reflect`/`migrate` CLI commands remain Ollama-only.
 
 ## The `memory_recall` tool
 

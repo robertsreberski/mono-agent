@@ -223,7 +223,7 @@ export interface MonoAgentConfig {
     readonly supermemory?: MemorySupermemoryConfig;
     /** Embedding provider for semantic memory_search; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
-    /** LLM for bujo capture/consolidation. */
+    /** LLM for bujo capture and effective tier selection. */
     readonly llm?: MemoryLlmConfig;
     /**
      * Read-only `memory_recall` tool exposed to the agent (embeddings + FTS, no

@@ -11,16 +11,18 @@ runs **in-app** — no external cron, launchd, or sidecar process. Consolidation
 lightweight housekeeping cycle: decay salience, deduplicate near-identical bullets by
 superseding duplicates, and rewrite the living index.
 
-Consolidation requires the `bujo` tier with a chat model (`memory.llm`) configured, because
-that is the tier that owns the LLM capture/reconcile pipeline and richer BuJo store. The
+The `consolidate()` operation itself is deterministic and can run without a chat model.
+The in-app scheduler, however, only starts for the effective `bujo` runtime tier. In
+configuration terms, that means `memory.mode: "bujo"` plus `memory.llm`; without
+`memory.llm`, the store resolves to `journal` and scheduled consolidation is skipped. The
 `lite` and `journal` tiers do not run scheduled maintenance. For tier selection and the
 `memory.llm` block, see [Capture & recall](/memory/capture-and-recall/) and the
 [Memory overview](/memory/). Coverage type: **config**.
 
 ## The in-app scheduler
 
-When `memory.mode` is `"bujo"` and `memory.llm` is present, `agent-app` starts a
-consolidation scheduler alongside your channels.
+When the effective store tier is `bujo`, `agent-app` starts a consolidation scheduler
+alongside your channels.
 
 | Pass | What it does | Default cron |
 | --- | --- | --- |
@@ -122,13 +124,14 @@ and diffable — you can browse them directly or commit them.
 ```
 
 See [Validation & CLI](/memory/validation-and-cli/) for the full liveness check. Validation
-reports scheduled consolidation only when the tier is `bujo` with an `llm` configured;
-otherwise it reports that consolidation is not scheduled.
+reports scheduled consolidation only when the effective store tier is `bujo`; otherwise it
+reports that consolidation is not scheduled.
 
 :::caution
-Scheduled consolidation needs the `bujo` runtime tier. If `memory.llm` is missing, the
-store downgrades to the `journal` tier and the scheduler does not run. Validate before
-relying on automated maintenance.
+Scheduled consolidation needs the effective `bujo` runtime tier. If `memory.llm` is
+missing, configured `bujo` mode resolves to the `journal` tier and the scheduler does not
+run. Manual deterministic `consolidate()` remains available to callers that invoke the
+store directly. Validate before relying on automated maintenance.
 :::
 
 ## Manual / out-of-band runs

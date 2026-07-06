@@ -85,7 +85,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   //   lite    — FTS keyword recall + rapid-log; no external deps.
   //   journal — + hybrid recall (BM25+vector) + decay; needs embeddings.
   //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled
-  //             lightweight consolidation; needs embeddings + an app-level memory.llm.
+  //             lightweight consolidation; needs embeddings + an app-level memory.llm for capture/tier selection.
   "memory": {
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
@@ -98,7 +98,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "apiKeyEnv": "OPENAI_API_KEY",       // or inline "apiKey"; required for openai
       "dim": 768                           // nomic-embed-text:v1.5 output dimension
     },
-    "llm": {                               // enables bujo capture/consolidation; omit for lite/journal
+    "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
       "provider": "ollama",                // ollama | agent-host
       "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.5

@@ -28,7 +28,7 @@ A Telegram bot that answers via long-polling, captures every turn into BuJo memo
 
 ## Configuration
 
-The bujo tier requires both an embeddings provider (for semantic recall) and an app-level `memory.llm` (for capture and scheduled consolidation). This recipe uses local Ollama for both, so no extra API keys are needed.
+The bujo tier requires both an embeddings provider (for semantic recall) and an app-level `memory.llm` (for capture and effective tier selection for scheduled consolidation). This recipe uses local Ollama for both, so no extra API keys are needed.
 
 ```json
 {
