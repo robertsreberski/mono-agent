@@ -34,6 +34,9 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS: "14",
         MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT: "250",
         MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN: "true",
+        MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS: "3",
+        MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT: "25",
+        MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN: "false",
         MONO_AGENT_TRACE_REGISTRY_DIR: "trace-registry",
         MONO_AGENT_TRACE_SOURCE_ID: "agent-one",
         MONO_AGENT_TRACE_SOURCE_LABEL: "Agent One",
@@ -64,6 +67,7 @@ describe("loadMonoAgentConfig", () => {
     });
     expect(config.artifacts.dir).toBe("/repo/artifacts");
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 14, maxCount: 250, dryRun: true });
+    expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 3, maxCount: 25, dryRun: false });
     expect(config.providers?.piAuthPath).toBe(join(homedir(), ".pi", "agent", "auth.json"));
     expect(config.traceability).toEqual({
       registryDir: "/repo/trace-registry",
@@ -79,6 +83,20 @@ describe("loadMonoAgentConfig", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
 
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
+    expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
+  });
+
+  it("defaults memory artifact retention dry-run to the agent retention dry-run", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN: "true",
+      },
+    });
+
+    expect(config.artifacts.retention.dryRun).toBe(true);
+    expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: true });
   });
 
   it("rejects invalid artifact retention values", () => {
@@ -92,6 +110,18 @@ describe("loadMonoAgentConfig", () => {
       loadMonoAgentConfig({
         cwd: "/repo",
         env: { ...baseEnv, MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT: "-1" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS: "0" },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT: "-1" },
       }),
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });

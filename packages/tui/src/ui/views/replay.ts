@@ -342,7 +342,9 @@ export class ReplayView extends Container {
     if (requestedDir === undefined) {
       return;
     }
-    const replay = await readReplayRun(requestedDir, runId);
+    const replay = await readReplayRun(requestedDir, runId, {
+      ...(this.sourceFilter === "memory" ? { scope: "memory" } : {}),
+    });
     if (this.artifactDir !== requestedDir) {
       return; // Superseded by a newer agent selection.
     }

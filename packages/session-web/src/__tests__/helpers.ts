@@ -10,7 +10,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { RunEventBus, RunEventFrame } from "@mono-agent/agent-contracts";
-import { createJsonlRunRecorder, registerTraceSource, type RunSummary } from "@mono-agent/observability";
+import {
+  createJsonlRunRecorder,
+  registerTraceSource,
+  type RunArtifactKind,
+  type RunSummary,
+} from "@mono-agent/observability";
 
 export async function makeTmpDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `session-web-${prefix}-`));
@@ -50,6 +55,7 @@ export interface SeedRunInput {
   readonly userInput?: string;
   readonly text: string;
   readonly source?: string;
+  readonly artifactKind?: RunArtifactKind;
   /** Fixed clock (ms) — controls `startedAt`, so multiple runs sort deterministically. */
   readonly at: number;
 }
@@ -64,6 +70,7 @@ export async function seedRun(input: SeedRunInput): Promise<RunSummary> {
     clock: () => input.at,
     ...(input.userInput === undefined ? {} : { userInput: input.userInput }),
     ...(input.source === undefined ? {} : { source: input.source }),
+    ...(input.artifactKind === undefined ? {} : { artifactKind: input.artifactKind }),
   });
   recorder.onEvent({
     type: "assistant",
@@ -83,6 +90,7 @@ export async function seedRunningRun(input: SeedRunInput): Promise<RunSummary> {
     clock: () => input.at,
     ...(input.userInput === undefined ? {} : { userInput: input.userInput }),
     ...(input.source === undefined ? {} : { source: input.source }),
+    ...(input.artifactKind === undefined ? {} : { artifactKind: input.artifactKind }),
   });
   recorder.onEvent({
     type: "assistant",

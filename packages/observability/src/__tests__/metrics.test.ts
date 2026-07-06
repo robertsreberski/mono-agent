@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -111,6 +111,34 @@ describe("summarizeRecordedRunMetrics", () => {
     ]);
     await expect(readFile(stalePath, "utf8")).resolves.toBe(before);
   });
+
+  it("defaults to agent metrics and includes memory summaries only by scope", async () => {
+    const dir = await tempDir();
+    await writeSummary(dir, "agent.summary.json", metricSummary({ runId: "agent", conversationId: "telegram:1", durationMs: 100 }));
+    await writeSummary(dir, "mem-legacy.summary.json", metricSummary({
+      runId: "mem-legacy",
+      conversationId: "memory:legacy",
+      durationMs: 200,
+    }));
+    await writeSummary(join(dir, "memory"), "mem-new.summary.json", metricSummary({
+      runId: "mem-new",
+      conversationId: "memory:new",
+      source: "memory",
+      durationMs: 300,
+    }));
+
+    const defaults = await summarizeRecordedRunMetrics({ artifactDir: dir });
+    expect(defaults.overall.totalRuns).toBe(1);
+    expect(defaults.overall.durationMs.max).toBe(100);
+
+    const memory = await summarizeRecordedRunMetrics({ artifactDir: dir, scope: "memory" });
+    expect(memory.overall.totalRuns).toBe(2);
+    expect(memory.overall.durationMs.max).toBe(300);
+
+    const all = await summarizeRecordedRunMetrics({ artifactDir: dir, scope: "all" });
+    expect(all.overall.totalRuns).toBe(3);
+    expect(all.overall.durationMs.max).toBe(300);
+  });
 });
 
 async function populatedMetricsDir(): Promise<string> {
@@ -203,5 +231,20 @@ async function populatedMetricsDir(): Promise<string> {
 }
 
 async function writeSummary(dir: string, name: string, summary: Record<string, unknown>): Promise<void> {
+  await mkdir(dir, { recursive: true });
   await writeFile(join(dir, name), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+}
+
+function metricSummary(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    runId: "run",
+    conversationId: "telegram:1",
+    status: "succeeded",
+    startedAt: "2026-06-24T10:00:00.000Z",
+    endedAt: "2026-06-24T10:00:01.000Z",
+    durationMs: 100,
+    eventCount: 0,
+    artifactPaths: [],
+    ...overrides,
+  };
 }

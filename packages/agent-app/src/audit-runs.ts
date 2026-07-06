@@ -16,6 +16,7 @@ export interface RunAuditRunsArgs {
   readonly consumerPath?: string;
   readonly staleAfterMs?: number;
   readonly json?: boolean;
+  readonly includeMemory?: boolean;
 }
 
 export async function runAuditRuns(args: RunAuditRunsArgs): Promise<number> {
@@ -32,7 +33,7 @@ export async function runAuditRuns(args: RunAuditRunsArgs): Promise<number> {
       ? await resolveAppArtifactDir(input)
       : resolve(process.cwd(), args.artifactDir);
     const staleAfterMs = args.staleAfterMs ?? await resolveAppTraceStaleAfterMs(input);
-    report = await auditRecordedRuns(artifactDir, { staleAfterMs });
+    report = await auditRecordedRuns(artifactDir, { staleAfterMs, scope: args.includeMemory === true ? "all" : "agent" });
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;

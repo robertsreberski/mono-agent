@@ -1,5 +1,6 @@
 import { join, resolve } from "node:path";
 
+import { artifactDirForKind } from "./artifact-scope.js";
 import { DEFAULT_MAX_STRING_BYTES, mkdir, safeArtifactName, writeJsonAtomic } from "./artifact-fs.js";
 import { errorFailureKind, errorToJson, redactJsonValue, truncateString } from "./redaction.js";
 import { normalizeFailoverHistory } from "./run-export-mapping.js";
@@ -52,7 +53,8 @@ class JsonlRunRecorder implements RunRecorder {
     if (options.maxStringBytes !== undefined && (!Number.isInteger(options.maxStringBytes) || options.maxStringBytes < 64)) {
       throw new ObservabilityError("invalid_recorder_options", "maxStringBytes must be an integer of at least 64.");
     }
-    this.artifactDir = resolve(options.artifactDir);
+    const artifactKind = normalizeArtifactKind(options.artifactKind);
+    this.artifactDir = artifactDirForKind(resolve(options.artifactDir), artifactKind);
     this.clock = options.clock ?? (() => Date.now());
     this.maxStringBytes = options.maxStringBytes ?? DEFAULT_MAX_STRING_BYTES;
     this.userInput =
@@ -177,6 +179,15 @@ function normalizeId(value: string, field: string): string {
     throw new ObservabilityError("invalid_recorder_options", `${field} must be a non-empty string.`, { field });
   }
   return value.trim();
+}
+
+function normalizeArtifactKind(value: JsonlRunRecorderOptions["artifactKind"]): "agent" | "memory" {
+  if (value === undefined || value === "agent" || value === "memory") {
+    return value ?? "agent";
+  }
+  throw new ObservabilityError("invalid_recorder_options", "artifactKind must be \"agent\" or \"memory\".", {
+    field: "artifactKind",
+  });
 }
 
 function runtimeFailureKind(result: RuntimeResultLike): string | undefined {

@@ -54,6 +54,7 @@ function monoConfig(piAuthPath: string): MonoAgentConfig {
     artifacts: {
       dir: "/repo/.mono-agent/artifacts",
       retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false },
+      memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false },
     },
     traceability: {
       registryDir: "/repo/.mono-agent/trace",

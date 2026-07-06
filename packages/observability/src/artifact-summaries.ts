@@ -2,13 +2,20 @@ import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
+  artifactDirForKind,
+  normalizeRunArtifactScope,
+  relativeSummaryFileName,
+  summaryMatchesArtifactScope,
+  type SummaryFileLocation,
+} from "./artifact-scope.js";
+import {
   errorMessage,
   isErrno,
   isRecord,
   safeJoin as safeJoinGuard,
 } from "./artifact-fs.js";
 import { SUMMARY_SUFFIX } from "./summary-schema.js";
-import type { ArtifactAuditFileIssue } from "./types.js";
+import type { ArtifactAuditFileIssue, RunArtifactScope } from "./types.js";
 
 export interface ArtifactSummaryRecord {
   readonly fileName: string;
@@ -24,25 +31,69 @@ export interface ReadArtifactSummaryRecordsResult {
   readonly warnings: readonly string[];
 }
 
-export async function readArtifactSummaryRecords(artifactDir: string): Promise<ReadArtifactSummaryRecordsResult> {
+export interface ReadArtifactSummaryRecordsOptions {
+  readonly scope?: RunArtifactScope;
+}
+
+export async function readArtifactSummaryRecords(
+  artifactDir: string,
+  options: ReadArtifactSummaryRecordsOptions = {},
+): Promise<ReadArtifactSummaryRecordsResult> {
   if (typeof artifactDir !== "string" || artifactDir.trim().length === 0) {
     throw new Error("artifactDir must be a non-empty path.");
   }
 
   const normalizedDir = resolve(artifactDir);
+  const scope = normalizeRunArtifactScope(options.scope);
   const parseFailures: ArtifactAuditFileIssue[] = [];
   const summaries: ArtifactSummaryRecord[] = [];
   const warnings: string[] = [];
+  let totalSummaryFiles = 0;
 
+  totalSummaryFiles += await readNamespaceSummaryRecords({
+    rootArtifactDir: normalizedDir,
+    namespaceKind: "agent",
+    scope,
+    parseFailures,
+    summaries,
+    warnings,
+    includeUnknownFailures: scope !== "memory",
+  });
+  if (scope === "memory" || scope === "all") {
+    totalSummaryFiles += await readNamespaceSummaryRecords({
+      rootArtifactDir: normalizedDir,
+      namespaceKind: "memory",
+      scope,
+      parseFailures,
+      summaries,
+      warnings,
+      includeUnknownFailures: true,
+    });
+  }
+
+  summaries.sort((a, b) => a.fileName.localeCompare(b.fileName));
+  return buildReadResult(normalizedDir, totalSummaryFiles, parseFailures, summaries, warnings);
+}
+
+async function readNamespaceSummaryRecords(input: {
+  readonly rootArtifactDir: string;
+  readonly namespaceKind: "agent" | "memory";
+  readonly scope: RunArtifactScope;
+  readonly parseFailures: ArtifactAuditFileIssue[];
+  readonly summaries: ArtifactSummaryRecord[];
+  readonly warnings: string[];
+  readonly includeUnknownFailures: boolean;
+}): Promise<number> {
+  const artifactDir = artifactDirForKind(input.rootArtifactDir, input.namespaceKind);
   let entries;
   try {
-    entries = await readdir(normalizedDir, { withFileTypes: true });
+    entries = await readdir(artifactDir, { withFileTypes: true });
   } catch (error) {
     if (isErrno(error, "ENOENT")) {
-      return buildReadResult(normalizedDir, 0, parseFailures, summaries, warnings);
+      return 0;
     }
-    warnings.push(`Unable to read artifact directory: ${errorMessage(error)}.`);
-    return buildReadResult(normalizedDir, 0, parseFailures, summaries, warnings);
+    input.warnings.push(`Unable to read artifact directory: ${errorMessage(error)}.`);
+    return 0;
   }
 
   const summaryFiles = entries
@@ -50,27 +101,36 @@ export async function readArtifactSummaryRecords(artifactDir: string): Promise<R
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b));
 
+  let included = 0;
   for (const fileName of summaryFiles) {
-    const raw = await readSummaryRecord(normalizedDir, fileName, parseFailures);
-    if (raw !== undefined) {
-      summaries.push({ fileName, raw });
+    const location: SummaryFileLocation = {
+      artifactDir,
+      fileName,
+      relativeFileName: relativeSummaryFileName(fileName, input.namespaceKind),
+      namespaceKind: input.namespaceKind,
+    };
+    const raw = await readSummaryRecord(location, input.includeUnknownFailures ? input.parseFailures : []);
+    if (raw !== undefined && summaryMatchesArtifactScope(input.namespaceKind, raw, input.scope)) {
+      input.summaries.push({ fileName: location.relativeFileName, raw });
+      included += 1;
+    } else if (raw === undefined && input.includeUnknownFailures) {
+      included += 1;
     }
   }
 
-  return buildReadResult(normalizedDir, summaryFiles.length, parseFailures, summaries, warnings);
+  return included;
 }
 
 async function readSummaryRecord(
-  artifactDir: string,
-  fileName: string,
+  location: SummaryFileLocation,
   parseFailures: ArtifactAuditFileIssue[],
 ): Promise<Record<string, unknown> | undefined> {
-  const filePath = safeJoin(artifactDir, fileName);
+  const filePath = safeJoin(location.artifactDir, location.fileName);
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");
   } catch (error) {
-    parseFailures.push(fileIssue(fileName, `unable to read: ${errorMessage(error)}`));
+    parseFailures.push(fileIssue(location.relativeFileName, `unable to read: ${errorMessage(error)}`));
     return undefined;
   }
 
@@ -78,11 +138,11 @@ async function readSummaryRecord(
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    parseFailures.push(fileIssue(fileName, `invalid JSON: ${errorMessage(error)}`));
+    parseFailures.push(fileIssue(location.relativeFileName, `invalid JSON: ${errorMessage(error)}`));
     return undefined;
   }
   if (!isRecord(parsed)) {
-    parseFailures.push(fileIssue(fileName, "summary is not an object", parsed));
+    parseFailures.push(fileIssue(location.relativeFileName, "summary is not an object", parsed));
     return undefined;
   }
   return parsed;

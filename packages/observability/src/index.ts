@@ -120,6 +120,8 @@ export type {
   PhoenixExporterConfig,
   PruneTraceSourcesOptions,
   PruneTraceSourcesResult,
+  RunArtifactKind,
+  RunArtifactScope,
   RunExportContext,
   RunExportEventContext,
   RunExporter,

@@ -473,6 +473,7 @@ describe("statusBackground", () => {
       listRecordedRuns: async (options) => {
         expect(options.artifactDir).toBe(current.artifactDir);
         expect(options.maxRuns).toBe(50);
+        expect(options.scope).toBe("agent");
         return { totalRuns: 12, runs, warnings: [] };
       },
       isAlive: () => false,

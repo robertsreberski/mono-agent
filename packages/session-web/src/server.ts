@@ -52,6 +52,8 @@ export interface StartSessionWebServerOptions {
     warn?(message: string, metadata?: unknown): void;
     error?(message: string, metadata?: unknown): void;
   };
+  /** Include memory-maintenance runs in history, API responses, and live frames. Default false. */
+  readonly includeMemory?: boolean;
 }
 
 export interface SessionWebServerHandle {
@@ -97,6 +99,7 @@ export async function startSessionWebServer(
     ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
     ...(options.env === undefined ? {} : { env: options.env }),
     ...(logger === undefined ? {} : { logger: logger as SessionAggregatorLogger }),
+    ...(options.includeMemory === undefined ? {} : { includeMemory: options.includeMemory }),
   });
   await aggregator.start();
 

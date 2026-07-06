@@ -318,6 +318,48 @@ describe("replay data", () => {
     expect(runs[0]?.runId).toBe("run-telegram");
   });
 
+  it("keeps memory runs out of the default list and opts them in with the memory source filter", async () => {
+    await createJsonlRunRecorder({
+      runId: "run-agent",
+      conversationId: "telegram:1",
+      artifactDir: dir,
+      source: "telegram",
+    }).finish({ text: "agent" });
+    const namespacedMemory = createJsonlRunRecorder({
+      runId: "mem-new",
+      conversationId: "memory:capture:distill",
+      artifactDir: dir,
+      artifactKind: "memory",
+      source: "memory",
+    });
+    namespacedMemory.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "new memory" }] } });
+    await namespacedMemory.finish({ text: "new memory" });
+    const legacyMemory = createJsonlRunRecorder({
+      runId: "mem-legacy",
+      conversationId: "memory:legacy",
+      artifactDir: dir,
+      source: "memory",
+    });
+    legacyMemory.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "legacy memory" }] } });
+    await legacyMemory.finish({ text: "legacy memory" });
+
+    const defaultList = await listReplayRuns(dir);
+    expect(defaultList.runs.map((run) => run.runId)).toEqual(["run-agent"]);
+
+    const memoryList = await listReplayRuns(dir, { sourceFilter: "memory" });
+    expect(memoryList.runs.map((run) => run.runId).sort()).toEqual(["mem-legacy", "mem-new"]);
+    expect(memoryList.runs.every((run) => run.resolvedSource === "memory")).toBe(true);
+
+    await expect(readReplayRun(dir, "mem-new")).resolves.toBeUndefined();
+    await expect(readReplayRun(dir, "mem-legacy")).resolves.toBeUndefined();
+    await expect(readReplayRun(dir, "mem-new", { scope: "memory" })).resolves.toMatchObject({
+      detail: { summary: { runId: "mem-new", summaryFileName: "memory/mem-new.summary.json" } },
+    });
+    await expect(readReplayRun(dir, "mem-legacy", { scope: "memory" })).resolves.toMatchObject({
+      detail: { summary: { runId: "mem-legacy" } },
+    });
+  });
+
   it("filters BEFORE capping so a small maxRuns doesn't starve a rare, older matching source", async () => {
     // Four runs, newest-first by clock: 3 "other"-sourced runs (no known
     // conversationId prefix) plus 1 OLDER telegram run. A naive

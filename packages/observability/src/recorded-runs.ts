@@ -2,6 +2,13 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
+  artifactDirForKind,
+  normalizeRunArtifactScope,
+  relativeSummaryFileName,
+  summaryMatchesArtifactScope,
+  type SummaryFileLocation,
+} from "./artifact-scope.js";
+import {
   DEFAULT_MAX_EVENTS_PER_RUN,
   DEFAULT_MAX_RUNS,
   DEFAULT_MAX_STRING_BYTES,
@@ -40,6 +47,8 @@ export { classifyRecordedRunEvent };
 
 interface NormalizedReaderOptions {
   readonly artifactDir: string;
+  readonly scope: "agent" | "memory" | "all";
+  readonly scopeProvided: boolean;
   readonly maxRuns: number;
   readonly maxEventsPerRun: number;
   readonly maxStringBytes: number;
@@ -47,6 +56,7 @@ interface NormalizedReaderOptions {
 
 interface ParsedSummaryFile {
   readonly fileName: string;
+  readonly artifactDir: string;
   readonly summary: RunSummary;
   readonly updatedAt: string;
   readonly mtimeMs: number;
@@ -69,7 +79,7 @@ export class ObservabilityReadError extends Error {
 
 export async function listRecordedRuns(options: JsonlRunReaderOptions): Promise<RecordedRunListResult> {
   const normalized = normalizeReaderOptions(options);
-  const { summaries, warnings } = await loadSummaryFiles(normalized);
+  const { summaries, warnings } = await loadSummaryFiles(normalized, true);
   return {
     totalRuns: summaries.length,
     runs: [...summaries]
@@ -167,15 +177,25 @@ export async function readRecordedRun(
   const normalized = normalizeReaderOptions(options);
   const normalizedRunId = normalizeRunId(runId);
   const baseName = safeArtifactName(normalizedRunId);
-  const summaryPath = safeJoin(normalized.artifactDir, `${baseName}${SUMMARY_SUFFIX}`);
   const warnings: string[] = [];
 
-  const summary = await readSummaryFile(summaryPath, `${baseName}${SUMMARY_SUFFIX}`, normalized, warnings);
-  if (summary === undefined || summary.summary.runId !== normalizedRunId) {
+  const locations = readLocationsForRun(normalized, `${baseName}${SUMMARY_SUFFIX}`);
+  let summary: ParsedSummaryFile | undefined;
+  for (const location of locations) {
+    const parsed = await readSummaryFile(safeJoin(location.artifactDir, location.fileName), location, normalized, warnings);
+    if (parsed === undefined || parsed.summary.runId !== normalizedRunId) {
+      continue;
+    }
+    if (summaryAllowedForRead(location.namespaceKind, parsed.summary, normalized)) {
+      summary = parsed;
+      break;
+    }
+  }
+  if (summary === undefined) {
     return undefined;
   }
 
-  const eventsPath = safeJoin(normalized.artifactDir, `${baseName}${EVENTS_SUFFIX}`);
+  const eventsPath = safeJoin(summary.artifactDir, `${baseName}${EVENTS_SUFFIX}`);
   const events = await readEventsFile(eventsPath, normalized, warnings);
 
   return {
@@ -185,41 +205,65 @@ export async function readRecordedRun(
   };
 }
 
-async function loadSummaryFiles(normalized: NormalizedReaderOptions): Promise<{
+async function loadSummaryFiles(normalized: NormalizedReaderOptions, includeTopLevelUnknownWarnings: boolean): Promise<{
   readonly summaries: readonly ParsedSummaryFile[];
   readonly warnings: readonly string[];
 }> {
   const warnings: string[] = [];
-  let entries;
-  try {
-    entries = await readdir(normalized.artifactDir, { withFileTypes: true });
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) {
-      return { summaries: [], warnings };
-    }
-    return {
-      summaries: [],
-      warnings: [`Unable to read artifact directory: ${errorMessage(error)}.`],
-    };
-  }
-
   const summaries: ParsedSummaryFile[] = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(SUMMARY_SUFFIX)) {
-      continue;
-    }
-    const filePath = safeJoin(normalized.artifactDir, entry.name);
-    const parsed = await readSummaryFile(filePath, entry.name, normalized, warnings);
-    if (parsed !== undefined) {
-      summaries.push(parsed);
-    }
+
+  await loadSummaryFilesFromNamespace(normalized, "agent", summaries, warnings, {
+    includeUnknownWarnings: includeTopLevelUnknownWarnings && normalized.scope !== "memory",
+  });
+  if (normalized.scope === "memory" || normalized.scope === "all") {
+    await loadSummaryFilesFromNamespace(normalized, "memory", summaries, warnings, { includeUnknownWarnings: true });
   }
   return { summaries, warnings };
 }
 
+async function loadSummaryFilesFromNamespace(
+  normalized: NormalizedReaderOptions,
+  namespaceKind: "agent" | "memory",
+  summaries: ParsedSummaryFile[],
+  warnings: string[],
+  options: { readonly includeUnknownWarnings: boolean },
+): Promise<void> {
+  const artifactDir = artifactDirForKind(normalized.artifactDir, namespaceKind);
+  let entries;
+  try {
+    entries = await readdir(artifactDir, { withFileTypes: true });
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      return;
+    }
+    warnings.push(`Unable to read artifact directory: ${errorMessage(error)}.`);
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(SUMMARY_SUFFIX)) {
+      continue;
+    }
+    const location: SummaryFileLocation = {
+      artifactDir,
+      fileName: entry.name,
+      relativeFileName: relativeSummaryFileName(entry.name, namespaceKind),
+      namespaceKind,
+    };
+    const targetWarnings = options.includeUnknownWarnings ? warnings : [];
+    const parsed = await readSummaryFile(safeJoin(artifactDir, entry.name), location, normalized, targetWarnings);
+    if (
+      parsed !== undefined &&
+      summaryMatchesArtifactScope(namespaceKind, parsed.summary, normalized.scope)
+    ) {
+      summaries.push(parsed);
+    }
+  }
+}
+
 async function readSummaryFile(
   filePath: string,
-  fileName: string,
+  location: SummaryFileLocation,
   normalized: NormalizedReaderOptions,
   warnings: string[],
 ): Promise<ParsedSummaryFile | undefined> {
@@ -230,7 +274,7 @@ async function readSummaryFile(
     if (isErrno(error, "ENOENT")) {
       return undefined;
     }
-    warnings.push(`Unable to read ${fileName}: ${errorMessage(error)}.`);
+    warnings.push(`Unable to read ${location.relativeFileName}: ${errorMessage(error)}.`);
     return undefined;
   }
 
@@ -238,11 +282,11 @@ async function readSummaryFile(
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    warnings.push(`Skipping ${fileName}: invalid JSON (${errorMessage(error)}).`);
+    warnings.push(`Skipping ${location.relativeFileName}: invalid JSON (${errorMessage(error)}).`);
     return undefined;
   }
 
-  const summary = coerceRunSummary(parsed, fileName, warnings, normalized.maxStringBytes);
+  const summary = coerceRunSummary(parsed, location.relativeFileName, warnings, normalized.maxStringBytes);
   if (summary === undefined) {
     return undefined;
   }
@@ -251,12 +295,13 @@ async function readSummaryFile(
   try {
     stats = await stat(filePath);
   } catch (error) {
-    warnings.push(`Unable to stat ${fileName}: ${errorMessage(error)}.`);
+    warnings.push(`Unable to stat ${location.relativeFileName}: ${errorMessage(error)}.`);
     return undefined;
   }
 
   return {
-    fileName,
+    fileName: location.relativeFileName,
+    artifactDir: location.artifactDir,
     summary,
     updatedAt: stats.mtime.toISOString(),
     mtimeMs: stats.mtimeMs,
@@ -426,10 +471,44 @@ function normalizeReaderOptions(options: JsonlRunReaderOptions): NormalizedReade
   };
   return {
     artifactDir: resolve(options.artifactDir),
+    scope: normalizeRunArtifactScope(options.scope, raiseOptions),
+    scopeProvided: options.scope !== undefined,
     maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns", raiseOptions),
     maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun", raiseOptions),
     maxStringBytes: minInteger(options.maxStringBytes, DEFAULT_MAX_STRING_BYTES, 64, "maxStringBytes", raiseOptions),
   };
+}
+
+function readLocationsForRun(normalized: NormalizedReaderOptions, summaryFileName: string): readonly SummaryFileLocation[] {
+  const locations: SummaryFileLocation[] = [];
+  if (normalized.scope === "memory" || normalized.scope === "all") {
+    locations.push({
+      artifactDir: artifactDirForKind(normalized.artifactDir, "memory"),
+      fileName: summaryFileName,
+      relativeFileName: relativeSummaryFileName(summaryFileName, "memory"),
+      namespaceKind: "memory",
+    });
+  }
+  if (normalized.scope === "agent" || normalized.scope === "memory" || normalized.scope === "all") {
+    locations.push({
+      artifactDir: normalized.artifactDir,
+      fileName: summaryFileName,
+      relativeFileName: summaryFileName,
+      namespaceKind: "agent",
+    });
+  }
+  return locations;
+}
+
+function summaryAllowedForRead(
+  namespaceKind: "agent" | "memory",
+  summary: RunSummary,
+  normalized: NormalizedReaderOptions,
+): boolean {
+  if (!normalized.scopeProvided && namespaceKind === "agent") {
+    return true;
+  }
+  return summaryMatchesArtifactScope(namespaceKind, summary, normalized.scope);
 }
 
 function normalizeRunId(runId: string): string {

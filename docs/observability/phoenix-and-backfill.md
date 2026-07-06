@@ -105,7 +105,7 @@ The project name defaults to your traceability source. Set `traceability.sourceL
 
 ## Backfilling historical runs
 
-The exporter only covers runs that happen while it is configured. To push already-recorded runs into Phoenix, use `mono-agent backfill`. It reads the recorded artifacts (`run-*.summary.json` + `run-*.events.jsonl`) from `artifacts.dir` and exports them with their **historical timestamps**, reusing the same live OTLP mapping. Coverage: **cli**.
+The exporter only covers runs that happen while it is configured. To push already-recorded runs into Phoenix, use `mono-agent backfill`. It reads the recorded artifacts (`run-*.summary.json` + `run-*.events.jsonl`) from `artifacts.dir` and exports them with their **historical timestamps**, reusing the same live OTLP mapping. `--all` defaults to agent runs only; add `--include-memory` to export memory-maintenance `mem-*` runs from `artifacts.dir/memory/` and legacy mixed directories. Explicit `--run mem-*` can still target a single memory run without widening the whole scan. Coverage: **cli**.
 
 ```bash
 mono-agent backfill --run <id>                    # one recorded run
@@ -113,6 +113,7 @@ mono-agent backfill --all                          # every recorded run
 mono-agent backfill --all --since 2026-06-01T00:00:00Z
 mono-agent backfill --all --until 2026-06-21T00:00:00Z
 mono-agent backfill --all --dry-run                # list what would export, send nothing
+mono-agent backfill --all --include-memory          # include memory-maintenance runs
 ```
 
 | Flag | Meaning |
@@ -121,6 +122,7 @@ mono-agent backfill --all --dry-run                # list what would export, sen
 | `--all` | Backfill all recorded runs (combine with `--since` / `--until` to bound). |
 | `--since <iso>` | Only runs at or after this ISO timestamp. |
 | `--until <iso>` | Only runs at or before this ISO timestamp. |
+| `--include-memory` | With `--all`, include memory-maintenance runs in addition to agent runs. |
 | `--dry-run` | Report what would be exported without sending. |
 
 :::note

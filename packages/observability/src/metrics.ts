@@ -6,6 +6,7 @@ import {
 } from "./summary-schema.js";
 import type {
   ArtifactAuditFileIssue,
+  RunArtifactScope,
   RunSummaryStatus,
 } from "./types.js";
 
@@ -13,6 +14,7 @@ export type RecordedRunMetricGroupBy = "model" | "channel" | "failureKind";
 
 export interface RecordedRunMetricsOptions {
   readonly artifactDir: string;
+  readonly scope?: RunArtifactScope;
   readonly since?: string;
   readonly until?: string;
   readonly groupBy?: RecordedRunMetricGroupBy;
@@ -65,7 +67,10 @@ export interface RecordedRunMetricsReport {
 
 export async function summarizeRecordedRunMetrics(options: RecordedRunMetricsOptions): Promise<RecordedRunMetricsReport> {
   const window = normalizeWindow(options);
-  const records = await readArtifactSummaryRecords(options.artifactDir);
+  const records = await readArtifactSummaryRecords(
+    options.artifactDir,
+    options.scope === undefined ? {} : { scope: options.scope },
+  );
   const summaries = records.summaries
     .map((entry) => entry.raw)
     .filter((summary) => isInWindow(summary, window));

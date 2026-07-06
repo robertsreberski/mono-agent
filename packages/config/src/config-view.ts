@@ -129,6 +129,9 @@ export const CONFIG_ENV_KEYS = {
   "artifacts.retention.maxAgeDays": "MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS",
   "artifacts.retention.maxCount": "MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT",
   "artifacts.retention.dryRun": "MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN",
+  "artifacts.memoryRetention.maxAgeDays": "MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS",
+  "artifacts.memoryRetention.maxCount": "MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT",
+  "artifacts.memoryRetention.dryRun": "MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN",
   "traceability.registryDir": "MONO_AGENT_TRACE_REGISTRY_DIR",
   "traceability.sourceId": "MONO_AGENT_TRACE_SOURCE_ID",
   "traceability.sourceLabel": "MONO_AGENT_TRACE_SOURCE_LABEL",
@@ -168,6 +171,7 @@ interface FieldSpec {
   readonly label: string;
   readonly value: string;
   readonly jsonPresent: boolean;
+  readonly source?: ConfigViewFieldSource;
   readonly redacted?: boolean;
 }
 
@@ -179,7 +183,7 @@ function toField(
     id: spec.id,
     label: spec.label,
     value: spec.value,
-    source: resolveSource(env, spec.id, spec.jsonPresent),
+    source: spec.source ?? resolveSource(env, spec.id, spec.jsonPresent),
     ...(spec.redacted === true ? { redacted: true } : {}),
   };
 }
@@ -719,6 +723,13 @@ function buildSandboxSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
 
 function buildArtifactsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
   const { redacted, json, env } = input;
+  const memoryDryRunJsonPresent = json.artifacts?.memoryRetention?.dryRun !== undefined;
+  const inheritedDryRunSource = resolveSource(env, "artifacts.retention.dryRun", json.artifacts?.retention?.dryRun !== undefined);
+  const memoryDryRunSource = envHas(env, CONFIG_ENV_KEYS["artifacts.memoryRetention.dryRun"])
+    ? "env"
+    : memoryDryRunJsonPresent
+      ? "json"
+      : inheritedDryRunSource;
   return {
     id: "artifacts",
     label: "Artifacts",
@@ -747,6 +758,25 @@ function buildArtifactsSection(input: BuildMonoAgentConfigViewInput): ConfigView
         label: "Retention dry run",
         value: redacted.artifacts.retention.dryRun ? "yes" : "no",
         jsonPresent: json.artifacts?.retention?.dryRun !== undefined,
+      }),
+      toField(env, {
+        id: "artifacts.memoryRetention.maxAgeDays",
+        label: "Memory retention max age",
+        value: `${redacted.artifacts.memoryRetention.maxAgeDays} day(s)`,
+        jsonPresent: json.artifacts?.memoryRetention?.maxAgeDays !== undefined,
+      }),
+      toField(env, {
+        id: "artifacts.memoryRetention.maxCount",
+        label: "Memory retention max count",
+        value: String(redacted.artifacts.memoryRetention.maxCount),
+        jsonPresent: json.artifacts?.memoryRetention?.maxCount !== undefined,
+      }),
+      toField(env, {
+        id: "artifacts.memoryRetention.dryRun",
+        label: "Memory retention dry run",
+        value: redacted.artifacts.memoryRetention.dryRun ? "yes" : "no",
+        jsonPresent: memoryDryRunJsonPresent,
+        source: memoryDryRunSource,
       }),
     ],
   };

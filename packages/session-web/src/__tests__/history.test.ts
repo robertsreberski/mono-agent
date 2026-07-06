@@ -117,6 +117,56 @@ describe("listInstanceSessions", () => {
     expect(entry?.signature.summaryFileName).toBe("run-detail.summary.json");
     expect(entry?.session.steps).toEqual([]);
   });
+
+  it("defaults to agent runs and includes memory runs only when opted in", async () => {
+    const agentDir = await tmp("agent");
+    const artifactDir = join(agentDir, "runs");
+    await seedRun({
+      artifactDir,
+      runId: "run-agent",
+      conversationId: "chat:agent",
+      text: "agent answer",
+      source: "chat",
+      at: 6_000_000,
+    });
+    await seedRun({
+      artifactDir,
+      runId: "mem-new",
+      conversationId: "memory:capture:distill",
+      text: "new memory",
+      source: "memory",
+      artifactKind: "memory",
+      at: 7_000_000,
+    });
+    await seedRun({
+      artifactDir,
+      runId: "mem-legacy",
+      conversationId: "memory:legacy",
+      text: "legacy memory",
+      source: "memory",
+      at: 8_000_000,
+    });
+    const discovered = await discoverOne(artifactDir);
+
+    await expect(listInstanceSessions(discovered, { maxRuns: 50 })).resolves.toMatchObject([
+      { id: "run-agent" },
+    ]);
+    await expect(readInstanceSession(discovered, "mem-new")).resolves.toBeUndefined();
+    await expect(readInstanceSession(discovered, "mem-legacy")).resolves.toBeUndefined();
+
+    const withMemory = await listInstanceSessions(discovered, { maxRuns: 50, includeMemory: true });
+    expect(withMemory.map((session) => session.id).sort()).toEqual(["mem-legacy", "mem-new", "run-agent"]);
+    await expect(readInstanceSession(discovered, "mem-new", { includeMemory: true })).resolves.toMatchObject({
+      id: "mem-new",
+      source: "memory",
+      finalText: "new memory",
+    });
+    await expect(readInstanceSession(discovered, "mem-legacy", { includeMemory: true })).resolves.toMatchObject({
+      id: "mem-legacy",
+      source: "memory",
+      finalText: "legacy memory",
+    });
+  });
 });
 
 describe("readInstanceSession", () => {

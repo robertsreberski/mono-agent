@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,6 +116,44 @@ describe("auditRecordedRuns", () => {
     expect(report.statusHistogram.succeeded).toBe(count);
   });
 
+  it("defaults to agent summaries and includes memory summaries only by scope", async () => {
+    const dir = await tempDir();
+    await writeSummary(dir, "agent.summary.json", summary({ runId: "agent", conversationId: "telegram:1" }));
+    await writeSummary(dir, "mem-legacy.summary.json", summary({ runId: "mem-legacy", conversationId: "memory:legacy" }));
+    await mkdir(join(dir, "memory"), { recursive: true });
+    await writeSummary(join(dir, "memory"), "mem-new.summary.json", summary({
+      runId: "mem-new",
+      conversationId: "memory:new",
+      source: "memory",
+    }));
+    await writeSummary(join(dir, "memory"), "mem-malformed.summary.json", { not: "a run summary" });
+
+    const defaults = await auditRecordedRuns(dir, {
+      now: Date.parse("2026-06-24T12:00:00.000Z"),
+      staleAfterMs: 30_000,
+    });
+    expect(defaults.totalSummaryFiles).toBe(1);
+    expect(defaults.parsedSummaryFiles).toBe(1);
+    expect(defaults.statusHistogram.succeeded).toBe(1);
+
+    const memory = await auditRecordedRuns(dir, {
+      scope: "memory",
+      now: Date.parse("2026-06-24T12:00:00.000Z"),
+      staleAfterMs: 30_000,
+    });
+    expect(memory.totalSummaryFiles).toBe(3);
+    expect(memory.parsedSummaryFiles).toBe(3);
+    expect(memory.unrecognizedStatuses).toEqual([{ fileName: "memory/mem-malformed.summary.json", reason: "missing status" }]);
+
+    const all = await auditRecordedRuns(dir, {
+      scope: "all",
+      now: Date.parse("2026-06-24T12:00:00.000Z"),
+      staleAfterMs: 30_000,
+    });
+    expect(all.totalSummaryFiles).toBe(4);
+    expect(all.parsedSummaryFiles).toBe(4);
+  });
+
   it("includes rates for every known failure kind with explicit denominators", async () => {
     const report = await auditRecordedRuns(fixtureDir, {
       now: Date.parse("2026-06-24T12:00:00.000Z"),
@@ -133,5 +171,20 @@ describe("auditRecordedRuns", () => {
 });
 
 async function writeSummary(dir: string, name: string, summary: Record<string, unknown>): Promise<void> {
+  await mkdir(dir, { recursive: true });
   await writeFile(join(dir, name), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+}
+
+function summary(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    runId: "run",
+    conversationId: "telegram:1",
+    status: "succeeded",
+    startedAt: "2026-06-24T10:00:00.000Z",
+    endedAt: "2026-06-24T10:00:01.000Z",
+    durationMs: 1000,
+    eventCount: 0,
+    artifactPaths: [],
+    ...overrides,
+  };
 }

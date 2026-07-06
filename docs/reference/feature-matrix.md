@@ -128,7 +128,7 @@ Core channels are independent JSON sections. External channel packages are decla
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
-| `observability.jsonl-artifacts` | config | `artifacts.dir`, `artifacts.retention.{maxAgeDays,maxCount,dryRun}` | `MONO_AGENT_ARTIFACT_*` | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
+| `observability.jsonl-artifacts` | config | `artifacts.dir`, `artifacts.retention.{maxAgeDays,maxCount,dryRun}`, `artifacts.memoryRetention.{maxAgeDays,maxCount,dryRun}` | `MONO_AGENT_ARTIFACT_*` | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `observability.latency-attribution` | auto | (emitted into run JSONL artifacts) | — | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `observability.trace-registry` | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` | `MONO_AGENT_TRACE_*` | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `observability.phoenix-exporter` | config | `observability.exporters[]: {type:"phoenix", endpoint, projectName, includeSensitiveData, headers, timeoutMs}` | `MONO_AGENT_OBSERVABILITY_EXPORTERS` | [Phoenix & backfill](/observability/phoenix-and-backfill/) | [Phoenix-observed agent](/playbooks/phoenix-observed-agent/) |
@@ -138,7 +138,7 @@ Core channels are independent JSON sections. External channel packages are decla
 | `observability.rich-traces` | auto | (model / token counts / cost / duration on every span; system prompt gated by `includeSensitiveData`; memory runs get `span.kind=memory` + `memory.operation`) | — | [Phoenix & backfill](/observability/phoenix-and-backfill/#per-run-attributes) | — |
 | `observability.stale-run-reconciliation` | auto | (`reconcileStaleRunArtifacts()` at startup over `artifacts.dir`; rewrites orphaned `running` → `interrupted`) | — | [Artifacts & traces](/observability/artifacts-and-traces/#run-status-and-stale-run-reconciliation) | — |
 | `tui.chat` | cli | `mono-agent tui [--agent <label\|sourceId>] [--conversation <id>]`; low-level `mono-agent-tui [--responder \| --url]` | `MONO_AGENT_TUI_API_KEY` (connect key) | [TUI](/observability/tui/) | — |
-| `session-web.pwa` | cli | `mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--config <path>]` | `MONO_AGENT_LIVE_*` (agent-side relay) | [CLI reference](/observability/cli-reference/#web) | — |
+| `session-web.pwa` | cli | `mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--include-memory] [--config <path>]` | `MONO_AGENT_LIVE_*` (agent-side relay) | [CLI reference](/observability/cli-reference/#web) | — |
 
 ## Execution & composition
 

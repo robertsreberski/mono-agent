@@ -87,6 +87,51 @@ describe("startSessionWebServer", () => {
     expect(missing.status).toBe(404);
   });
 
+  it("excludes memory runs from the API by default and includes them with includeMemory", async () => {
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    const staticDir = await tmp("static");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>session-web</title><div id=app></div>", "utf8");
+    await seedRun({
+      artifactDir,
+      runId: "run-agent",
+      conversationId: "chat:http",
+      text: "agent answer",
+      source: "chat",
+      at: 1_700_000_000,
+    });
+    await seedRun({
+      artifactDir,
+      runId: "mem-new",
+      conversationId: "memory:capture:distill",
+      text: "new memory",
+      source: "memory",
+      artifactKind: "memory",
+      at: 1_700_000_100,
+    });
+    await registerSource({ registryDir, sourceId: "http-agent", label: "HTTP Agent", artifactDir });
+
+    server = await startSessionWebServer({ registryDirs: [registryDir], port: 0, staticDir });
+    const defaultSessions = (await (await fetch(`${server.url}api/sessions`)).json()) as {
+      sessions: { id: string }[];
+    };
+    expect(defaultSessions.sessions.map((session) => session.id)).toEqual(["run-agent"]);
+    const defaultMemoryDetail = await fetch(`${server.url}api/sessions/http-agent/mem-new`);
+    expect(defaultMemoryDetail.status).toBe(404);
+    await server.stop();
+
+    server = await startSessionWebServer({ registryDirs: [registryDir], port: 0, staticDir, includeMemory: true });
+    const withMemorySessions = (await (await fetch(`${server.url}api/sessions`)).json()) as {
+      sessions: { id: string }[];
+    };
+    expect(withMemorySessions.sessions.map((session) => session.id).sort()).toEqual(["mem-new", "run-agent"]);
+    const memoryDetail = (await (await fetch(`${server.url}api/sessions/http-agent/mem-new`)).json()) as {
+      session: { id: string; source: string; finalText: string };
+    };
+    expect(memoryDetail.session).toMatchObject({ id: "mem-new", source: "memory", finalText: "new memory" });
+  });
+
   it("streams an initial instances frame then session upserts over SSE", async () => {
     const fix = await fixture();
     server = await startSessionWebServer({ registryDirs: [fix.registryDir], port: 0, staticDir: fix.staticDir });

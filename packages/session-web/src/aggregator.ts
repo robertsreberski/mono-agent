@@ -17,6 +17,7 @@
  */
 import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
+import { join } from "node:path";
 
 import type { RunEventFrame } from "@mono-agent/agent-contracts";
 import { mapRunToSession } from "@mono-agent/observability";
@@ -32,6 +33,8 @@ import type { BrowserStreamFrame, WebInstance } from "./session-model.js";
 
 /** On-disk recorded-run summary suffix (observability's `SUMMARY_SUFFIX`, not exported). */
 const SUMMARY_SUFFIX = ".summary.json";
+const MEMORY_ARTIFACT_NAMESPACE = "memory";
+const MAX_SUPPRESSED_MEMORY_LIVE_RUNS = 512;
 
 const RUN_SUMMARY_STATUSES = new Set<RunSummaryStatus>([
   "running",
@@ -65,6 +68,8 @@ export interface SessionAggregatorOptions {
   readonly instancesDebounceMs?: number;
   /** Injectable fetch, threaded to the live client (tests point it at a local SSE server). */
   readonly fetchImpl?: typeof fetch;
+  /** Include memory-maintenance runs in disk history and live frames. Default false. */
+  readonly includeMemory?: boolean;
 }
 
 /** Per-run live-fold state: the running summary + the ordered events folded so far. */
@@ -86,6 +91,7 @@ interface InstanceState {
   liveConnected: boolean;
   live: LiveState | undefined;
   artifactWatcher: FSWatcher | undefined;
+  memoryArtifactWatcher: FSWatcher | undefined;
   readonly artifactTimers: Map<string, ReturnType<typeof setTimeout>>;
   /** Last observed summary-file signature per retained disk run. */
   readonly diskRunSignatures: Map<string, DiskRunSignature>;
@@ -106,6 +112,8 @@ interface InstanceState {
    * {@link artifactFinished} (disk) so a later authoritative disk read still wins.
    */
   readonly liveFinished: Set<string>;
+  /** Memory runs recently identified on the live stream and suppressed while includeMemory is false. */
+  readonly suppressedMemoryLiveRuns: BoundedStringFifoSet;
 }
 
 export class SessionAggregator {
@@ -120,6 +128,7 @@ export class SessionAggregator {
   private readonly liveFoldDebounceMs: number;
   private readonly instancesDebounceMs: number;
   private readonly fetchImpl: typeof fetch | undefined;
+  private readonly includeMemory: boolean;
 
   private readonly states = new Map<string, InstanceState>();
   private readonly subscribers = new Set<(frame: BrowserStreamFrame) => void>();
@@ -142,6 +151,7 @@ export class SessionAggregator {
     this.liveFoldDebounceMs = options.liveFoldDebounceMs ?? 150;
     this.instancesDebounceMs = options.instancesDebounceMs ?? 100;
     this.fetchImpl = options.fetchImpl;
+    this.includeMemory = options.includeMemory === true;
   }
 
   /** Discover instances, seed history, open live connections, and start watching. */
@@ -213,7 +223,7 @@ export class SessionAggregator {
     }
     let session: SourceStampedSession | undefined;
     try {
-      session = await readInstanceSession(state.discovered, runId);
+      session = await readInstanceSession(state.discovered, runId, { includeMemory: this.includeMemory });
     } catch (error) {
       this.logger?.warn?.("Failed to read session on demand.", { sourceId, runId, error: errorMessage(error) });
       return existing;
@@ -279,12 +289,14 @@ export class SessionAggregator {
       liveConnected: false,
       live: undefined,
       artifactWatcher: undefined,
+      memoryArtifactWatcher: undefined,
       artifactTimers: new Map(),
       diskRunSignatures: new Map(),
       detailLoaded: new Set(),
       maxRunsPerInstance: this.maxRunsPerInstance,
       artifactFinished: new Set(),
       liveFinished: new Set(),
+      suppressedMemoryLiveRuns: new BoundedStringFifoSet(MAX_SUPPRESSED_MEMORY_LIVE_RUNS),
     };
     this.states.set(discovered.instance.sourceId, state);
 
@@ -375,6 +387,10 @@ export class SessionAggregator {
       return;
     }
     if (frame.sourceId !== state.discovered.instance.sourceId) {
+      return;
+    }
+    if (!this.includeMemory && this.shouldDropMemoryLiveFrame(state, frame)) {
+      this.suppressMemoryLiveRun(state, frame.runId);
       return;
     }
     // A run that already finished (live) or was materialized from its terminal
@@ -561,6 +577,7 @@ export class SessionAggregator {
       state.detailLoaded.delete(oldestId);
       state.artifactFinished.delete(oldestId);
       state.liveFinished.delete(oldestId);
+      state.suppressedMemoryLiveRuns.delete(oldestId);
       this.emit({ t: "session_removed", sourceId: state.discovered.instance.sourceId, runId: oldestId });
     }
   }
@@ -574,6 +591,10 @@ export class SessionAggregator {
           return;
         }
         const name = typeof filename === "string" ? filename : String(filename);
+        if (name === MEMORY_ARTIFACT_NAMESPACE && this.includeMemory) {
+          this.watchMemoryArtifacts(state);
+          return;
+        }
         if (!name.endsWith(SUMMARY_SUFFIX)) {
           return;
         }
@@ -589,6 +610,38 @@ export class SessionAggregator {
       this.logger?.warn?.("Artifact watcher error.", { artifactDir, error: errorMessage(error) });
     });
     state.artifactWatcher = watcher;
+    if (this.includeMemory) {
+      this.watchMemoryArtifacts(state);
+    }
+  }
+
+  private watchMemoryArtifacts(state: InstanceState): void {
+    if (state.memoryArtifactWatcher !== undefined) {
+      return;
+    }
+    const artifactDir = join(state.discovered.instance.artifactDir, MEMORY_ARTIFACT_NAMESPACE);
+    let watcher: FSWatcher;
+    try {
+      watcher = watch(artifactDir, (_eventType, filename) => {
+        if (filename === null) {
+          return;
+        }
+        const name = typeof filename === "string" ? filename : String(filename);
+        if (name.endsWith(SUMMARY_SUFFIX) && name.length > SUMMARY_SUFFIX.length) {
+          this.scheduleArtifactReread(state, `${MEMORY_ARTIFACT_NAMESPACE}/${name}`);
+        }
+      });
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) {
+        return;
+      }
+      this.logger?.warn?.("Failed to watch memory artifact dir.", { artifactDir, error: errorMessage(error) });
+      return;
+    }
+    watcher.on("error", (error) => {
+      this.logger?.warn?.("Memory artifact watcher error.", { artifactDir, error: errorMessage(error) });
+    });
+    state.memoryArtifactWatcher = watcher;
   }
 
   private scheduleArtifactReread(state: InstanceState, summaryFileName: string): void {
@@ -612,6 +665,7 @@ export class SessionAggregator {
     try {
       entry = await readInstanceSessionSummaryByFileName(state.discovered, summaryFileName, {
         maxRuns: state.maxRunsPerInstance,
+        includeMemory: this.includeMemory,
       });
     } catch (error) {
       this.logger?.warn?.("Failed to re-read changed run artifact.", { summaryFileName, error: errorMessage(error) });
@@ -704,6 +758,8 @@ export class SessionAggregator {
                 error: errorMessage(error),
               });
             }
+          } else if (this.includeMemory && existing.memoryArtifactWatcher === undefined) {
+            this.watchMemoryArtifacts(existing);
           }
         }
       }
@@ -733,6 +789,10 @@ export class SessionAggregator {
         state.artifactWatcher.close();
         state.artifactWatcher = undefined;
       }
+      if (state.memoryArtifactWatcher !== undefined) {
+        state.memoryArtifactWatcher.close();
+        state.memoryArtifactWatcher = undefined;
+      }
       for (const timer of state.artifactTimers.values()) {
         clearTimeout(timer);
       }
@@ -743,6 +803,7 @@ export class SessionAggregator {
       state.detailLoaded.clear();
       state.artifactFinished.clear();
       state.liveFinished.clear();
+      state.suppressedMemoryLiveRuns.clear();
       for (const runId of removedRunIds) {
         this.emit({ t: "session_removed", sourceId: discovered.instance.sourceId, runId });
       }
@@ -777,6 +838,10 @@ export class SessionAggregator {
       state.artifactWatcher.close();
       state.artifactWatcher = undefined;
     }
+    if (state.memoryArtifactWatcher !== undefined) {
+      state.memoryArtifactWatcher.close();
+      state.memoryArtifactWatcher = undefined;
+    }
     for (const timer of state.artifactTimers.values()) {
       clearTimeout(timer);
     }
@@ -785,6 +850,7 @@ export class SessionAggregator {
     state.detailLoaded.clear();
     state.artifactFinished.clear();
     state.liveFinished.clear();
+    state.suppressedMemoryLiveRuns.clear();
     state.sessions.clear();
   }
 
@@ -827,7 +893,10 @@ export class SessionAggregator {
   }
 
   private async refreshDiskState(state: InstanceState, options: { readonly emitSessions: boolean }): Promise<boolean> {
-    const sessions = await listInstanceSessionSummaries(state.discovered, { maxRuns: state.maxRunsPerInstance });
+    const sessions = await listInstanceSessionSummaries(state.discovered, {
+      maxRuns: state.maxRunsPerInstance,
+      includeMemory: this.includeMemory,
+    });
     let changed = false;
     for (const entry of sessions) {
       if (entry.session.status === "running" && state.liveFinished.has(entry.session.id)) {
@@ -859,6 +928,73 @@ export class SessionAggregator {
       ...(cwd.length === 0 ? {} : { cwd }),
     };
   }
+
+  private shouldDropMemoryLiveFrame(state: InstanceState, frame: RunEventFrame): boolean {
+    return state.suppressedMemoryLiveRuns.has(frame.runId) || liveFrameIsMemory(frame);
+  }
+
+  private suppressMemoryLiveRun(state: InstanceState, runId: string): void {
+    state.suppressedMemoryLiveRuns.add(runId);
+    state.live?.runs.delete(runId);
+    const pending = state.live?.recomputeTimers.get(runId);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      state.live?.recomputeTimers.delete(runId);
+    }
+    const hadSession = state.sessions.delete(runId);
+    state.diskRunSignatures.delete(runId);
+    state.detailLoaded.delete(runId);
+    state.artifactFinished.delete(runId);
+    state.liveFinished.delete(runId);
+    if (hadSession) {
+      this.emit({ t: "session_removed", sourceId: state.discovered.instance.sourceId, runId });
+      this.scheduleInstancesEmit();
+    }
+  }
+}
+
+class BoundedStringFifoSet {
+  private readonly values = new Set<string>();
+  private readonly order: string[] = [];
+
+  constructor(private readonly maxSize: number) {}
+
+  get size(): number {
+    return this.values.size;
+  }
+
+  has(value: string): boolean {
+    return this.values.has(value);
+  }
+
+  add(value: string): void {
+    if (this.values.has(value)) {
+      return;
+    }
+    this.values.add(value);
+    this.order.push(value);
+    while (this.values.size > this.maxSize) {
+      const oldest = this.order.shift();
+      if (oldest !== undefined) {
+        this.values.delete(oldest);
+      }
+    }
+  }
+
+  delete(value: string): void {
+    if (!this.values.delete(value)) {
+      return;
+    }
+    const index = this.order.indexOf(value);
+    if (index >= 0) {
+      this.order.splice(index, 1);
+    }
+  }
+
+  clear(): void {
+    this.values.clear();
+    this.order.length = 0;
+  }
 }
 
 function runningSummaryFromStart(frame: Extract<RunEventFrame, { t: "run_started" }>): RunSummary {
@@ -873,6 +1009,45 @@ function runningSummaryFromStart(frame: Extract<RunEventFrame, { t: "run_started
     ...(frame.source === undefined ? {} : { source: frame.source }),
     ...(frame.sourceDetail === undefined ? {} : { sourceDetail: frame.sourceDetail }),
   };
+}
+
+function liveFrameIsMemory(frame: RunEventFrame): boolean {
+  if (runIdLooksMemory(frame.runId)) {
+    return true;
+  }
+  if (frame.t === "run_started") {
+    return frame.source === "memory" || conversationIdLooksMemory(frame.conversationId);
+  }
+  if (frame.t === "run_finished") {
+    return summaryPayloadLooksMemory(frame.summary);
+  }
+  return eventPayloadLooksMemory(frame.event);
+}
+
+function summaryPayloadLooksMemory(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return value.source === "memory" ||
+    (typeof value.conversationId === "string" && conversationIdLooksMemory(value.conversationId)) ||
+    (typeof value.runId === "string" && runIdLooksMemory(value.runId));
+}
+
+function eventPayloadLooksMemory(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return value.source === "memory" ||
+    (typeof value.conversationId === "string" && conversationIdLooksMemory(value.conversationId)) ||
+    (typeof value.runId === "string" && runIdLooksMemory(value.runId));
+}
+
+function conversationIdLooksMemory(conversationId: string): boolean {
+  return conversationId.startsWith("memory:");
+}
+
+function runIdLooksMemory(runId: string): boolean {
+  return runId.startsWith("mem-");
 }
 
 function runningSummaryFromEvent(frame: Extract<RunEventFrame, { t: "event" }>): RunSummary {
@@ -1072,6 +1247,10 @@ function startMs(timestamp: string): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === code;
 }
 
 function errorMessage(error: unknown): string {

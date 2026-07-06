@@ -100,6 +100,32 @@ describe("runWeb", () => {
     expect(capturedOptions?.port).toBe(4599);
   });
 
+  it("passes includeMemory through to the session-web server", async () => {
+    const configPath = await testConfig();
+    let capturedOptions: StartSessionWebServerOptions | undefined;
+    const startServer = vi.fn(async (options: StartSessionWebServerOptions): Promise<SessionWebServerHandle> => {
+      capturedOptions = options;
+      return { url: "http://127.0.0.1:4599/", stop: vi.fn(async () => undefined) };
+    });
+
+    await runWeb(
+      {
+        configPath,
+        cwd: dir!,
+        env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: join(dir!, "global-trace-sources") },
+        open: false,
+        includeMemory: true,
+      },
+      {
+        startServer,
+        waitForShutdown: async () => undefined,
+        stdout: { write: () => undefined },
+      },
+    );
+
+    expect(capturedOptions?.includeMemory).toBe(true);
+  });
+
   it("prints a non-loopback hint when the server actually binds a non-loopback URL", async () => {
     const configPath = await testConfig();
     let output = "";

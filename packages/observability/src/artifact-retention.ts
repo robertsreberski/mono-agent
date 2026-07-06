@@ -2,6 +2,13 @@ import { lstat, readdir, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
+  artifactDirForKind,
+  normalizeRunArtifactScope,
+  relativeSummaryFileName,
+  summaryMatchesArtifactScope,
+  type SummaryFileLocation,
+} from "./artifact-scope.js";
+import {
   errorMessage,
   isErrno,
   isRecord,
@@ -12,11 +19,13 @@ import {
   SUMMARY_SUFFIX,
   isRunSummaryStatus,
 } from "./summary-schema.js";
+import type { RunArtifactScope } from "./types.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface PruneRunArtifactsOptions {
   readonly artifactDir: string;
+  readonly scope?: RunArtifactScope;
   readonly maxAgeDays?: number;
   readonly maxCount?: number;
   readonly dryRun?: boolean;
@@ -56,6 +65,7 @@ interface ParsedRetentionSummary {
 
 interface NormalizedRetentionOptions {
   readonly artifactDir: string;
+  readonly scope: RunArtifactScope;
   readonly dryRun: boolean;
   readonly now: number;
   readonly maxAgeMs?: number;
@@ -70,38 +80,21 @@ export async function pruneRunArtifacts(options: PruneRunArtifactsOptions): Prom
     return emptyResult(resolveSafe(options.artifactDir), options.dryRun === true, warnings);
   }
 
-  let entries;
-  try {
-    entries = await readdir(normalized.artifactDir, { withFileTypes: true });
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) {
-      warnings.push(`Artifact directory does not exist: ${normalized.artifactDir}.`);
-    } else {
-      warnings.push(`Unable to read artifact directory: ${errorMessage(error)}.`);
-    }
-    return emptyResult(normalized.artifactDir, normalized.dryRun, warnings);
-  }
-
-  const summaryFiles = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(SUMMARY_SUFFIX))
-    .map((entry) => entry.name)
-    .sort((a, b) => a.localeCompare(b));
-
   const terminalSummaries: ParsedRetentionSummary[] = [];
+  let scannedSummaryFiles = 0;
   let parsedSummaryFiles = 0;
   let skippedRunningCount = 0;
 
-  for (const fileName of summaryFiles) {
-    const parsed = await readRetentionSummary(normalized.artifactDir, fileName, warnings);
-    if (parsed === undefined) {
-      continue;
-    }
-    parsedSummaryFiles += 1;
-    if (parsed === "running") {
-      skippedRunningCount += 1;
-      continue;
-    }
-    terminalSummaries.push(parsed);
+  const topLevel = await loadRetentionNamespace(normalized, "agent", warnings, { includeUnknownWarnings: normalized.scope !== "memory" });
+  const namespaces = normalized.scope === "memory" || normalized.scope === "all"
+    ? [topLevel, await loadRetentionNamespace(normalized, "memory", warnings, { includeUnknownWarnings: true })]
+    : [topLevel];
+
+  for (const namespace of namespaces) {
+    scannedSummaryFiles += namespace.scannedSummaryFiles;
+    parsedSummaryFiles += namespace.parsedSummaryFiles;
+    skippedRunningCount += namespace.skippedRunningCount;
+    terminalSummaries.push(...namespace.terminalSummaries);
   }
 
   const pruned = selectPrunableSummaries(terminalSummaries, normalized);
@@ -134,7 +127,7 @@ export async function pruneRunArtifacts(options: PruneRunArtifactsOptions): Prom
   return {
     artifactDir: normalized.artifactDir,
     dryRun: normalized.dryRun,
-    scannedSummaryFiles: summaryFiles.length,
+    scannedSummaryFiles,
     parsedSummaryFiles,
     eligibleRunCount: terminalSummaries.length,
     skippedRunningCount,
@@ -146,17 +139,84 @@ export async function pruneRunArtifacts(options: PruneRunArtifactsOptions): Prom
   };
 }
 
-async function readRetentionSummary(
-  artifactDir: string,
-  fileName: string,
+async function loadRetentionNamespace(
+  normalized: NormalizedRetentionOptions,
+  namespaceKind: "agent" | "memory",
   warnings: string[],
-): Promise<ParsedRetentionSummary | "running" | undefined> {
-  const summaryPath = safeJoin(artifactDir, fileName);
+  options: { readonly includeUnknownWarnings: boolean },
+): Promise<{
+  readonly scannedSummaryFiles: number;
+  readonly parsedSummaryFiles: number;
+  readonly skippedRunningCount: number;
+  readonly terminalSummaries: readonly ParsedRetentionSummary[];
+}> {
+  const artifactDir = artifactDirForKind(normalized.artifactDir, namespaceKind);
+  let entries;
+  try {
+    entries = await readdir(artifactDir, { withFileTypes: true });
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      if (namespaceKind === "agent") {
+        warnings.push(`Artifact directory does not exist: ${normalized.artifactDir}.`);
+      }
+      return emptyRetentionNamespace();
+    }
+    warnings.push(`Unable to read artifact directory: ${errorMessage(error)}.`);
+    return emptyRetentionNamespace();
+  }
+
+  const summaryFiles = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(SUMMARY_SUFFIX))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
+
+  let scannedSummaryFiles = 0;
+  let parsedSummaryFiles = 0;
+  let skippedRunningCount = 0;
+  const terminalSummaries: ParsedRetentionSummary[] = [];
+
+  for (const fileName of summaryFiles) {
+    const location: SummaryFileLocation = {
+      artifactDir,
+      fileName,
+      relativeFileName: relativeSummaryFileName(fileName, namespaceKind),
+      namespaceKind,
+    };
+    const targetWarnings = options.includeUnknownWarnings ? warnings : [];
+    const warningCountBefore = targetWarnings.length;
+    const parsed = await readRetentionSummary(location, normalized, targetWarnings);
+    if (parsed === undefined) {
+      if (options.includeUnknownWarnings && targetWarnings.length > warningCountBefore) {
+        scannedSummaryFiles += 1;
+      }
+      continue;
+    }
+    if (parsed === "excluded") {
+      continue;
+    }
+    scannedSummaryFiles += 1;
+    parsedSummaryFiles += 1;
+    if (parsed === "running") {
+      skippedRunningCount += 1;
+      continue;
+    }
+    terminalSummaries.push(parsed);
+  }
+
+  return { scannedSummaryFiles, parsedSummaryFiles, skippedRunningCount, terminalSummaries };
+}
+
+async function readRetentionSummary(
+  location: SummaryFileLocation,
+  normalized: NormalizedRetentionOptions,
+  warnings: string[],
+): Promise<ParsedRetentionSummary | "running" | "excluded" | undefined> {
+  const summaryPath = safeJoin(location.artifactDir, location.fileName);
   let raw: string;
   try {
     raw = await readFile(summaryPath, "utf8");
   } catch (error) {
-    warnings.push(`Skipping ${fileName}: unable to read (${errorMessage(error)}).`);
+    warnings.push(`Skipping ${location.relativeFileName}: unable to read (${errorMessage(error)}).`);
     return undefined;
   }
 
@@ -164,21 +224,24 @@ async function readRetentionSummary(
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    warnings.push(`Skipping ${fileName}: invalid JSON (${errorMessage(error)}).`);
+    warnings.push(`Skipping ${location.relativeFileName}: invalid JSON (${errorMessage(error)}).`);
     return undefined;
   }
   if (!isRecord(parsed)) {
-    warnings.push(`Skipping ${fileName}: summary is not an object.`);
+    warnings.push(`Skipping ${location.relativeFileName}: summary is not an object.`);
     return undefined;
+  }
+  if (!summaryMatchesArtifactScope(location.namespaceKind, parsed, normalized.scope)) {
+    return "excluded";
   }
 
   const runId = typeof parsed.runId === "string" && parsed.runId.trim().length > 0 ? parsed.runId.trim() : undefined;
   if (runId === undefined) {
-    warnings.push(`Skipping ${fileName}: summary is missing runId.`);
+    warnings.push(`Skipping ${location.relativeFileName}: summary is missing runId.`);
     return undefined;
   }
   if (!isRunSummaryStatus(parsed.status)) {
-    warnings.push(`Skipping ${fileName}: summary has missing or unrecognized status.`);
+    warnings.push(`Skipping ${location.relativeFileName}: summary has missing or unrecognized status.`);
     return undefined;
   }
   if (parsed.status === "running") {
@@ -189,19 +252,19 @@ async function readRetentionSummary(
   try {
     stats = await lstat(summaryPath);
   } catch (error) {
-    warnings.push(`Skipping ${fileName}: unable to stat summary (${errorMessage(error)}).`);
+    warnings.push(`Skipping ${location.relativeFileName}: unable to stat summary (${errorMessage(error)}).`);
     return undefined;
   }
 
-  const baseName = fileName.slice(0, -SUMMARY_SUFFIX.length);
+  const baseName = location.fileName.slice(0, -SUMMARY_SUFFIX.length);
   const updatedAtMs = summaryUpdatedAtMs(parsed, stats.mtimeMs);
   return {
-    fileName,
+    fileName: location.relativeFileName,
     runId,
     updatedAtMs,
     mtimeMs: stats.mtimeMs,
     summaryPath,
-    eventsPath: safeJoin(artifactDir, `${baseName}${EVENTS_SUFFIX}`),
+    eventsPath: safeJoin(location.artifactDir, `${baseName}${EVENTS_SUFFIX}`),
   };
 }
 
@@ -280,11 +343,26 @@ function normalizeRetentionOptions(
 
   return {
     artifactDir: resolve(options.artifactDir),
+    scope: normalizeRunArtifactScope(options.scope),
     dryRun: options.dryRun === true,
     now,
     ...(maxAgeMs === undefined ? {} : { maxAgeMs }),
     ...(maxCount === undefined ? {} : { maxCount }),
     ...(options.shouldContinue === undefined ? {} : { shouldContinue: options.shouldContinue }),
+  };
+}
+
+function emptyRetentionNamespace(): {
+  readonly scannedSummaryFiles: number;
+  readonly parsedSummaryFiles: number;
+  readonly skippedRunningCount: number;
+  readonly terminalSummaries: readonly ParsedRetentionSummary[];
+} {
+  return {
+    scannedSummaryFiles: 0,
+    parsedSummaryFiles: 0,
+    skippedRunningCount: 0,
+    terminalSummaries: [],
   };
 }
 

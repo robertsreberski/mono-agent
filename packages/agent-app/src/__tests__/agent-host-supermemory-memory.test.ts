@@ -23,7 +23,11 @@ function baseConfig(memory: NonNullable<MonoAgentConfig["memory"]>): MonoAgentCo
     context: { identityPath: "/tmp/identity.md", selectedSkills: [] },
     memory,
     tools: { allowedTools: [], disallowedTools: [] },
-    artifacts: { dir: "/tmp/agent/artifacts", retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false } },
+    artifacts: {
+      dir: "/tmp/agent/artifacts",
+      retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false },
+      memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false },
+    },
     traceability: { registryDir: join("/tmp/agent", "trace-sources"), sourceId: "agent-alpha" },
   };
 }

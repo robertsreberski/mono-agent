@@ -1,6 +1,6 @@
 import type { ArtifactRetentionConfig } from "@mono-agent/config";
 import { pruneRunArtifacts } from "@mono-agent/observability";
-import type { PruneRunArtifactsResult } from "@mono-agent/observability";
+import type { PruneRunArtifactsResult, RunArtifactScope } from "@mono-agent/observability";
 
 export const DEFAULT_ARTIFACT_RETENTION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -12,12 +12,14 @@ interface ArtifactRetentionLogger {
 export interface RunArtifactRetentionPassInput {
   readonly artifactDir: string;
   readonly retention: ArtifactRetentionConfig;
+  readonly scope?: Extract<RunArtifactScope, "agent" | "memory">;
   readonly logger?: ArtifactRetentionLogger;
   readonly clock?: () => number;
   readonly shouldContinue?: () => boolean;
 }
 
 export interface StartArtifactRetentionSchedulerInput extends RunArtifactRetentionPassInput {
+  readonly memoryRetention?: ArtifactRetentionConfig;
   readonly sweepIntervalMs?: number;
   readonly beforeFirstRun?: () => Promise<void>;
   readonly setInterval?: (callback: () => void, ms: number) => { readonly unref?: () => void };
@@ -32,15 +34,17 @@ export interface RunningArtifactRetentionScheduler {
 export async function runArtifactRetentionPass(
   input: RunArtifactRetentionPassInput,
 ): Promise<PruneRunArtifactsResult> {
+  const scope = input.scope ?? "agent";
   const result = await pruneRunArtifacts({
     artifactDir: input.artifactDir,
+    scope,
     maxAgeDays: input.retention.maxAgeDays,
     maxCount: input.retention.maxCount,
     dryRun: input.retention.dryRun,
     ...(input.clock === undefined ? {} : { clock: input.clock }),
     ...(input.shouldContinue === undefined ? {} : { shouldContinue: input.shouldContinue }),
   });
-  logArtifactRetentionResult(input.logger, result);
+  logArtifactRetentionResult(input.logger, result, scope);
   return result;
 }
 
@@ -72,8 +76,20 @@ export function startArtifactRetentionScheduler(
       }
       await runArtifactRetentionPass({
         ...input,
+        scope: "agent",
         shouldContinue: () => !stopped && (input.shouldContinue?.() ?? true),
       });
+      if (stopped) {
+        return;
+      }
+      if (input.memoryRetention !== undefined) {
+        await runArtifactRetentionPass({
+          ...input,
+          scope: "memory",
+          retention: input.memoryRetention,
+          shouldContinue: () => !stopped && (input.shouldContinue?.() ?? true),
+        });
+      }
     })().catch((error: unknown) => {
       input.logger?.warn?.("Artifact retention sweep failed.", { reason: reasonOf(error) });
     }).finally(() => {
@@ -100,21 +116,27 @@ export function startArtifactRetentionScheduler(
 function logArtifactRetentionResult(
   logger: ArtifactRetentionLogger | undefined,
   result: PruneRunArtifactsResult,
+  scope: Extract<RunArtifactScope, "agent" | "memory">,
 ): void {
   for (const warning of result.warnings) {
     logger?.warn?.(`Artifact retention: ${warning}`);
   }
   if (result.dryRun) {
-    logger?.info?.("Artifact retention dry run completed.", resultMeta(result, { includeCompletePlan: true }));
+    logger?.info?.(`${retentionLabel(scope)} dry run completed.`, resultMeta(result, scope, { includeCompletePlan: true }));
     return;
   }
   if (result.prunedRunCount > 0) {
-    logger?.info?.("Artifact retention pruned terminal run artifacts.", resultMeta(result));
+    logger?.info?.(`${retentionLabel(scope)} pruned terminal run artifacts.`, resultMeta(result, scope));
   }
+}
+
+function retentionLabel(scope: Extract<RunArtifactScope, "agent" | "memory">): string {
+  return scope === "memory" ? "Memory artifact retention" : "Artifact retention";
 }
 
 function resultMeta(
   result: PruneRunArtifactsResult,
+  scope: Extract<RunArtifactScope, "agent" | "memory">,
   options: { readonly includeCompletePlan?: boolean } = {},
 ): Record<string, unknown> {
   const prunedRunIds = options.includeCompletePlan === true
@@ -125,6 +147,7 @@ function resultMeta(
     : result.removedFilePaths.slice(0, 20);
   return {
     artifactDir: result.artifactDir,
+    scope,
     prunedRunCount: result.prunedRunCount,
     removedFileCount: result.removedFileCount,
     skippedRunningCount: result.skippedRunningCount,

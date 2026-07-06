@@ -38,6 +38,7 @@ function codexConfig(): MonoAgentConfig {
     artifacts: {
       dir: join(dir, "artifacts"),
       retention: { maxAgeDays: 365, maxCount: 50000, dryRun: false },
+      memoryRetention: { maxAgeDays: 7, maxCount: 5000, dryRun: false },
     },
     traceability: {
       registryDir: join(dir, "trace-sources"),

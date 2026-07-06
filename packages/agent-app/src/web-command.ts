@@ -21,6 +21,8 @@ export interface RunWebOptions {
   readonly open?: boolean;
   /** --allow-non-loopback: bind a non-loopback host (refused by default). */
   readonly allowNonLoopback?: boolean;
+  /** --include-memory: show memory-maintenance runs in the web operator surface. */
+  readonly includeMemory?: boolean;
 }
 
 /** Test seams: server boot, browser open, and the shutdown wait are injectable. */
@@ -64,6 +66,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
       port,
       ...(options.allowNonLoopback === undefined ? {} : { allowNonLoopback: options.allowNonLoopback }),
       ...(authToken === undefined ? {} : { authToken }),
+      ...(options.includeMemory === undefined ? {} : { includeMemory: options.includeMemory }),
     });
   } catch (error) {
     stderr.write(`mono-agent web failed to start: ${error instanceof Error ? error.message : String(error)}\n`);

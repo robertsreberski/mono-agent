@@ -141,6 +141,7 @@ function composeRunRecorder(
     runId: args.runId,
     conversationId: args.conversationId,
     artifactDir: deps.artifactDir,
+    ...(args.runKind === "memory" ? { artifactKind: "memory" as const } : {}),
     ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
     ...(args.systemPrompt === undefined ? {} : { systemPrompt: args.systemPrompt }),
     ...(args.source === undefined ? {} : { source: args.source }),

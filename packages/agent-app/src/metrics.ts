@@ -14,6 +14,7 @@ export interface RunMetricsArgs {
   readonly until?: string;
   readonly groupBy?: RecordedRunMetricGroupBy;
   readonly json?: boolean;
+  readonly includeMemory?: boolean;
 }
 
 export async function runMetrics(args: RunMetricsArgs): Promise<number> {
@@ -34,6 +35,7 @@ export async function runMetrics(args: RunMetricsArgs): Promise<number> {
       ...(args.since === undefined ? {} : { since: args.since }),
       ...(args.until === undefined ? {} : { until: args.until }),
       ...(args.groupBy === undefined ? {} : { groupBy: args.groupBy }),
+      scope: args.includeMemory === true ? "all" : "agent",
     });
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

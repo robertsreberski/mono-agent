@@ -715,15 +715,23 @@ class MonoAgentAppController implements MonoAgentApp {
       this.artifactRetentionScheduler = startArtifactRetentionScheduler({
         artifactDir,
         retention: coreConfig.artifacts.retention,
+        memoryRetention: coreConfig.artifacts.memoryRetention,
         ...(this.logger === undefined ? {} : { logger: this.logger }),
         beforeFirstRun: () => this.reconcileStaleRunsOnce(artifactDir),
       });
       this.logger?.info?.("Artifact retention scheduler started.", {
         reason,
         artifactDir,
-        maxAgeDays: coreConfig.artifacts.retention.maxAgeDays,
-        maxCount: coreConfig.artifacts.retention.maxCount,
-        dryRun: coreConfig.artifacts.retention.dryRun,
+        agent: {
+          maxAgeDays: coreConfig.artifacts.retention.maxAgeDays,
+          maxCount: coreConfig.artifacts.retention.maxCount,
+          dryRun: coreConfig.artifacts.retention.dryRun,
+        },
+        memory: {
+          maxAgeDays: coreConfig.artifacts.memoryRetention.maxAgeDays,
+          maxCount: coreConfig.artifacts.memoryRetention.maxCount,
+          dryRun: coreConfig.artifacts.memoryRetention.dryRun,
+        },
       });
     })();
   }

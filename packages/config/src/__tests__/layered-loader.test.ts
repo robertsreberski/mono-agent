@@ -44,6 +44,7 @@ describe("layerJsonOntoEnv", () => {
         artifacts: {
           dir: ".mono-agent/artifacts",
           retention: { maxAgeDays: 21, maxCount: 300, dryRun: true },
+          memoryRetention: { maxAgeDays: 5, maxCount: 30, dryRun: false },
         },
         traceability: { registryDir: ".mono-agent/traces", sourceId: "json-source", staleAfterMs: 60000 },
         providers: {
@@ -75,6 +76,9 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS).toBe("21");
     expect(layered.MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT).toBe("300");
     expect(layered.MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN).toBe("true");
+    expect(layered.MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS).toBe("5");
+    expect(layered.MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT).toBe("30");
+    expect(layered.MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN).toBe("false");
     expect(layered.MONO_AGENT_TRACE_REGISTRY_DIR).toBe(".mono-agent/traces");
     expect(layered.MONO_AGENT_TRACE_SOURCE_ID).toBe("json-source");
     expect(layered.MONO_AGENT_TRACE_STALE_AFTER_MS).toBe("60000");
