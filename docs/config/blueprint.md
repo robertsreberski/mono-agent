@@ -148,6 +148,11 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "maxAgeDays": 365,
       "maxCount": 50000,
       "dryRun": false
+    },
+    "memoryRetention": {
+      "maxAgeDays": 7,                    // memory-maintenance mem-* runs
+      "maxCount": 5000,
+      "dryRun": false                     // defaults to retention.dryRun when omitted
     }
   },
   "traceability": {

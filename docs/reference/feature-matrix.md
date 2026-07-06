@@ -128,7 +128,7 @@ Core channels are independent JSON sections. External channel packages are decla
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
-| `observability.jsonl-artifacts` | config | `artifacts.dir`, `artifacts.retention.{maxAgeDays,maxCount,dryRun}` | `MONO_AGENT_ARTIFACT_*` | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
+| `observability.jsonl-artifacts` | config | `artifacts.dir`, `artifacts.retention.{maxAgeDays,maxCount,dryRun}`, `artifacts.memoryRetention.{maxAgeDays,maxCount,dryRun}` | `MONO_AGENT_ARTIFACT_*` | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `observability.latency-attribution` | auto | (emitted into run JSONL artifacts) | — | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `observability.trace-registry` | config | `traceability.{registryDir,sourceId,sourceLabel,heartbeatMs,staleAfterMs}` | `MONO_AGENT_TRACE_*` | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `observability.phoenix-exporter` | config | `observability.exporters[]: {type:"phoenix", endpoint, projectName, includeSensitiveData, headers, timeoutMs}` | `MONO_AGENT_OBSERVABILITY_EXPORTERS` | [Phoenix & backfill](/observability/phoenix-and-backfill/) | [Phoenix-observed agent](/playbooks/phoenix-observed-agent/) |

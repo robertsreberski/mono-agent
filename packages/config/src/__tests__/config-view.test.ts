@@ -156,6 +156,19 @@ describe("buildMonoAgentConfigView", () => {
     );
     expect(field(envSections, "artifacts.retention.maxCount")).toMatchObject({ value: "50", source: "env" });
     expect(field(envSections, "artifacts.memoryRetention.maxCount")).toMatchObject({ value: "15", source: "env" });
+
+    const inheritedJsonDryRunSections = buildView(baseEnv, {
+      artifacts: {
+        retention: { dryRun: true },
+      },
+    });
+    expect(field(inheritedJsonDryRunSections, "artifacts.memoryRetention.dryRun")).toMatchObject({ value: "yes", source: "json" });
+
+    const inheritedEnvDryRunSections = buildView({
+      ...baseEnv,
+      MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN: "true",
+    });
+    expect(field(inheritedEnvDryRunSections, "artifacts.memoryRetention.dryRun")).toMatchObject({ value: "yes", source: "env" });
   });
 });
 

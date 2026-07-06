@@ -307,7 +307,7 @@ See [Skills](/context/skills/) for how skills are surfaced to the agent.
 
 ## `audit-runs`
 
-Audits recorded run summary artifacts without exporting, reconciling, or rewriting anything. Use it when you need a structural inventory of a consumer's local artifact directory: how many summaries parse, which statuses and production failure kinds are present, whether any values are unrecognized, how many `running` summaries are stale, and the per-failure-kind rates.
+Audits recorded run summary artifacts without exporting, reconciling, or rewriting anything. By default it audits agent runs only, excluding memory-maintenance `mem-*` runs from both the legacy mixed namespace and the `memory/` namespace. Use it when you need a structural inventory of a consumer's local artifact directory: how many summaries parse, which statuses and production failure kinds are present, whether any values are unrecognized, how many `running` summaries are stale, and the per-failure-kind rates.
 
 | Flag | Effect |
 | --- | --- |
@@ -316,6 +316,7 @@ Audits recorded run summary artifacts without exporting, reconciling, or rewriti
 | `--config <path>` | Use a non-default config file when resolving a consumer. |
 | `--env-file <path>` | Load secrets or env overrides from a non-default dotenv file. |
 | `--stale-after-ms <n>` | Override the stale-running cutoff interval. |
+| `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
 | `--json` | Print the full machine-readable audit report. |
 
 ```bash
@@ -327,7 +328,7 @@ The command only reads `*.summary.json` files. A malformed summary is reported a
 
 ## `metrics`
 
-Aggregates recorded run summary artifacts without exporting, reconciling, or rewriting anything. Use it when you need latency, cost, and failure-rate numbers over the whole local corpus or a time window.
+Aggregates recorded run summary artifacts without exporting, reconciling, or rewriting anything. By default it reports agent-run metrics only, excluding memory-maintenance `mem-*` runs from both the legacy mixed namespace and the `memory/` namespace. Use it when you need latency, cost, and failure-rate numbers over the whole local corpus or a time window.
 
 | Flag | Effect |
 | --- | --- |
@@ -337,6 +338,7 @@ Aggregates recorded run summary artifacts without exporting, reconciling, or rew
 | `--since <iso>` | Only summaries whose `startedAt` is at or after this ISO instant. |
 | `--until <iso>` | Only summaries whose `startedAt` is at or before this ISO instant. |
 | `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. |
+| `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
 | `--json` | Print the full machine-readable metrics report. |
 
 ```bash
@@ -350,7 +352,7 @@ See [Artifact metrics](/observability/artifact-metrics/) for the full report con
 
 ## `backfill`
 
-Exports already-recorded run artifacts to the configured Phoenix exporter with their historical timestamps. Trace ids are deterministic per run, so re-running overwrites rather than duplicating. Honors `--config <path>` and `--env-file <path>`.
+Exports already-recorded run artifacts to the configured Phoenix exporter with their historical timestamps. `--all` defaults to agent runs only; add `--include-memory` to export memory-maintenance runs from both the legacy mixed namespace and the `memory/` namespace. Explicit `--run mem-*` reads the requested memory run even without `--include-memory`. Trace ids are deterministic per run, so re-running overwrites rather than duplicating. Honors `--config <path>` and `--env-file <path>`.
 
 | Flag | Effect |
 | --- | --- |
@@ -358,6 +360,7 @@ Exports already-recorded run artifacts to the configured Phoenix exporter with t
 | `--all` | Export every recorded run. |
 | `--since <iso>` | Only runs whose `startedAt` is ≥ this ISO instant. |
 | `--until <iso>` | Only runs whose `startedAt` is ≤ this ISO instant. |
+| `--include-memory` | With `--all`, include memory-maintenance runs in addition to agent runs. |
 | `--dry-run` | Map and serialize but do not POST. |
 | `--config <path>` | Use a non-default config. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. |

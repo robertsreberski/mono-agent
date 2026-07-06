@@ -171,6 +171,7 @@ interface FieldSpec {
   readonly label: string;
   readonly value: string;
   readonly jsonPresent: boolean;
+  readonly source?: ConfigViewFieldSource;
   readonly redacted?: boolean;
 }
 
@@ -182,7 +183,7 @@ function toField(
     id: spec.id,
     label: spec.label,
     value: spec.value,
-    source: resolveSource(env, spec.id, spec.jsonPresent),
+    source: spec.source ?? resolveSource(env, spec.id, spec.jsonPresent),
     ...(spec.redacted === true ? { redacted: true } : {}),
   };
 }
@@ -722,6 +723,13 @@ function buildSandboxSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
 
 function buildArtifactsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSection {
   const { redacted, json, env } = input;
+  const memoryDryRunJsonPresent = json.artifacts?.memoryRetention?.dryRun !== undefined;
+  const inheritedDryRunSource = resolveSource(env, "artifacts.retention.dryRun", json.artifacts?.retention?.dryRun !== undefined);
+  const memoryDryRunSource = envHas(env, CONFIG_ENV_KEYS["artifacts.memoryRetention.dryRun"])
+    ? "env"
+    : memoryDryRunJsonPresent
+      ? "json"
+      : inheritedDryRunSource;
   return {
     id: "artifacts",
     label: "Artifacts",
@@ -767,7 +775,8 @@ function buildArtifactsSection(input: BuildMonoAgentConfigViewInput): ConfigView
         id: "artifacts.memoryRetention.dryRun",
         label: "Memory retention dry run",
         value: redacted.artifacts.memoryRetention.dryRun ? "yes" : "no",
-        jsonPresent: json.artifacts?.memoryRetention?.dryRun !== undefined,
+        jsonPresent: memoryDryRunJsonPresent,
+        source: memoryDryRunSource,
       }),
     ],
   };
