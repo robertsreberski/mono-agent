@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@mono-agent/agent-contracts": "workspace:0.4.0",
+    "@mono-agent/agent-contracts": "workspace:0.4.1",
     "zod": "^4.4.3"
   }
 }
