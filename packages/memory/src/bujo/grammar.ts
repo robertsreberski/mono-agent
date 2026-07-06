@@ -39,11 +39,14 @@ export const MARKER_FOR = (type: MemoryType, status: MemoryStatus): string => {
 const VALID_TYPES = new Set<string>(["task", "event", "note"]);
 const VALID_STATUSES = new Set<string>(["open", "done", "scheduled", "migrated", "dropped", "invalidated"]);
 
-const LINE_RE = /^- (\[[ x><~]\]|◦|–) (.*?)  <!--mem (.*)-->$/u;
+const BULLET_MARKER = String.raw`(\[[ x><~]\]|◦|–)`;
+const LEGACY_LINE_RE = new RegExp(`^- ${BULLET_MARKER} (.*?)  <!--mem (.*)-->$`, "u");
+const VISIBLE_LINE_RE = new RegExp(`^- ${BULLET_MARKER} (.*?)$`, "u");
+const META_LINE_RE = /^\s+<!--mem (.*)-->$/u;
 
 export function parseBullet(line: string): Bullet | undefined {
-  const match = LINE_RE.exec(line);
-  if (match === null) return undefined;
+  const match = parseBulletParts(line);
+  if (match === undefined) return undefined;
   const [, marker, text, meta] = match;
   const fields = parseMeta(meta ?? "");
   const base = MARKERS[marker ?? ""];
@@ -89,7 +92,22 @@ export function serializeBullet(bullet: Bullet): string {
     `refs=${bullet.refs.join(",")}`,
     ...(bullet.dueAt === undefined ? [] : [`due=${bullet.dueAt}`]),
   ].join(" ");
-  return `- ${marker} ${bullet.text}  <!--mem ${meta}-->`;
+  return `- ${marker} ${bullet.text}\n  <!--mem ${meta}-->`;
+}
+
+function parseBulletParts(line: string): RegExpExecArray | undefined {
+  const legacy = LEGACY_LINE_RE.exec(line);
+  if (legacy !== null) return legacy;
+
+  const split = line.split("\n");
+  if (split.length !== 2) return undefined;
+  const visible = VISIBLE_LINE_RE.exec(split[0] ?? "");
+  const meta = META_LINE_RE.exec(split[1] ?? "");
+  if (visible === null || meta === null) return undefined;
+  const out = [line, visible[1] ?? "", visible[2] ?? "", meta[1] ?? ""] as unknown as RegExpExecArray;
+  out.index = 0;
+  out.input = line;
+  return out;
 }
 
 function parseMeta(meta: string): Record<string, string> {
@@ -102,15 +120,41 @@ function parseMeta(meta: string): Record<string, string> {
   return out;
 }
 
+export interface DailyLine {
+  readonly raw: string;
+  readonly lineNumber: number;
+  readonly bullet?: Bullet;
+}
+
 export interface DailyFile {
-  readonly lines: readonly { readonly raw: string; readonly bullet?: Bullet }[];
+  readonly lines: readonly DailyLine[];
 }
 
 export function parseDailyFile(content: string): DailyFile & { bullets: Bullet[] } {
-  const lines = content.split("\n").map((raw) => {
+  const rawLines = content.split("\n");
+  const lines: DailyLine[] = [];
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const raw = rawLines[i] ?? "";
+    const lineNumber = i + 1;
     const bullet = parseBullet(raw);
-    return bullet === undefined ? { raw } : { raw, bullet };
-  });
+    if (bullet !== undefined) {
+      lines.push({ raw, lineNumber, bullet });
+      continue;
+    }
+
+    const next = rawLines[i + 1];
+    if (next !== undefined) {
+      const splitRaw = `${raw}\n${next}`;
+      const splitBullet = parseBullet(splitRaw);
+      if (splitBullet !== undefined) {
+        lines.push({ raw: splitRaw, lineNumber, bullet: splitBullet });
+        i += 1;
+        continue;
+      }
+    }
+
+    lines.push({ raw, lineNumber });
+  }
   return { lines, bullets: lines.flatMap((l) => (l.bullet ? [l.bullet] : [])) };
 }
 

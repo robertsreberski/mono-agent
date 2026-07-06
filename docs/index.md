@@ -34,7 +34,7 @@ Equivalent env override: `MONO_AGENT_MODEL=claude:claude-sonnet-4-6`. See [Envir
 - **[Config](/config/)** — the `mono-agent.config.json` blueprint, env-var precedence, and folder layout.
 - **[Runtime](/runtime/)** — model backends, fallback chains, local providers, effort/permissions, sessions, concurrency, and tool guards.
 - **[Channels](/channels/)** — Telegram, Slack, WhatsApp, Webhook, OpenAI-compatible API, A2A, cron, and proactive delivery.
-- **[Memory](/memory/)** — tiered capture/recall, embeddings, rituals, the entity graph, and validation/CLI.
+- **[Memory](/memory/)** — tiered capture/recall, embeddings, consolidation, the entity graph, and validation/CLI.
 - **[Context](/context/)** — identity/soul, skills, and how the system prompt is assembled per turn.
 - **[Tools](/tools/)** — the tool policy (allow/deny), MCP integration, and the native sandbox.
 - **[Observability](/observability/)** — JSONL artifacts and traces, Phoenix/OTLP export and backfill, the CLI, and the TUI.

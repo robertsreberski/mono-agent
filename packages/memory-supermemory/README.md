@@ -60,7 +60,7 @@ injectable seam (`SupermemoryFetch`) so the store is fully unit-testable without
 It does not own backend selection (that is `config.memory.backend`) or the
 `memory_recall` tool wiring; both are resolved in `@mono-agent/agent-app`. It also does not own
 the Supermemory service itself (extraction, consolidation, and storage all happen
-server-side). It does not run BuJo rituals and ignores `mode`/`embeddings`/`llm`.
+server-side). It does not run BuJo scheduled consolidation and ignores `mode`/`embeddings`/`llm`.
 
 ## Verification
 

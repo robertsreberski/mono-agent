@@ -22,7 +22,7 @@ Both implement the same internal `MemoryStore` contract and surface through the 
 view — what differs is where memory lives, how it's built, and what it costs to run.
 
 > Terminology: "BuJo" names the whole built-in engine here. Its top `bujo` tier (LLM
-> capture + entity graph + rituals) is the fairest like-for-like comparison with
+> capture + entity graph + consolidation) is the fairest like-for-like comparison with
 > Supermemory; the `lite`/`journal` tiers are lighter. For tier selection within BuJo, see
 > the [Memory overview](/memory/).
 
@@ -36,8 +36,8 @@ view — what differs is where memory lives, how it's built, and what it costs t
 | Dependencies | Ollama embeddings (`journal`/`bujo`) + optional chat model (`bujo`) | The Supermemory binary + an OpenAI-compatible LLM endpoint for its extractor (Ollama works); embeddings bundled |
 | Recall | Embeddings + FTS, RRF fusion + decay/salience, no LLM | Hybrid search (`/v4/search`, legacy `/v3` fallback) |
 | Capture latency | Host summary written synchronously; intelligent capture async | Ingestion is **async** ("queued") — a just-captured turn isn't instantly searchable |
-| Maintenance | `bujo`: nightly reflection + monthly migration (in-app scheduler) | Consolidation happens server-side; BuJo rituals are a no-op |
-| Cost model | Your tokens for `bujo` capture/rituals; embeddings local | Extraction runs on Supermemory's configured LLM endpoint |
+| Maintenance | `bujo`: lightweight consolidation every two hours by default (in-app scheduler) | Consolidation happens server-side; BuJo scheduled consolidation is a no-op |
+| Cost model | Your tokens for `bujo` capture; embeddings local | Extraction runs on Supermemory's configured LLM endpoint |
 | Privacy / ownership | Fully local, plain-text markdown you can read and `grep` | Local binary keeps data on-machine; the hosted cloud sends it out |
 | Setup effort | Pull Ollama models (for `journal`/`bujo`); zero extra services for `lite` | Install + run `supermemory-server` (and point it at an LLM) |
 | Lock-in / portability | Open SQLite + markdown; no service | Data lives in Supermemory; no shared index with BuJo |
@@ -76,11 +76,11 @@ background. Supermemory ingestion is **asynchronous** (the API returns `queued`)
 fact captured this turn may take seconds to minutes to become searchable — don't rely on
 reading it back within the same turn.
 
-### Maintenance & rituals
-BuJo's `bujo` tier auto-runs nightly **reflection** (temporal decay + insight synthesis)
-and monthly **migration** (promote/reschedule/cluster/forget), producing a living
-`index.md` + `future-log.md` — see [Rituals](/memory/rituals/). Supermemory performs its
-own consolidation server-side, so those rituals do not run for the Supermemory backend.
+### Maintenance & consolidation
+BuJo's `bujo` tier auto-runs lightweight **consolidation** every two hours by default:
+temporal decay, duplicate superseding, `index.md` refresh, and an empty retired
+`future-log.md` stub — see [Consolidation](/memory/rituals/). Supermemory performs its own
+consolidation server-side, so the BuJo scheduler does not run for the Supermemory backend.
 
 ### Privacy & data ownership
 BuJo keeps everything local in formats you own and can inspect. The Supermemory **local
@@ -89,7 +89,7 @@ cloud** sends your memory off-machine — choose the local binary if that matter
 
 ## Config side by side
 
-BuJo (`bujo` tier — full capture + rituals):
+BuJo (`bujo` tier — full capture + consolidation):
 
 ```json
 {
@@ -130,7 +130,7 @@ tiers default to `append-host-summary`.
 
 - You want a fully local, zero-or-Ollama-only setup with no extra service to run.
 - You value human-readable, owned memory you can read, `grep`, and version.
-- You want the entity graph, reflection/migration rituals, and deterministic, inspectable
+- You want the entity graph, lightweight consolidation, and deterministic, inspectable
   recall.
 - You're on `lite`/`journal` and don't want any LLM in the memory loop at all.
 
@@ -158,13 +158,13 @@ A full, runnable example lives in the
   self-hosted instance, so recall here uses the in-app REST-proxied `memory_recall` tool
   (works everywhere). `memory.supermemory.exposeMcpServer: true` additionally injects the
   hosted MCP server for cloud deployments with an API key.
-- **Rituals are BuJo-only.** Reflection/migration don't run for external backends.
+- **Scheduled consolidation is BuJo-only.** The BuJo scheduler does not run for external backends.
 
 ## See also
 
 - [Memory overview & tiers](/memory/)
 - [Write modes, capture & recall](/memory/capture-and-recall/)
-- [Rituals: reflection & migration](/memory/rituals/)
+- [Consolidation](/memory/rituals/)
 - [Embeddings](/memory/embeddings/)
 - [Environment variables → Memory](/config/env-vars/)
 - [Telegram + Supermemory playbook](/playbooks/telegram-supermemory-memory/)

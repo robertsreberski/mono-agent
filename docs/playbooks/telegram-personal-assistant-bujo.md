@@ -6,7 +6,7 @@ sidebar:
 
 # Personal Telegram Assistant with BuJo Memory
 
-This playbook wires a private Telegram bot to mono-agent's BuJo tiered memory so it captures every conversation turn, reflects nightly, migrates monthly, and recalls past notes semantically. It is a complete config-first recipe: pull the local models, init, fill in the Telegram and memory sections, validate, and start.
+This playbook wires a private Telegram bot to mono-agent's BuJo tiered memory so it captures every conversation turn, consolidates the store automatically, and recalls past notes semantically. It is a complete config-first recipe: pull the local models, init, fill in the Telegram and memory sections, validate, and start.
 
 ## Who this is for
 
@@ -14,22 +14,21 @@ Individual power users who want a private assistant that remembers — a persona
 
 ## Goal
 
-A Telegram bot that answers via long-polling, captures every turn into BuJo memory with nightly reflection plus monthly migration, and recalls past notes semantically.
+A Telegram bot that answers via long-polling, captures every turn into BuJo memory with scheduled consolidation, and recalls past notes semantically.
 
 ## Features used
 
 - [`telegram.long-polling`](/channels/telegram/) — Telegram channel via getUpdates long-polling (config)
 - [`channel.final-only-delivery`](/channels/delivery-and-send-tools/) — Telegram delivers the final answer only, not intermediate tokens (auto)
-- [`memory.bujo`](/memory/rituals/) — BuJo tier: capture + nightly reflection + monthly migration (config)
+- [`memory.bujo`](/memory/rituals/) — BuJo tier: capture + scheduled consolidation (config)
 - [`memory.per-turn-capture`](/memory/capture-and-recall/) — `writeMode: "capture"` records each turn asynchronously (config)
-- [`memory.bujo-reflection`](/memory/rituals/) — in-app nightly reflection ritual (config / auto)
-- [`memory.bujo-migration`](/memory/rituals/) — in-app monthly migration ritual (config / auto)
+- [`memory.bujo-consolidation`](/memory/rituals/) — in-app lightweight consolidation (config / auto)
 - [`memory.recall-tool`](/memory/capture-and-recall/) — `memory_recall` tool auto-provisioned for journal/bujo with embeddings (auto)
 - [`memory.embeddings-config`](/memory/embeddings/) — embeddings provider for semantic recall (config)
 
 ## Configuration
 
-The bujo tier requires both an embeddings provider (for semantic recall) and an app-level `memory.llm` (for capture and the reflection/migration rituals). This recipe uses local Ollama for both, so no extra API keys are needed.
+The bujo tier requires both an embeddings provider (for semantic recall) and an app-level `memory.llm` (for capture and effective tier selection for scheduled consolidation). This recipe uses local Ollama for both, so no extra API keys are needed.
 
 ```json
 {
@@ -56,8 +55,7 @@ The bujo tier requires both an embeddings provider (for semantic recall) and an 
       "model": "qwen3.6:latest",
       "endpoint": "http://localhost:11434"
     },
-    "reflection": { "enabled": true, "cron": "0 3 * * *" },
-    "migration": { "enabled": true, "cron": "0 4 1 * *" }
+    "consolidation": { "enabled": true, "cron": "0 */2 * * *" }
   }
 }
 ```
@@ -65,7 +63,7 @@ The bujo tier requires both an embeddings provider (for semantic recall) and an 
 Keep `botToken` out of the file in production by setting `MONO_AGENT_TELEGRAM_BOT_TOKEN` instead. The memory LLM provider/model/endpoint can also come from `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`.
 
 :::note
-The reflection and migration rituals run in-app on the schedules above — no external cron or launchd is needed.
+Consolidation runs in-app on the schedule above — no external cron or launchd is needed.
 :::
 
 :::caution
@@ -77,7 +75,7 @@ Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resol
 1. Pull the local models the memory tier needs: `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest`.
 2. Scaffold the agent: `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo`.
 3. Edit `mono-agent.config.json`: add the `telegram` section with `botToken` and `allowedChatIds`, set `memory.writeMode` to `capture`, and fill in the `embeddings` and `llm` blocks.
-4. Run `mono-agent validate` and confirm memory liveness — embeddings and chat model pulled, and the ritual cadence shown with next-run times.
+4. Run `mono-agent validate` and confirm memory liveness — embeddings and chat model pulled, and the consolidation cadence shown.
 5. Run `mono-agent start` and confirm telegram reports running.
 6. Send a fact from an allowed chat (e.g. "My dog is named Pixel"), then in a later turn ask a paraphrased question and confirm recall.
 
@@ -91,7 +89,7 @@ From the allowed Telegram chat, send a message; verify the typing indicator then
 
 - [Telegram channel](/channels/telegram/)
 - [Delivery and send tools](/channels/delivery-and-send-tools/)
-- [Memory rituals (reflection & migration)](/memory/rituals/)
+- [Memory consolidation](/memory/rituals/)
 - [Capture and recall](/memory/capture-and-recall/)
 - [Embeddings](/memory/embeddings/)
 - [Artifacts and traces](/observability/artifacts-and-traces/) — where the run JSONL lands

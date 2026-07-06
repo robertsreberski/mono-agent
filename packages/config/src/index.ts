@@ -25,7 +25,7 @@ export type {
   MemoryLlmProvider,
   MemoryMode,
   MemoryOllamaLlmConfig,
-  MemoryRitualConfig,
+  MemoryConsolidationConfig,
   MemorySupermemoryConfig,
   MemoryWriteMode,
   MonoAgentConfig,
@@ -55,6 +55,7 @@ export type {
   MonoAgentLocalProviderJson,
   MonoAgentLocalProviderModelJson,
   MonoAgentMemoryEmbeddingsCircuitBreakerJson,
+  MonoAgentMemoryConsolidationJson,
   MonoAgentMemoryEmbeddingsJson,
   MonoAgentMemoryLlmJson,
   MonoAgentObservabilityExporterJson,
@@ -63,7 +64,7 @@ export type {
   ReadMonoAgentConfigJsonResult,
 } from "./json-source.js";
 export { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
-export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings } from "./config-view.js";
+export { buildMonoAgentConfigView, CONFIG_ENV_KEYS, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "./config-view.js";
 export type {
   BuildMonoAgentConfigViewInput,
   ConfigViewField,
@@ -71,4 +72,5 @@ export type {
   ConfigViewFieldSource,
   ConfigViewSection,
   ConfigViewSectionStatus,
+  RemovedConfigWarningsInput,
 } from "./config-view.js";

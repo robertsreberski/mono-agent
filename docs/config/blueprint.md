@@ -85,7 +85,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   //   lite    — FTS keyword recall + rapid-log; no external deps.
   //   journal — + hybrid recall (BM25+vector) + decay; needs embeddings.
   //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled
-  //             reflection/migration; needs embeddings + an app-level memory.llm.
+  //             lightweight consolidation; needs embeddings + an app-level memory.llm for capture/tier selection.
   "memory": {
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
@@ -98,7 +98,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "apiKeyEnv": "OPENAI_API_KEY",       // or inline "apiKey"; required for openai
       "dim": 768                           // nomic-embed-text:v1.5 output dimension
     },
-    "llm": {                               // enables bujo capture/rituals; omit for lite/journal
+    "llm": {                               // enables bujo capture and the effective bujo tier; omit for lite/journal
       // Env: MONO_AGENT_MEMORY_LLM_PROVIDER / _MODEL / _EXECUTION_MODE / _ENDPOINT / _TIMEOUT_MS.
       "provider": "ollama",                // ollama | agent-host
       "model": "qwen3.6:latest",           // ollama: model string; agent-host: runtime ref, e.g. pi:openai-codex:gpt-5.5
@@ -106,10 +106,9 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
       // For agent-host, use: "model": "pi:openai-codex:gpt-5.5", "executionMode": "sdk"; omit endpoint.
     },
-    // Bujo auto-scheduler — override defaults or disable per-ritual.
-    // Rituals run in-app; no external cron or launchd needed.
-    "reflection": { "enabled": true, "cron": "0 3 * * *" },  // default: nightly 03:00
-    "migration":  { "enabled": true, "cron": "0 4 1 * *" }   // default: 1st of month 04:00
+    // Bujo auto-scheduler — override the default or disable it.
+    // Consolidation runs in-app; no external cron or launchd needed.
+    "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
   },
 
   // Fail-closed tool policy + MCP servers. Deny wins; overlap is rejected.
@@ -329,7 +328,7 @@ Every top-level section maps to a deep-dive page:
 | `runtime` | Model, fallback chain, execution mode, effort, sessions | [Backends](/runtime/backends/), [Effort & permissions](/runtime/execution-effort-permissions/), [Fallback](/runtime/fallback/), [Sessions & concurrency](/runtime/sessions-concurrency/) |
 | `providers` | Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Local providers](/runtime/local-providers/) |
 | `context` | Identity, soul, skills selection | [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Assembly](/context/assembly/) |
-| `memory` | Tier, embeddings, capture LLM, reflection/migration rituals | [Embeddings](/memory/embeddings/), [Capture & recall](/memory/capture-and-recall/), [Rituals](/memory/rituals/), [Entity graph](/memory/entity-graph/) |
+| `memory` | Tier, embeddings, capture LLM, consolidation | [Embeddings](/memory/embeddings/), [Capture & recall](/memory/capture-and-recall/), [Consolidation](/memory/rituals/), [Entity graph](/memory/entity-graph/) |
 | `tools` | Allow/deny tool policy, MCP servers | [Tool policy](/tools/policy/), [MCP](/tools/mcp/) |
 | `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability` | JSONL run summaries + the trace-source registry | [Artifacts & traces](/observability/artifacts-and-traces/) |

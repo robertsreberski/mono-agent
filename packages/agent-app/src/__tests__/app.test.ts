@@ -1070,7 +1070,7 @@ describe("startMonoAgentApp", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("logs an accurate skip (not 'started') when bujo mode has no chat LLM (tier downgrades to journal)", async () => {
+  it("logs an accurate consolidation skip (not 'started') when bujo mode has no chat LLM (tier downgrades to journal)", async () => {
     const infos: string[] = [];
     const logger = { info: (m: string) => { infos.push(m); } };
 
@@ -1081,7 +1081,7 @@ describe("startMonoAgentApp", () => {
         path: join(dir, "mem"),
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
-        // no llm → runtime tier is "journal" → rituals are a no-op
+        // no llm -> runtime tier is "journal" -> consolidation is a no-op
       },
     });
 
@@ -1091,12 +1091,15 @@ describe("startMonoAgentApp", () => {
       logger,
     });
 
-    expect(infos.some((m) => /ritual scheduler skipped/iu.test(m))).toBe(true);
-    expect(infos.some((m) => /ritual scheduler started/iu.test(m))).toBe(false);
+    expect(infos.some((m) => /consolidation scheduler skipped/iu.test(m))).toBe(true);
+    expect(
+      infos.some((m) => /configured bujo mode resolved to the journal tier because memory\.llm is missing/iu.test(m)),
+    ).toBe(true);
+    expect(infos.some((m) => /consolidation scheduler started/iu.test(m))).toBe(false);
     await app.stop();
   });
 
-  it("logs 'scheduler started' when bujo mode has a chat LLM (tier=bujo)", async () => {
+  it("logs 'consolidation scheduler started' when bujo mode has a chat LLM (tier=bujo)", async () => {
     const infos: string[] = [];
     const logger = { info: (m: string) => { infos.push(m); } };
 
@@ -1117,7 +1120,7 @@ describe("startMonoAgentApp", () => {
       logger,
     });
 
-    expect(infos.some((m) => /ritual scheduler started/iu.test(m))).toBe(true);
+    expect(infos.some((m) => /consolidation scheduler started/iu.test(m))).toBe(true);
     await app.stop();
   });
 

@@ -20,7 +20,7 @@ The layering is strict: `agent-app` owns config-driven composition and delegates
 
 ## The full host: `startMonoAgentApp`
 
-`startMonoAgentApp` is what the CLI's `mono-agent start` runs. It loads `mono-agent.config.json` from `cwd`, builds the responder through app-owned configured composition, and starts traceability, observability exporters, every configured channel, and memory rituals.
+`startMonoAgentApp` is what the CLI's `mono-agent start` runs. It loads `mono-agent.config.json` from `cwd`, builds the responder through app-owned configured composition, and starts traceability, observability exporters, every configured channel, and memory consolidation.
 
 ```ts
 import { startMonoAgentApp } from "@mono-agent/agent-app";

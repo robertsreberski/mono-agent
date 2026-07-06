@@ -96,6 +96,28 @@ describe("BujoMemoryStore — tier derivation", () => {
 
     await store.close();
   });
+
+  it("consolidate() is available without an llm and preserves derived tier semantics", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-tier-consolidate-"));
+    let now = new Date("2026-06-01T09:00:00.000Z");
+    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
+
+    expect(store.tier()).toBe("journal");
+    await store.appendHostSummary("s1", "Morgan prefers opt-in memory.");
+    now = new Date("2026-06-02T09:00:00.000Z");
+    await store.appendHostSummary("s2", "morgan prefers opt in memory");
+    now = new Date("2026-07-06T09:00:00.000Z");
+
+    const result = await store.consolidate();
+
+    expect(store.tier()).toBe("journal");
+    expect(result.superseded).toBe(1);
+    expect(readFileSync(join(root, "future-log.md"), "utf8")).toBe("# Future Log\n");
+    const hits = await store.recall("opt-in memory", { topK: 5 });
+    expect(hits).toHaveLength(1);
+
+    await store.close();
+  });
 });
 
 describe("BujoMemoryStore", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { loadMonoAgentConfig, redactMonoAgentConfig } from "../config.js";
-import { buildMonoAgentConfigView, findJsonSecretConfigWarnings } from "../config-view.js";
+import { buildMonoAgentConfigView, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "../config-view.js";
 import type { ConfigViewSection } from "../config-view.js";
 import type { MonoAgentConfigJson } from "../json-source.js";
 import { layerJsonOntoEnv } from "../layered-loader.js";
@@ -119,6 +119,26 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(sections, "memory.mode")).toMatchObject({ value: "lite", source: "env" });
   });
 
+  it("surfaces consolidation fields for bujo memory and does not expose removed ritual fields", () => {
+    const sections = buildView({
+      ...baseEnv,
+      MONO_AGENT_MEMORY_MODE: "bujo",
+      MONO_AGENT_MEMORY_PATH: "/repo/memory",
+      MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "0 */4 * * *",
+    });
+
+    expect(field(sections, "memory.consolidation.enabled")).toMatchObject({ value: "on", source: "default" });
+    expect(field(sections, "memory.consolidation.cron")).toMatchObject({ value: "0 */4 * * *", source: "env" });
+    expect(sections.flatMap((entry) => entry.fields).map((entry) => entry.id)).not.toEqual(
+      expect.arrayContaining([
+        "memory.reflection.enabled",
+        "memory.reflection.cron",
+        "memory.migration.enabled",
+        "memory.migration.cron",
+      ]),
+    );
+  });
+
   it("shows artifact retention with default, json, and env sources", () => {
     const defaultSections = buildView(baseEnv);
     expect(field(defaultSections, "artifacts.retention.maxAgeDays")).toMatchObject({ value: "365 day(s)", source: "default" });
@@ -223,5 +243,41 @@ describe("findJsonSecretConfigWarnings", () => {
     expect(warnings).toEqual([
       "[WARN] memory.supermemory.apiKey is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY).",
     ]);
+  });
+});
+
+describe("findRemovedConfigWarnings", () => {
+  it("warns for removed JSON memory keys without printing values", () => {
+    const warnings = findRemovedConfigWarnings({
+      json: {
+        memory: {
+          reflection: { enabled: true, cron: "secret-ish-cron" },
+          migration: { enabled: false },
+        },
+      },
+      env: {},
+    });
+
+    expect(warnings).toEqual([
+      "[WARN] memory.reflection is removed and ignored; use memory.consolidation instead.",
+      "[WARN] memory.migration is removed and ignored; use memory.consolidation instead.",
+    ]);
+    expect(warnings.join("\n")).not.toContain("secret-ish-cron");
+  });
+
+  it("warns for removed env memory keys without printing values", () => {
+    const warnings = findRemovedConfigWarnings({
+      json: {},
+      env: {
+        MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
+        MONO_AGENT_MEMORY_MIGRATION_CRON: "secret-ish-cron",
+      },
+    });
+
+    expect(warnings).toEqual([
+      "[WARN] MONO_AGENT_MEMORY_REFLECTION_ENABLED is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
+      "[WARN] MONO_AGENT_MEMORY_MIGRATION_CRON is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
+    ]);
+    expect(warnings.join("\n")).not.toContain("secret-ish-cron");
   });
 });

@@ -38,7 +38,7 @@ The graph is built and used only when the memory tier is `bujo`, which requires 
 Relevant env overrides: `MONO_AGENT_MEMORY_MODE=bujo`, `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_ENDPOINT`. The `lite` and `journal` tiers do not build a graph.
 
 :::note
-The `journal` and `bujo` tiers store the memory root under `memory.path`; `graph.jsonl` lives there next to the daily markdown notes (`daily/`), the rebuildable SQLite index (`memory.db`), and the living `index.md` / `future-log.md`.
+The `journal` and `bujo` tiers store the memory root under `memory.path`; `graph.jsonl` lives there next to the daily markdown notes (`daily/`), the rebuildable SQLite index (`memory.db`), the living `index.md`, and the retired `future-log.md` stub.
 :::
 
 ## What gets extracted
@@ -62,7 +62,7 @@ Because extraction is part of the async, per-turn capture pipeline, it runs in t
 
 `memory_recall` is hybrid BM25 + vector search over the journal entries. On the bujo tier it additionally consults the graph: matched entries contribute their entities, and the recall result is expanded **one hop** along the graph edges. That means a query that surfaces one entity also pulls in its directly related entities and the entries that mention them, giving the agent connected context (the people on a project, the org behind it) without the user having to name every node.
 
-The living `index.md`, regenerated during rituals and by the `index` CLI command, includes a table of the top entities so the graph is human-inspectable as plain markdown.
+The living `index.md`, regenerated during consolidation and by the `index` CLI command, includes a table of the top entities so the graph is human-inspectable as plain markdown.
 
 ## Inspecting and rebuilding
 
@@ -73,4 +73,4 @@ The graph is rebuilt from the markdown files on disk by `memory-bujo rebuild`, a
 - [Capture and recall](/memory/capture-and-recall/) — the capture pipeline that feeds the graph and the recall tool that uses it
 - [Validation and CLI](/memory/validation-and-cli/) — `memory-bujo` subcommands and validation
 - [Embeddings](/memory/embeddings/) — the embeddings provider bujo requires
-- [Rituals](/memory/rituals/) — reflection and migration passes that maintain the index
+- [Consolidation](/memory/rituals/) — scheduled index maintenance and duplicate superseding

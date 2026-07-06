@@ -96,4 +96,4 @@ mono-agent start
 - **Self-host vs cloud.** The same config works against the hosted cloud (`baseUrl: "https://api.supermemory.ai"` + a cloud `sm_...` key). The OSS binary self-hosts for personal use; production enterprise-grade self-hosting is a separate arrangement.
 - **MCP server.** Supermemory's hosted MCP server is cloud-only and cannot point at a self-hosted instance, so recall here uses the in-app REST-proxied tool (works everywhere). `memory.supermemory.exposeMcpServer: true` additionally injects the hosted MCP server for cloud deployments that have an API key.
 - **No shared index with BuJo.** Switching backends does not migrate existing BuJo memories; the two stores never share data.
-- **Rituals.** BuJo's nightly reflection / monthly migration do not run for external backends — Supermemory does its own server-side consolidation.
+- **Consolidation.** BuJo's in-app consolidation scheduler does not run for external backends — Supermemory does its own server-side consolidation.
