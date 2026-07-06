@@ -12,6 +12,31 @@ describe("entity repository", () => {
     db.close();
   });
 
+  it("preserves optional entity details when an upsert omits them", () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
+    db.upsertEntity({
+      id: "person:morgan",
+      name: "Morgan",
+      type: "person",
+      summary: "prefers opt-in memory",
+      createdAt: "2026-06-15T09:00:00.000Z",
+      updatedAt: "2026-06-16T00:00:00.000Z",
+    });
+    db.upsertEntity({
+      id: "person:morgan",
+      name: "Morgan Updated",
+      createdAt: "2026-06-17T00:00:00.000Z",
+    });
+
+    expect(db.getEntity("person:morgan")).toMatchObject({
+      name: "Morgan Updated",
+      type: "person",
+      summary: "prefers opt-in memory",
+      updatedAt: "2026-06-16T00:00:00.000Z",
+    });
+    db.close();
+  });
+
   it("stores entity relations and lists them by src", () => {
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
     db.upsertEntity({ id: "person:morgan", name: "Morgan", createdAt: "2026-06-15T09:00:00.000Z" });

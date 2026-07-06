@@ -568,6 +568,255 @@ describe("AgentHarness", () => {
     expect(calls.some((c) => c.startsWith("schedule:c1"))).toBe(true);
   });
 
+  for (const [label, metadata] of [
+    ["cron", { cron: { jobId: "focus-scan", scheduledAt: "2026-07-05T08:00:00.000Z" } }],
+    ["webhook", { webhook: { endpointName: "focus-scan", requestId: "req-1", mode: "sync" } }],
+  ] as const) {
+    it(`writeMode 'capture' captures only the assistant answer for ${label} turns`, async () => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const summaries: string[] = [];
+      const captures: string[] = [];
+      const memory = {
+        load: async () => undefined,
+        appendHostSummary: async (id: string, summary: string) => {
+          summaries.push(summary);
+          return { conversationId: id, source: "memory.md", bytesWritten: summary.length };
+        },
+        scheduleCapture: (_id: string, text: string) => {
+          captures.push(text);
+        },
+        flush: async () => {},
+      };
+      const prompt = "Run the hourly focus scan. Do not run a broad project scan.";
+      const answer = "No focus changes need your attention.";
+      const fake = createFakeRuntime(async () => ({ text: answer }));
+
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        executionMode: "sdk",
+        memory,
+        memoryWriteMode: "capture",
+        createRunId: () => `run-${label}-capture`,
+      }).run({ conversationId: `${label}:focus-scan`, userMessage: prompt, metadata, abortSignal: new AbortController().signal });
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toContain(answer);
+      expect(summaries[0]).not.toContain(prompt);
+      expect(captures).toEqual([`Assistant: ${answer}`]);
+      expect(captures[0]).not.toContain(prompt);
+    });
+  }
+
+  const memoryWriteModes = ["append-host-summary", "capture"] as const;
+
+  for (const mode of memoryWriteModes) {
+    it(`writeMode '${mode}' skips memory writes when the assistant returns NOTHING_TO_REPORT`, async () => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const calls: string[] = [];
+      const memory = {
+        load: async () => undefined,
+        appendHostSummary: async (id: string) => {
+          calls.push(`append:${id}`);
+          return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+        },
+        scheduleCapture: (id: string) => {
+          calls.push(`schedule:${id}`);
+        },
+        flush: async () => {},
+      };
+      const fake = createFakeRuntime(async () => ({ text: "  nothing_to_report  " }));
+
+      const response = await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        executionMode: "sdk",
+        memory,
+        memoryWriteMode: mode,
+        createRunId: () => `run-nothing-to-report-${mode}`,
+      }).run({
+        conversationId: "cron:focus-scan",
+        userMessage: "Run the hourly focus scan.",
+        metadata: { cron: { jobId: "focus-scan" } },
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(response.text).toBe("  nothing_to_report  ");
+      expect(calls).toEqual([]);
+    });
+
+    for (const [probe, answer] of [["test", "test ok"], ["ping", "pong"]] as const) {
+      it(`writeMode '${mode}' skips memory writes for tiny ${probe} turns`, async () => {
+        const dir = await tempDir();
+        const identityPath = join(dir, "IDENTITY.md");
+        await writeFile(identityPath, "You are Mono.", "utf8");
+        const calls: string[] = [];
+        const memory = {
+          load: async () => undefined,
+          appendHostSummary: async (id: string) => {
+            calls.push(`append:${id}`);
+            return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+          },
+          scheduleCapture: (id: string) => {
+            calls.push(`schedule:${id}`);
+          },
+          flush: async () => {},
+        };
+        const fake = createFakeRuntime(async () => ({ text: answer }));
+
+        await createAgentHarness({
+          identityPath,
+          runtime: fake.runtime,
+          model,
+          executionMode: "sdk",
+          memory,
+          memoryWriteMode: mode,
+          createRunId: () => `run-trivial-${mode}-${probe}`,
+        }).run({ conversationId: "telegram:9", userMessage: probe, abortSignal: new AbortController().signal });
+
+        expect(calls).toEqual([]);
+      });
+    }
+
+    it(`writeMode '${mode}' skips trigger probes even when the trigger prompt is prefixed`, async () => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const calls: string[] = [];
+      const memory = {
+        load: async () => undefined,
+        appendHostSummary: async (id: string) => {
+          calls.push(`append:${id}`);
+          return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+        },
+        scheduleCapture: (id: string) => {
+          calls.push(`schedule:${id}`);
+        },
+        flush: async () => {},
+      };
+      const fake = createFakeRuntime(async () => ({ text: "test ok" }));
+
+      await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        executionMode: "sdk",
+        memory,
+        memoryWriteMode: mode,
+        createRunId: () => `run-prefixed-trivial-${mode}`,
+      }).run({
+        conversationId: "webhook:probe",
+        userMessage: "Pre-instructions: answer tersely.\n\nRequest body:\ntest",
+        metadata: { webhook: { endpointName: "probe", requestId: "req-1", mode: "sync" } },
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(calls).toEqual([]);
+    });
+  }
+
+  it("still writes memory for short non-trivial turns", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      appendHostSummary: async (id: string) => {
+        calls.push(`append:${id}`);
+        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+      },
+      scheduleCapture: (id: string, text: string) => {
+        calls.push(`schedule:${id}:${text}`);
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-short-meaningful",
+    }).run({ conversationId: "telegram:9", userMessage: "call Paola", abortSignal: new AbortController().signal });
+
+    expect(calls).toContain("append:telegram:9");
+    expect(calls).toContain("schedule:telegram:9:User: call Paola\nAssistant: ok");
+  });
+
+  it("still writes memory for short contextual acknowledgements", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      appendHostSummary: async (id: string) => {
+        calls.push(`append:${id}`);
+        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+      },
+      scheduleCapture: (id: string, text: string) => {
+        calls.push(`schedule:${id}:${text}`);
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "done" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-short-ack",
+    }).run({ conversationId: "telegram:9", userMessage: "yes", abortSignal: new AbortController().signal });
+
+    expect(calls).toContain("append:telegram:9");
+    expect(calls).toContain("schedule:telegram:9:User: yes\nAssistant: done");
+  });
+
+  it("still writes memory when a test-like word appears in a meaningful turn", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: string[] = [];
+    const memory = {
+      load: async () => undefined,
+      appendHostSummary: async (id: string) => {
+        calls.push(`append:${id}`);
+        return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+      },
+      scheduleCapture: (id: string, text: string) => {
+        calls.push(`schedule:${id}:${text}`);
+      },
+      flush: async () => {},
+    };
+    const fake = createFakeRuntime(async () => ({ text: "works" }));
+
+    await createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-test-meaningful",
+    }).run({ conversationId: "telegram:9", userMessage: "test deploy", abortSignal: new AbortController().signal });
+
+    expect(calls).toContain("append:telegram:9");
+    expect(calls).toContain("schedule:telegram:9:User: test deploy\nAssistant: works");
+  });
+
   it("writeMode 'append-host-summary' does NOT schedule a capture", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -594,7 +843,7 @@ describe("AgentHarness", () => {
       memory,
       memoryWriteMode: "append-host-summary",
       createRunId: () => "run-no-capture",
-    }).run({ conversationId: "c1", userMessage: "hi", abortSignal: new AbortController().signal });
+    }).run({ conversationId: "c1", userMessage: "Summarize build status", abortSignal: new AbortController().signal });
 
     expect(calls).toContain("append:c1");
     expect(calls).not.toContain("schedule");

@@ -372,7 +372,12 @@ export class MonoAgentHarness implements AgentHarness {
 
       // Persist the ORIGINAL caption + redacted attachment metadata (persistText),
       // NOT the expanded prompt with inlined document text.
-      await this.persistSuccessfulTurn(request.conversationId, persistText, text);
+      await this.persistSuccessfulTurn(
+        request.conversationId,
+        persistText,
+        text,
+        runSource.source === undefined ? {} : { source: runSource.source },
+      );
       return {
         text,
         metadata: baseMetadata,
@@ -827,7 +832,12 @@ export class MonoAgentHarness implements AgentHarness {
    * durable history/memory prevents sensitive content leaking into future
    * prompts replayed from history or into memory recall.
    */
-  private async persistSuccessfulTurn(conversationId: string, userMessage: string, assistantText: string): Promise<void> {
+  private async persistSuccessfulTurn(
+    conversationId: string,
+    userMessage: string,
+    assistantText: string,
+    options: { readonly source?: string } = {},
+  ): Promise<void> {
     const timestamp = this.options.now?.().toISOString() ?? new Date().toISOString();
     await this.options.historyStore?.append(conversationId, [
       { role: "user", content: userMessage, timestamp },
@@ -836,14 +846,17 @@ export class MonoAgentHarness implements AgentHarness {
 
     const mode = this.options.memoryWriteMode;
     if (this.options.memory !== undefined && (mode === "append-host-summary" || mode === "capture")) {
+      if (shouldSkipMemoryPersistence(userMessage, assistantText, options)) {
+        return;
+      }
       // Always write the deterministic rapid-log line (sync, durable).
       await this.options.memory.appendHostSummary(
         conversationId,
-        deterministicHostSummary(userMessage, assistantText),
+        deterministicHostSummary(userMessage, assistantText, options),
       );
       // 'capture' additionally enqueues a best-effort intelligent capture (async, non-blocking).
       if (mode === "capture") {
-        this.options.memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText));
+        this.options.memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, options));
       }
     }
   }
@@ -1180,7 +1193,17 @@ function failureResponse(input: {
   };
 }
 
-function deterministicHostSummary(userMessage: string, assistantText: string): string {
+function deterministicHostSummary(
+  userMessage: string,
+  assistantText: string,
+  options: { readonly source?: string } = {},
+): string {
+  if (isTriggerSource(options.source)) {
+    return [
+      "Host-observed completed trigger turn.",
+      `Assistant: ${compactOneLine(assistantText, 240)}`,
+    ].join("\n");
+  }
   return [
     "Host-observed completed turn.",
     `User: ${compactOneLine(userMessage, 240)}`,
@@ -1188,9 +1211,67 @@ function deterministicHostSummary(userMessage: string, assistantText: string): s
   ].join("\n");
 }
 
-function captureTurnText(userMessage: string, assistantText: string): string {
+function captureTurnText(
+  userMessage: string,
+  assistantText: string,
+  options: { readonly source?: string } = {},
+): string {
   // Richer than the compacted host summary: the distiller wants the real turn content.
+  if (isTriggerSource(options.source)) {
+    return `Assistant: ${assistantText}`;
+  }
   return `User: ${userMessage}\nAssistant: ${assistantText}`;
+}
+
+function isTriggerSource(source: string | undefined): boolean {
+  return source === "cron" || source === "webhook";
+}
+
+const MAX_TRIVIAL_MEMORY_TURN_CHARS = 48;
+const TRIVIAL_MEMORY_ANCHOR_TOKENS = new Set([
+  "ping",
+  "pong",
+  "test",
+  "testing",
+]);
+const TRIVIAL_MEMORY_FILLER_TOKENS = new Set([
+  "ok",
+  "okay",
+  "works",
+]);
+
+function shouldSkipMemoryPersistence(
+  userMessage: string,
+  assistantText: string,
+  options: { readonly source?: string } = {},
+): boolean {
+  return isNothingToReportSentinel(assistantText) || isTrivialMemoryTurn(userMessage, assistantText, options);
+}
+
+function isNothingToReportSentinel(assistantText: string): boolean {
+  return assistantText.trim().toUpperCase() === NOTHING_TO_REPORT_SENTINEL;
+}
+
+function isTrivialMemoryTurn(
+  userMessage: string,
+  assistantText: string,
+  options: { readonly source?: string } = {},
+): boolean {
+  const candidate = isTriggerSource(options.source) ? assistantText : `${userMessage} ${assistantText}`;
+  const compact = candidate.replace(/\s+/gu, " ").trim();
+  if (compact.length === 0 || compact.length > MAX_TRIVIAL_MEMORY_TURN_CHARS) {
+    return false;
+  }
+  const tokens = compact
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .filter((token) => token.length > 0);
+  return (
+    tokens.some((token) => TRIVIAL_MEMORY_ANCHOR_TOKENS.has(token)) &&
+    tokens.every((token) => TRIVIAL_MEMORY_ANCHOR_TOKENS.has(token) || TRIVIAL_MEMORY_FILLER_TOKENS.has(token))
+  );
 }
 
 function compactOneLine(value: string, maxChars: number): string {
