@@ -30,9 +30,9 @@ export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{
     const parsed = parseDailyFile(readFileSync(join(dailyDir, file), "utf8"));
     // Use the real 1-based file line number (not the bullet ordinal) so source.line points at the
     // actual markdown line for provenance / jump-to-source.
-    parsed.lines.forEach((line, index) => {
+    parsed.lines.forEach((line) => {
       if (line.bullet !== undefined) {
-        records.push(toRecord(line.bullet, `daily/${file}`, index + 1));
+        records.push(toRecord(line.bullet, `daily/${file}`, line.lineNumber));
       }
     });
   }
