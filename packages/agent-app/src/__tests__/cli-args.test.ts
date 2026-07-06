@@ -207,12 +207,22 @@ describe("parseCliArgs", () => {
   });
 
   it("parses web command flags", () => {
-    const result = parseCliArgs(["web", "--host", "0.0.0.0", "--port", "4599", "--no-open", "--allow-non-loopback"]);
+    const result = parseCliArgs([
+      "web",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "4599",
+      "--no-open",
+      "--allow-non-loopback",
+      "--include-memory",
+    ]);
     expect(result.command).toBe("web");
     expect(result.host).toBe("0.0.0.0");
     expect(result.port).toBe(4599);
     expect(result.open).toBe(false);
     expect(result.allowNonLoopback).toBe(true);
+    expect(result.includeMemory).toBe(true);
     expect(() => parseCliArgs(["web", "--port", "notaport"])).toThrow(/--port/u);
   });
 

@@ -98,7 +98,7 @@ interface ParsedCliArgs {
   readonly until?: string;
   /** backfill: map + serialize but do not POST. */
   readonly dryRun: boolean;
-  /** audit-runs/metrics/backfill: include memory-run artifacts. */
+  /** audit-runs/metrics/backfill/web: include memory-run artifacts. */
   readonly includeMemory: boolean;
   /** audit-runs: read this artifact directory directly. */
   readonly artifactDir?: string;
@@ -328,8 +328,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if ((host !== undefined || port !== undefined || open !== undefined || allowNonLoopback !== undefined) && cmd !== "web") {
     throw new Error("--host, --port, --no-open, and --allow-non-loopback are only supported for `mono-agent web`.");
   }
-  if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill") {
-    throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, and `mono-agent backfill`.");
+  if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill" && cmd !== "web") {
+    throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, `mono-agent backfill`, and `mono-agent web`.");
   }
 
   return {
@@ -492,12 +492,13 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback]",
+    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--include-memory]",
     lines: [
       "Serve the read-only Session Recorder web PWA from any directory: a live",
       "flight-recorder over every agent's runs (prompt, reasoning, tools, cost).",
       "Discovers running agents via the trace-source registry — the same",
       "mechanism as `tui` — and streams new/updated runs in real time.",
+      "--include-memory also shows memory-maintenance runs.",
     ],
   },
   {
@@ -632,6 +633,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.port === undefined ? {} : { port: args.port }),
         ...(args.open === undefined ? {} : { open: args.open }),
         ...(args.allowNonLoopback === undefined ? {} : { allowNonLoopback: args.allowNonLoopback }),
+        includeMemory: args.includeMemory,
       });
     }
     case "install-skill":

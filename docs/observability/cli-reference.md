@@ -277,6 +277,7 @@ Serves the read-only [Session Recorder web PWA](/observability/) from any direct
 mono-agent web
 mono-agent web --port 4599 --no-open
 mono-agent web --host 0.0.0.0 --allow-non-loopback
+mono-agent web --include-memory
 ```
 
 | Flag | Effect |
@@ -285,9 +286,10 @@ mono-agent web --host 0.0.0.0 --allow-non-loopback
 | `--port <n>` | Bind port (default `4599`, printed on start for reverse-proxy targets). |
 | `--no-open` | Do not launch the browser after the backend starts. |
 | `--allow-non-loopback` | Permit a non-loopback bind. The command generates a bearer token and prints/opens a tokenized URL; `/api/*` and `/api/stream` require it. |
+| `--include-memory` | Include memory-maintenance runs from both the `memory/` artifact namespace and legacy mixed directories. Defaults to agent runs only. |
 | `--config <path>` | Resolve a custom `traceability.registryDir` from this config, in addition to the global registry. |
 
-Loopback mode prints both the exact reverse-proxy target and a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
+Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback mode prints both the exact reverse-proxy target and a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
 
 ## `install-skill`
 

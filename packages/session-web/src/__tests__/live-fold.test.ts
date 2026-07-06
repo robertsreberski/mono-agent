@@ -88,6 +88,60 @@ function runFinished(): RunEventFrame {
   };
 }
 
+const MEMORY_RUN_ID = "mem-live-1";
+
+function memoryRunStarted(): RunEventFrame {
+  return {
+    t: "run_started",
+    schema: LIVE_EVENT_SCHEMA,
+    sourceId: SOURCE_ID,
+    runId: MEMORY_RUN_ID,
+    conversationId: "memory:capture:distill",
+    source: "memory",
+    startedAt: STARTED_AT,
+    seq: 0,
+  };
+}
+
+function memoryAssistantEvent(): RunEventFrame {
+  return {
+    t: "event",
+    schema: LIVE_EVENT_SCHEMA,
+    sourceId: SOURCE_ID,
+    runId: MEMORY_RUN_ID,
+    eventIndex: 0,
+    event: {
+      type: "assistant",
+      timestamp: STARTED_AT,
+      source: "memory",
+      message: { content: [{ type: "text", text: "memory answer" }] },
+    },
+    seq: 0,
+  };
+}
+
+function memoryRunFinished(): RunEventFrame {
+  return {
+    t: "run_finished",
+    schema: LIVE_EVENT_SCHEMA,
+    sourceId: SOURCE_ID,
+    runId: MEMORY_RUN_ID,
+    status: "succeeded",
+    summary: {
+      runId: MEMORY_RUN_ID,
+      conversationId: "memory:capture:distill",
+      status: "succeeded",
+      startedAt: STARTED_AT,
+      endedAt: "2026-07-04T00:00:05.000Z",
+      durationMs: 5000,
+      eventCount: 1,
+      artifactPaths: [],
+      source: "memory",
+    },
+    seq: 0,
+  };
+}
+
 describe("SessionAggregator live fold", () => {
   it("folds run_started → event → run_finished into a provisional then final session_upsert", async () => {
     const bus: RunEventBus = createLiveEventBus();
@@ -200,6 +254,70 @@ describe("SessionAggregator live fold", () => {
     await sleep(80);
 
     expect(aggregator.getSessions("all")).toHaveLength(0);
+  });
+
+  it("drops identifiable memory live frames by default", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+    });
+    const frames: BrowserStreamFrame[] = [];
+    aggregator.subscribe((frame) => frames.push(frame));
+    await aggregator.start();
+
+    bus.publish(memoryRunStarted());
+    bus.publish(memoryAssistantEvent());
+    bus.publish(memoryRunFinished());
+    await sleep(80);
+
+    expect(aggregator.getSessions("all")).toHaveLength(0);
+    expect(aggregator.getInstances()[0]?.counts.runs).toBe(0);
+    expect(frames.some((frame) => frame.t === "session_upsert" && frame.session.id === MEMORY_RUN_ID)).toBe(false);
+  });
+
+  it("includes memory live frames when includeMemory is true", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir, liveBaseUrl: sse.baseUrl });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      maxRunsPerInstance: 50,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+      includeMemory: true,
+    });
+    await aggregator.start();
+
+    bus.publish(memoryRunStarted());
+    bus.publish(memoryAssistantEvent());
+    bus.publish(memoryRunFinished());
+
+    await waitFor(() =>
+      aggregator?.getSessions("all").find((session) => session.id === MEMORY_RUN_ID && session.status === "succeeded"),
+    );
+    await expect(aggregator.getSession(SOURCE_ID, MEMORY_RUN_ID)).resolves.toMatchObject({
+      id: MEMORY_RUN_ID,
+      source: "memory",
+      finalText: "memory answer",
+    });
+    expect(aggregator.getInstances()[0]?.counts.runs).toBe(1);
   });
 
   it("keeps seeded terminal disk history authoritative over sparse live replay", async () => {

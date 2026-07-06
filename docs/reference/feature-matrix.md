@@ -138,7 +138,7 @@ Core channels are independent JSON sections. External channel packages are decla
 | `observability.rich-traces` | auto | (model / token counts / cost / duration on every span; system prompt gated by `includeSensitiveData`; memory runs get `span.kind=memory` + `memory.operation`) | — | [Phoenix & backfill](/observability/phoenix-and-backfill/#per-run-attributes) | — |
 | `observability.stale-run-reconciliation` | auto | (`reconcileStaleRunArtifacts()` at startup over `artifacts.dir`; rewrites orphaned `running` → `interrupted`) | — | [Artifacts & traces](/observability/artifacts-and-traces/#run-status-and-stale-run-reconciliation) | — |
 | `tui.chat` | cli | `mono-agent tui [--agent <label\|sourceId>] [--conversation <id>]`; low-level `mono-agent-tui [--responder \| --url]` | `MONO_AGENT_TUI_API_KEY` (connect key) | [TUI](/observability/tui/) | — |
-| `session-web.pwa` | cli | `mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--config <path>]` | `MONO_AGENT_LIVE_*` (agent-side relay) | [CLI reference](/observability/cli-reference/#web) | — |
+| `session-web.pwa` | cli | `mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--include-memory] [--config <path>]` | `MONO_AGENT_LIVE_*` (agent-side relay) | [CLI reference](/observability/cli-reference/#web) | — |
 
 ## Execution & composition
 
