@@ -170,6 +170,15 @@ describe("trace source registry", () => {
     });
   });
 
+  it("rejects invalid run-list scope values with a typed registry error", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    await expect(listTraceRuns({ registryDir, scope: "invalid" as never })).rejects.toMatchObject({
+      code: "invalid_registry_options",
+      details: { code: "invalid_registry_options", field: "scope" },
+    });
+  });
+
   it("keeps malformed manifests as warnings and rejects path-like ids", async () => {
     const dir = await tempDir();
     const registryDir = join(dir, "registry");

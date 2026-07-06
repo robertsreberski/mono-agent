@@ -1,4 +1,4 @@
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import process from "node:process";
 
@@ -254,8 +254,7 @@ function isMemoryRunSummary(summary: Record<string, unknown>): boolean {
 
 async function fileExists(path: string): Promise<boolean> {
   try {
-    await readFile(path, "utf8");
-    return true;
+    return (await stat(path)).isFile();
   } catch (error) {
     if (isMissingPath(error)) {
       return false;

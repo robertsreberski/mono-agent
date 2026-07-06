@@ -471,7 +471,7 @@ function normalizeReaderOptions(options: JsonlRunReaderOptions): NormalizedReade
   };
   return {
     artifactDir: resolve(options.artifactDir),
-    scope: normalizeRunArtifactScope(options.scope),
+    scope: normalizeRunArtifactScope(options.scope, raiseOptions),
     scopeProvided: options.scope !== undefined,
     maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns", raiseOptions),
     maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun", raiseOptions),

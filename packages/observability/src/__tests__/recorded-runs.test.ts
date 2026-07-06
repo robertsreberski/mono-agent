@@ -59,6 +59,14 @@ describe("recorded run reader", () => {
     await expect(listRecordedRuns({ artifactDir: dir })).resolves.toEqual({ totalRuns: 0, runs: [], warnings: [] });
   });
 
+  it("rejects invalid scope values with a typed reader error", async () => {
+    const dir = await tempDir();
+    await expect(listRecordedRuns({ artifactDir: dir, scope: "invalid" as never })).rejects.toMatchObject({
+      code: "invalid_reader_options",
+      details: { code: "invalid_reader_options", field: "scope" },
+    });
+  });
+
   it("scopes agent and memory summaries while preserving legacy explicit reads", async () => {
     const dir = await tempDir();
     await createJsonlRunRecorder({ runId: "agent-run", conversationId: "telegram:1", artifactDir: dir }).finish({});

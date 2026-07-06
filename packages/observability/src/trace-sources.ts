@@ -442,7 +442,7 @@ function raiseRegistryOption(message: string, field: string): never {
 function normalizeRunListOptions(options: TraceRunListOptions): NormalizedRunListOptions {
   return {
     ...normalizeRegistryOptions(options),
-    scope: normalizeRunArtifactScope(options.scope),
+    scope: normalizeRunArtifactScope(options.scope, raiseRegistryOption),
     scopeProvided: options.scope !== undefined,
     maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns", raiseRegistryOption),
     maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun", raiseRegistryOption),

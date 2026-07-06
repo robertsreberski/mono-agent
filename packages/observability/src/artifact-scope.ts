@@ -17,6 +17,8 @@ type SummaryKindFields = {
   readonly source?: unknown;
 };
 
+type RaiseScopeOption = (message: string, field: "scope") => never;
+
 export function artifactDirForKind(rootArtifactDir: string, artifactKind: RunArtifactKind): string {
   const root = resolve(rootArtifactDir);
   return artifactKind === "memory" ? resolve(root, MEMORY_ARTIFACT_NAMESPACE) : root;
@@ -26,14 +28,21 @@ export function relativeSummaryFileName(fileName: string, namespaceKind: RunArti
   return namespaceKind === "memory" ? `${MEMORY_ARTIFACT_NAMESPACE}/${fileName}` : fileName;
 }
 
-export function normalizeRunArtifactScope(scope: RunArtifactScope | undefined): RunArtifactScope {
+export function normalizeRunArtifactScope(
+  scope: RunArtifactScope | undefined,
+  raiseOption: RaiseScopeOption = raiseScopeOption,
+): RunArtifactScope {
   if (scope === undefined) {
     return "agent";
   }
   if (scope === "agent" || scope === "memory" || scope === "all") {
     return scope;
   }
-  throw new Error("scope must be \"agent\", \"memory\", or \"all\".");
+  return raiseOption("scope must be \"agent\", \"memory\", or \"all\".", "scope");
+}
+
+function raiseScopeOption(message: string): never {
+  throw new Error(message);
 }
 
 export function isMemorySummary(summary: SummaryKindFields): boolean {
