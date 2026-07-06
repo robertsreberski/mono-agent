@@ -100,15 +100,31 @@ See the [TUI page](/observability/tui/) for details, including the embedded `--r
 mono-agent web
 mono-agent web --port 4599 --no-open
 mono-agent web --include-memory
+mono-agent web --max-runs 500
 ```
 
 The backend binds loopback on the stable default port `4599`. Startup prints the exact URL for reverse proxies plus a Tailscale serve hint. Run lists and the initial browser stream are summary-only; a run's full timeline is loaded lazily from its detail endpoint when opened. Memory-maintenance runs are hidden by default; pass `--include-memory` to inspect them. `--allow-non-loopback` generates a tokenized URL and protects `/api/*` plus `/api/stream`; use it only on a trusted network boundary.
 
-The Session Recorder loads recent runs first and pages older history on demand.
-The browser treats stale `running` summaries as `stalled`, shows recorded
-failure kinds/error text/failover attempts, and uses each instance's discovered
-timezone for single-instance lists and run details. Mixed-instance views fall
-back to the viewer locale/timezone.
+A run's detail view includes a **Context (this turn)** section showing what each
+provider call was actually driven with: any recalled long-term memory (with its
+source), the prior conversation messages that were replayed (role-badged), and
+the full compiled system prompt behind a collapsible raw view. When the
+transcript was carried by the provider session instead of locally-loaded history
+— a warm in-process session, or a durable cross-restart resume — the section
+reads *context carried by the provider session* (this also appears on turn 1 of
+a brand-new conversation under a derived durable session id). Recordings made
+before this feature degrade gracefully: they show only the raw compiled-prompt
+fallback, and runs with neither context nor a recorded prompt show no section.
+
+The Session Recorder loads recent runs first and pages the full on-disk history
+on demand via **Load older** — every recorded run stays reachable, because
+cap-eviction of completed runs from the in-memory working set is silent (it no
+longer drops runs from the browser). `--max-runs <n>` (default `200`) bounds that
+in-memory working set and the initial snapshot size; it does not limit how far
+Load older can reach. The browser treats stale `running` summaries as `stalled`,
+shows recorded failure kinds/error text/failover attempts, and uses each
+instance's discovered timezone for single-instance lists and run details.
+Mixed-instance views fall back to the viewer locale/timezone.
 
 ## Related
 
