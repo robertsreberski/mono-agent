@@ -124,6 +124,61 @@ describe("trace source registry", () => {
     expect(item?.traceSource.sourceId).toBe("agent-cron");
   });
 
+  it("defaults trace runs to agent scope and reaches memory runs only when scoped", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    const artifactDir = join(dir, "artifacts");
+
+    await registerTraceSource({
+      registryDir,
+      sourceId: "agent-memory",
+      label: "Agent Memory",
+      artifactDir,
+    });
+
+    await createJsonlRunRecorder({ runId: "agent-run", conversationId: "telegram:1", artifactDir }).finish({});
+    await createJsonlRunRecorder({
+      runId: "mem-new",
+      conversationId: "memory:capture:distill",
+      artifactDir,
+      artifactKind: "memory",
+      source: "memory",
+    }).finish({});
+    await createJsonlRunRecorder({
+      runId: "mem-legacy",
+      conversationId: "memory:legacy",
+      artifactDir,
+      source: "memory",
+    }).finish({});
+
+    const defaults = await listTraceRuns({ registryDir, maxRuns: 10 });
+    expect(defaults.runs.map((run) => run.runId)).toEqual(["agent-run"]);
+
+    const memory = await listTraceRuns({ registryDir, scope: "memory", maxRuns: 10 });
+    expect(memory.runs.map((run) => run.runId).sort()).toEqual(["mem-legacy", "mem-new"]);
+
+    const all = await listTraceRuns({ registryDir, scope: "all", maxRuns: 10 });
+    expect(all.runs.map((run) => run.runId).sort()).toEqual(["agent-run", "mem-legacy", "mem-new"]);
+
+    await expect(readTraceRun({ registryDir }, "agent-memory", "mem-new")).resolves.toBeUndefined();
+    await expect(readTraceRun({ registryDir }, "agent-memory", "mem-legacy")).resolves.toMatchObject({
+      run: { summary: { runId: "mem-legacy", summaryFileName: "mem-legacy.summary.json" } },
+    });
+    await expect(readTraceRun({ registryDir, scope: "agent" }, "agent-memory", "mem-legacy")).resolves.toBeUndefined();
+    await expect(readTraceRun({ registryDir, scope: "memory" }, "agent-memory", "mem-new")).resolves.toMatchObject({
+      run: { summary: { runId: "mem-new", summaryFileName: "memory/mem-new.summary.json" } },
+    });
+  });
+
+  it("rejects invalid run-list scope values with a typed registry error", async () => {
+    const dir = await tempDir();
+    const registryDir = join(dir, "registry");
+    await expect(listTraceRuns({ registryDir, scope: "invalid" as never })).rejects.toMatchObject({
+      code: "invalid_registry_options",
+      details: { code: "invalid_registry_options", field: "scope" },
+    });
+  });
+
   it("keeps malformed manifests as warnings and rejects path-like ids", async () => {
     const dir = await tempDir();
     const registryDir = join(dir, "registry");

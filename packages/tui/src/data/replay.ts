@@ -10,6 +10,7 @@ import type {
   RecordedRunEvent,
   RecordedRunListItem,
   RecordedRunTimelineItem,
+  RunArtifactScope,
   TimelineTurn,
 } from "@mono-agent/observability";
 
@@ -67,7 +68,12 @@ export async function listReplayRuns(
   // Filtering path: read the wider ceiling so filtering doesn't get starved
   // by a cap applied before we even know what matches.
   const readCeiling = normalized.sourceFilter === undefined ? maxRuns : Math.max(maxRuns, FILTERED_READ_CEILING);
-  const result = await listRecordedRuns({ artifactDir, maxRuns: readCeiling });
+  const scope = replayScopeForSourceFilter(normalized.sourceFilter);
+  const result = await listRecordedRuns({
+    artifactDir,
+    maxRuns: readCeiling,
+    ...(scope === undefined ? {} : { scope }),
+  });
   const resolved = result.runs.map(
     (run): ReplayRunListItem => ({
       ...run,
@@ -125,8 +131,21 @@ export interface ReplayRunDetail {
   readonly effort?: string;
 }
 
-export async function readReplayRun(artifactDir: string, runId: string): Promise<ReplayRunDetail | undefined> {
-  const detail = await readRecordedRun({ artifactDir, maxStringBytes: REPLAY_MAX_STRING_BYTES }, runId);
+export interface ReadReplayRunOptions {
+  readonly scope?: RunArtifactScope;
+}
+
+export async function readReplayRun(
+  artifactDir: string,
+  runId: string,
+  options: ReadReplayRunOptions = {},
+): Promise<ReplayRunDetail | undefined> {
+  const scope = options.scope ?? "agent";
+  const detail = await readRecordedRun({
+    artifactDir,
+    maxStringBytes: REPLAY_MAX_STRING_BYTES,
+    scope,
+  }, runId);
   if (detail === undefined) {
     return undefined;
   }
@@ -142,6 +161,13 @@ export async function readReplayRun(artifactDir: string, runId: string): Promise
     ...(runConfig === undefined ? {} : { runConfig }),
     ...(effort === undefined ? {} : { effort }),
   };
+}
+
+function replayScopeForSourceFilter(sourceFilter: string | undefined): RunArtifactScope | undefined {
+  if (sourceFilter === "memory") {
+    return "memory";
+  }
+  return undefined;
 }
 
 /**

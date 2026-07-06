@@ -12,10 +12,12 @@ This page covers where artifacts land, the latency-attribution events inside the
 
 ## Run artifacts (JSONL)
 
-Each run writes two files into `artifacts.dir`:
+Each agent run writes two files into `artifacts.dir`:
 
 - `run-<id>.events.jsonl` — an append-only event stream (assistant deltas, tool calls/results, timing, usage/cost).
 - `run-<id>.summary.json` — a roll-up of the run (final `status`, aggregate usage/cost, model). See [Run status](#run-status-and-stale-run-reconciliation) for the status values. A failed run also persists `error` (the redacted underlying provider/runtime message — the "why" behind `failureKind`) and, when the fallback router exhausted its chain, `failoverHistory` — an array of per-attempt records (`{ model, failureKind, subkind, requestId }`) canonicalized from the router's `ModelRef` + `retryableSubkind` shape. These show *which* models were tried and *how* each failed, instead of only the collapsed `provider_unavailable_exhausted` kind.
+
+Memory-maintenance runs (`mem-*`, used by BuJo capture and rituals) write the same two-file shape under `artifacts.dir/memory/`. Keeping them in a separate namespace lets operator surfaces default to human-facing agent runs while still allowing explicit memory export, audit, and metrics flows.
 
 Artifacts are written for every run regardless of whether any exporter is configured. Secrets are redacted and long strings are truncated before they hit disk, so the files are safe to keep and to ship to a viewer. The same tool-bloat guard that truncates oversized tool output persists the full payload here as an artifact (coverage: `auto`).
 
@@ -26,6 +28,11 @@ Artifacts are written for every run regardless of whether any exporter is config
     "retention": {
       "maxAgeDays": 365,
       "maxCount": 50000,
+      "dryRun": false
+    },
+    "memoryRetention": {
+      "maxAgeDays": 7,
+      "maxCount": 5000,
       "dryRun": false
     }
   }
@@ -38,10 +45,13 @@ Artifacts are written for every run regardless of whether any exporter is config
 | `artifacts.retention.maxAgeDays` | `365` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS` | config |
 | `artifacts.retention.maxCount` | `50000` | `MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT` | config |
 | `artifacts.retention.dryRun` | `false` | `MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN` | config |
+| `artifacts.memoryRetention.maxAgeDays` | `7` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_AGE_DAYS` | config |
+| `artifacts.memoryRetention.maxCount` | `5000` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT` | config |
+| `artifacts.memoryRetention.dryRun` | `artifacts.retention.dryRun` | `MONO_AGENT_ARTIFACT_MEMORY_RETENTION_DRY_RUN` | config |
 
-These files are exactly what the [backfill command](/observability/phoenix-and-backfill/) replays into Phoenix after the fact — `run-*.summary.json` plus `run-*.events.jsonl` are read back and exported with their original historical timestamps. The `error` / `failoverHistory` fields are written into the live record *and* re-canonicalized by the recorded-runs list reader, so they surface for both freshly-failed runs and re-read artifacts (artifacts written before this field was added carry no source data to recover).
+These files are exactly what the [backfill command](/observability/phoenix-and-backfill/) replays into Phoenix after the fact — `run-*.summary.json` plus `run-*.events.jsonl` are read back and exported with their original historical timestamps. The default backfill/audit/metrics/operator views read agent runs only; pass `--include-memory` where supported to add memory-maintenance runs. Explicit `--run mem-*` backfills can still reach memory artifacts, including legacy top-level `mem-*` files from older mixed directories. The `error` / `failoverHistory` fields are written into the live record *and* re-canonicalized by the recorded-runs list reader, so they surface for both freshly-failed runs and re-read artifacts (artifacts written before this field was added carry no source data to recover).
 
-The host applies artifact retention once at startup, after stale-run reconciliation, and then on a periodic in-app sweep. Retention deletes only terminal run summaries and their matching top-level event files; summaries still marked `running` are never deleted by the retention pass. Set `dryRun: true` to log which runs would be pruned without removing files.
+The host applies artifact retention once at startup, after stale-run reconciliation, and then on a periodic in-app sweep. Agent runs use `artifacts.retention`; memory runs use `artifacts.memoryRetention`, defaulting to a shorter 7-day / 5,000-run window. Retention deletes only terminal run summaries and their matching event files; summaries still marked `running` are never deleted by the retention pass. Set `dryRun: true` to log which runs would be pruned without removing files; memory retention inherits the agent dry-run setting when its own `dryRun` is unset.
 
 ### Run status and stale-run reconciliation
 

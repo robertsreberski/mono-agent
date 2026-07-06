@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -19,6 +19,11 @@ async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "observability-reader-test-"));
   tempDirs.push(dir);
   return dir;
+}
+
+async function writeSummary(dir: string, name: string, summary: Record<string, unknown>): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, name), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 }
 
 afterEach(async () => {
@@ -52,6 +57,57 @@ describe("recorded run reader", () => {
   it("returns an empty list when the artifact directory does not exist", async () => {
     const dir = join(await tempDir(), "missing");
     await expect(listRecordedRuns({ artifactDir: dir })).resolves.toEqual({ totalRuns: 0, runs: [], warnings: [] });
+  });
+
+  it("rejects invalid scope values with a typed reader error", async () => {
+    const dir = await tempDir();
+    await expect(listRecordedRuns({ artifactDir: dir, scope: "invalid" as never })).rejects.toMatchObject({
+      code: "invalid_reader_options",
+      details: { code: "invalid_reader_options", field: "scope" },
+    });
+  });
+
+  it("scopes agent and memory summaries while preserving legacy explicit reads", async () => {
+    const dir = await tempDir();
+    await createJsonlRunRecorder({ runId: "agent-run", conversationId: "telegram:1", artifactDir: dir }).finish({});
+    await createJsonlRunRecorder({
+      runId: "mem-new",
+      conversationId: "memory:capture:distill",
+      artifactDir: dir,
+      artifactKind: "memory",
+      source: "memory",
+    }).finish({});
+    await writeSummary(dir, "mem-legacy.summary.json", {
+      runId: "mem-legacy",
+      conversationId: "memory:legacy",
+      status: "succeeded",
+      startedAt: "2026-06-24T10:00:00.000Z",
+      endedAt: "2026-06-24T10:00:01.000Z",
+      updatedAt: "2026-06-24T10:00:01.000Z",
+      durationMs: 1000,
+      eventCount: 0,
+      artifactPaths: [],
+    });
+    await writeFile(join(dir, "mem-legacy.events.jsonl"), "", "utf8");
+
+    const defaultList = await listRecordedRuns({ artifactDir: dir });
+    expect(defaultList.runs.map((run) => run.runId)).toEqual(["agent-run"]);
+
+    const memoryList = await listRecordedRuns({ artifactDir: dir, scope: "memory" });
+    expect(memoryList.runs.map((run) => run.runId).sort()).toEqual(["mem-legacy", "mem-new"]);
+    expect(memoryList.runs.find((run) => run.runId === "mem-new")?.summaryFileName).toBe("memory/mem-new.summary.json");
+    expect(memoryList.runs.find((run) => run.runId === "mem-legacy")?.summaryFileName).toBe("mem-legacy.summary.json");
+
+    const allList = await listRecordedRuns({ artifactDir: dir, scope: "all" });
+    expect(allList.runs.map((run) => run.runId).sort()).toEqual(["agent-run", "mem-legacy", "mem-new"]);
+
+    await expect(readRecordedRun({ artifactDir: dir }, "mem-new")).resolves.toBeUndefined();
+    await expect(readRecordedRun({ artifactDir: dir }, "mem-legacy")).resolves.toMatchObject({
+      summary: { runId: "mem-legacy" },
+    });
+    await expect(readRecordedRun({ artifactDir: dir, scope: "memory" }, "mem-new")).resolves.toMatchObject({
+      summary: { runId: "mem-new", summaryFileName: "memory/mem-new.summary.json" },
+    });
   });
 
   it("surfaces model, effort, source, sourceDetail, and userInput on both list items and run detail (regression: model was previously dropped)", async () => {

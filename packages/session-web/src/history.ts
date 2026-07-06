@@ -5,7 +5,7 @@
  * both surfaces decompose a run identically.
  */
 import { listRecordedRuns, mapRunToSession, readRecordedRun } from "@mono-agent/observability";
-import type { RecordedRunListItem, RunSummary, RuntimeEventLike, Session } from "@mono-agent/observability";
+import type { RecordedRunListItem, RunArtifactScope, RunSummary, RuntimeEventLike, Session } from "@mono-agent/observability";
 
 import type { DiscoveredWebInstance } from "./discovery.js";
 
@@ -33,6 +33,11 @@ const DETAIL_MAX_STRING_BYTES = 32_768;
 
 export interface ListInstanceSessionsOptions {
   readonly maxRuns: number;
+  readonly includeMemory?: boolean;
+}
+
+export interface ReadInstanceSessionOptions {
+  readonly includeMemory?: boolean;
 }
 
 /**
@@ -46,7 +51,11 @@ export async function listInstanceSessionSummaries(
   options: ListInstanceSessionsOptions,
 ): Promise<readonly SourceStampedSessionSummary[]> {
   const artifactDir = instance.instance.artifactDir;
-  const { runs } = await listRecordedRuns({ artifactDir, maxRuns: options.maxRuns });
+  const { runs } = await listRecordedRuns({
+    artifactDir,
+    maxRuns: options.maxRuns,
+    scope: runScope(options.includeMemory === true),
+  });
   const sessions: SourceStampedSessionSummary[] = [];
   for (const run of runs) {
     const signature = diskRunSignature(run);
@@ -85,9 +94,14 @@ export async function listInstanceSessions(
 export async function readInstanceSession(
   instance: DiscoveredWebInstance,
   runId: string,
+  options: ReadInstanceSessionOptions = {},
 ): Promise<SourceStampedSession | undefined> {
   const artifactDir = instance.instance.artifactDir;
-  const detail = await readRecordedRun({ artifactDir, maxStringBytes: DETAIL_MAX_STRING_BYTES }, runId);
+  const detail = await readRecordedRun({
+    artifactDir,
+    maxStringBytes: DETAIL_MAX_STRING_BYTES,
+    scope: runScope(options.includeMemory === true),
+  }, runId);
   if (detail === undefined) {
     return undefined;
   }
@@ -100,6 +114,10 @@ export async function readInstanceSession(
     ...(instance.instance.cwd.length === 0 ? {} : { cwd: instance.instance.cwd }),
   });
   return { ...session, sourceId: instance.instance.sourceId };
+}
+
+function runScope(includeMemory: boolean): RunArtifactScope {
+  return includeMemory ? "all" : "agent";
 }
 
 function toRuntimeEvent(payload: unknown): RuntimeEventLike {

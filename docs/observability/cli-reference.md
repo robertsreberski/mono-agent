@@ -24,7 +24,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--follow` / `-f`, `--lines <n>` |
-| `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--config <path>` |
+| `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--include-memory`, `--config <path>` |
 | `install-skill` | Copy the bundled `mono-agent-composer` skill into the agent skill folders. | `--target claude\|codex\|both`, `--force` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
@@ -277,6 +277,7 @@ Serves the read-only [Session Recorder web PWA](/observability/) from any direct
 mono-agent web
 mono-agent web --port 4599 --no-open
 mono-agent web --host 0.0.0.0 --allow-non-loopback
+mono-agent web --include-memory
 ```
 
 | Flag | Effect |
@@ -285,9 +286,10 @@ mono-agent web --host 0.0.0.0 --allow-non-loopback
 | `--port <n>` | Bind port (default `4599`, printed on start for reverse-proxy targets). |
 | `--no-open` | Do not launch the browser after the backend starts. |
 | `--allow-non-loopback` | Permit a non-loopback bind. The command generates a bearer token and prints/opens a tokenized URL; `/api/*` and `/api/stream` require it. |
+| `--include-memory` | Include memory-maintenance runs from both the `memory/` artifact namespace and legacy mixed directories. Defaults to agent runs only. |
 | `--config <path>` | Resolve a custom `traceability.registryDir` from this config, in addition to the global registry. |
 
-Loopback mode prints both the exact reverse-proxy target and a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
+Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback mode prints both the exact reverse-proxy target and a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
 
 ## `install-skill`
 
@@ -307,7 +309,7 @@ See [Skills](/context/skills/) for how skills are surfaced to the agent.
 
 ## `audit-runs`
 
-Audits recorded run summary artifacts without exporting, reconciling, or rewriting anything. Use it when you need a structural inventory of a consumer's local artifact directory: how many summaries parse, which statuses and production failure kinds are present, whether any values are unrecognized, how many `running` summaries are stale, and the per-failure-kind rates.
+Audits recorded run summary artifacts without exporting, reconciling, or rewriting anything. By default it audits agent runs only, excluding memory-maintenance `mem-*` runs from both the legacy mixed namespace and the `memory/` namespace. Use it when you need a structural inventory of a consumer's local artifact directory: how many summaries parse, which statuses and production failure kinds are present, whether any values are unrecognized, how many `running` summaries are stale, and the per-failure-kind rates.
 
 | Flag | Effect |
 | --- | --- |
@@ -316,6 +318,7 @@ Audits recorded run summary artifacts without exporting, reconciling, or rewriti
 | `--config <path>` | Use a non-default config file when resolving a consumer. |
 | `--env-file <path>` | Load secrets or env overrides from a non-default dotenv file. |
 | `--stale-after-ms <n>` | Override the stale-running cutoff interval. |
+| `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
 | `--json` | Print the full machine-readable audit report. |
 
 ```bash
@@ -327,7 +330,7 @@ The command only reads `*.summary.json` files. A malformed summary is reported a
 
 ## `metrics`
 
-Aggregates recorded run summary artifacts without exporting, reconciling, or rewriting anything. Use it when you need latency, cost, and failure-rate numbers over the whole local corpus or a time window.
+Aggregates recorded run summary artifacts without exporting, reconciling, or rewriting anything. By default it reports agent-run metrics only, excluding memory-maintenance `mem-*` runs from both the legacy mixed namespace and the `memory/` namespace. Use it when you need latency, cost, and failure-rate numbers over the whole local corpus or a time window.
 
 | Flag | Effect |
 | --- | --- |
@@ -337,6 +340,7 @@ Aggregates recorded run summary artifacts without exporting, reconciling, or rew
 | `--since <iso>` | Only summaries whose `startedAt` is at or after this ISO instant. |
 | `--until <iso>` | Only summaries whose `startedAt` is at or before this ISO instant. |
 | `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. |
+| `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
 | `--json` | Print the full machine-readable metrics report. |
 
 ```bash
@@ -350,7 +354,7 @@ See [Artifact metrics](/observability/artifact-metrics/) for the full report con
 
 ## `backfill`
 
-Exports already-recorded run artifacts to the configured Phoenix exporter with their historical timestamps. Trace ids are deterministic per run, so re-running overwrites rather than duplicating. Honors `--config <path>` and `--env-file <path>`.
+Exports already-recorded run artifacts to the configured Phoenix exporter with their historical timestamps. `--all` defaults to agent runs only; add `--include-memory` to export memory-maintenance runs from both the legacy mixed namespace and the `memory/` namespace. Explicit `--run mem-*` reads the requested memory run even without `--include-memory`. Trace ids are deterministic per run, so re-running overwrites rather than duplicating. Honors `--config <path>` and `--env-file <path>`.
 
 | Flag | Effect |
 | --- | --- |
@@ -358,6 +362,7 @@ Exports already-recorded run artifacts to the configured Phoenix exporter with t
 | `--all` | Export every recorded run. |
 | `--since <iso>` | Only runs whose `startedAt` is ≥ this ISO instant. |
 | `--until <iso>` | Only runs whose `startedAt` is ≤ this ISO instant. |
+| `--include-memory` | With `--all`, include memory-maintenance runs in addition to agent runs. |
 | `--dry-run` | Map and serialize but do not POST. |
 | `--config <path>` | Use a non-default config. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. |

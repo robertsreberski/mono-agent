@@ -11,10 +11,12 @@ import type {
   ArtifactAuditReport,
   ArtifactFailureKindRate,
   KnownArtifactFailureKind,
+  RunArtifactScope,
   RunSummaryStatus,
 } from "./types.js";
 
 export interface AuditRecordedRunsOptions {
+  readonly scope?: RunArtifactScope;
   readonly now?: number;
   readonly staleAfterMs: number;
 }
@@ -34,7 +36,10 @@ export async function auditRecordedRuns(
     throw new Error("now must be a finite epoch millisecond value.");
   }
 
-  const records = await readArtifactSummaryRecords(artifactDir);
+  const records = await readArtifactSummaryRecords(
+    artifactDir,
+    options.scope === undefined ? {} : { scope: options.scope },
+  );
   const startedBeforeMs = now - options.staleAfterMs;
   const statusHistogram = emptyStatusHistogram();
   const failureKindHistogram = emptyFailureKindHistogram();

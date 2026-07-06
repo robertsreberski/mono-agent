@@ -15,6 +15,7 @@ import {
   stringField,
   writeJsonAtomic,
 } from "./artifact-fs.js";
+import { normalizeRunArtifactScope } from "./artifact-scope.js";
 import { listRecordedRuns, readRecordedRun } from "./recorded-runs.js";
 import { redactJsonValue } from "./recorder.js";
 import type {
@@ -427,6 +428,8 @@ interface NormalizedRegistryOptions {
 }
 
 interface NormalizedRunListOptions extends NormalizedRegistryOptions {
+  readonly scope: "agent" | "memory" | "all";
+  readonly scopeProvided: boolean;
   readonly maxRuns: number;
   readonly maxEventsPerRun: number;
   readonly maxStringBytes: number;
@@ -439,6 +442,8 @@ function raiseRegistryOption(message: string, field: string): never {
 function normalizeRunListOptions(options: TraceRunListOptions): NormalizedRunListOptions {
   return {
     ...normalizeRegistryOptions(options),
+    scope: normalizeRunArtifactScope(options.scope, raiseRegistryOption),
+    scopeProvided: options.scope !== undefined,
     maxRuns: positiveInteger(options.maxRuns, DEFAULT_MAX_RUNS, "maxRuns", raiseRegistryOption),
     maxEventsPerRun: positiveInteger(options.maxEventsPerRun, DEFAULT_MAX_EVENTS_PER_RUN, "maxEventsPerRun", raiseRegistryOption),
     maxStringBytes: minInteger(options.maxStringBytes, DEFAULT_MAX_STRING_BYTES, 64, "maxStringBytes", raiseRegistryOption),
@@ -459,6 +464,7 @@ function normalizeRegistryOptions(options: TraceSourceRegistryOptions): Normaliz
 function readerOptionsForSource(artifactDir: string, options: NormalizedRunListOptions): JsonlRunReaderOptions {
   return {
     artifactDir,
+    ...(options.scopeProvided ? { scope: options.scope } : {}),
     maxRuns: options.maxRuns,
     maxEventsPerRun: options.maxEventsPerRun,
     maxStringBytes: options.maxStringBytes,

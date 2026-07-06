@@ -249,6 +249,8 @@ export interface MonoAgentConfig {
   readonly artifacts: {
     readonly dir: string;
     readonly retention: ArtifactRetentionConfig;
+    /** Retention policy for memory-run artifacts under the memory namespace. */
+    readonly memoryRetention: ArtifactRetentionConfig;
   };
   readonly traceability: {
     readonly registryDir: string;

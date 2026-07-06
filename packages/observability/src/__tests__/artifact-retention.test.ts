@@ -117,6 +117,50 @@ describe("pruneRunArtifacts", () => {
     await expectExists(join(dir, "old-terminal.events.jsonl"), false);
   });
 
+  it("prunes memory namespace and legacy top-level memory runs without pruning agent runs", async () => {
+    const dir = await tempDir();
+    const memoryDir = join(dir, "memory");
+    await writeRun(dir, "agent-run", "succeeded", NOW - 30 * DAY_MS);
+    await writeRun(dir, "mem-legacy", "succeeded", NOW - 30 * DAY_MS);
+    await writeRun(memoryDir, "mem-new", "succeeded", NOW - 30 * DAY_MS);
+
+    const result = await pruneRunArtifacts({
+      artifactDir: dir,
+      scope: "memory",
+      maxAgeDays: 7,
+      clock: () => NOW,
+    });
+
+    expect(result.prunedRunIds).toEqual(["mem-legacy", "mem-new"]);
+    expect(relatives(dir, result.removedFilePaths)).toEqual([
+      "mem-legacy.events.jsonl",
+      "mem-legacy.summary.json",
+      "memory/mem-new.events.jsonl",
+      "memory/mem-new.summary.json",
+    ]);
+    await expectExists(join(dir, "agent-run.summary.json"), true);
+    await expectExists(join(dir, "agent-run.events.jsonl"), true);
+    await expectExists(join(dir, "mem-legacy.summary.json"), false);
+    await expectExists(join(memoryDir, "mem-new.summary.json"), false);
+  });
+
+  it("default retention skips memory summaries", async () => {
+    const dir = await tempDir();
+    await writeRun(dir, "agent-run", "succeeded", NOW - 30 * DAY_MS);
+    await writeRun(dir, "mem-legacy", "succeeded", NOW - 30 * DAY_MS);
+    await writeRun(join(dir, "memory"), "mem-new", "succeeded", NOW - 30 * DAY_MS);
+
+    const result = await pruneRunArtifacts({
+      artifactDir: dir,
+      maxAgeDays: 7,
+      clock: () => NOW,
+    });
+
+    expect(result.prunedRunIds).toEqual(["agent-run"]);
+    await expectExists(join(dir, "mem-legacy.summary.json"), true);
+    await expectExists(join(dir, "memory", "mem-new.summary.json"), true);
+  });
+
   it("skips malformed summary files with warnings and continues pruning valid runs", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "bad.summary.json"), "{bad", "utf8");

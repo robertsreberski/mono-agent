@@ -86,6 +86,65 @@ describe("runCli metrics", () => {
       fetchSpy.mockRestore();
     }
   });
+
+  it("defaults to agent metrics and includes memory metrics only with --include-memory", async () => {
+    const cwd = await tempDir();
+    const artifacts = join(cwd, "artifacts");
+    await mkdir(join(artifacts, "memory"), { recursive: true });
+    await writeFile(
+      join(cwd, "mono-agent.config.json"),
+      JSON.stringify({
+        artifacts: { dir: "./artifacts" },
+      }, null, 2),
+      "utf8",
+    );
+    await writeSummary(artifacts, "run-agent.summary.json", {
+      runId: "run-agent",
+      conversationId: "telegram:1",
+      status: "succeeded",
+      startedAt: "2026-06-24T10:00:00.000Z",
+      endedAt: "2026-06-24T10:00:01.000Z",
+      durationMs: 1000,
+      eventCount: 0,
+      artifactPaths: [],
+    });
+    await writeSummary(artifacts, "mem-legacy.summary.json", {
+      runId: "mem-legacy",
+      conversationId: "memory:capture:distill",
+      source: "memory",
+      status: "succeeded",
+      startedAt: "2026-06-24T10:01:00.000Z",
+      endedAt: "2026-06-24T10:01:01.000Z",
+      durationMs: 1000,
+      eventCount: 0,
+      artifactPaths: [],
+    });
+    await writeSummary(join(artifacts, "memory"), "mem-new.summary.json", {
+      runId: "mem-new",
+      conversationId: "memory:capture:entities",
+      source: "memory",
+      status: "failed",
+      startedAt: "2026-06-24T10:02:00.000Z",
+      endedAt: "2026-06-24T10:02:01.000Z",
+      durationMs: 1000,
+      eventCount: 0,
+      artifactPaths: [],
+    });
+
+    const agentOnly = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["metrics", "--json"]))));
+    const all = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["metrics", "--include-memory", "--json"]))));
+    const agentReport = JSON.parse(agentOnly.stdout) as { readonly overall: { readonly totalRuns: number; readonly statusCounts: { readonly succeeded: number; readonly failed: number } } };
+    const allReport = JSON.parse(all.stdout) as { readonly overall: { readonly totalRuns: number; readonly statusCounts: { readonly succeeded: number; readonly failed: number } } };
+
+    expect(agentOnly.code).toBe(0);
+    expect(all.code).toBe(0);
+    expect(agentReport.overall.totalRuns).toBe(1);
+    expect(agentReport.overall.statusCounts.succeeded).toBe(1);
+    expect(agentReport.overall.statusCounts.failed).toBe(0);
+    expect(allReport.overall.totalRuns).toBe(3);
+    expect(allReport.overall.statusCounts.succeeded).toBe(2);
+    expect(allReport.overall.statusCounts.failed).toBe(1);
+  });
 });
 
 async function captureCli(run: () => Promise<number>): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {

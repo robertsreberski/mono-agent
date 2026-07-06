@@ -6,12 +6,13 @@ sidebar:
 
 # Artifact metrics
 
-`mono-agent metrics` aggregates recorded run summary artifacts into operational numbers you can use to prioritize runtime work: status rates, failure-kind rates, latency percentiles, and total plus per-run cost. It is intentionally offline and read-only. It reads only `*.summary.json` files from `artifacts.dir` or an explicit artifact directory; it does not read exporter config, contact Phoenix, reconcile stale runs, or rewrite artifacts.
+`mono-agent metrics` aggregates recorded run summary artifacts into operational numbers you can use to prioritize runtime work: status rates, failure-kind rates, latency percentiles, and total plus per-run cost. It is intentionally offline and read-only. It reads only `*.summary.json` files from `artifacts.dir` or an explicit artifact directory; it does not read exporter config, contact Phoenix, reconcile stale runs, or rewrite artifacts. The default report is agent runs only; pass `--include-memory` to add memory-maintenance `mem-*` runs from the `memory/` namespace and legacy mixed directories.
 
 ```bash
 mono-agent metrics --artifacts ./.mono-agent/artifacts
 mono-agent metrics --since 2026-06-01T00:00:00Z --until 2026-06-24T00:00:00Z
 mono-agent metrics --by model --json
+mono-agent metrics --include-memory --json
 ```
 
 ## Inputs
@@ -24,6 +25,7 @@ mono-agent metrics --by model --json
 | `--since <iso>` | Include only summaries whose `startedAt` is at or after this ISO instant. |
 | `--until <iso>` | Include only summaries whose `startedAt` is at or before this ISO instant. |
 | `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. |
+| `--include-memory` | Include memory-maintenance summaries in addition to default agent runs. |
 | `--json` | Print the full machine-readable metrics report. |
 
 Without a time window, summaries with missing or unparseable `startedAt` are still included. Once `--since` or `--until` is active, those summaries are excluded because they cannot be placed in the window.
