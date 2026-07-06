@@ -90,6 +90,10 @@
       "types": "./types/agent/tools/shared/runtime-context.d.ts",
       "default": "./src/agent/tools/shared/runtime-context.js"
     },
+    "./agent/tools/shared/ripgrep.js": {
+      "types": "./types/agent/tools/shared/ripgrep.d.ts",
+      "default": "./src/agent/tools/shared/ripgrep.js"
+    },
     "./agent/prompt/skill-index.js": {
       "types": "./types/agent/prompt/skill-index.d.ts",
       "default": "./src/agent/prompt/skill-index.js"
