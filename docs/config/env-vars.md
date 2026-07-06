@@ -101,18 +101,23 @@ See [../runtime/local-providers.md](/runtime/local-providers/) for the local pro
 | `MONO_AGENT_MEMORY_EMBEDDINGS_MODEL` | `memory.embeddings.model` | Embedding model string. |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` | `memory.embeddings.dim` | Embedding dimension. |
 | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `memory_recall` tool; default on for journal/bujo with embeddings, and for the supermemory backend. |
-| `MONO_AGENT_MEMORY_REFLECTION_ENABLED` | `memory.reflection.enabled` | Nightly BuJo reflection pass. |
-| `MONO_AGENT_MEMORY_REFLECTION_CRON` | `memory.reflection.cron` | Default `0 3 * * *`. See [../memory/rituals.md](/memory/rituals/). |
-| `MONO_AGENT_MEMORY_MIGRATION_ENABLED` | `memory.migration.enabled` | Monthly BuJo migration pass. |
-| `MONO_AGENT_MEMORY_MIGRATION_CRON` | `memory.migration.cron` | Default `0 4 1 * *`. |
-| `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Required for BuJo capture/rituals. |
-| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for capture/reflection/migration. |
+| `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.consolidation.enabled` | Scheduled BuJo consolidation; default on. |
+| `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` | Default `0 */2 * * *`. See [../memory/rituals.md](/memory/rituals/). |
+| `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Required for BuJo capture/consolidation. |
+| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for capture and legacy manual `reflect`/`migrate`. |
 | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | `memory.llm.executionMode` | `sdk` for `agent-host` refs. |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama-only endpoint override. |
 | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | In-app per-call memory-LLM timeout (`1000`–`600000`, **default `60000`**). The standalone CLI reads the same var but defaults to `120000`; see [the two memory-LLM timeouts](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
 
 :::note
 The standalone `memory-bujo` maintenance CLI reads `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` / `_MODEL` / `_DIM` to enable semantic recall, and `MONO_AGENT_MEMORY_LLM_MODEL` / `MONO_AGENT_MEMORY_LLM_ENDPOINT` / `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` for `reflect`/`migrate`. See [../memory/validation-and-cli.md](/memory/validation-and-cli/).
+:::
+
+:::note
+`MONO_AGENT_MEMORY_REFLECTION_ENABLED`, `MONO_AGENT_MEMORY_REFLECTION_CRON`,
+`MONO_AGENT_MEMORY_MIGRATION_ENABLED`, and `MONO_AGENT_MEMORY_MIGRATION_CRON` are retired.
+They are tolerated so stale environments do not break startup, but they are ignored and
+`mono-agent validate` reports a warning.
 :::
 
 ## Tools

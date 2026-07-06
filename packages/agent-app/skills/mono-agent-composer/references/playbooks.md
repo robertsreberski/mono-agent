@@ -13,8 +13,8 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 
 ## 1. Personal Telegram assistant with BuJo memory
 **For:** an individual wanting a private assistant that remembers.
-**Goal:** a Telegram bot (long polling) that captures every turn into BuJo memory with nightly reflection + monthly migration and recalls past notes semantically.
-**Features:** `telegram.long-polling`, `channel.final-only-delivery`, `memory.bujo`, `memory.per-turn-capture`, `memory.bujo-reflection`, `memory.bujo-migration`, `memory.recall-tool`, `memory.embeddings`.
+**Goal:** a Telegram bot (long polling) that captures every turn into BuJo memory with scheduled consolidation and recalls past notes semantically.
+**Features:** `telegram.long-polling`, `channel.final-only-delivery`, `memory.bujo`, `memory.per-turn-capture`, `memory.bujo-consolidation`, `memory.recall-tool`, `memory.embeddings`.
 
 ```json
 {
@@ -24,12 +24,11 @@ Flow, check whether one of these fits and adapt it. Verify every key against
     "mode": "bujo", "path": "./.mono-agent/memory", "writeMode": "capture",
     "embeddings": { "provider": "ollama", "model": "nomic-embed-text:v1.5", "endpoint": "http://localhost:11434", "dim": 768 },
     "llm": { "provider": "ollama", "model": "qwen3.6:latest" },
-    "reflection": { "enabled": true, "cron": "0 3 * * *" },
-    "migration": { "enabled": true, "cron": "0 4 1 * *" }
+    "consolidation": { "enabled": true, "cron": "0 */2 * * *" }
   }
 }
 ```
-**Steps:** `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest` → `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo` → add telegram + fill embeddings/llm + `writeMode: capture` → `mono-agent validate` (confirm memory liveness + ritual cadence) → `mono-agent start`.
+**Steps:** `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest` → `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo` → add telegram + fill embeddings/llm + `writeMode: capture` → `mono-agent validate` (confirm memory liveness + consolidation cadence) → `mono-agent start`.
 **Smoke:** send a fact from the allowed chat, then ask a paraphrased question later; confirm `memory_recall` in the run JSONL and that the answer uses it.
 
 ## 2. Slack team bot with MCP tools

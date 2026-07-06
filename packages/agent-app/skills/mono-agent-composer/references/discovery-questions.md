@@ -87,7 +87,7 @@ Should the agent remember anything between conversations?
 2. Lite memory — FTS keyword recall + rapid-log capture; zero external deps
 3. Journal memory — hybrid recall (BM25+vector) + salience decay; requires embeddings
 4. BuJo memory — full tier: journal + LLM capture/reconcile + entity graph + auto-scheduled
-   reflection/migration; requires embeddings AND a chat model
+   consolidation; requires embeddings AND a chat model
 ```
 
 All tiers share the same `@mono-agent/memory/bujo` substrate. Fills: `memory.mode`
@@ -134,13 +134,12 @@ Write:
 After writing, remind the user to run `mono-agent validate` (checks root writability and
 provider-specific liveness; Ollama model pulls are checked only when using Ollama).
 
-**Tier 4 — bujo (embeddings + chat model + auto-rituals):**
+**Tier 4 — bujo (embeddings + chat model + consolidation):**
 
 Proactively explain what bujo does: capture → reconcile (ADD/UPDATE/SUPERSEDE/NOOP),
-hybrid BM25+vector recall, entity graph, reflection (decay + insight synthesis), monthly
-migration (promote/reschedule/cluster/forget), living `index.md` + `future-log.md`.
-The reflection and migration rituals are **auto-scheduled in-app** — no external cron or
-launchd setup needed.
+hybrid BM25+vector recall, entity graph, scheduled consolidation (decay + duplicate
+superseding), living `index.md`, and an empty retired `future-log.md` stub. Consolidation
+is **auto-scheduled in-app** — no external cron or launchd setup needed.
 
 - Ask: which embeddings provider/model? Use the same choices as journal.
 - Ask: which chat LLM provider/model for LLM pipelines?
@@ -150,9 +149,9 @@ launchd setup needed.
     `executionMode: "sdk"`. Do not use CLI-backed refs such as `codex:gpt-5.5`; they are
     rejected for memory LLMs until runtimes can enforce no external actions.
 - Ask: should per-turn intelligent capture be enabled (`writeMode: "capture"`), or only
-  deterministic rapid-log summaries (`append-host-summary`) plus scheduled rituals?
-- Ask: should we keep the default reflection/migration schedule (nightly `0 3 * * *` /
-  monthly `0 4 1 * *`), or customise the cron expressions?
+  deterministic rapid-log summaries (`append-host-summary`) plus scheduled consolidation?
+- Ask: should we keep the default consolidation schedule (`0 */2 * * *`), customise the
+  cron expression, or disable scheduled consolidation?
 
 Write (embeddings + chat model):
 
@@ -183,11 +182,10 @@ For an agent-host memory LLM, write the `llm` block as:
 }
 ```
 
-If the user customises the ritual schedule, add the `reflection`/`migration` blocks:
+If the user customises the consolidation schedule, add the `consolidation` block:
 
 ```jsonc
-"reflection": { "enabled": true, "cron": "0 3 * * *" },
-"migration":  { "enabled": true, "cron": "0 4 1 * *" }
+"consolidation": { "enabled": true, "cron": "0 */4 * * *" }
 ```
 
 After writing, append a prerequisite note:
@@ -199,7 +197,7 @@ Before running mono-agent validate, pull the required models:
 ```
 
 Then run `mono-agent validate` — the Memory section confirms the root is writable,
-provider-specific liveness, and the ritual cadence (with next-run times).
+provider-specific liveness, and the consolidation cadence.
 See `docs/memory/index.md` for the full tier table, config shapes, and CLI subcommands
 (`memory-bujo rebuild|recall|index|reflect|migrate`).
 

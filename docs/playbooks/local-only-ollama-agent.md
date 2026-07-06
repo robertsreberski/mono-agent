@@ -71,7 +71,7 @@ Use the exact `nomic-embed-text:v1.5` tag — the bare `nomic-embed-text` name r
 :::
 
 :::note
-The journal tier is config-only and needs no `memory.llm`; recall is embeddings + FTS with no model call. Promote to `mode: "bujo"` later if you want LLM capture and rituals (which then require a `memory.llm` block). See [Capture and recall](/memory/capture-and-recall/).
+The journal tier is config-only and needs no `memory.llm`; recall is embeddings + FTS with no model call. Promote to `mode: "bujo"` later if you want LLM capture and scheduled consolidation (which then require a `memory.llm` block). See [Capture and recall](/memory/capture-and-recall/).
 :::
 
 ## Steps

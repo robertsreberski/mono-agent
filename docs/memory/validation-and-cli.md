@@ -4,7 +4,7 @@ sidebar:
   order: 5
 ---
 
-This page covers how `mono-agent validate` verifies memory liveness (writable root, Ollama reachability, ritual cadence) and how the standalone `memory-bujo` CLI runs out-of-band maintenance against a memory root. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects.
+This page covers how `mono-agent validate` verifies memory liveness (writable root, Ollama reachability, consolidation cadence) and how the standalone `memory-bujo` CLI runs out-of-band maintenance against a memory root. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects.
 
 The memory subsystem **never silently falls back**: the host never downgrades the configured tier. Misconfiguration surfaces as a loud `[warn]` you must read, not a quiet degradation. Run `mono-agent validate` before cutover and after pulling any model.
 
@@ -18,7 +18,7 @@ Coverage: cli.
 | --- | --- |
 | `lite` | Memory root creatable and writable. |
 | `journal` | Root writable + Ollama embeddings reachable + embeddings model pulled (Ollama embeddings only). |
-| `bujo` | All journal checks + chat model pulled (`llm.provider: "ollama"` only) + ritual cadence with next-run times. |
+| `bujo` | All journal checks + chat model pulled (`llm.provider: "ollama"` only) + consolidation cadence. |
 
 The individual probes for `journal` / `bujo`:
 
@@ -27,17 +27,16 @@ The individual probes for `journal` / `bujo`:
 3. **Embeddings model pulled** — for Ollama embeddings only, confirms `nomic-embed-text:v1.5` (or whichever `memory.embeddings.model` you set) appears in that endpoint's `/api/tags`. If absent it emits:
    `⚠  memory embeddings model "nomic-embed-text:v1.5" not found — run: ollama pull nomic-embed-text:v1.5`
 4. **Chat model pulled** (bujo only) — only when `memory.llm.provider` is `ollama`; probes the chat endpoint and checks the chat model against its `/api/tags`. `agent-host` chat LLMs are **not** checked against Ollama.
-5. **Ritual cadence** (bujo only) — reports the reflection/migration cron expressions and whether the scheduler will run (tier is bujo with an `llm` configured).
+5. **Consolidation cadence** (bujo only) — reports the consolidation cron expression and whether the scheduler will run (tier is bujo with an `llm` configured).
 
 A healthy bujo report looks like:
 
 ```
 [ok] memory.mode     bujo
-[ok] reflection      0 3 * * * (next: …)
-[ok] migration       0 4 1 * * (next: …)
+[ok] consolidation   0 */2 * * * (auto)
 ```
 
-The embeddings reachability and pull checks only run when embeddings/chat actually use Ollama. With `embeddings.provider: "openai"` the embeddings probes are skipped, and with `llm.provider: "agent-host"` the chat-model pull check is skipped. See [Embeddings](/memory/embeddings/) for the provider matrix and [Rituals](/memory/rituals/) for the auto-scheduler.
+The embeddings reachability and pull checks only run when embeddings/chat actually use Ollama. With `embeddings.provider: "openai"` the embeddings probes are skipped, and with `llm.provider: "agent-host"` the chat-model pull check is skipped. See [Embeddings](/memory/embeddings/) for the provider matrix and [Consolidation](/memory/rituals/) for the auto-scheduler.
 
 :::caution
 Use the exact `:v1.5` tag for the default embeddings model. The bare alias `nomic-embed-text` (no tag) may be absent from your Ollama install and will fail the provider at startup — `validate` checks for the exact tag.
@@ -45,7 +44,7 @@ Use the exact `:v1.5` tag for the default embeddings model. The bare alias `nomi
 
 ## `memory.llm` provider choices
 
-The validator's behavior depends on `memory.llm.provider`. There are two providers, and which one you pick changes both what runs the reflection/migration LLM passes and what `validate` probes.
+The validator's behavior depends on `memory.llm.provider`. There are two providers, and which one you pick changes both what runs BuJo capture/consolidation and what `validate` probes.
 
 | Field | `ollama` | `agent-host` |
 | --- | --- | --- |
@@ -82,7 +81,7 @@ Env overrides: `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, 
 
 ### Host-runtime (SDK) memory LLM
 
-The `agent-host` provider runs memory LLM passes (capture's distil → reconcile → entity-extraction, plus reflection/migration) on their **own dedicated SDK runtime built from `memory.llm.model`** — independent of the channel runtime — so there is no separate local chat model to pull. The `model` is a runtime reference and `executionMode` **must** be `"sdk"`. Do not set `endpoint` — it is Ollama-only and rejected here.
+The `agent-host` provider runs memory LLM passes (capture's distil → reconcile → entity-extraction, plus consolidation when the store needs the bujo tier) on their **own dedicated SDK runtime built from `memory.llm.model`** — independent of the channel runtime — so there is no separate local chat model to pull. The `model` is a runtime reference and `executionMode` **must** be `"sdk"`. Do not set `endpoint` — it is Ollama-only and rejected here.
 
 :::note
 The memory LLM always executes on `memory.llm.model`, and that model is its **sole primary** — the memory turn does **not** inherit `runtime.fallbackModels`, so there is no failover chain on memory passes. This is deliberate: the channel runtime's fallback router rewrites each call's model to the chain primary (`runtime.model`), so reusing it would silently run capture on `runtime.model`. Setting `runtime.fallbackModels` no longer leaks the runtime primary onto memory capture.
@@ -119,8 +118,8 @@ There are **two** per-call memory-LLM timeouts. They share the env var name `MON
 
 | Path | Config / env | Default | Governs |
 | --- | --- | --- | --- |
-| **In-app** (the running agent) | `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`) | `60000` | Per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) (distil → reconcile → entities) and the in-app [ritual scheduler](/memory/rituals/) |
-| **Standalone CLI** | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` only | `120000` | `memory-bujo reflect` / `migrate` run by hand |
+| **In-app** (the running agent) | `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`) | `60000` | Per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) (distil → reconcile → entities) and the in-app [consolidation scheduler](/memory/rituals/) |
+| **Standalone CLI** | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` only | `120000` | Legacy `memory-bujo reflect` / `migrate` run by hand |
 
 So in the app, raise `memory.llm.timeoutMs` (config) when a slow local memory model trips the cap on the heavier `reconcile`/`entities` steps — its default is **`60000`**, not the CLI's `120000`. The value is bounded `1000`–`600000` ms.
 
@@ -128,7 +127,7 @@ When the in-app memory LLM does exceed its timeout, the run reports it explicitl
 
 ## `memory-bujo` CLI — out-of-band maintenance
 
-The `memory-bujo` binary runs maintenance directly against a bujo memory root (the positional `<root>` argument). It is available for all tiers for manual runs; the in-app [auto-scheduler](/memory/rituals/) handles the routine cadence for `bujo` automatically.
+The `memory-bujo` binary runs maintenance directly against a bujo memory root (the positional `<root>` argument). It is available for all tiers for manual runs; the in-app [auto-scheduler](/memory/rituals/) handles routine lightweight consolidation for `bujo` automatically.
 
 Coverage: cli.
 
@@ -142,10 +141,10 @@ memory-bujo recall <root> "<query>"
 # Write the living index.md (counts, top memories, entities)
 memory-bujo index <root>
 
-# Reflection pass: decay + insight synthesis (Ollama-only; needs MONO_AGENT_MEMORY_LLM_MODEL)
+# Legacy reflection pass: decay + insight synthesis (Ollama-only; needs MONO_AGENT_MEMORY_LLM_MODEL)
 MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo reflect <root>
 
-# Monthly migration: promote/reschedule/cluster/forget (Ollama-only; needs MONO_AGENT_MEMORY_LLM_MODEL)
+# Legacy migration: promote/reschedule/cluster/forget (Ollama-only; needs MONO_AGENT_MEMORY_LLM_MODEL)
 MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 ```
 
@@ -161,17 +160,17 @@ MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 
 The standalone CLI reads the **same `MONO_AGENT_MEMORY_*` env vars** as the app. Embeddings are opt-in: set `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama` / `openai`) to enable semantic recall. Without it, `recall` / `rebuild` run FTS-only and need no embedding service. When enabled, the model defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and the dimension to 768 (`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). See [Embeddings](/memory/embeddings/) for the full env list.
 
-### reflect / migrate are Ollama-only
+### reflect / migrate are legacy and Ollama-only
 
-The standalone CLI uses the built-in Ollama chat adapter for `reflect` / `migrate` — it does **not** route through the agent host, so `memory.llm.provider: "agent-host"` does not apply to the CLI. You must set `MONO_AGENT_MEMORY_LLM_MODEL`; if it is unset when running `reflect` or `migrate`, the command prints a clear error and exits `2` (no silent fallback). `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default `http://localhost:11434`), and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call timeout (CLI default `120000` — distinct from the in-app default; see [The two memory-LLM timeouts](#the-two-memory-llm-timeouts)); raise it for slow models.
+The standalone CLI uses the built-in Ollama chat adapter for `reflect` / `migrate` — it does **not** route through the agent host, so `memory.llm.provider: "agent-host"` does not apply to the CLI. These commands are manual compatibility tools, not the app's scheduled maintenance path. You must set `MONO_AGENT_MEMORY_LLM_MODEL`; if it is unset when running `reflect` or `migrate`, the command prints a clear error and exits `2` (no silent fallback). `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default `http://localhost:11434`), and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call timeout (CLI default `120000` — distinct from the in-app default; see [The two memory-LLM timeouts](#the-two-memory-llm-timeouts)); raise it for slow models.
 
-For the in-app runtime you can instead use `memory.llm.provider: "agent-host"` to run rituals through an SDK model — see the [provider choices](#memoryllm-provider-choices) above and [Rituals](/memory/rituals/) for the auto-scheduler the CLI complements.
+For the in-app runtime you can instead use `memory.llm.provider: "agent-host"` for capture/consolidation through an SDK model — see the [provider choices](#memoryllm-provider-choices) above and [Consolidation](/memory/rituals/) for the auto-scheduler the CLI complements.
 
 ## Related
 
 - [Embeddings](/memory/embeddings/) — providers, models, dimensions, and env vars.
 - [Capture & recall](/memory/capture-and-recall/) — `writeMode` and the `memory_recall` tool.
-- [Rituals](/memory/rituals/) — in-app reflection/migration auto-scheduler.
+- [Consolidation](/memory/rituals/) — in-app consolidation auto-scheduler.
 - [Config blueprint](/config/blueprint/) — the full annotated `memory` block.
 - [Environment variables](/config/env-vars/) — every `MONO_AGENT_MEMORY_*` override.
 - [CLI reference](/observability/cli-reference/) — the broader `mono-agent` command surface.
