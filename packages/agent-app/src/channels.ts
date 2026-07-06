@@ -1010,7 +1010,6 @@ async function deliverCronModelExhaustionFailureNotice(input: {
 
   const destination = job.notifyConversationId;
   const text = buildCronModelExhaustionFailureNotice(job, input.result);
-  input.cooldowns.set(job.id, nowMs);
   try {
     const delivery = await input.notifyDestination(destination, text, { verbatim: true });
     if (!delivery.delivered) {
@@ -1021,6 +1020,7 @@ async function deliverCronModelExhaustionFailureNotice(input: {
       });
       return;
     }
+    input.cooldowns.set(job.id, nowMs);
     input.logger?.info?.("Cron failure notice delivered.", { jobId: job.id, conversationId: destination });
   } catch (error) {
     input.logger?.warn?.("Cron failure notice failed.", {
