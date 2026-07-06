@@ -91,7 +91,7 @@ export type MemoryRecallSettings = MemoryRecallBujoSettings | MemoryRecallSuperm
 export interface RecallCapableStore {
   recall(
     query: string,
-    options?: { readonly topK?: number },
+    options?: { readonly topK?: number; readonly trackAccess?: boolean },
   ): Promise<readonly { readonly score: number; readonly record: { readonly id: string; readonly text: string } }[]>;
   close(): Promise<void>;
 }

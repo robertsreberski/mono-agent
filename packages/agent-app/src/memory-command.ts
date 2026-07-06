@@ -1,0 +1,769 @@
+import { readdir, readFile, stat } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
+
+import { resolveSupermemoryContainer } from "@mono-agent/config";
+import type { MonoAgentConfig } from "@mono-agent/config";
+import { openMemoryDb } from "@mono-agent/memory/store";
+import type { EntityRecord, MemoryDb, MemoryRecord, MemoryStoreStats } from "@mono-agent/memory/store";
+import { parseDailyFile } from "@mono-agent/memory/bujo";
+
+import { isAppCoreConfigError, loadAppCoreConfig } from "./app-config.js";
+import {
+  createRecallStore,
+  resolveMemoryRecallSettings,
+} from "./memory-recall.js";
+import type {
+  MemoryRecallBujoSettings,
+  MemoryRecallSettings,
+} from "./memory-recall.js";
+import * as ui from "./ui.js";
+
+const DEFAULT_SEARCH_LIMIT = 8;
+const DEFAULT_TOP_LIMIT = 10;
+const DEFAULT_ENTITY_LIMIT = 8;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
+
+export interface RunMemoryCommandInput {
+  readonly cwd: string;
+  readonly env: Record<string, string | undefined>;
+  readonly configPath?: string;
+  readonly positionals: readonly string[];
+  readonly json: boolean;
+  readonly limit?: number;
+}
+
+interface MemoryCommandContext {
+  readonly cwd: string;
+  readonly configPath: string;
+  readonly config: MonoAgentConfig;
+}
+
+interface PreviewRecallHit {
+  readonly score: number;
+  readonly record: {
+    readonly id: string;
+    readonly text: string;
+    readonly source?: { readonly file?: string; readonly line?: number; readonly session?: string };
+    readonly salience?: number;
+    readonly createdAt?: string;
+  };
+}
+
+export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<number> {
+  const context = await loadMemoryCommandContext(input);
+  if ("code" in context) {
+    return context.code;
+  }
+
+  const [rawSubcommand, ...rest] = input.positionals;
+  const subcommand = rawSubcommand ?? "stats";
+  if (context.config.memory === undefined) {
+    writeNoMemory(context.configPath, input.json);
+    return 0;
+  }
+
+  switch (subcommand) {
+    case "stats":
+      return await runStats(context, input);
+    case "today":
+      return await runShow(context, todayKey(), input.json);
+    case "show": {
+      const date = rest[0];
+      if (date === undefined || !DATE_RE.test(date)) {
+        process.stderr.write(ui.errorLine("Usage: mono-agent memory show <YYYY-MM-DD>."));
+        return 2;
+      }
+      return await runShow(context, date, input.json);
+    }
+    case "search": {
+      const query = rest.join(" ").trim();
+      if (query.length === 0) {
+        process.stderr.write(ui.errorLine("Usage: mono-agent memory search <query>."));
+        return 2;
+      }
+      return await runSearch(context, query, input);
+    }
+    case "top":
+      return await runTop(context, input);
+    default:
+      process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, or top."));
+      return 2;
+  }
+}
+
+async function loadMemoryCommandContext(
+  input: RunMemoryCommandInput,
+): Promise<MemoryCommandContext | { readonly code: number }> {
+  const cwd = input.cwd;
+  const configPath = resolve(cwd, input.configPath ?? "mono-agent.config.json");
+  try {
+    return {
+      cwd,
+      configPath,
+      config: await loadAppCoreConfig({ env: input.env, cwd, configPath }),
+    };
+  } catch (error) {
+    if (isAppCoreConfigError(error)) {
+      process.stderr.write(ui.errorLine(error.message));
+      process.stderr.write(ui.hint(`Fix ${configPath}, then re-run \`mono-agent memory\`.`));
+      return { code: 1 };
+    }
+    throw error;
+  }
+}
+
+async function runStats(context: MemoryCommandContext, input: RunMemoryCommandInput): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    writeNoMemory(context.configPath, input.json);
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    const supermemory = supermemoryStats(context.config);
+    write(input.json, supermemory, () => renderSupermemoryStats(supermemory));
+    return 0;
+  }
+
+  const root = memory.path;
+  const dbPath = join(root, "memory.db");
+  const rootExists = await exists(root);
+  const dbExists = await exists(dbPath);
+  const size = rootExists ? await collectStoreSize(root) : emptySize();
+  const lastConsolidation = await mtimeIso(join(root, "index.md"));
+  const lastDailyWrite = rootExists ? await latestDailyMtime(root) : undefined;
+  let stats: MemoryStoreStats | undefined;
+  let entityCount = 0;
+  let topMemories: readonly MemoryRecord[] = [];
+  if (dbExists) {
+    const db = openMemoryDb({ path: dbPath });
+    try {
+      stats = readLocalStats(db, input.limit ?? DEFAULT_ENTITY_LIMIT);
+      entityCount = db.countEntities();
+      topMemories = db.topSalient(input.limit ?? DEFAULT_TOP_LIMIT);
+    } finally {
+      db.close();
+    }
+  }
+
+  const lastCapture = stats?.latestCreatedMemory?.createdAt ?? lastDailyWrite;
+  const lastAccess = stats?.latestAccessedMemory?.lastAccessedAt;
+  const result = {
+    configured: true,
+    backend: "bujo",
+    mode: memory.mode,
+    effectiveTier: effectiveLocalTier(memory),
+    writeMode: memory.writeMode,
+    recallToolEnabled: memory.recallTool?.enabled === true,
+    root,
+    ...(dbExists ? { database: dbPath } : {}),
+    counts: stats === undefined
+      ? { total: 0, live: 0, byStatus: {}, byType: {}, entities: 0 }
+      : {
+          total: stats.totalMemories,
+          live: stats.liveMemories,
+          byStatus: stats.countsByStatus,
+          byType: stats.countsByType,
+          entities: entityCount,
+        },
+    size,
+    ...(lastCapture === undefined ? {} : { lastCapture }),
+    ...(lastAccess === undefined ? {} : { lastAccess }),
+    ...(lastConsolidation === undefined ? {} : { lastConsolidation }),
+    topEntities: stats?.topEntities ?? [],
+    topMemories,
+    notes: [
+      ...(rootExists ? [] : [`Memory root does not exist yet: ${root}`]),
+      ...(dbExists ? [] : [`No SQLite index found at ${dbPath}; search/top need an indexed store.`]),
+    ],
+  };
+
+  write(input.json, result, () => renderLocalStats(result));
+  return 0;
+}
+
+async function runShow(context: MemoryCommandContext, date: string, json: boolean): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    writeNoMemory(context.configPath, json);
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    const result = {
+      configured: true,
+      backend: "supermemory",
+      available: false,
+      message: "Supermemory stores memories remotely; local daily logs are not available.",
+    };
+    write(json, result, () => `${ui.banner("mono-agent memory", "daily log")}\n${result.message}\n`);
+    return 0;
+  }
+
+  const found = await findDailyFile(memory.path, date);
+  if (found === undefined) {
+    const result = {
+      configured: true,
+      backend: "bujo",
+      date,
+      found: false,
+      checked: [join(memory.path, "daily", `${date}.md`), join(memory.path, `${date}.md`)],
+    };
+    write(json, result, () => `${ui.banner("mono-agent memory", date)}\nNo daily log found for ${date}.\n`);
+    return 0;
+  }
+  const content = await readFile(found, "utf8");
+  const parsed = parseDailyFile(content);
+  const result = {
+    configured: true,
+    backend: "bujo",
+    date,
+    found: true,
+    path: found,
+    bullets: parsed.bullets.map((bullet) => ({
+      id: bullet.id,
+      type: bullet.type,
+      status: bullet.status,
+      text: bullet.text,
+      salience: bullet.salience,
+      createdAt: bullet.createdAt,
+    })),
+    content,
+  };
+  write(json, result, () => renderDaily(result));
+  return 0;
+}
+
+async function runSearch(
+  context: MemoryCommandContext,
+  query: string,
+  input: RunMemoryCommandInput,
+): Promise<number> {
+  const settings = previewRecallSettings(context.config);
+  if (settings === undefined) {
+    writeNoMemory(context.configPath, input.json);
+    return 0;
+  }
+  if (!("supermemory" in settings) && !(await exists(join(settings.root, "memory.db")))) {
+    const result = {
+      configured: true,
+      backend: "bujo",
+      query,
+      hits: [],
+      notes: [`No SQLite index found at ${join(settings.root, "memory.db")}; run memory-bujo rebuild or wait for capture.`],
+    };
+    write(input.json, result, () => renderSearch(result));
+    return 0;
+  }
+
+  const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
+  let degraded: string | undefined;
+  const hits = await recallWithFtsFallback(settings, query, limit)
+    .then((result) => {
+      degraded = result.degraded;
+      return result.hits;
+    })
+    .catch((error) => {
+      process.stderr.write(ui.errorLine(`memory search failed: ${reasonOf(error)}`));
+      return undefined;
+    });
+  if (hits === undefined) {
+    return 1;
+  }
+  const result = {
+    configured: true,
+    backend: "supermemory" in settings ? "supermemory" : "bujo",
+    query,
+    ...(degraded === undefined ? {} : { degraded }),
+    hits: hits.map((hit) => ({
+      id: hit.record.id,
+      score: hit.score,
+      text: hit.record.text,
+      source: sourceOf(hit),
+      ...(hit.record.salience === undefined ? {} : { salience: hit.record.salience }),
+      ...(hit.record.createdAt === undefined ? {} : { createdAt: hit.record.createdAt }),
+    })),
+  };
+  write(input.json, result, () => renderSearch(result));
+  return 0;
+}
+
+async function runTop(context: MemoryCommandContext, input: RunMemoryCommandInput): Promise<number> {
+  const memory = context.config.memory;
+  if (memory === undefined) {
+    writeNoMemory(context.configPath, input.json);
+    return 0;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    const result = {
+      configured: true,
+      backend: "supermemory",
+      available: false,
+      message: "Supermemory does not expose a local salience ranking; use memory search instead.",
+    };
+    write(input.json, result, () => `${ui.banner("mono-agent memory", "top")}\n${result.message}\n`);
+    return 0;
+  }
+  const dbPath = join(memory.path, "memory.db");
+  if (!(await exists(dbPath))) {
+    const result = {
+      configured: true,
+      backend: "bujo",
+      hits: [],
+      notes: [`No SQLite index found at ${dbPath}; run memory-bujo rebuild or wait for capture.`],
+    };
+    write(input.json, result, () => renderTop(result));
+    return 0;
+  }
+  const db = openMemoryDb({ path: dbPath });
+  try {
+    const hits = db.topSalient(input.limit ?? DEFAULT_TOP_LIMIT).map((record) => ({
+      id: record.id,
+      text: record.text,
+      salience: record.salience,
+      status: record.status,
+      type: record.type,
+      source: sourceOfRecord(record),
+      createdAt: record.createdAt,
+    }));
+    const result = { configured: true, backend: "bujo", hits, notes: [] };
+    write(input.json, result, () => renderTop(result));
+  } finally {
+    db.close();
+  }
+  return 0;
+}
+
+function previewRecallSettings(config: MonoAgentConfig): MemoryRecallSettings | undefined {
+  const fromTool = resolveMemoryRecallSettings(config);
+  if (fromTool !== undefined) {
+    return fromTool;
+  }
+  const memory = config.memory;
+  if (memory === undefined) {
+    return undefined;
+  }
+  if ((memory.backend ?? "bujo") === "supermemory") {
+    const sm = memory.supermemory;
+    if (sm === undefined) {
+      return undefined;
+    }
+    return {
+      supermemory: {
+        baseUrl: sm.baseUrl,
+        container: resolveSupermemoryContainer(config),
+        ...(sm.apiKey === undefined ? {} : { apiKey: sm.apiKey }),
+        ...(sm.timeoutMs === undefined ? {} : { timeoutMs: sm.timeoutMs }),
+      },
+    };
+  }
+  const embeddings = memory.embeddings;
+  if (embeddings === undefined) {
+    return { root: memory.path };
+  }
+  return {
+    root: memory.path,
+    embeddings: {
+      provider: embeddings.provider,
+      model: embeddings.model,
+      ...(embeddings.endpoint === undefined ? {} : { endpoint: embeddings.endpoint }),
+      ...(embeddings.apiKey === undefined ? {} : { apiKey: embeddings.apiKey }),
+      ...(embeddings.apiKeyEnv === undefined ? {} : { apiKeyEnv: embeddings.apiKeyEnv }),
+      ...(embeddings.dim === undefined ? {} : { dim: embeddings.dim }),
+      ...(embeddings.timeoutMs === undefined ? {} : { timeoutMs: embeddings.timeoutMs }),
+      ...(embeddings.circuitBreaker === undefined ? {} : { circuitBreaker: embeddings.circuitBreaker }),
+    },
+  };
+}
+
+async function recallWithFtsFallback(
+  settings: MemoryRecallSettings,
+  query: string,
+  limit: number,
+): Promise<{ readonly hits: readonly PreviewRecallHit[]; readonly degraded?: string }> {
+  const store = await createRecallStore(settings);
+  try {
+    return { hits: await store.recall(query, { topK: limit, trackAccess: false }) as readonly PreviewRecallHit[] };
+  } catch (error) {
+    if (!isFtsFallbackEligible(settings, error)) {
+      throw error;
+    }
+    await store.close().catch(() => undefined);
+    const fallback: MemoryRecallBujoSettings = { root: settings.root };
+    const ftsStore = await createRecallStore(fallback);
+    try {
+      return {
+        hits: await ftsStore.recall(query, { topK: limit, trackAccess: false }) as readonly PreviewRecallHit[],
+        degraded: `Semantic embeddings unavailable (${reasonOf(error)}); showing FTS-only results.`,
+      };
+    } finally {
+      await ftsStore.close();
+    }
+  } finally {
+    await store.close().catch(() => undefined);
+  }
+}
+
+function isFtsFallbackEligible(settings: MemoryRecallSettings, error: unknown): settings is MemoryRecallBujoSettings {
+  if ("supermemory" in settings || settings.embeddings === undefined) {
+    return false;
+  }
+  const record = typeof error === "object" && error !== null ? error as Record<string, unknown> : {};
+  const code = typeof record.code === "string" ? record.code : "";
+  if (code.startsWith("embedding_") || code === "invalid_embedding_options") {
+    return true;
+  }
+  const name = error instanceof Error ? error.name : "";
+  const message = reasonOf(error).toLocaleLowerCase("en-US");
+  return name === "AbortError" ||
+    name === "TypeError" ||
+    message.includes("fetch failed") ||
+    message.includes("embedding") ||
+    message.includes("econnrefused") ||
+    message.includes("enotfound");
+}
+
+function readLocalStats(db: MemoryDb, topEntitiesLimit: number): MemoryStoreStats {
+  return db.stats({ topEntitiesLimit });
+}
+
+function effectiveLocalTier(memory: NonNullable<MonoAgentConfig["memory"]>): string {
+  if (memory.mode === "lite") {
+    return "lite";
+  }
+  if (memory.mode === "journal") {
+    return "journal";
+  }
+  return memory.llm === undefined ? "journal" : "bujo";
+}
+
+function supermemoryStats(config: MonoAgentConfig): {
+  readonly configured: true;
+  readonly backend: "supermemory";
+  readonly baseUrl: string | undefined;
+  readonly container: string | undefined;
+  readonly known: readonly string[];
+  readonly unavailable: readonly string[];
+} {
+  return {
+    configured: true,
+    backend: "supermemory",
+    baseUrl: config.memory?.supermemory?.baseUrl,
+    container: config.memory === undefined ? undefined : resolveSupermemoryContainer(config),
+    known: ["backend", "baseUrl", "container"],
+    unavailable: [
+      "local counts",
+      "local size",
+      "last capture",
+      "last consolidation",
+      "top entities",
+      "highest-salience memories",
+      "daily markdown logs",
+    ],
+  };
+}
+
+async function findDailyFile(root: string, date: string): Promise<string | undefined> {
+  const candidates = [join(root, "daily", `${date}.md`), join(root, `${date}.md`)];
+  for (const candidate of candidates) {
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+async function latestDailyMtime(root: string): Promise<string | undefined> {
+  const files = await dailyMarkdownFiles(root);
+  const mtimes = await Promise.all(files.map((file) => mtimeIso(file)));
+  return newest(mtimes.flatMap((mtime) => mtime === undefined ? [] : [mtime]));
+}
+
+async function dailyMarkdownFiles(root: string): Promise<readonly string[]> {
+  const files: string[] = [];
+  for (const dir of [root, join(root, "daily")]) {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && DATE_RE.test(basename(entry.name, ".md")) && entry.name.endsWith(".md")) {
+        files.push(join(dir, entry.name));
+      }
+    }
+  }
+  return files;
+}
+
+async function collectStoreSize(root: string): Promise<{
+  readonly rootBytes: number;
+  readonly dailyBytes: number;
+  readonly databaseBytes: number;
+  readonly fileCount: number;
+}> {
+  let rootBytes = 0;
+  let dailyBytes = 0;
+  let databaseBytes = 0;
+  let fileCount = 0;
+  async function walk(dir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(path);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      const s = await stat(path).catch(() => undefined);
+      if (s === undefined) {
+        continue;
+      }
+      fileCount += 1;
+      rootBytes += s.size;
+      if ((entry.name.endsWith(".md") && DATE_RE.test(basename(entry.name, ".md"))) || path.includes(`${join(root, "daily")}/`)) {
+        dailyBytes += s.size;
+      }
+      if (entry.name === "memory.db" || entry.name.startsWith("memory.db-")) {
+        databaseBytes += s.size;
+      }
+    }
+  }
+  await walk(root);
+  return { rootBytes, dailyBytes, databaseBytes, fileCount };
+}
+
+function emptySize(): { readonly rootBytes: 0; readonly dailyBytes: 0; readonly databaseBytes: 0; readonly fileCount: 0 } {
+  return { rootBytes: 0, dailyBytes: 0, databaseBytes: 0, fileCount: 0 };
+}
+
+async function mtimeIso(path: string): Promise<string | undefined> {
+  const s = await stat(path).catch(() => undefined);
+  return s === undefined ? undefined : s.mtime.toISOString();
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function newest(values: readonly string[]): string | undefined {
+  let best: string | undefined;
+  let bestMs = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms) && ms > bestMs) {
+      best = value;
+      bestMs = ms;
+    }
+  }
+  return best;
+}
+
+function todayKey(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function sourceOf(hit: PreviewRecallHit): string {
+  const source = hit.record.source;
+  if (source?.file !== undefined) {
+    return source.line === undefined ? source.file : `${source.file}:${source.line}`;
+  }
+  if (source?.session !== undefined) {
+    return `session:${source.session}`;
+  }
+  return hit.record.id;
+}
+
+function sourceOfRecord(record: MemoryRecord): string {
+  if (record.source.file !== undefined) {
+    return record.source.line === undefined ? record.source.file : `${record.source.file}:${record.source.line}`;
+  }
+  if (record.source.session !== undefined) {
+    return `session:${record.source.session}`;
+  }
+  return record.id;
+}
+
+function writeNoMemory(configPath: string, json: boolean): void {
+  const result = {
+    configured: false,
+    message: `No memory configured in ${configPath}.`,
+  };
+  write(json, result, () => `${ui.banner("mono-agent memory", "not configured")}\n${result.message}\n`);
+}
+
+function write<T>(json: boolean, value: T, human: () => string): void {
+  process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : human());
+}
+
+function renderSupermemoryStats(stats: ReturnType<typeof supermemoryStats>): string {
+  return [
+    ui.banner("mono-agent memory", "stats"),
+    ui.keyValue([
+      ["backend", "supermemory"],
+      ["base URL", stats.baseUrl ?? "unknown"],
+      ["container", stats.container ?? "unknown"],
+    ], 2),
+    "Remote-only fields not known locally:\n",
+    ...stats.unavailable.map((item) => `  - ${item}\n`),
+  ].join("");
+}
+
+function renderLocalStats(stats: {
+  readonly mode: string;
+  readonly effectiveTier: string;
+  readonly writeMode: string;
+  readonly recallToolEnabled: boolean;
+  readonly root: string;
+  readonly database?: string;
+  readonly counts: {
+    readonly total: number;
+    readonly live: number;
+    readonly byStatus: Readonly<Record<string, number>>;
+    readonly byType: Readonly<Record<string, number>>;
+    readonly entities: number;
+  };
+  readonly size: { readonly rootBytes: number; readonly dailyBytes: number; readonly databaseBytes: number; readonly fileCount: number };
+  readonly lastCapture?: string;
+  readonly lastAccess?: string;
+  readonly lastConsolidation?: string;
+  readonly topEntities: readonly EntityRecord[];
+  readonly notes: readonly string[];
+}): string {
+  let out = ui.banner("mono-agent memory", "stats") + "\n";
+  out += ui.keyValue([
+    ["backend", "bujo"],
+    ["configured tier", stats.mode],
+    ["effective tier", stats.effectiveTier],
+    ["write mode", stats.writeMode],
+    ["recall tool", stats.recallToolEnabled ? "enabled" : "disabled"],
+    ["root", stats.root],
+    ["database", stats.database ?? "missing"],
+    ["memories", `${stats.counts.total} total, ${stats.counts.live} live`],
+    ["entities", String(stats.counts.entities)],
+    ["size", `${formatBytes(stats.size.rootBytes)} (${stats.size.fileCount} files)`],
+    ["daily logs", formatBytes(stats.size.dailyBytes)],
+    ["database files", formatBytes(stats.size.databaseBytes)],
+    ["last capture", stats.lastCapture ?? "unknown"],
+    ["last access", stats.lastAccess ?? "unknown"],
+    ["last consolidation", stats.lastConsolidation ?? "unknown"],
+  ], 2);
+  out += renderCounts("Status counts", stats.counts.byStatus);
+  out += renderCounts("Type counts", stats.counts.byType);
+  if (stats.topEntities.length > 0) {
+    out += "\n" + ui.heading("Top Entities");
+    for (const entity of stats.topEntities) {
+      out += `  - ${entity.name}${entity.type === undefined ? "" : ` (${entity.type})`}`;
+      if (entity.summary !== undefined) {
+        out += `: ${entity.summary}`;
+      }
+      out += "\n";
+    }
+  }
+  for (const note of stats.notes) {
+    out += ui.style.yellow(`[WARN] ${note}`) + "\n";
+  }
+  return out;
+}
+
+function renderDaily(result: { readonly date: string; readonly path: string; readonly content: string }): string {
+  return [
+    ui.banner("mono-agent memory", result.date),
+    ui.keyValue([["source", result.path]], 2),
+    "\n",
+    result.content.endsWith("\n") ? result.content : `${result.content}\n`,
+  ].join("");
+}
+
+function renderSearch(result: {
+  readonly query: string;
+  readonly degraded?: string;
+  readonly hits: readonly { readonly score: number; readonly text: string; readonly source?: string }[];
+  readonly notes?: readonly string[];
+}): string {
+  let out = ui.banner("mono-agent memory", `search: ${result.query}`) + "\n";
+  if (result.degraded !== undefined) {
+    out += ui.style.yellow(`[WARN] ${result.degraded}`) + "\n";
+  }
+  for (const note of result.notes ?? []) {
+    out += ui.style.yellow(`[WARN] ${note}`) + "\n";
+  }
+  if (result.hits.length === 0) {
+    return out + "No memories matched.\n";
+  }
+  for (const hit of result.hits) {
+    out += `${hit.score.toFixed(3)}  ${hit.text}\n`;
+    if (hit.source !== undefined) {
+      out += `       source: ${hit.source}\n`;
+    }
+  }
+  return out;
+}
+
+function renderTop(result: {
+  readonly hits: readonly {
+    readonly salience: number;
+    readonly text: string;
+    readonly source?: string;
+    readonly status?: string;
+    readonly type?: string;
+  }[];
+  readonly notes?: readonly string[];
+}): string {
+  let out = ui.banner("mono-agent memory", "top") + "\n";
+  for (const note of result.notes ?? []) {
+    out += ui.style.yellow(`[WARN] ${note}`) + "\n";
+  }
+  if (result.hits.length === 0) {
+    return out + "No memories indexed.\n";
+  }
+  for (const hit of result.hits) {
+    const meta = [
+      `salience ${hit.salience.toFixed(3)}`,
+      ...(hit.type === undefined ? [] : [hit.type]),
+      ...(hit.status === undefined ? [] : [hit.status]),
+      ...(hit.source === undefined ? [] : [`source ${hit.source}`]),
+    ].join("; ");
+    out += `${hit.text}\n`;
+    out += `       ${meta}\n`;
+  }
+  return out;
+}
+
+function renderCounts(label: string, counts: Readonly<Record<string, number>>): string {
+  const entries = Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) {
+    return "";
+  }
+  return "\n" + ui.heading(label) + entries.map(([key, value]) => `  ${key}: ${value}\n`).join("");
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = units[0] ?? "KB";
+  for (let i = 1; i < units.length && value >= 1024; i += 1) {
+    value /= 1024;
+    unit = units[i] ?? unit;
+  }
+  return `${value >= 10 ? value.toFixed(1) : value.toFixed(2)} ${unit}`;
+}
+
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
