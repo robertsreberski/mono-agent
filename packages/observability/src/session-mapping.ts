@@ -100,6 +100,16 @@ export type SessionStep =
       readonly u?: SessionStepUsage;
     }
   | {
+      readonly k: "boundary";
+      readonly ts: string;
+      readonly kind: string;
+      readonly conversationId?: string;
+      readonly baseConversationId?: string;
+      readonly previousConversationId?: string;
+      readonly providerSessionId?: string;
+      readonly reason?: string;
+    }
+  | {
       readonly k: "result";
       readonly ts: string;
       readonly tcid: string;
@@ -114,6 +124,7 @@ export type SessionStep =
 /** The UI "Session" model the web visualizer renders. */
 export interface Session {
   readonly id: string;
+  readonly conversationId?: string;
   /** Trace-source id of the producing agent instance, when known. */
   readonly sourceId?: string;
   readonly cwd: string;
@@ -128,6 +139,8 @@ export interface Session {
   readonly outcome: SessionOutcome;
   readonly model?: string;
   readonly provider?: string;
+  readonly providerSessionId?: string | null;
+  readonly isolated?: boolean;
   readonly api?: string;
   readonly effort?: string;
   /** Trigger prompt (userInput minus the recalled-memory tail). */
@@ -232,6 +245,7 @@ export function mapRunToSession(
 
   return {
     id: summary.runId,
+    conversationId: summary.conversationId,
     ...(opts.sourceId === undefined ? {} : { sourceId: opts.sourceId }),
     cwd: opts.cwd ?? "",
     instance: opts.instanceLabel,
@@ -243,6 +257,8 @@ export function mapRunToSession(
     outcome,
     ...(summary.model === undefined ? {} : { model: summary.model }),
     ...modelRef,
+    ...(summary.providerSessionId === undefined ? {} : { providerSessionId: summary.providerSessionId }),
+    ...(summary.isolated === undefined ? {} : { isolated: summary.isolated }),
     ...(summary.effort === undefined ? {} : { effort: summary.effort }),
     instr: instrClamp.text,
     ...(instrClamp.truncated ? { instrTr: true } : {}),
@@ -291,6 +307,7 @@ type PendingStep =
       readonly text: string;
       readonly ttr: boolean;
     }
+  | { readonly p: "boundary"; readonly step: Extract<SessionStep, { k: "boundary" }> }
   | { readonly p: "result"; readonly step: Extract<SessionStep, { k: "result" }> };
 
 interface WalkResult {
@@ -368,6 +385,13 @@ function walkEvents(summary: RunSummary, events: readonly RuntimeEventLike[]): W
     const type = typeof event.type === "string" ? event.type : "";
     const ts = eventTimestamp(event, fallbackTs);
 
+    const boundary = sessionBoundaryStep(event, ts);
+    if (boundary !== undefined) {
+      flushCurrent();
+      pending.push({ p: "boundary", step: boundary });
+      return;
+    }
+
     if (type === "tool_timing") {
       const id = readString(event.tool_use_id);
       const call = id === undefined ? undefined : callsById.get(id);
@@ -434,7 +458,7 @@ function walkEvents(summary: RunSummary, events: readonly RuntimeEventLike[]): W
 
   // All backfills have landed; snapshot each live call into its immutable step.
   const steps: SessionStep[] = pending.map((item) =>
-    item.p === "result"
+    item.p === "result" || item.p === "boundary"
       ? item.step
       : {
           k: "assistant",
@@ -463,6 +487,29 @@ function finalizeCall(call: MutableToolCall): SessionToolCall {
     ...(truncated ? { tr: true } : {}),
     ...(call.ok === undefined ? {} : { ok: call.ok }),
     ...(call.durMs === undefined ? {} : { durMs: call.durMs }),
+  };
+}
+
+function sessionBoundaryStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, { k: "boundary" }> | undefined {
+  const type = readString(event.type);
+  if (type !== "session_boundary") {
+    return undefined;
+  }
+  const kind = readString(event.kind) ?? "session";
+  const conversationId = readString(event.conversationId);
+  const baseConversationId = readString(event.baseConversationId);
+  const previousConversationId = readString(event.previousConversationId);
+  const providerSessionId = readString(event.providerSessionId);
+  const reason = readString(event.reason);
+  return {
+    k: "boundary",
+    ts,
+    kind,
+    ...(conversationId === undefined ? {} : { conversationId }),
+    ...(baseConversationId === undefined ? {} : { baseConversationId }),
+    ...(previousConversationId === undefined ? {} : { previousConversationId }),
+    ...(providerSessionId === undefined ? {} : { providerSessionId }),
+    ...(reason === undefined ? {} : { reason }),
   };
 }
 

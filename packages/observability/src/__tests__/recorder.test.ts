@@ -98,6 +98,7 @@ describe("JsonlRunRecorder", () => {
       usage: { inputTokens: 3 },
       cost: { totalUsd: 0.01 },
       providerSessionId: "session-1",
+      isolated: true,
       capabilitiesUsed: ["tools:read"],
     });
 
@@ -106,6 +107,7 @@ describe("JsonlRunRecorder", () => {
       durationMs: 250,
       eventCount: 1,
       providerSessionId: "session-1",
+      isolated: true,
       cost: { totalUsd: 0.01 },
       capabilitiesUsed: ["tools:read"],
     });
@@ -114,6 +116,23 @@ describe("JsonlRunRecorder", () => {
     expect(events).toContain('"token":"[redacted]"');
     const summaryJson = await readFile(summary.artifactPaths[1] ?? "", "utf8");
     expect(summaryJson).toContain('"status": "succeeded"');
+    expect(summaryJson).toContain('"isolated": true');
+  });
+
+  it("persists recorder-level isolated identity for running and failed summaries", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "run:isolated",
+      conversationId: "cron:daily",
+      artifactDir: dir,
+      isolated: true,
+    });
+
+    const running = await recorder.start?.();
+    const failed = await recorder.fail(new Error("boom"));
+
+    expect(running).toMatchObject({ status: "running", isolated: true });
+    expect(failed).toMatchObject({ status: "failed", isolated: true });
   });
 
   it("stamps events with no usable timestamp using the injected clock, but preserves provider-supplied timestamps untouched", async () => {

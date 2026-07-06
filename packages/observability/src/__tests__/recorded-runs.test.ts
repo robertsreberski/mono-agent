@@ -110,7 +110,7 @@ describe("recorded run reader", () => {
     });
   });
 
-  it("surfaces model, effort, source, sourceDetail, and userInput on both list items and run detail (regression: model was previously dropped)", async () => {
+  it("surfaces identity, model, effort, source, sourceDetail, and userInput on both list items and run detail", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({
       runId: "run-meta",
@@ -120,9 +120,17 @@ describe("recorded run reader", () => {
       source: "cron",
       sourceDetail: "nightly-digest",
     });
-    await recorder.finish({ model: "pi:openai-codex:gpt-5.5", effort: "high" });
+    await recorder.finish({
+      model: "pi:openai-codex:gpt-5.5",
+      effort: "high",
+      providerSessionId: "provider-session-1",
+      isolated: false,
+    });
 
     const expectedMeta = {
+      conversationId: "cron:nightly-digest",
+      providerSessionId: "provider-session-1",
+      isolated: false,
       model: "pi:openai-codex:gpt-5.5",
       effort: "high",
       source: "cron",

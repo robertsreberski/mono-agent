@@ -72,6 +72,7 @@ export const CONFIG_ENV_KEYS = {
   "runtime.session.idleTimeoutMs": "MONO_AGENT_SESSION_IDLE_TIMEOUT_MS",
   "runtime.session.rollover": "MONO_AGENT_SESSION_ROLLOVER",
   "runtime.session.rolloverTimezone": "MONO_AGENT_SESSION_ROLLOVER_TIMEZONE",
+  "runtime.session.rolloverNotice": "MONO_AGENT_SESSION_ROLLOVER_NOTICE",
   "runtime.session.isolateProactive": "MONO_AGENT_SESSION_ISOLATE_PROACTIVE",
   "concurrency.maxConcurrentRuns": "MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS",
   "concurrency.maxPendingRuns": "MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS",
@@ -282,6 +283,12 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         label: "Session rollover timezone",
         value: session.rolloverTimezone ?? PLACEHOLDER,
         jsonPresent: json.runtime?.session?.rolloverTimezone !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.session.rolloverNotice",
+        label: "Session rollover notice",
+        value: session.rolloverNotice === true ? "yes" : "no",
+        jsonPresent: json.runtime?.session?.rolloverNotice !== undefined,
       }),
       toField(env, {
         id: "runtime.session.isolateProactive",

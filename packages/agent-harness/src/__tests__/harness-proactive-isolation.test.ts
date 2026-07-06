@@ -66,11 +66,19 @@ describe("AgentHarness proactive session isolation", () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-cron" }));
     const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session: isolatingSession });
+    const events: unknown[] = [];
 
     // First cron run: no session keys requested, no warm session derived.
-    await harness.run(cronRequest("cron:nightly", "first"));
+    const response = await harness.run({ ...cronRequest("cron:nightly", "first"), onEvent: (event) => events.push(event) });
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
     expect(fake.calls[0]?.options.providerSessionId).toBeUndefined();
+    expect(response.metadata.summary).toMatchObject({ isolated: true });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "session_boundary",
+      kind: "isolated",
+      conversationId: "cron:nightly",
+      reason: "proactive",
+    }));
 
     // Second cron run on the SAME conversation does NOT resume the prior turn —
     // the isolated run saved nothing, so it goes fresh again.

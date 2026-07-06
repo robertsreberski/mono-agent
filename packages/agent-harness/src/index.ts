@@ -7,6 +7,7 @@ export { createRuntimeSessionStore } from "./sessions.js";
 export type {
   RuntimeSessionEvictReason,
   RuntimeSessionRecord,
+  RuntimeSessionSnapshot,
   RuntimeSessionStore,
   RuntimeSessionStoreOptions,
 } from "./sessions.js";
@@ -24,6 +25,11 @@ export type {
   AgentHarnessResponse,
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
+  AgentHarnessSessionBoundary,
+  AgentHarnessSessionBoundaryKind,
+  AgentHarnessSessionEvent,
+  AgentHarnessSessionEventKind,
+  AgentHarnessSessionSnapshot,
   AgentHarnessSessionOptions,
   AgentSessionMode,
   ConversationHistoryStore,

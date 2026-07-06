@@ -17,6 +17,7 @@ export interface RuntimeResultLike {
   readonly cost?: unknown;
   readonly durationMs?: number;
   readonly providerSessionId?: string | null;
+  readonly isolated?: boolean;
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
@@ -118,6 +119,7 @@ export interface RunSummary {
   readonly usage?: unknown;
   readonly cost?: unknown;
   readonly providerSessionId?: string | null;
+  readonly isolated?: boolean;
   readonly eventCount: number;
   readonly artifactPaths: readonly string[];
   readonly runtimeWarnings?: unknown;
@@ -213,6 +215,8 @@ export interface JsonlRunRecorderOptions {
   readonly artifactKind?: RunArtifactKind;
   readonly clock?: () => number;
   readonly maxStringBytes?: number;
+  /** Whether this run is intentionally detached from the shared warm provider session. */
+  readonly isolated?: boolean;
   /** The user's prompt; persisted (redacted) into the summary as `userInput`. */
   readonly userInput?: string;
   /**
@@ -255,6 +259,7 @@ export interface RecordedRunListItem {
   readonly cost?: unknown;
   readonly model?: string;
   readonly providerSessionId?: string | null;
+  readonly isolated?: boolean;
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;

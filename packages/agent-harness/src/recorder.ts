@@ -3,12 +3,14 @@ import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } fro
 export class NoopRunRecorder implements RunRecorder {
   private readonly runId: string;
   private readonly conversationId: string;
+  private readonly isolated: boolean | undefined;
   private readonly startedAt = Date.now();
   private eventCount = 0;
 
-  constructor(input: { readonly runId: string; readonly conversationId: string }) {
+  constructor(input: { readonly runId: string; readonly conversationId: string; readonly isolated?: boolean }) {
     this.runId = input.runId;
     this.conversationId = input.conversationId;
+    this.isolated = input.isolated;
   }
 
   onEvent(_event: RuntimeEventLike): void {
@@ -37,6 +39,7 @@ export class NoopRunRecorder implements RunRecorder {
       ...(result.usage === undefined ? {} : { usage: result.usage }),
       ...(result.cost === undefined ? {} : { cost: result.cost }),
       ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
+      ...(typeof result.isolated === "boolean" ? { isolated: result.isolated } : this.isolated === undefined ? {} : { isolated: this.isolated }),
       eventCount: this.eventCount,
       artifactPaths: [],
       ...(result.runtimeWarnings === undefined ? {} : { runtimeWarnings: result.runtimeWarnings }),

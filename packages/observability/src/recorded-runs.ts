@@ -373,6 +373,7 @@ function coerceRunSummary(
   const endedAt = stringField(value, "endedAt");
   const updatedAt = stringField(value, "updatedAt");
   const providerSessionId = providerSessionIdField(value.providerSessionId);
+  const isolated = booleanField(value, "isolated");
   const artifactPaths = Array.isArray(value.artifactPaths) ? value.artifactPaths.filter((entry): entry is string => typeof entry === "string") : [];
   const model = stringField(value, "model");
   const effort = stringField(value, "effort");
@@ -393,6 +394,7 @@ function coerceRunSummary(
     ...(value.usage === undefined ? {} : { usage: redactJsonValue(value.usage, maxStringBytes) }),
     ...(value.cost === undefined ? {} : { cost: redactJsonValue(value.cost, maxStringBytes) }),
     ...(providerSessionId === undefined ? {} : { providerSessionId }),
+    ...(isolated === undefined ? {} : { isolated }),
     eventCount,
     artifactPaths,
     ...(model === undefined ? {} : { model }),
@@ -429,6 +431,7 @@ function summaryToListItem(
     ...(summary.cost === undefined ? {} : { cost: redactJsonValue(summary.cost, maxStringBytes) }),
     ...(summary.model === undefined ? {} : { model: summary.model }),
     ...(summary.providerSessionId === undefined ? {} : { providerSessionId: summary.providerSessionId }),
+    ...(summary.isolated === undefined ? {} : { isolated: summary.isolated }),
     ...(summary.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(summary.runtimeWarnings, maxStringBytes) }),
     ...(summary.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(summary.diagnostics, maxStringBytes) }),
     ...(summary.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(summary.capabilitiesUsed, maxStringBytes) }),
@@ -533,6 +536,11 @@ function providerSessionIdField(value: unknown): string | null | undefined {
     return null;
   }
   return typeof value === "string" ? value : undefined;
+}
+
+function booleanField(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function finiteNumberField(record: Record<string, unknown>, key: string): number | undefined {

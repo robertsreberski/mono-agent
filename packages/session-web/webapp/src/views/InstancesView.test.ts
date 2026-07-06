@@ -26,6 +26,7 @@ const instances: WebInstance[] = [
 
 const session: Session = {
   id: "run-1",
+  conversationId: "cron:run-1",
   sourceId: "agent-a",
   cwd: "/Users/example/agent-a",
   instance: "Agent",

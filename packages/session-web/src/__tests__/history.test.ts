@@ -192,4 +192,38 @@ describe("readInstanceSession", () => {
 
     expect(await readInstanceSession(discovered, "run-does-not-exist")).toBeUndefined();
   });
+
+  it("maps persisted session identity fields into summary and detail sessions", async () => {
+    const agentDir = await tmp("agent");
+    const artifactDir = join(agentDir, "runs");
+    await seedRun({
+      artifactDir,
+      runId: "run-identity",
+      conversationId: "chat:identity",
+      userInput: "Carry session identity",
+      text: "Identity answer.",
+      source: "chat",
+      providerSessionId: "provider-identity",
+      isolated: true,
+      at: 9_000_000,
+    });
+    const discovered = await discoverOne(artifactDir);
+
+    const [summary] = await listInstanceSessions(discovered, { maxRuns: 50 });
+    expect(summary).toMatchObject({
+      id: "run-identity",
+      conversationId: "chat:identity",
+      providerSessionId: "provider-identity",
+      isolated: true,
+    });
+
+    const detail = await readInstanceSession(discovered, "run-identity");
+    expect(detail).toMatchObject({
+      id: "run-identity",
+      conversationId: "chat:identity",
+      providerSessionId: "provider-identity",
+      isolated: true,
+      finalText: "Identity answer.",
+    });
+  });
 });

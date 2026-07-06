@@ -56,6 +56,32 @@ export interface ConfiguredAgentRuntimeOptions {
   readonly sandboxEngine?: SandboxEngine;
 }
 
+export type ConfiguredAgentSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
+
+export interface ConfiguredAgentSessionSnapshot {
+  readonly conversationId: string;
+  readonly providerSessionId: string;
+  readonly createdAt: number;
+  readonly lastActivityAt: number;
+  readonly busy: boolean;
+}
+
+export interface ConfiguredAgentSessionEvent {
+  readonly kind: ConfiguredAgentSessionEventKind;
+  readonly conversationId: string;
+  readonly providerSessionId?: string;
+  readonly createdAt?: number;
+  readonly lastActivityAt?: number;
+  readonly busy?: boolean;
+  readonly reason?: string;
+  readonly snapshot?: readonly ConfiguredAgentSessionSnapshot[];
+}
+
+type ConfiguredAgentSessionEventHandler = (event: ConfiguredAgentSessionEvent) => void | Promise<void>;
+type AgentHarnessSessionOptionsWithEvents = NonNullable<AgentHarnessOptions["session"]> & {
+  readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
+};
+
 export interface ConfiguredAgentHarnessOptions {
   readonly config: MonoAgentConfig;
   readonly runtime?: MonoRuntimeLike;
@@ -70,6 +96,7 @@ export interface ConfiguredAgentHarnessOptions {
   readonly runtimeOptionsForRequest?: (
     input: AgentHarnessRuntimeOptionsInput,
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
+  readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
   /**
    * Factory for a runtime bound to a per-request override model (cron/webhook
    * per-trigger model). Wired by the app so override runtimes share the
@@ -131,6 +158,7 @@ function composeRunRecorder(
     readonly systemPrompt?: string;
     readonly runKind?: "memory" | "channel";
     readonly memoryOperation?: string;
+    readonly isolated?: boolean;
     /** Originating channel/trigger kind, e.g. "tui" | "cron" | "webhook" | "memory". */
     readonly source?: string;
     /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
@@ -142,6 +170,7 @@ function composeRunRecorder(
     conversationId: args.conversationId,
     artifactDir: deps.artifactDir,
     ...(args.runKind === "memory" ? { artifactKind: "memory" as const } : {}),
+    ...(args.isolated === undefined ? {} : { isolated: args.isolated }),
     ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
     ...(args.systemPrompt === undefined ? {} : { systemPrompt: args.systemPrompt }),
     ...(args.source === undefined ? {} : { source: args.source }),
@@ -306,6 +335,14 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     options.sandboxEngine === undefined ? undefined : { sandboxEngine: options.sandboxEngine },
     options.runtimeOptions,
   );
+  const sessionOptions: AgentHarnessSessionOptionsWithEvents = {
+    mode: config.runtime.session.mode,
+    idleTimeoutMs: config.runtime.session.idleTimeoutMs,
+    ...(config.runtime.session.isolateProactive === undefined
+      ? {}
+      : { isolateProactive: config.runtime.session.isolateProactive }),
+    ...(options.onSessionEvent === undefined ? {} : { onSessionEvent: options.onSessionEvent }),
+  };
 
   return createAgentHarness({
     identityPath: config.context.identityPath,
@@ -323,13 +360,7 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     ...(config.providers?.piNative?.piSessionsRoot === undefined
       ? {}
       : { piSessionsRoot: config.providers.piNative.piSessionsRoot }),
-    session: {
-      mode: config.runtime.session.mode,
-      idleTimeoutMs: config.runtime.session.idleTimeoutMs,
-      ...(config.runtime.session.isolateProactive === undefined
-        ? {}
-        : { isolateProactive: config.runtime.session.isolateProactive }),
-    },
+    session: sessionOptions,
     ...(config.concurrency?.maxConcurrentRuns === undefined && config.concurrency?.maxPendingRuns === undefined
       ? {}
       : {
@@ -355,11 +386,12 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     attachmentsDir: resolvePath(config.artifacts.dir, "attachments"),
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
-    recorderFactory: ({ runId, conversationId, userInput, source, sourceDetail }) =>
+    recorderFactory: ({ runId, conversationId, userInput, source, sourceDetail, isolated }) =>
       composeRunRecorder(recorderCompositionDeps(config, options), {
         runId,
         conversationId,
         runKind: "channel",
+        ...(isolated === undefined ? {} : { isolated }),
         ...(userInput === undefined ? {} : { userInput }),
         ...(source === undefined ? {} : { source }),
         ...(sourceDetail === undefined ? {} : { sourceDetail }),
@@ -375,6 +407,7 @@ export async function createConfiguredAgentResponder(options: ConfiguredAgentRes
     harness: await createConfiguredAgentHarness(options),
     ...(session.rollover === undefined ? {} : { rollover: session.rollover }),
     ...(session.rolloverTimezone === undefined ? {} : { rolloverTimezone: session.rolloverTimezone }),
+    ...(session.rolloverNotice === undefined ? {} : { rolloverNotice: session.rolloverNotice }),
     ...(options.now === undefined ? {} : { now: options.now }),
   }) as AgentResponder;
 }

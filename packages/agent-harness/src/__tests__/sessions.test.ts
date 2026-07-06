@@ -21,6 +21,32 @@ describe("createRuntimeSessionStore", () => {
     expect(store.acquire("conv-1")).toMatchObject({ providerSessionId: "ps-1" });
   });
 
+  it("lists read-only snapshots of live session records", () => {
+    const store = createRuntimeSessionStore({ idleTimeoutMs: 60_000, now: () => 1000 });
+    store.save("conv-1", "ps-1");
+    const snapshot = store.list();
+    expect(snapshot).toEqual([
+      {
+        conversationId: "conv-1",
+        providerSessionId: "ps-1",
+        createdAt: 1000,
+        lastActivityAt: 1000,
+        busy: false,
+      },
+    ]);
+    const record = store.acquire("conv-1");
+    expect(record).toBeDefined();
+    expect(store.list()).toEqual([
+      {
+        conversationId: "conv-1",
+        providerSessionId: "ps-1",
+        createdAt: 1000,
+        lastActivityAt: 1000,
+        busy: true,
+      },
+    ]);
+  });
+
   it("evicts after the idle timeout and reports the record to onEvict", async () => {
     const onEvict = vi.fn();
     const store = createRuntimeSessionStore({ idleTimeoutMs: 60_000, onEvict });

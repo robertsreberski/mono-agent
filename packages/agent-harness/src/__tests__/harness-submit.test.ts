@@ -46,6 +46,13 @@ function request(conversationId: string, userMessage = "hello") {
   return { conversationId, userMessage, abortSignal: new AbortController().signal };
 }
 
+async function waitForCalls(calls: readonly unknown[], count: number): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (calls.length < count && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe("AgentHarness.submit (queue-after-turn)", () => {
   it("serializes same-conversation turns so the second resumes the first's provider session", async () => {
     const identityPath = await identityFixture();
@@ -63,7 +70,7 @@ describe("AgentHarness.submit (queue-after-turn)", () => {
 
     const p1 = harness.submit?.(request("conv-1", "first"));
     const p2 = harness.submit?.(request("conv-1", "second"));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await waitForCalls(fake.calls, 1);
 
     // The second turn is queued, not racing: only the first runtime call exists.
     expect(fake.calls).toHaveLength(1);

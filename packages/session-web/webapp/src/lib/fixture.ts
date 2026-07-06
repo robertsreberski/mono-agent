@@ -30,6 +30,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 1 — CRON focus-scan, silent (NOTHING_TO_REPORT). The archetype run.
   {
     id: "2582cf1d-636e-475c-ac72-eab20e09d829",
+    conversationId: "cron:daily-focus",
     cwd: "/Users/example/personal-agent",
     instance: "personal-agent",
     sourceId: "personal-agent",
@@ -162,6 +163,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 2 — WEBHOOK, notified. Deploy webhook that summarised a CI failure.
   {
     id: "d1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
+    conversationId: "webhook:github-build",
     cwd: "/Users/example/a8c-agents/orchestrator",
     instance: "orchestrator",
     sourceId: "orchestrator",
@@ -283,6 +285,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 3 — CHAT, notified (chat runs show no outcome badge in the mock).
   {
     id: "b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2",
+    conversationId: "chat:paola",
     cwd: "/Users/example/personal-agent",
     instance: "personal-agent",
     sourceId: "personal-agent",
@@ -352,6 +355,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 4 — MEMORY, silent. A background memory-curation pass.
   {
     id: "f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8",
+    conversationId: "memory:capture:distill",
     cwd: "/Users/example/personal-agent",
     instance: "personal-agent",
     sourceId: "personal-agent",
@@ -454,6 +458,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 5 — CRON briefing, notified, rich markdown final. The showcase card.
   {
     id: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    conversationId: "cron:morning-briefing",
     cwd: "/Users/example/personal-agent",
     instance: "personal-agent",
     sourceId: "personal-agent",
@@ -607,6 +612,7 @@ export const FIXTURE_SESSIONS: Session[] = [
   // 6 — CRON focus-scan, RUNNING (live). Partial run still streaming.
   {
     id: "c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4",
+    conversationId: "tui-local",
     cwd: "/Users/example/a8c-agents/orchestrator",
     instance: "orchestrator",
     sourceId: "orchestrator",
