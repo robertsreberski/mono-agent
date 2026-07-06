@@ -5,6 +5,15 @@ description: Deploy repo changes to the live launchd mono-agent fleet (~/persona
 
 # Fleet deploy
 
+> **CURRENT STATE (2026-07-06):** the fleet's deploy checkout is FROZEN as a bare
+> tree at `90b97a9d` (pre-wave-0) — it does NOT yet carry the #137 provider-auth
+> failover fix. The catch-up deploy + unfreeze decision is tracked in **issue
+> #148**. Until that resolves, deploy is NOT "build in place": use a detached
+> worktree at the target sha → `pnpm install --frozen-lockfile` → full
+> `pnpm -r --sort run build` → rsync each surviving package's `dist/` into the
+> frozen tree → `chmod +x` entry points → restart per instance (the "Clean
+> deploy while main has WIP" flow below is exactly this).
+
 ## Fleet map
 
 | Instance | Config / label | Notes |
@@ -74,3 +83,8 @@ rm ~/Library/LaunchAgents/<label>.plist
   moving agents onto the `live` channel is a separate config step.
 - Deploy = build + restart. Verify the restart actually picked up your change
   (e.g. a log line or behavior probe), not just that the service came back.
+- **Package layout changed (31 → 17 packages + `extras/`):** after deploying a
+  post-consolidation build into the frozen tree, retired packages' stale `dist/`
+  dirs linger there and can still be loaded. Verify the entry point actually
+  loads (`node packages/agent-app/dist/cli.js --help`) and prefer
+  `rsync -a --delete` per surviving package so removed modules are dropped.
