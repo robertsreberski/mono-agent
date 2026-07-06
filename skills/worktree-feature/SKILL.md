@@ -9,6 +9,19 @@ Why worktrees here: the main repo's built dist is LIVE — two launchd agents ex
 `packages/agent-app/dist/cli.js` directly. Never destabilize the main working
 tree and **never `git stash` WIP on it**.
 
+> **Current state (2026-07):** the deploy checkout is a FROZEN bare tree
+> (`core.bare=true`, `git status` fails there, the local `origin/main` ref may
+> not resolve). Never build, test, or commit in it. ALL work happens in
+> worktrees created from a fresh fetch + `FETCH_HEAD` (not the local
+> `origin/main` ref):
+>
+> ```bash
+> git fetch origin main
+> git worktree add ~/.config/superpowers/worktrees/mono-agent/<name> -b <branch> FETCH_HEAD
+> ```
+>
+> Current practice keeps worktrees under `~/.config/superpowers/worktrees/mono-agent/`.
+
 ## Create
 
 ```bash
@@ -41,6 +54,12 @@ pnpm --filter @mono-agent/<X> run build
 
 Intra-package vitest runs use `src` directly and are exempt — only CROSS-package
 resolution hits this.
+
+**Stale-dist rescue:** if a cross-package typecheck/build fails inexplicably in a
+worktree, don't debug it in place — a poisoned dist can't be reasoned about.
+Spin up a FRESH worktree and rebuild in dependency order
+(`pnpm -r --sort run build`). Wave-1 goal #124 lost iterations to this and
+recovered exactly this way (a "rescue worktree").
 
 ## Website inside a worktree
 

@@ -12,6 +12,7 @@ description: Run the mono-agent verification gate — full repo green or fast si
 ```bash
 pnpm run check:secrets
 pnpm run check:oss-hygiene
+pnpm run check:codex-discoverability  # skills/agents Codex parity (wired into CI + verify:all by PR #142)
 pnpm run check:architecture     # catalog + README sections + dependency categories
 pnpm run build                  # pnpm -r --sort run build && build:demo
 pnpm run typecheck
@@ -74,6 +75,16 @@ git worktree remove /tmp/base-check
 ```
 
 - `git diff --check` failures (trailing whitespace) fail CI — run it locally.
+- `check:codex-discoverability` enforces skills/agents Codex parity: editing an
+  `agents/*.md` template requires syncing its `agents/*.toml` companion (and vice
+  versa) or the gate fails (`codex-agent-toml-missing` / `-orphan`).
+- Do NOT run `check:architecture` in parallel with the website build:
+  `website/scripts/sync-content.mjs` deletes and recreates the synced docs dir,
+  and the two race (observed on goal #124). Run them sequentially.
+- `pnpm --filter <pkg> exec mono-agent …` resolves the Homebrew/global binary,
+  NOT your worktree build — so it silently verifies the wrong code. Invoke the
+  worktree CLI explicitly: `node packages/agent-app/dist/cli.js …` (bit goals
+  #122 and #139's executor).
 
 ## Report format
 
