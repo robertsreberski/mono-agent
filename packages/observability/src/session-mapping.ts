@@ -27,6 +27,12 @@ const RECALLED_MEMORY_MARKER = "[Recalled long-term memory";
 
 /** Display cap for step/prompt/result/final text bodies. */
 const TEXT_MAX_CHARS = 20_000;
+/**
+ * Dedicated cap for the recorded system prompt. Larger than {@link TEXT_MAX_CHARS}
+ * because the recorder writes it under its own 32 KB byte cap; using the 20 KB
+ * text cap here would gut the tail of a real compiled prompt.
+ */
+const SYS_PROMPT_MAX_CHARS = 32_000;
 /** Cap for a tool call's full (already-redacted) argument JSON string. */
 const RAW_MAX_CHARS = 8_000;
 /** Cap for a one-line digest of args/result. */
@@ -35,6 +41,30 @@ const DIGEST_MAX_CHARS = 120;
 const TITLE_MAX_CHARS = 80;
 
 export type SessionOutcome = "silent" | "notified";
+
+/** One prior conversation message the turn was driven with (from a `turn_context` event). */
+export interface SessionCtxMsg {
+  readonly role: string;
+  readonly text: string;
+  readonly name?: string;
+  readonly ts?: string;
+  /** Set when `text` was capped for display. */
+  readonly tr?: boolean;
+}
+
+/**
+ * The context a single turn was driven with: the loaded conversation history (or
+ * the fact it was omitted because a warm provider session carries the transcript)
+ * and the recalled long-term memory block. Mapped from the run's LAST
+ * `turn_context` runtime event (resume-replay double-fires; last-wins).
+ */
+export interface SessionTurnContext {
+  readonly histCount: number;
+  /** Present only when true: a warm provider session already held the transcript. */
+  readonly histOmitted?: boolean;
+  readonly hist?: readonly SessionCtxMsg[];
+  readonly mem?: { readonly text: string; readonly src?: string; readonly tr?: boolean };
+}
 
 /** One coalesced run of assistant thinking within an {@link SessionStep} assistant step. */
 export interface SessionThink {
@@ -173,7 +203,15 @@ export interface Session {
   readonly instr: string;
   readonly instrTr?: boolean;
   readonly recalled?: string;
+  /** Set when `recalled` was capped for display. */
+  readonly recalledTr?: boolean;
   readonly hasRecall: boolean;
+  /** The context this turn was driven with (history + recalled memory), when a `turn_context` event was recorded. */
+  readonly ctx?: SessionTurnContext;
+  /** The compiled system prompt the run was driven with (redacted + capped). */
+  readonly sysPrompt?: string;
+  /** Set when `sysPrompt` was capped for display. */
+  readonly sysPromptTr?: boolean;
   /** Last assistant text block content. */
   readonly finalText: string;
   readonly finalTr?: boolean;
@@ -243,6 +281,13 @@ export function mapRunToSession(
 ): Session {
   const { instrRaw, recalledRaw, hasRecall } = splitUserInput(summary.userInput);
   const walk = walkEvents(summary, events);
+  // Total pre-pass over the whole stream: the LAST turn_context event wins
+  // (resume-replay double-fires; consumers are last-wins). turn_context has no
+  // message.content, so walkEvents already yields no timeline step for it.
+  const ctx = turnContextFromEvents(events);
+  const recalledClamp = recalledRaw === undefined ? undefined : clampText(recalledRaw, TEXT_MAX_CHARS);
+  const sysPromptClamp =
+    typeof summary.systemPrompt === "string" ? clampText(summary.systemPrompt, SYS_PROMPT_MAX_CHARS) : undefined;
 
   const finalClamp = clampText(walk.finalTextRaw, TEXT_MAX_CHARS);
   const outcome = resolveOutcome(walk.finalTextRaw);
@@ -291,8 +336,12 @@ export function mapRunToSession(
     ...(summary.effort === undefined ? {} : { effort: summary.effort }),
     instr: instrClamp.text,
     ...(instrClamp.truncated ? { instrTr: true } : {}),
-    ...(recalledRaw === undefined ? {} : { recalled: clampText(recalledRaw, TEXT_MAX_CHARS).text }),
+    ...(recalledClamp === undefined ? {} : { recalled: recalledClamp.text }),
+    ...(recalledClamp?.truncated ? { recalledTr: true } : {}),
     hasRecall,
+    ...(ctx === undefined ? {} : { ctx }),
+    ...(sysPromptClamp === undefined ? {} : { sysPrompt: sysPromptClamp.text }),
+    ...(sysPromptClamp?.truncated ? { sysPromptTr: true } : {}),
     finalText: finalClamp.text,
     ...(finalClamp.truncated ? { finalTr: true } : {}),
     status: summary.status,
@@ -619,6 +668,82 @@ function splitUserInput(userInput: string | undefined): {
     return { instrRaw: raw.slice(0, idx).trimEnd(), recalledRaw: raw.slice(idx), hasRecall: true };
   }
   return { instrRaw: raw.trimEnd(), hasRecall: false };
+}
+
+/**
+ * Reduce the event stream to the LAST `turn_context` event's context model.
+ * Resume-replay double-fires the event (the retry re-prepares context), so the
+ * last occurrence wins — it reflects the history the model was actually driven
+ * with. Defensive and total: a malformed payload never throws (mapRunToSession is
+ * documented pure/total); bad fields are dropped, strings are re-clamped. Returns
+ * undefined when no `turn_context` event was recorded.
+ */
+function turnContextFromEvents(events: readonly RuntimeEventLike[]): SessionTurnContext | undefined {
+  let last: RuntimeEventLike | undefined;
+  for (const event of events) {
+    if (readString(event.type) === "turn_context") {
+      last = event;
+    }
+  }
+  if (last === undefined) {
+    return undefined;
+  }
+  const hist = coerceCtxMessages(last.history);
+  const mem = coerceCtxMemory(last.memory);
+  const histCount = finiteNumber(last.historyCount) ?? hist?.length ?? 0;
+  return {
+    histCount,
+    ...(last.historyOmitted === true ? { histOmitted: true } : {}),
+    ...(hist === undefined ? {} : { hist }),
+    ...(mem === undefined ? {} : { mem }),
+  };
+}
+
+/** Coerce a `turn_context.history` payload into typed messages, dropping malformed entries. */
+function coerceCtxMessages(value: unknown): readonly SessionCtxMsg[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const out: SessionCtxMsg[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      continue; // drop non-record entries
+    }
+    const role = readString(entry.role);
+    const content = readString(entry.content);
+    if (role === undefined || content === undefined) {
+      continue; // require the two load-bearing fields as strings
+    }
+    const clamp = clampText(content, TEXT_MAX_CHARS);
+    const name = readString(entry.name);
+    const ts = readString(entry.timestamp);
+    out.push({
+      role,
+      text: clamp.text,
+      ...(name === undefined ? {} : { name }),
+      ...(ts === undefined ? {} : { ts }),
+      ...(clamp.truncated || entry.truncated === true ? { tr: true } : {}),
+    });
+  }
+  return out.length === 0 ? undefined : out;
+}
+
+/** Coerce a `turn_context.memory` payload into the typed memory block, or undefined when malformed/empty. */
+function coerceCtxMemory(value: unknown): { readonly text: string; readonly src?: string; readonly tr?: boolean } | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const content = readString(value.content);
+  if (content === undefined) {
+    return undefined;
+  }
+  const clamp = clampText(content, TEXT_MAX_CHARS);
+  const src = readString(value.source);
+  return {
+    text: clamp.text,
+    ...(src === undefined ? {} : { src }),
+    ...(clamp.truncated || value.truncated === true ? { tr: true } : {}),
+  };
 }
 
 /** Silent when the final assistant text is empty or the NOTHING_TO_REPORT sentinel (trimmed, case-insensitive). */

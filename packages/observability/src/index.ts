@@ -26,12 +26,14 @@ export {
 export type {
   MapRunToSessionOptions,
   Session,
+  SessionCtxMsg,
   SessionOutcome,
   SessionStep,
   SessionStepUsage,
   SessionThink,
   SessionToolCall,
   SessionTotals,
+  SessionTurnContext,
 } from "./session-mapping.js";
 export {
   buildEventSpanAttributes,

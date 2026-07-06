@@ -380,6 +380,7 @@ function coerceRunSummary(
   const source = stringField(value, "source");
   const sourceDetail = stringField(value, "sourceDetail");
   const userInput = stringField(value, "userInput");
+  const systemPrompt = stringField(value, "systemPrompt");
   const summary: RunSummary = {
     runId,
     conversationId,
@@ -399,6 +400,7 @@ function coerceRunSummary(
     artifactPaths,
     ...(model === undefined ? {} : { model }),
     ...(userInput === undefined ? {} : { userInput: redactJsonValue(userInput, maxStringBytes) as string }),
+    ...(systemPrompt === undefined ? {} : { systemPrompt: redactJsonValue(systemPrompt, maxStringBytes) as string }),
     ...(value.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(value.runtimeWarnings, maxStringBytes) }),
     ...(value.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(value.diagnostics, maxStringBytes) }),
     ...(value.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(value.capabilitiesUsed, maxStringBytes) }),
@@ -439,6 +441,7 @@ function summaryToListItem(
     ...(summary.source === undefined ? {} : { source: summary.source }),
     ...(summary.sourceDetail === undefined ? {} : { sourceDetail: summary.sourceDetail }),
     ...(summary.userInput === undefined ? {} : { userInput: summary.userInput }),
+    ...(summary.systemPrompt === undefined ? {} : { systemPrompt: summary.systemPrompt }),
     ...(artifact === undefined ? {} : { summaryFileName: artifact.fileName, summaryMtimeMs: artifact.mtimeMs }),
   };
 }
