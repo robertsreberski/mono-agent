@@ -1060,7 +1060,7 @@
           "examples": [
             [
               {
-                "id": "triage",
+                "name": "triage",
                 "path": "/webhook/triage",
                 "prompt": "Triage this payload."
               }

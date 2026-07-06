@@ -195,8 +195,36 @@ function toField(
   };
 }
 
-function sameJsonValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+export function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    return left.every((value, index) => sameJsonValue(value, right[index]));
+  }
+  if (isJsonObject(left) || isJsonObject(right)) {
+    if (!isJsonObject(left) || !isJsonObject(right)) {
+      return false;
+    }
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    if (leftKeys.length !== rightKeys.length) {
+      return false;
+    }
+    return leftKeys.every((key, index) => key === rightKeys[index] && sameJsonValue(left[key], right[key]));
+  }
+  return false;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  return prototype === Object.prototype || prototype === null;
 }
 
 function formatModelReference(

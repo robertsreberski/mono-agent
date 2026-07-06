@@ -93,6 +93,11 @@ describe("config reference", () => {
     expect(cronJobs?.example).toEqual([
       { id: "daily", expression: "0 8 * * *", prompt: "Summarize the overnight queue." },
     ]);
+
+    const webhookEndpoints = allConfigReferenceFields().find((field) => field.jsonPath === "webhook.endpoints");
+    expect(webhookEndpoints?.example).toEqual([
+      { name: "triage", path: "/webhook/triage", prompt: "Triage this payload." },
+    ]);
   });
 
   it("keeps the committed generated config reference in sync", () => {

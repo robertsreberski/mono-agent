@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { loadMonoAgentConfig, redactMonoAgentConfig } from "../config.js";
-import { buildMonoAgentConfigView, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "../config-view.js";
+import { buildMonoAgentConfigView, findJsonSecretConfigWarnings, findRemovedConfigWarnings, sameJsonValue } from "../config-view.js";
 import type { ConfigViewSection } from "../config-view.js";
 import type { MonoAgentConfigJson } from "../json-source.js";
 import { layerJsonOntoEnv } from "../layered-loader.js";
@@ -39,6 +39,16 @@ function section(sections: readonly ConfigViewSection[], id: string): ConfigView
 }
 
 describe("buildMonoAgentConfigView", () => {
+  it("compares JSON object defaults structurally while preserving array order", () => {
+    expect(sameJsonValue(
+      { a: 1, b: { c: true, d: [1, { e: "x", f: "y" }] } },
+      { b: { d: [1, { f: "y", e: "x" }], c: true }, a: 1 },
+    )).toBe(true);
+    expect(sameJsonValue([{ a: 1, b: 2 }], [{ b: 2, a: 1 }])).toBe(true);
+    expect(sameJsonValue([1, 2], [2, 1])).toBe(false);
+    expect(sameJsonValue({ a: 1 }, { a: 1, b: 2 })).toBe(false);
+  });
+
   it("covers every core section exactly once", () => {
     const sections = buildView(baseEnv);
     expect(sections.map((entry) => entry.id)).toEqual([

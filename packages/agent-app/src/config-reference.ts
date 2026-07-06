@@ -109,7 +109,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     type: "array",
     defaultLabel: "[]",
     defaultValue: [],
-    example: [{ id: "triage", path: "/webhook/triage", prompt: "Triage this payload." }],
+    example: [{ name: "triage", path: "/webhook/triage", prompt: "Triage this payload." }],
     description: "Additional named webhook endpoints beyond webhook.path.",
   },
   {
