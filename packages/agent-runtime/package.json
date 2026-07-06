@@ -66,6 +66,18 @@
       "types": "./types/ai/file-change-stats.d.ts",
       "default": "./src/ai/file-change-stats.js"
     },
+    "./ai/providers/claude-sdk.js": {
+      "types": "./types/ai/providers/claude-sdk.d.ts",
+      "default": "./src/ai/providers/claude-sdk.js"
+    },
+    "./ai/providers/claude-cli.js": {
+      "types": "./types/ai/providers/claude-cli.d.ts",
+      "default": "./src/ai/providers/claude-cli.js"
+    },
+    "./ai/providers/codex-app.js": {
+      "types": "./types/ai/providers/codex-app.d.ts",
+      "default": "./src/ai/providers/codex-app.js"
+    },
     "./ai/providers/opencode-discovery.js": {
       "types": "./types/ai/providers/opencode-discovery.d.ts",
       "default": "./src/ai/providers/opencode-discovery.js"
@@ -77,6 +89,10 @@
     "./agent/tools/shared/runtime-context.js": {
       "types": "./types/agent/tools/shared/runtime-context.d.ts",
       "default": "./src/agent/tools/shared/runtime-context.js"
+    },
+    "./agent/tools/shared/ripgrep.js": {
+      "types": "./types/agent/tools/shared/ripgrep.d.ts",
+      "default": "./src/agent/tools/shared/ripgrep.js"
     },
     "./agent/prompt/skill-index.js": {
       "types": "./types/agent/prompt/skill-index.d.ts",
