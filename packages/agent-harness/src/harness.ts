@@ -289,7 +289,7 @@ export class MonoAgentHarness implements AgentHarness {
       let runtimeResult: RuntimeResult | undefined;
       let resumeError: unknown;
       try {
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, resumeSessionId, prepared.skillDisclosureNames, leavePending);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, resumeSessionId, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, leavePending);
       } catch (error) {
         if (resumeSessionId === undefined || request.abortSignal.aborted) {
           throw error;
@@ -317,7 +317,7 @@ export class MonoAgentHarness implements AgentHarness {
         resumeSessionId = undefined;
         prepared = await this.prepareContext(activeRequest, { omitHistory: false }, emit);
         context = prepared.context;
-        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, prepared.skillDisclosureNames, leavePending);
+        runtimeResult = await this.runRuntime(activeRequest, recorder, context, prepared.memory, runId, undefined, prepared.skillDisclosureNames, prepared.history, prepared.historyOmitted, leavePending);
       }
       if (runtimeResult === undefined) {
         throw resumeError ?? new Error("Runtime did not produce a result.");
@@ -556,7 +556,16 @@ export class MonoAgentHarness implements AgentHarness {
     request: AgentHarnessRequest,
     options: { readonly omitHistory: boolean },
     emit?: (event: RuntimeEventLike) => void,
-  ): Promise<{ readonly context: BuiltAgentContext; readonly memory: ContextBlockInput | undefined; readonly skillDisclosureNames: readonly string[] }> {
+  ): Promise<{
+    readonly context: BuiltAgentContext;
+    readonly memory: ContextBlockInput | undefined;
+    readonly skillDisclosureNames: readonly string[];
+    // Raw loaded history (empty when omitted) + the omit decision, returned so the
+    // caller can emit a `turn_context` event describing exactly what the model saw
+    // this turn. Local to prepareContext otherwise.
+    readonly history: readonly HistoryMessage[];
+    readonly historyOmitted: boolean;
+  }> {
     const history = options.omitHistory ? [] : await this.loadHistory(request.conversationId);
     // Recalled memory deliberately does NOT go into the system prompt. It rides on
     // the per-turn USER MESSAGE instead (see runRuntime): the user message is the
@@ -587,7 +596,7 @@ export class MonoAgentHarness implements AgentHarness {
     // inlined up front) and does NOT add read_skill. Names load only when a
     // skillsRoot is set.
     const skillDisclosureNames = await this.loadSkillDisclosureNames();
-    return { context, memory, skillDisclosureNames };
+    return { context, memory, skillDisclosureNames, history, historyOmitted: options.omitHistory };
   }
 
   /**
@@ -735,6 +744,8 @@ export class MonoAgentHarness implements AgentHarness {
     runId: string,
     resumeSessionId: string | undefined,
     skillDisclosureNames: readonly string[],
+    history: readonly HistoryMessage[],
+    historyOmitted: boolean,
     onProviderStart?: () => void,
   ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
@@ -875,6 +886,17 @@ export class MonoAgentHarness implements AgentHarness {
       };
       recorder.onEvent(runConfigEvent);
       hostOnEvent?.(runConfigEvent);
+      // Synthetic turn_context event: describes the context this specific turn was
+      // driven with — the loaded conversation history (or the fact it was omitted
+      // because a warm provider session already carries the transcript) and the
+      // recalled long-term memory block. The user message is intentionally omitted
+      // (it is already the run's userInput). Emitted right after run_config and
+      // delivered to both sinks identically. Like run_config it double-fires on the
+      // resume-replay retry (the second carries the replayed history); consumers are
+      // last-wins.
+      const turnContextEvent = buildTurnContextEvent(history, historyOmitted, memory);
+      recorder.onEvent(turnContextEvent);
+      hostOnEvent?.(turnContextEvent);
       // Bracket the provider call so observability can separate provider+tool+IO
       // time (this event's durationMs) from harness overhead (context build,
       // attachment persistence, compaction, admission wait).
@@ -1421,6 +1443,77 @@ function composeUserMessageWithMemory(userMessage: string, memory: ContextBlockI
     return userMessage;
   }
   return `${userMessage}\n\n[Recalled long-term memory — background context for this turn, not the user's words:]\n${text}`;
+}
+
+// Per-entry display caps for the turn_context event. Kept well under the
+// downstream recorder redaction cap (redactJsonValue truncates strings at its
+// maxStringBytes, default 4096) so the clamp — not the redactor — decides where
+// content is cut, and the `truncated` flag stays meaningful.
+const TURN_CONTEXT_MESSAGE_MAX_CHARS = 2_000;
+const TURN_CONTEXT_MEMORY_MAX_CHARS = 4_000;
+
+/**
+ * Builds the synthetic `turn_context` event: what context THIS turn was driven
+ * with. `historyCount` is the number of loaded prior messages (0 when omitted);
+ * `historyOmitted` is true when a warm provider session already carries the
+ * transcript so no history was replayed. The `history`/`memory` keys are omitted
+ * entirely when empty. Each entry is clamped for display, flagging `truncated`.
+ * The current user message is deliberately NOT included (it is the run's userInput).
+ */
+function buildTurnContextEvent(
+  history: readonly HistoryMessage[],
+  historyOmitted: boolean,
+  memory: ContextBlockInput | undefined,
+): RuntimeEventLike {
+  const mappedHistory = history.map(clampTurnContextMessage);
+  const mem = turnContextMemory(memory);
+  return {
+    type: "turn_context",
+    historyCount: history.length,
+    historyOmitted,
+    ...(mappedHistory.length === 0 ? {} : { history: mappedHistory }),
+    ...(mem === undefined ? {} : { memory: mem }),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function clampTurnContextMessage(message: HistoryMessage): Record<string, unknown> {
+  const clamp = clampTurnContextText(message.content, TURN_CONTEXT_MESSAGE_MAX_CHARS);
+  return {
+    role: message.role,
+    content: clamp.text,
+    ...(message.name === undefined ? {} : { name: message.name }),
+    ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
+    ...(clamp.truncated ? { truncated: true } : {}),
+  };
+}
+
+/**
+ * Maps the recalled-memory ContextBlockInput (loadMemory returns `{kind, content,
+ * source}`) to the event's `memory` field, clamped. Returns undefined when there
+ * is nothing to show (no recall / empty content), so the caller omits the key.
+ */
+function turnContextMemory(
+  memory: ContextBlockInput | undefined,
+): { readonly content: string; readonly source?: string; readonly truncated?: true } | undefined {
+  const text = memoryBlockText(memory);
+  if (text === undefined) {
+    return undefined;
+  }
+  const source =
+    typeof memory === "object" && memory !== null && "source" in memory && typeof memory.source === "string"
+      ? memory.source
+      : undefined;
+  const clamp = clampTurnContextText(text, TURN_CONTEXT_MEMORY_MAX_CHARS);
+  return {
+    content: clamp.text,
+    ...(source === undefined ? {} : { source }),
+    ...(clamp.truncated ? { truncated: true } : {}),
+  };
+}
+
+function clampTurnContextText(value: string, max: number): { readonly text: string; readonly truncated: boolean } {
+  return value.length <= max ? { text: value, truncated: false } : { text: value.slice(0, max), truncated: true };
 }
 
 const MIME_EXTENSIONS: Record<string, string> = {
