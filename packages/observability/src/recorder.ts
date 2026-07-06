@@ -41,6 +41,7 @@ class JsonlRunRecorder implements RunRecorder {
   private readonly events: RuntimeEventLike[] = [];
   private readonly userInput: string | undefined;
   private readonly systemPrompt: string | undefined;
+  private readonly isolated: boolean | undefined;
   private readonly source: string | undefined;
   private readonly sourceDetail: string | undefined;
 
@@ -63,6 +64,7 @@ class JsonlRunRecorder implements RunRecorder {
         : undefined;
     this.systemPrompt =
       typeof options.systemPrompt === "string" ? truncateString(options.systemPrompt, SYSTEM_PROMPT_MAX_BYTES) : undefined;
+    this.isolated = typeof options.isolated === "boolean" ? options.isolated : undefined;
     this.source = typeof options.source === "string" && options.source.length > 0 ? options.source : undefined;
     this.sourceDetail =
       typeof options.sourceDetail === "string" && options.sourceDetail.length > 0 ? options.sourceDetail : undefined;
@@ -117,6 +119,7 @@ class JsonlRunRecorder implements RunRecorder {
         ? (redactJsonValue(result.error, this.maxStringBytes) as string)
         : undefined;
     const failoverHistory = normalizeFailoverHistory(result.failoverHistory);
+    const isolated = typeof result.isolated === "boolean" ? result.isolated : this.isolated;
     const summary: RunSummary = {
       runId: this.runId,
       conversationId: this.conversationId,
@@ -132,6 +135,7 @@ class JsonlRunRecorder implements RunRecorder {
       ...(result.cost === undefined ? {} : { cost: redactJsonValue(result.cost, this.maxStringBytes) }),
       ...(typeof result.model === "string" && result.model.length > 0 ? { model: result.model } : {}),
       ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
+      ...(isolated === undefined ? {} : { isolated }),
       eventCount: this.events.length,
       artifactPaths: this.artifactPaths(),
       ...(this.userInput === undefined ? {} : { userInput: this.userInput }),

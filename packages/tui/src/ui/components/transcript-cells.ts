@@ -122,13 +122,14 @@ export class ThinkingCell implements Component {
   }
 }
 
-/** Runtime warning / failover notice. */
+/** Runtime warning / failover / neutral notice. */
 export class NoticeCell implements Component {
   private readonly text: Text;
 
-  constructor(message: string, kind: "warning" | "error" = "warning") {
-    const style = kind === "error" ? styles.error : styles.warning;
-    this.text = new Text(style(`⚠ ${message}`), 1, 0);
+  constructor(message: string, kind: "info" | "warning" | "error" = "warning") {
+    const style = kind === "error" ? styles.error : kind === "warning" ? styles.warning : styles.info;
+    const prefix = kind === "info" ? "i" : "⚠";
+    this.text = new Text(style(`${prefix} ${message}`), 1, 0);
   }
 
   render(width: number): string[] {

@@ -1,4 +1,4 @@
-import type { AgentHarness, AgentHarnessFailure } from "./types.js";
+import type { AgentHarness, AgentHarnessFailure, AgentHarnessSessionBoundary } from "./types.js";
 import type {
   AgentMessageStream,
   AgentRequestBase,
@@ -30,6 +30,7 @@ export function createAgentResponder(options: {
    */
   readonly rollover?: SessionRollover;
   readonly rolloverTimezone?: string;
+  readonly rolloverNotice?: boolean;
   /** Injectable clock for the rollover date; defaults to the system clock. */
   readonly now?: () => Date;
 }): AgentResponder & {
@@ -50,6 +51,8 @@ export function createAgentResponder(options: {
   const now = options.now ?? ((): Date => new Date());
   const bucket = (conversationId: string): string =>
     bucketConversationId(conversationId, options.rollover, options.rolloverTimezone, now);
+  const lastBucketByBaseConversation = new Map<string, string>();
+  const responseTailsByBaseConversation = new Map<string, Promise<void>>();
 
   return {
     async dispose(): Promise<void> {
@@ -66,45 +69,68 @@ export function createAgentResponder(options: {
       await options.harness.appendVerbatimTurn?.(bucket(conversationId), text);
     },
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
-      const runtimeEventStream = createRuntimeEventStream(stream);
-      // Per-turn scratch: tool_timing arrives strictly before its tool_result and
-      // is folded into that tool_call_completed rather than emitted on its own.
-      const eventContext: StreamEventContext = { toolTimings: new Map() };
-      const response = await invoke({
-        conversationId: bucket(request.conversationId),
-        userMessage: request.text,
-        abortSignal: request.abortSignal,
-        ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
-        ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
-        onEvent: (event) => {
-          const streamEvent = streamEventFromRuntimeEvent(event, eventContext);
-          if (streamEvent !== undefined) {
-            runtimeEventStream.enqueueEvent(streamEvent);
-          }
-          const delta = assistantTextFromRuntimeEvent(event);
-          if (delta.length > 0) {
-            runtimeEventStream.enqueueText(delta);
-          }
-          // Commentary-phase narration appears in neither thinking nor the
-          // answer; surface it transiently on the ephemeral status line.
-          const commentary = commentaryTextFromRuntimeEvent(event);
-          if (commentary.length > 0) {
-            runtimeEventStream.enqueueStatus(commentary);
-          }
-        },
-      });
-      await runtimeEventStream.flush();
-
-      if (response.failure !== undefined) {
-        throw new AgentHarnessFailureError(response.failure);
-      }
-
-      return {
-        ...(response.text === undefined ? {} : { text: response.text }),
-        metadata: { ...response.metadata },
-      };
+      return await serializeByKey(
+        responseTailsByBaseConversation,
+        responseSerializationKey(request.conversationId, options.rollover),
+        async () => respondOnce(request, stream),
+      );
     },
   };
+
+  async function respondOnce(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
+    const runtimeEventStream = createRuntimeEventStream(stream);
+    const bucketed = bucketConversationId(request.conversationId, options.rollover, options.rolloverTimezone, now);
+    const boundary = rolloverBoundaryForRequest({
+      conversationId: request.conversationId,
+      bucketedConversationId: bucketed,
+      rollover: options.rollover,
+      lastBucketByBaseConversation,
+      now,
+    });
+    const notice = boundary !== undefined && options.rolloverNotice === true
+      ? `${sessionRolloverNotice(boundary)}\n\n`
+      : undefined;
+    if (notice !== undefined) {
+      runtimeEventStream.enqueueText(notice);
+    }
+    // Per-turn scratch: tool_timing arrives strictly before its tool_result and
+    // is folded into that tool_call_completed rather than emitted on its own.
+    const eventContext: StreamEventContext = { toolTimings: new Map() };
+    const response = await invoke({
+      conversationId: bucketed,
+      userMessage: request.text,
+      abortSignal: request.abortSignal,
+      ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+      ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
+      ...(boundary === undefined ? {} : { sessionBoundary: boundary }),
+      onEvent: (event) => {
+        const streamEvent = streamEventFromRuntimeEvent(event, eventContext);
+        if (streamEvent !== undefined) {
+          runtimeEventStream.enqueueEvent(streamEvent);
+        }
+        const delta = assistantTextFromRuntimeEvent(event);
+        if (delta.length > 0) {
+          runtimeEventStream.enqueueText(delta);
+        }
+        // Commentary-phase narration appears in neither thinking nor the
+        // answer; surface it transiently on the ephemeral status line.
+        const commentary = commentaryTextFromRuntimeEvent(event);
+        if (commentary.length > 0) {
+          runtimeEventStream.enqueueStatus(commentary);
+        }
+      },
+    });
+    await runtimeEventStream.flush();
+
+    if (response.failure !== undefined) {
+      throw new AgentHarnessFailureError(response.failure);
+    }
+
+    return {
+      ...(response.text === undefined ? {} : { text: notice === undefined ? response.text : `${notice}${response.text}` }),
+      metadata: { ...response.metadata },
+    };
+  }
 }
 
 export function assistantTextFromRuntimeEvent(event: unknown): string {
@@ -122,6 +148,29 @@ export function assistantTextFromRuntimeEvent(event: unknown): string {
     }
   }
   return text;
+}
+
+async function serializeByKey<T>(
+  tails: Map<string, Promise<void>>,
+  key: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = tails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const next = previous.catch(() => undefined).then(() => current);
+  tails.set(key, next);
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+    if (tails.get(key) === next) {
+      tails.delete(key);
+    }
+  }
 }
 
 /**
@@ -146,6 +195,7 @@ const RUNTIME_TELEMETRY_KINDS = new Set([
   "capabilities_resolved",
   "provider_bridge_latency",
   "run_config",
+  "session_boundary",
 ]);
 
 export function streamEventFromRuntimeEvent(
@@ -425,8 +475,49 @@ export function bucketConversationId(
   if (rollover !== "daily") {
     return conversationId;
   }
+  const baseConversationId = stripDailyBucket(conversationId);
   const suffix = `#${formatRolloverDay(now(), timezone)}`;
-  return conversationId.endsWith(suffix) ? conversationId : `${conversationId}${suffix}`;
+  return baseConversationId.endsWith(suffix) ? baseConversationId : `${baseConversationId}${suffix}`;
+}
+
+const DAILY_BUCKET_SUFFIX_RE = /#\d{4}-\d{2}-\d{2}$/u;
+
+function stripDailyBucket(conversationId: string): string {
+  return conversationId.replace(DAILY_BUCKET_SUFFIX_RE, "");
+}
+
+function responseSerializationKey(conversationId: string, rollover: SessionRollover | undefined): string {
+  return rollover === "daily" ? stripDailyBucket(conversationId) : conversationId;
+}
+
+function rolloverBoundaryForRequest(input: {
+  readonly conversationId: string;
+  readonly bucketedConversationId: string;
+  readonly rollover: SessionRollover | undefined;
+  readonly lastBucketByBaseConversation: Map<string, string>;
+  readonly now: () => Date;
+}): AgentHarnessSessionBoundary | undefined {
+  if (input.rollover !== "daily") {
+    return undefined;
+  }
+  const baseConversationId = stripDailyBucket(input.conversationId);
+  const previousConversationId = input.lastBucketByBaseConversation.get(baseConversationId);
+  input.lastBucketByBaseConversation.set(baseConversationId, input.bucketedConversationId);
+  if (previousConversationId === undefined || previousConversationId === input.bucketedConversationId) {
+    return undefined;
+  }
+  return {
+    type: "session_boundary",
+    kind: "rollover",
+    conversationId: input.bucketedConversationId,
+    baseConversationId,
+    previousConversationId,
+    timestamp: input.now().toISOString(),
+  };
+}
+
+function sessionRolloverNotice(boundary: AgentHarnessSessionBoundary): string {
+  return `New session bucket started: ${boundary.conversationId}.`;
 }
 
 function formatRolloverDay(date: Date, timezone: string | undefined): string {

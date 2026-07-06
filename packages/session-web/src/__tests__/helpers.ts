@@ -56,6 +56,8 @@ export interface SeedRunInput {
   readonly text: string;
   readonly source?: string;
   readonly artifactKind?: RunArtifactKind;
+  readonly providerSessionId?: string;
+  readonly isolated?: boolean;
   /** Fixed clock (ms) — controls `startedAt`, so multiple runs sort deterministically. */
   readonly at: number;
 }
@@ -77,7 +79,12 @@ export async function seedRun(input: SeedRunInput): Promise<RunSummary> {
     timestamp: new Date(input.at).toISOString(),
     message: { content: [{ type: "text", text: input.text }] },
   });
-  return await recorder.finish({ usage: { input_tokens: 10, output_tokens: 5 }, model: "pi:ollama:qwen" });
+  return await recorder.finish({
+    usage: { input_tokens: 10, output_tokens: 5 },
+    model: "pi:ollama:qwen",
+    ...(input.providerSessionId === undefined ? {} : { providerSessionId: input.providerSessionId }),
+    ...(input.isolated === undefined ? {} : { isolated: input.isolated }),
+  });
 }
 
 /** Write one real recorded run that is still marked running on disk. */

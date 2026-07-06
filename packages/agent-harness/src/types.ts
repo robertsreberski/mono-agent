@@ -24,6 +24,7 @@ export interface AgentHarnessRequest {
   readonly abortSignal: AbortSignal;
   readonly metadata?: Record<string, unknown>;
   readonly onEvent?: (event: RuntimeEventLike) => void;
+  readonly sessionBoundary?: AgentHarnessSessionBoundary;
   /**
    * Multimodal attachments. The harness saves each to `attachmentsDir` and
    * references the saved path (plus inlined text for documents) in the prompt,
@@ -77,6 +78,40 @@ export interface AgentHarness {
 
 export type AgentSessionMode = "continuous" | "per-message";
 
+export type AgentHarnessSessionBoundaryKind = "rollover" | "isolated" | "resume_replay";
+
+export interface AgentHarnessSessionBoundary {
+  readonly type: "session_boundary";
+  readonly kind: AgentHarnessSessionBoundaryKind;
+  readonly conversationId: string;
+  readonly baseConversationId?: string;
+  readonly previousConversationId?: string;
+  readonly providerSessionId?: string;
+  readonly reason?: string;
+  readonly timestamp?: string;
+}
+
+export type AgentHarnessSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
+
+export interface AgentHarnessSessionSnapshot {
+  readonly conversationId: string;
+  readonly providerSessionId: string;
+  readonly createdAt: number;
+  readonly lastActivityAt: number;
+  readonly busy: boolean;
+}
+
+export interface AgentHarnessSessionEvent {
+  readonly kind: AgentHarnessSessionEventKind;
+  readonly conversationId: string;
+  readonly providerSessionId?: string;
+  readonly createdAt?: number;
+  readonly lastActivityAt?: number;
+  readonly busy?: boolean;
+  readonly reason?: string;
+  readonly snapshot?: readonly AgentHarnessSessionSnapshot[];
+}
+
 export interface AgentHarnessSessionOptions {
   readonly mode: AgentSessionMode;
   readonly idleTimeoutMs: number;
@@ -93,6 +128,7 @@ export interface AgentHarnessSessionOptions {
    * are unaffected. Default false (no behavior change).
    */
   readonly isolateProactive?: boolean;
+  readonly onSessionEvent?: (event: AgentHarnessSessionEvent) => void | Promise<void>;
 }
 
 export interface AgentHarnessRecorderFactoryInput {
@@ -109,6 +145,8 @@ export interface AgentHarnessRecorderFactoryInput {
   readonly source?: string;
   /** Trigger name for `source`, e.g. the cron job id or webhook endpoint name. */
   readonly sourceDetail?: string;
+  /** Whether the run is detached from the shared warm provider session. */
+  readonly isolated?: boolean;
 }
 
 export interface AgentHarnessOptions {

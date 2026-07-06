@@ -1078,12 +1078,16 @@ function backfillRunningSummary(base: RunSummary, from: RunSummary): RunSummary 
   const startedAt = base.startedAt ?? from.startedAt;
   const source = base.source ?? from.source;
   const sourceDetail = base.sourceDetail ?? from.sourceDetail;
+  const providerSessionId = base.providerSessionId !== undefined ? base.providerSessionId : from.providerSessionId;
+  const isolated = base.isolated !== undefined ? base.isolated : from.isolated;
   return {
     ...base,
     conversationId,
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(source === undefined ? {} : { source }),
     ...(sourceDetail === undefined ? {} : { sourceDetail }),
+    ...(providerSessionId === undefined ? {} : { providerSessionId }),
+    ...(isolated === undefined ? {} : { isolated }),
   };
 }
 

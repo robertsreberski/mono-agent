@@ -124,6 +124,31 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
   });
 
+  it("releases an acquired session when boundary event callbacks throw before runtime", async () => {
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, executionMode: "sdk", session });
+
+    await harness.run(request("conv-boundary", "first"));
+    const failed = await harness.run({
+      ...request("conv-boundary", "second"),
+      sessionBoundary: {
+        type: "session_boundary",
+        kind: "rollover",
+        conversationId: "conv-boundary",
+        previousConversationId: "conv-boundary#old",
+      },
+      onEvent: () => {
+        throw new Error("stream callback failed");
+      },
+    });
+    await harness.run(request("conv-boundary", "third"));
+
+    expect(failed.failure?.kind).toBe("Error");
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]?.options.sessionId).toBe("ps-1");
+  });
+
   it("carries recalled memory on the user message of every turn, including the resumed turn", async () => {
     const identityPath = await identityFixture();
     const memory: MemoryStore = {
@@ -199,6 +224,7 @@ describe("AgentHarness continuous sessions", () => {
   it("retries once with history when the resumed session is stale", async () => {
     const identityPath = await identityFixture();
     const historyStore = await primedHistoryStore("conv-1");
+    const events: RuntimeEventLike[] = [];
     const fake = createSessionFakeRuntime(async (_prompt, options) => {
       if (options.sessionId !== undefined) {
         return { failureKind: "session_not_found", error: "session expired" };
@@ -210,13 +236,20 @@ describe("AgentHarness continuous sessions", () => {
     const first = await harness.run(request("conv-1"));
     expect(first.text).toBe("recovered");
 
-    const second = await harness.run(request("conv-1", "again"));
+    const second = await harness.run({ ...request("conv-1", "again"), onEvent: (event) => events.push(event) });
     expect(second.text).toBe("recovered");
     expect(fake.calls).toHaveLength(3);
     expect(fake.calls[1]?.options.sessionId).toBe("ps-next");
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
     expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
     expect(fake.disposedSessions).toContain("ps-next");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "session_boundary",
+      kind: "resume_replay",
+      conversationId: "conv-1",
+      providerSessionId: "ps-next",
+      reason: "runtime_result",
+    }));
   });
 
   it("retries once with history when a resumed attempt throws a structured session miss", async () => {

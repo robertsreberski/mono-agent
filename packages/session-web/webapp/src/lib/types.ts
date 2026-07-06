@@ -44,6 +44,16 @@ export type SessionStep =
       u?: Usage;
     }
   | {
+      k: "boundary";
+      ts: string;
+      kind: string;
+      conversationId?: string;
+      baseConversationId?: string;
+      previousConversationId?: string;
+      providerSessionId?: string;
+      reason?: string;
+    }
+  | {
       k: "result";
       ts: string;
       tcid: string;
@@ -57,6 +67,7 @@ export type SessionStep =
 
 export interface Session {
   id: string;
+  conversationId?: string;
   cwd: string;
   instance: string;
   startTs: string;
@@ -68,6 +79,8 @@ export interface Session {
   outcome: Outcome;
   model?: string;
   provider?: string;
+  providerSessionId?: string | null;
+  isolated?: boolean;
   api?: string;
   effort?: string;
   instr: string;

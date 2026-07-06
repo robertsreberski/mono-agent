@@ -38,6 +38,9 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 | `MONO_AGENT_SESSION_MODE` | `runtime.session.mode` | Continuous provider session mode per conversation. |
 | `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | `runtime.session.idleTimeoutMs` | Idle eviction window for sessions. See [../runtime/sessions-concurrency.md](/runtime/sessions-concurrency/). |
 | `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | `runtime.session.isolateProactive` | When `true`, proactive (cron/webhook) runs use a session separate from the conversation. |
+| `MONO_AGENT_SESSION_ROLLOVER` | `runtime.session.rollover` | `none` or `daily`; daily buckets conversation ids by local day. |
+| `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE` | `runtime.session.rolloverTimezone` | IANA timezone used for daily rollover buckets. |
+| `MONO_AGENT_SESSION_ROLLOVER_NOTICE` | `runtime.session.rolloverNotice` | When `true`, streams a one-line adapter-visible notice on the first turn of a new daily rollover bucket. Default off / unset; does not add an IPC path. |
 | `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS` | `concurrency.maxConcurrentRuns` | Runs executing against the provider at once (**per-channel**). |
 | `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS` | `concurrency.maxPendingRuns` | Runs admitted before the provider step (**per-channel**). |
 
@@ -47,7 +50,7 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
     "model": "pi:openai:gpt-5.5",
     "effort": "high",
     "fallbackModels": ["claude:claude-sonnet-4-6"],
-    "session": { "mode": "continuous", "idleTimeoutMs": 600000 }
+    "session": { "mode": "continuous", "idleTimeoutMs": 600000, "rollover": "daily", "rolloverTimezone": "UTC", "rolloverNotice": false }
   },
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
 }

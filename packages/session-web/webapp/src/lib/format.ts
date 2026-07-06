@@ -53,6 +53,7 @@ export function hexA(hex: string, a: number): string {
 export function stepColor(s: SessionStep): string {
   if (s.k === "prompt") return BLUE;
   if (s.k === "assistant") return AMBER;
+  if (s.k === "boundary") return VIOLET;
   if (s.k === "result") return s.ok ? OK : ERROR;
   return MUTED;
 }

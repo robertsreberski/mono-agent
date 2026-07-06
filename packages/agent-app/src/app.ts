@@ -35,6 +35,7 @@ import {
   createConfiguredAgentRuntime,
   createConfiguredMemory,
 } from "./configured-agent.js";
+import type { ConfiguredAgentSessionEvent, ConfiguredAgentSessionSnapshot } from "./configured-agent.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import { routeProactiveNotification } from "./proactive-notify.js";
@@ -115,6 +116,22 @@ export interface SandboxStatus extends SandboxEffectiveState {
   readonly detail: string;
   readonly warning?: string;
   readonly resolutionError?: string;
+}
+
+type SessionTraceState = "warm" | "cold";
+
+interface SessionTraceMetadata {
+  readonly currentBucketId: string;
+  readonly state: SessionTraceState;
+  readonly event: ConfiguredAgentSessionEvent["kind"];
+  readonly updatedAt: string;
+  readonly snapshot?: readonly ConfiguredAgentSessionSnapshot[];
+  readonly providerSessionId?: string;
+  readonly createdAt?: number;
+  readonly lastActivityAt?: number;
+  readonly busy?: boolean;
+  readonly reason?: string;
+  readonly nextRolloverAt?: string;
 }
 
 export interface MonoAgentApp {
@@ -211,9 +228,11 @@ class MonoAgentAppController implements MonoAgentApp {
   };
   private sandboxStatusValue: SandboxStatus = DEFAULT_SANDBOX_STATUS;
   private selectedSkillsValue: readonly string[] | undefined;
+  private sessionMetadataValue: SessionTraceMetadata | undefined;
   /** The exporter the responder threads into agent-host (first configured exporter). */
   private resolvedExporter: ResolvedExporter | undefined;
   private traceSource: TraceSourceHandle | undefined;
+  private traceRefreshTail: Promise<void> = Promise.resolve();
   // Best-effort mirror of `traceSource` into the machine-wide global registry,
   // present only when `shouldMirrorTraceSourceGlobally` gates it on (see
   // `startTraceability`). Kept in lockstep with `traceSource` on every
@@ -525,22 +544,30 @@ class MonoAgentAppController implements MonoAgentApp {
   }
 
   async refreshTraceSource(reason: string): Promise<void> {
-    if (this.traceSource === undefined) {
-      return;
-    }
-    const patch = { transports: this.activeTransports(), metadata: this.traceMetadata(reason) };
-    try {
-      await this.traceSource.update(patch);
-    } catch (error) {
-      this.logger?.warn?.("Traceability source update failed.", { reason: reasonOf(error) });
-    }
-    if (this.globalTraceSource !== undefined) {
-      try {
-        await this.globalTraceSource.update(patch);
-      } catch (error) {
-        this.logger?.warn?.("Global trace-source mirror update failed.", { reason: reasonOf(error) });
+    const run = async (): Promise<void> => {
+      if (this.traceSource === undefined) {
+        return;
       }
-    }
+      const patch = { transports: this.activeTransports(), metadata: this.traceMetadata(reason) };
+      try {
+        await this.traceSource.update(patch);
+      } catch (error) {
+        this.logger?.warn?.("Traceability source update failed.", { reason: reasonOf(error) });
+      }
+      if (this.globalTraceSource !== undefined) {
+        try {
+          await this.globalTraceSource.update(patch);
+        } catch (error) {
+          this.logger?.warn?.("Global trace-source mirror update failed.", { reason: reasonOf(error) });
+        }
+      }
+    };
+    const next = this.traceRefreshTail.then(run, run);
+    this.traceRefreshTail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    await next;
   }
 
   /**
@@ -984,6 +1011,7 @@ class MonoAgentAppController implements MonoAgentApp {
       // when config.observability.exporters is non-empty).
       observabilityContext,
       exporterWarn: (warning) => this.recordExporterWarning(warning),
+      onSessionEvent: (event) => this.recordSessionEvent(event, coreConfig),
       // Publish every run's start/event/finish to the shared bus so the `live`
       // channel can relay it. Best-effort + additive (see broadcast recorder).
       runEventSink: this.liveEventBus,
@@ -1270,6 +1298,37 @@ class MonoAgentAppController implements MonoAgentApp {
     this.selectedSkillsValue = [...coreConfig.context.selectedSkills];
   }
 
+  private recordSessionEvent(event: ConfiguredAgentSessionEvent, coreConfig: MonoAgentConfig): void {
+    const now = new Date();
+    const nextRolloverAt = coreConfig.runtime.session.rollover === "daily"
+      ? nextDailyRolloverAt(now, coreConfig.runtime.session.rolloverTimezone)
+      : undefined;
+    const snapshot = event.snapshot ?? [];
+    const current = snapshot.find((entry) => entry.conversationId === event.conversationId);
+    const providerSessionId = current?.providerSessionId ?? event.providerSessionId;
+    this.sessionMetadataValue = {
+      currentBucketId: event.conversationId,
+      state: current === undefined ? "cold" : "warm",
+      event: event.kind,
+      updatedAt: now.toISOString(),
+      ...(snapshot.length === 0 ? {} : { snapshot }),
+      ...(providerSessionId === undefined ? {} : { providerSessionId }),
+      ...(current?.createdAt === undefined ? {} : { createdAt: current.createdAt }),
+      ...(current?.lastActivityAt === undefined ? {} : { lastActivityAt: current.lastActivityAt }),
+      ...(current?.busy === undefined ? {} : { busy: current.busy }),
+      ...(event.reason === undefined ? {} : { reason: event.reason }),
+      ...(nextRolloverAt === undefined ? {} : { nextRolloverAt }),
+    };
+    if (event.kind === "evicted") {
+      this.logger?.info?.("Provider session evicted.", {
+        conversationId: event.conversationId,
+        providerSessionId: event.providerSessionId,
+        reason: event.reason,
+      });
+    }
+    void this.refreshTraceSource(`session-${event.kind}`).catch(() => undefined);
+  }
+
   private traceMetadata(reason: string): Record<string, unknown> {
     const channels: Record<string, unknown> = {};
     for (const driver of this.drivers) {
@@ -1323,9 +1382,80 @@ class MonoAgentAppController implements MonoAgentApp {
               selectedSkills: [...this.selectedSkillsValue],
             },
           }),
+      ...(this.sessionMetadataValue === undefined ? {} : { session: this.sessionMetadataValue }),
       channels,
     };
   }
+}
+
+function nextDailyRolloverAt(now: Date, timezone: string | undefined): string | undefined {
+  if (timezone === undefined || timezone.trim().length === 0) {
+    const next = new Date(now);
+    next.setHours(24, 0, 0, 0);
+    return next.toISOString();
+  }
+  try {
+    const parts = datePartsInTimeZone(now, timezone);
+    return new Date(zonedDateTimeToUtcMs(
+      {
+        year: parts.year,
+        month: parts.month,
+        day: parts.day + 1,
+        hour: 0,
+        minute: 0,
+        second: 0,
+      },
+      timezone,
+    )).toISOString();
+  } catch {
+    const next = new Date(now);
+    next.setHours(24, 0, 0, 0);
+    return next.toISOString();
+  }
+}
+
+interface DateTimeParts {
+  readonly year: number;
+  readonly month: number;
+  readonly day: number;
+  readonly hour: number;
+  readonly minute: number;
+  readonly second: number;
+}
+
+function zonedDateTimeToUtcMs(parts: DateTimeParts, timezone: string): number {
+  const targetAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  let utcMs = targetAsUtc - timeZoneOffsetMs(new Date(targetAsUtc), timezone);
+  utcMs = targetAsUtc - timeZoneOffsetMs(new Date(utcMs), timezone);
+  return utcMs;
+}
+
+function timeZoneOffsetMs(date: Date, timezone: string): number {
+  const parts = datePartsInTimeZone(date, timezone);
+  const asUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return asUtc - date.getTime();
+}
+
+function datePartsInTimeZone(date: Date, timezone: string): DateTimeParts {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const entries = new Map(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: Number(entries.get("year")),
+    month: Number(entries.get("month")),
+    day: Number(entries.get("day")),
+    hour: Number(entries.get("hour")),
+    minute: Number(entries.get("minute")),
+    second: Number(entries.get("second")),
+  };
 }
 
 function sandboxStatusFromState(state: SandboxEffectiveState): SandboxStatus {

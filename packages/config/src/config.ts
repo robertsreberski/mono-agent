@@ -462,6 +462,11 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
     && env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE.trim()
     ? env.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE.trim()
     : undefined;
+  // Unset stays undefined so hosts can keep their existing display policy;
+  // explicit false is preserved for operators who want to suppress notices.
+  const rolloverNotice = normalizeOptionalString(env.MONO_AGENT_SESSION_ROLLOVER_NOTICE) === undefined
+    ? undefined
+    : readBoolean(env.MONO_AGENT_SESSION_ROLLOVER_NOTICE, "MONO_AGENT_SESSION_ROLLOVER_NOTICE", false, invalidEnv);
   // Unset stays undefined so the harness default (false, no behavior change) is
   // preserved byte-for-byte; only parse the boolean when an operator opts in.
   const isolateProactive = normalizeOptionalString(env.MONO_AGENT_SESSION_ISOLATE_PROACTIVE) === undefined
@@ -472,6 +477,7 @@ function readSessionConfig(env: Record<string, string | undefined>): MonoAgentCo
     idleTimeoutMs,
     rollover,
     ...(rolloverTimezone === undefined ? {} : { rolloverTimezone }),
+    ...(rolloverNotice === undefined ? {} : { rolloverNotice }),
     ...(isolateProactive === undefined ? {} : { isolateProactive }),
   };
 }

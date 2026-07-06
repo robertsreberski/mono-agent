@@ -98,6 +98,20 @@ describe("createAgentResponder", () => {
     expect(appended).toEqual(["Hel", "lo", "!"]);
   });
 
+  it("returns response text without trimming trailing formatting", async () => {
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => ({
+        ...okResponse(request.conversationId),
+        text: "ok\n\n",
+      }),
+    };
+    const responder = createAgentResponder({ harness });
+
+    const response = await responder.respond(baseRequest(), noopStream());
+
+    expect(response.text).toBe("ok\n\n");
+  });
+
   it("cancel(conversationId) delegates to the harness", async () => {
     const cancelled: string[] = [];
     const harness: AgentHarness = {
@@ -140,6 +154,156 @@ describe("createAgentResponder", () => {
     expect(seen.cancelled).toBe("telegram:42#2026-06-19");
   });
 
+  it("replaces an old daily bucket suffix instead of appending another one", async () => {
+    expect(bucketConversationId(
+      "telegram:42#2026-06-18",
+      "daily",
+      "UTC",
+      () => new Date("2026-06-19T23:30:00Z"),
+    )).toBe("telegram:42#2026-06-19");
+  });
+
+  it("passes a rollover session_boundary only on the first turn of a new bucket", async () => {
+    let now = new Date("2026-06-19T23:30:00Z");
+    const seen: AgentHarnessRequest[] = [];
+    const streamed: AgentStreamEvent[] = [];
+    const harness: AgentHarness = {
+      submit: async (request: AgentHarnessRequest) => {
+        seen.push(request);
+        if (request.sessionBoundary !== undefined) {
+          request.onEvent?.({ ...request.sessionBoundary });
+        }
+        return okResponse(request.conversationId);
+      },
+      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+    };
+    const responder = createAgentResponder({
+      harness,
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => now,
+    });
+    const stream: AgentMessageStream = {
+      append: async () => {},
+      event: async (event) => {
+        streamed.push(event);
+      },
+    };
+
+    await responder.respond(baseRequest("telegram:42"), stream);
+    now = new Date("2026-06-20T00:05:00Z");
+    await responder.respond(baseRequest("telegram:42"), stream);
+    await responder.respond(baseRequest("telegram:42"), stream);
+
+    expect(seen.map((request) => request.conversationId)).toEqual([
+      "telegram:42#2026-06-19",
+      "telegram:42#2026-06-20",
+      "telegram:42#2026-06-20",
+    ]);
+    expect(seen[0]?.sessionBoundary).toBeUndefined();
+    expect(seen[1]?.sessionBoundary).toMatchObject({
+      type: "session_boundary",
+      kind: "rollover",
+      conversationId: "telegram:42#2026-06-20",
+      baseConversationId: "telegram:42",
+      previousConversationId: "telegram:42#2026-06-19",
+    });
+    expect(seen[2]?.sessionBoundary).toBeUndefined();
+    expect(streamed).toContainEqual({
+      type: "runtime_telemetry",
+      kind: "session_boundary",
+      data: {
+        kind: "rollover",
+        conversationId: "telegram:42#2026-06-20",
+        baseConversationId: "telegram:42",
+        previousConversationId: "telegram:42#2026-06-19",
+        timestamp: "2026-06-20T00:05:00.000Z",
+      },
+    });
+  });
+
+  it("streams and returns an opt-in rollover notice without writing durable history", async () => {
+    let now = new Date("2026-06-19T23:30:00Z");
+    const verbatim: Array<[string, string]> = [];
+    const appended: string[] = [];
+    const harness: AgentHarness = {
+      submit: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+      appendVerbatimTurn: async (conversationId, text) => {
+        verbatim.push([conversationId, text]);
+      },
+    };
+    const responder = createAgentResponder({
+      harness,
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      rolloverNotice: true,
+      now: () => now,
+    });
+
+    await responder.respond(baseRequest("telegram:42"), noopStream());
+    now = new Date("2026-06-20T00:05:00Z");
+    const response = await responder.respond(baseRequest("telegram:42"), {
+      append: async (delta) => {
+        appended.push(delta);
+      },
+    });
+
+    expect(verbatim).toEqual([]);
+    expect(appended).toEqual(["New session bucket started: telegram:42#2026-06-20.\n\n"]);
+    expect(response.text).toBe("New session bucket started: telegram:42#2026-06-20.\n\nok");
+  });
+
+  it("serializes rollover boundary decisions per base conversation", async () => {
+    let now = new Date("2026-06-19T23:30:00Z");
+    let firstNewStarted!: () => void;
+    let releaseFirstNew!: () => void;
+    const firstNewSubmitted = new Promise<void>((resolve) => {
+      firstNewStarted = resolve;
+    });
+    const firstNewRelease = new Promise<void>((resolve) => {
+      releaseFirstNew = resolve;
+    });
+    const seen: AgentHarnessRequest[] = [];
+    const harness: AgentHarness = {
+      submit: async (request: AgentHarnessRequest) => {
+        seen.push(request);
+        if (seen.length === 2) {
+          firstNewStarted();
+          await firstNewRelease;
+        }
+        return okResponse(request.conversationId);
+      },
+      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+    };
+    const responder = createAgentResponder({
+      harness,
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => now,
+    });
+
+    await responder.respond(baseRequest("telegram:42"), noopStream());
+    now = new Date("2026-06-20T00:05:00Z");
+    const first = responder.respond(baseRequest("telegram:42"), noopStream());
+    await firstNewSubmitted;
+    const second = responder.respond(baseRequest("telegram:42"), noopStream());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(seen).toHaveLength(2);
+    releaseFirstNew();
+    await Promise.all([first, second]);
+
+    expect(seen).toHaveLength(3);
+    expect(seen[1]?.sessionBoundary).toMatchObject({
+      kind: "rollover",
+      conversationId: "telegram:42#2026-06-20",
+      previousConversationId: "telegram:42#2026-06-19",
+    });
+    expect(seen[2]?.sessionBoundary).toBeUndefined();
+  });
+
   it("does not bucket the conversationId when rollover is off (default)", async () => {
     let submitted = "";
     const harness: AgentHarness = {
@@ -154,6 +318,35 @@ describe("createAgentResponder", () => {
     await responder.respond(baseRequest("cron:scan"), noopStream());
 
     expect(submitted).toBe("cron:scan");
+  });
+
+  it("does not serialize distinct non-rollover conversations that naturally end with daily bucket syntax", async () => {
+    let releaseFirst!: () => void;
+    const firstRelease = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const started: string[] = [];
+    const harness: AgentHarness = {
+      submit: async (request: AgentHarnessRequest) => {
+        started.push(request.conversationId);
+        if (started.length === 1) {
+          await firstRelease;
+        }
+        return okResponse(request.conversationId);
+      },
+      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+    };
+    const responder = createAgentResponder({ harness });
+
+    const first = responder.respond(baseRequest("thread#2026-06-19"), noopStream());
+    await Promise.resolve();
+    const second = responder.respond(baseRequest("thread#2026-06-20"), noopStream());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(started).toEqual(["thread#2026-06-19", "thread#2026-06-20"]);
+    releaseFirst();
+    await Promise.all([first, second]);
   });
 });
 

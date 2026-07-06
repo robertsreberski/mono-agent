@@ -1,6 +1,6 @@
 import { readMonoAgentConfigJson } from "./json-source.js";
 import type { MonoAgentConfigJson } from "./json-source.js";
-import { loadMonoAgentConfig } from "./config.js";
+import { loadMonoAgentConfig, MonoAgentConfigError } from "./config.js";
 import type { MonoAgentConfig } from "./types.js";
 
 export interface LoadMonoAgentConfigWithSourcesInput {
@@ -77,6 +77,14 @@ export function layerJsonOntoEnv(
   }
   if (json.runtime?.session?.rolloverTimezone !== undefined) {
     fromJson.MONO_AGENT_SESSION_ROLLOVER_TIMEZONE = json.runtime.session.rolloverTimezone;
+  }
+  if (json.runtime?.session?.rolloverNotice !== undefined) {
+    if (typeof json.runtime.session.rolloverNotice !== "boolean") {
+      throw new MonoAgentConfigError("invalid_env", "runtime.session.rolloverNotice must be a boolean.", {
+        path: "runtime.session.rolloverNotice",
+      });
+    }
+    fromJson.MONO_AGENT_SESSION_ROLLOVER_NOTICE = String(json.runtime.session.rolloverNotice);
   }
   if (json.runtime?.session?.isolateProactive !== undefined) {
     fromJson.MONO_AGENT_SESSION_ISOLATE_PROACTIVE = String(json.runtime.session.isolateProactive);

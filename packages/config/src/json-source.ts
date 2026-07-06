@@ -120,6 +120,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly idleTimeoutMs?: number;
       readonly rollover?: string;
       readonly rolloverTimezone?: string;
+      readonly rolloverNotice?: boolean;
       readonly isolateProactive?: boolean;
     };
   };

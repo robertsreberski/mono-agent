@@ -25,7 +25,7 @@ import type { LiveSessionManager } from "./live-session.js";
 import { createSemaphore } from "./semaphore.js";
 import type { Semaphore } from "./semaphore.js";
 import { createRuntimeSessionStore } from "./sessions.js";
-import type { RuntimeSessionRecord, RuntimeSessionStore } from "./sessions.js";
+import type { RuntimeSessionRecord, RuntimeSessionSnapshot, RuntimeSessionStore } from "./sessions.js";
 import type {
   AgentHarness,
   AgentHarnessFailure,
@@ -33,6 +33,8 @@ import type {
   AgentHarnessRequest,
   AgentHarnessResponse,
   AgentHarnessRuntimeOptionsExtension,
+  AgentHarnessSessionBoundary,
+  AgentHarnessSessionEvent,
 } from "./types.js";
 import { createSkillsCache } from "./skills/index.js";
 import type { SkillsCache } from "./skills/index.js";
@@ -84,7 +86,8 @@ export class MonoAgentHarness implements AgentHarness {
     this.sessionStore = options.session?.mode === "continuous"
       ? createRuntimeSessionStore({
         idleTimeoutMs: options.session.idleTimeoutMs,
-        onEvict: async (record) => {
+        onEvict: async (record, reason) => {
+          this.publishSessionEvent(sessionEventFromRecord("evicted", record, reason, this.sessionStoreSnapshot()));
           await this.options.runtime.disposeSession?.(record.providerSessionId);
         },
       })
@@ -150,13 +153,31 @@ export class MonoAgentHarness implements AgentHarness {
     validateRequest(request);
     const runId = this.options.createRunId?.() ?? createDefaultRunId();
     const runSource = runSourceFromRequest(request);
+    // Proactive isolation (opt-in): a cron/proactive run is treated as a one-shot
+    // ephemeral turn — it neither resumes nor persists the shared continuous
+    // session, so its large tool dumps stay out of the interactive transcript.
+    // Computed before recorder construction so even running/early-failed summaries
+    // carry the run's session identity.
+    //
+    // A per-trigger MODEL override is isolated, regardless of the opt-in, ONLY
+    // when it names a model DIFFERENT from the harness default: the turn runs on a
+    // different model (often a different runtime) and the provider session is keyed
+    // by conversationId + bound to a model, so resuming or persisting it against
+    // the shared session would mix two models' lineage (durable-session corruption
+    // / wrong-runtime disposal). Effort-only, same-model, and invalid overrides
+    // leave the model chain unchanged, so they keep the shared session — matching
+    // the runtime/session-key decision taken later in runRuntime.
+    const proactiveIsolated = this.isProactiveIsolated(request);
+    const modelOverrideIsolated = requestOverridesModel(request, this.options.model);
+    const isolated = proactiveIsolated || modelOverrideIsolated;
     const recorder = this.options.recorderFactory?.({
       runId,
       conversationId: request.conversationId,
       userInput: request.userMessage,
+      isolated,
       ...(runSource.source === undefined ? {} : { source: runSource.source }),
       ...(runSource.sourceDetail === undefined ? {} : { sourceDetail: runSource.sourceDetail }),
-    }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId });
+    }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId, isolated });
     await recorder.start?.();
 
     if (request.abortSignal.aborted) {
@@ -187,21 +208,6 @@ export class MonoAgentHarness implements AgentHarness {
         return { metadata: responseMetadata(runId, request, undefined, summary), failure };
       }
     }
-    // Proactive isolation (opt-in): a cron/proactive run is treated as a one-shot
-    // ephemeral turn — it neither resumes nor persists the shared continuous
-    // session, so its large tool dumps stay out of the interactive transcript.
-    // Computed once and applied as a minimal gate on the session machinery below;
-    // interactive (non-cron) runs are byte-for-byte unchanged.
-    //
-    // A per-trigger MODEL override is isolated, regardless of the opt-in, ONLY
-    // when it names a model DIFFERENT from the harness default: the turn runs on a
-    // different model (often a different runtime) and the provider session is keyed
-    // by conversationId + bound to a model, so resuming or persisting it against
-    // the shared session would mix two models' lineage (durable-session corruption
-    // / wrong-runtime disposal). Effort-only, same-model, and invalid overrides
-    // leave the model chain unchanged, so they keep the shared session — matching
-    // the runtime/session-key decision taken later in runRuntime.
-    const isolated = this.isProactiveIsolated(request) || requestOverridesModel(request, this.options.model);
     const sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
@@ -221,6 +227,35 @@ export class MonoAgentHarness implements AgentHarness {
       }
     };
     try {
+      if (request.sessionBoundary !== undefined) {
+        emit(withSessionBoundaryTimestamp(request.sessionBoundary, this.nowIso()));
+      }
+      if (isolated) {
+        const reason = proactiveIsolated ? "proactive" : "model_override";
+        emit({
+          type: "session_boundary",
+          kind: "isolated",
+          conversationId: request.conversationId,
+          reason,
+          timestamp: this.nowIso(),
+        });
+        this.publishSessionEvent({
+          kind: "isolated",
+          conversationId: request.conversationId,
+          reason,
+          snapshot: this.sessionStoreSnapshot(),
+        });
+      } else if (this.sessionsEnabled()) {
+        if (sessionRecord === undefined) {
+          this.publishSessionEvent({
+            kind: "cold",
+            conversationId: request.conversationId,
+            snapshot: this.sessionStoreSnapshot(),
+          });
+        } else {
+          this.publishSessionEvent(sessionEventFromRecord("acquired", sessionRecord, undefined, this.sessionStoreSnapshot()));
+        }
+      }
       // Persist any inbound attachments to disk and reference them in the
       // prompt so the agent opens them with its own file tools. The expanded
       // request (absolute paths + inlined document text) feeds the provider
@@ -269,8 +304,15 @@ export class MonoAgentHarness implements AgentHarness {
           message: `Provider session ${resumeSessionId} could not be resumed; retrying with conversation history.`,
           provider_session_id: resumeSessionId,
         };
-        recorder.onEvent(warning);
-        request.onEvent?.(warning);
+        emit(warning);
+        emit({
+          type: "session_boundary",
+          kind: "resume_replay",
+          conversationId: request.conversationId,
+          providerSessionId: resumeSessionId,
+          reason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result",
+          timestamp: this.nowIso(),
+        });
         await this.sessionStore?.evict(request.conversationId, "stale", resumeSessionId);
         resumeSessionId = undefined;
         prepared = await this.prepareContext(activeRequest, { omitHistory: false }, emit);
@@ -291,7 +333,7 @@ export class MonoAgentHarness implements AgentHarness {
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
         await this.retireRunResultSession(request.conversationId, sessionRecord, runtimeResult.providerSessionId);
-        const summary = await recorder.finish({ ...runtimeResult, systemPrompt: context.prompt, cancelled: true, failureKind: "cancelled" });
+        const summary = await recorder.finish({ ...runtimeResult, systemPrompt: context.prompt, isolated, cancelled: true, failureKind: "cancelled" });
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
           failure: {
@@ -308,8 +350,8 @@ export class MonoAgentHarness implements AgentHarness {
       // redacted+capped at the recorder and sensitive-gated at export.
       const summary = await recorder.finish(
         failure === undefined
-          ? { ...runtimeResult, systemPrompt: context.prompt }
-          : { ...runtimeResult, systemPrompt: context.prompt, failureKind: failure.kind, error: failure.message },
+          ? { ...runtimeResult, systemPrompt: context.prompt, isolated }
+          : { ...runtimeResult, systemPrompt: context.prompt, isolated, failureKind: failure.kind, error: failure.message },
       );
       const baseMetadata = responseMetadata(runId, request, context, summary, runtimeResult);
 
@@ -395,7 +437,17 @@ export class MonoAgentHarness implements AgentHarness {
       // admission). No-op when onProviderStart already released it.
       leavePending();
       if (sessionRecord !== undefined) {
-        this.sessionStore?.release(request.conversationId, sessionRecord);
+        const released = this.sessionStore?.release(request.conversationId, sessionRecord);
+        if (released !== false) {
+          const snapshot = this.sessionStoreSnapshot();
+          const live = snapshot.find((entry) =>
+            entry.conversationId === sessionRecord.conversationId &&
+            entry.providerSessionId === sessionRecord.providerSessionId
+          );
+          if (live !== undefined || released === undefined) {
+            this.publishSessionEvent(sessionEventFromRecord("released", live ?? sessionRecord, undefined, snapshot));
+          }
+        }
       }
     }
   }
@@ -450,6 +502,30 @@ export class MonoAgentHarness implements AgentHarness {
       return;
     }
     this.sessionStore?.save(conversationId, providerSessionId, owner);
+    const snapshot = this.sessionStoreSnapshot();
+    const saved = snapshot.find((entry) => entry.conversationId === conversationId && entry.providerSessionId === providerSessionId);
+    if (saved !== undefined) {
+      this.publishSessionEvent({ kind: "saved", ...saved, snapshot });
+    }
+  }
+
+  private nowIso(): string {
+    return this.options.now?.().toISOString() ?? new Date().toISOString();
+  }
+
+  private publishSessionEvent(event: AgentHarnessSessionEvent): void {
+    try {
+      const result = this.options.session?.onSessionEvent?.(event);
+      if (result !== undefined) {
+        void Promise.resolve(result).catch(() => undefined);
+      }
+    } catch {
+      // Session status is diagnostic; runtime cleanup and turn outcome must win.
+    }
+  }
+
+  private sessionStoreSnapshot(): readonly RuntimeSessionSnapshot[] {
+    return this.sessionStore?.list?.() ?? [];
   }
 
   /**
@@ -864,6 +940,28 @@ export class MonoAgentHarness implements AgentHarness {
 
 export function createAgentHarness(options: AgentHarnessOptions): AgentHarness {
   return new MonoAgentHarness(options);
+}
+
+function withSessionBoundaryTimestamp(event: AgentHarnessSessionBoundary, timestamp: string): RuntimeEventLike {
+  return event.timestamp === undefined ? { ...event, timestamp } : { ...event };
+}
+
+function sessionEventFromRecord(
+  kind: AgentHarnessSessionEvent["kind"],
+  record: RuntimeSessionRecord | RuntimeSessionSnapshot,
+  reason: string | undefined,
+  snapshot: AgentHarnessSessionEvent["snapshot"],
+): AgentHarnessSessionEvent {
+  return {
+    kind,
+    conversationId: record.conversationId,
+    providerSessionId: record.providerSessionId,
+    createdAt: record.createdAt,
+    lastActivityAt: record.lastActivityAt,
+    busy: record.busy,
+    ...(reason === undefined ? {} : { reason }),
+    ...(snapshot === undefined ? {} : { snapshot }),
+  };
 }
 
 function validateOptions(options: AgentHarnessOptions): void {

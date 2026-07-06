@@ -41,6 +41,17 @@ interface CallVM {
 type StepVM =
   | { kind: "prompt"; key: string; color: string; glow: string; timeStr: string; text: string }
   | {
+      kind: "boundary";
+      key: string;
+      color: string;
+      glow: string;
+      timeStr: string;
+      dt: string;
+      label: string;
+      meta: string;
+      reason?: string;
+    }
+  | {
       kind: "assistant";
       key: string;
       color: string;
@@ -72,6 +83,23 @@ const secLabel = (color: string) => ({
 export function timelineEmptyMessage(status: string, itemCount: number): string | undefined {
   if (itemCount > 0) return undefined;
   return status === "running" ? "Waiting for live events..." : "No timeline events captured.";
+}
+
+export function boundaryStepLabel(kind: string): string {
+  if (kind === "rollover") return "Session rollover";
+  if (kind === "isolated") return "Isolated session";
+  if (kind === "resume_replay") return "Resume replay";
+  return kind.length > 0 ? kind.replace(/_/gu, " ") : "Session boundary";
+}
+
+export function boundaryStepMeta(step: Extract<SessionStep, { k: "boundary" }>): string {
+  const parts = [
+    step.previousConversationId === undefined ? undefined : `previous ${step.previousConversationId}`,
+    step.baseConversationId === undefined ? undefined : `base ${step.baseConversationId}`,
+    step.conversationId === undefined ? undefined : `current ${step.conversationId}`,
+    step.providerSessionId === undefined ? undefined : `provider ${step.providerSessionId}`,
+  ].filter((part): part is string => part !== undefined && part.length > 0);
+  return parts.join(" | ");
 }
 
 export function DetailView({ id, onBack }: Props) {
@@ -151,7 +179,7 @@ export function DetailView({ id, onBack }: Props) {
         prevTs = x.ts;
         return;
       }
-      const color = x.k === "prompt" ? BLUE : x.k === "assistant" ? AMBER : MUTED;
+      const color = x.k === "prompt" ? BLUE : x.k === "assistant" ? AMBER : x.k === "boundary" ? VIOLET : MUTED;
       const dtMs = prevTs != null ? +new Date(x.ts) - +new Date(prevTs) : 0;
       const dt = prevTs != null && dtMs > 0 ? "+" + fmtDur(dtMs) : "";
       prevTs = x.ts;
@@ -167,6 +195,18 @@ export function DetailView({ id, onBack }: Props) {
           glow: hexA(color, 0.5),
           timeStr: timeStr(x.ts),
           text: pt + (x.tr ? "\n…" : ""),
+        });
+      } else if (x.k === "boundary") {
+        steps.push({
+          kind: "boundary",
+          key: "s" + i,
+          color,
+          glow: hexA(color, 0.5),
+          timeStr: timeStr(x.ts),
+          dt,
+          label: boundaryStepLabel(x.kind),
+          meta: boundaryStepMeta(x),
+          ...(x.reason === undefined ? {} : { reason: x.reason }),
         });
       } else if (x.k === "assistant") {
         const thinkText = (x.think || []).map((tk) => tk.t + (tk.tr ? "…" : "")).join("\n\n");
@@ -586,6 +626,24 @@ export function DetailView({ id, onBack }: Props) {
                       <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIMMER }}>{st.timeStr}</span>
                     </div>
                     <Markdown src={st.text} style={{ fontSize: 14, lineHeight: 1.55, color: "#D4D8DE", fontFamily: FONT_UI }} />
+                  </div>
+                ) : st.kind === "boundary" ? (
+                  <div style={{ background: "rgba(177,138,224,.055)", border: "1px solid rgba(177,138,224,.2)", borderRadius: 10, padding: "11px 13px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: VIOLET, fontWeight: 600 }}>
+                        Session boundary
+                      </span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIMMER, whiteSpace: "nowrap" }}>
+                        {st.dt ? st.dt + " · " : ""}{st.timeStr}
+                      </span>
+                    </div>
+                    <div style={{ marginTop: 7, color: "#D8CEE8", fontSize: 13, lineHeight: 1.45, overflowWrap: "anywhere" }}>{st.label}</div>
+                    {st.meta.length > 0 && (
+                      <div style={{ marginTop: 5, fontFamily: FONT_MONO, fontSize: 11, lineHeight: 1.45, color: "#9A90AA", overflowWrap: "anywhere" }}>{st.meta}</div>
+                    )}
+                    {st.reason !== undefined && st.reason.length > 0 && (
+                      <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45, color: DIM, overflowWrap: "anywhere" }}>{st.reason}</div>
+                    )}
                   </div>
                 ) : (
                   <div style={{ background: "linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012))", border: "1px solid rgba(255,255,255,.09)", borderRadius: 12, padding: "14px 16px" }}>

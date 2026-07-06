@@ -456,6 +456,13 @@ function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget
       deps.stdout(`  ${line}\n`);
     }
   }
+  const sessionLines = describeSessionMetadata(source, deps.now());
+  if (sessionLines.length > 0) {
+    deps.stdout(ui.rule("session"));
+    for (const line of sessionLines) {
+      deps.stdout(`  ${line}\n`);
+    }
+  }
   const channelLines = formatChannels(source);
   if (channelLines.length > 0) {
     deps.stdout(ui.rule("channels"));
@@ -591,9 +598,90 @@ function describeSandboxMetadata(source: TraceSourceListItem): string[] {
   ];
 }
 
+function describeSessionMetadata(source: TraceSourceListItem, nowMs: number): string[] {
+  const session = source.metadata?.session;
+  if (session === null || typeof session !== "object") {
+    return [];
+  }
+  const record = session as Record<string, unknown>;
+  const bucket = stringField(record, "currentBucketId");
+  if (bucket === undefined) {
+    return [];
+  }
+  const current = sessionSnapshotRecord(record, bucket);
+  const hasSnapshot = Array.isArray(record.snapshot);
+  const state = current === undefined
+    ? hasSnapshot ? "cold" : stringField(record, "state") ?? stringField(record, "status") ?? "cold"
+    : "warm";
+  const event = stringField(record, "event");
+  const providerSessionId = current?.providerSessionId ?? stringField(record, "providerSessionId");
+  const nextRolloverAt = stringField(record, "nextRolloverAt");
+  const reason = stringField(record, "reason");
+  const createdAt = current?.createdAt ?? numberField(record, "createdAt");
+  const summary = [
+    `bucket: ${bucket}`,
+    `state: ${state}`,
+    `age: ${formatSessionAge(createdAt, nowMs)}`,
+    ...(event === undefined ? [] : [`event: ${event}`]),
+    ...(providerSessionId === undefined ? [] : [`provider: ${providerSessionId}`]),
+    ...(nextRolloverAt === undefined ? [] : [`next rollover: ${nextRolloverAt}`]),
+    ...(reason === undefined ? [] : [`reason: ${reason}`]),
+  ];
+  return [summary.join("; ")];
+}
+
+function sessionSnapshotRecord(
+  record: Record<string, unknown>,
+  bucket: string,
+): { providerSessionId: string; createdAt: number } | undefined {
+  const snapshot = record.snapshot;
+  if (!Array.isArray(snapshot)) {
+    return undefined;
+  }
+  for (const item of snapshot) {
+    if (item === null || typeof item !== "object") {
+      continue;
+    }
+    const entry = item as Record<string, unknown>;
+    if (stringField(entry, "conversationId") !== bucket) {
+      continue;
+    }
+    const providerSessionId = stringField(entry, "providerSessionId");
+    const createdAt = numberField(entry, "createdAt");
+    if (providerSessionId !== undefined && createdAt !== undefined) {
+      return { providerSessionId, createdAt };
+    }
+  }
+  return undefined;
+}
+
 function stringField(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatSessionAge(createdAt: number | undefined, nowMs: number): string {
+  if (createdAt === undefined) {
+    return "unknown";
+  }
+  const elapsedSeconds = Math.max(0, Math.floor((nowMs - createdAt) / 1000));
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s`;
+  }
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m`;
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 48) {
+    return `${elapsedHours}h`;
+  }
+  return `${Math.floor(elapsedHours / 24)}d`;
 }
 
 function stringFieldAsList(record: Record<string, unknown>, key: string): string[] {

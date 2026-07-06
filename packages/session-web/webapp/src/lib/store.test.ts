@@ -7,6 +7,7 @@ import { applySessionOps, sessionStoreKey, shouldUseFixtureFallback } from "./st
 
 const baseSession: Session = {
   id: "run-1",
+  conversationId: "cron:run-1",
   cwd: "/Users/example/agent-a",
   instance: "Agent",
   source: "cron",

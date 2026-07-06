@@ -14,6 +14,7 @@ import {
 
 const baseSession: Session = {
   id: "run-1",
+  conversationId: "cron:run-1",
   cwd: "/Users/example/agent",
   instance: "Agent",
   sourceId: "agent",

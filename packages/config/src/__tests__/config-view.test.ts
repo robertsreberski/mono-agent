@@ -80,6 +80,20 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(sections, "runtime.maxTurns")).toMatchObject({ value: "9", source: "env" });
   });
 
+  it("surfaces session rollover notice source and resolved value", () => {
+    const defaultSections = buildView(baseEnv);
+    expect(field(defaultSections, "runtime.session.rolloverNotice")).toMatchObject({ value: "no", source: "default" });
+
+    const jsonSections = buildView(baseEnv, { runtime: { session: { rolloverNotice: false } } });
+    expect(field(jsonSections, "runtime.session.rolloverNotice")).toMatchObject({ value: "no", source: "json" });
+
+    const envSections = buildView(
+      { ...baseEnv, MONO_AGENT_SESSION_ROLLOVER_NOTICE: "true" },
+      { runtime: { session: { rolloverNotice: false } } },
+    );
+    expect(field(envSections, "runtime.session.rolloverNotice")).toMatchObject({ value: "yes", source: "env" });
+  });
+
   it("reports the memory section as disabled when memory is unconfigured", () => {
     const memory = section(buildView(baseEnv), "memory");
     expect(memory.status).toBe("disabled");

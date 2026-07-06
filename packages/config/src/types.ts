@@ -166,6 +166,8 @@ export interface MonoAgentConfig {
       readonly rollover?: SessionRollover;
       /** IANA timezone for the rollover date boundary; default system-local. */
       readonly rolloverTimezone?: string;
+      /** Show an operator-facing notice when session rollover starts a fresh session. */
+      readonly rolloverNotice?: boolean;
       /**
        * When true, cron/proactive runs are handled as one-shot ephemeral turns:
        * they neither resume nor persist into the shared continuous session, so

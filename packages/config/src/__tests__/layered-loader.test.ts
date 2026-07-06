@@ -218,23 +218,26 @@ describe("layerJsonOntoEnv", () => {
 
   it("translates JSON runtime.session to env keys", () => {
     const layered = layerJsonOntoEnv(
-      { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000 } } },
+      { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000, rolloverNotice: true } } },
       {},
     );
     expect(layered.MONO_AGENT_SESSION_MODE).toBe("per-message");
     expect(layered.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS).toBe("120000");
+    expect(layered.MONO_AGENT_SESSION_ROLLOVER_NOTICE).toBe("true");
   });
 
   it("lets env override JSON session values", () => {
     const layered = layerJsonOntoEnv(
-      { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000 } } },
+      { runtime: { session: { mode: "per-message", idleTimeoutMs: 120_000, rolloverNotice: true } } },
       {
         MONO_AGENT_SESSION_MODE: "continuous",
         MONO_AGENT_SESSION_IDLE_TIMEOUT_MS: "5000",
+        MONO_AGENT_SESSION_ROLLOVER_NOTICE: "false",
       },
     );
     expect(layered.MONO_AGENT_SESSION_MODE).toBe("continuous");
     expect(layered.MONO_AGENT_SESSION_IDLE_TIMEOUT_MS).toBe("5000");
+    expect(layered.MONO_AGENT_SESSION_ROLLOVER_NOTICE).toBe("false");
   });
 
   it("lets env override JSON values", () => {
@@ -488,12 +491,30 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_SESSION_ISOLATE_PROACTIVE).toBe("true");
   });
 
+  it("translates JSON runtime.session.rolloverNotice false to an env key", () => {
+    const layered = layerJsonOntoEnv(
+      { runtime: { session: { rolloverNotice: false } } },
+      {},
+    );
+    expect(layered.MONO_AGENT_SESSION_ROLLOVER_NOTICE).toBe("false");
+  });
+
+  it("rejects non-boolean JSON runtime.session.rolloverNotice", () => {
+    expect(() =>
+      layerJsonOntoEnv(
+        { runtime: { session: { rolloverNotice: "false" as unknown as boolean } } },
+        {},
+      ),
+    ).toThrow(/runtime\.session\.rolloverNotice must be a boolean/u);
+  });
+
   it("omits MONO_AGENT_SESSION_ISOLATE_PROACTIVE when session.isolateProactive is absent", () => {
     const layered = layerJsonOntoEnv(
       { runtime: { session: { mode: "continuous" } } },
       {},
     );
     expect(layered.MONO_AGENT_SESSION_ISOLATE_PROACTIVE).toBeUndefined();
+    expect(layered.MONO_AGENT_SESSION_ROLLOVER_NOTICE).toBeUndefined();
   });
 
   it("treats empty env values as absent so JSON wins", () => {
@@ -703,7 +724,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     expect(withEnv.runtime.session.rolloverTimezone).toBe("UTC");
   });
 
-  it("round-trips context.skillDisclosure + session.isolateProactive from JSON through to the config", async () => {
+  it("round-trips context.skillDisclosure + session.isolateProactive + session.rolloverNotice from JSON through to the config", async () => {
     const dir = await mkdtemp(join(tmpdir(), "mono-disclosure-isolate-"));
     const path = join(dir, "config.json");
     await writeFile(
@@ -711,7 +732,7 @@ describe("loadMonoAgentConfigWithSources", () => {
       JSON.stringify({
         runtime: {
           model: "pi:openai-codex:gpt-5.5",
-          session: { isolateProactive: true },
+          session: { isolateProactive: true, rolloverNotice: true },
         },
         context: { identityPath: "IDENTITY.md", skillDisclosure: "index" },
       }),
@@ -721,8 +742,9 @@ describe("loadMonoAgentConfigWithSources", () => {
     const fromJson = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
     expect(fromJson.context.skillDisclosure).toBe("index");
     expect(fromJson.runtime.session.isolateProactive).toBe(true);
+    expect(fromJson.runtime.session.rolloverNotice).toBe(true);
 
-    // Both keys default to UNSET so legacy behavior is byte-for-byte preserved.
+    // These keys default to UNSET so legacy behavior is byte-for-byte preserved.
     const path2 = join(dir, "config2.json");
     await writeFile(
       path2,
@@ -735,15 +757,21 @@ describe("loadMonoAgentConfigWithSources", () => {
     const defaults = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path2 });
     expect(defaults.context.skillDisclosure).toBeUndefined();
     expect(defaults.runtime.session.isolateProactive).toBeUndefined();
+    expect(defaults.runtime.session.rolloverNotice).toBeUndefined();
 
     // Env overrides JSON (higher precedence).
     const withEnv = await loadMonoAgentConfigWithSources({
-      env: { MONO_AGENT_SKILL_DISCLOSURE: "full", MONO_AGENT_SESSION_ISOLATE_PROACTIVE: "false" },
+      env: {
+        MONO_AGENT_SKILL_DISCLOSURE: "full",
+        MONO_AGENT_SESSION_ISOLATE_PROACTIVE: "false",
+        MONO_AGENT_SESSION_ROLLOVER_NOTICE: "false",
+      },
       cwd: dir,
       jsonPath: path,
     });
     expect(withEnv.context.skillDisclosure).toBe("full");
     expect(withEnv.runtime.session.isolateProactive).toBe(false);
+    expect(withEnv.runtime.session.rolloverNotice).toBe(false);
   });
 
   it("loads a sandbox policy from the JSON config file", async () => {
