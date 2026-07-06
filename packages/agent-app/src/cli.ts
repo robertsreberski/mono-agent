@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildMonoAgentConfigView,
   findJsonSecretConfigWarnings,
+  findRemovedConfigWarnings,
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
 } from "@mono-agent/config";
@@ -1047,7 +1048,10 @@ async function runConfig(args: ParsedCliArgs): Promise<number> {
     process.stdout.write("\n" + ui.heading("Channels"));
     process.stdout.write(renderConfigView(channelViews));
   }
-  for (const warning of findJsonSecretConfigWarnings([...sections, ...channelViews])) {
+  for (const warning of [
+    ...findJsonSecretConfigWarnings([...sections, ...channelViews]),
+    ...findRemovedConfigWarnings({ json: jsonResult.json, env }),
+  ]) {
     process.stdout.write(`${ui.style.yellow(warning)}\n`);
   }
 

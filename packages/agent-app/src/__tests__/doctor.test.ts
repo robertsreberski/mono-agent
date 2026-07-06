@@ -205,6 +205,64 @@ describe("validateMonoAgentFolder", () => {
     expect(report.sections.find((section) => section.id === "secret-placement")).toBeUndefined();
   });
 
+  it("warns non-fatally for removed JSON memory ritual keys", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      memory: {
+        mode: "bujo",
+        path: dir,
+        reflection: { cron: "ignored-secret-cron" },
+        migration: { enabled: false },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(true);
+    const placement = sectionById(report, "secret-placement");
+    expect(placement.status).toBe("waiting");
+    expect(placement.details).toEqual([
+      "[WARN] memory.reflection is removed and ignored; use memory.consolidation instead.",
+      "[WARN] memory.migration is removed and ignored; use memory.consolidation instead.",
+    ]);
+    expect(placement.details.join("\n")).not.toContain("ignored-secret-cron");
+  });
+
+  it("warns non-fatally for removed memory env keys without requiring a memory path", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const report = await validateMonoAgentFolder({
+        env: {
+          MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
+          MONO_AGENT_MEMORY_MIGRATION_CRON: "ignored-secret-cron",
+        },
+        cwd: dir,
+        configPath,
+        liveness: false,
+      });
+
+      expect(report.ok).toBe(true);
+      expect(sectionById(report, "memory").status).toBe("disabled");
+      const placement = sectionById(report, "secret-placement");
+      expect(placement.status).toBe("waiting");
+      expect(placement.details).toEqual([
+        "[WARN] MONO_AGENT_MEMORY_REFLECTION_ENABLED is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
+        "[WARN] MONO_AGENT_MEMORY_MIGRATION_CRON is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.",
+      ]);
+      expect(placement.details.join("\n")).not.toContain("ignored-secret-cron");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("warns non-fatally when a channel secret (bot token) is sourced from JSON", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
@@ -1143,7 +1201,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("reports ritual cadence for bujo with a chat LLM (auto-scheduled)", async () => {
+  it("reports consolidation cadence for bujo with a chat LLM (auto-scheduled)", async () => {
     stubFetch(["nomic-embed-text:v1.5", "qwen3:6b"]);
 
     const configPath = await writeMinimalConfig({
@@ -1161,13 +1219,12 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     const memory = sectionById(report, "memory");
     expect(memory.status).toBe("ok");
     const text = memory.details.join("\n");
-    expect(text).toMatch(/rituals/iu);
-    expect(text).toContain("0 3 * * *"); // default reflection cron
-    expect(text).toContain("0 4 1 * *"); // default migration cron
+    expect(text).toMatch(/consolidation/iu);
+    expect(text).toContain("0 */2 * * *");
     expect(text).toMatch(/auto/iu);
   });
 
-  it("reports manual rituals for bujo without a chat LLM", async () => {
+  it("reports no automatic consolidation for bujo without a chat LLM", async () => {
     stubFetch(["nomic-embed-text:v1.5"]);
 
     const configPath = await writeMinimalConfig({
@@ -1185,12 +1242,13 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     const memory = sectionById(report, "memory");
     expect(memory.status).toBe("ok");
     const text = memory.details.join("\n");
-    expect(text).toMatch(/rituals/iu);
-    expect(text).toMatch(/manual/iu);
+    expect(text).toMatch(/consolidation/iu);
+    expect(text).toMatch(/not scheduled/iu);
     expect(text).toMatch(/no chat model/iu);
+    expect(text).toMatch(/downgrades to journal/iu);
   });
 
-  it("reports custom ritual crons when configured", async () => {
+  it("reports custom consolidation cron when configured", async () => {
     stubFetch(["nomic-embed-text:v1.5", "qwen3:6b"]);
 
     const configPath = await writeMinimalConfig({
@@ -1200,8 +1258,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
         writeMode: "append-host-summary",
         embeddings: { provider: "ollama", model: "nomic-embed-text:v1.5" },
         llm: { provider: "ollama", model: "qwen3:6b" },
-        reflection: { cron: "0 2 * * *" },
-        migration: { enabled: false },
+        consolidation: { cron: "0 */4 * * *" },
       },
     });
 
@@ -1210,8 +1267,8 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     const memory = sectionById(report, "memory");
     expect(memory.status).toBe("ok");
     const text = memory.details.join("\n");
-    expect(text).toContain("0 2 * * *"); // custom reflection cron
-    expect(text).toMatch(/migration disabled/iu);
+    expect(text).toContain("0 */4 * * *");
+    expect(text).not.toMatch(/reflection|migration/iu);
   });
 });
 

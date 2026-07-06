@@ -26,14 +26,12 @@ function loaderEnvKeys(): Set<string> {
 
 /**
  * Loader literals that are deliberately NOT discrete view fields:
- * - `MONO_AGENT_MEMORY_` is a template prefix for the ritual `${suffix}` keys.
  * - `MONO_AGENT_LOCAL_PROVIDER` and its single-provider `_*` form are an alternate
  *   input encoding the view summarizes under the `providers.local` field.
  * - The retired pre-v2 memory keys are tolerated (warned, not honored), so they
  *   are intentionally absent from the view.
  */
 const LOADER_ONLY_ALLOWLIST = new Set<string>([
-  "MONO_AGENT_MEMORY_",
   "MONO_AGENT_LOCAL_PROVIDER",
   "MONO_AGENT_LOCAL_PROVIDER_ID",
   "MONO_AGENT_LOCAL_PROVIDER_TYPE",
@@ -44,6 +42,10 @@ const LOADER_ONLY_ALLOWLIST = new Set<string>([
   "MONO_AGENT_MEMORY_GRAPH_PATH",
   "MONO_AGENT_MEMORY_SCOPE",
   "MONO_AGENT_MEMORY_TOOLS_ENABLED",
+  "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
+  "MONO_AGENT_MEMORY_REFLECTION_CRON",
+  "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
+  "MONO_AGENT_MEMORY_MIGRATION_CRON",
 ]);
 
 describe("config view <-> loader parity", () => {
@@ -75,8 +77,7 @@ describe("config view <-> loader parity", () => {
         MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text",
         MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama",
         MONO_AGENT_MEMORY_LLM_MODEL: "qwen3:8b",
-        MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
-        MONO_AGENT_MEMORY_MIGRATION_ENABLED: "true",
+        MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "true",
         MONO_AGENT_SANDBOX_MODE: "native",
       },
     });

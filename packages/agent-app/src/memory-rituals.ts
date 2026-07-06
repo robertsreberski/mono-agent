@@ -1,27 +1,26 @@
 /**
  * In-app memory ritual scheduler for the `bujo` tier.
  *
- * Schedules `store.reflect()` and `store.migrate()` on their configured cron
- * cadences (defaults: `0 3 * * *` / `0 4 1 * *`). Uses a hand-rolled minimal
- * cron next-run calculator (5-field `m h dom mon dow`); avoids adding
- * `cron-parser` as a direct dep of this package.
+ * Schedules lightweight `store.consolidate()` on its configured cron cadence
+ * (default: every two hours). Uses a hand-rolled minimal cron next-run calculator
+ * (5-field `m h dom mon dow`); avoids adding `cron-parser` as a direct dep of
+ * this package.
  *
  * Design guarantees:
  * - Only schedules for `store.tier() === "bujo"` (needs the LLM tier).
- * - Rituals default-enabled; set `enabled: false` to opt out.
+ * - Consolidation defaults enabled; set `enabled: false` to opt out.
  * - Skip-overlap: never starts a run while the previous is in flight.
  * - Never-throws: errors are caught and logged via `logger.warn`; the
  *   scheduler reschedules after every run (success or failure).
  * - Injectable `now` / `setTimer` / `clearTimer` for deterministic testing.
  */
 
-const DEFAULT_REFLECTION_CRON = "0 3 * * *";
-const DEFAULT_MIGRATION_CRON = "0 4 1 * *";
+const DEFAULT_CONSOLIDATION_CRON = "0 */2 * * *";
 
 // Node's setTimeout stores the delay in a 32-bit signed int; anything larger
-// silently fires after 1ms (with a TimeoutOverflowWarning). A monthly ritual is
-// often >24.8 days out, so the raw cron delay must be capped and re-armed —
-// otherwise the ritual busy-loops every ~1ms until its target date arrives.
+// silently fires after 1ms (with a TimeoutOverflowWarning). A very sparse custom
+// consolidation cron can be >24.8 days out, so the raw cron delay must be capped
+// and re-armed instead of busy-looping every ~1ms until its target date arrives.
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
 export interface MemoryRitualSchedule {
@@ -32,13 +31,10 @@ export interface MemoryRitualSchedule {
 export interface StartMemoryRitualsInput {
   readonly store: {
     tier(): string;
-    reflect(): Promise<unknown>;
-    migrate(): Promise<unknown>;
+    consolidate(): Promise<unknown>;
   };
-  /** From config.memory.reflection */
-  readonly reflection?: MemoryRitualSchedule;
-  /** From config.memory.migration */
-  readonly migration?: MemoryRitualSchedule;
+  /** From config.memory.consolidation */
+  readonly consolidation?: MemoryRitualSchedule;
   readonly logger?: {
     info(m: string): void;
     warn(m: string): void;
@@ -77,11 +73,7 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
   const handles: Array<{ unref?: () => void } | undefined> = [];
   let stopped = false;
 
-  function scheduleRitual(
-    name: string,
-    cronExpr: string,
-    run: () => Promise<unknown>,
-  ): void {
+  function scheduleConsolidation(cronExpr: string): void {
     let inFlight = false;
     let currentHandle: { unref?: () => void } | undefined;
 
@@ -95,7 +87,7 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
         delayMs = nextCronDelayMs(cronExpr, current);
       } catch (err) {
         logger?.warn(
-          `Memory ritual "${name}" has an invalid cron expression "${cronExpr}": ${err instanceof Error ? err.message : String(err)}. Ritual disabled.`,
+          `Memory consolidation has an invalid cron expression "${cronExpr}": ${err instanceof Error ? err.message : String(err)}. Consolidation disabled.`,
         );
         return;
       }
@@ -113,29 +105,28 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
         }
 
         if (delayMs > MAX_TIMEOUT_MS) {
-          // The timer was capped below the real target — the ritual isn't due
+          // The timer was capped below the real target — consolidation isn't due
           // yet. Re-arm for the remaining time instead of running it.
           schedule();
           return;
         }
 
+        schedule();
+
         if (inFlight) {
-          // Skip: the previous run is still in flight. Do NOT reschedule here — the in-flight run's
-          // .finally schedules the next tick, keeping exactly one pending timer per ritual (no double-schedule).
-          logger?.warn(`Memory ritual "${name}" skipped — previous run is still in flight.`);
+          logger?.warn("Memory consolidation skipped — previous run is still in flight.");
           return;
         }
 
         inFlight = true;
-        run()
+        store.consolidate()
           .catch((err: unknown) => {
             logger?.warn(
-              `Memory ritual "${name}" failed: ${err instanceof Error ? err.message : String(err)}.`,
+              `Memory consolidation failed: ${err instanceof Error ? err.message : String(err)}.`,
             );
           })
           .finally(() => {
             inFlight = false;
-            schedule();
           });
       }, Math.min(delayMs, MAX_TIMEOUT_MS));
 
@@ -148,16 +139,8 @@ export function startMemoryRituals(input: StartMemoryRitualsInput): RunningRitua
     void currentHandle; // suppress unused-variable lint; reference is in handles
   }
 
-  // Schedule reflection ritual
-  if (input.reflection?.enabled !== false) {
-    const cronExpr = input.reflection?.cron ?? DEFAULT_REFLECTION_CRON;
-    scheduleRitual("reflect", cronExpr, () => store.reflect());
-  }
-
-  // Schedule migration ritual
-  if (input.migration?.enabled !== false) {
-    const cronExpr = input.migration?.cron ?? DEFAULT_MIGRATION_CRON;
-    scheduleRitual("migrate", cronExpr, () => store.migrate());
+  if (input.consolidation?.enabled !== false) {
+    scheduleConsolidation(input.consolidation?.cron ?? DEFAULT_CONSOLIDATION_CRON);
   }
 
   return {

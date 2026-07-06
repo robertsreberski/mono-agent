@@ -118,4 +118,60 @@ describe("runCli config", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("prints removed memory key warnings without leaking ignored values", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-app-cli-config-"));
+    const previousCwd = process.cwd();
+    const previousMonoAgentEnv = new Map<string, string>();
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("MONO_AGENT_")) {
+        previousMonoAgentEnv.set(key, process.env[key] ?? "");
+        delete process.env[key];
+      }
+    }
+
+    const chunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stdout.write);
+
+    try {
+      process.chdir(dir);
+      await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+      const configPath = join(dir, "mono-agent.config.json");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          runtime: { model: "pi:openai-codex:gpt-5.5" },
+          context: { identityPath: "./IDENTITY.md" },
+          memory: {
+            mode: "bujo",
+            path: "./memory",
+            reflection: { cron: "ignored-secret-cron" },
+            migration: { enabled: false },
+          },
+        }, null, 2),
+      );
+
+      await expect(runCli(["config", "--config", configPath])).resolves.toBe(0);
+
+      const out = chunks.join("");
+      expect(out).toContain("[WARN] memory.reflection is removed and ignored");
+      expect(out).toContain("[WARN] memory.migration is removed and ignored");
+      expect(out).not.toContain("ignored-secret-cron");
+    } finally {
+      stdoutSpy.mockRestore();
+      process.chdir(previousCwd);
+      for (const key of Object.keys(process.env)) {
+        if (key.startsWith("MONO_AGENT_")) {
+          delete process.env[key];
+        }
+      }
+      for (const [key, value] of previousMonoAgentEnv) {
+        process.env[key] = value;
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

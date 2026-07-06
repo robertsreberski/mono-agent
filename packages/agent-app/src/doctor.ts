@@ -9,6 +9,7 @@ import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import {
   buildMonoAgentConfigView,
   findJsonSecretConfigWarnings,
+  findRemovedConfigWarnings,
   readMonoAgentConfigJson,
   redactMonoAgentConfig,
   resolveSupermemoryContainer,
@@ -99,16 +100,19 @@ export async function validateMonoAgentFolder(
     const jsonResult = await readMonoAgentConfigJson(options.configPath);
     // Channel secrets (bot tokens, API keys) live outside the core view, so the
     // placement check spans both: core sections + every channel's config view.
-    const secretWarnings = findJsonSecretConfigWarnings([
-      ...buildMonoAgentConfigView({
-        redacted: redactMonoAgentConfig(coreConfig),
-        json: jsonResult.json,
-        env: options.env,
-      }),
-      ...(await collectChannelConfigViews(drivers, options)),
-    ]);
-    if (secretWarnings.length > 0) {
-      sections.push({ id: "secret-placement", label: "Secret placement", status: "waiting", details: secretWarnings });
+    const configWarnings = [
+      ...findJsonSecretConfigWarnings([
+        ...buildMonoAgentConfigView({
+          redacted: redactMonoAgentConfig(coreConfig),
+          json: jsonResult.json,
+          env: options.env,
+        }),
+        ...(await collectChannelConfigViews(drivers, options)),
+      ]),
+      ...findRemovedConfigWarnings({ json: jsonResult.json, env: options.env }),
+    ];
+    if (configWarnings.length > 0) {
+      sections.push({ id: "secret-placement", label: "Config warnings", status: "waiting", details: configWarnings });
     }
     sections.push(runtimeSection(coreConfig));
     sections.push(await credentialsSection(coreConfig));
@@ -311,8 +315,7 @@ async function contextSection(config: MonoAgentConfig): Promise<ValidationSectio
   return { id: "context", label: "Context & skills", status, details };
 }
 
-const DEFAULT_REFLECTION_CRON = "0 3 * * *";
-const DEFAULT_MIGRATION_CRON = "0 4 1 * *";
+const DEFAULT_CONSOLIDATION_CRON = "0 */2 * * *";
 
 async function memorySection(
   config: MonoAgentConfig,
@@ -357,28 +360,19 @@ async function memorySection(
   }
 
   if (config.memory.mode === "bujo") {
-    // Report ritual scheduler cadence
-    const reflectionEnabled = config.memory.reflection?.enabled !== false;
-    const migrationEnabled = config.memory.migration?.enabled !== false;
-    const reflectionCron = config.memory.reflection?.cron ?? DEFAULT_REFLECTION_CRON;
-    const migrationCron = config.memory.migration?.cron ?? DEFAULT_MIGRATION_CRON;
+    // Report consolidation scheduler cadence.
+    const consolidationEnabled = config.memory.consolidation?.enabled !== false;
+    const consolidationCron = config.memory.consolidation?.cron ?? DEFAULT_CONSOLIDATION_CRON;
     const hasLlm = config.memory.llm !== undefined;
 
     if (hasLlm) {
-      const ritualParts: string[] = [];
-      if (reflectionEnabled) {
-        ritualParts.push(`reflection ${reflectionCron}`);
+      if (consolidationEnabled) {
+        details.push(`Consolidation: ${consolidationCron} (auto).`);
       } else {
-        ritualParts.push("reflection disabled");
+        details.push("Consolidation: disabled.");
       }
-      if (migrationEnabled) {
-        ritualParts.push(`migration ${migrationCron}`);
-      } else {
-        ritualParts.push("migration disabled");
-      }
-      details.push(`Rituals: ${ritualParts.join(" / ")} (auto).`);
     } else {
-      details.push("Rituals: manual (no chat model — reflect/migrate need an LLM).");
+      details.push("Consolidation: not scheduled (no chat model — bujo runtime tier downgrades to journal).");
     }
   }
 
