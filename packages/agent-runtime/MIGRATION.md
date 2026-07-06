@@ -26,7 +26,7 @@ registry resolves `pi` → the native bridge unconditionally; there is no
   longer resolve**: the deprecated compatibility shim was removed and, with the
   Phase-6 explicit `exports` map (no `./ai/*` / `./agent/*` wildcards), that
   subpath is not exported. **Action:** import `generatePiNativeResponse` /
-  `piNativeRuntimeBridge` from `./ai/providers/pi-native.js`, and
+  `piNativeRuntimeBridge` from `./ai`, and
   `isContextLimitError` / `normalizePiErrorMessage` from `./ai/providers/pi-errors.js`
   (or reach for the public runtime registry). The `pi*Backend` aliases are gone —
   all Pi routes through the one native bridge.
@@ -195,33 +195,36 @@ now `^0.80.x`** (were `^0.79.1`). Compaction is driven natively (section 3).
 ## 11. Exports map: wildcards removed (explicit deep-path map)
 
 The package's `./ai/*` and `./agent/*` **wildcard exports were replaced by an
-explicit `exports` map**: 3 barrels (`.`, `./ai`, `./agent`) plus **17 named deep
+explicit `exports` map**: 3 barrels (`.`, `./ai`, `./agent`) plus **21 named deep
 `.js` subpaths**, each carrying its own generated `types` condition. A deep import
 that is not on the map **no longer resolves** — a wildcard used to silently
 resolve anything under `src/`, so a moved/renamed/mistyped subpath is now a loud
 failure (guarded by `scripts/verify-deep-imports.mjs`).
 
-The 17 supported deep paths:
+The 21 supported deep paths:
 
 ```
 ./ai/failure.js                         ./agent/tools/index.js
 ./ai/cost.js                            ./agent/tools/shared/runtime-context.js
-./ai/backend.js                         ./agent/prompt/skill-index.js
-./ai/runtime/model-refs.js              ./agent/allowlists.js
-./ai/runtime/registry.js                ./agent/transcript.js
-./ai/runtime/context-windows.js         ./agent/compaction.js
-./ai/runtime/fast-mode.js
+./ai/backend.js                         ./agent/tools/shared/ripgrep.js
+./ai/runtime/model-refs.js              ./agent/prompt/skill-index.js
+./ai/runtime/registry.js                ./agent/allowlists.js
+./ai/runtime/context-windows.js         ./agent/transcript.js
+./ai/runtime/fast-mode.js               ./agent/compaction.js
 ./ai/streaming/codex-events.js
 ./ai/live-input-prompt.js
 ./ai/file-change-stats.js
+./ai/providers/claude-sdk.js
+./ai/providers/claude-cli.js
+./ai/providers/codex-app.js
 ./ai/providers/opencode-discovery.js
 ```
 
 **Action:** if you deep-import a subpath not in this list, switch to the closest
 supported one, a barrel (`./ai` / `./agent`), or the public runtime registry.
-`pi-sdk.js` is gone (section 1); the provider bridges (`claude-sdk.js`,
-`claude-cli.js`, `codex-app.js`, …) are intentionally **not** exported — reach
-them through `createRuntime` / the runtime registry.
+`pi-sdk.js` is gone and remains intentionally unexported (section 1). Worklab
+ports should import `generatePiNativeResponse` from `@mono-agent/agent-runtime/ai`
+instead of adding a `pi-sdk.js` compatibility subpath.
 
 ---
 
@@ -254,8 +257,8 @@ Run these before/at the port:
    `@earendil-works/pi-agent-core` (`^0.80.x`), `@modelcontextprotocol/sdk`,
    `@opencode-ai/sdk`, `@anthropic-ai/claude-agent-sdk`, `zod`.
 3. **Pi bump `^0.74.0` → `^0.80.x` in lockstep.** worklab tests that use old pi
-   APIs (and its test-only deep imports of `pi-sdk.js` / `codex-app.js` /
-   `claude-sdk.js` / `claude-cli.js` — see step 6) are rewritten at the port.
+   APIs are rewritten at the port. Do not restore the old `pi-sdk.js` deep
+   import; use `generatePiNativeResponse` from `@mono-agent/agent-runtime/ai`.
 4. **Sandbox.** worklab passes **no** `sandbox` implementation → `passthroughSandbox`,
    and **never sets `sandboxPolicy`** *(verified: zero `sandboxPolicy` /
    `sandbox:` in worklab `src/`)*, so with no policy every tool runs unsandboxed
@@ -264,11 +267,12 @@ Run these before/at the port:
 5. **License / packaging.** GPL-3.0-only stays; `files` includes `types/`
    (additive — worklab consumes raw `src/`, `.d.ts` generation is optional).
 6. **Deep imports resolve.** `node scripts/verify-deep-imports.mjs` (default +
-   types conditions) is green, and every worklab **non-test** deep import (17
-   specifiers) resolves in the explicit exports map *(verified — no gap)*. The
-   only worklab deep imports NOT in the map are **test-only** (`pi-sdk.js`,
-   `codex-app.js`, `claude-sdk.js`, `claude-cli.js`); those tests are rewritten at
-   the port (step 3), so no exports entry is added for them.
+   types conditions) is green. Every worklab **non-test** deep import resolves in
+   the explicit exports map *(verified — no gap)*, and the Worklab-test provider
+   bridge imports for `claude-sdk.js`, `claude-cli.js`, and `codex-app.js` are
+   supported as exported subpaths. The only worklab deep import NOT in the map is
+   the removed **test-only** `pi-sdk.js`; those tests are rewritten at the port
+   (step 3), so no export entry is added for it.
 7. **Contract supersets.** `HOST_KEYS` ⊇ worklab's host bag *(verified:
    worklab passes `resolveCustomPricing`, `onCompactionRecorded`, `persistArtifact`,
    `resolvePiApiKey`, `observers` — all covered)*; the deep-import
