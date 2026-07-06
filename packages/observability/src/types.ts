@@ -28,6 +28,8 @@ export interface RuntimeResultLike {
 }
 
 export type RunSummaryStatus = "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
+export type RunArtifactKind = "agent" | "memory";
+export type RunArtifactScope = RunArtifactKind | "all";
 
 export type KnownArtifactFailureKind =
   | "provider_unavailable"
@@ -203,6 +205,12 @@ export interface JsonlRunRecorderOptions {
   readonly runId: string;
   readonly conversationId: string;
   readonly artifactDir: string;
+  /**
+   * Physical artifact namespace under `artifactDir`. Defaults to top-level
+   * agent artifacts; memory maintenance runs should use the dedicated
+   * `memory/` namespace while still stamping `source: "memory"` when relevant.
+   */
+  readonly artifactKind?: RunArtifactKind;
   readonly clock?: () => number;
   readonly maxStringBytes?: number;
   /** The user's prompt; persisted (redacted) into the summary as `userInput`. */
@@ -344,6 +352,7 @@ export interface RecordedRunListResult {
 
 export interface JsonlRunReaderOptions {
   readonly artifactDir: string;
+  readonly scope?: RunArtifactScope;
   readonly maxRuns?: number;
   readonly maxEventsPerRun?: number;
   readonly maxStringBytes?: number;
@@ -427,6 +436,7 @@ export interface TraceSourceListResult {
 }
 
 export interface TraceRunListOptions extends TraceSourceRegistryOptions {
+  readonly scope?: RunArtifactScope;
   readonly maxRuns?: number;
   readonly maxEventsPerRun?: number;
   readonly maxStringBytes?: number;

@@ -52,6 +52,23 @@ describe("JsonlRunRecorder", () => {
     expect(onDisk.systemPrompt).toBe("You are the private memory maintenance LLM.");
   });
 
+  it("writes memory-kind artifacts under the memory namespace without inventing source metadata", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "mem-capture-distill-1",
+      conversationId: "memory:capture:distill",
+      artifactDir: dir,
+      artifactKind: "memory",
+    });
+
+    const summary = await recorder.finish({ model: "pi:opencode-go:kimi-k2.6" });
+
+    expect(summary.artifactPaths[0]).toBe(join(dir, "memory", "mem-capture-distill-1.events.jsonl"));
+    expect(summary.artifactPaths[1]).toBe(join(dir, "memory", "mem-capture-distill-1.summary.json"));
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as { source?: string };
+    expect(onDisk.source).toBeUndefined();
+  });
+
   it("prefers the result's system prompt and caps it beyond the per-event byte limit", async () => {
     const dir = await tempDir();
     // maxStringBytes (256) bounds event content, but the system prompt rides its
