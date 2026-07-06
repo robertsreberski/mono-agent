@@ -42,6 +42,7 @@ import type { BackgroundDeps, InstanceTarget } from "./background.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelStatus } from "./channels.js";
+import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
 import { initMonoAgentFolder, isWithChannel } from "./init.js";
@@ -1056,7 +1057,8 @@ export function renderConfigView(sections: readonly ConfigViewSection[]): string
     for (const field of section.fields) {
       const tag = SOURCE_TAG[field.source];
       const lock = field.redacted === true ? ` ${ui.style.dim("(secret)")}` : "";
-      out += `    ${ui.style.gray(field.label.padEnd(width))}  ${field.value}${lock}  ${tag}\n`;
+      const defaultRestatement = field.restatesDefault === true ? ` ${ui.style.dim("(same as default)")}` : "";
+      out += `    ${ui.style.gray(field.label.padEnd(width))}  ${field.value}${lock}${defaultRestatement}  ${tag}\n`;
     }
   }
   return out;
@@ -1104,6 +1106,7 @@ async function runConfig(args: ParsedCliArgs): Promise<number> {
     process.stdout.write(renderConfigView(channelViews));
   }
   for (const warning of [
+    ...findUnknownAppConfigWarnings(jsonResult.json),
     ...findJsonSecretConfigWarnings([...sections, ...channelViews]),
     ...findRemovedConfigWarnings({ json: jsonResult.json, env }),
   ]) {

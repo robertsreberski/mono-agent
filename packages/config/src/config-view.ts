@@ -28,6 +28,8 @@ export interface ConfigViewField {
   /** Already-redacted, display-ready value (never a raw secret). */
   readonly value: string;
   readonly source: ConfigViewFieldSource;
+  /** True when a JSON-sourced value only restates the built-in default. */
+  readonly restatesDefault?: boolean;
   /** True when the underlying value is a secret that has been redacted. */
   readonly redacted?: boolean;
   /**
@@ -170,6 +172,8 @@ interface FieldSpec {
   readonly label: string;
   readonly value: string;
   readonly jsonPresent: boolean;
+  readonly jsonValue?: unknown;
+  readonly defaultValue?: unknown;
   readonly source?: ConfigViewFieldSource;
   readonly redacted?: boolean;
 }
@@ -178,13 +182,49 @@ function toField(
   env: Record<string, string | undefined>,
   spec: FieldSpec,
 ): ConfigViewField {
+  const source = spec.source ?? resolveSource(env, spec.id, spec.jsonPresent);
   return {
     id: spec.id,
     label: spec.label,
     value: spec.value,
-    source: spec.source ?? resolveSource(env, spec.id, spec.jsonPresent),
+    source,
+    ...(source === "json" && spec.defaultValue !== undefined && sameJsonValue(spec.jsonValue, spec.defaultValue)
+      ? { restatesDefault: true }
+      : {}),
     ...(spec.redacted === true ? { redacted: true } : {}),
   };
+}
+
+export function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    return left.every((value, index) => sameJsonValue(value, right[index]));
+  }
+  if (isJsonObject(left) || isJsonObject(right)) {
+    if (!isJsonObject(left) || !isJsonObject(right)) {
+      return false;
+    }
+    const leftKeys = Object.keys(left).sort();
+    const rightKeys = Object.keys(right).sort();
+    if (leftKeys.length !== rightKeys.length) {
+      return false;
+    }
+    return leftKeys.every((key, index) => key === rightKeys[index] && sameJsonValue(left[key], right[key]));
+  }
+  return false;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  return prototype === Object.prototype || prototype === null;
 }
 
 function formatModelReference(
@@ -801,12 +841,16 @@ function buildTraceabilitySection(input: BuildMonoAgentConfigViewInput): ConfigV
         label: "Heartbeat (ms)",
         value: trace.heartbeatMs === undefined ? "default" : String(trace.heartbeatMs),
         jsonPresent: json.traceability?.heartbeatMs !== undefined,
+        jsonValue: json.traceability?.heartbeatMs,
+        defaultValue: 10_000,
       }),
       toField(env, {
         id: "traceability.staleAfterMs",
         label: "Stale after (ms)",
         value: trace.staleAfterMs === undefined ? "default" : String(trace.staleAfterMs),
         jsonPresent: json.traceability?.staleAfterMs !== undefined,
+        jsonValue: json.traceability?.staleAfterMs,
+        defaultValue: 30_000,
       }),
       toField(env, {
         id: "traceability.globalDiscovery",

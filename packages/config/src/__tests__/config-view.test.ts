@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { loadMonoAgentConfig, redactMonoAgentConfig } from "../config.js";
-import { buildMonoAgentConfigView, findJsonSecretConfigWarnings, findRemovedConfigWarnings } from "../config-view.js";
+import { buildMonoAgentConfigView, findJsonSecretConfigWarnings, findRemovedConfigWarnings, sameJsonValue } from "../config-view.js";
 import type { ConfigViewSection } from "../config-view.js";
 import type { MonoAgentConfigJson } from "../json-source.js";
 import { layerJsonOntoEnv } from "../layered-loader.js";
@@ -39,6 +39,16 @@ function section(sections: readonly ConfigViewSection[], id: string): ConfigView
 }
 
 describe("buildMonoAgentConfigView", () => {
+  it("compares JSON object defaults structurally while preserving array order", () => {
+    expect(sameJsonValue(
+      { a: 1, b: { c: true, d: [1, { e: "x", f: "y" }] } },
+      { b: { d: [1, { f: "y", e: "x" }], c: true }, a: 1 },
+    )).toBe(true);
+    expect(sameJsonValue([{ a: 1, b: 2 }], [{ b: 2, a: 1 }])).toBe(true);
+    expect(sameJsonValue([1, 2], [2, 1])).toBe(false);
+    expect(sameJsonValue({ a: 1 }, { a: 1, b: 2 })).toBe(false);
+  });
+
   it("covers every core section exactly once", () => {
     const sections = buildView(baseEnv);
     expect(sections.map((entry) => entry.id)).toEqual([
@@ -78,6 +88,26 @@ describe("buildMonoAgentConfigView", () => {
       { runtime: { maxTurns: 7 } },
     );
     expect(field(sections, "runtime.maxTurns")).toMatchObject({ value: "9", source: "env" });
+  });
+
+  it("marks JSON values that merely restate traceability defaults", () => {
+    const sections = buildView(baseEnv, {
+      traceability: {
+        heartbeatMs: 10_000,
+        staleAfterMs: 30_000,
+      },
+    });
+
+    expect(field(sections, "traceability.heartbeatMs")).toMatchObject({
+      value: "10000",
+      source: "json",
+      restatesDefault: true,
+    });
+    expect(field(sections, "traceability.staleAfterMs")).toMatchObject({
+      value: "30000",
+      source: "json",
+      restatesDefault: true,
+    });
   });
 
   it("surfaces session rollover notice source and resolved value", () => {

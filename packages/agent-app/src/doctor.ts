@@ -35,6 +35,7 @@ import { adapterSendToolNames, resolveAdapterSendToolsSettings } from "./adapter
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
+import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 
 export type ValidationStatus = "ok" | "waiting" | "disabled" | "error";
@@ -101,6 +102,7 @@ export async function validateMonoAgentFolder(
     // Channel secrets (bot tokens, API keys) live outside the core view, so the
     // placement check spans both: core sections + every channel's config view.
     const configWarnings = [
+      ...findUnknownAppConfigWarnings(jsonResult.json),
       ...findJsonSecretConfigWarnings([
         ...buildMonoAgentConfigView({
           redacted: redactMonoAgentConfig(coreConfig),
