@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,7 +6,7 @@ import { buildRunReadableSpans, createDeterministicIdFactory } from "@mono-agent
 import type { RunSummary } from "@mono-agent/observability";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { isRetryable, readRunArtifacts, runStartEndNanos } from "../backfill.js";
+import { backfillRuns, isRetryable, readRunArtifacts, runStartEndNanos } from "../backfill.js";
 
 const summary: RunSummary = {
   runId: "run-x",
@@ -30,9 +30,14 @@ afterEach(async () => {
 });
 
 async function writeRun(runId: string, sum: RunSummary, eventLines: string[]): Promise<void> {
-  await writeFile(join(dir, `${runId}.summary.json`), JSON.stringify(sum));
+  await writeRunIn(dir, runId, sum, eventLines);
+}
+
+async function writeRunIn(root: string, runId: string, sum: RunSummary, eventLines: string[]): Promise<void> {
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, `${runId}.summary.json`), JSON.stringify(sum));
   if (eventLines.length > 0) {
-    await writeFile(join(dir, `${runId}.events.jsonl`), eventLines.join("\n") + "\n");
+    await writeFile(join(root, `${runId}.events.jsonl`), eventLines.join("\n") + "\n");
   }
 }
 
@@ -64,6 +69,20 @@ describe("readRunArtifacts", () => {
     const { events, warnings } = await readRunArtifacts(dir, "run-x");
     expect(events).toHaveLength(0);
     expect(warnings.join("\n")).toMatch(/no .*events/iu);
+  });
+
+  it("finds memory namespace artifacts for an explicit run id", async () => {
+    await writeRunIn(join(dir, "memory"), "mem-new", {
+      ...summary,
+      runId: "mem-new",
+      conversationId: "memory:capture:distill",
+    }, [JSON.stringify({ type: "assistant", text: "memory" })]);
+
+    const { summary: parsed, events } = await readRunArtifacts(dir, "mem-new");
+
+    expect(parsed.runId).toBe("mem-new");
+    expect(parsed.conversationId).toBe("memory:capture:distill");
+    expect(events).toHaveLength(1);
   });
 });
 
@@ -117,5 +136,40 @@ describe("backfill mapping integration", () => {
     expect(spans).toHaveLength(1 + events.length);
     // Historical timestamps, not wall-clock now().
     expect(spans[0]!.startTime[0]).toBe(Math.trunc(Date.parse("2026-06-18T00:00:00.000Z") / 1000));
+  });
+
+  it("exports agent runs by default for --all and includes memory runs with includeMemory", async () => {
+    const cwd = join(dir, "consumer");
+    await mkdir(cwd, { recursive: true });
+    const artifactDir = join(cwd, "artifacts");
+    const configPath = join(cwd, "mono-agent.config.json");
+    await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeFile(configPath, JSON.stringify({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+      context: { identityPath: "./IDENTITY.md" },
+      artifacts: { dir: "./artifacts" },
+      observability: { exporters: [{ type: "phoenix", endpoint: "http://127.0.0.1:9/v1/traces" }] },
+    }), "utf8");
+    await writeRunIn(artifactDir, "run-agent", { ...summary, runId: "run-agent", conversationId: "chat" }, []);
+    await writeRunIn(artifactDir, "mem-legacy", {
+      ...summary,
+      runId: "mem-legacy",
+      conversationId: "memory:capture:distill",
+    }, []);
+    await writeRunIn(join(artifactDir, "memory"), "mem-new", {
+      ...summary,
+      runId: "mem-new",
+      conversationId: "memory:capture:entities",
+    }, []);
+
+    const input = { env: {}, cwd, configPath };
+    const agentOnly = await backfillRuns(input, { all: true, dryRun: true });
+    const all = await backfillRuns(input, { all: true, dryRun: true, includeMemory: true });
+    const explicitMemory = await backfillRuns(input, { run: "mem-new", dryRun: true });
+
+    expect(agentOnly.outcomes.map((outcome) => outcome.runId)).toEqual(["run-agent"]);
+    expect(all.outcomes.map((outcome) => outcome.runId).sort()).toEqual(["mem-legacy", "mem-new", "run-agent"]);
+    expect(explicitMemory.outcomes).toHaveLength(1);
+    expect(explicitMemory.outcomes[0]).toMatchObject({ runId: "mem-new", status: "ok" });
   });
 });

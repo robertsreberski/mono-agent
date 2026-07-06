@@ -41,6 +41,7 @@ describe("parseCliArgs", () => {
       follow: false,
       all: false,
       dryRun: false,
+      includeMemory: false,
     });
   });
 
@@ -74,6 +75,7 @@ describe("parseCliArgs", () => {
       follow: false,
       all: false,
       dryRun: false,
+      includeMemory: false,
     });
   });
 
@@ -109,19 +111,21 @@ describe("parseCliArgs", () => {
       follow: false,
       all: false,
       dryRun: false,
+      includeMemory: false,
     });
     expect(parseCliArgs(["install-skill"])).toMatchObject({ command: "install-skill", force: false });
     expect(() => parseCliArgs(["install-skill", "--target", "browser"])).toThrow(/--target/u);
   });
 
-  it("parses backfill flags (--run/--all/--since/--until/--dry-run)", () => {
+  it("parses backfill flags (--run/--all/--since/--until/--include-memory/--dry-run)", () => {
     expect(parseCliArgs(["backfill", "--all", "--dry-run"])).toMatchObject({
       command: "backfill",
       all: true,
       dryRun: true,
+      includeMemory: false,
     });
     expect(
-      parseCliArgs(["backfill", "--run", "run-x", "--since", "2026-06-01", "--until", "2026-06-30"]),
+      parseCliArgs(["backfill", "--run", "run-x", "--since", "2026-06-01", "--until", "2026-06-30", "--include-memory"]),
     ).toMatchObject({
       command: "backfill",
       run: "run-x",
@@ -129,16 +133,18 @@ describe("parseCliArgs", () => {
       until: "2026-06-30",
       all: false,
       dryRun: false,
+      includeMemory: true,
     });
   });
 
   it("parses audit-runs flags", () => {
     expect(
-      parseCliArgs(["audit-runs", "--artifact-dir", "./runs", "--stale-after-ms", "1234", "--json"]),
+      parseCliArgs(["audit-runs", "--artifact-dir", "./runs", "--stale-after-ms", "1234", "--include-memory", "--json"]),
     ).toMatchObject({
       command: "audit-runs",
       artifactDir: "./runs",
       staleAfterMs: 1234,
+      includeMemory: true,
       json: true,
     });
     expect(
@@ -163,6 +169,7 @@ describe("parseCliArgs", () => {
         "2026-06-30T00:00:00.000Z",
         "--by",
         "model",
+        "--include-memory",
         "--json",
       ]),
     ).toMatchObject({
@@ -171,6 +178,7 @@ describe("parseCliArgs", () => {
       since: "2026-06-01T00:00:00.000Z",
       until: "2026-06-30T00:00:00.000Z",
       groupBy: "model",
+      includeMemory: true,
       json: true,
     });
     expect(parseCliArgs(["metrics", "--by", "channel"])).toMatchObject({ command: "metrics", groupBy: "channel" });
@@ -194,6 +202,7 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--what"])).toThrow(/Unknown flag/u);
     // `--port` is a recognized (web-only) flag; it is rejected for non-web commands.
     expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/only supported for/u);
+    expect(() => parseCliArgs(["start", "--include-memory"])).toThrow(/--include-memory/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
   });
 
@@ -211,6 +220,7 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("mono-agent setup");
     expect(renderHelp()).toContain("mono-agent web");
     expect(renderHelp()).toContain("--allow-non-loopback");
+    expect(renderHelp()).toContain("--include-memory");
   });
 
   it("accepts --memory bujo and --memory lite, rejects --memory markdown", () => {

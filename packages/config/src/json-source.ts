@@ -170,6 +170,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
   readonly artifacts?: {
     readonly dir?: string;
     readonly retention?: MonoAgentArtifactRetentionJson;
+    readonly memoryRetention?: MonoAgentArtifactRetentionJson;
   };
   readonly traceability?: {
     readonly registryDir?: string;

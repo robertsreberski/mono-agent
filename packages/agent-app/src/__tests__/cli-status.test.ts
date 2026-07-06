@@ -63,7 +63,10 @@ async function captureStatus(
   restore = () => spy.mockRestore();
   await printAppStatus(app, {
     nowMs: Date.parse("2026-06-24T08:00:00.000Z"),
-    listRecordedRuns: async () => ({ totalRuns, runs, warnings: [] }),
+    listRecordedRuns: async (options) => {
+      expect(options.scope).toBe("agent");
+      return { totalRuns, runs, warnings: [] };
+    },
   });
   return chunks.join("");
 }

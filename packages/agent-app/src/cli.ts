@@ -98,6 +98,8 @@ interface ParsedCliArgs {
   readonly until?: string;
   /** backfill: map + serialize but do not POST. */
   readonly dryRun: boolean;
+  /** audit-runs/metrics/backfill: include memory-run artifacts. */
+  readonly includeMemory: boolean;
   /** audit-runs: read this artifact directory directly. */
   readonly artifactDir?: string;
   /** metrics: group totals by this summary dimension. */
@@ -125,7 +127,7 @@ interface ParsedCliArgs {
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    return { command: "help", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false };
+    return { command: "help", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
   }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
@@ -153,6 +155,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let since: string | undefined;
   let until: string | undefined;
   let dryRun = false;
+  let includeMemory = false;
   let artifactDir: string | undefined;
   let groupBy: "model" | "channel" | "failureKind" | undefined;
   let consumerPath: string | undefined;
@@ -185,6 +188,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--dry-run":
         dryRun = true;
+        break;
+      case "--include-memory":
+        includeMemory = true;
         break;
       case "--artifact-dir":
         artifactDir = requireValue(rest, ++i, flag);
@@ -322,6 +328,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if ((host !== undefined || port !== undefined || open !== undefined || allowNonLoopback !== undefined) && cmd !== "web") {
     throw new Error("--host, --port, --no-open, and --allow-non-loopback are only supported for `mono-agent web`.");
   }
+  if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill") {
+    throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, and `mono-agent backfill`.");
+  }
 
   return {
     command: cmd,
@@ -343,6 +352,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(since === undefined ? {} : { since }),
     ...(until === undefined ? {} : { until }),
     dryRun,
+    includeMemory,
     ...(artifactDir === undefined ? {} : { artifactDir }),
     ...(groupBy === undefined ? {} : { groupBy }),
     ...(consumerPath === undefined ? {} : { consumerPath }),
@@ -500,31 +510,33 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   {
     signature:
       "mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]\n" +
-      "                    [--dry-run] [--config <path>] [--env-file <path>]",
+      "                    [--include-memory] [--dry-run] [--config <path>] [--env-file <path>]",
     lines: [
-      "Export already-recorded run artifacts to the configured Phoenix exporter",
+      "Export already-recorded agent-run artifacts to the configured Phoenix exporter",
       "with their historical timestamps. Trace ids are deterministic per run, so",
       "re-running overwrites rather than duplicating. --dry-run maps and",
-      "serializes without sending.",
+      "serializes without sending. --include-memory adds memory-run artifacts",
+      "for --all; explicit --run can target a memory run directly.",
     ],
   },
   {
     signature:
       "mono-agent audit-runs [--artifact-dir <path> | --consumer <path>]\n" +
-      "                      [--config <path>] [--env-file <path>] [--stale-after-ms <n>] [--json]",
+      "                      [--include-memory] [--config <path>] [--env-file <path>] [--stale-after-ms <n>] [--json]",
     lines: [
-      "Read local run summary artifacts without rewriting them. Reports parse",
+      "Read local agent-run summary artifacts without rewriting them. Reports parse",
       "failures, status and failure-kind histograms, stale running summaries,",
-      "and per-failure-kind rates.",
+      "and per-failure-kind rates. --include-memory includes memory-run artifacts.",
     ],
   },
   {
     signature:
       "mono-agent metrics [--artifacts <path>] [--since <iso>] [--until <iso>]\n" +
-      "                   [--by model|channel|failureKind] [--json] [--config <path>] [--env-file <path>]",
+      "                   [--include-memory] [--by model|channel|failureKind] [--json] [--config <path>] [--env-file <path>]",
     lines: [
-      "Aggregate local run summaries into status rates, failure-kind rates,",
+      "Aggregate local agent-run summaries into status rates, failure-kind rates,",
       "duration percentiles, and total/per-run cost. Read-only and offline.",
+      "--include-memory includes memory-run artifacts.",
     ],
   },
 ];
@@ -632,6 +644,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.since === undefined ? {} : { since: args.since }),
         ...(args.until === undefined ? {} : { until: args.until }),
         dryRun: args.dryRun,
+        includeMemory: args.includeMemory,
       });
     case "audit-runs":
       return await runAuditRuns({
@@ -640,6 +653,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.consumerPath === undefined ? {} : { consumerPath: args.consumerPath }),
         ...(args.staleAfterMs === undefined ? {} : { staleAfterMs: args.staleAfterMs }),
         json: args.json === true,
+        includeMemory: args.includeMemory,
       });
     case "metrics":
       return await runMetrics({
@@ -649,6 +663,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.until === undefined ? {} : { until: args.until }),
         ...(args.groupBy === undefined ? {} : { groupBy: args.groupBy }),
         json: args.json === true,
+        includeMemory: args.includeMemory,
       });
   }
 }
@@ -1299,7 +1314,7 @@ async function writeAppRunsHealthDetail(app: MonoAgentApp, options: PrintAppStat
   const reader = options.listRecordedRuns ?? listRecordedRuns;
   let result;
   try {
-    result = await reader({ artifactDir, maxRuns: RUNS_HEALTH_MAX_RUNS });
+    result = await reader({ artifactDir, maxRuns: RUNS_HEALTH_MAX_RUNS, scope: "agent" });
   } catch (error) {
     result = {
       totalRuns: 0,

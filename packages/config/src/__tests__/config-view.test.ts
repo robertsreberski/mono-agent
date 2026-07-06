@@ -124,28 +124,38 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(defaultSections, "artifacts.retention.maxAgeDays")).toMatchObject({ value: "365 day(s)", source: "default" });
     expect(field(defaultSections, "artifacts.retention.maxCount")).toMatchObject({ value: "50000", source: "default" });
     expect(field(defaultSections, "artifacts.retention.dryRun")).toMatchObject({ value: "no", source: "default" });
+    expect(field(defaultSections, "artifacts.memoryRetention.maxAgeDays")).toMatchObject({ value: "7 day(s)", source: "default" });
+    expect(field(defaultSections, "artifacts.memoryRetention.maxCount")).toMatchObject({ value: "5000", source: "default" });
+    expect(field(defaultSections, "artifacts.memoryRetention.dryRun")).toMatchObject({ value: "no", source: "default" });
 
     const jsonSections = buildView(baseEnv, {
       artifacts: {
         retention: { maxAgeDays: 10, maxCount: 200, dryRun: true },
+        memoryRetention: { maxAgeDays: 2, maxCount: 20, dryRun: false },
       },
     });
     expect(field(jsonSections, "artifacts.retention.maxAgeDays")).toMatchObject({ value: "10 day(s)", source: "json" });
     expect(field(jsonSections, "artifacts.retention.maxCount")).toMatchObject({ value: "200", source: "json" });
     expect(field(jsonSections, "artifacts.retention.dryRun")).toMatchObject({ value: "yes", source: "json" });
+    expect(field(jsonSections, "artifacts.memoryRetention.maxAgeDays")).toMatchObject({ value: "2 day(s)", source: "json" });
+    expect(field(jsonSections, "artifacts.memoryRetention.maxCount")).toMatchObject({ value: "20", source: "json" });
+    expect(field(jsonSections, "artifacts.memoryRetention.dryRun")).toMatchObject({ value: "no", source: "json" });
 
     const envSections = buildView(
       {
         ...baseEnv,
         MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT: "50",
+        MONO_AGENT_ARTIFACT_MEMORY_RETENTION_MAX_COUNT: "15",
       },
       {
         artifacts: {
           retention: { maxCount: 200 },
+          memoryRetention: { maxCount: 20 },
         },
       },
     );
     expect(field(envSections, "artifacts.retention.maxCount")).toMatchObject({ value: "50", source: "env" });
+    expect(field(envSections, "artifacts.memoryRetention.maxCount")).toMatchObject({ value: "15", source: "env" });
   });
 });
 

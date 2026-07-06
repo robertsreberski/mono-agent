@@ -172,6 +172,60 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("applies memory artifact retention separately on startup", async () => {
+    const artifactDir = join(dir, "artifacts");
+    const memoryArtifactDir = join(artifactDir, "memory");
+    await mkdir(memoryArtifactDir, { recursive: true });
+    const oldUpdatedAt = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    await writeFile(
+      join(artifactDir, "old-agent-run.summary.json"),
+      `${JSON.stringify({
+        runId: "old-agent-run",
+        conversationId: "chat",
+        status: "succeeded",
+        startedAt: oldUpdatedAt,
+        endedAt: oldUpdatedAt,
+        updatedAt: oldUpdatedAt,
+        artifactPaths: [],
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(join(artifactDir, "old-agent-run.events.jsonl"), "{}\n", "utf8");
+    await writeFile(
+      join(memoryArtifactDir, "old-memory-run.summary.json"),
+      `${JSON.stringify({
+        runId: "old-memory-run",
+        conversationId: "memory:capture:distill",
+        source: "memory",
+        status: "succeeded",
+        startedAt: oldUpdatedAt,
+        endedAt: oldUpdatedAt,
+        updatedAt: oldUpdatedAt,
+        artifactPaths: [],
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(join(memoryArtifactDir, "old-memory-run.events.jsonl"), "{}\n", "utf8");
+    await writeConfig({
+      ...baseConfig(),
+      artifacts: {
+        dir: "./artifacts",
+        retention: { maxAgeDays: 30, maxCount: 5000, dryRun: false },
+        memoryRetention: { maxAgeDays: 7, maxCount: 500, dryRun: false },
+      },
+    });
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });
+
+    await vi.waitFor(() => {
+      expect(existsSync(join(memoryArtifactDir, "old-memory-run.summary.json"))).toBe(false);
+      expect(existsSync(join(memoryArtifactDir, "old-memory-run.events.jsonl"))).toBe(false);
+    });
+    expect(existsSync(join(artifactDir, "old-agent-run.summary.json"))).toBe(true);
+    expect(existsSync(join(artifactDir, "old-agent-run.events.jsonl"))).toBe(true);
+    await app.stop();
+  });
+
   it("applies artifact retention even when trace-source registration fails", async () => {
     const artifactDir = join(dir, "artifacts");
     await mkdir(artifactDir, { recursive: true });

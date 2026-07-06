@@ -472,6 +472,7 @@ async function writeRunsHealthDetail(source: TraceSourceListItem, deps: Backgrou
   const { totalRuns, runs, warnings } = await deps.listRecordedRuns({
     artifactDir: source.artifactDir,
     maxRuns: RUNS_HEALTH_MAX_RUNS,
+    scope: "agent",
   });
   const selectedSkills = selectedSkillsFromMetadata(source.metadata);
   const runOwnerAlive = source.pid === undefined ? undefined : deps.isAlive(source.pid);

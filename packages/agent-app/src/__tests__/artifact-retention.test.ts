@@ -100,6 +100,36 @@ describe("artifact retention app scheduler", () => {
     expect(clearInterval).toHaveBeenCalledTimes(1);
   });
 
+  it("runs separate agent and memory retention passes each sweep", async () => {
+    const dir = await tempDir();
+    await writeRun(dir, "old-agent-run", NOW - 10 * DAY_MS);
+    await writeRun(join(dir, "memory"), "old-memory-run", NOW - 10 * DAY_MS);
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const beforeFirstRun = vi.fn(async () => undefined);
+
+    const scheduler = startArtifactRetentionScheduler({
+      artifactDir: dir,
+      retention: { maxAgeDays: 30, maxCount: 5000, dryRun: false },
+      memoryRetention: { maxAgeDays: 7, maxCount: 500, dryRun: false },
+      logger,
+      clock: () => NOW,
+      beforeFirstRun,
+      setInterval: () => ({ unref: vi.fn() }),
+      clearInterval: vi.fn(),
+    });
+
+    await scheduler.runNow();
+
+    expect(beforeFirstRun).toHaveBeenCalledTimes(1);
+    await expectExists(join(dir, "old-agent-run.summary.json"), true);
+    await expectExists(join(dir, "memory", "old-memory-run.summary.json"), false);
+    expect(logger.info).toHaveBeenCalledWith(
+      "Memory artifact retention pruned terminal run artifacts.",
+      expect.objectContaining({ scope: "memory", prunedRunIds: ["old-memory-run"] }),
+    );
+    scheduler.stop();
+  });
+
   it("does not prune after stop while the first-run hook is still pending", async () => {
     const dir = await tempDir();
     await writeRun(dir, "old-run", NOW - 40 * DAY_MS);

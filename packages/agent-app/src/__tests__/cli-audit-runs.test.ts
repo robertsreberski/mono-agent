@@ -54,6 +54,57 @@ describe("runCli audit-runs", () => {
     await expect(readFile(stalePath, "utf8")).resolves.toBe(before);
   });
 
+  it("defaults to agent summaries and includes memory summaries only with --include-memory", async () => {
+    const dir = await tempDir();
+    await mkdir(join(dir, "memory"), { recursive: true });
+    await writeSummary(dir, "run-agent.summary.json", {
+      runId: "run-agent",
+      conversationId: "fixture",
+      status: "succeeded",
+      startedAt: "2026-06-24T10:00:00.000Z",
+      endedAt: "2026-06-24T10:00:01.000Z",
+      durationMs: 1000,
+      eventCount: 0,
+      artifactPaths: [],
+    });
+    await writeSummary(dir, "mem-legacy.summary.json", {
+      runId: "mem-legacy",
+      conversationId: "memory:capture:distill",
+      source: "memory",
+      status: "succeeded",
+      startedAt: "2026-06-24T10:01:00.000Z",
+      endedAt: "2026-06-24T10:01:01.000Z",
+      durationMs: 1000,
+      eventCount: 0,
+      artifactPaths: [],
+    });
+    await writeSummary(join(dir, "memory"), "mem-new.summary.json", {
+      runId: "mem-new",
+      conversationId: "memory:capture:entities",
+      source: "memory",
+      status: "failed",
+      startedAt: "2026-06-24T10:02:00.000Z",
+      endedAt: "2026-06-24T10:02:01.000Z",
+      durationMs: 1000,
+      eventCount: 0,
+      artifactPaths: [],
+    });
+
+    const agentOnly = await captureCli(() => runCli(["audit-runs", "--artifact-dir", dir, "--stale-after-ms", "1", "--json"]));
+    const all = await captureCli(() => runCli(["audit-runs", "--artifact-dir", dir, "--stale-after-ms", "1", "--include-memory", "--json"]));
+    const agentReport = JSON.parse(agentOnly.stdout) as { readonly totalSummaryFiles: number; readonly statusHistogram: { readonly succeeded: number; readonly failed: number } };
+    const allReport = JSON.parse(all.stdout) as { readonly totalSummaryFiles: number; readonly statusHistogram: { readonly succeeded: number; readonly failed: number } };
+
+    expect(agentOnly.code).toBe(0);
+    expect(all.code).toBe(0);
+    expect(agentReport.totalSummaryFiles).toBe(1);
+    expect(agentReport.statusHistogram.succeeded).toBe(1);
+    expect(agentReport.statusHistogram.failed).toBe(0);
+    expect(allReport.totalSummaryFiles).toBe(3);
+    expect(allReport.statusHistogram.succeeded).toBe(2);
+    expect(allReport.statusHistogram.failed).toBe(1);
+  });
+
   it("resolves artifact dir and stale interval from a consumer folder without requiring an exporter", async () => {
     const consumer = await tempDir();
     const artifactDir = join(consumer, "custom-artifacts");

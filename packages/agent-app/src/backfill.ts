@@ -9,6 +9,7 @@ import {
   serializeTraceSpans,
 } from "@mono-agent/observability/otel";
 import type {
+  RunArtifactScope,
   RunExportContext,
   RunSummary,
   RuntimeEventLike,
@@ -24,6 +25,7 @@ import type { MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js"
 
 const SUMMARY_SUFFIX = ".summary.json";
 const EVENTS_SUFFIX = ".events.jsonl";
+const MEMORY_ARTIFACT_NAMESPACE = "memory";
 // Backfill is a deliberate foreground batch (not the live best-effort path), so
 // a single very large run gets a generous POST budget regardless of the live
 // exporter's small default timeout.
@@ -63,6 +65,8 @@ export interface BackfillOptions {
   readonly until?: string;
   /** Map + serialize but do not POST; report span counts and byte sizes. */
   readonly dryRun?: boolean;
+  /** With `all`, include memory-run artifacts in addition to default agent runs. */
+  readonly includeMemory?: boolean;
 }
 
 export interface BackfillRunArtifacts {
@@ -80,17 +84,30 @@ export interface BackfillRunArtifacts {
  */
 export async function readRunArtifacts(artifactDir: string, runId: string): Promise<BackfillRunArtifacts> {
   const warnings: string[] = [];
-  const summaryRaw = await readFile(join(artifactDir, `${runId}${SUMMARY_SUFFIX}`), "utf8");
+  const runArtifactDir = await resolveRunArtifactDir(artifactDir, runId);
+  const summaryRaw = await readFile(join(runArtifactDir, `${runId}${SUMMARY_SUFFIX}`), "utf8");
   const summary = JSON.parse(summaryRaw) as RunSummary;
 
   let events: RuntimeEventLike[] = [];
   try {
-    const eventsRaw = await readFile(join(artifactDir, `${runId}${EVENTS_SUFFIX}`), "utf8");
+    const eventsRaw = await readFile(join(runArtifactDir, `${runId}${EVENTS_SUFFIX}`), "utf8");
     events = parseEventsJsonl(eventsRaw, warnings);
   } catch {
     warnings.push(`No ${EVENTS_SUFFIX} for ${runId}; exporting a root-span-only trace.`);
   }
   return { summary, events, warnings };
+}
+
+async function resolveRunArtifactDir(artifactDir: string, runId: string): Promise<string> {
+  const topLevel = resolve(artifactDir);
+  if (await fileExists(join(topLevel, `${runId}${SUMMARY_SUFFIX}`))) {
+    return topLevel;
+  }
+  const memoryDir = join(topLevel, MEMORY_ARTIFACT_NAMESPACE);
+  if (await fileExists(join(memoryDir, `${runId}${SUMMARY_SUFFIX}`))) {
+    return memoryDir;
+  }
+  return topLevel;
 }
 
 function parseEventsJsonl(raw: string, warnings: string[]): RuntimeEventLike[] {
@@ -171,12 +188,87 @@ async function postWithRetry(exporter: ResolvedExporter, projectName: string, bo
 }
 
 /** List run ids (base names) present in an artifact dir, sorted oldest-first by id. */
-async function listRunIds(artifactDir: string): Promise<string[]> {
-  const entries = await readdir(artifactDir, { withFileTypes: true });
-  return entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(SUMMARY_SUFFIX))
-    .map((entry) => entry.name.slice(0, -SUMMARY_SUFFIX.length))
-    .sort();
+async function listRunIds(artifactDir: string, scope: RunArtifactScope): Promise<string[]> {
+  const root = resolve(artifactDir);
+  const ids = new Set<string>();
+  for (const runId of await listRunIdsFromDir(root, "agent", scope)) {
+    ids.add(runId);
+  }
+  if (scope === "memory" || scope === "all") {
+    for (const runId of await listRunIdsFromDir(join(root, MEMORY_ARTIFACT_NAMESPACE), "memory", scope)) {
+      ids.add(runId);
+    }
+  }
+  return [...ids].sort();
+}
+
+async function listRunIdsFromDir(
+  artifactDir: string,
+  namespaceKind: "agent" | "memory",
+  scope: RunArtifactScope,
+): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(artifactDir, { withFileTypes: true });
+  } catch (error) {
+    if (isMissingPath(error)) {
+      return [];
+    }
+    throw error;
+  }
+  const ids: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(SUMMARY_SUFFIX)) {
+      continue;
+    }
+    const runId = entry.name.slice(0, -SUMMARY_SUFFIX.length);
+    if (scope === "all" || namespaceKind === "memory") {
+      ids.push(runId);
+      continue;
+    }
+    const raw = await readSummaryJson(join(artifactDir, entry.name));
+    const memoryRun = raw === undefined ? runId.startsWith("mem-") : isMemoryRunSummary(raw);
+    if (scope === "agent" ? !memoryRun : memoryRun) {
+      ids.push(runId);
+    }
+  }
+  return ids;
+}
+
+async function readSummaryJson(path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isMemoryRunSummary(summary: Record<string, unknown>): boolean {
+  return summary.source === "memory" ||
+    (typeof summary.conversationId === "string" && summary.conversationId.startsWith("memory:")) ||
+    (typeof summary.runId === "string" && summary.runId.startsWith("mem-"));
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await readFile(path, "utf8");
+    return true;
+  } catch (error) {
+    if (isMissingPath(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function isMissingPath(error: unknown): boolean {
+  return error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { readonly code?: unknown }).code === "ENOENT";
 }
 
 function withinWindow(summary: RunSummary, since?: string, until?: string): boolean {
@@ -223,7 +315,8 @@ export async function backfillRuns(
   const projectName = resolveProjectName(exporter, sourceLabel, sourceId);
   const includeSensitiveData = exporter.includeSensitiveData ?? false;
 
-  const runIds = options.run !== undefined ? [options.run] : await listRunIds(artifactDir);
+  const scope: RunArtifactScope = options.run !== undefined ? "all" : options.includeMemory === true ? "all" : "agent";
+  const runIds = options.run !== undefined ? [options.run] : await listRunIds(artifactDir, scope);
 
   const outcomes: RunOutcome[] = [];
   for (const runId of runIds) {
@@ -282,6 +375,7 @@ export interface RunBackfillArgs {
   readonly since?: string;
   readonly until?: string;
   readonly dryRun: boolean;
+  readonly includeMemory?: boolean;
 }
 
 /** CLI entry: resolve config, run the backfill, and print a per-run report. */
@@ -305,6 +399,7 @@ export async function runBackfill(args: RunBackfillArgs): Promise<number> {
       ...(args.since === undefined ? {} : { since: args.since }),
       ...(args.until === undefined ? {} : { until: args.until }),
       dryRun: args.dryRun,
+      ...(args.includeMemory === undefined ? {} : { includeMemory: args.includeMemory }),
     });
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

@@ -573,6 +573,7 @@ describe("validateMonoAgentFolder — runs health section", () => {
 
     const runs = sectionById(report, "runs");
     expect(runs.details[0]).toBe("Artifact retention: maxAgeDays=12, maxCount=34, dryRun=true.");
+    expect(runs.details[1]).toBe("Memory artifact retention: maxAgeDays=7, maxCount=5000, dryRun=true.");
     expect(report.ok).toBe(true);
   });
 

@@ -185,7 +185,8 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
     await store.close();
 
-    const summaries = await readSummaries(join(dir, "artifacts"));
+    expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
+    const summaries = await readSummaries(join(dir, "artifacts", "memory"));
     expect(summaries.length).toBeGreaterThanOrEqual(2);
     for (const s of summaries) {
       expect(s.runId).toMatch(/^mem-/u);
@@ -241,7 +242,8 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
     await store.close();
 
-    const summaries = await readSummaries(join(dir, "artifacts"));
+    expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
+    const summaries = await readSummaries(join(dir, "artifacts", "memory"));
     expect(summaries.length).toBeGreaterThanOrEqual(2);
     expect(summaries.every((s) => s.source === "memory")).toBe(true);
     const distill = summaries.find((s) => s.conversationId === "memory:capture:distill");
@@ -312,7 +314,7 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     await expect(store.capture("conv-1", "text")).rejects.toThrow();
     await store.close();
 
-    const summaries = await readSummaries(join(dir, "artifacts"));
+    const summaries = await readSummaries(join(dir, "artifacts", "memory"));
     expect(summaries.length).toBeGreaterThanOrEqual(1);
     expect(summaries.some((s) => s.status === "failed")).toBe(true);
   });
