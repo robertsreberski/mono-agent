@@ -78,8 +78,11 @@ export class BujoMemoryStore implements MemoryStore {
   }
 
   /** Query-based hybrid recall (text + score). Used by the MCP and any deliberate recall surface. */
-  async recall(query: string, options: { topK?: number } = {}): Promise<RecallHit[]> {
-    return this.db.recall(query, { ...(options.topK !== undefined && { topK: options.topK }) });
+  async recall(query: string, options: { topK?: number; trackAccess?: boolean } = {}): Promise<RecallHit[]> {
+    return this.db.recall(query, {
+      ...(options.topK !== undefined && { topK: options.topK }),
+      ...(options.trackAccess !== undefined && { trackAccess: options.trackAccess }),
+    });
   }
 
   async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {

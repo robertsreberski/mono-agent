@@ -2,6 +2,8 @@ import type { EmbeddingProvider } from "../search/index.js";
 
 export type MemoryType = "task" | "event" | "note";
 
+export const MEMORY_TYPES = ["task", "event", "note"] as const satisfies readonly MemoryType[];
+
 export type MemoryStatus =
   | "open"
   | "done"
@@ -9,6 +11,15 @@ export type MemoryStatus =
   | "migrated"
   | "dropped"
   | "invalidated";
+
+export const MEMORY_STATUSES = [
+  "open",
+  "done",
+  "scheduled",
+  "migrated",
+  "dropped",
+  "invalidated",
+] as const satisfies readonly MemoryStatus[];
 
 export interface MemorySource {
   readonly session?: string;
@@ -78,7 +89,25 @@ export interface RecallOptions {
   readonly candidates?: number;
   readonly expandHops?: number;
   readonly includeInvalid?: boolean;
+  readonly trackAccess?: boolean;
   readonly now?: Date;
+}
+
+export interface MemoryStoreStatsOptions {
+  readonly topEntitiesLimit?: number;
+}
+
+export type MemoryCountByStatus = Readonly<Record<MemoryStatus, number>>;
+export type MemoryCountByType = Readonly<Record<MemoryType, number>>;
+
+export interface MemoryStoreStats {
+  readonly totalMemories: number;
+  readonly liveMemories: number;
+  readonly countsByStatus: MemoryCountByStatus;
+  readonly countsByType: MemoryCountByType;
+  readonly latestCreatedMemory?: MemoryRecord;
+  readonly latestAccessedMemory?: MemoryRecord;
+  readonly topEntities: readonly EntityRecord[];
 }
 
 export interface MemoryDbOptions {

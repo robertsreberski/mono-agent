@@ -3,7 +3,7 @@
 Config-first mono-agent host. Reads one `mono-agent.config.json` in a folder,
 builds the configured responder, and starts every configured communication
 channel plus traceability. Ships the
-`mono-agent` CLI (`init`, `validate`, `start`) so an agent folder works without
+`mono-agent` CLI (`init`, `validate`, `memory`, `start`) so an agent folder works without
 hand-written composition code.
 
 ## Category
@@ -28,6 +28,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   preset): `start`/`status` report the configured endpoint and a note that JSONL
   artifacts remain local; `validate` performs the live reachability probe. Export
   is best-effort and never changes a run outcome.
+- Preview the configured memory backend from the same config/env resolution path
+  via `mono-agent memory` (`stats`, `today`, `show`, `search`, `top`).
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 

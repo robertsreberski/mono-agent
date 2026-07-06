@@ -43,6 +43,18 @@ describe("recall", () => {
     db.close();
   });
 
+  it("can recall without mutating access metadata", async () => {
+    const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64, clock: () => new Date("2026-06-16T00:00:00.000Z") });
+    await db.upsert(note("a", "cat"));
+    const hits = await db.recall("cat", { topK: 1, trackAccess: false });
+    const got = db.get("a");
+    expect(hits[0]?.record.accessCount).toBe(0);
+    expect(hits[0]?.record.lastAccessedAt).toBeUndefined();
+    expect(got?.accessCount).toBe(0);
+    expect(got?.lastAccessedAt).toBeUndefined();
+    db.close();
+  });
+
   it("excludes memories whose validTo has passed, unless includeInvalid", async () => {
     const now = new Date("2026-06-15T00:00:00.000Z");
     const db = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });

@@ -19,6 +19,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `recipes` | List executable setup recipes or show a recipe's generated config, `.env.example`, and checklist. | `list`, `show <id>` |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias). | `--consumer <path>`, `--config <path>`, `--env-file <path>` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>` |
+| `memory` | Preview the configured memory store from an agent folder: stats, daily logs, search, and top salient memories. | `stats`, `today`, `show <date>`, `search <query>`, `top`, `--limit <n>`, `--json`, `--config <path>`, `--env-file <path>` |
 | `start` | Start the agent as a background launchd service (or foreground worker). | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
 | `restart` | Restart the background instance for this config (starts it if stopped). | `--config <path>`, `--force` |
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
@@ -176,6 +177,33 @@ mono-agent config --config ./agents/support.config.json --env-file ./.env.stagin
 | --- | --- |
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. |
+
+## `memory`
+
+Previews the configured memory store from an agent folder without using the standalone `memory-bujo <root>` env workflow. It reads `memory` from `mono-agent.config.json` through the normal app config loader, so relative paths resolve the same way they do for the running agent. Output is human-first by default; pass `--json` for scripts.
+
+```bash
+mono-agent memory stats
+mono-agent memory today
+mono-agent memory show 2026-07-06
+mono-agent memory search "deployment notes"
+mono-agent memory top --limit 20
+```
+
+| Subcommand | Effect |
+| --- | --- |
+| `stats` | Shows backend, configured/effective tier, write mode, recall-tool state, local root, memory/entity counts, store sizes, last capture/access/consolidation signals, and top entities. For Supermemory it reports the known remote endpoint/container and explicitly lists fields that are not knowable locally. |
+| `today` | Renders today's local BuJo daily log. |
+| `show <YYYY-MM-DD>` | Renders one local BuJo daily log by date. Both current `daily/YYYY-MM-DD.md` and older root-level `YYYY-MM-DD.md` layouts are recognized. |
+| `search <query>` | Uses the same recall-store construction as `memory_recall`. Local BuJo/journal search returns scores plus sources; if configured embeddings are unavailable, it retries FTS-only and prints a warning. Supermemory search proxies the remote API. |
+| `top` | Shows highest-salience local BuJo/journal memories with salience, type/status, and source. Supermemory has no local salience ranking, so it tells you to use search. |
+
+| Flag | Effect |
+| --- | --- |
+| `--limit <n>` | Limits search hits, top memories, and stats entity preview rows (1-100). |
+| `--json` | Prints the machine-readable result instead of the human view. |
+| `--config <path>` | Use a non-default config file. |
+| `--env-file <path>` | Load secrets from a non-default dotenv file before resolving the config. |
 
 ## `start`
 

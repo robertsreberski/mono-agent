@@ -39,7 +39,7 @@ memory-bujo recall ./memory "what did we decide about releases?"
 
 ## Public API
 
-- `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, local record/entity/recall types, and re-exported `MemoryBlock`, `MemoryStore`, `MemoryWriteResult`
+- `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, `MEMORY_TYPES`, `MEMORY_STATUSES`, local record/entity/recall/stats types, and re-exported `MemoryBlock`, `MemoryStore`, `MemoryWriteResult`
 - `@mono-agent/memory/search`: `createEmbeddingProvider`, `createCircuitBreakerEmbeddingProvider`, `createVectorMemoryIndex`, `gatherMemoryChunks`, embedding/search provider classes and types
 - `@mono-agent/memory/bujo`: `createBujoMemoryStore`, `BujoMemoryStore`, `composeRecallBlock`, markdown grammar helpers, daily-file helpers, capture/reconcile/reflection/migration helpers, `createOllamaLlm`, and related BuJo/LLM types
 - CLI: `memory-bujo`

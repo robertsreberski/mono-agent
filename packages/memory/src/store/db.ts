@@ -12,9 +12,13 @@ import {
   DEFAULT_RRF_K,
   DEFAULT_VEC_DIM,
   DEFAULT_WEIGHTS,
+  MEMORY_STATUSES,
+  MEMORY_TYPES,
   type EntityRecord,
   type EntityRelationRecord,
   type MemoryDbOptions,
+  type MemoryStoreStats,
+  type MemoryStoreStatsOptions,
   type MemoryRecord,
   type RecallHit,
   type RecallOptions,
@@ -139,6 +143,58 @@ export class MemoryDb {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM memories`).get() as { n: number }).n;
   }
 
+  stats(options: MemoryStoreStatsOptions = {}): MemoryStoreStats {
+    const topEntitiesLimit = normalizeNonNegativeInteger(
+      options.topEntitiesLimit ?? 10,
+      "memory-store: stats topEntitiesLimit must be a non-negative integer.",
+    );
+    const countsByStatus = Object.fromEntries(MEMORY_STATUSES.map((status) => [status, 0])) as Record<
+      (typeof MEMORY_STATUSES)[number],
+      number
+    >;
+    const countsByType = Object.fromEntries(MEMORY_TYPES.map((type) => [type, 0])) as Record<
+      (typeof MEMORY_TYPES)[number],
+      number
+    >;
+
+    const totalMemories = (this.db.prepare(`SELECT COUNT(*) AS n FROM memories`).get() as { n: number }).n;
+    const liveMemories = (
+      this.db.prepare(`SELECT COUNT(*) AS n FROM memories WHERE status NOT IN ('invalidated','dropped')`).get() as { n: number }
+    ).n;
+
+    const statusRows = this.db.prepare(`SELECT status, COUNT(*) AS n FROM memories GROUP BY status`).all() as {
+      status: MemoryRecord["status"];
+      n: number;
+    }[];
+    for (const row of statusRows) countsByStatus[row.status] = row.n;
+
+    const typeRows = this.db.prepare(`SELECT type, COUNT(*) AS n FROM memories GROUP BY type`).all() as {
+      type: MemoryRecord["type"];
+      n: number;
+    }[];
+    for (const row of typeRows) countsByType[row.type] = row.n;
+
+    const latestCreatedRow = this.db.prepare(
+      `SELECT * FROM memories ORDER BY created_at DESC, id ASC LIMIT 1`,
+    ).get() as Record<string, unknown> | undefined;
+    const latestAccessedRow = this.db.prepare(
+      `SELECT * FROM memories WHERE last_accessed_at IS NOT NULL ORDER BY last_accessed_at DESC, created_at DESC, id ASC LIMIT 1`,
+    ).get() as Record<string, unknown> | undefined;
+    const entityRows = this.db.prepare(
+      `SELECT * FROM entities ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC, name ASC, id ASC LIMIT ?`,
+    ).all(topEntitiesLimit) as Record<string, unknown>[];
+
+    return {
+      totalMemories,
+      liveMemories,
+      countsByStatus,
+      countsByType,
+      ...(latestCreatedRow !== undefined && { latestCreatedMemory: this.fromRow(latestCreatedRow) }),
+      ...(latestAccessedRow !== undefined && { latestAccessedMemory: this.fromRow(latestAccessedRow) }),
+      topEntities: entityRows.map((row) => this.entityFromRow(row)),
+    };
+  }
+
   async recall(query: string, options: RecallOptions = {}): Promise<RecallHit[]> {
     const topK = options.topK ?? 8;
     const candidates = options.candidates ?? Math.max(topK * 4, 20);
@@ -178,6 +234,9 @@ export class MemoryDb {
     }
     scored.sort((a, b) => b.score - a.score);
     const top = scored.slice(0, topK);
+    if (options.trackAccess === false) {
+      return top;
+    }
     this.bumpAccess(top.map((h) => h.record.id), now);
     return top.map((h) => ({ ...h, record: { ...h.record, accessCount: h.record.accessCount + 1, lastAccessedAt: now.toISOString() } }));
   }
@@ -505,4 +564,11 @@ export class MemoryDb {
 
 export function openMemoryDb(options: MemoryDbOptions): MemoryDb {
   return new MemoryDb(options);
+}
+
+function normalizeNonNegativeInteger(value: number, message: string): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(message);
+  }
+  return value;
 }

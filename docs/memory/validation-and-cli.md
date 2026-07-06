@@ -4,9 +4,37 @@ sidebar:
   order: 5
 ---
 
-This page covers how `mono-agent validate` verifies memory liveness (writable root, Ollama reachability, consolidation cadence) and how the standalone `memory-bujo` CLI runs out-of-band maintenance against a memory root. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects.
+This page covers how `mono-agent validate` verifies memory liveness (writable root, Ollama reachability, consolidation cadence), how `mono-agent memory` previews the configured backend from an agent folder, and how the standalone `memory-bujo` CLI runs out-of-band maintenance against a memory root. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects.
 
 The memory subsystem **never silently falls back**: missing tier prerequisites surface as loud `[warn]` output and explicit not-scheduled messages, not quiet success. Run `mono-agent validate` before cutover and after pulling any model.
+
+## `mono-agent memory` — config-aware preview
+
+`mono-agent memory` is the operator preview for the memory configured in the current agent folder. It loads the same `mono-agent.config.json` and `.env` resolution path as the app, so it sees the active memory mode, backend, root path, embeddings provider, and Supermemory settings without a separate root argument.
+
+Coverage: cli.
+
+```bash
+# High-level memory configuration and local-store counts
+mono-agent memory stats
+
+# Today's or a specific daily markdown file
+mono-agent memory today
+mono-agent memory show 2026-07-06
+
+# Recall through the configured backend
+mono-agent memory search "release checklist"
+
+# Highest-salience local memories
+mono-agent memory top --limit 10
+
+# Machine-readable output for scripts
+mono-agent memory stats --json
+```
+
+If memory is disabled or missing from config, the command exits successfully and says no memory backend is configured. For local BuJo/journal/lite memory, `stats` reports the configured and effective tier, write mode, recall-tool state, memory root and database paths, daily-file counts, markdown/database sizes, record/status/type counts, latest capture/access timestamps, and top entities. `today` / `show <date>` print daily markdown when present, and `top` ranks local memories by salience.
+
+`search` uses the same recall path as the `memory_recall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
 
 ## `mono-agent validate` — memory liveness
 
