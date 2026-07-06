@@ -58,6 +58,7 @@ interface HistoryPageState {
   readonly hasMore: boolean;
   readonly loading: boolean;
   readonly total?: number;
+  readonly loadedKeys?: ReadonlySet<string>;
   readonly error?: string;
 }
 
@@ -161,6 +162,106 @@ function loadedSessionCount(sessions: readonly Session[], instance: string): num
   return sessions.filter((session) => sessionSourceId(session) === key).length;
 }
 
+function baseHistoryState(states: Readonly<Record<string, HistoryPageState>>, key: string, status: ConnStatus): HistoryPageState {
+  const known = states[key];
+  if (known !== undefined) {
+    return known;
+  }
+  if (status !== "live" && status !== "reconnecting") {
+    return { offset: 0, hasMore: false, loading: false };
+  }
+  return { offset: 0, hasMore: states.all?.hasMore ?? true, loading: false };
+}
+
+function upsertLoadedKeys(
+  state: HistoryPageState,
+  sessions: readonly Session[],
+  page?: { readonly offset: number; readonly hasMore: boolean; readonly total?: number },
+): HistoryPageState {
+  const loadedKeys = new Set(state.loadedKeys ?? []);
+  for (const session of sessions) {
+    loadedKeys.add(sessionStoreKey(session));
+  }
+  const loadedOffset = loadedKeys.size;
+  const pageOffset = page === undefined ? 0 : page.offset + sessions.length;
+  const offset = Math.max(state.offset, loadedOffset, pageOffset);
+  const total = page?.total ?? state.total;
+  return {
+    ...state,
+    offset,
+    hasMore: total === undefined ? page?.hasMore ?? state.hasMore : offset < total,
+    loading: page === undefined ? state.loading : false,
+    loadedKeys,
+    ...(total === undefined ? {} : { total }),
+  };
+}
+
+function removeLoadedKeys(state: HistoryPageState, keys: ReadonlySet<string>): HistoryPageState {
+  if (state.loadedKeys === undefined) {
+    return state;
+  }
+  const loadedKeys = new Set(state.loadedKeys);
+  let changed = false;
+  for (const key of keys) {
+    changed = loadedKeys.delete(key) || changed;
+  }
+  if (!changed) {
+    return state;
+  }
+  const offset = Math.min(state.offset, loadedKeys.size);
+  return {
+    ...state,
+    offset,
+    hasMore: state.total === undefined ? state.hasMore : offset < state.total,
+    loadedKeys,
+  };
+}
+
+export function markHistorySessionsLoaded(
+  states: Readonly<Record<string, HistoryPageState>>,
+  sessions: readonly Session[],
+  instance = "all",
+  page?: { readonly offset: number; readonly hasMore: boolean; readonly total?: number },
+): Record<string, HistoryPageState> {
+  const key = historyKey(instance);
+  const next: Record<string, HistoryPageState> = { ...states };
+  next[key] = upsertLoadedKeys(baseHistoryState(next, key, "live"), sessions, page);
+  if (key === "all") {
+    const bySource = new Map<string, Session[]>();
+    for (const session of sessions) {
+      const sourceId = sessionSourceId(session);
+      const group = bySource.get(sourceId) ?? [];
+      group.push(session);
+      bySource.set(sourceId, group);
+    }
+    for (const [sourceId, sourceSessions] of bySource) {
+      next[sourceId] = upsertLoadedKeys(baseHistoryState(next, sourceId, "live"), sourceSessions);
+    }
+  }
+  return next;
+}
+
+function applyHistoryOps(
+  states: Readonly<Record<string, HistoryPageState>>,
+  ops: readonly SessionStoreOp[],
+): Record<string, HistoryPageState> {
+  const upserts = ops.filter((op): op is Extract<SessionStoreOp, { type: "upsert" }> => op.type === "upsert");
+  let next = upserts.length > 0 ? markHistorySessionsLoaded(states, upserts.map((op) => op.session), "all") : { ...states };
+  const removedKeys = new Set(
+    ops
+      .filter((op): op is Extract<SessionStoreOp, { type: "remove" }> => op.type === "remove")
+      .map((op) => sessionStoreKeyParts(op.sourceId, op.runId)),
+  );
+  if (removedKeys.size === 0) {
+    return next;
+  }
+  next = { ...next };
+  for (const [key, state] of Object.entries(next)) {
+    next[key] = removeLoadedKeys(state, removedKeys);
+  }
+  return next;
+}
+
 export function seedHistoryPageStates(
   instances: readonly WebInstance[],
   sessions: readonly Session[],
@@ -168,26 +269,32 @@ export function seedHistoryPageStates(
 ): Record<string, HistoryPageState> {
   const allTotal = page.total;
   const allLoaded = page.offset + sessions.length;
+  const allLoadedKeys = new Set(sessions.map((session) => sessionStoreKey(session)));
   const states: Record<string, HistoryPageState> = {
     all: {
       offset: allLoaded,
       hasMore: allTotal === undefined ? page.hasMore : allLoaded < allTotal,
       loading: false,
+      loadedKeys: allLoadedKeys,
       ...(allTotal === undefined ? {} : { total: allTotal }),
     },
   };
-  const counts = new Map<string, number>();
+  const loadedKeysBySource = new Map<string, Set<string>>();
   for (const session of sessions) {
     const sourceId = sessionSourceId(session);
-    counts.set(sourceId, (counts.get(sourceId) ?? 0) + 1);
+    const loadedKeys = loadedKeysBySource.get(sourceId) ?? new Set<string>();
+    loadedKeys.add(sessionStoreKey(session));
+    loadedKeysBySource.set(sourceId, loadedKeys);
   }
   for (const instance of instances) {
-    const offset = counts.get(instance.sourceId) ?? 0;
+    const loadedKeys = loadedKeysBySource.get(instance.sourceId) ?? new Set<string>();
+    const offset = loadedKeys.size;
     const total = page.hasMore ? undefined : offset;
     states[instance.sourceId] = {
       offset,
       hasMore: total === undefined ? page.hasMore : offset < total,
       loading: false,
+      loadedKeys,
       ...(total === undefined ? {} : { total }),
     };
   }
@@ -206,7 +313,7 @@ export function historyStateFor(
   }
   const known = states[key];
   if (known !== undefined) {
-    const loadedOffset = loadedSessionCount(sessions, key);
+    const loadedOffset = known.loadedKeys?.size ?? loadedSessionCount(sessions, key);
     const offset = Math.max(known.offset, loadedOffset);
     return {
       ...known,
@@ -257,9 +364,11 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
     const ops = pendingOps.current;
     if (ops.size === 0) return;
     pendingOps.current = new Map();
+    const appliedOps = [...ops.values()];
     setSessions((prev) => {
-      return applySessionOps(prev, [...ops.values()]);
+      return applySessionOps(prev, appliedOps);
     });
+    setHistoryStates((prev) => applyHistoryOps(prev, appliedOps));
   }, []);
 
   const scheduleFlush = useCallback(() => {
@@ -415,17 +524,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
           applySessionOps(prev, page.sessions.map((session): SessionStoreOp => ({ type: "upsert", session }))),
         );
         setHistoryStates((prev) => {
-          const previous = historyStateFor(prev, key, statusRef.current, sessionsRef.current);
-          const offset = Math.max(previous.offset, page.offset + page.sessions.length);
-          return {
-            ...prev,
-            [key]: {
-              offset,
-              hasMore: page.hasMore,
-              loading: false,
-              ...(page.total === undefined ? (previous.total === undefined ? {} : { total: previous.total }) : { total: page.total }),
-            },
-          };
+          return markHistorySessionsLoaded(prev, page.sessions, key, page);
         });
       })
       .catch((error_) => {

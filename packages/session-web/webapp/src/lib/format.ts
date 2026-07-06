@@ -5,10 +5,18 @@ import type { Session, SessionStep } from "./types";
 import { CHANNEL_COLOR, CHANNEL_LABEL, MUTED, AMBER, OK, ERROR, BLUE, VIOLET } from "./tokens";
 
 export function tz(ts: string | number, opt: Intl.DateTimeFormatOptions, timeZone?: string): string {
+  const date = new Date(ts);
   try {
-    return new Intl.DateTimeFormat(undefined, { ...(timeZone === undefined ? {} : { timeZone }), ...opt }).format(new Date(ts));
+    return new Intl.DateTimeFormat(undefined, { ...(timeZone === undefined ? {} : { timeZone }), ...opt }).format(date);
   } catch {
-    return "";
+    if (timeZone === undefined) {
+      return "";
+    }
+    try {
+      return new Intl.DateTimeFormat(undefined, opt).format(date);
+    } catch {
+      return "";
+    }
   }
 }
 export const timeStr = (ts: string | number, timeZone?: string) =>

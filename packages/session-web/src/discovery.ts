@@ -94,11 +94,13 @@ async function toDiscoveredInstance(source: TraceSourceListItem): Promise<Discov
 function timezoneFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {
   const direct = stringField(metadata?.timeZone) ?? stringField(metadata?.timezone);
   if (direct !== undefined) {
-    return direct;
+    return normalizeTimeZone(direct);
   }
   const runtime = recordField(metadata?.runtime);
   const session = recordField(runtime?.session);
-  return stringField(session?.rolloverTimezone) ?? stringField(session?.timeZone) ?? stringField(session?.timezone);
+  return normalizeTimeZone(
+    stringField(session?.rolloverTimezone) ?? stringField(session?.timeZone) ?? stringField(session?.timezone),
+  );
 }
 
 async function timezoneFromConfig(configPath: string | undefined): Promise<string | undefined> {
@@ -109,7 +111,7 @@ async function timezoneFromConfig(configPath: string | undefined): Promise<strin
     const parsed = JSON.parse(await readFile(configPath, "utf8")) as unknown;
     const runtime = recordField(recordField(parsed)?.runtime);
     const session = recordField(runtime?.session);
-    return stringField(session?.rolloverTimezone);
+    return normalizeTimeZone(stringField(session?.rolloverTimezone));
   } catch {
     return undefined;
   }
@@ -190,6 +192,18 @@ function recordField(value: unknown): Record<string, unknown> | undefined {
 function stringField(value: unknown): string | undefined {
   const trimmed = typeof value === "string" ? value.trim() : "";
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeTimeZone(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: value }).format(0);
+    return value;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Resolve + dedupe the requested registry list; empties fall back to the machine-wide default. */

@@ -91,11 +91,15 @@ describe("discoverWebInstances", () => {
   it("exposes instance timezone from trace metadata or config without failing discovery", async () => {
     const registryDir = await tmp("reg");
     const metadataAgentDir = await tmp("agent-meta");
+    const invalidMetadataAgentDir = await tmp("agent-invalid-meta");
     const configAgentDir = await tmp("agent-config");
+    const invalidConfigAgentDir = await tmp("agent-invalid-config");
     const badConfigAgentDir = await tmp("agent-bad-config");
     const configPath = join(configAgentDir, "mono-agent.config.json");
+    const invalidConfigPath = join(invalidConfigAgentDir, "mono-agent.config.json");
     const badConfigPath = join(badConfigAgentDir, "mono-agent.config.json");
     await writeFile(configPath, JSON.stringify({ runtime: { session: { rolloverTimezone: "Europe/Amsterdam" } } }), "utf8");
+    await writeFile(invalidConfigPath, JSON.stringify({ runtime: { session: { rolloverTimezone: "Not/A_Zone" } } }), "utf8");
     await writeFile(badConfigPath, "{not-json", "utf8");
     await registerSource({
       registryDir,
@@ -107,10 +111,24 @@ describe("discoverWebInstances", () => {
     });
     await registerSource({
       registryDir,
+      sourceId: "agent-invalid-meta",
+      label: "Agent Invalid Meta",
+      artifactDir: join(invalidMetadataAgentDir, "runs"),
+      metadata: { runtime: { session: { rolloverTimezone: "Not/A_Zone" } } },
+    });
+    await registerSource({
+      registryDir,
       sourceId: "agent-config",
       label: "Agent Config",
       artifactDir: join(configAgentDir, "runs"),
       configPath,
+    });
+    await registerSource({
+      registryDir,
+      sourceId: "agent-invalid-config",
+      label: "Agent Invalid Config",
+      artifactDir: join(invalidConfigAgentDir, "runs"),
+      configPath: invalidConfigPath,
     });
     await registerSource({
       registryDir,
@@ -125,6 +143,8 @@ describe("discoverWebInstances", () => {
 
     expect(byId.get("agent-meta")).toMatchObject({ timeZone: "America/New_York", timezone: "America/New_York" });
     expect(byId.get("agent-config")).toMatchObject({ timeZone: "Europe/Amsterdam", timezone: "Europe/Amsterdam" });
+    expect(byId.get("agent-invalid-meta")?.timeZone).toBeUndefined();
+    expect(byId.get("agent-invalid-config")?.timeZone).toBeUndefined();
     expect(byId.get("agent-bad-config")?.timeZone).toBeUndefined();
   });
 

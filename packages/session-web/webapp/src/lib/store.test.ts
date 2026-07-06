@@ -6,6 +6,7 @@ import { FIXTURE_SESSIONS } from "./fixture";
 import {
   applySessionOps,
   historyStateFor,
+  markHistorySessionsLoaded,
   seedHistoryPageStates,
   sessionStoreKey,
   shouldUseFixtureFallback,
@@ -247,8 +248,30 @@ describe("history pagination state", () => {
       session("agent-b", "B1", { id: "b-1" }),
     ];
 
-    expect(historyStateFor(states, "all", "live", loadedAfterStream)).toMatchObject({ offset: 4, hasMore: true });
-    expect(historyStateFor(states, "agent-a", "live", loadedAfterStream)).toMatchObject({ offset: 3, hasMore: true });
+    const afterStream = markHistorySessionsLoaded(states, loadedAfterStream.slice(2), "all");
+
+    expect(historyStateFor(afterStream, "all", "live")).toMatchObject({ offset: 4, hasMore: true });
+    expect(historyStateFor(afterStream, "agent-a", "live")).toMatchObject({ offset: 3, hasMore: true });
+  });
+
+  test("does not advance all-instances offset from a single-instance page", () => {
+    const firstPage = [
+      session("agent-a", "A1", { id: "a-1" }),
+      session("agent-b", "B1", { id: "b-1" }),
+    ];
+    const states = seedHistoryPageStates(webInstances, firstPage, { offset: 0, total: 6, hasMore: true });
+    const afterInstancePage = markHistorySessionsLoaded(
+      states,
+      [
+        session("agent-a", "A2", { id: "a-2" }),
+        session("agent-a", "A3", { id: "a-3" }),
+      ],
+      "agent-a",
+      { offset: 1, total: 3, hasMore: false },
+    );
+
+    expect(historyStateFor(afterInstancePage, "agent-a", "live")).toMatchObject({ offset: 3, hasMore: false, total: 3 });
+    expect(historyStateFor(afterInstancePage, "all", "live")).toMatchObject({ offset: 2, hasMore: true, total: 6 });
   });
 
   test("does not offer older history outside a live backend state", () => {
