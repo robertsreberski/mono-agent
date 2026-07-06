@@ -77,7 +77,7 @@ See [Phoenix export & backfill](/observability/phoenix-and-backfill/) for the fu
 
 ## The CLI
 
-`mono-agent` drives the entire agent lifecycle from one config: `init` scaffolds non-destructively, `validate` prints a per-section report (including observability and every channel), `start` launches traceability plus every configured channel (a background launchd service on macOS by default), and `stop` / `logs` / `restart` operate the running instance. `backfill` exports historical runs to Phoenix, while `audit-runs` scans local run summaries read-only and [artifact metrics](/observability/artifact-metrics/) aggregates local latency, cost, and failure rates.
+`mono-agent` drives the entire agent lifecycle from one config: `init` scaffolds non-destructively, `validate` prints a per-section report (including observability and every channel), `start` launches traceability plus every configured channel (a background launchd service on macOS by default), and `stop` / `logs` / `restart` operate the running instance. `backfill` exports historical runs to Phoenix, while `audit-runs` scans local run summaries read-only and [artifact metrics](/observability/artifacts-and-traces/#artifact-metrics) aggregates local latency, cost, and failure rates.
 
 The full command and flag matrix is in the [CLI reference](/observability/cli-reference/).
 

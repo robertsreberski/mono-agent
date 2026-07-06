@@ -42,7 +42,7 @@ When a turn approaches the model's context window, the pi bridge drives `AgentHa
 
 ## Entity graph
 
-A BuJo-tier structure that tracks the people, projects, and things referenced across captured memories and the relationships between them. It is built only in `memory.mode: "bujo"`. See [Entity graph](/memory/entity-graph/).
+A BuJo-tier structure that tracks the people, projects, and things referenced across captured memories and the relationships between them. It is built only in `memory.mode: "bujo"`. See [Capture and recall](/memory/capture-and-recall/#entity-graph-bujo-auto).
 
 ## Fail-closed
 

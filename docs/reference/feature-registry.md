@@ -48,7 +48,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.structured-output` | JSON-schema-enforced output on capable backends | `code` | `runtimeOptions.outputSchema` via harness options |
 | `runtime.live-input` | In-flight user message steering | `code` | `runtimeOptions.liveInput` queue |
 | `runtime.approval-gates` | Human-in-the-loop tool approval (risk tiers, timeout, always-allow) | `code` | `createMonoRuntime({ onToolApprovalRequest, toolRiskTiers, approvalDefaultRiskTier, approvalTimeoutMs, approvalAlwaysAllowTools })` — needs a host UI to answer; config posture is `runtime.permissionMode` |
-| `runtime.custom` | Any `MonoRuntimeLike` implementation | `code` | `startMonoAgentApp({ runtime })` or `await createConfiguredAgentResponder({ runtime })` (see [custom runtime](../programmatic/custom-runtime.md)) |
+| `runtime.custom` | Any `MonoRuntimeLike` implementation | `code` | `startMonoAgentApp({ runtime })` or `await createConfiguredAgentResponder({ runtime })` (see [composition](../programmatic/composition.md#injecting-a-custom-runtime-monoruntimelike)) |
 
 ## Sandbox (`@mono-agent/runtime-adapter`)
 
@@ -80,7 +80,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `memory.per-turn-capture` | bujo-tier per-turn intelligent capture: each turn writes the sync rapid-log then enqueues an **async, serialized** distil→reconcile→entity capture; non-blocking (reply latency unchanged), drained on graceful shutdown. Validated to require `mode: "bujo"` | `config` | `memory.writeMode: "capture"` (`MONO_AGENT_MEMORY_WRITE_MODE=capture`; requires `MONO_AGENT_MEMORY_MODE=bujo`) |
 | `memory.recall-tool` | Auto-provisioned read-only `memory_recall` tool (hybrid keyword+semantic search) exposed to the agent from the single memory config; no chat LLM. `agent-app` spawns it as a bundled `mono-agent-memory` stdio child using the same memory root + embeddings as the in-app memory. Beyond this on-demand tool, the harness appends recalled entries to the **user message** each turn (not the system prompt) so they survive session resume; a `memory_recalled` diagnostic keeps recall visible in traces. Its description directs proactive recall on missing/uncertain context | `config` | `config.memory.recallTool.enabled` (`MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED`, default on for journal/bujo with embeddings) |
 | `memory.llm-timeout` | Per-call timeout for the **in-app** memory LLM used by per-turn capture, distinct from the standalone CLI's timeout. A timeout now reports `agent-host memory LLM timed out after <ms>ms (provider too slow or unavailable)` instead of a generic `cancelled` | `config` | `memory.llm.timeoutMs` (`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`, 1000–600000, **default 60000**; the `memory-bujo` CLI reads the same var but defaults to 120000) |
-| `memory.custom-store` | Any `MemoryStore` implementation | `code` | `await createConfiguredAgentResponder({ memory })` (async since the lazy-backend change; see [custom memory backend](../programmatic/custom-memory-backend.md)) |
+| `memory.custom-store` | Any `MemoryStore` implementation | `code` | `await createConfiguredAgentResponder({ memory })` (async since the lazy-backend change; see [composition](../programmatic/composition.md#custom-memory-stores)) |
 
 ## Tools & MCP (`@mono-agent/agent-harness`)
 
@@ -93,14 +93,17 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 
 ## Channels (`@mono-agent/*-adapter`, composed by `@mono-agent/agent-app`)
 
-Core channels are independent JSON sections. External channel packages are
+Built-in channels are independent JSON sections: `telegram`, `slack`,
+`webhook`, `openaiApi`, `cron`, `tui`, and `live`. External channel packages are
 declared under `channels.plugins[]`, resolved by package name, and must return
-the same `ChannelDriver` shape from `@mono-agent/agent-contracts`. Most channels
-are opt-in via an `enabled` flag (default off); the operator surfaces `tui` and
-`live` default on so local operator tools can discover running agents without
-per-agent edits. A channel that is off reports `disabled`; an enabled channel
-with incomplete config reports `waiting_for_config`. Either way it never blocks
-the rest. Adapter fields can also have `MONO_AGENT_<CHANNEL>_*` env vars.
+the same `ChannelDriver` shape from `@mono-agent/agent-contracts`. The current
+cataloged channel extras are `@mono-agent/a2a-adapter` and
+`@mono-agent/whatsapp-adapter`. Most channels are opt-in via an `enabled` flag
+(default off); the operator surfaces `tui` and `live` default on so local
+operator tools can discover running agents without per-agent edits. A channel
+that is off reports `disabled`; an enabled channel with incomplete config
+reports `waiting_for_config`. Either way it never blocks the rest. Adapter
+fields can also have `MONO_AGENT_<CHANNEL>_*` env vars.
 
 | Feature id | What it is | Coverage | Config section / keys |
 | --- | --- | --- | --- |

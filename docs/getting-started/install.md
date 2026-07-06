@@ -77,7 +77,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. |
 | `setup` | Guided, terminal-native recipe setup (recipe chooser, non-secret prompts, auto-validate, and a secrets checklist) when attached to a TTY; falls back to flag-driven `init` in non-TTY contexts. |
 | `recipes` | List executable setup recipes (`list`) or show a recipe's generated config, `.env.example`, and checklist (`show <id>`). |
-| `validate` | Validate `mono-agent.config.json` (and resolved secrets) before starting. |
+| `validate` | Validate `mono-agent.config.json` and live checks that can be tested safely before starting. |
 | `start` | Start the host for every configured channel (backgrounds on macOS; use `--foreground`/`-f` elsewhere). |
 | `restart` / `stop` / `status` / `logs` | Manage the backgrounded instance (macOS). |
 | `tui` | Open the operator console and connect to any running agent. |
@@ -86,10 +86,13 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 
 ## Next: scaffold your first agent
 
-Once the binaries are verified, scaffold a project folder:
+Once the binaries are verified, scaffold and validate a clean project folder:
 
 ```bash
+mkdir my-agent
+cd my-agent
 mono-agent init
+mono-agent validate
 ```
 
 On a TTY, prefer `mono-agent setup` as the guided alternative: it lets you pick a recipe, answer non-secret prompts (model, fallbacks, channel add-ons), then auto-validates and prints a secrets checklist. It falls back to flag-driven `init` when stdin is not a TTY.
@@ -98,7 +101,7 @@ On a TTY, prefer `mono-agent setup` as the guided alternative: it lets you pick 
 mono-agent setup
 ```
 
-Then continue with the [Quickstart](/getting-started/quickstart/). For the full key reference, see [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/).
+Then continue with the [Quickstart](/getting-started/quickstart/) to start the agent and send a webhook request. For the full key reference, see [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/).
 
 ## Updating
 
@@ -131,7 +134,17 @@ pnpm install --frozen-lockfile
 pnpm run build
 ```
 
-`pnpm run build` builds every package (and the demos) in dependency order. After the build, the CLI entry point is `packages/agent-app/dist/cli.js`. Alias `mono-agent` to it so you can run the local build from anywhere:
+`pnpm run build` builds every package (and the demos) in dependency order. After the build, the CLI entry point is `packages/agent-app/dist/cli.js`. For a literal source-build smoke test from a clean folder, call that entry directly:
+
+```bash
+repo=/absolute/path/to/mono-agent
+agent_dir=$(mktemp -d)
+cd "$agent_dir"
+node "$repo/packages/agent-app/dist/cli.js" init --model claude:claude-sonnet-4-6
+node "$repo/packages/agent-app/dist/cli.js" validate
+```
+
+You can also alias `mono-agent` to the built entry so you can run the local build from anywhere:
 
 ```bash
 alias mono-agent="node /absolute/path/to/mono-agent/packages/agent-app/dist/cli.js"
