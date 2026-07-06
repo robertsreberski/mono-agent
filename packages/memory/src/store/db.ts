@@ -383,9 +383,9 @@ export class MemoryDb {
        VALUES (@id, @name, @type, @summary, @created_at, @updated_at)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
-         type = excluded.type,
-         summary = excluded.summary,
-         updated_at = excluded.updated_at`,
+         type = COALESCE(excluded.type, entities.type),
+         summary = COALESCE(excluded.summary, entities.summary),
+         updated_at = COALESCE(excluded.updated_at, entities.updated_at)`,
     ).run({
       id: entity.id,
       name: entity.name,

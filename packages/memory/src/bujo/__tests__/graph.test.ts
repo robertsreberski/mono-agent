@@ -56,6 +56,53 @@ describe("readGraph", () => {
     expect(readGraph(root).entities).toHaveLength(1);
   });
 
+  it("does not append a partial duplicate that omits existing optional entity details", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-"));
+    appendEntity(root, {
+      id: "person:alice",
+      name: "Alice",
+      type: "person",
+      summary: "prefers quiet mornings",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    });
+    appendEntity(root, {
+      id: "person:alice",
+      name: "Alice",
+      createdAt: "2026-06-15T10:00:00.000Z",
+    });
+
+    const lines = readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(1);
+    expect(readGraph(root).entities[0]).toMatchObject({
+      type: "person",
+      summary: "prefers quiet mornings",
+    });
+  });
+
+  it("preserves existing optional entity details when appending a partial update", () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-graph-"));
+    appendEntity(root, {
+      id: "person:alice",
+      name: "Alice",
+      type: "person",
+      summary: "prefers quiet mornings",
+      createdAt: "2026-06-15T09:00:00.000Z",
+    });
+    appendEntity(root, {
+      id: "person:alice",
+      name: "Alice Updated",
+      createdAt: "2026-06-15T10:00:00.000Z",
+    });
+
+    const lines = readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(readGraph(root).entities[0]).toMatchObject({
+      name: "Alice Updated",
+      type: "person",
+      summary: "prefers quiet mornings",
+    });
+  });
+
   it("still appends entity updates so the last occurrence wins", () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-graph-"));
     appendEntity(root, entity("person:alice", "Alice"));
