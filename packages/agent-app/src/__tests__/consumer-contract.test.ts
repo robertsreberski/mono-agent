@@ -35,6 +35,10 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
+          "id": "secret-placement",
+          "status": "waiting",
+        },
+        {
           "id": "runtime",
           "status": "ok",
         },
@@ -109,6 +113,10 @@ describe("golden consumer config contracts", () => {
         {
           "id": "core",
           "status": "ok",
+        },
+        {
+          "id": "secret-placement",
+          "status": "waiting",
         },
         {
           "id": "runtime",

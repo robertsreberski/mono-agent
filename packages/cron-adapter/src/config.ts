@@ -256,6 +256,7 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
  */
 export const CRON_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "cron.enabled", env: "MONO_AGENT_CRON_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
+  { id: "cron.dir", env: "MONO_AGENT_CRON_DIR", fromJson: (s) => s.dir },
   { id: "cron.expression", env: "MONO_AGENT_CRON_EXPRESSION", fromJson: (s) => s.expression },
   { id: "cron.timezone", env: "MONO_AGENT_CRON_TIMEZONE", fromJson: (s) => s.timezone },
   { id: "cron.prompt", env: "MONO_AGENT_CRON_PROMPT", fromJson: (s) => s.prompt },

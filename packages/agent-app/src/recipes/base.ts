@@ -1,5 +1,6 @@
 import type { MonoAgentConfigJson } from "@mono-agent/config";
 
+import { monoAgentConfigWithSchema } from "../config-reference.js";
 import type { RecipeInput, RecipeInputValues } from "./types.js";
 
 export const DEFAULT_MODEL = "claude:claude-sonnet-4-6";
@@ -19,7 +20,7 @@ export const MODEL_INPUT: RecipeInput = {
  * `init.ts`'s scaffold so a recipe-built folder matches a hand-init'd one.
  */
 export function baseConfig(input: RecipeInputValues): MonoAgentConfigJson {
-  return {
+  return monoAgentConfigWithSchema({
     runtime: {
       model: input.model ?? DEFAULT_MODEL,
       workspace: ".",
@@ -43,7 +44,7 @@ export function baseConfig(input: RecipeInputValues): MonoAgentConfigJson {
     traceability: {
       registryDir: "./.mono-agent/trace-sources",
     },
-  } as MonoAgentConfigJson;
+  } as MonoAgentConfigJson);
 }
 
 /** A `memory` block for the given tier, rooted at the standard memory path. */

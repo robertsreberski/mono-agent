@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { parseCliArgs, renderRecipeList, renderRecipeShow } from "../cli.js";
+import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { initMonoAgentFolder } from "../init.js";
 import { findRecipe, recipeIds } from "../recipes/index.js";
 
@@ -49,6 +50,7 @@ describe("renderRecipeShow", () => {
     expect(recipe).toBeDefined();
     const out = renderRecipeShow(recipe!);
     expect(out).toContain("Generated mono-agent.config.json");
+    expect(out).toContain(MONO_AGENT_CONFIG_SCHEMA_URL);
     expect(out).toContain("\"telegram\"");
     expect(out).toContain(".env.example");
     expect(out).toContain("MONO_AGENT_TELEGRAM_TOKEN");

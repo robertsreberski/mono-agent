@@ -6,7 +6,7 @@ sidebar:
 
 # Configuration
 
-A mono-agent is declared by a single `mono-agent.config.json` in the agent folder. This page covers how that file is structured, what is required versus optional, and how environment variables override it. The full annotated config lives in [Blueprint](/config/blueprint/); the canonical key map is the [Feature Matrix](/reference/feature-matrix/).
+A mono-agent is declared by a single `mono-agent.config.json` in the agent folder. This page covers how that file is structured, what is required versus optional, and how environment variables override it. The full annotated config lives in [Blueprint](/config/blueprint/); the generated key/schema reference lives in [Generated config reference](/config/reference/); the canonical capability map is the [Feature Matrix](/reference/feature-matrix/).
 
 ## The one config file
 
@@ -115,6 +115,7 @@ The **secret placement** section is advisory and non-fatal: it surfaces a `waiti
 ## Related pages
 
 - [Blueprint](/config/blueprint/) — the full annotated `mono-agent.config.json`.
+- [Generated Config Reference](/config/reference/) — the generated key table and JSON Schema URL.
 - [Environment Variables](/config/env-vars/) — the complete `MONO_AGENT_*` map.
 - [Folder Layout](/config/folder-layout/) — files and directories around the config.
 - [Feature Matrix](/reference/feature-matrix/) — canonical capability → config key reference.

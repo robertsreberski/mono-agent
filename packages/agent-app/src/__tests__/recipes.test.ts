@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { RECIPE_CATALOG, findRecipe, recipeIds, resolveRecipeInputs } from "../recipes/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -117,6 +118,12 @@ describe("recipe catalog", () => {
       const json = JSON.stringify(recipe.config(resolveRecipeInputs(recipe)));
       // Secrets only ever appear as .env placeholders, never inlined.
       expect(json).not.toMatch(/xoxb-|xapp-|sk-[A-Za-z0-9]/u);
+    }
+  });
+
+  it("emits the shared JSON schema reference for every recipe config", () => {
+    for (const recipe of RECIPE_CATALOG) {
+      expect(recipe.config(resolveRecipeInputs(recipe)).$schema, recipe.id).toBe(MONO_AGENT_CONFIG_SCHEMA_URL);
     }
   });
 });

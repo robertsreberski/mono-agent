@@ -301,6 +301,7 @@ function deriveEndpointName(path: string): string {
  */
 export const WEBHOOK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "webhook.enabled", env: "MONO_AGENT_WEBHOOK_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
+  { id: "webhook.dir", env: "MONO_AGENT_WEBHOOK_DIR", fromJson: (s) => s.dir },
   { id: "webhook.host", env: "MONO_AGENT_WEBHOOK_HOST", fromJson: (s) => s.host },
   { id: "webhook.port", env: "MONO_AGENT_WEBHOOK_PORT", kind: "integer", fromJson: (s) => s.port },
   { id: "webhook.path", env: "MONO_AGENT_WEBHOOK_PATH", fromJson: (s) => s.path },
