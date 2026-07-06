@@ -929,11 +929,6 @@ export class SessionAggregator {
     };
   }
 
-  /** Test-only visibility for the bounded hidden-memory-run cache; not part of the public API. */
-  _testSuppressedMemoryLiveRunCount(sourceId: string): number | undefined {
-    return this.states.get(sourceId)?.suppressedMemoryLiveRuns.size;
-  }
-
   private shouldDropMemoryLiveFrame(state: InstanceState, frame: RunEventFrame): boolean {
     return state.suppressedMemoryLiveRuns.has(frame.runId) || liveFrameIsMemory(frame);
   }

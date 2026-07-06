@@ -307,7 +307,9 @@ describe("SessionAggregator live fold", () => {
       states: Map<string, unknown>;
       handleLiveFrame(state: unknown, frame: RunEventFrame): void;
     };
-    const state = internals.states.get(SOURCE_ID);
+    const state = internals.states.get(SOURCE_ID) as
+      | { readonly suppressedMemoryLiveRuns: { readonly size: number } }
+      | undefined;
     if (state === undefined) {
       throw new Error("expected live-agent state");
     }
@@ -316,7 +318,7 @@ describe("SessionAggregator live fold", () => {
       internals.handleLiveFrame(state, memoryRunStarted(`mem-hidden-${index}`));
     }
 
-    expect(aggregator._testSuppressedMemoryLiveRunCount(SOURCE_ID)).toBe(512);
+    expect(state.suppressedMemoryLiveRuns.size).toBe(512);
     expect(aggregator.getSessions("all")).toHaveLength(0);
   });
 
