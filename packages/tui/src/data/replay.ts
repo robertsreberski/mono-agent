@@ -140,10 +140,11 @@ export async function readReplayRun(
   runId: string,
   options: ReadReplayRunOptions = {},
 ): Promise<ReplayRunDetail | undefined> {
+  const scope = options.scope ?? "agent";
   const detail = await readRecordedRun({
     artifactDir,
     maxStringBytes: REPLAY_MAX_STRING_BYTES,
-    ...(options.scope === undefined ? {} : { scope: options.scope }),
+    scope,
   }, runId);
   if (detail === undefined) {
     return undefined;

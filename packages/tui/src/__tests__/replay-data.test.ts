@@ -351,6 +351,7 @@ describe("replay data", () => {
     expect(memoryList.runs.every((run) => run.resolvedSource === "memory")).toBe(true);
 
     await expect(readReplayRun(dir, "mem-new")).resolves.toBeUndefined();
+    await expect(readReplayRun(dir, "mem-legacy")).resolves.toBeUndefined();
     await expect(readReplayRun(dir, "mem-new", { scope: "memory" })).resolves.toMatchObject({
       detail: { summary: { runId: "mem-new", summaryFileName: "memory/mem-new.summary.json" } },
     });
