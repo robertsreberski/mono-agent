@@ -80,6 +80,26 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(sections, "runtime.maxTurns")).toMatchObject({ value: "9", source: "env" });
   });
 
+  it("marks JSON values that merely restate traceability defaults", () => {
+    const sections = buildView(baseEnv, {
+      traceability: {
+        heartbeatMs: 10_000,
+        staleAfterMs: 30_000,
+      },
+    });
+
+    expect(field(sections, "traceability.heartbeatMs")).toMatchObject({
+      value: "10000",
+      source: "json",
+      restatesDefault: true,
+    });
+    expect(field(sections, "traceability.staleAfterMs")).toMatchObject({
+      value: "30000",
+      source: "json",
+      restatesDefault: true,
+    });
+  });
+
   it("surfaces session rollover notice source and resolved value", () => {
     const defaultSections = buildView(baseEnv);
     expect(field(defaultSections, "runtime.session.rolloverNotice")).toMatchObject({ value: "no", source: "default" });

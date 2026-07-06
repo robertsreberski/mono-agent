@@ -6,6 +6,7 @@ import type { MonoAgentConfigJson } from "@mono-agent/config";
 
 import { resolveRecipeInputs } from "./recipes/index.js";
 import type { AgentRecipe, RecipeInputValues } from "./recipes/index.js";
+import { monoAgentConfigWithSchema } from "./config-reference.js";
 
 /** Channels `--with` can switch on, merged onto a recipe's config. */
 export const WITH_CHANNELS = ["telegram", "slack", "webhook", "openaiApi", "cron"] as const;
@@ -136,9 +137,9 @@ async function resolveConfigJson(
 ): Promise<MonoAgentConfigJson> {
   if (options.recipe !== undefined) {
     const inputs = resolveRecipeInputs(options.recipe, recipeOverrides(options.recipe, options));
-    return withChannels(withRuntimeOverrides(options.recipe.config(inputs), options), options.withChannels ?? []);
+    return monoAgentConfigWithSchema(withChannels(withRuntimeOverrides(options.recipe.config(inputs), options), options.withChannels ?? []));
   }
-  return withChannels(configTemplate(dir, options, skillsRootExists), options.withChannels ?? []);
+  return monoAgentConfigWithSchema(withChannels(configTemplate(dir, options, skillsRootExists), options.withChannels ?? []));
 }
 
 function withRuntimeOverrides(

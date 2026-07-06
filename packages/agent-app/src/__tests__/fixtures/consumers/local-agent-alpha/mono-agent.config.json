@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packages/agent-app/schema/mono-agent.config.schema.json",
   "runtime": {
     "model": "pi:openai-codex:gpt-5.5",
     "fallbackModels": [

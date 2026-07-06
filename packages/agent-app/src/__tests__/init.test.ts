@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { initMonoAgentFolder } from "../init.js";
 
 let dir: string;
@@ -25,6 +26,7 @@ describe("initMonoAgentFolder", () => {
     expect(result.knowledgeFiles).toEqual([]);
 
     const config = JSON.parse(await readFile(result.configPath, "utf8"));
+    expect(config.$schema).toBe(MONO_AGENT_CONFIG_SCHEMA_URL);
     expect(config.runtime.model).toBe("pi:ollama:gemma4:31b");
     expect(config.runtime.maxTurns).toBeUndefined();
     expect(config.context.identityPath).toBe("./IDENTITY.md");

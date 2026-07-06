@@ -16,6 +16,7 @@ const sections: readonly ConfigViewSection[] = [
       { id: "runtime.model", label: "Model", value: "pi:ollama:qwen3:8b", source: "json" },
       { id: "runtime.effort", label: "Effort", value: "—", source: "default" },
       { id: "runtime.workspace", label: "Workspace", value: "/work", source: "env" },
+      { id: "traceability.heartbeatMs", label: "Heartbeat", value: "10000", source: "json", restatesDefault: true },
     ],
   },
   {
@@ -33,6 +34,7 @@ describe("renderConfigView", () => {
     expect(out).toMatch(/Model.*pi:ollama:qwen3:8b.*\[json\]/u);
     expect(out).toMatch(/Effort.*\[default\]/u);
     expect(out).toMatch(/Workspace.*\[env\]/u);
+    expect(out).toMatch(/Heartbeat.*10000.*same as default.*\[json\]/u);
   });
 
   it("renders an active section with the ok badge and a disabled one with the off badge", () => {
@@ -160,6 +162,63 @@ describe("runCli config", () => {
       expect(out).toContain("[WARN] memory.reflection is removed and ignored");
       expect(out).toContain("[WARN] memory.migration is removed and ignored");
       expect(out).not.toContain("ignored-secret-cron");
+    } finally {
+      stdoutSpy.mockRestore();
+      process.chdir(previousCwd);
+      for (const key of Object.keys(process.env)) {
+        if (key.startsWith("MONO_AGENT_")) {
+          delete process.env[key];
+        }
+      }
+      for (const [key, value] of previousMonoAgentEnv) {
+        process.env[key] = value;
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints unknown key warnings for stale config blocks", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-app-cli-config-"));
+    const previousCwd = process.cwd();
+    const previousMonoAgentEnv = new Map<string, string>();
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("MONO_AGENT_")) {
+        previousMonoAgentEnv.set(key, process.env[key] ?? "");
+        delete process.env[key];
+      }
+    }
+
+    const chunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stdout.write);
+
+    try {
+      process.chdir(dir);
+      await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+      const configPath = join(dir, "mono-agent.config.json");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          runtime: { model: "pi:openai-codex:gpt-5.5" },
+          context: { identityPath: "./IDENTITY.md" },
+          console: { enabled: true, port: 4400 },
+          traceability: {
+            heartbeatMs: 10000,
+            staleAfterMs: 30000,
+            heartBeatMs: 10000,
+          },
+        }, null, 2),
+      );
+
+      await expect(runCli(["config", "--config", configPath])).resolves.toBe(0);
+
+      const out = chunks.join("");
+      expect(out).toContain("[WARN] Unknown config key console in mono-agent.config.json");
+      expect(out).toContain("[WARN] Unknown config key traceability.heartBeatMs in mono-agent.config.json");
+      expect(out).toContain("Heartbeat (ms)");
+      expect(out).toContain("(same as default)");
     } finally {
       stdoutSpy.mockRestore();
       process.chdir(previousCwd);
