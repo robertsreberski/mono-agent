@@ -39,7 +39,7 @@ import {
 } from "./background.js";
 import type { BackgroundDeps, InstanceTarget } from "./background.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
-import { defaultChannelDrivers } from "./channels.js";
+import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelStatus } from "./channels.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
@@ -761,7 +761,7 @@ function resolveWithChannels(args: ParsedCliArgs): readonly WithChannel[] | unde
   const invalid = args.withChannels.filter((channel) => !isWithChannel(channel));
   if (invalid.length > 0) {
     process.stderr.write(ui.errorLine(`Unknown --with channel(s): ${invalid.join(", ")}.`));
-    process.stderr.write(ui.hint("Valid channels: telegram, slack, whatsapp, a2a, webhook, openaiApi, cron."));
+    process.stderr.write(ui.hint("Valid channels: telegram, slack, webhook, openaiApi, cron."));
     return "invalid";
   }
   return args.withChannels.filter(isWithChannel);
@@ -1038,7 +1038,8 @@ async function runConfig(args: ParsedCliArgs): Promise<number> {
     json: jsonResult.json,
     env,
   });
-  const channelViews = await collectChannelConfigViews(defaultChannelDrivers(), { env, cwd, configPath });
+  const drivers = await resolveChannelDrivers({ env, cwd, configPath });
+  const channelViews = await collectChannelConfigViews(drivers, { env, cwd, configPath });
 
   process.stdout.write(ui.banner("mono-agent", "resolved config") + "\n");
   process.stdout.write(renderConfigView(sections));
@@ -1050,7 +1051,7 @@ async function runConfig(args: ParsedCliArgs): Promise<number> {
     process.stdout.write(`${ui.style.yellow(warning)}\n`);
   }
 
-  const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false });
+  const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false, drivers });
   const channels = report.sections.filter((section) => section.id.startsWith("channel:"));
   if (channels.length > 0) {
     process.stdout.write("\n" + ui.heading("Channel status"));

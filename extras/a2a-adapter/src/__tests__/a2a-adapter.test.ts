@@ -1,11 +1,22 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type {
+  A2AAdapterConfig,
+  A2AProviderOptions,
+  A2AProviderStartResult,
+} from "../index.js";
 
 import {
   A2AConsumerError,
   A2AProviderError,
   createA2AAgentCard,
+  createA2AChannelDriver,
+  createChannelDriver,
   createA2AConsumer,
   createA2AConsumerResponder,
   loadA2AAdapterConfig,
@@ -476,6 +487,356 @@ describe("A2A adapter contract", () => {
       },
     })).rejects.toBeInstanceOf(A2AProviderError);
   });
+
+  it("loads disabled channel-driver config without starting the provider", async () => {
+    let providerCalls = 0;
+    const driver = createA2AChannelDriver({
+      config: { enabled: false },
+      providerFactory: async () => {
+        providerCalls += 1;
+        return fakeProviderResult();
+      },
+    });
+
+    const config = await driver.loadConfig({
+      env: {},
+      cwd: "/repo",
+      configPath: "/repo/missing-mono-agent.config.json",
+    });
+
+    expect(driver.id).toBe("a2a");
+    expect(driver.label).toBe("A2A");
+    expect(config.provider.enabled).toBe(false);
+    expect(driver.disabledReason?.(config)).toBe("A2A provider is disabled.");
+    expect(driver.waitingReason?.(config)).toBeUndefined();
+    expect(providerCalls).toBe(0);
+  });
+
+  it("exports the generic channel-driver alias from the package root", () => {
+    const driver = createChannelDriver({ config: { enabled: false } });
+
+    expect(driver.id).toBe("a2a");
+    expect(driver.label).toBe("A2A");
+  });
+
+  it("marks JSON bearer tokens as redacted config-view fields for secret-placement warnings", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-a2a-driver-view-"));
+    const configPath = join(dir, "mono-agent.config.json");
+    try {
+      await writeFile(configPath, JSON.stringify({
+        a2a: {
+          enabled: false,
+          provider: {
+            bearerToken: "provider-json-secret",
+          },
+          consumer: {
+            bearerToken: "consumer-json-secret",
+          },
+        },
+      }), "utf8");
+
+      const driver = createA2AChannelDriver();
+      const section = await driver.configView?.({
+        env: {},
+        cwd: dir,
+        configPath,
+      });
+
+      if (section === undefined) {
+        throw new Error("Expected A2A driver to expose configView.");
+      }
+      expect(section.status).toBe("disabled");
+      const fields = new Map(section.fields.map((field) => [field.id, field]));
+      expect(fields.get("a2a.provider.bearerToken")).toMatchObject({
+        value: "set",
+        source: "json",
+        redacted: true,
+        envKey: "MONO_AGENT_A2A_BEARER_TOKEN",
+      });
+      expect(fields.get("a2a.consumer.bearerToken")).toMatchObject({
+        value: "set",
+        source: "json",
+        redacted: true,
+        envKey: "MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN",
+      });
+      expect(JSON.stringify(section)).not.toContain("provider-json-secret");
+      expect(JSON.stringify(section)).not.toContain("consumer-json-secret");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads channel-driver config from an existing configPath when inline config is absent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-a2a-driver-"));
+    const configPath = join(dir, "mono-agent.config.json");
+    try {
+      await writeFile(configPath, JSON.stringify({
+        a2a: {
+          enabled: true,
+          provider: {
+            host: "127.0.0.1",
+            port: 4305,
+            publicBaseUrl: "http://127.0.0.1:4305",
+          },
+          agent: {
+            name: "File Mono",
+            description: "File provider",
+            version: "0.1.0",
+          },
+          skill: {
+            id: "file",
+            name: "File",
+            description: "File skill",
+            tags: ["file"],
+          },
+          consumer: {
+            remoteAgentUrls: ["http://127.0.0.1:7000"],
+            timeoutMs: 4321,
+          },
+        },
+      }), "utf8");
+
+      const driver = createA2AChannelDriver();
+      const config = await driver.loadConfig({
+        env: {},
+        cwd: dir,
+        configPath,
+      });
+
+      expect(config.provider).toMatchObject({
+        enabled: true,
+        host: "127.0.0.1",
+        port: 4305,
+        publicBaseUrl: "http://127.0.0.1:4305",
+      });
+      expect(config.agent).toMatchObject({ name: "File Mono" });
+      expect(config.skill).toMatchObject({ tags: ["file"] });
+      expect(config.consumer).toMatchObject({
+        remoteAgentUrls: ["http://127.0.0.1:7000"],
+        timeoutMs: 4321,
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports enabled-but-incomplete channel-driver config as typed or waiting config", async () => {
+    const driver = createA2AChannelDriver({
+      config: {
+        enabled: true,
+        provider: { host: "127.0.0.1", port: 0 },
+      },
+    });
+
+    let error: unknown;
+    try {
+      await driver.loadConfig({
+        env: {},
+        cwd: "/repo",
+        configPath: "/repo/missing-mono-agent.config.json",
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(A2AProviderError);
+    expect(driver.isConfigError(error)).toBe(true);
+
+    const waitingConfig: A2AAdapterConfig = {
+      provider: {
+        enabled: true,
+        host: "127.0.0.1",
+        port: 0,
+        allowNonLoopback: false,
+        requireBearer: false,
+      },
+      consumer: {
+        remoteAgentUrls: [],
+        timeoutMs: 30_000,
+      },
+    };
+    expect(driver.waitingReason?.(waitingConfig)).toBe("A2A provider requires agent and skill configuration.");
+    await expect(driver.start({
+      config: waitingConfig,
+      coreConfig: {},
+      responder: echoResponder(),
+      cwd: "/repo",
+      onFailure() {},
+    })).rejects.toMatchObject({
+      code: "missing_required_config",
+      message: "A2A provider requires agent and skill configuration.",
+    });
+  });
+
+  it("starts through the injected channel-driver provider factory and returns its agent card summary", async () => {
+    const responder = echoResponder();
+    const logger = { info() {} };
+    let captured: A2AProviderOptions | undefined;
+    let stopped = false;
+    const agentCardUrl = "http://127.0.0.1:4300/.well-known/agent-card.json";
+    const driver = createA2AChannelDriver({
+      providerFactory: async (options) => {
+        captured = options;
+        return fakeProviderResult({
+          agentCardUrl,
+          stop: async () => {
+            stopped = true;
+          },
+        });
+      },
+    });
+
+    const running = await driver.start({
+      config: completeChannelConfig(),
+      coreConfig: {},
+      responder,
+      cwd: "/repo",
+      logger,
+      onFailure() {},
+    });
+
+    expect(running.summary).toEqual({ agentCardUrl });
+    expect(captured).toMatchObject({
+      host: "127.0.0.1",
+      port: 4300,
+      publicBaseUrl: "http://127.0.0.1:4300",
+      allowNonLoopback: false,
+      requireBearer: true,
+      bearerToken: "provider-token",
+      agent: {
+        name: "Driver Mono",
+        description: "Driver provider",
+        version: "0.1.0",
+        provider: {
+          organization: "Mono Org",
+          url: "https://example.com/mono",
+        },
+      },
+      skill: {
+        id: "driver",
+        name: "Driver",
+        description: "Driver skill",
+        tags: ["driver"],
+      },
+    });
+    expect(captured?.responder).toBe(responder);
+    expect(captured?.logger).toBe(logger);
+
+    await running.stop();
+    expect(stopped).toBe(true);
+  });
+
+  it("honors plugin-style raw config while letting env overrides win", async () => {
+    const driver = createA2AChannelDriver({
+      id: "plugin-a2a",
+      label: "Plugin A2A",
+      config: {
+        enabled: true,
+        provider: {
+          host: "127.0.0.1",
+          port: 1111,
+          publicBaseUrl: "http://127.0.0.1:1111",
+        },
+        agent: {
+          name: "Plugin Mono",
+          description: "Plugin provider",
+          version: "0.1.0",
+        },
+        skill: {
+          id: "plugin",
+          name: "Plugin",
+          description: "Plugin skill",
+          tags: ["plugin"],
+        },
+        consumer: {
+          remoteAgentUrls: ["http://127.0.0.1:7000"],
+          timeoutMs: 1234,
+        },
+      },
+    });
+
+    const config = await driver.loadConfig({
+      env: {
+        MONO_AGENT_A2A_PORT: "2222",
+        MONO_AGENT_A2A_AGENT_NAME: "Env Mono",
+        MONO_AGENT_A2A_REMOTE_AGENT_URLS: "http://127.0.0.1:8000",
+      },
+      cwd: "/repo",
+      configPath: "/repo/this-file-is-not-read.json",
+    });
+
+    expect(driver.id).toBe("plugin-a2a");
+    expect(driver.label).toBe("Plugin A2A");
+    expect(config.provider).toMatchObject({
+      enabled: true,
+      host: "127.0.0.1",
+      port: 2222,
+      publicBaseUrl: "http://127.0.0.1:1111",
+    });
+    expect(config.agent).toMatchObject({
+      name: "Env Mono",
+      description: "Plugin provider",
+      version: "0.1.0",
+    });
+    expect(config.skill).toMatchObject({
+      id: "plugin",
+      name: "Plugin",
+      description: "Plugin skill",
+      tags: ["plugin"],
+    });
+    expect(config.consumer).toMatchObject({
+      remoteAgentUrls: ["http://127.0.0.1:8000"],
+      timeoutMs: 1234,
+    });
+  });
+
+  it("rejects wrong-typed plugin-style raw config fields as A2A config errors", async () => {
+    const cases = [
+      {
+        name: "boolean",
+        config: { provider: { requireBearer: "true" } },
+        path: "a2a.provider.requireBearer",
+      },
+      {
+        name: "integer",
+        config: { provider: { port: "4300" } },
+        path: "a2a.provider.port",
+      },
+      {
+        name: "skill csv",
+        config: { skill: { tags: "a,b" } },
+        path: "a2a.skill.tags",
+      },
+      {
+        name: "consumer csv",
+        config: { consumer: { remoteAgentUrls: "http://127.0.0.1:7000" } },
+        path: "a2a.consumer.remoteAgentUrls",
+      },
+      {
+        name: "section",
+        config: { agent: ["not", "an", "object"] },
+        path: "a2a.agent",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const driver = createA2AChannelDriver({ config: testCase.config });
+      const error = await driver.loadConfig({
+        env: {},
+        cwd: "/repo",
+        configPath: "/repo/this-file-is-not-read.json",
+      }).catch((caught: unknown) => caught);
+
+      expect(error, testCase.name).toBeInstanceOf(A2AProviderError);
+      expect(error, testCase.name).toMatchObject({
+        code: "invalid_config",
+        details: {
+          code: "invalid_config",
+          path: testCase.path,
+        },
+      });
+      expect(driver.isConfigError(error)).toBe(true);
+    }
+  });
 });
 
 function echoResponder(): AgentResponder {
@@ -488,4 +849,54 @@ function echoResponder(): AgentResponder {
 
 async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function completeChannelConfig(): A2AAdapterConfig {
+  return {
+    provider: {
+      enabled: true,
+      host: "127.0.0.1",
+      port: 4300,
+      publicBaseUrl: "http://127.0.0.1:4300",
+      allowNonLoopback: false,
+      requireBearer: true,
+      bearerToken: "provider-token",
+    },
+    agent: {
+      name: "Driver Mono",
+      description: "Driver provider",
+      version: "0.1.0",
+      providerOrganization: "Mono Org",
+      providerUrl: "https://example.com/mono",
+    },
+    skill: {
+      id: "driver",
+      name: "Driver",
+      description: "Driver skill",
+      tags: ["driver"],
+    },
+    consumer: {
+      remoteAgentUrls: [],
+      timeoutMs: 30_000,
+    },
+  };
+}
+
+function fakeProviderResult(
+  options: {
+    readonly agentCardUrl?: string;
+    readonly stop?: () => Promise<void>;
+  } = {},
+): A2AProviderStartResult {
+  const agentCardUrl = options.agentCardUrl ?? "http://127.0.0.1:4300/.well-known/agent-card.json";
+  return {
+    url: "http://127.0.0.1:4300",
+    agentCardUrl,
+    jsonRpcUrl: "http://127.0.0.1:4300/a2a/json-rpc",
+    restUrl: "http://127.0.0.1:4300/a2a/rest",
+    host: "127.0.0.1",
+    port: 4300,
+    agentCard: {} as A2AProviderStartResult["agentCard"],
+    stop: options.stop ?? (async () => {}),
+  };
 }

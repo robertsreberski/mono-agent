@@ -233,38 +233,49 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "stripMentionText": true
   },
 
-  "whatsapp": {
-    "enabled": true,                       // opt-in; defaults to false (off → "disabled")
-    "allowedChatJids": ["123@s.whatsapp.net"], // or "allowAllChats": true
-    "allowAllChats": false,
-    "groupMode": "mention",                // mention | any (group trigger rule)
-    "botJids": ["456@s.whatsapp.net"],
-    "mentionTextAliases": ["@agent"],
-    "stripMentionText": true
-    // Baileys auth state lives in .mono-agent/whatsapp-auth; the start log
-    // prints a QR code to scan on first login.
-  },
-
-  "a2a": {
-    "provider": {
-      "enabled": true,
-      "host": "127.0.0.1",
-      "port": 4201,
-      "publicBaseUrl": "https://agent.example.com", // Agent Card URL when fronted by a proxy
-      "allowNonLoopback": false,
-      "requireBearer": false,
-      "bearerToken": "..."
-    },
-    "agent": { "name": "My Agent", "description": "What it does.", "version": "0.1.0" },
-    "skill": { "id": "main", "name": "Main", "description": "Primary skill.", "tags": ["agent"] },
-    "consumer": {                          // settings for calling remote A2A agents
-      "remoteAgentUrls": ["http://127.0.0.1:4202"],
-      "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
-      "bearerToken": "...",
-      "timeoutMs": 30000
-      // Consumed programmatically (createA2AConsumerResponder); the app's A2A
-      // channel runs the provider side.
-    }
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/whatsapp-adapter",
+        "id": "whatsapp",
+        "config": {
+          "enabled": true,                 // opt-in; defaults to false (off -> "disabled")
+          "allowedChatJids": ["123@s.whatsapp.net"], // or "allowAllChats": true
+          "allowAllChats": false,
+          "groupMode": "mention",          // mention | any (group trigger rule)
+          "botJids": ["456@s.whatsapp.net"],
+          "mentionTextAliases": ["@agent"],
+          "stripMentionText": true
+          // Baileys auth state lives in .mono-agent/whatsapp-auth; the start log
+          // prints a QR code to scan on first login.
+        }
+      },
+      {
+        "package": "@mono-agent/a2a-adapter",
+        "id": "a2a",
+        "config": {
+          "enabled": true,
+          "provider": {
+            "host": "127.0.0.1",
+            "port": 4201,
+            "publicBaseUrl": "https://agent.example.com", // Agent Card URL when fronted by a proxy
+            "allowNonLoopback": false,
+            "requireBearer": false,
+            "bearerToken": "..."
+          },
+          "agent": { "name": "My Agent", "description": "What it does.", "version": "0.1.0" },
+          "skill": { "id": "main", "name": "Main", "description": "Primary skill.", "tags": ["agent"] },
+          "consumer": {                    // settings for calling remote A2A agents
+            "remoteAgentUrls": ["http://127.0.0.1:4202"],
+            "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
+            "bearerToken": "...",
+            "timeoutMs": 30000
+            // Consumed programmatically (createA2AConsumerResponder); the app's A2A
+            // channel runs the provider side.
+          }
+        }
+      }
+    ]
   },
 
   "cron": {
@@ -322,8 +333,7 @@ Every top-level section maps to a deep-dive page:
 | `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](/channels/openai-api/) |
 | `telegram` | Telegram bot channel | [Telegram](/channels/telegram/) |
 | `slack` | Slack Socket Mode channel | [Slack](/channels/slack/) |
-| `whatsapp` | WhatsApp (Baileys) channel | [WhatsApp](/channels/whatsapp/) |
-| `a2a` | Agent-to-Agent provider + consumer settings | [A2A](/channels/a2a/), [A2A consumer](/programmatic/a2a-consumer/) |
+| `channels.plugins[]` | External channel packages such as WhatsApp and A2A | [Write your own channel adapter](/programmatic/custom-channels/), [WhatsApp](/channels/whatsapp/), [A2A](/channels/a2a/) |
 | `cron` | Scheduled prompt jobs (inline + `cron/*.md`) | [Cron](/channels/cron/) |
 
 For per-section env vars see [Environment variables](/config/env-vars/). When config cannot express what you need (custom runtime, request-scoped extensions, custom channels, tool-approval gates, structured-output schemas), use the [programmatic escape hatch](/programmatic/).

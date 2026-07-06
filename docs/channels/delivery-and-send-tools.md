@@ -26,7 +26,7 @@ The OpenAI-compatible endpoint always streams token-by-token (SSE), which is wha
 
 Restoring live, interim-edit streaming on Telegram or Slack requires a **custom channel driver** that sets `stream.finalOnly: false` on the adapter. There is no `mono-agent.config.json` key for this — it is a code-only override.
 
-Concretely, build the driver yourself (e.g. `createTelegramChannelDriver` / `createSlackChannelDriver`) and pass `finalOnly: false` so the substrate's `ResilientMessageStream({ finalOnly })` edits an in-progress message as deltas arrive. See [Custom channels](/programmatic/custom-channels/) for the programmatic composition path.
+Concretely, build the driver yourself (e.g. `createTelegramChannelDriver` / `createSlackChannelDriver`) and pass `finalOnly: false` so the substrate's `ResilientMessageStream({ finalOnly })` edits an in-progress message as deltas arrive. See [Write your own channel adapter](/programmatic/custom-channels/) for the programmatic composition path.
 
 :::caution
 Live interim streaming on Telegram/Slack means frequent message edits, which can hit the platform's rate limits on busy chats. Tune the edit debounce (below) before enabling it broadly.
@@ -44,7 +44,7 @@ Status text, edit debounce, max message characters, and the welcome/help/error t
 | Max message chars | Where long replies are split into multiple messages |
 | Welcome / help / error texts | Per-channel canned message bodies |
 
-Because these are code-only, they live in your driver wiring rather than `mono-agent.config.json`. See [Custom channels](/programmatic/custom-channels/).
+Because these are code-only, they live in your driver wiring rather than `mono-agent.config.json`. See [Write your own channel adapter](/programmatic/custom-channels/).
 
 ## App-owned send tools
 
@@ -151,4 +151,4 @@ Notifying **multiple** or **other** conversations from one trigger is not a buil
 - [Cron](/channels/cron/) and [Webhook](/channels/webhook/) — the proactive turns that support native `notify: true` delivery.
 - [Tool policy](/tools/policy/) — `allowedTools` / `disallowedTools` precedence.
 - [MCP tools](/tools/mcp/) — why app-injected tools sit outside the allowlist.
-- [Custom channels](/programmatic/custom-channels/) — building a driver to override `stream.finalOnly`, debounce, and message texts.
+- [Write your own channel adapter](/programmatic/custom-channels/) — building a driver to override `stream.finalOnly`, debounce, and message texts.

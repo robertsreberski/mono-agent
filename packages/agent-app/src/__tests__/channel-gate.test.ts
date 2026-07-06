@@ -2,14 +2,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadA2AAdapterConfig } from "@mono-agent/a2a-adapter";
 import { loadCronAdapterConfig } from "@mono-agent/cron-adapter";
 import { loadOpenAIApiAdapterConfig } from "@mono-agent/openai-api-adapter";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { loadTelegramAdapterConfig } from "@mono-agent/telegram-adapter";
 import { loadTuiAdapterConfig } from "@mono-agent/operator-adapter";
 import { loadWebhookAdapterConfig } from "@mono-agent/webhook-adapter";
-import { loadWhatsAppAdapterConfig } from "@mono-agent/whatsapp-adapter";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { isChannelConfigured } from "../channel-gate.js";
@@ -69,8 +67,6 @@ describe("unconfigured drivers answer with the adapter loader's own empty-input 
 
     expect(await drivers.get("telegram")!.loadConfig(input)).toEqual(await loadTelegramAdapterConfig(empty));
     expect(await drivers.get("slack")!.loadConfig(input)).toEqual(await loadSlackAdapterConfig(empty));
-    expect(await drivers.get("whatsapp")!.loadConfig(input)).toEqual(await loadWhatsAppAdapterConfig(empty));
-    expect(await drivers.get("a2a")!.loadConfig(input)).toEqual(await loadA2AAdapterConfig(empty));
     expect(await drivers.get("webhook")!.loadConfig(input)).toEqual(await loadWebhookAdapterConfig(empty));
     expect(await drivers.get("openai-api")!.loadConfig(input)).toEqual(await loadOpenAIApiAdapterConfig(empty));
     expect(await drivers.get("cron")!.loadConfig(input)).toEqual(await loadCronAdapterConfig(empty));

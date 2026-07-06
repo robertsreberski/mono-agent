@@ -84,7 +84,7 @@ describe("validateMonoAgentFolder", () => {
     expect(runtime.status).toBe("ok");
     expect(runtime.details.join("\n")).toContain("Fallback model claude:claude-sonnet-4-6");
     expect(sectionById(report, "channel:webhook").status).toBe("ok");
-    expect(sectionById(report, "channel:a2a").status).toBe("disabled");
+    expect(report.sections.some((section) => section.id === "channel:a2a")).toBe(false);
     expect(sectionById(report, "channel:telegram").status).toBe("disabled");
   });
 
@@ -222,6 +222,46 @@ describe("validateMonoAgentFolder", () => {
       "[WARN] telegram.botToken is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_TELEGRAM_BOT_TOKEN).",
     ]);
     expect(placement.details.join("\n")).not.toContain("json-bot-token");
+  });
+
+  it("warns when an external A2A driver reports JSON bearer tokens", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      channels: {
+        plugins: [
+          {
+            package: "@mono-agent/a2a-adapter",
+            config: {
+              provider: {
+                bearerToken: "provider-json-secret",
+              },
+              consumer: {
+                bearerToken: "consumer-json-secret",
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    expect(report.ok).toBe(true);
+    const placement = sectionById(report, "secret-placement");
+    expect(placement.status).toBe("waiting");
+    expect(placement.details).toEqual([
+      "[WARN] a2a.provider.bearerToken is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_A2A_BEARER_TOKEN).",
+      "[WARN] a2a.consumer.bearerToken is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN).",
+    ]);
+    expect(placement.details.join("\n")).not.toContain("provider-json-secret");
+    expect(placement.details.join("\n")).not.toContain("consumer-json-secret");
   });
 
   it("errors on an invalid per-trigger model/effort override at validate time", async () => {

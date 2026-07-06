@@ -6,17 +6,25 @@ sidebar:
 
 # WhatsApp
 
-The WhatsApp channel connects your agent to a personal WhatsApp account over a [Baileys](https://github.com/WhiskeySockets/Baileys) socket, authenticated by scanning a QR code at first start. It is opt-in (`whatsapp.enabled`), gates which chats can trigger the agent, and lets you choose whether group messages require an @mention. Coverage: **config** (`whatsapp` section) — see [feature-registry](/reference/feature-matrix/) row `whatsapp.baileys`.
+The WhatsApp channel connects your agent to a personal WhatsApp account over a [Baileys](https://github.com/WhiskeySockets/Baileys) socket, authenticated by scanning a QR code at first start. It is provided by the external `@mono-agent/whatsapp-adapter` package and loaded through `channels.plugins[]`. The plugin config gates which chats can trigger the agent and lets you choose whether group messages require an @mention. Coverage: **config** — see [feature-registry](/reference/feature-matrix/) row `whatsapp.baileys`.
 
 ## Quick start
 
-Enable the channel and allow one or more chats:
+Declare the plugin package, enable the channel, and allow one or more chats:
 
 ```json
 {
-  "whatsapp": {
-    "enabled": true,
-    "allowedChatJids": ["123@s.whatsapp.net"]
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/whatsapp-adapter",
+        "id": "whatsapp",
+        "config": {
+          "enabled": true,
+          "allowedChatJids": ["123@s.whatsapp.net"]
+        }
+      }
+    ]
   }
 }
 ```
@@ -31,26 +39,34 @@ There is no bot token: WhatsApp links your own account as a paired device. Keep 
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `whatsapp.enabled` | boolean | `false` | Opt-in switch. Off means the channel reports "disabled" (not "waiting"). |
-| `whatsapp.allowedChatJids` | string[] | `[]` | Allowlist of chat JIDs (e.g. `123@s.whatsapp.net` for a DM, `...@g.us` for a group) that may trigger the agent. |
-| `whatsapp.allowAllChats` | boolean | `false` | When `true`, every chat is allowed; `allowedChatJids` is ignored. |
-| `whatsapp.groupMode` | `"mention"` \| `"any"` | `"mention"` | Trigger rule for group messages (DMs always trigger — see below). |
-| `whatsapp.botJids` | string[] | `[]` | Your linked account's JID(s), used to detect @mentions of the agent in groups. |
-| `whatsapp.mentionTextAliases` | string[] | `[]` | Extra text aliases (e.g. `@agent`) that count as a mention even without a native WhatsApp mention. |
-| `whatsapp.stripMentionText` | boolean | `false` | When `true`, the matched mention/alias text is removed from the message before it reaches the agent. |
+| `config.enabled` | boolean | `false` | Opt-in switch. Off means the channel reports "disabled" (not "waiting"). |
+| `config.allowedChatJids` | string[] | `[]` | Allowlist of chat JIDs (e.g. `123@s.whatsapp.net` for a DM, `...@g.us` for a group) that may trigger the agent. |
+| `config.allowAllChats` | boolean | `false` | When `true`, every chat is allowed; `allowedChatJids` is ignored. |
+| `config.groupMode` | `"mention"` \| `"any"` | `"mention"` | Trigger rule for group messages (DMs always trigger — see below). |
+| `config.botJids` | string[] | `[]` | Your linked account's JID(s), used to detect @mentions of the agent in groups. |
+| `config.mentionTextAliases` | string[] | `[]` | Extra text aliases (e.g. `@agent`) that count as a mention even without a native WhatsApp mention. |
+| `config.stripMentionText` | boolean | `false` | When `true`, the matched mention/alias text is removed from the message before it reaches the agent. |
 
 Full annotated example:
 
 ```json
 {
-  "whatsapp": {
-    "enabled": true,
-    "allowedChatJids": ["123@s.whatsapp.net", "987654321@g.us"],
-    "allowAllChats": false,
-    "groupMode": "mention",
-    "botJids": ["456@s.whatsapp.net"],
-    "mentionTextAliases": ["@agent"],
-    "stripMentionText": true
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/whatsapp-adapter",
+        "id": "whatsapp",
+        "config": {
+          "enabled": true,
+          "allowedChatJids": ["123@s.whatsapp.net", "987654321@g.us"],
+          "allowAllChats": false,
+          "groupMode": "mention",
+          "botJids": ["456@s.whatsapp.net"],
+          "mentionTextAliases": ["@agent"],
+          "stripMentionText": true
+        }
+      }
+    ]
   }
 }
 ```
@@ -59,7 +75,15 @@ To allow every chat instead of an explicit allowlist, set `allowAllChats` and dr
 
 ```json
 {
-  "whatsapp": { "enabled": true, "allowAllChats": true, "groupMode": "any" }
+  "channels": {
+    "plugins": [
+      {
+        "package": "@mono-agent/whatsapp-adapter",
+        "id": "whatsapp",
+        "config": { "enabled": true, "allowAllChats": true, "groupMode": "any" }
+      }
+    ]
+  }
 }
 ```
 
@@ -86,9 +110,9 @@ Every key has a `MONO_AGENT_*` override (precedence: env > JSON > defaults). See
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_WHATSAPP_ENABLED` | `whatsapp.enabled` | QR login; auth state in `.mono-agent/whatsapp-auth`. |
-| `MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS` | `whatsapp.allowedChatJids` | Or set `allowAllChats`. |
-| `MONO_AGENT_WHATSAPP_GROUP_MODE` | `whatsapp.groupMode` | `mention` / `any`. |
+| `MONO_AGENT_WHATSAPP_ENABLED` | plugin `config.enabled` | QR login; auth state in `.mono-agent/whatsapp-auth`. |
+| `MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS` | plugin `config.allowedChatJids` | Or set `allowAllChats`. |
+| `MONO_AGENT_WHATSAPP_GROUP_MODE` | plugin `config.groupMode` | `mention` / `any`. |
 
 ```bash
 MONO_AGENT_WHATSAPP_ENABLED=true
@@ -104,4 +128,4 @@ WhatsApp has **no notify path of its own**. Native cron/webhook notification (`n
 
 ## Related
 
-There is no WhatsApp-specific playbook yet. The closest end-to-end recipes are the [Telegram personal-assistant playbook](/playbooks/telegram-personal-assistant-bujo/) and the [Slack team-bot playbook](/playbooks/slack-team-bot-mcp-tools/); both translate directly — swap the channel section for `whatsapp`. See also the [Telegram](/channels/telegram/) and [Slack](/channels/slack/) channel pages for the shared mention/allowlist model, and the [Channels overview](/channels/).
+There is no WhatsApp-specific playbook yet. The closest end-to-end recipes are the [Telegram personal-assistant playbook](/playbooks/telegram-personal-assistant-bujo/) and the [Slack team-bot playbook](/playbooks/slack-team-bot-mcp-tools/); both translate directly — add an `@mono-agent/whatsapp-adapter` entry under `channels.plugins[]` and put the WhatsApp settings under that entry's `config`. See also the [Telegram](/channels/telegram/) and [Slack](/channels/slack/) channel pages for the shared mention/allowlist model, and the [Channels overview](/channels/).

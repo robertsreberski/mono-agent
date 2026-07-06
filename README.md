@@ -75,20 +75,22 @@ To use it as a selected mono-agent skill instead, point `context.skillsRoot` at 
 
 ## Package Architecture
 
-Package categories are catalog metadata, documentation, and architecture-guard inputs. The physical layout intentionally stays `packages/<package-name>` and published names stay `@mono-agent/<package-name>`; a future physical move to `packages/<category>/<package-name>` would be a separate mechanical release-tooling task.
+Package categories are catalog metadata, documentation, and architecture-guard inputs. Publishable packages live under `packages/<package-name>` and unpublished optional extras live under `extras/<package-name>`; published names stay `@mono-agent/<package-name>`.
 
 See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
+
+Current catalog count: 17 publishable packages plus 3 unpublished extras.
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers with adapter-neutral core config. |
 | `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
-| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, fail-closed tool/MCP policy normalization, and bounded collaborator orchestration through runtime-visible tools. |
+| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, fail-closed tool/MCP policy normalization, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
-| `communication` | `@mono-agent/a2a-adapter`, `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients; Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
+| `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients; Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
 | `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
 | `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
@@ -119,7 +121,8 @@ demos/final-agent (not a workspace package)
 
 Rules for future packages:
 
-- New packages live under `packages/<package-name>` and publish as `@mono-agent/<package-name>`.
+- New publishable packages live under `packages/<package-name>` and publish as `@mono-agent/<package-name>`.
+- Unpublished optional add-ons may live under `extras/<package-name>` when explicitly cataloged with `publishable: false`.
 - Add every workspace package to `scripts/package-catalog.mjs` with category, responsibility, and allowed dependency categories.
 - Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
 - Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.

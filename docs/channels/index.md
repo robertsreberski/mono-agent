@@ -6,27 +6,32 @@ sidebar:
 
 # Channels
 
-Channels are how a mono-agent receives input and delivers replies. Each is an independent JSON section in `mono-agent.config.json`, opt-in via its own `enabled` flag, and composed into the running host by `@mono-agent/agent-app`. This page explains the shared lifecycle, how to pick a channel, and links to every per-channel guide. Coverage: **config** unless a feature is noted otherwise.
+Channels are how a mono-agent receives input and delivers replies. Core channels use independent JSON sections in `mono-agent.config.json`; external channel packages are declared under `channels.plugins[]` and return the same `ChannelDriver` shape. Each channel is opt-in via its own `enabled` flag and composed into the running host by `@mono-agent/agent-app`. This page explains the shared lifecycle, how to pick a channel, and links to every per-channel guide. Coverage: **config** unless a feature is noted otherwise.
 
-## The eight channels
+## Core channels
 
 | Channel | Transport | Section | Guide |
 | --- | --- | --- | --- |
 | Telegram | Bot long polling | `telegram` | [Telegram](/channels/telegram/) |
 | Slack | Socket Mode bot | `slack` | [Slack](/channels/slack/) |
-| WhatsApp | Baileys socket (QR login) | `whatsapp` | [WhatsApp](/channels/whatsapp/) |
 | Webhook | HTTP POST, sync or async | `webhook` | [Webhook](/channels/webhook/) |
 | OpenAI-compatible API | `/v1/chat/completions` (SSE) | `openaiApi` | [OpenAI-compatible API](/channels/openai-api/) |
-| A2A | Agent-to-Agent provider/consumer | `a2a` | [A2A](/channels/a2a/) |
 | Cron | Scheduled prompts | `cron` | [Cron](/channels/cron/) |
 | TUI stream endpoint | Loopback NDJSON stream for `mono-agent tui` | `tui` | [TUI stream endpoint](/channels/tui/) |
 | Live event relay | Loopback SSE stream of run lifecycle frames for `mono-agent web` | `live` | [Live event relay](/channels/tui/#live-event-relay-for-web-pwa) |
+
+## External channel packages
+
+| Channel | Transport | Plugin package | Guide |
+| --- | --- | --- | --- |
+| WhatsApp | Baileys socket (QR login) | `@mono-agent/whatsapp-adapter` | [WhatsApp](/channels/whatsapp/) |
+| A2A | Agent-to-Agent provider/consumer | `@mono-agent/a2a-adapter` | [A2A](/channels/a2a/) |
 
 Channels are fully independent: enabling one neither requires nor affects another, and a misconfigured channel never blocks the rest of the host from starting.
 
 ## Opt-in and the status lifecycle
 
-Most channels default to **off**. The deliberate exceptions are the operator surfaces: the [TUI stream endpoint](/channels/tui/) and the `live` event relay both default to **on** (loopback-only, ephemeral ports, so `mono-agent tui` and `mono-agent web` can reach any running agent without a config edit). Set `"tui": {"enabled": false}` or `"live": {"enabled": false}` to opt out. You turn other channels on with `enabled: true` and supply their required settings. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
+Most channels default to **off**. The deliberate exceptions are the operator surfaces: the [TUI stream endpoint](/channels/tui/) and the `live` event relay both default to **on** (loopback-only, ephemeral ports, so `mono-agent tui` and `mono-agent web` can reach any running agent without a config edit). Set `"tui": {"enabled": false}` or `"live": {"enabled": false}` to opt out. You turn other channels on with `enabled: true` and supply their required settings; external channels also need a `channels.plugins[]` entry naming the package. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
 
 | State | Meaning |
 | --- | --- |
@@ -65,8 +70,8 @@ Pick by who or what is on the other end:
 
 | You want… | Use | Why |
 | --- | --- | --- |
-| A human chatting interactively | [Telegram](/channels/telegram/), [Slack](/channels/slack/), or [WhatsApp](/channels/whatsapp/) | Conversational adapters with allowlists, working indicators, and final-answer delivery |
-| Programmatic / pipeline invocation | [Webhook](/channels/webhook/) or [A2A](/channels/a2a/) | Webhook for plain HTTP POST (sync or async polling); A2A for agent-to-agent calls with Agent Card discovery |
+| A human chatting interactively | [Telegram](/channels/telegram/), [Slack](/channels/slack/), or [WhatsApp](/channels/whatsapp/) | Conversational adapters with allowlists, working indicators, and final-answer delivery; WhatsApp is loaded as an external plugin |
+| Programmatic / pipeline invocation | [Webhook](/channels/webhook/) or [A2A](/channels/a2a/) | Webhook for plain HTTP POST (sync or async polling); A2A for agent-to-agent calls with Agent Card discovery and is loaded as an external plugin |
 | A chat UI (e.g. Open WebUI) | [OpenAI-compatible API](/channels/openai-api/) | Exposes `/v1/models` + `/v1/chat/completions` with token-by-token SSE streaming |
 | Scheduled / unattended runs | [Cron](/channels/cron/) | Timezone-aware five-field jobs that invoke the responder on a schedule |
 
@@ -86,4 +91,4 @@ Replies go back over the same channel that received the request. To send *outbou
 
 ## Custom transports
 
-The built-in channels are config-driven. For a bespoke transport, implement a `ChannelDriver` and pass it via `startMonoAgentApp({ drivers })` — this is **code-only**. See [Custom channels](/programmatic/custom-channels/).
+For a bespoke transport, implement a `ChannelDriver` from `@mono-agent/agent-contracts` and either expose it from a package loaded by `channels.plugins[]` or pass it via `startMonoAgentApp({ drivers })`. See [Write your own channel adapter](/programmatic/custom-channels/).

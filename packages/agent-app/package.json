@@ -29,7 +29,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@mono-agent/a2a-adapter": "workspace:0.4.0",
     "@mono-agent/agent-contracts": "workspace:0.4.0",
     "@mono-agent/agent-harness": "workspace:0.4.0",
     "@mono-agent/config": "workspace:0.4.0",
@@ -45,7 +44,6 @@
     "@mono-agent/telegram-adapter": "workspace:0.4.0",
     "@mono-agent/tui": "workspace:0.4.0",
     "@mono-agent/webhook-adapter": "workspace:0.4.0",
-    "@mono-agent/whatsapp-adapter": "workspace:0.4.0",
     "zod": "^4.4.3"
   },
   "publishConfig": {
