@@ -195,22 +195,22 @@ now `^0.80.x`** (were `^0.79.1`). Compaction is driven natively (section 3).
 ## 11. Exports map: wildcards removed (explicit deep-path map)
 
 The package's `./ai/*` and `./agent/*` **wildcard exports were replaced by an
-explicit `exports` map**: 3 barrels (`.`, `./ai`, `./agent`) plus **20 named deep
+explicit `exports` map**: 3 barrels (`.`, `./ai`, `./agent`) plus **21 named deep
 `.js` subpaths**, each carrying its own generated `types` condition. A deep import
 that is not on the map **no longer resolves** — a wildcard used to silently
 resolve anything under `src/`, so a moved/renamed/mistyped subpath is now a loud
 failure (guarded by `scripts/verify-deep-imports.mjs`).
 
-The 20 supported deep paths:
+The 21 supported deep paths:
 
 ```
 ./ai/failure.js                         ./agent/tools/index.js
 ./ai/cost.js                            ./agent/tools/shared/runtime-context.js
-./ai/backend.js                         ./agent/prompt/skill-index.js
-./ai/runtime/model-refs.js              ./agent/allowlists.js
-./ai/runtime/registry.js                ./agent/transcript.js
-./ai/runtime/context-windows.js         ./agent/compaction.js
-./ai/runtime/fast-mode.js
+./ai/backend.js                         ./agent/tools/shared/ripgrep.js
+./ai/runtime/model-refs.js              ./agent/prompt/skill-index.js
+./ai/runtime/registry.js                ./agent/allowlists.js
+./ai/runtime/context-windows.js         ./agent/transcript.js
+./ai/runtime/fast-mode.js               ./agent/compaction.js
 ./ai/streaming/codex-events.js
 ./ai/live-input-prompt.js
 ./ai/file-change-stats.js
