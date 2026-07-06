@@ -107,6 +107,30 @@ const app = await startMonoAgentApp({ cwd: process.cwd(), runtime: myRuntime });
 A custom runtime fully replaces model selection, so config keys like `runtime.model`, `runtime.executionMode`, and `runtime.fallbackModels` no longer drive provider behavior — your runtime owns that. For the built-in runtime's model refs, execution modes, and fallback chain, see [backends](/runtime/backends/) and [fallback](/runtime/fallback/).
 :::
 
+Notes:
+
+- The configured fallback chain is applied by the built-in runtime's router. An injected runtime bypasses that wiring, so your runtime owns retry and failover behavior.
+- The BuJo memory LLM is separate from the channel runtime. `createConfiguredMemory(config, { memoryRuntime })` is the seam for tests or custom memory LLM execution; otherwise memory builds its own fallback-free runtime from `memory.llm`.
+- Per-trigger model overrides from cron and webhook use `runtimeForModel`. A host with a custom runtime that should honor those overrides must also provide a `runtimeForModel(model, executionMode)` factory.
+
+## Custom memory stores
+
+The built-in memory tiers are config-driven: `memory.mode: "lite" | "journal" | "bujo"` for local storage, or `memory.backend: "supermemory"` for the Supermemory adapter. Anything else is a code capability: implement the structural `MemoryStore` contract from `@mono-agent/agent-contracts` and inject it into the configured composition layer.
+
+```ts
+import type { MemoryStore } from "@mono-agent/agent-contracts";
+import { createConfiguredAgentResponder } from "@mono-agent/agent-app";
+
+const memory: MemoryStore = createMyMemoryStore();
+
+const responder = await createConfiguredAgentResponder({
+  config,
+  memory,
+});
+```
+
+The injected store wins over anything `config.memory` would otherwise build, and `config.memory` can be omitted entirely. Recall happens before each turn and capture happens after the reply according to `memory.writeMode`; slow or failing memory degrades the memory path rather than faking a successful model turn.
+
 ## Per-request runtime options (`runtimeOptionsForRequest`)
 
 `runtimeOptionsForRequest` is a callback invoked once per turn to compute run options scoped to that request. The app uses it internally to attach the per-turn `memory_recall` and adapter send tools; you can supply your own to vary tools, system context, or other run options per request.

@@ -8,7 +8,7 @@ Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.a
 
 ## Quickstart: An Agent Folder From One Config File
 
-Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a working agent with the `mono-agent` CLI from `@mono-agent/agent-app`. Use Node.js 20 or newer, and install the CLI once:
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a validated agent folder with the `mono-agent` CLI from `@mono-agent/agent-app`. Use Node.js 20 or newer, and install the CLI once:
 
 ```bash
 npm i -g @mono-agent/agent-app
@@ -26,13 +26,28 @@ mono-agent setup
 Or drive it with flags (`setup` falls back to this form when stdin is not a TTY):
 
 ```bash
+mkdir my-agent
+cd my-agent
 mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
-export ANTHROPIC_API_KEY=sk-...   # key for whatever model you chose
 mono-agent validate               # per-section report; `mono-agent doctor` is an alias
-mono-agent start                  # backgrounds on macOS (launchd); use `start --foreground` elsewhere
 ```
 
-Then smoke-test over the webhook channel that `init` enables by default — it needs no channel credentials (the model key above is the only secret involved):
+For unreleased source testing, use the built CLI entry directly instead of the published package:
+
+```bash
+repo=/absolute/path/to/mono-agent
+mkdir my-agent
+cd my-agent
+node "$repo/packages/agent-app/dist/cli.js" init --model claude:claude-sonnet-4-6
+node "$repo/packages/agent-app/dist/cli.js" validate
+```
+
+`validate` proves the folder and config are startable; it does not fake a provider call. To get a real first reply, export credentials for the model you chose, start the agent, then smoke-test over the webhook channel that `init` enables by default. The webhook needs no channel credentials; model auth is still required for a model response.
+
+```bash
+export ANTHROPIC_API_KEY=...      # or the auth expected by your model/backend
+mono-agent start                  # backgrounds on macOS (launchd); use `start --foreground` elsewhere
+```
 
 ```bash
 curl -s http://127.0.0.1:<PORT>/webhook/invoke \
@@ -40,9 +55,9 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
   -d '{"text": "Say hello and tell me what you are."}'
 ```
 
-`<PORT>` comes from the `start` output. A reply means runtime, model, identity, and channel wiring all work.
+`<PORT>` comes from the `start` output. A reply means runtime, model, identity, and channel wiring all work. On a local build with packages already installed and built, `init` plus `validate` should take well under a minute; first reply time depends on provider authentication, network latency, and model availability.
 
-`init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), channels (`telegram`, `slack`, `a2a`, `webhook`, `openaiApi`, `cron`, `whatsapp`), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.
+`init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), built-in channels (`telegram`, `slack`, `webhook`, `openaiApi`, `cron`, `tui`, `live`), external channel plugins under `channels.plugins[]` (`@mono-agent/a2a-adapter`, `@mono-agent/whatsapp-adapter`, or your own `ChannelDriver` package), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.
 
 ### Recipes: executable example configs
 
@@ -75,7 +90,7 @@ To use it as a selected mono-agent skill instead, point `context.skillsRoot` at 
 
 ## Package Architecture
 
-Package categories are catalog metadata, documentation, and architecture-guard inputs. Publishable packages live under `packages/<package-name>` and unpublished optional extras live under `extras/<package-name>`; published names stay `@mono-agent/<package-name>`.
+Package categories are catalog metadata, documentation, and architecture-guard inputs. Publishable packages live under `packages/<package-name>` and unpublished optional extras live under `extras/<package-name>`. Both use `@mono-agent/<package-name>` names, but extras are cataloged with `publishable: false` and are loaded only through explicit composition or `channels.plugins[]`.
 
 See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
@@ -90,7 +105,7 @@ Current catalog count: 17 publishable packages plus 3 unpublished extras.
 | `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` | `core`, `context` | Tiered memory (lite/journal/bujo via `@mono-agent/memory` subpaths plus optional Supermemory backend). The agent's `memory_recall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, fail-closed tool/MCP policy normalization, and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
-| `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. A2A adds direct Agent Card discovery plus text/task inter-agent calls; OpenAI API exposes Chat Completions for OpenWebUI-style clients; Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
+| `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. Built-in channel sections cover Telegram, Slack, webhook, OpenAI API, cron, TUI stream, and live relay; A2A and WhatsApp are config-loaded channel plugins. Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
 | `app` | `@mono-agent/agent-app` | All categories | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. |
 | `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
@@ -278,13 +293,13 @@ flowchart TB
   end
 
   subgraph Communication["Communication adapter choices"]
-    A2A["`@mono-agent/a2a-adapter`\nAgent Card discovery + text tasks"]
+    A2A["`@mono-agent/a2a-adapter`\nextra plugin: Agent Card discovery + text tasks"]
     Cron["`@mono-agent/cron-adapter`\nScheduled invocations"]
     OpenAIApi["`@mono-agent/openai-api-adapter`\nOpenAI Chat Completions"]
     Slack["`@mono-agent/slack-adapter`\nSocket Mode + Web API"]
     Telegram["`@mono-agent/telegram-adapter`\nBot API + long polling"]
     Webhook["`@mono-agent/webhook-adapter`\nHTTP sync/async invocation"]
-    WhatsApp["`@mono-agent/whatsapp-adapter`\nBaileys socket + group trigger policy"]
+    WhatsApp["`@mono-agent/whatsapp-adapter`\nextra plugin: Baileys socket + group trigger policy"]
   end
 
   subgraph Core["Core contracts and config"]
@@ -303,7 +318,7 @@ flowchart TB
 
   subgraph Execution["Execution layer"]
     Harness["`@mono-agent/agent-harness`\nrequest to runtime run\ncontext + skills + tool policy"]
-    Orchestrator["`@mono-agent/agent-orchestrator`\ncollaborator MCP tool"]
+    Orchestrator["`@mono-agent/agent-orchestrator`\nextra: collaborator MCP tool"]
     Observability["`@mono-agent/observability`\nJSONL events + summaries + trace registry"]
   end
 
@@ -318,13 +333,13 @@ flowchart TB
 
   Host -. optional .-> Tui
   Host --> Telegram
-  Host --> A2A
+  Host -. plugin .-> A2A
   Host --> Webhook
   Host --> OpenAIApi
   Host --> Cron
   Host -. optional package .-> Slack
-  Host -. optional package .-> WhatsApp
-  Host -. optional package .-> Orchestrator
+  Host -. plugin .-> WhatsApp
+  Host -. runtime extension .-> Orchestrator
   Host --> Config
   Host --> AgentApp
 

@@ -35,7 +35,7 @@ Where should people (or other agents) reach this agent? Pick every channel that 
 7. Cron (scheduled prompts, no inbound channel)
 ```
 
-Fills one config section per choice: `webhook`, `openaiApi`, `telegram`, `slack`, `whatsapp`, `a2a`, `cron`. Channels are independent: an unconfigured channel reports `waiting_for_config` and never blocks the others. For chat channels collect tokens and allowlists (chat IDs, channel IDs, JIDs). For HTTP channels collect host/port/path and whether non-loopback binding is allowed (default: loopback only).
+Fills one config section per choice: built-in channels use `webhook`, `openaiApi`, `telegram`, `slack`, and `cron`; WhatsApp and A2A are external channel plugins under `channels.plugins[]` with package names `@mono-agent/whatsapp-adapter` and `@mono-agent/a2a-adapter`. Channels are independent: an unconfigured channel reports `waiting_for_config` and never blocks the others. For chat channels collect tokens and allowlists (chat IDs, channel IDs, JIDs). For HTTP channels collect host/port/path and whether non-loopback binding is allowed (default: loopback only).
 
 ## 3. Identity And Existing Knowledge
 

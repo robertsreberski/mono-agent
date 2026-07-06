@@ -96,10 +96,10 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | --- | --- | --- |
 | Telegram | `@mono-agent/telegram-adapter` | Allowed chat sends a message |
 | Slack | `@mono-agent/slack-adapter` | Allowed channel or DM gets a streamed reply |
-| WhatsApp | `@mono-agent/whatsapp-adapter` | Allowed sender/group trigger produces a reply |
+| WhatsApp | `@mono-agent/whatsapp-adapter` (external channel plugin) | Allowed sender/group trigger produces a reply |
 | OpenAI-compatible API | `@mono-agent/openai-api-adapter` | `curl /v1/models` and `/v1/chat/completions` |
 | Operator endpoints | `@mono-agent/operator-adapter` | `mono-agent tui` connects; `mono-agent web` observes live runs |
-| A2A provider/consumer | `@mono-agent/a2a-adapter` | Send text to the Agent Card URL |
+| A2A provider/consumer | `@mono-agent/a2a-adapter` (external channel plugin) | Send text to the Agent Card URL |
 | Webhook | `@mono-agent/webhook-adapter` | `curl` the configured invocation path |
 | Cron | `@mono-agent/cron-adapter` | One scheduled or manually triggered invocation |
 
