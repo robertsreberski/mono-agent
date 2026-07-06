@@ -43,8 +43,8 @@ export type MonoAgentMemorySupermemoryJson = {
   readonly exposeMcpServer?: boolean;
 };
 
-/** JSON-serialisable shape for a ritual config block (reflection or migration). */
-export type MonoAgentMemoryRitualJson = {
+/** JSON-serialisable shape for memory consolidation config. */
+export type MonoAgentMemoryConsolidationJson = {
   readonly enabled?: boolean;
   readonly cron?: string;
 };
@@ -145,8 +145,11 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly embeddings?: MonoAgentMemoryEmbeddingsJson;
     readonly llm?: MonoAgentMemoryLlmJson;
     readonly recallTool?: { readonly enabled?: boolean };
-    readonly reflection?: MonoAgentMemoryRitualJson;
-    readonly migration?: MonoAgentMemoryRitualJson;
+    readonly consolidation?: MonoAgentMemoryConsolidationJson;
+    /** Removed and ignored; retained so stale JSON stays typed/tolerated. */
+    readonly reflection?: MonoAgentMemoryConsolidationJson;
+    /** Removed and ignored; retained so stale JSON stays typed/tolerated. */
+    readonly migration?: MonoAgentMemoryConsolidationJson;
   };
   readonly tools?: {
     readonly allowedTools?: readonly string[];

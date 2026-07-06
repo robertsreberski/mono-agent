@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { openMemoryDb } from "../db.js";
 import { fakeEmbeddings } from "./helpers.js";
+import type { EmbeddingProvider } from "../../search/index.js";
 import type { MemoryRecord } from "../types.js";
 
 function note(id: string, text: string): MemoryRecord {
@@ -41,6 +42,37 @@ describe("supersede", () => {
     await db.upsert(note("old", "Berlin"));
     await expect(db.supersede("missing", note("new", "Lisbon"))).rejects.toThrow(/unknown memory/);
     await expect(db.supersede("old", note("old", "self"))).rejects.toThrow(/distinct id/);
+    db.close();
+  });
+
+  it("markSuperseded links two existing records without embedding either record", async () => {
+    const base = fakeEmbeddings(64);
+    let calls = 0;
+    let fail = false;
+    const embeddings: EmbeddingProvider = {
+      id: "flaky",
+      embed: async (texts) => {
+        calls += 1;
+        if (fail) throw new Error("embedding provider down");
+        return base.embed(texts);
+      },
+    };
+    const db = openMemoryDb({ path: ":memory:", embeddings, dim: 64, clock: () => new Date("2026-06-16T00:00:00.000Z") });
+    await db.upsert(note("old", "Berlin city note"));
+    await db.upsert(note("new", "Lisbon city note"));
+    expect(calls).toBe(2);
+
+    fail = true;
+    db.markSuperseded("old", "new");
+
+    expect(calls).toBe(2);
+    expect(db.get("old")).toMatchObject({
+      status: "invalidated",
+      supersededBy: "new",
+      supersededAt: "2026-06-16T00:00:00.000Z",
+      validTo: "2026-06-16T00:00:00.000Z",
+    });
+    expect(db.edges("old")).toContainEqual(expect.objectContaining({ src: "old", dst: "new", kind: "supersedes" }));
     db.close();
   });
 });

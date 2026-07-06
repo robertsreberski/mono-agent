@@ -47,7 +47,7 @@ export function rewriteBullet(
     // Build the merged bullet by applying only the defined patch keys so that
     // exactOptionalPropertyTypes is satisfied (no undefined values injected).
     const merged: Bullet = { ...line.bullet, ...patch };
-    return { raw: line.raw, bullet: merged };
+    return { raw: line.raw, lineNumber: line.lineNumber, bullet: merged };
   });
 
   if (!found) return false;

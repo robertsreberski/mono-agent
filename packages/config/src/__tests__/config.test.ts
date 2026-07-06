@@ -656,8 +656,8 @@ describe("loadMonoAgentConfig", () => {
       { MONO_AGENT_MEMORY_LLM_PROVIDER: "ollama" },
       { MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest" },
       { MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED: "true" },
-      { MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true" },
-      { MONO_AGENT_MEMORY_MIGRATION_CRON: "0 3 * * *" },
+      { MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "true" },
+      { MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "0 */2 * * *" },
     ]) {
       try {
         loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, ...env } });
@@ -1306,78 +1306,86 @@ describe("loadMonoAgentConfig", () => {
     expect(config.memory?.mode).toBe("journal");
   });
 
-  it("loads memory.reflection from env when enabled and cron are set", () => {
+  it("loads memory.consolidation from env when enabled and cron are set", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
-        MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
-        MONO_AGENT_MEMORY_REFLECTION_CRON: "0 3 * * *",
+        MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "true",
+        MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "0 */2 * * *",
       },
     });
 
-    expect(config.memory?.reflection).toEqual({ enabled: true, cron: "0 3 * * *" });
+    expect(config.memory?.consolidation).toEqual({ enabled: true, cron: "0 */2 * * *" });
   });
 
-  it("loads memory.migration from env when enabled and cron are set", () => {
+  it("omits consolidation when neither enabled nor cron env vars are set", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
-        MONO_AGENT_MEMORY_MIGRATION_ENABLED: "false",
-        MONO_AGENT_MEMORY_MIGRATION_CRON: "0 4 1 * *",
       },
     });
 
-    expect(config.memory?.migration).toEqual({ enabled: false, cron: "0 4 1 * *" });
+    expect(config.memory?.consolidation).toBeUndefined();
   });
 
-  it("omits ritual blocks when neither enabled nor cron env vars are set", () => {
+  it("loads a consolidation block with only cron set (enabled omitted)", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
+        MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "30 */4 * * *",
       },
     });
 
-    expect(config.memory?.reflection).toBeUndefined();
-    expect(config.memory?.migration).toBeUndefined();
+    expect(config.memory?.consolidation).toEqual({ cron: "30 */4 * * *" });
+    expect(config.memory?.consolidation?.enabled).toBeUndefined();
   });
 
-  it("loads a ritual block with only cron set (enabled omitted)", () => {
+  it("loads a consolidation block with only enabled set (cron omitted)", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
         ...baseEnv,
         MONO_AGENT_MEMORY_PATH: "memory-root",
         MONO_AGENT_MEMORY_MODE: "bujo",
-        MONO_AGENT_MEMORY_REFLECTION_CRON: "30 2 * * *",
+        MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "false",
       },
     });
 
-    expect(config.memory?.reflection).toEqual({ cron: "30 2 * * *" });
-    expect(config.memory?.reflection?.enabled).toBeUndefined();
+    expect(config.memory?.consolidation).toEqual({ enabled: false });
+    expect(config.memory?.consolidation?.cron).toBeUndefined();
   });
 
-  it("loads a ritual block with only enabled set (cron omitted)", () => {
-    const config = loadMonoAgentConfig({
-      cwd: "/repo",
-      env: {
-        ...baseEnv,
-        MONO_AGENT_MEMORY_PATH: "memory-root",
-        MONO_AGENT_MEMORY_MODE: "bujo",
-        MONO_AGENT_MEMORY_MIGRATION_ENABLED: "true",
-      },
-    });
+  it("ignores removed reflection and migration env keys without requiring a memory path", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
+          MONO_AGENT_MEMORY_REFLECTION_CRON: "0 3 * * *",
+          MONO_AGENT_MEMORY_MIGRATION_ENABLED: "true",
+        },
+      });
 
-    expect(config.memory?.migration).toEqual({ enabled: true });
-    expect(config.memory?.migration?.cron).toBeUndefined();
+      expect(config.memory).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0]);
+      expect(message).toContain("MONO_AGENT_MEMORY_REFLECTION_ENABLED");
+      expect(message).toContain("MONO_AGENT_MEMORY_REFLECTION_CRON");
+      expect(message).toContain("MONO_AGENT_MEMORY_MIGRATION_ENABLED");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("accepts memory.writeMode 'capture' with mode 'bujo'", () => {
@@ -1500,21 +1508,27 @@ describe("loadMonoAgentConfig", () => {
   it("ignores stale bujo-only env (embeddings/llm) when backend is supermemory", () => {
     // Switching an existing bujo config to supermemory must not be blocked by leftover bujo env —
     // e.g. an openai embeddings provider with no API key would throw under the bujo backend.
-    const config = loadMonoAgentConfig({
-      cwd: "/repo",
-      env: {
-        ...baseEnv,
-        MONO_AGENT_MEMORY_BACKEND: "supermemory",
-        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-        MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
-        MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
-        MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
-      },
-    });
-    expect(config.memory?.backend).toBe("supermemory");
-    expect(config.memory?.embeddings).toBeUndefined();
-    expect(config.memory?.llm).toBeUndefined();
-    expect(config.memory?.reflection).toBeUndefined();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_MEMORY_BACKEND: "supermemory",
+          MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
+          MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+          MONO_AGENT_MEMORY_LLM_MODEL: "qwen3.6:latest",
+          MONO_AGENT_MEMORY_REFLECTION_ENABLED: "true",
+          MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED: "false",
+        },
+      });
+      expect(config.memory?.backend).toBe("supermemory");
+      expect(config.memory?.embeddings).toBeUndefined();
+      expect(config.memory?.llm).toBeUndefined();
+      expect(config.memory?.consolidation).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("allows the supermemory backend without a memory path (path is bujo-only)", () => {

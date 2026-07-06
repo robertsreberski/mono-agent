@@ -81,6 +81,29 @@ describe("rebuildFromMarkdown", () => {
     db.close();
   });
 
+  it("uses the split bullet's physical visible line for rebuild provenance", async () => {
+    const root = mkdtempSync(join(tmpdir(), "bujo-rebuild-split-line-"));
+    mkdirSync(join(root, "daily"), { recursive: true });
+    writeFileSync(
+      join(root, "daily", "2026-06-14.md"),
+      [
+        "# 2026-06-14",
+        "",
+        "- – First split bullet.",
+        "  <!--mem id=01A type=note status=open salience=0.8 isInsight=0 created=2026-06-14T09:00:00.000Z refs=-->",
+        "- – Second split bullet.",
+        "  <!--mem id=01B type=note status=open salience=0.5 isInsight=0 created=2026-06-14T10:00:00.000Z refs=-->",
+        "",
+      ].join("\n"),
+    );
+
+    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
+    await rebuildFromMarkdown(root, db);
+    expect(db.get("01A")?.source.line).toBe(3);
+    expect(db.get("01B")?.source.line).toBe(5);
+    db.close();
+  });
+
   it("treats a missing daily directory as empty (indexed 0, no throw)", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-rebuild-noenoent-")); // no daily/ created
     const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });

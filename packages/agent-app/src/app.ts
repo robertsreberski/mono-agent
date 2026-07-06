@@ -627,7 +627,7 @@ class MonoAgentAppController implements MonoAgentApp {
       coreConfig = await loadAppCoreConfig(input);
       this.rememberSelectedSkills(coreConfig);
     } catch {
-      // Config not ready yet — rituals will start on the next applyConfigChange.
+      // Config not ready yet — consolidation will start on the next applyConfigChange.
       return;
     }
 
@@ -643,22 +643,21 @@ class MonoAgentAppController implements MonoAgentApp {
       this.activeRuntimes.push(runtime);
     }
     const store = await this.memoryStore(coreConfig);
-    // Duck-type: only bujo-tier BujoMemoryStore has reflect/migrate.
+    // Duck-type: only bujo-tier BujoMemoryStore has consolidate().
     // Cast through unknown to bypass the MemoryStore contract's type mismatch.
     const storeAsAny = store as unknown as Record<string, unknown>;
     if (
       store === undefined ||
-      typeof storeAsAny["reflect"] !== "function" ||
-      typeof storeAsAny["migrate"] !== "function" ||
+      typeof storeAsAny["consolidate"] !== "function" ||
       typeof storeAsAny["tier"] !== "function"
     ) {
+      this.logger?.info?.("Memory consolidation scheduler skipped — store does not support consolidate().", { reason });
       return;
     }
 
     const bujoStore = store as unknown as {
       tier(): string;
-      reflect(): Promise<unknown>;
-      migrate(): Promise<unknown>;
+      consolidate(): Promise<unknown>;
     };
 
     // `memory.mode` is "bujo", but the store derives the runtime tier from its options: without a
@@ -666,14 +665,16 @@ class MonoAgentAppController implements MonoAgentApp {
     // scheduler started in that case — log an accurate skip instead.
     const tier = bujoStore.tier();
     if (tier !== "bujo") {
-      this.logger?.info?.("Memory ritual scheduler skipped — store tier is not bujo (reflect/migrate need a chat LLM).", { reason, tier });
+      this.logger?.info?.(
+        "Memory consolidation scheduler skipped — configured bujo mode resolved to the journal tier because memory.llm is missing.",
+        { reason, tier },
+      );
       return;
     }
 
     this.memoryRituals = startMemoryRituals({
       store: bujoStore,
-      ...(coreConfig.memory.reflection !== undefined && { reflection: coreConfig.memory.reflection }),
-      ...(coreConfig.memory.migration !== undefined && { migration: coreConfig.memory.migration }),
+      ...(coreConfig.memory.consolidation !== undefined && { consolidation: coreConfig.memory.consolidation }),
       ...(this.logger !== undefined && {
         logger: {
           info: (m: string) => this.logger?.info?.(m),
@@ -682,7 +683,7 @@ class MonoAgentAppController implements MonoAgentApp {
       }),
     });
 
-    this.logger?.info?.("Memory ritual scheduler started.", { reason, mode: "bujo" });
+    this.logger?.info?.("Memory consolidation scheduler started.", { reason, mode: "bujo" });
   }
 
   private stopMemoryRituals(): void {
@@ -692,7 +693,7 @@ class MonoAgentAppController implements MonoAgentApp {
     }
     this.memoryRituals = undefined;
     rituals.stop();
-    this.logger?.info?.("Memory ritual scheduler stopped.");
+    this.logger?.info?.("Memory consolidation scheduler stopped.");
   }
 
   private restartArtifactRetentionScheduler(artifactDir: string, reason: string): void {
@@ -1129,7 +1130,7 @@ class MonoAgentAppController implements MonoAgentApp {
         ? { warn: (message: string) => { appLogger.warn?.(message); } }
         : undefined;
       // Thread the per-app observability context so the bujo memory LLM records
-      // each capture/reflect/migrate run through the same JSONL + Phoenix pipeline
+      // capture and consolidation runs through the same JSONL + Phoenix pipeline
       // as channel runs (gated by `memory.llm.trace`, default on). The context is
       // per-app (not per-request), so caching it into the shared store is correct.
       //

@@ -6,7 +6,7 @@ sidebar:
 
 This page covers the two halves of the memory loop: how the host **writes** each completed turn (`memory.writeMode`) and how the agent **reads** what it stored back through the auto-provisioned `memory_recall` tool. Both are driven by the single `config.memory` block — there is no separate `.mcp.json` entry to hand-wire.
 
-For tier selection (lite / journal / bujo) and embeddings setup, start at the [Memory overview](/memory/) and [Embeddings](/memory/embeddings/). Recall is the read path; rituals (reflect/migrate) are the maintenance path covered in [Rituals](/memory/rituals/).
+For tier selection (lite / journal / bujo) and embeddings setup, start at the [Memory overview](/memory/) and [Embeddings](/memory/embeddings/). Recall is the read path; scheduled consolidation is the maintenance path covered in [Consolidation](/memory/rituals/).
 
 ## Write modes (`memory.writeMode`)
 
@@ -70,7 +70,7 @@ MONO_AGENT_MEMORY_WRITE_MODE=capture
 The capture pipeline swallows LLM errors (never-throw), so a too-short timeout makes a capture **silently store nothing** rather than fail loudly. Raise the in-app memory-LLM timeout — `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`), **default `60000`** in the app — for slow local chat models. (The standalone `memory-bujo` CLI reads the same env var but defaults to `120000`; see [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).)
 :::
 
-The bujo chat model used by capture is the same `memory.llm` referenced for the [rituals](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.5`); the standalone CLI remains Ollama-only.
+The bujo chat model used by capture is the same `memory.llm` block that lets the app resolve the effective `bujo` tier for [scheduled consolidation](/memory/rituals/). With `memory.llm.provider: "agent-host"` it can point at an SDK runtime model reference (e.g. `pi:openai-codex:gpt-5.5`); the standalone legacy `reflect`/`migrate` CLI commands remain Ollama-only.
 
 ## The `memory_recall` tool
 
@@ -114,7 +114,7 @@ Recall fuses two retrievers and re-ranks the result:
 
 - **BM25 keyword (FTS)** over the markdown entries.
 - **Vector similarity** over the configured embeddings.
-- Results are combined with **Reciprocal Rank Fusion (RRF)**, then weighted by **recency** and **salience** so fresh, important memories surface above stale or low-signal ones (salience decays over time via the nightly [reflect ritual](/memory/rituals/)).
+- Results are combined with **Reciprocal Rank Fusion (RRF)**, then weighted by **recency** and **salience** so fresh, important memories surface above stale or low-signal ones (salience decays over time via scheduled [consolidation](/memory/rituals/)).
 
 You can exercise the exact same scoring offline against a memory root:
 
@@ -139,7 +139,7 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 | `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo`) |
 | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `memory_recall`; default on for journal/bujo with embeddings |
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
-| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and CLI reflect/migrate) |
+| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline (and legacy CLI `reflect`/`migrate`) |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama chat endpoint (default `http://localhost:11434`) |
 | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | Per-call chat-LLM timeout. **In-app (agent-app) default `60000`**; the standalone `memory-bujo` CLI reads the same var but defaults to `120000`. See [Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` | `memory.embeddings.provider` | `ollama` / `openai`; required for vector recall |
@@ -152,6 +152,6 @@ See [Environment variables](/config/env-vars/) for the full table and precedence
 
 - [Memory overview](/memory/) — tier matrix and the single `memory` config block
 - [Embeddings](/memory/embeddings/) — the provider/model behind vector recall
-- [Rituals](/memory/rituals/) — reflect (decay + salience) and migrate, which keep recall scoring fresh
+- [Consolidation](/memory/rituals/) — scheduled salience decay, duplicate superseding, and index maintenance
 - [Entity graph](/memory/entity-graph/) — what the capture pipeline's entity-extraction step builds
 - [Validation & CLI](/memory/validation-and-cli/) — `mono-agent validate` checks and the `memory-bujo` binary

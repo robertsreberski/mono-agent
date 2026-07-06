@@ -48,7 +48,7 @@ The same `memory` option exists on `createConfiguredAgentHarness`. When running 
 
 - **Recall**: before each turn, recalled entries are appended to the user message (not the system prompt), so they survive provider session resume. The auto-provisioned `memory_recall` tool serves on-demand recall from the same config.
 - **Capture**: gated by `memory.writeMode` (`disabled` / `append-host-summary` / `capture`). Your store's capture method is only called when the mode allows writes.
-- **Rituals**: the in-app scheduler only schedules `reflect()`/`migrate()` for stores that report the `bujo` tier — a custom store without those lifecycle methods is simply left alone.
+- **Consolidation**: the in-app scheduler only schedules `consolidate()` for stores that report the `bujo` tier — a custom store without that lifecycle method is simply left alone.
 
 ## When to prefer which path
 

@@ -190,17 +190,11 @@ export function layerJsonOntoEnv(
   if (json.memory?.recallTool?.enabled !== undefined) {
     fromJson.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED = String(json.memory.recallTool.enabled);
   }
-  if (json.memory?.reflection?.enabled !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_REFLECTION_ENABLED = String(json.memory.reflection.enabled);
+  if (json.memory?.consolidation?.enabled !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED = String(json.memory.consolidation.enabled);
   }
-  if (json.memory?.reflection?.cron !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_REFLECTION_CRON = json.memory.reflection.cron;
-  }
-  if (json.memory?.migration?.enabled !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_MIGRATION_ENABLED = String(json.memory.migration.enabled);
-  }
-  if (json.memory?.migration?.cron !== undefined) {
-    fromJson.MONO_AGENT_MEMORY_MIGRATION_CRON = json.memory.migration.cron;
+  if (json.memory?.consolidation?.cron !== undefined) {
+    fromJson.MONO_AGENT_MEMORY_CONSOLIDATION_CRON = json.memory.consolidation.cron;
   }
   if (json.tools?.allowedTools !== undefined) {
     fromJson.MONO_AGENT_ALLOWED_TOOLS = csv(json.tools.allowedTools);

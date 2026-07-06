@@ -14,6 +14,12 @@ export function writeFutureLog(root: string, db: MemoryDb, now: Date, horizonDay
   return items.length;
 }
 
+/** Write the deterministic consolidation future log. No synthesis or due-item expansion. */
+export function writeEmptyFutureLog(root: string): void {
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "future-log.md"), "# Future Log\n", "utf8");
+}
+
 /** Write <root>/index.md: a living table of contents — counts + top entities + top-salient memories. */
 export function writeIndex(root: string, db: MemoryDb, _now: Date): void {
   const memoryCount = db.count();

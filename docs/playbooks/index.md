@@ -15,7 +15,7 @@ Every recipe ends with a concrete smoke test (a Telegram message, a `curl`, a cr
 1. Pick a recipe from the [selector](#pick-a-recipe) or the [full table](#all-recipes) below.
 2. Run `mono-agent init` with the suggested `--model` (and `--memory` / `--fallback-models` where shown).
 3. Edit `mono-agent.config.json` per the recipe — keys are cross-checked against [the config blueprint](/config/blueprint/) and [feature registry](/reference/feature-matrix/).
-4. Run `mono-agent validate` (catches missing tokens, unreachable providers, un-pulled local models, ritual cadence, and exporter reachability), then `mono-agent start`.
+4. Run `mono-agent validate` (catches missing tokens, unreachable providers, un-pulled local models, consolidation cadence, and exporter reachability), then `mono-agent start`.
 5. Run the recipe's smoke test and inspect the JSONL run artifact under `artifacts.dir`.
 
 :::note
@@ -44,11 +44,11 @@ See [Channels](/channels/) for the full per-channel reference.
 
 | Memory need | Tier | Recipe |
 | --- | --- | --- |
-| Remember every turn, nightly reflection, monthly migration, semantic recall | `bujo` | [Telegram Assistant with BuJo](/playbooks/telegram-personal-assistant-bujo/) |
-| Durable notes + semantic recall, no rituals | `journal` | [Local-Only Ollama](/playbooks/local-only-ollama-agent/) · [Sandboxed Code Agent](/playbooks/sandboxed-code-agent/) · [Cron Digest](/playbooks/cron-digest-proactive-notify/) |
+| Remember every turn, scheduled consolidation, semantic recall | `bujo` | [Telegram Assistant with BuJo](/playbooks/telegram-personal-assistant-bujo/) |
+| Durable notes + semantic recall, no scheduled consolidation | `journal` | [Local-Only Ollama](/playbooks/local-only-ollama-agent/) · [Sandboxed Code Agent](/playbooks/sandboxed-code-agent/) · [Cron Digest](/playbooks/cron-digest-proactive-notify/) |
 | Stateless / no long-term memory | — | [Webhook](/playbooks/webhook-automation-sync-async/) · [OpenAI Endpoint](/playbooks/openai-endpoint-open-webui/) · [A2A](/playbooks/a2a-provider-and-consumer/) |
 
-Memory tiers, `writeMode`, embeddings, and rituals are covered in [Memory](/memory/capture-and-recall/) and [Rituals](/memory/rituals/).
+Memory tiers, `writeMode`, embeddings, and consolidation are covered in [Memory](/memory/capture-and-recall/) and [Consolidation](/memory/rituals/).
 
 ### 3. By deployment shape
 
@@ -64,7 +64,7 @@ Memory tiers, `writeMode`, embeddings, and rituals are covered in [Memory](/memo
 
 | Recipe | Who it's for | Goal |
 | --- | --- | --- |
-| [Personal Telegram Assistant with BuJo Memory](/playbooks/telegram-personal-assistant-bujo/) | Individual power user wanting a private assistant that remembers | Telegram long-polling bot that captures every turn into BuJo memory (nightly reflection + monthly migration) and recalls past notes semantically. |
+| [Personal Telegram Assistant with BuJo Memory](/playbooks/telegram-personal-assistant-bujo/) | Individual power user wanting a private assistant that remembers | Telegram long-polling bot that captures every turn into BuJo memory, consolidates it automatically, and recalls past notes semantically. |
 | [Personal Telegram Assistant with Supermemory](/playbooks/telegram-supermemory-memory/) | Power user trying an external memory layer while keeping the agent local | Telegram long-polling bot that captures every turn into a local Supermemory instance and recalls past memories through the same `memory_recall` tool. |
 | [Slack Team Bot with MCP Tools](/playbooks/slack-team-bot-mcp-tools/) | DevOps engineer running a shared team bot | Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MCP tool plus Read/Grep and `slack_send_message` for proactive posts. |
 | [Fully Local Ollama Agent (No Cloud)](/playbooks/local-only-ollama-agent/) | Privacy-focused user with no cloud API budget | Agent running entirely on local Ollama via the Pi runtime, with journal memory on local embeddings and no outbound network. |

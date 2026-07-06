@@ -211,13 +211,26 @@ export class MemoryDb {
     }
     const now = this.clock().toISOString();
     await this.upsert(replacement);
+    this.markSuperseded(oldId, replacement.id, now);
+  }
+
+  markSuperseded(oldId: string, replacementId: string, at = this.clock().toISOString()): void {
+    if (oldId === replacementId) {
+      throw new Error("memory-store: supersede requires a replacement with a distinct id.");
+    }
+    if (this.get(oldId) === undefined) {
+      throw new Error(`memory-store: cannot supersede unknown memory "${oldId}".`);
+    }
+    if (this.get(replacementId) === undefined) {
+      throw new Error(`memory-store: cannot supersede with unknown replacement "${replacementId}".`);
+    }
     const tx = this.db.transaction(() => {
       this.db.prepare(
         `UPDATE memories SET status = 'invalidated', superseded_by = ?, superseded_at = ?, valid_to = ? WHERE id = ?`,
-      ).run(replacement.id, now, now, oldId);
+      ).run(replacementId, at, at, oldId);
       this.db.prepare(
         `INSERT OR IGNORE INTO edges (src, dst, kind, weight, created_at) VALUES (?, ?, 'supersedes', 1.0, ?)`,
-      ).run(oldId, replacement.id, now);
+      ).run(oldId, replacementId, at);
     });
     tx();
   }

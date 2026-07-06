@@ -16,7 +16,7 @@ Use this section when you need to confirm an exact config key, env var, or cover
 | --- | --- |
 | [Capability ladder](/reference/capability-ladder/) | Where new capability work belongs before changing package boundaries or shared contracts. |
 | [Feature matrix](/reference/feature-matrix/) | Compact, scannable table of capabilities mapped to their primary config key, env var, and coverage type. |
-| [Glossary](/reference/glossary/) | Definitions of terms (channel, soul, ritual, recall, A2A, fallback chain, sandbox, etc.) used across the docs. |
+| [Glossary](/reference/glossary/) | Definitions of terms (channel, soul, consolidation, recall, A2A, fallback chain, sandbox, etc.) used across the docs. |
 | [Feature registry](/reference/feature-registry/) | Authoritative, long-form checklist — the source of truth a new capability row is added to when a package ships a feature. |
 | [Telegram feature evaluation](/reference/telegram-feature-evaluation/) | Decision record: which Telegram Bot API features the channel adopts (and what it skips), with the two architectural decisions behind the interactive ones. |
 

@@ -33,8 +33,8 @@ export interface MemorySupermemoryConfig {
   /** Also inject Supermemory's official MCP server alongside the in-app recall tool. Default false. */
   readonly exposeMcpServer?: boolean;
 }
-/** Configuration for a bujo-tier auto-ritual (reflection or migration). */
-export interface MemoryRitualConfig {
+/** Configuration for bujo-tier lightweight consolidation. */
+export interface MemoryConsolidationConfig {
   readonly enabled?: boolean;
   readonly cron?: string;
 }
@@ -223,7 +223,7 @@ export interface MonoAgentConfig {
     readonly supermemory?: MemorySupermemoryConfig;
     /** Embedding provider for semantic memory_search; keyword fallback when unset. */
     readonly embeddings?: MemoryEmbeddingsConfig;
-    /** LLM for bujo capture/reflect/migrate. */
+    /** LLM for bujo capture and effective tier selection. */
     readonly llm?: MemoryLlmConfig;
     /**
      * Read-only `memory_recall` tool exposed to the agent (embeddings + FTS, no
@@ -231,10 +231,8 @@ export interface MonoAgentConfig {
      * Defaults on when the resolved tier has embeddings; off for lite.
      */
     readonly recallTool?: { readonly enabled: boolean };
-    /** Bujo-tier reflection ritual (nightly summarise/compress). Default cron: `0 3 * * *`. */
-    readonly reflection?: MemoryRitualConfig;
-    /** Bujo-tier migration ritual (monthly archive/rebalance). Default cron: `0 4 1 * *`. */
-    readonly migration?: MemoryRitualConfig;
+    /** Bujo-tier lightweight consolidation. Scheduler default cadence: every two hours. */
+    readonly consolidation?: MemoryConsolidationConfig;
   };
   readonly tools: {
     readonly allowedTools: readonly string[];

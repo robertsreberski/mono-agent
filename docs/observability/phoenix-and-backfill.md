@@ -48,12 +48,12 @@ The secret-redaction pass that runs before export no longer clobbers numeric tok
 
 ### Memory-maintenance runs
 
-BuJo memory work — per-turn capture (`distill` → `reconcile` → `entities`) and the nightly `reflect` / monthly `migrate` rituals — records as its own `mem-*` runs. These export with:
+BuJo memory work — per-turn capture (`distill` → `reconcile` → `entities`) and scheduled `consolidate` maintenance — records as its own `mem-*` runs. Legacy manual `reflect` / `migrate` CLI runs can still appear for old-store maintenance. These export with:
 
 - `openinference.span.kind = "memory"` (channel runs stay `AGENT`), so memory work is filterable in Phoenix.
-- `mono.agent.run.kind` and `mono.agent.memory.operation` — the operation is one of `distill` / `reconcile` / `entities` / `reflect` / `migrate`.
+- `mono.agent.run.kind` and `mono.agent.memory.operation` — the operation is one of `distill` / `reconcile` / `entities` / `consolidate` (plus legacy manual `reflect` / `migrate`).
 
-This surfaces memory cost and latency alongside channel runs instead of hiding it inside generic `AGENT` spans. See [Capture & recall](/memory/capture-and-recall/) and [Rituals](/memory/rituals/) for what each operation does.
+This surfaces memory cost and latency alongside channel runs instead of hiding it inside generic `AGENT` spans. See [Capture & recall](/memory/capture-and-recall/) and [Consolidation](/memory/rituals/) for what each operation does.
 
 ## Configuration
 

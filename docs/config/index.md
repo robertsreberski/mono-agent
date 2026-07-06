@@ -62,7 +62,7 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `runtime` | Model, execution mode, effort, sessions, concurrency | [Runtime](/runtime/) |
 | `providers` | Local/self-hosted providers, Pi OAuth, pi-native tuning | [Local Providers](/runtime/local-providers/) |
 | `context` | Identity, soul, selected skills | [Context Assembly](/context/assembly/) |
-| `memory` | Tiered memory (lite/journal/bujo), embeddings, rituals | [Capture & Recall](/memory/capture-and-recall/) |
+| `memory` | Tiered memory (lite/journal/bujo), embeddings, consolidation | [Capture & Recall](/memory/capture-and-recall/) |
 | `tools` | Fail-closed allow/deny policy, MCP servers | [Tool Policy](/tools/policy/), [MCP](/tools/mcp/) |
 | `sandbox` | Filesystem/network sandboxing for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](/observability/) |

@@ -12,6 +12,7 @@ import { captureTurn } from "./capture.js";
 import { composeRecallBlock } from "./recall.js";
 import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
 import { migrate as migrateFn, type MigrateResult } from "./migrate.js";
+import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js";
 import { writeFutureLog, writeIndex } from "./projections.js";
 import type { Bullet, BujoLogger, BujoOptions, BujoTier } from "./types.js";
 
@@ -39,6 +40,7 @@ export class BujoMemoryStore implements MemoryStore {
       path: join(options.root, "memory.db"),
       ...(options.embeddings !== undefined && { embeddings: options.embeddings }),
       ...(options.dim !== undefined && { dim: options.dim }),
+      clock: this.clock,
     });
     if (options.llm !== undefined) {
       this.llm = options.llm;
@@ -208,6 +210,15 @@ export class BujoMemoryStore implements MemoryStore {
    */
   async decay(): Promise<{ decayed: number }> {
     return this.db.applyDecay(this.clock());
+  }
+
+  /** Run deterministic, no-LLM BuJo consolidation in every tier. */
+  async consolidate(): Promise<ConsolidateResult> {
+    return consolidateBujoMemory({
+      root: this.root,
+      db: this.db,
+      now: this.clock(),
+    });
   }
 
   async close(): Promise<void> {

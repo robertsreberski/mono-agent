@@ -8,7 +8,7 @@ sidebar:
 
 This section covers the **code escape hatches** for when `mono-agent.config.json` and the `mono-agent` CLI cannot express the host you need. Everything here is **code** coverage: you import `@mono-agent/*` packages and compose a host yourself. If a behavior is already reachable through config, prefer that — see [Config](/config/) and the [Feature Matrix](/reference/feature-matrix/) for the config/cli/auto/code/dev split.
 
-Most agents never need this section. The config-first host (`@mono-agent/agent-app`) loads your config, builds the responder, and drives every configured channel, memory ritual, and observability exporter for you. Reach below it only when you need a custom driver set, a request-scoped runtime tweak, or a bare responder embedded in your own process.
+Most agents never need this section. The config-first host (`@mono-agent/agent-app`) loads your config, builds the responder, and drives every configured channel, memory consolidation, and observability exporter for you. Reach below it only when you need a custom driver set, a request-scoped runtime tweak, or a bare responder embedded in your own process.
 
 ## Three entry points, three altitudes
 
@@ -16,7 +16,7 @@ Most agents never need this section. The config-first host (`@mono-agent/agent-a
 | --- | --- | --- | --- |
 | App (default) | `@mono-agent/agent-app` | `startMonoAgentApp({ cwd, configPath, drivers, runtime })` | You want the full config-first host but need to override the channel driver set, inject a runtime, or embed it in a larger process. |
 | Responder | `@mono-agent/agent-app` | `createConfiguredAgentResponder({ config, memory, historyStore, runtimeOptions, runtimeOptionsForRequest })` | You want config-driven runtime/harness/memory composition but you own the transport (your own server, queue, or test harness). |
-| Bare | `@mono-agent/agent-app` + `@mono-agent/config` | `loadMonoAgentConfigWithSources(...)` → `createConfiguredAgentResponder({ config })` | You want the smallest possible responder from a loaded config, with no channels, rituals, or exporters wired up. |
+| Bare | `@mono-agent/agent-app` + `@mono-agent/config` | `loadMonoAgentConfigWithSources(...)` → `createConfiguredAgentResponder({ config })` | You want the smallest possible responder from a loaded config, with no channels, scheduler, or exporters wired up. |
 
 All three still read the same `MonoAgentConfig`. The escape hatch is in *composition and request handling*, not in re-implementing runtime, prompt assembly, or memory.
 
@@ -88,7 +88,7 @@ Session rollover (`runtime.session.rollover` / `runtime.session.rolloverTimezone
 
 ## A bare responder — `@mono-agent/agent-app` + `@mono-agent/config`
 
-The minimal local host is just two packages: load a config, build a responder. No channels, no rituals, no exporters.
+The minimal local host is just two packages: load a config, build a responder. No channels, no scheduler, no exporters.
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";

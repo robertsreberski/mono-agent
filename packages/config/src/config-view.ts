@@ -108,10 +108,8 @@ export const CONFIG_ENV_KEYS = {
   "memory.llm.timeoutMs": "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
   "memory.llm.endpoint": "MONO_AGENT_MEMORY_LLM_ENDPOINT",
   "memory.recallTool.enabled": "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
-  "memory.reflection.enabled": "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
-  "memory.reflection.cron": "MONO_AGENT_MEMORY_REFLECTION_CRON",
-  "memory.migration.enabled": "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
-  "memory.migration.cron": "MONO_AGENT_MEMORY_MIGRATION_CRON",
+  "memory.consolidation.enabled": "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
+  "memory.consolidation.cron": "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
   "tools.allowedTools": "MONO_AGENT_ALLOWED_TOOLS",
   "tools.disallowedTools": "MONO_AGENT_DISALLOWED_TOOLS",
   "tools.mcpConfigPath": "MONO_AGENT_MCP_CONFIG_PATH",
@@ -572,36 +570,19 @@ function buildMemorySection(input: BuildMonoAgentConfigViewInput): ConfigViewSec
     }
   }
 
-  if (memory.reflection !== undefined) {
+  if (memory.mode === "bujo" || memory.consolidation !== undefined) {
     fields.push(
       toField(env, {
-        id: "memory.reflection.enabled",
-        label: "Reflection ritual",
-        value: memory.reflection.enabled === true ? "on" : "off",
-        jsonPresent: json.memory?.reflection?.enabled !== undefined,
+        id: "memory.consolidation.enabled",
+        label: "Consolidation",
+        value: memory.consolidation?.enabled === false ? "off" : "on",
+        jsonPresent: json.memory?.consolidation?.enabled !== undefined,
       }),
       toField(env, {
-        id: "memory.reflection.cron",
-        label: "Reflection cron",
-        value: memory.reflection.cron ?? "default",
-        jsonPresent: json.memory?.reflection?.cron !== undefined,
-      }),
-    );
-  }
-
-  if (memory.migration !== undefined) {
-    fields.push(
-      toField(env, {
-        id: "memory.migration.enabled",
-        label: "Migration ritual",
-        value: memory.migration.enabled === true ? "on" : "off",
-        jsonPresent: json.memory?.migration?.enabled !== undefined,
-      }),
-      toField(env, {
-        id: "memory.migration.cron",
-        label: "Migration cron",
-        value: memory.migration.cron ?? "default",
-        jsonPresent: json.memory?.migration?.cron !== undefined,
+        id: "memory.consolidation.cron",
+        label: "Consolidation cron",
+        value: memory.consolidation?.cron ?? "default (0 */2 * * *)",
+        jsonPresent: json.memory?.consolidation?.cron !== undefined,
       }),
     );
   }
@@ -969,6 +950,38 @@ export function findJsonSecretConfigWarnings(
         continue;
       }
       warnings.push(`[WARN] ${field.id} is a secret read from mono-agent.config.json — move it to .env (${envVar}).`);
+    }
+  }
+  return warnings;
+}
+
+export interface RemovedConfigWarningsInput {
+  readonly json: MonoAgentConfigJson;
+  readonly env: Record<string, string | undefined>;
+}
+
+const REMOVED_MEMORY_ENV_KEYS = [
+  "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
+  "MONO_AGENT_MEMORY_REFLECTION_CRON",
+  "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
+  "MONO_AGENT_MEMORY_MIGRATION_CRON",
+] as const;
+
+/**
+ * Find advisory warnings for removed config keys that are tolerated but ignored.
+ * Warnings mention only stable JSON paths and env var names, never values.
+ */
+export function findRemovedConfigWarnings(input: RemovedConfigWarningsInput): readonly string[] {
+  const warnings: string[] = [];
+  if (input.json.memory?.reflection !== undefined) {
+    warnings.push("[WARN] memory.reflection is removed and ignored; use memory.consolidation instead.");
+  }
+  if (input.json.memory?.migration !== undefined) {
+    warnings.push("[WARN] memory.migration is removed and ignored; use memory.consolidation instead.");
+  }
+  for (const key of REMOVED_MEMORY_ENV_KEYS) {
+    if (envHas(input.env, key)) {
+      warnings.push(`[WARN] ${key} is removed and ignored; use MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED or MONO_AGENT_MEMORY_CONSOLIDATION_CRON instead.`);
     }
   }
   return warnings;

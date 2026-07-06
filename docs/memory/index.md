@@ -24,10 +24,9 @@ Weighing the built-in engine against an external memory service? See
 | Salience decay | — | yes | yes |
 | LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP) | — | — | yes |
 | Entity graph | — | — | yes |
-| Reflection (decay + insight synthesis) | — | — | yes |
-| Monthly migration (promote/reschedule/cluster/forget) | — | — | yes |
-| Auto-scheduled rituals (in-app scheduler) | — | — | yes |
-| Living `index.md` + `future-log.md` | — | — | yes |
+| Lightweight consolidation (dedupe + salience decay) | — | — | yes |
+| Auto-scheduled maintenance (in-app scheduler) | — | — | yes |
+| Living `index.md` + retired `future-log.md` stub | — | — | yes |
 | **Requires embeddings** | no | **yes** | **yes** |
 | **Requires chat model** | no | no | **yes** |
 
@@ -46,22 +45,21 @@ Requires a configured embeddings provider, either Ollama or OpenAI. No chat mode
 ### `bujo` (BuJo — Bullet Journal memory)
 
 The full tier: everything in `journal` plus an LLM-augmented capture-and-reconcile
-pipeline, entity graph, reflection, and migration rituals. Captures agent observations
+pipeline, entity graph, and lightweight consolidation. Capture writes agent observations
 and conversation summaries into daily markdown notes, reconciles them against existing
 memories (classifying each entry as ADD / UPDATE / SUPERSEDE / NOOP to avoid
 duplication), and maintains hybrid recall via BM25 full-text + vector RRF with recency
 and salience weighting.
 
-A **reflection** pass applies temporal decay, synthesises cross-entry insights (with
-provenance links), and surfaces overdue future-log items. A **migration** pass promotes
-active memories, reschedules recurring patterns, clusters related entries, and forgets
-stale ones (bi-temporal — never deleted). Both produce a living `index.md` and
-`future-log.md` at the memory root.
+A **consolidation** pass keeps the store legible without writing an LLM essay: it applies
+temporal decay, deduplicates near-identical bullets by superseding duplicates, rewrites
+the living `index.md`, and leaves `future-log.md` as an empty retired stub (`# Future Log`).
+It does not create monthly projection files.
 
-The reflection and migration rituals are **auto-scheduled in-app** for the `bujo` tier:
-the agent-app scheduler runs them at the configured cron cadence (default: nightly
-reflect at `0 3 * * *`, monthly migrate at `0 4 1 * *`). No external cron or launchd
-setup is required. Run `mono-agent validate` to confirm the cadence being used.
+Consolidation is **auto-scheduled in-app** for the `bujo` tier: the agent-app scheduler
+runs `store.consolidate()` at the configured cron cadence (default `0 */2 * * *`, every
+two hours). No external cron or launchd setup is required. Run `mono-agent validate` to
+confirm whether automatic consolidation will run.
 
 Requires embeddings and a chat model for the LLM pipelines. The app-level chat model can
 be a direct Ollama model or an `agent-host` runtime model reference such as
@@ -102,7 +100,7 @@ be a direct Ollama model or an `agent-host` runtime model reference such as
 }
 ```
 
-### Bujo tier (embeddings + chat model + auto-rituals)
+### Bujo tier (embeddings + chat model + consolidation)
 
 ```jsonc
 {
@@ -122,15 +120,10 @@ be a direct Ollama model or an `agent-host` runtime model reference such as
       "model": "qwen3.6:latest",         // any local chat model; set MONO_AGENT_MEMORY_LLM_MODEL for CLI
       "endpoint": "http://localhost:11434"
     },
-    // Reflection and migration are auto-scheduled in-app for the bujo tier.
-    // Override the default cron expressions here if needed:
-    "reflection": {
+    // Lightweight consolidation is auto-scheduled in-app for the bujo tier.
+    "consolidation": {
       "enabled": true,
-      "cron": "0 3 * * *"              // nightly at 03:00 (default)
-    },
-    "migration": {
-      "enabled": true,
-      "cron": "0 4 1 * *"             // 1st of each month at 04:00 (default)
+      "cron": "0 */2 * * *"            // every two hours (default)
     }
   }
 }
@@ -209,43 +202,43 @@ ollama pull nomic-embed-text:v1.5
 ollama pull qwen3.6:latest   # or any local chat model you prefer
 ```
 
-Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the standalone CLI
-reflect/migrate commands manually. The standalone CLI remains Ollama-only. For the app
+Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the legacy standalone
+CLI `reflect`/`migrate` commands manually. The standalone CLI remains Ollama-only. For the app
 runtime, `memory.llm.provider: "agent-host"` may instead point at a SDK runtime model
 reference such as `pi:openai-codex:gpt-5.5`.
 
 ## Auto-Scheduler (bujo tier)
 
-When `memory.mode` is `"bujo"` the agent-app starts an **in-app ritual scheduler**
-alongside the other channels. It runs:
+When `memory.mode` is `"bujo"` and `memory.llm` is configured, the agent-app starts an
+**in-app consolidation scheduler** alongside the other channels. It runs
+`store.consolidate()` at the `memory.consolidation.cron` cadence (default `0 */2 * * *`,
+every two hours). Consolidation applies decay, deduplicates repeated bullets by
+superseding duplicates, rewrites the living `index.md`, and keeps `future-log.md` as a
+literal empty stub.
 
-- `reflect` at the `memory.reflection.cron` cadence (default `0 3 * * *` — nightly at
-  03:00). Decay + insight synthesis; never throws — failures are logged and the
-  scheduler carries on.
-- `migrate` at the `memory.migration.cron` cadence (default `0 4 1 * *` — 1st of each
-  month at 04:00). Promote/reschedule/cluster/forget; same error isolation.
-
-Overlap protection: a new run is skipped if the previous one is still in flight.
-The scheduler starts with the app and stops cleanly on shutdown.
+Overlap protection: a new run is skipped if the previous consolidation is still in
+flight. Failures are logged and the scheduler carries on. The scheduler starts with the
+app and stops cleanly on shutdown.
 
 `mono-agent validate` reports the configured cadence in the Memory section:
 
 ```
 [ok] memory.mode     bujo
-[ok] reflection      0 3 * * * (next: …)
-[ok] migration       0 4 1 * * (next: …)
+[ok] consolidation   0 */2 * * * (auto)
 ```
 
-To disable a ritual while keeping the tier, set `memory.reflection.enabled: false` or
-`memory.migration.enabled: false`. Env overrides: `MONO_AGENT_MEMORY_REFLECTION_CRON`,
-`MONO_AGENT_MEMORY_REFLECTION_ENABLED`, `MONO_AGENT_MEMORY_MIGRATION_CRON`,
-`MONO_AGENT_MEMORY_MIGRATION_ENABLED`.
+To disable scheduled consolidation while keeping the tier, set
+`memory.consolidation.enabled: false`. Env overrides:
+`MONO_AGENT_MEMORY_CONSOLIDATION_CRON` and `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED`.
+Retired `memory.reflection.*` / `memory.migration.*` keys and their env vars are tolerated
+but ignored; `mono-agent validate` reports a warning when it sees them.
 
 ## CLI Subcommands
 
 The `memory-bujo` binary provides out-of-band maintenance against a bujo root. It is
-available for all tiers (lite/journal/bujo) for manual runs — the auto-scheduler
-handles the routine cadence for `bujo` automatically.
+available for all tiers (lite/journal/bujo) for manual runs. Routine in-app maintenance
+uses lightweight consolidation; `reflect` and `migrate` remain as legacy/manual escape
+hatches for old stores or one-off experiments.
 
 ```bash
 # Rebuild the SQLite index from the markdown files on disk
@@ -257,10 +250,10 @@ memory-bujo recall <root> "<query>"
 # Write the living index.md (table of contents: counts, top memories, entities)
 memory-bujo index <root>
 
-# Reflection pass: decay + insight synthesis (requires MONO_AGENT_MEMORY_LLM_MODEL)
+# Legacy reflection pass: decay + insight synthesis (requires MONO_AGENT_MEMORY_LLM_MODEL)
 MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo reflect <root>
 
-# Monthly migration: promote/reschedule/cluster/forget (requires MONO_AGENT_MEMORY_LLM_MODEL)
+# Legacy migration: promote/reschedule/cluster/forget (requires MONO_AGENT_MEMORY_LLM_MODEL)
 MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
 ```
 
@@ -270,7 +263,7 @@ Embeddings are **opt-in**: set
 `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama`/`openai`) to enable semantic recall — without
 it, `recall`/`rebuild` run FTS-only and need no embedding service. When enabled, the model
 defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and dim to 768
-(`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). For `reflect`/`migrate`, the standalone CLI uses the
+(`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). For legacy `reflect`/`migrate`, the standalone CLI uses the
 built-in Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint
 for the chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL` is
 unset when running `reflect` or `migrate`, the command prints a clear error and exits 2.
@@ -304,7 +297,7 @@ with the configured tier:
 4. **Chat model pulled** — only when `memory.llm.provider` is `ollama`; probes the chat
    endpoint and checks the chat model against that endpoint's `/api/tags`. `agent-host`
    chat LLMs are not checked against Ollama.
-5. **Ritual cadence** — reports the reflection/migration cron expressions and whether
+5. **Consolidation cadence** — reports the consolidation cron expression and whether
    the scheduler will run (tier is bujo with an llm configured).
 
 Any failure emits a loud `[warn]` in the validate report's Memory section (status

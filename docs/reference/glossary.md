@@ -30,7 +30,7 @@ The automatic 256KB truncation of oversized tool output, with the full result pe
 
 ## BuJo
 
-The richest memory tier (`memory.mode: "bujo"`), modeled on the Bullet Journal method: everything in the journal tier plus LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP), an [entity graph](#entity-graph), reflection, monthly migration, and living `index.md` / `future-log.md` files. It needs an embeddings provider and a chat model. See [Capture and recall](/memory/capture-and-recall/).
+The richest memory tier (`memory.mode: "bujo"`), modeled on the Bullet Journal method: everything in the journal tier plus LLM capture/reconcile (ADD/UPDATE/SUPERSEDE/NOOP), an [entity graph](#entity-graph), scheduled lightweight consolidation, a living `index.md`, and a retired empty `future-log.md` stub. It needs an embeddings provider and a chat model. See [Capture and recall](/memory/capture-and-recall/).
 
 ## Channel driver
 
@@ -87,9 +87,9 @@ The deterministic single-line daily capture written by the host after a complete
 
 The top-level entry point that takes an inbound request and produces a reply, delegating to the harness for execution. It is what channels and cron call (`responder.respond`), and what you build programmatically with `createConfiguredAgentResponder`. See [Composition](/programmatic/composition/).
 
-## Ritual
+## Consolidation
 
-A scheduled BuJo maintenance pass run by the in-app scheduler (no external cron needed): **reflection** (nightly decay + insight synthesis, default `0 3 * * *`) and **migration** (monthly promote/reschedule/cluster/forget, default `0 4 1 * *`). Tune via `memory.reflection.*` / `memory.migration.*`. See [Rituals](/memory/rituals/).
+A scheduled BuJo maintenance pass run by the in-app scheduler (no external cron needed): salience decay, near-duplicate superseding, `index.md` refresh, and an empty retired `future-log.md` stub. Tune via `memory.consolidation.*`; the default cron is `0 */2 * * *`. See [Consolidation](/memory/rituals/).
 
 ## RRF
 
@@ -101,7 +101,7 @@ The backend-specific glue (e.g. the pi-native bridge) that translates harness op
 
 ## Salience
 
-The decay-weighted importance score the journal and BuJo tiers attach to memories, so older, less-reinforced items rank lower in recall and become candidates for forgetting during migration. See [Capture and recall](/memory/capture-and-recall/).
+The decay-weighted importance score the journal and BuJo tiers attach to memories, so older, less-reinforced items rank lower in recall. See [Capture and recall](/memory/capture-and-recall/).
 
 ## srt
 

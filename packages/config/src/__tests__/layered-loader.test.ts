@@ -405,7 +405,31 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MEMORY_LLM_ENDPOINT).toBeUndefined();
   });
 
-  it("translates JSON memory reflection and migration ritual blocks to env keys", () => {
+  it("translates JSON memory consolidation block to env keys", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        memory: {
+          mode: "bujo",
+          path: ".mono-agent/memory",
+          consolidation: { enabled: true, cron: "0 */2 * * *" },
+        },
+      },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED).toBe("true");
+    expect(layered.MONO_AGENT_MEMORY_CONSOLIDATION_CRON).toBe("0 */2 * * *");
+  });
+
+  it("omits consolidation env keys when consolidation block is absent in JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { memory: { mode: "bujo", path: ".mono-agent/memory" } },
+      {},
+    );
+    expect(layered.MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED).toBeUndefined();
+    expect(layered.MONO_AGENT_MEMORY_CONSOLIDATION_CRON).toBeUndefined();
+  });
+
+  it("does not translate removed JSON reflection and migration blocks to env keys", () => {
     const layered = layerJsonOntoEnv(
       {
         memory: {
@@ -415,17 +439,6 @@ describe("layerJsonOntoEnv", () => {
           migration: { enabled: false, cron: "0 4 1 * *" },
         },
       },
-      {},
-    );
-    expect(layered.MONO_AGENT_MEMORY_REFLECTION_ENABLED).toBe("true");
-    expect(layered.MONO_AGENT_MEMORY_REFLECTION_CRON).toBe("0 3 * * *");
-    expect(layered.MONO_AGENT_MEMORY_MIGRATION_ENABLED).toBe("false");
-    expect(layered.MONO_AGENT_MEMORY_MIGRATION_CRON).toBe("0 4 1 * *");
-  });
-
-  it("omits ritual env keys when ritual blocks are absent in JSON", () => {
-    const layered = layerJsonOntoEnv(
-      { memory: { mode: "bujo", path: ".mono-agent/memory" } },
       {},
     );
     expect(layered.MONO_AGENT_MEMORY_REFLECTION_ENABLED).toBeUndefined();
@@ -821,8 +834,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     expect(config.memory?.mode).toBe("lite");
     expect(config.memory?.embeddings).toBeUndefined();
     expect(config.memory?.llm).toBeUndefined();
-    expect(config.memory?.reflection).toBeUndefined();
-    expect(config.memory?.migration).toBeUndefined();
+    expect(config.memory?.consolidation).toBeUndefined();
   });
 
   it("loads journal mode from a JSON config file", async () => {
@@ -847,7 +859,7 @@ describe("loadMonoAgentConfigWithSources", () => {
     expect(config.memory?.llm).toBeUndefined();
   });
 
-  it("loads bujo mode with reflection and migration ritual blocks from a JSON config file", async () => {
+  it("loads bujo mode with consolidation block from a JSON config file", async () => {
     const path = join(dir, "config.json");
     await writeFile(
       path,
@@ -859,8 +871,7 @@ describe("loadMonoAgentConfigWithSources", () => {
           path: ".mono-agent/memory",
           embeddings: { provider: "ollama", model: "nomic-embed-text", dim: 768 },
           llm: { provider: "ollama", model: "qwen3:8b" },
-          reflection: { enabled: true, cron: "0 3 * * *" },
-          migration: { enabled: true, cron: "0 4 1 * *" },
+          consolidation: { enabled: true, cron: "0 */2 * * *" },
         },
       }),
       "utf8",
@@ -868,11 +879,10 @@ describe("loadMonoAgentConfigWithSources", () => {
 
     const config = await loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: path });
     expect(config.memory?.mode).toBe("bujo");
-    expect(config.memory?.reflection).toEqual({ enabled: true, cron: "0 3 * * *" });
-    expect(config.memory?.migration).toEqual({ enabled: true, cron: "0 4 1 * *" });
+    expect(config.memory?.consolidation).toEqual({ enabled: true, cron: "0 */2 * * *" });
   });
 
-  it("env ritual cron beats JSON ritual cron", async () => {
+  it("env consolidation cron beats JSON consolidation cron", async () => {
     const path = join(dir, "config.json");
     await writeFile(
       path,
@@ -882,18 +892,18 @@ describe("loadMonoAgentConfigWithSources", () => {
         memory: {
           mode: "bujo",
           path: ".mono-agent/memory",
-          reflection: { enabled: true, cron: "0 3 * * *" },
+          consolidation: { enabled: true, cron: "0 */2 * * *" },
         },
       }),
       "utf8",
     );
 
     const config = await loadMonoAgentConfigWithSources({
-      env: { MONO_AGENT_MEMORY_REFLECTION_CRON: "0 2 * * *" },
+      env: { MONO_AGENT_MEMORY_CONSOLIDATION_CRON: "0 */4 * * *" },
       cwd: dir,
       jsonPath: path,
     });
-    expect(config.memory?.reflection?.cron).toBe("0 2 * * *");
+    expect(config.memory?.consolidation?.cron).toBe("0 */4 * * *");
   });
 
   it("loads bujo mode with llm block from a JSON config file", async () => {

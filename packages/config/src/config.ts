@@ -29,7 +29,7 @@ import {
 import type { ConfigErrorFactory } from "@mono-agent/agent-contracts";
 
 import { EFFORT_LEVELS, PERMISSION_MODES } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemoryRitualConfig, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -485,6 +485,10 @@ const RETIRED_MEMORY_ENV_KEYS = [
   "MONO_AGENT_MEMORY_GRAPH_PATH",
   "MONO_AGENT_MEMORY_SCOPE",
   "MONO_AGENT_MEMORY_TOOLS_ENABLED",
+  "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
+  "MONO_AGENT_MEMORY_REFLECTION_CRON",
+  "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
+  "MONO_AGENT_MEMORY_MIGRATION_CRON",
 ] as const;
 
 function warnRetiredMemoryKeys(env: Record<string, string | undefined>): void {
@@ -512,7 +516,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   // and therefore does NOT require a path. For bujo, any memory env set without a path is a
   // misconfiguration — fail closed rather than silently ignoring it. Backend selection and the
   // supermemory block are routing concerns (not path-gated) and are excluded from this check. The
-  // retired _GRAPH_PATH/_SCOPE/_TOOLS_ENABLED keys stay tolerated (warned, not thrown) for pre-v2.
+  // retired memory keys stay tolerated (warned, not thrown) for stale configs.
   if (backend !== "supermemory" && rawPath === undefined) {
     const orphaned = [
       "MONO_AGENT_MEMORY_MODE",
@@ -533,10 +537,8 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       "MONO_AGENT_MEMORY_LLM_ENDPOINT",
       "MONO_AGENT_MEMORY_LLM_TIMEOUT_MS",
       "MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED",
-      "MONO_AGENT_MEMORY_REFLECTION_ENABLED",
-      "MONO_AGENT_MEMORY_REFLECTION_CRON",
-      "MONO_AGENT_MEMORY_MIGRATION_ENABLED",
-      "MONO_AGENT_MEMORY_MIGRATION_CRON",
+      "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED",
+      "MONO_AGENT_MEMORY_CONSOLIDATION_CRON",
     ].find((name) => normalizeOptionalString(env[name]) !== undefined);
     if (orphaned !== undefined) {
       throw new MonoAgentConfigError("invalid_env", `${orphaned} requires MONO_AGENT_MEMORY_PATH (or memory.path) to be set.`, {
@@ -573,7 +575,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
       { env: "MONO_AGENT_MEMORY_WRITE_MODE" },
     );
   }
-  // embeddings / llm / dim / rituals are BuJo-only and ignored by external backends. Skip parsing
+  // embeddings / llm / dim / consolidation are BuJo-only and ignored by external backends. Skip parsing
   // them for supermemory so a stale BuJo env (e.g. an openai embeddings provider with no key) does
   // not throw and block switching an existing BuJo config over to Supermemory.
   const isBujo = backend === "bujo";
@@ -582,8 +584,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
   const dim = isBujo
     ? readOptionalInteger(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM, "MONO_AGENT_MEMORY_EMBEDDINGS_DIM", { min: 1, max: 16_384 })
     : undefined;
-  const reflection = isBujo ? readMemoryRitualConfig(env, "REFLECTION") : undefined;
-  const migration = isBujo ? readMemoryRitualConfig(env, "MIGRATION") : undefined;
+  const consolidation = isBujo ? readMemoryConsolidationConfig(env) : undefined;
 
   const embeddingsWithDim =
     embeddings === undefined
@@ -617,8 +618,7 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     ...(embeddingsWithDim === undefined ? {} : { embeddings: embeddingsWithDim }),
     ...(llm === undefined ? {} : { llm }),
     recallTool: { enabled: recallToolEnabled },
-    ...(reflection === undefined ? {} : { reflection }),
-    ...(migration === undefined ? {} : { migration }),
+    ...(consolidation === undefined ? {} : { consolidation }),
   };
 }
 
@@ -863,18 +863,14 @@ function readMemoryLlmExecutionMode(
 }
 
 /**
- * Reads an optional ritual config block (reflection or migration) from env.
- * Returns undefined when neither `_ENABLED` nor `_CRON` is present — the
- * object is only added to memory config when the user explicitly configures it.
- *
- * @param suffix - uppercase discriminator: "REFLECTION" or "MIGRATION"
+ * Reads the optional consolidation config from env. Cron syntax is scheduler-validated,
+ * not config-load validated, so operators get a runtime warning without blocking config load.
  */
-function readMemoryRitualConfig(
+function readMemoryConsolidationConfig(
   env: Record<string, string | undefined>,
-  suffix: "REFLECTION" | "MIGRATION",
-): MemoryRitualConfig | undefined {
-  const enabledKey = `MONO_AGENT_MEMORY_${suffix}_ENABLED`;
-  const cronKey = `MONO_AGENT_MEMORY_${suffix}_CRON`;
+): MemoryConsolidationConfig | undefined {
+  const enabledKey = "MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED";
+  const cronKey = "MONO_AGENT_MEMORY_CONSOLIDATION_CRON";
   const hasEnabled = normalizeOptionalString(env[enabledKey]) !== undefined;
   const hasCron = normalizeOptionalString(env[cronKey]) !== undefined;
   if (!hasEnabled && !hasCron) {
