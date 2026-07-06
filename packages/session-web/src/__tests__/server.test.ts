@@ -3,9 +3,11 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { RUNS_HEALTH_STALE_RUNNING_MS } from "@mono-agent/observability";
+
 import { startSessionWebServer } from "../server.js";
 import type { SessionWebServerHandle } from "../server.js";
-import { makeTmpDir, readSseFrames, registerSource, removeDir, seedRun } from "./helpers.js";
+import { makeTmpDir, readSseFrames, registerSource, removeDir, seedRun, seedRunningRun } from "./helpers.js";
 
 const tmpDirs: string[] = [];
 let server: SessionWebServerHandle | undefined;
@@ -61,9 +63,14 @@ describe("startSessionWebServer", () => {
     expect(instances.instances[0]?.counts.runs).toBe(1);
 
     const all = (await (await fetch(`${server.url}api/sessions`)).json()) as {
+      total: number;
+      offset: number;
+      limit: number;
+      hasMore: boolean;
       sessions: { id: string; finalText: string; steps: unknown[]; totals: { steps: number } }[];
     };
     expect(all.sessions.map((session) => session.id)).toContain("run-http-1");
+    expect(all).toMatchObject({ total: 1, offset: 0, limit: 1, hasMore: false });
     const listed = all.sessions.find((session) => session.id === "run-http-1");
     expect(listed?.finalText).toBe("");
     expect((listed as { instr?: string } | undefined)?.instr).toBe("");
@@ -85,6 +92,109 @@ describe("startSessionWebServer", () => {
 
     const missing = await fetch(`${server.url}api/sessions/${fix.sourceId}/nope`);
     expect(missing.status).toBe(404);
+  });
+
+  it("serves instance timezone metadata from the discovered config", async () => {
+    const registryDir = await tmp("reg");
+    const agentDir = await tmp("agent");
+    const artifactDir = join(agentDir, "runs");
+    const configPath = join(agentDir, "mono-agent.config.json");
+    const staticDir = await tmp("static");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>session-web</title><div id=app></div>", "utf8");
+    await writeFile(configPath, JSON.stringify({ runtime: { session: { rolloverTimezone: "Europe/Amsterdam" } } }), "utf8");
+    await registerSource({ registryDir, sourceId: "tz-agent", label: "TZ Agent", artifactDir, configPath });
+
+    server = await startSessionWebServer({ registryDirs: [registryDir], port: 0, staticDir });
+
+    const instances = (await (await fetch(`${server.url}api/instances`)).json()) as {
+      instances: { sourceId: string; timeZone?: string; timezone?: string }[];
+    };
+    expect(instances.instances).toEqual([
+      expect.objectContaining({ sourceId: "tz-agent", timeZone: "Europe/Amsterdam", timezone: "Europe/Amsterdam" }),
+    ]);
+  });
+
+  it("reports stale running sessions as stalled without rewriting artifacts", async () => {
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    const staticDir = await tmp("static");
+    const now = 1_700_100_000_000;
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>session-web</title><div id=app></div>", "utf8");
+    await seedRunningRun({
+      artifactDir,
+      runId: "run-stale-running",
+      conversationId: "chat:stale",
+      text: "stale answer",
+      source: "chat",
+      at: now - RUNS_HEALTH_STALE_RUNNING_MS - 1,
+    });
+    await registerSource({ registryDir, sourceId: "http-agent", label: "HTTP Agent", artifactDir });
+
+    server = await startSessionWebServer({ registryDirs: [registryDir], port: 0, staticDir, clock: () => now });
+
+    const listed = (await (await fetch(`${server.url}api/sessions`)).json()) as {
+      sessions: { id: string; status: string; steps: unknown[] }[];
+    };
+    expect(listed.sessions).toMatchObject([{ id: "run-stale-running", status: "stalled", steps: [] }]);
+
+    const detail = (await (await fetch(`${server.url}api/sessions/http-agent/run-stale-running`)).json()) as {
+      session: { id: string; status: string; finalText: string };
+    };
+    expect(detail.session).toMatchObject({ id: "run-stale-running", status: "stalled", finalText: "stale answer" });
+
+    const frames = await readSseFrames(`${server.url}api/stream`, 2) as (
+      | { t: "instances" }
+      | { t: "session_upsert"; session: { id: string; status: string; steps: unknown[] } }
+    )[];
+    expect(frames[1]?.t === "session_upsert" ? frames[1].session : undefined).toMatchObject({
+      id: "run-stale-running",
+      status: "stalled",
+      steps: [],
+    });
+  });
+
+  it("pages older disk history beyond the retained cache", async () => {
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    const staticDir = await tmp("static");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>session-web</title><div id=app></div>", "utf8");
+    for (let idx = 0; idx < 5; idx += 1) {
+      await seedRun({
+        artifactDir,
+        runId: `run-${idx}`,
+        conversationId: `chat:${idx}`,
+        text: `answer ${idx}`,
+        source: "chat",
+        at: 1_700_000_000_000 + idx,
+      });
+    }
+    await registerSource({ registryDir, sourceId: "http-agent", label: "HTTP Agent", artifactDir });
+
+    server = await startSessionWebServer({
+      registryDirs: [registryDir],
+      port: 0,
+      staticDir,
+      maxRunsPerInstance: 2,
+    });
+
+    const retained = (await (await fetch(`${server.url}api/sessions`)).json()) as {
+      sessions: { id: string }[];
+    };
+    expect(retained.sessions.map((session) => session.id)).toEqual(["run-4", "run-3"]);
+
+    const page = (await (await fetch(`${server.url}api/sessions?offset=3&limit=2`)).json()) as {
+      total: number;
+      offset: number;
+      limit: number;
+      hasMore: boolean;
+      sessions: { id: string; steps: unknown[]; finalText: string }[];
+    };
+    expect(page).toMatchObject({ total: 5, offset: 3, limit: 2, hasMore: false });
+    expect(page.sessions.map((session) => session.id)).toEqual(["run-1", "run-0"]);
+    expect(page.sessions.every((session) => session.finalText === "" && session.steps.length === 0)).toBe(true);
   });
 
   it("excludes memory runs from the API by default and includes them with includeMemory", async () => {

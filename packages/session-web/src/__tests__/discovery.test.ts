@@ -88,6 +88,46 @@ describe("discoverWebInstances", () => {
     expect(discovered[0]?.liveBaseUrl).toBeUndefined();
   });
 
+  it("exposes instance timezone from trace metadata or config without failing discovery", async () => {
+    const registryDir = await tmp("reg");
+    const metadataAgentDir = await tmp("agent-meta");
+    const configAgentDir = await tmp("agent-config");
+    const badConfigAgentDir = await tmp("agent-bad-config");
+    const configPath = join(configAgentDir, "mono-agent.config.json");
+    const badConfigPath = join(badConfigAgentDir, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify({ runtime: { session: { rolloverTimezone: "Europe/Amsterdam" } } }), "utf8");
+    await writeFile(badConfigPath, "{not-json", "utf8");
+    await registerSource({
+      registryDir,
+      sourceId: "agent-meta",
+      label: "Agent Meta",
+      artifactDir: join(metadataAgentDir, "runs"),
+      configPath: join(metadataAgentDir, "mono-agent.config.json"),
+      metadata: { runtime: { session: { rolloverTimezone: "America/New_York" } } },
+    });
+    await registerSource({
+      registryDir,
+      sourceId: "agent-config",
+      label: "Agent Config",
+      artifactDir: join(configAgentDir, "runs"),
+      configPath,
+    });
+    await registerSource({
+      registryDir,
+      sourceId: "agent-bad-config",
+      label: "Agent Bad Config",
+      artifactDir: join(badConfigAgentDir, "runs"),
+      configPath: badConfigPath,
+    });
+
+    const discovered = await discoverWebInstances({ registryDirs: [registryDir] });
+    const byId = new Map(discovered.map((item) => [item.instance.sourceId, item.instance]));
+
+    expect(byId.get("agent-meta")).toMatchObject({ timeZone: "America/New_York", timezone: "America/New_York" });
+    expect(byId.get("agent-config")).toMatchObject({ timeZone: "Europe/Amsterdam", timezone: "Europe/Amsterdam" });
+    expect(byId.get("agent-bad-config")?.timeZone).toBeUndefined();
+  });
+
   it("uses env when resolving the default registry dir", async () => {
     const registryDir = await tmp("env-reg");
     const agentDir = await tmp("agent");

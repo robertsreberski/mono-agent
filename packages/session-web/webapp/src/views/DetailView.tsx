@@ -52,6 +52,16 @@ type StepVM =
       reason?: string;
     }
   | {
+      kind: "runtime";
+      key: string;
+      color: string;
+      glow: string;
+      timeStr: string;
+      dt: string;
+      label: string;
+      meta: string;
+    }
+  | {
       kind: "assistant";
       key: string;
       color: string;
@@ -102,8 +112,32 @@ export function boundaryStepMeta(step: Extract<SessionStep, { k: "boundary" }>):
   return parts.join(" | ");
 }
 
+export function runtimeStepLabel(step: Extract<SessionStep, { k: "runtime" }>): string {
+  if (step.type === "runtime_warning") return step.kind ?? "Runtime warning";
+  if (step.type === "provider_status") return step.kind.replace(/_/gu, " ");
+  return step.kind.replace(/_/gu, " ");
+}
+
+export function runtimeStepMeta(step: Extract<SessionStep, { k: "runtime" }>): string {
+  if (step.type === "runtime_warning") {
+    return step.message;
+  }
+  if (step.type === "provider_status") {
+    const parts = [
+      step.model === undefined ? undefined : `model ${step.model}`,
+      step.from === undefined ? undefined : `from ${step.from}`,
+      step.to === undefined ? undefined : `to ${step.to}`,
+      step.attemptIndex === undefined ? undefined : `attempt ${step.attemptIndex}`,
+      step.durationMs === undefined ? undefined : fmtDur(step.durationMs),
+      step.cancelled === true ? "cancelled" : undefined,
+    ].filter((part): part is string => part !== undefined && part.length > 0);
+    return parts.join(" | ");
+  }
+  return step.type;
+}
+
 export function DetailView({ id, onBack }: Props) {
-  const { sessions, detailStatus, retryDetail } = useRecorder();
+  const { sessions, instances, detailStatus, retryDetail } = useRecorder();
   const isMobile = useIsMobile();
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [showRecall, setShowRecall] = useState(false);
@@ -114,6 +148,7 @@ export function DetailView({ id, onBack }: Props) {
     if (!s) return null;
     const t = s.totals;
     const ch = channelOf(s);
+    const zone = instances.find((instance) => instance.sourceId === (s.sourceId ?? s.instance))?.timeZone;
     const col = channelColor(ch);
     const isChat = ch === "chat";
     const oi = outcomeInfo(s);
@@ -193,7 +228,7 @@ export function DetailView({ id, onBack }: Props) {
           key: "s" + i,
           color,
           glow: hexA(color, 0.5),
-          timeStr: timeStr(x.ts),
+          timeStr: timeStr(x.ts, zone),
           text: pt + (x.tr ? "\n…" : ""),
         });
       } else if (x.k === "boundary") {
@@ -202,11 +237,22 @@ export function DetailView({ id, onBack }: Props) {
           key: "s" + i,
           color,
           glow: hexA(color, 0.5),
-          timeStr: timeStr(x.ts),
+          timeStr: timeStr(x.ts, zone),
           dt,
           label: boundaryStepLabel(x.kind),
           meta: boundaryStepMeta(x),
           ...(x.reason === undefined ? {} : { reason: x.reason }),
+        });
+      } else if (x.k === "runtime") {
+        steps.push({
+          kind: "runtime",
+          key: "s" + i,
+          color,
+          glow: hexA(color, 0.5),
+          timeStr: timeStr(x.ts, zone),
+          dt,
+          label: runtimeStepLabel(x),
+          meta: runtimeStepMeta(x),
         });
       } else if (x.k === "assistant") {
         const thinkText = (x.think || []).map((tk) => tk.t + (tk.tr ? "…" : "")).join("\n\n");
@@ -238,7 +284,7 @@ export function DetailView({ id, onBack }: Props) {
           key: "s" + i,
           color,
           glow: hexA(color, 0.5),
-          timeStr: timeStr(x.ts),
+          timeStr: timeStr(x.ts, zone),
           dt,
           hasThink: !!thinkText,
           thinkText,
@@ -256,7 +302,7 @@ export function DetailView({ id, onBack }: Props) {
         steps.push(vm);
       }
     });
-    // The final answer is shown once, in "Delivered output" — hide it from the
+    // The final answer is shown once, in "Agent output" — hide it from the
     // timeline by clearing the last assistant turn that carries text, whenever
     // there is a non-empty finalText being shown there (finalText IS that last
     // assistant text, so this de-dups). Empty-finalText runs (memory/tui) keep
@@ -282,6 +328,7 @@ export function DetailView({ id, onBack }: Props) {
       toolBars,
       toolEntries,
       steps,
+      zone,
       tokTot: rawTokTot,
       tbInput: Math.round((t.tokIn / tokTot) * 100),
       tbOutput: Math.round((t.tokOut / tokTot) * 100),
@@ -290,7 +337,7 @@ export function DetailView({ id, onBack }: Props) {
     // note: `open`/`showRecall` are read at render time, not memo deps.
     // keyed on `s` alone so an SSE upsert to any *other* session doesn't
     // rebuild this run's timeline.
-  }, [s]);
+  }, [s, instances]);
 
   if (!s || !d) {
     return (
@@ -306,13 +353,17 @@ export function DetailView({ id, onBack }: Props) {
   const { isChat, outcome, eff, vitals, toolBars, toolEntries, steps } = d;
   const t = s.totals;
   const terminalStatus = ["failed", "cancelled", "interrupted"].includes(s.status);
+  const failureDetails = [
+    s.failureKind === undefined ? undefined : `kind ${s.failureKind}`,
+    s.error,
+  ].filter((part): part is string => part !== undefined && part.trim().length > 0);
   const emptyTimelineMessage = timelineEmptyMessage(s.status, steps.length);
   const detail = detailStatus[id];
   const outputSubtitle = outcome.running
     ? "Running · streaming live"
     : terminalStatus
       ? `${outcome.label.toLowerCase()} · ${channelLabel(channelOf(s))}`
-      : `${channelLabel(channelOf(s))} · delivered`;
+      : `${channelLabel(channelOf(s))} · replied`;
 
   return (
     <div style={{ maxWidth: 920, margin: "0 auto", padding: "0 0 calc(48px + env(safe-area-inset-bottom))" }}>
@@ -344,7 +395,7 @@ export function DetailView({ id, onBack }: Props) {
               {s.title}
             </div>
             <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: DIM }}>
-              {s.instance} · {dow(s.startTs)} {dateStr(s.startTs)} · {timeStr(s.startTs)}
+              {s.instance} · {dow(s.startTs, d.zone)} {dateStr(s.startTs, d.zone)} · {timeStr(s.startTs, d.zone)}
             </div>
           </div>
           {(!isChat || outcome.running || terminalStatus) && (
@@ -467,6 +518,34 @@ export function DetailView({ id, onBack }: Props) {
             <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: DIM }}>{eff.detail}</span>
           </div>
         </div>
+
+        {terminalStatus && (failureDetails.length > 0 || (s.failoverHistory?.length ?? 0) > 0) && (
+          <div style={{ marginTop: 16, background: "rgba(224,104,91,.07)", border: "1px solid rgba(224,104,91,.24)", borderRadius: 13, padding: "14px 16px" }}>
+            <div style={{ ...secLabel("#E0988F"), marginBottom: 9 }}>▼ Failure detail</div>
+            {failureDetails.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {failureDetails.map((detailLine, index) => (
+                  <div key={index} style={{ fontFamily: FONT_MONO, fontSize: 12, lineHeight: 1.5, color: "#E7B0A9", overflowWrap: "anywhere" }}>
+                    {detailLine}
+                  </div>
+                ))}
+              </div>
+            )}
+            {(s.failoverHistory?.length ?? 0) > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: failureDetails.length > 0 ? 11 : 0 }}>
+                {s.failoverHistory?.map((attempt, index) => (
+                  <div key={`${attempt.model ?? "model"}-${index}`} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontFamily: FONT_MONO, fontSize: 11, color: "#D9A49D" }}>
+                    <span style={{ color: "#F0988F" }}>#{index + 1}</span>
+                    <span style={{ overflowWrap: "anywhere" }}>{attempt.model ?? "unknown model"}</span>
+                    {attempt.failureKind !== undefined && <span style={{ color: DIM }}>{attempt.failureKind}</span>}
+                    {attempt.subkind !== undefined && <span style={{ color: DIM }}>{attempt.subkind}</span>}
+                    {attempt.requestId !== undefined && <span style={{ color: DIM }}>request {attempt.requestId}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* vitals */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(104px,1fr))", gap: 10 }}>
@@ -645,6 +724,21 @@ export function DetailView({ id, onBack }: Props) {
                       <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.45, color: DIM, overflowWrap: "anywhere" }}>{st.reason}</div>
                     )}
                   </div>
+                ) : st.kind === "runtime" ? (
+                  <div style={{ background: "rgba(232,162,74,.045)", border: "1px solid rgba(232,162,74,.16)", borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: AMBER, fontWeight: 600 }}>
+                        Runtime
+                      </span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIMMER, whiteSpace: "nowrap" }}>
+                        {st.dt ? st.dt + " · " : ""}{st.timeStr}
+                      </span>
+                    </div>
+                    <div style={{ marginTop: 7, color: "#E0C28D", fontSize: 13, lineHeight: 1.45, overflowWrap: "anywhere" }}>{st.label}</div>
+                    {st.meta.length > 0 && (
+                      <div style={{ marginTop: 5, fontFamily: FONT_MONO, fontSize: 11, lineHeight: 1.45, color: "#A99570", overflowWrap: "anywhere" }}>{st.meta}</div>
+                    )}
+                  </div>
                 ) : (
                   <div style={{ background: "linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012))", border: "1px solid rgba(255,255,255,.09)", borderRadius: 12, padding: "14px 16px" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -811,9 +905,9 @@ export function DetailView({ id, onBack }: Props) {
           </div>
         </div>
 
-        {/* delivered output */}
+        {/* agent output */}
         <div style={{ marginTop: 26 }}>
-          <div style={{ ...secLabel(AMBER), marginBottom: 11 }}>▼ Delivered output</div>
+          <div style={{ ...secLabel(AMBER), marginBottom: 11 }}>▼ Agent output</div>
           {outcome.silent ? (
             <div style={{ background: "rgba(255,255,255,.02)", border: "1px dashed rgba(255,255,255,.14)", borderRadius: 13, padding: 20, textAlign: "center" }}>
               <div style={{ fontFamily: FONT_MONO, fontSize: 14, color: "#8b8d94", letterSpacing: ".05em" }}>NOTHING_TO_REPORT</div>

@@ -76,6 +76,9 @@ export {
   describeRunFailureKind,
   KNOWN_RUN_FAILURE_KINDS,
 } from "./failure-kinds.js";
+export {
+  RUNS_HEALTH_STALE_RUNNING_MS,
+} from "./run-health.js";
 export type {
   DescribeRunFailureKindInput,
   KnownRunFailureKindDescription,

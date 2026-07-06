@@ -63,7 +63,7 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
     sessionsBySource.set(sourceId, arr);
   }
 
-  const instanceRecords = instances.length > 0
+  const instanceRecords: readonly WebInstance[] = instances.length > 0
     ? instances
     : [...sessionsBySource.entries()].map(([sourceId, arr]) => ({
         sourceId,
@@ -119,7 +119,7 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
           const info = statusInfo(status);
           return { label: info.label, n, color: info.color };
         });
-      const lastLabel = last === undefined ? "no runs" : dateStr(last) + " · " + timeStr(last);
+      const lastLabel = last === undefined ? "no runs" : dateStr(last, instance.timeZone) + " · " + timeStr(last, instance.timeZone);
       const stats = [
         { label: "Cost", value: fmtCost(cost), color: AMBER },
         { label: "Tokens", value: fmtTok(tok), color: BLUE },
@@ -143,7 +143,7 @@ export function buildInstanceCards(instances: readonly WebInstance[], sessions: 
         noti,
         sil,
         last: lastLabel,
-        ariaSummary: `${instance.label}: ${arr.length} runs, ${health.label}. ${stats.map((s) => `${s.label} ${s.value}`).join(", ")}. ${channelSummary}. ${statusSummary}. ${noti} notified, ${sil} silent. Last ${lastLabel}.`,
+        ariaSummary: `${instance.label}: ${arr.length} runs, ${health.label}. ${stats.map((s) => `${s.label} ${s.value}`).join(", ")}. ${channelSummary}. ${statusSummary}. ${noti} replied, ${sil} silent. Last ${lastLabel}.`,
       };
     });
 }
@@ -292,7 +292,7 @@ export function InstancesView({ instances, sessions, onOpenInstance }: Props) {
                   </span>
                 ))}
                 <span style={{ whiteSpace: "nowrap" }}>
-                  <span style={{ color: AMBER }}>{ic.noti}</span> notified · <span style={{ color: "#8b8d94" }}>{ic.sil}</span> silent
+                  <span style={{ color: AMBER }}>{ic.noti}</span> replied · <span style={{ color: "#8b8d94" }}>{ic.sil}</span> silent
                 </span>
               </span>
               <span style={{ color: DIM, whiteSpace: "nowrap" }}>last {ic.last}</span>

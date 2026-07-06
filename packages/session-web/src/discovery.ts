@@ -65,20 +65,22 @@ export async function discoverWebInstances(
       }),
     ),
   );
-  return mergeTraceSources(...results.map((result) => result.sources))
+  return Promise.all(mergeTraceSources(...results.map((result) => result.sources))
     .filter((source) => source.health !== "stopped")
-    .map((source) => toDiscoveredInstance(source));
+    .map((source) => toDiscoveredInstance(source)));
 }
 
-function toDiscoveredInstance(source: TraceSourceListItem): DiscoveredWebInstance {
+async function toDiscoveredInstance(source: TraceSourceListItem): Promise<DiscoveredWebInstance> {
   const liveBaseUrl = liveBaseUrlFromMetadata(source.metadata);
   const cwd = source.configPath !== undefined ? dirname(source.configPath) : dirname(source.artifactDir);
+  const timeZone = timezoneFromMetadata(source.metadata) ?? await timezoneFromConfig(source.configPath);
   const instance: WebInstance = {
     sourceId: source.sourceId,
     label: source.label,
     cwd,
     artifactDir: source.artifactDir,
     health: source.health,
+    ...(timeZone === undefined ? {} : { timeZone, timezone: timeZone }),
     liveConnected: false,
     counts: { runs: 0 },
   };
@@ -87,6 +89,30 @@ function toDiscoveredInstance(source: TraceSourceListItem): DiscoveredWebInstanc
     source,
     ...(liveBaseUrl === undefined ? {} : { liveBaseUrl }),
   };
+}
+
+function timezoneFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {
+  const direct = stringField(metadata?.timeZone) ?? stringField(metadata?.timezone);
+  if (direct !== undefined) {
+    return direct;
+  }
+  const runtime = recordField(metadata?.runtime);
+  const session = recordField(runtime?.session);
+  return stringField(session?.rolloverTimezone) ?? stringField(session?.timeZone) ?? stringField(session?.timezone);
+}
+
+async function timezoneFromConfig(configPath: string | undefined): Promise<string | undefined> {
+  if (configPath === undefined) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(await readFile(configPath, "utf8")) as unknown;
+    const runtime = recordField(recordField(parsed)?.runtime);
+    const session = recordField(runtime?.session);
+    return stringField(session?.rolloverTimezone);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -155,6 +181,15 @@ function isTrustedLiveBaseUrl(baseUrl: string): boolean {
   } catch {
     return false;
   }
+}
+
+function recordField(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function stringField(value: unknown): string | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /** Resolve + dedupe the requested registry list; empties fall back to the machine-wide default. */

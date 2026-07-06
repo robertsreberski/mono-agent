@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Session, WebInstance } from "./types";
-import { ApiError, fetchInstances, fetchSessions, fetchSessionDetail, openStream } from "./api";
+import { ApiError, fetchInstances, fetchSessionDetail, fetchSessionPage, openStream } from "./api";
 import { FIXTURE_INSTANCES, FIXTURE_SESSIONS } from "./fixture";
 
 export type ConnStatus = "loading" | "live" | "reconnecting" | "fixture" | "error";
@@ -30,7 +30,15 @@ export interface RecorderStore {
   sessions: Session[];
   status: ConnStatus;
   error?: string;
+  canLoadOlder: boolean;
+  loadingOlder: boolean;
+  historyError?: string;
+  canLoadOlderFor: (instance: string) => boolean;
+  loadingOlderFor: (instance: string) => boolean;
+  historyErrorFor: (instance: string) => string | undefined;
   detailStatus: Record<string, DetailStatus>;
+  /** Load the next page of older history beyond the current backend snapshot. */
+  loadOlder: (instance?: string) => void;
   /** Trigger a lazy detail fetch for a run if its steps aren't loaded yet. */
   ensureDetail: (key: string) => void;
   /** Retry a failed detail fetch for a run. */
@@ -41,7 +49,17 @@ export interface RecorderStore {
 
 const RecorderContext = createContext<RecorderStore | null>(null);
 
+const HISTORY_PAGE_SIZE = 200;
+
 const byNewest = (a: Session, b: Session) => +new Date(b.startTs) - +new Date(a.startTs);
+
+interface HistoryPageState {
+  readonly offset: number;
+  readonly hasMore: boolean;
+  readonly loading: boolean;
+  readonly total?: number;
+  readonly error?: string;
+}
 
 export type SessionStoreOp =
   | { readonly type: "upsert"; readonly session: Session }
@@ -126,11 +144,89 @@ function resolveSourceId(session: Session, instances: WebInstance[]): string {
   return match?.sourceId || session.instance;
 }
 
+function historyKey(instance: string | undefined): string {
+  const trimmed = instance?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? "all" : trimmed;
+}
+
+function sessionSourceId(session: Session): string {
+  return session.sourceId ?? session.instance;
+}
+
+function loadedSessionCount(sessions: readonly Session[], instance: string): number {
+  const key = historyKey(instance);
+  if (key === "all") {
+    return sessions.length;
+  }
+  return sessions.filter((session) => sessionSourceId(session) === key).length;
+}
+
+export function seedHistoryPageStates(
+  instances: readonly WebInstance[],
+  sessions: readonly Session[],
+  page: { readonly offset: number; readonly hasMore: boolean; readonly total?: number },
+): Record<string, HistoryPageState> {
+  const allTotal = page.total;
+  const allLoaded = page.offset + sessions.length;
+  const states: Record<string, HistoryPageState> = {
+    all: {
+      offset: allLoaded,
+      hasMore: allTotal === undefined ? page.hasMore : allLoaded < allTotal,
+      loading: false,
+      ...(allTotal === undefined ? {} : { total: allTotal }),
+    },
+  };
+  const counts = new Map<string, number>();
+  for (const session of sessions) {
+    const sourceId = sessionSourceId(session);
+    counts.set(sourceId, (counts.get(sourceId) ?? 0) + 1);
+  }
+  for (const instance of instances) {
+    const offset = counts.get(instance.sourceId) ?? 0;
+    const total = page.hasMore ? undefined : offset;
+    states[instance.sourceId] = {
+      offset,
+      hasMore: total === undefined ? page.hasMore : offset < total,
+      loading: false,
+      ...(total === undefined ? {} : { total }),
+    };
+  }
+  return states;
+}
+
+export function historyStateFor(
+  states: Readonly<Record<string, HistoryPageState>>,
+  instance: string,
+  status: ConnStatus,
+  sessions: readonly Session[] = [],
+): HistoryPageState {
+  const key = historyKey(instance);
+  if (status !== "live" && status !== "reconnecting") {
+    return { offset: 0, hasMore: false, loading: false };
+  }
+  const known = states[key];
+  if (known !== undefined) {
+    const loadedOffset = loadedSessionCount(sessions, key);
+    const offset = Math.max(known.offset, loadedOffset);
+    return {
+      ...known,
+      offset,
+      hasMore: known.total === undefined ? known.hasMore : offset < known.total,
+    };
+  }
+  const all = states.all;
+  if (key === "all") {
+    return all ?? { offset: 0, hasMore: false, loading: false };
+  }
+  return { offset: loadedSessionCount(sessions, key), hasMore: all?.hasMore ?? true, loading: false };
+}
+
 export function RecorderProvider({ children }: { children: ReactNode }): ReactElement {
   const [instances, setInstances] = useState<WebInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [status, setStatus] = useState<ConnStatus>("loading");
   const [error, setError] = useState<string | undefined>(undefined);
+  const [historyStates, setHistoryStates] = useState<Record<string, HistoryPageState>>({});
   const [detailStatus, setDetailStatus] = useState<Record<string, DetailStatus>>({});
   const [reloadToken, setReloadToken] = useState(0);
 
@@ -141,6 +237,8 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   const sessionsRef = useRef<Session[]>([]);
   sessionsRef.current = sessions;
   const inflight = useRef<Set<string>>(new Set());
+  const historyStatesRef = useRef<Record<string, HistoryPageState>>({});
+  historyStatesRef.current = historyStates;
   // Runs we've already fired a detail fetch for (attempted), so a legitimately
   // zero-step run isn't re-fetched on every open.
   const loadedDetail = useRef<Set<string>>(new Set());
@@ -210,10 +308,12 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
       try {
         setStatus("loading");
         setError(undefined);
-        const [ins, ses] = await Promise.all([fetchInstances(), fetchSessions("all", 2000)]);
+        setHistoryStates({});
+        const [ins, page] = await Promise.all([fetchInstances(), fetchSessionPage("all", { limit: HISTORY_PAGE_SIZE })]);
         if (disposed) return;
         setInstances(ins);
-        setSessions([...ses].sort(byNewest));
+        setSessions([...page.sessions].sort(byNewest));
+        setHistoryStates(seedHistoryPageStates(ins, page.sessions, page));
         setStatus("reconnecting");
 
         closeStream = openStream({
@@ -235,6 +335,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
         if (!shouldUseFixtureFallback(error_)) {
           setInstances([]);
           setSessions([]);
+          setHistoryStates({});
           setStatus("error");
           setError(error_ instanceof Error ? error_.message : String(error_));
           return;
@@ -242,6 +343,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
         // No backend — develop/verify against the bundled fixture.
         setInstances(FIXTURE_INSTANCES);
         setSessions([...FIXTURE_SESSIONS].sort(byNewest));
+        setHistoryStates({});
         setStatus("fixture");
         setError(undefined);
       }
@@ -296,6 +398,48 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
     [queueUpsert],
   );
 
+  const loadOlder = useCallback((instance?: string) => {
+    if (statusRef.current !== "live" && statusRef.current !== "reconnecting") return;
+    const key = historyKey(instance);
+    const current = historyStateFor(historyStatesRef.current, key, statusRef.current, sessionsRef.current);
+    if (current.loading || !current.hasMore) return;
+
+    setHistoryStates((prev) => ({
+      ...prev,
+      [key]: { ...historyStateFor(prev, key, statusRef.current, sessionsRef.current), loading: true, error: undefined },
+    }));
+
+    fetchSessionPage(key, { limit: HISTORY_PAGE_SIZE, offset: current.offset })
+      .then((page) => {
+        setSessions((prev) =>
+          applySessionOps(prev, page.sessions.map((session): SessionStoreOp => ({ type: "upsert", session }))),
+        );
+        setHistoryStates((prev) => {
+          const previous = historyStateFor(prev, key, statusRef.current, sessionsRef.current);
+          const offset = Math.max(previous.offset, page.offset + page.sessions.length);
+          return {
+            ...prev,
+            [key]: {
+              offset,
+              hasMore: page.hasMore,
+              loading: false,
+              ...(page.total === undefined ? (previous.total === undefined ? {} : { total: previous.total }) : { total: page.total }),
+            },
+          };
+        });
+      })
+      .catch((error_) => {
+        setHistoryStates((prev) => ({
+          ...prev,
+          [key]: {
+            ...historyStateFor(prev, key, statusRef.current, sessionsRef.current),
+            loading: false,
+            error: error_ instanceof Error ? error_.message : String(error_),
+          },
+        }));
+      });
+  }, []);
+
   const ensureDetail = useCallback((key: string) => loadDetail(key, false), [loadDetail]);
   const retryDetail = useCallback((key: string) => {
     loadedDetail.current.delete(key);
@@ -305,7 +449,37 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
     setReloadToken((n) => n + 1);
   }, []);
 
-  const value: RecorderStore = { instances, sessions, status, error, detailStatus, ensureDetail, retryDetail, reload };
+  const allHistory = historyStateFor(historyStates, "all", status, sessions);
+  const canLoadOlderFor = useCallback(
+    (instance: string) => historyStateFor(historyStates, instance, status, sessions).hasMore,
+    [historyStates, sessions, status],
+  );
+  const loadingOlderFor = useCallback(
+    (instance: string) => historyStateFor(historyStates, instance, status, sessions).loading,
+    [historyStates, sessions, status],
+  );
+  const historyErrorFor = useCallback(
+    (instance: string) => historyStateFor(historyStates, instance, status, sessions).error,
+    [historyStates, sessions, status],
+  );
+
+  const value: RecorderStore = {
+    instances,
+    sessions,
+    status,
+    error,
+    canLoadOlder: allHistory.hasMore,
+    loadingOlder: allHistory.loading,
+    historyError: allHistory.error,
+    canLoadOlderFor,
+    loadingOlderFor,
+    historyErrorFor,
+    detailStatus,
+    loadOlder,
+    ensureDetail,
+    retryDetail,
+    reload,
+  };
   return createElement(RecorderContext.Provider, { value }, children);
 }
 

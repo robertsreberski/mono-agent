@@ -1,9 +1,15 @@
 import { describe, expect, test } from "vitest";
 
-import type { Session } from "./types";
+import type { Session, WebInstance } from "./types";
 import { ApiError } from "./api";
 import { FIXTURE_SESSIONS } from "./fixture";
-import { applySessionOps, sessionStoreKey, shouldUseFixtureFallback } from "./store";
+import {
+  applySessionOps,
+  historyStateFor,
+  seedHistoryPageStates,
+  sessionStoreKey,
+  shouldUseFixtureFallback,
+} from "./store";
 
 const baseSession: Session = {
   id: "run-1",
@@ -38,6 +44,27 @@ function session(
     totals: { ...baseSession.totals, ...overrides.totals },
   };
 }
+
+const webInstances: WebInstance[] = [
+  {
+    sourceId: "agent-a",
+    label: "Agent A",
+    cwd: "/Users/example/agent-a",
+    artifactDir: "/Users/example/agent-a/.mono-agent/runs",
+    health: "ok",
+    liveConnected: true,
+    counts: { runs: 3 },
+  },
+  {
+    sourceId: "agent-b",
+    label: "Agent B",
+    cwd: "/Users/example/agent-b",
+    artifactDir: "/Users/example/agent-b/.mono-agent/runs",
+    health: "ok",
+    liveConnected: true,
+    counts: { runs: 2 },
+  },
+];
 
 describe("session store identity", () => {
   test("uses sourceId and runId as the browser session key", () => {
@@ -191,6 +218,43 @@ describe("fixture sessions", () => {
     for (const item of FIXTURE_SESSIONS) {
       expect(item.totals.steps, item.id).toBe(item.steps.length);
     }
+  });
+});
+
+describe("history pagination state", () => {
+  test("seeds per-instance offsets from the first all-instances page", () => {
+    const firstPage = [
+      session("agent-a", "A1", { id: "a-1" }),
+      session("agent-a", "A2", { id: "a-2" }),
+    ];
+
+    const states = seedHistoryPageStates(webInstances, firstPage, { offset: 0, total: 5, hasMore: true });
+
+    expect(historyStateFor(states, "all", "live")).toMatchObject({ offset: 2, hasMore: true, total: 5 });
+    expect(historyStateFor(states, "agent-a", "live")).toMatchObject({ offset: 2, hasMore: true });
+    expect(historyStateFor(states, "agent-b", "live")).toMatchObject({ offset: 0, hasMore: true });
+  });
+
+  test("advances the next page offset from SSE-loaded unique sessions", () => {
+    const firstPage = [
+      session("agent-a", "A1", { id: "a-1" }),
+      session("agent-a", "A2", { id: "a-2" }),
+    ];
+    const states = seedHistoryPageStates(webInstances, firstPage, { offset: 0, total: 5, hasMore: true });
+    const loadedAfterStream = [
+      ...firstPage,
+      session("agent-a", "A3", { id: "a-3" }),
+      session("agent-b", "B1", { id: "b-1" }),
+    ];
+
+    expect(historyStateFor(states, "all", "live", loadedAfterStream)).toMatchObject({ offset: 4, hasMore: true });
+    expect(historyStateFor(states, "agent-a", "live", loadedAfterStream)).toMatchObject({ offset: 3, hasMore: true });
+  });
+
+  test("does not offer older history outside a live backend state", () => {
+    const states = seedHistoryPageStates(webInstances, [], { offset: 0, total: 0, hasMore: false });
+
+    expect(historyStateFor(states, "agent-b", "fixture").hasMore).toBe(false);
   });
 });
 

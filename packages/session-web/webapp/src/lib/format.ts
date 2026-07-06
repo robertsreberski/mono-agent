@@ -4,21 +4,22 @@
 import type { Session, SessionStep } from "./types";
 import { CHANNEL_COLOR, CHANNEL_LABEL, MUTED, AMBER, OK, ERROR, BLUE, VIOLET } from "./tokens";
 
-// The recorded agents run in Europe/Rome; keep the mock's fixed timezone so
-// day-boundaries and tick labels are stable regardless of the viewer's locale.
-const TZ = "Europe/Rome";
-
-export function tz(ts: string | number, opt: Intl.DateTimeFormatOptions): string {
+export function tz(ts: string | number, opt: Intl.DateTimeFormatOptions, timeZone?: string): string {
   try {
-    return new Intl.DateTimeFormat("en-GB", { timeZone: TZ, ...opt }).format(new Date(ts));
+    return new Intl.DateTimeFormat(undefined, { ...(timeZone === undefined ? {} : { timeZone }), ...opt }).format(new Date(ts));
   } catch {
     return "";
   }
 }
-export const timeStr = (ts: string | number) =>
-  tz(ts, { hour: "2-digit", minute: "2-digit", hour12: false });
-export const dateStr = (ts: string | number) => tz(ts, { day: "2-digit", month: "short" });
-export const dow = (ts: string | number) => tz(ts, { weekday: "short" });
+export const timeStr = (ts: string | number, timeZone?: string) =>
+  tz(ts, { hour: "2-digit", minute: "2-digit", hour12: false }, timeZone);
+export const dateStr = (ts: string | number, timeZone?: string) => tz(ts, { day: "2-digit", month: "short" }, timeZone);
+export const dow = (ts: string | number, timeZone?: string) => tz(ts, { weekday: "short" }, timeZone);
+export const dayKey = (ts: string | number, timeZone?: string) => tz(ts, {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+}, timeZone);
 
 export function fmtDur(ms: number): string {
   if (!ms || ms < 0) return "0s";
@@ -54,6 +55,7 @@ export function stepColor(s: SessionStep): string {
   if (s.k === "prompt") return BLUE;
   if (s.k === "assistant") return AMBER;
   if (s.k === "boundary") return VIOLET;
+  if (s.k === "runtime") return s.type === "runtime_warning" ? AMBER : VIOLET;
   if (s.k === "result") return s.ok ? OK : ERROR;
   return MUTED;
 }
@@ -91,6 +93,8 @@ export interface OutcomeInfo {
 export function outcomeInfo(s: Session): OutcomeInfo {
   if (s.status === "running")
     return { label: "LIVE", color: "#4FB6A6", running: true, silent: false };
+  if (s.status === "stalled")
+    return { label: "STALLED", color: "#E8955A", running: false, silent: false };
   if (s.status === "failed")
     return { label: "FAILED", color: ERROR, running: false, silent: false };
   if (s.status === "cancelled")
@@ -99,7 +103,7 @@ export function outcomeInfo(s: Session): OutcomeInfo {
     return { label: "INTERRUPTED", color: "#E8955A", running: false, silent: false };
   const silent = s.outcome === "silent";
   return {
-    label: silent ? "SILENT" : "NOTIFIED",
+    label: silent ? "SILENT" : "REPLIED",
     color: silent ? "#8b8d94" : AMBER,
     running: false,
     silent,
