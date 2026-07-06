@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -140,6 +140,42 @@ describe("captureTurn", () => {
 
     // Should resolve, not throw
     await expect(captureTurn("brief note about something", deps)).resolves.toBeDefined();
+  });
+
+  it("does not append duplicate graph records across repeated captures", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const llm = fakeLlm([
+      [
+        "Extract named entities",
+        JSON.stringify({
+          entities: [{ id: "person:robin", name: "Robin", type: "person" }],
+          relations: [{ src: "person:robin", dst: "person:robin", relation: "self-reference" }],
+        }),
+      ],
+      [
+        "TEXT:",
+        JSON.stringify([{ type: "note", text: "Robin prefers quiet mornings", salience: 0.7, isInsight: false }]),
+      ],
+    ]);
+    let now = new Date("2026-06-15T12:00:00.000Z");
+    const deps: ReconcileDeps = {
+      db,
+      root,
+      llm,
+      nextId: makeSeqNextId(),
+      now: () => now,
+    };
+
+    await captureTurn("Robin prefers quiet mornings", deps);
+    now = new Date("2026-06-16T12:00:00.000Z");
+    await captureTurn("Robin prefers quiet mornings", deps);
+
+    const graphLines = readFileSync(join(root, "graph.jsonl"), "utf8").trim().split("\n");
+    expect(graphLines).toHaveLength(2);
+    const graph = readGraph(root);
+    expect(graph.entities).toHaveLength(1);
+    expect(graph.relations).toHaveLength(1);
   });
 
   it("writes entities/relations to canonical graph.jsonl even when the db mirror fails (canonical-first)", async () => {

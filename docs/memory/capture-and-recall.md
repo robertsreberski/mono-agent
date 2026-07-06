@@ -18,6 +18,10 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 | `append-host-summary` | Append a deterministic, single-line rapid-log of the turn to today's daily file. Fast and synchronous. | all (lite/journal/bujo) | no |
 | `capture` | **bujo only.** A superset of `append-host-summary` — see below. | bujo | yes (chat model) |
 
+The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers equal to `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel) and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
+
+Cron and webhook turns are also capture-hygienic: when they do write memory, only the assistant answer is written. The trigger prompt or webhook pre-instructions are never sent to the deterministic host summary or intelligent capture pipeline.
+
 ```json
 {
   "memory": {
@@ -34,7 +38,7 @@ MONO_AGENT_MEMORY_WRITE_MODE=append-host-summary
 
 ### `capture` — per-turn intelligent capture (bujo)
 
-`capture` still writes the deterministic rapid-log **synchronously** (so the canonical markdown rapid-log is durable), and *additionally* enqueues the intelligent capture pipeline — **distil → reconcile → entity extraction** — in the background.
+`capture` still writes the deterministic rapid-log **synchronously** (so the canonical markdown rapid-log is durable), and *additionally* enqueues the intelligent capture pipeline — **distil → reconcile → entity extraction** — in the background, except for the low-signal skipped turns described above.
 
 Key properties:
 
