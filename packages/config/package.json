@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/config",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Strict environment/file config parser for agent hosts.",
   "type": "module",
   "license": "UNLICENSED",
@@ -23,8 +23,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@mono-agent/runtime-adapter": "workspace:0.4.0",
-    "@mono-agent/agent-contracts": "workspace:0.4.0"
+    "@mono-agent/runtime-adapter": "workspace:0.4.1",
+    "@mono-agent/agent-contracts": "workspace:0.4.1"
   },
   "publishConfig": {
     "access": "public"
