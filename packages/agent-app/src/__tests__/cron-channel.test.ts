@@ -374,6 +374,45 @@ describe("cron channel driver — native notification delivery", () => {
     expect(deliveredText).not.toContain("\n");
   });
 
+  it("does not consume the failure notice cooldown when delivery throws", async () => {
+    const warn = vi.fn();
+    const notifyDestination = vi.fn()
+      .mockRejectedValueOnce(new Error("transport offline"))
+      .mockResolvedValueOnce({ delivered: true });
+    let now = new Date("2026-01-01T00:00:00.000Z");
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { warn },
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+            notifyFailureCooldownHours: 1,
+          },
+        ],
+      },
+    }, { now: () => now });
+
+    await captured.onResult?.(failedResult());
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(
+      "Cron failure notice failed.",
+      expect.objectContaining({ jobId: "j", reason: "transport offline" }),
+    ));
+
+    now = new Date("2026-01-01T00:05:00.000Z");
+    await captured.onResult?.(failedResult());
+
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(2));
+  });
+
   it("uses a job-specific failure notice cooldown", async () => {
     const notifyDestination = vi.fn(async () => ({ delivered: true }));
     let now = new Date("2026-01-01T00:00:00.000Z");
