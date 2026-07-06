@@ -34,6 +34,10 @@ function boundarySteps(steps: readonly SessionStep[]): Extract<SessionStep, { k:
   return steps.filter((step): step is Extract<SessionStep, { k: "boundary" }> => step.k === "boundary");
 }
 
+function runtimeSteps(steps: readonly SessionStep[]): Extract<SessionStep, { k: "runtime" }>[] {
+  return steps.filter((step): step is Extract<SessionStep, { k: "runtime" }> => step.k === "runtime");
+}
+
 describe("mapRunToSession", () => {
   it("maps a real notified run with a tool call, coercing redacted token usage to 0", () => {
     const { summary, events } = loadFixture("notified");
@@ -172,6 +176,34 @@ describe("mapRunToSession", () => {
     expect(session.title).toBe("run-empty"); // no prompt/final text -> falls back to runId
   });
 
+  it("maps failed-run detail fields from the run summary", () => {
+    const summary: RunSummary = {
+      runId: "run-failed",
+      conversationId: "openai-api:req-123",
+      status: "failed",
+      failureKind: "provider_unavailable_exhausted",
+      error: "All fallback models failed.",
+      failoverHistory: [
+        {
+          model: "pi:openai-codex:gpt-5.5",
+          failureKind: "provider_unavailable",
+          subkind: "server_error",
+          requestId: "req-a",
+        },
+      ],
+      durationMs: 12,
+      eventCount: 0,
+      artifactPaths: [],
+    };
+
+    const session = mapRunToSession(summary, [], OPTS);
+
+    expect(session.status).toBe("failed");
+    expect(session.failureKind).toBe("provider_unavailable_exhausted");
+    expect(session.error).toBe("All fallback models failed.");
+    expect(session.failoverHistory).toEqual(summary.failoverHistory);
+  });
+
   it("derives finalText only from assistant text, not user/commentary text blocks", () => {
     const summary: RunSummary = {
       runId: "run-final-role",
@@ -263,6 +295,139 @@ describe("mapRunToSession", () => {
     expect(session.finalText).toBe("Ready in the new session.");
   });
 
+  it("maps live runtime telemetry session-boundary shapes without raw telemetry leakage", () => {
+    const summary: RunSummary = {
+      runId: "run-telemetry-boundary",
+      conversationId: "telegram:42#2026-07-06",
+      status: "succeeded",
+      startedAt: "2026-07-06T10:00:00.000Z",
+      durationMs: 1000,
+      eventCount: 2,
+      artifactPaths: [],
+    };
+    const events: RuntimeEventLike[] = [
+      {
+        type: "runtime_telemetry",
+        kind: "session_boundary",
+        data: {
+          type: "session_boundary",
+          kind: "rollover",
+          previousConversationId: "telegram:42#2026-07-05",
+          conversationId: "telegram:42#2026-07-06",
+          reason: "daily_rollover",
+        },
+        timestamp: "2026-07-06T10:00:00.100Z",
+      },
+      {
+        type: "runtime_telemetry",
+        kind: "runtime_event",
+        data: { kind: "session_boundary" },
+        timestamp: "2026-07-06T10:00:00.200Z",
+      },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+
+    expect(boundarySteps(session.steps)).toEqual([
+      {
+        k: "boundary",
+        ts: "2026-07-06T10:00:00.100Z",
+        kind: "rollover",
+        conversationId: "telegram:42#2026-07-06",
+        previousConversationId: "telegram:42#2026-07-05",
+        reason: "daily_rollover",
+      },
+      {
+        k: "boundary",
+        ts: "2026-07-06T10:00:00.200Z",
+        kind: "session",
+      },
+    ]);
+    expect(runtimeSteps(session.steps)).toEqual([]);
+    expect(session.steps).not.toContainEqual(expect.objectContaining({ data: expect.anything() }));
+  });
+
+  it("keeps recognized content-less runtime events as compact timeline steps", () => {
+    const summary: RunSummary = {
+      runId: "run-runtime-events",
+      conversationId: "chat:runtime-events",
+      status: "succeeded",
+      startedAt: "2026-07-06T10:00:00.000Z",
+      durationMs: 1000,
+      eventCount: 5,
+      artifactPaths: [],
+    };
+    const events: RuntimeEventLike[] = [
+      {
+        type: "provider_status",
+        kind: "failover_started",
+        from: "gpt-5.5",
+        to: "kimi",
+        attemptIndex: 1,
+        timestamp: "2026-07-06T10:00:00.100Z",
+      },
+      {
+        type: "runtime_warning",
+        warningKind: "context",
+        message: "context compaction imminent",
+        timestamp: "2026-07-06T10:00:00.200Z",
+      },
+      {
+        type: "runtime_telemetry",
+        kind: "cache_hit",
+        data: { tokens: 400, source: "prompt_cache" },
+        timestamp: "2026-07-06T10:00:00.300Z",
+      },
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "tool-1", name: "read_file", input: { path: "AGENTS.md" } }],
+        },
+        timestamp: "2026-07-06T10:00:00.400Z",
+      },
+      {
+        type: "tool_timing",
+        tool_use_id: "tool-1",
+        execution_ms: 42,
+        is_error: false,
+        timestamp: "2026-07-06T10:00:00.500Z",
+      },
+    ];
+
+    const session = mapRunToSession(summary, events, OPTS);
+
+    expect(runtimeSteps(session.steps)).toEqual([
+      {
+        k: "runtime",
+        ts: "2026-07-06T10:00:00.100Z",
+        type: "provider_status",
+        kind: "failover_started",
+        from: "gpt-5.5",
+        to: "kimi",
+        attemptIndex: 1,
+      },
+      {
+        k: "runtime",
+        ts: "2026-07-06T10:00:00.200Z",
+        type: "runtime_warning",
+        severity: "warning",
+        message: "context compaction imminent",
+        kind: "context",
+      },
+      {
+        k: "runtime",
+        ts: "2026-07-06T10:00:00.300Z",
+        type: "runtime_telemetry",
+        kind: "cache_hit",
+      },
+    ]);
+    const call = assistantSteps(session.steps).flatMap((step) => step.calls)[0]!;
+    expect(call.durMs).toBe(42);
+    expect(call.ok).toBe(true);
+    expect(session.steps).not.toContainEqual(expect.objectContaining({ type: "tool_timing" }));
+    expect(runtimeSteps(session.steps)).not.toContainEqual(expect.objectContaining({ data: expect.anything() }));
+  });
+
   it("generates unique fallback ids for multiple anonymous tool calls in one event", () => {
     const summary: RunSummary = {
       runId: "run-anonymous-tools",
@@ -311,6 +476,7 @@ describe("mapRunToSession", () => {
     expect(src("cron:nightly")).toBe("cron");
     expect(src("memory:capture:reconcile")).toBe("memory");
     expect(src("telegram:123#2026-06-24")).toBe("telegram");
+    expect(src("openai-api:resp-123")).toBe("openai-api");
     // TUI sessions.
     expect(src("work-agent-tui")).toBe("tui");
     expect(src("tui-local")).toBe("tui");

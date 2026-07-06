@@ -70,6 +70,12 @@ describe("buildInstanceCards", () => {
     ]);
   });
 
+  test("formats last-run time in the instance timezone", () => {
+    const cards = buildInstanceCards([{ ...instances[0]!, timeZone: "America/New_York" }], [session]);
+
+    expect(cards[0]?.last).toContain("06:00");
+  });
+
   test("labels session-only fallback cards as unknown health", () => {
     const cards = buildInstanceCards([], [session]);
 

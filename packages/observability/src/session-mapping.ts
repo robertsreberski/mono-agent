@@ -3,7 +3,7 @@ import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
 import { compactString } from "./content.js";
 import { isRecord } from "./guards.js";
 import { deriveRunSource } from "./run-source.js";
-import type { RunSummary, RuntimeEventLike } from "./types.js";
+import type { FailoverAttempt, RunSummary, RuntimeEventLike } from "./types.js";
 
 /**
  * Pure run -> UI "Session" mapping. Turns a recorded run ({@link RunSummary} plus
@@ -110,6 +110,32 @@ export type SessionStep =
       readonly reason?: string;
     }
   | {
+      readonly k: "runtime";
+      readonly ts: string;
+      readonly type: "runtime_warning";
+      readonly severity: "warning";
+      readonly message: string;
+      readonly kind?: string;
+    }
+  | {
+      readonly k: "runtime";
+      readonly ts: string;
+      readonly type: "provider_status";
+      readonly kind: string;
+      readonly model?: string;
+      readonly from?: string;
+      readonly to?: string;
+      readonly attemptIndex?: number;
+      readonly durationMs?: number;
+      readonly cancelled?: boolean;
+    }
+  | {
+      readonly k: "runtime";
+      readonly ts: string;
+      readonly type: "runtime_telemetry";
+      readonly kind: string;
+    }
+  | {
       readonly k: "result";
       readonly ts: string;
       readonly tcid: string;
@@ -152,6 +178,9 @@ export interface Session {
   readonly finalText: string;
   readonly finalTr?: boolean;
   readonly status: string;
+  readonly failureKind?: string;
+  readonly error?: string;
+  readonly failoverHistory?: readonly FailoverAttempt[];
   readonly totals: SessionTotals;
   readonly toolCounts: Readonly<Record<string, number>>;
   readonly steps: readonly SessionStep[];
@@ -267,6 +296,9 @@ export function mapRunToSession(
     finalText: finalClamp.text,
     ...(finalClamp.truncated ? { finalTr: true } : {}),
     status: summary.status,
+    ...(summary.failureKind === undefined ? {} : { failureKind: summary.failureKind }),
+    ...(summary.error === undefined ? {} : { error: summary.error }),
+    ...(summary.failoverHistory === undefined ? {} : { failoverHistory: summary.failoverHistory }),
     totals,
     toolCounts: walk.toolCounts,
     steps,
@@ -308,6 +340,7 @@ type PendingStep =
       readonly ttr: boolean;
     }
   | { readonly p: "boundary"; readonly step: Extract<SessionStep, { k: "boundary" }> }
+  | { readonly p: "runtime"; readonly step: Extract<SessionStep, { k: "runtime" }> }
   | { readonly p: "result"; readonly step: Extract<SessionStep, { k: "result" }> };
 
 interface WalkResult {
@@ -392,6 +425,13 @@ function walkEvents(summary: RunSummary, events: readonly RuntimeEventLike[]): W
       return;
     }
 
+    const runtime = runtimeStep(event, ts);
+    if (runtime !== undefined) {
+      flushCurrent();
+      pending.push({ p: "runtime", step: runtime });
+      return;
+    }
+
     if (type === "tool_timing") {
       const id = readString(event.tool_use_id);
       const call = id === undefined ? undefined : callsById.get(id);
@@ -458,7 +498,7 @@ function walkEvents(summary: RunSummary, events: readonly RuntimeEventLike[]): W
 
   // All backfills have landed; snapshot each live call into its immutable step.
   const steps: SessionStep[] = pending.map((item) =>
-    item.p === "result" || item.p === "boundary"
+    item.p === "result" || item.p === "boundary" || item.p === "runtime"
       ? item.step
       : {
           k: "assistant",
@@ -492,15 +532,27 @@ function finalizeCall(call: MutableToolCall): SessionToolCall {
 
 function sessionBoundaryStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, { k: "boundary" }> | undefined {
   const type = readString(event.type);
-  if (type !== "session_boundary") {
+  const telemetryData = isRecord(event.data) ? event.data : undefined;
+  const telemetryKind = readString(event.kind);
+  const dataKind = readString(telemetryData?.kind);
+  const dataType = readString(telemetryData?.type);
+  const isTelemetryBoundary =
+    type === "runtime_telemetry" &&
+    (telemetryKind === "session_boundary" || dataKind === "session_boundary" || dataType === "session_boundary");
+  if (type !== "session_boundary" && !isTelemetryBoundary) {
     return undefined;
   }
-  const kind = readString(event.kind) ?? "session";
-  const conversationId = readString(event.conversationId);
-  const baseConversationId = readString(event.baseConversationId);
-  const previousConversationId = readString(event.previousConversationId);
-  const providerSessionId = readString(event.providerSessionId);
-  const reason = readString(event.reason);
+  const source = isTelemetryBoundary ? telemetryData ?? event : event;
+  const kind = isTelemetryBoundary
+    ? dataKind === undefined || dataKind === "session_boundary"
+      ? "session"
+      : dataKind
+    : readString(event.kind) ?? "session";
+  const conversationId = readString(source?.conversationId);
+  const baseConversationId = readString(source?.baseConversationId);
+  const previousConversationId = readString(source?.previousConversationId);
+  const providerSessionId = readString(source?.providerSessionId);
+  const reason = readString(source?.reason);
   return {
     k: "boundary",
     ts,
@@ -511,6 +563,48 @@ function sessionBoundaryStep(event: RuntimeEventLike, ts: string): Extract<Sessi
     ...(providerSessionId === undefined ? {} : { providerSessionId }),
     ...(reason === undefined ? {} : { reason }),
   };
+}
+
+function runtimeStep(event: RuntimeEventLike, ts: string): Extract<SessionStep, { k: "runtime" }> | undefined {
+  const type = readString(event.type);
+  if (type === "runtime_warning") {
+    const message = readString(event.message) ?? readString(event.summary) ?? "runtime warning";
+    const kind = readString(event.warningKind) ?? readString(event.warning_kind);
+    return {
+      k: "runtime",
+      ts,
+      type,
+      severity: "warning",
+      message,
+      ...(kind === undefined ? {} : { kind }),
+    };
+  }
+  if (type === "provider_status") {
+    const kind = readString(event.kind) ?? "provider_status";
+    const model = readString(event.model);
+    const from = readString(event.from);
+    const to = readString(event.to);
+    const attemptIndex = finiteNumber(event.attemptIndex);
+    const durationMs = finiteNumber(event.durationMs);
+    return {
+      k: "runtime",
+      ts,
+      type,
+      kind,
+      ...(model === undefined ? {} : { model }),
+      ...(from === undefined ? {} : { from }),
+      ...(to === undefined ? {} : { to }),
+      ...(attemptIndex === undefined ? {} : { attemptIndex }),
+      ...(durationMs === undefined ? {} : { durationMs }),
+      ...(typeof event.cancelled === "boolean" ? { cancelled: event.cancelled } : {}),
+    };
+  }
+  if (type === "runtime_telemetry") {
+    const kind = readString(event.kind);
+    if (kind === undefined) return undefined;
+    return { k: "runtime", ts, type, kind };
+  }
+  return undefined;
 }
 
 /** Split userInput into the trigger prompt (`instr`) and the recalled-memory tail. */

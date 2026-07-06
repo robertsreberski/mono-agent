@@ -21,6 +21,7 @@ import {
   activityBucketLimit,
   buildActivityBuckets,
   buildChannelChips,
+  buildConversationDayGroups,
   clearExcludedChannels,
   filterSessionsForList,
   orderedChannelsForSessions,
@@ -38,6 +39,10 @@ interface Props {
   setFOut: (v: string) => void;
   setFInstance: (v: string) => void;
   onOpen: (id: string) => void;
+  canLoadOlder: boolean;
+  loadingOlder: boolean;
+  historyError?: string;
+  onLoadOlder: () => void;
 }
 
 const label9: Style = {
@@ -58,8 +63,36 @@ function instanceHealthInfo(instance?: Pick<WebInstance, "health" | "liveConnect
   return { label: health || "unknown", color: DIM };
 }
 
+function compactFailureSummary(session: Session): string | undefined {
+  if (!["failed", "cancelled", "interrupted"].includes(session.status)) {
+    return undefined;
+  }
+  const parts = [
+    session.failureKind,
+    session.error,
+    session.failoverHistory !== undefined && session.failoverHistory.length > 0
+      ? `${session.failoverHistory.length} provider ${session.failoverHistory.length === 1 ? "attempt" : "attempts"}`
+      : undefined,
+  ].filter((part): part is string => part !== undefined && part.trim().length > 0);
+  return parts.length > 0 ? parts.join(" | ") : session.status;
+}
+
 export function ListView(props: Props) {
-  const { sessions, instances: discoveredInstances, excludedChannels, fOut, fInstance, setExcludedChannels, setFOut, setFInstance, onOpen } = props;
+  const {
+    sessions,
+    instances: discoveredInstances,
+    excludedChannels,
+    fOut,
+    fInstance,
+    setExcludedChannels,
+    setFOut,
+    setFInstance,
+    onOpen,
+    canLoadOlder,
+    loadingOlder,
+    historyError,
+    onLoadOlder,
+  } = props;
   const [instOpen, setInstOpen] = useState(false);
   const [selectedBucketId, setSelectedBucketId] = useState<string | null>(null);
   const isMobile = useIsMobile();
@@ -79,6 +112,10 @@ export function ListView(props: Props) {
   }, [excludedChannelKey, fOut, fInstance]);
 
   const m = useMemo(() => {
+    const timeZoneBySource = new Map(
+      discoveredInstances.map((instance) => [instance.sourceId, instance.timeZone] as const),
+    );
+    const timeZoneForSession = (session: Session) => timeZoneBySource.get(sourceFor(session));
     // ---- instances (over all sessions) ----
     const instMap: Record<string, { count: number; cwd: string; label: string }> = {};
     sessions.forEach((s) => {
@@ -132,6 +169,7 @@ export function ListView(props: Props) {
     const activeRecord = instRecords.find((inst) => inst.sourceId === fInstance);
     const activeInst = fInstance === "all" ? "All instances" : activeRecord?.label ?? instMap[fInstance]?.label ?? fInstance;
     const activeCount = fInstance === "all" ? sessions.length : instMap[fInstance]?.count || 0;
+    const activeTimeZone = fInstance === "all" ? undefined : timeZoneBySource.get(fInstance);
 
     // ---- filtered set ----
     const baseList = filterSessionsForList(sessions, {
@@ -139,7 +177,7 @@ export function ListView(props: Props) {
       outcome: fOut,
       instance: fInstance,
     });
-    const activity = buildActivityBuckets(baseList, { maxBuckets: activityBucketLimit(isMobile) });
+    const activity = buildActivityBuckets(baseList, { maxBuckets: activityBucketLimit(isMobile), timeZone: activeTimeZone });
     const selectedBucket = selectedBucketId ? activity.find((bucket) => bucket.id === selectedBucketId) : undefined;
     const list = selectedBucket
       ? filterSessionsForList(sessions, {
@@ -163,7 +201,9 @@ export function ListView(props: Props) {
     });
     const n = list.length || 1;
     const dates = list.map((s) => s.startTs).sort();
-    const range = dates.length ? dateStr(dates[0]) + " – " + dateStr(dates[dates.length - 1]) : "—";
+    const range = dates.length
+      ? dateStr(dates[0], activeTimeZone) + " – " + dateStr(dates[dates.length - 1], activeTimeZone)
+      : "—";
     const silentN = list.filter((s) => s.outcome === "silent").length;
     const aggTiles = [
       { label: "Total cost", value: fmtCost(cost), sub: "≈ " + fmtCost(cost / n) + " / run", color: AMBER },
@@ -181,7 +221,7 @@ export function ListView(props: Props) {
     });
     const outs: [string, string][] = [
       ["all", "All"],
-      ["notified", "Notified"],
+      ["notified", "Replied"],
       ["silent", "Silent"],
     ];
     const outcomeChips = outs.map(([k, l]) => {
@@ -203,13 +243,16 @@ export function ListView(props: Props) {
       const col = channelColor(ch);
       const isChat = ch === "chat";
       const oi = outcomeInfo(s);
+      const zone = timeZoneForSession(s);
+      const failureSummary = compactFailureSummary(s);
       return {
         id: s.id,
         key: sessionStoreKey(s),
-        timeStr: timeStr(s.startTs),
-        dateStr: dateStr(s.startTs),
-        dow: dow(s.startTs),
+        timeStr: timeStr(s.startTs, zone),
+        dateStr: dateStr(s.startTs, zone),
+        dow: dow(s.startTs, zone),
         title: s.title,
+        conversationId: s.conversationId,
         accent: col,
         glow: hexA(col, 0.45),
         kindLabel: channelLabel(ch),
@@ -219,21 +262,24 @@ export function ListView(props: Props) {
         think: s.totals.think,
         durStr: fmtDur(s.durMs),
         costStr: fmtCost(s.totals.cost),
-        showOutcome: !isChat || oi.running || ["failed", "cancelled", "interrupted"].includes(s.status),
+        showOutcome: !isChat || oi.running || ["failed", "cancelled", "interrupted", "stalled"].includes(s.status),
         outcomeLabel: oi.label,
         outcomeColor: oi.color,
         outcomeBg: hexA(oi.color, 0.12),
         outcomeBorder: hexA(oi.color, 0.32),
         running: oi.running,
+        failureSummary,
         segs: segsFor(s),
       };
     });
+    const cardsByKey = Object.fromEntries(cards.map((card) => [card.key, card])) as Record<string, (typeof cards)[number]>;
+    const groups = buildConversationDayGroups(list, { timeZoneForSession });
 
     // ---- activity rhythm ----
     const legendKeys = orderedChannelsForSessions(baseList);
     const legend = legendKeys.map((k) => ({ label: channelLabel(k), color: channelColor(k) }));
-    const activityNotified = baseList.filter((s) => s.outcome !== "silent").length;
-    const activitySilent = baseList.length - activityNotified;
+    const activityReplied = baseList.filter((s) => s.outcome !== "silent").length;
+    const activitySilent = baseList.length - activityReplied;
     const activityPeak = activity.length ? Math.max(...activity.map((bucket) => bucket.runCount)) : 0;
     const bucketStatus = selectedBucket
       ? `${list.length} ${list.length === 1 ? "run" : "runs"} in ${selectedBucket.rangeLabel}`
@@ -248,16 +294,200 @@ export function ListView(props: Props) {
       kindChips,
       outcomeChips,
       cards,
+      cardsByKey,
+      groups,
       activity,
       selectedBucket,
       bucketStatus,
-      activityNotified,
+      activityReplied,
       activitySilent,
       activityPeak,
+      activeTimeZone,
       legend,
       emptyMessage: sessions.length === 0 ? "No runs recorded yet." : "No sessions match this filter.",
     };
   }, [sessions, discoveredInstances, excludedChannels, fOut, fInstance, isMobile, selectedBucketId]);
+
+  const renderProviderTick = (tick: { key: string; label: string }) => (
+    <div
+      key={tick.key}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 9,
+        minHeight: 34,
+        margin: "2px 0",
+        fontFamily: FONT_MONO,
+        fontSize: 10,
+        letterSpacing: ".08em",
+        textTransform: "uppercase",
+        color: "#9A90AA",
+      }}
+    >
+      <span style={{ flex: 1, height: 1, background: "rgba(177,138,224,.18)" }} />
+      <span
+        title={tick.label}
+        style={{
+          maxWidth: "min(460px, 76vw)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          border: "1px solid rgba(177,138,224,.22)",
+          borderRadius: 6,
+          padding: "5px 9px",
+          background: "rgba(177,138,224,.06)",
+        }}
+      >
+        {tick.label}
+      </span>
+      <span style={{ flex: 1, height: 1, background: "rgba(177,138,224,.18)" }} />
+    </div>
+  );
+
+  const renderCard = (card: (typeof m.cards)[number] | undefined) => {
+    if (card === undefined) {
+      return null;
+    }
+    return (
+      <div
+        key={card.key}
+        className="rec-card"
+        role="button"
+        tabIndex={0}
+        onClick={() => onOpen(card.key)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen(card.key);
+          }
+        }}
+        aria-label={`Open run: ${card.title} — ${card.kindLabel}, ${card.dateStr} ${card.timeStr}`}
+        style={
+          {
+            cursor: "pointer",
+            position: "relative",
+            background: "linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.014))",
+            border: "1px solid rgba(255,255,255,.08)",
+            borderLeft: `3px solid ${card.accent}`,
+            borderRadius: 15,
+            padding: isMobile ? "16px 16px" : "17px 20px",
+            transition: "transform .16s,border-color .16s,background .16s,box-shadow .16s",
+            "--glow": card.glow,
+          } as Style
+        }
+      >
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div style={{ minWidth: 58, fontFamily: FONT_MONO }}>
+            <div style={{ fontSize: 19, fontWeight: 600, color: TEXT, lineHeight: 1 }}>{card.timeStr}</div>
+            <div style={{ fontSize: 11, color: DIM, marginTop: 4 }}>
+              {card.dow} {card.dateStr}
+            </div>
+          </div>
+          <div style={{ flex: "1 1 220px", minWidth: isMobile ? 0 : 220 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 7 }}>
+              <span
+                style={{
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  letterSpacing: ".1em",
+                  textTransform: "uppercase",
+                  padding: "3px 8px",
+                  borderRadius: 5,
+                  background: card.kindBg,
+                  color: card.accent,
+                  border: `1px solid ${card.kindBorder}`,
+                }}
+              >
+                {card.kindLabel}
+              </span>
+            </div>
+            <div style={{ fontSize: 15.5, color: "#E4E2DB", lineHeight: 1.4, fontWeight: 500, maxWidth: "60ch", overflowWrap: "anywhere", wordBreak: "break-word", textWrap: "pretty" } as Style}>
+              {card.title}
+            </div>
+            {card.failureSummary !== undefined && (
+              <div style={{ marginTop: 8, fontFamily: FONT_MONO, fontSize: 11, lineHeight: 1.45, color: "#E0988F", overflowWrap: "anywhere" }}>
+                {card.failureSummary}
+              </div>
+            )}
+            <div
+              style={{
+                display: "flex",
+                gap: 2,
+                height: 9,
+                marginTop: 13,
+                borderRadius: 4,
+                overflow: "hidden",
+                maxWidth: 380,
+                padding: 1,
+                background: "rgba(0,0,0,.25)",
+                boxShadow: "inset 0 0 0 1px rgba(255,255,255,.04)",
+              }}
+            >
+              {card.segs.map((seg, si) => (
+                <span key={si} style={{ flex: seg.flex, background: seg.color, borderRadius: 1.5, minWidth: 2 }} />
+              ))}
+            </div>
+          </div>
+          <div style={{ minWidth: isMobile ? 0 : 158, flex: isMobile ? "1 1 100%" : "0 0 auto", display: "flex", flexDirection: "column", alignItems: isMobile ? "flex-start" : "flex-end", gap: 12 }}>
+            {card.showOutcome && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  fontFamily: FONT_MONO,
+                  fontSize: 10,
+                  letterSpacing: ".1em",
+                  textTransform: "uppercase",
+                  padding: "5px 11px",
+                  borderRadius: 7,
+                  background: card.outcomeBg,
+                  color: card.outcomeColor,
+                  border: `1px solid ${card.outcomeBorder}`,
+                }}
+              >
+                {card.running && (
+                  <span
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: card.outcomeColor,
+                      boxShadow: `0 0 7px ${card.outcomeColor}`,
+                      animation: "rec-blink 1.4s ease-in-out infinite",
+                    }}
+                  />
+                )}
+                {card.outcomeLabel}
+              </span>
+            )}
+            <div style={{ display: "flex", gap: 14, alignItems: "center", fontFamily: FONT_MONO, fontSize: 12.5 }}>
+              <span title="duration" role="img" aria-label={`Duration ${card.durStr}`} style={{ display: "flex", alignItems: "center", gap: 5, color: "#8b8d94" }}>
+                <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 7.5v5l3.2 1.8" />
+                </svg>
+                {card.durStr}
+              </span>
+              <span title="tool calls" role="img" aria-label={`${card.tools} tool calls`} style={{ display: "flex", alignItems: "center", gap: 5, color: TEAL }}>
+                <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8.5 6L3.5 12l5 6M15.5 6l5 6-5 6" />
+                </svg>
+                {card.tools}
+              </span>
+              <span title="reasoning" role="img" aria-label={`${card.think} reasoning blocks`} style={{ display: "flex", alignItems: "center", gap: 5, color: VIOLET }}>
+                <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 3l1.7 5.6L19 10l-5.3 1.4L12 17l-1.7-5.6L5 10l5.3-1.4z" />
+                </svg>
+                {card.think}
+              </span>
+            </div>
+            <span style={{ fontFamily: FONT_MONO, fontSize: 16, fontWeight: 600, color: AMBER, letterSpacing: "-.01em" }}>{card.costStr}</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -499,7 +729,7 @@ export function ListView(props: Props) {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {[
               { label: "Runs", value: String(m.activity.reduce((sum, bucket) => sum + bucket.runCount, 0)), color: TEXT },
-              { label: "Notified", value: String(m.activityNotified), color: AMBER },
+              { label: "Replied", value: String(m.activityReplied), color: AMBER },
               { label: "Silent", value: String(m.activitySilent), color: "#8b8d94" },
             ].map((item) => (
               <span
@@ -569,7 +799,7 @@ export function ListView(props: Props) {
                     <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: bucket.dominantColor, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                       {bucket.dominantLabel}
                     </span>
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIM, marginLeft: "auto", whiteSpace: "nowrap" }}>{timeStr(bucket.startMs)}</span>
+                    <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: DIM, marginLeft: "auto", whiteSpace: "nowrap" }}>{timeStr(bucket.startMs, m.activeTimeZone)}</span>
                     <span style={{ fontFamily: FONT_MONO, fontSize: 10, color: AMBER, whiteSpace: "nowrap" }}>{bucket.costLabel}</span>
                   </span>
                   <span
@@ -600,7 +830,7 @@ export function ListView(props: Props) {
                     </span>
                   </span>
                   <span style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0, fontFamily: FONT_MONO, fontSize: 10, color: DIM }}>
-                    <span style={{ whiteSpace: "nowrap" }}>{bucket.notifiedCount} notified</span>
+                    <span style={{ whiteSpace: "nowrap" }}>{bucket.repliedCount} replied</span>
                     <span style={{ whiteSpace: "nowrap" }}>{bucket.silentCount} silent</span>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{bucket.rangeLabel}</span>
                   </span>
@@ -647,7 +877,7 @@ export function ListView(props: Props) {
                   >
                     <span style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 5, minWidth: 0 }}>
                       <span style={{ fontFamily: FONT_MONO, fontSize: 17, fontWeight: 700, color: TEXT, lineHeight: 1 }}>{bucket.runCount}</span>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: DIM, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{timeStr(bucket.startMs)}</span>
+                      <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: DIM, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{timeStr(bucket.startMs, m.activeTimeZone)}</span>
                     </span>
                     <span
                       aria-hidden="true"
@@ -681,7 +911,7 @@ export function ListView(props: Props) {
                       </span>
                     </span>
                     <span aria-hidden="true" style={{ display: "flex", height: 4, borderRadius: 999, overflow: "hidden", background: "rgba(255,255,255,.06)" }}>
-                      <span style={{ width: `${(bucket.notifiedCount / bucket.runCount) * 100}%`, background: AMBER }} />
+                      <span style={{ width: `${(bucket.repliedCount / bucket.runCount) * 100}%`, background: AMBER }} />
                       <span style={{ width: `${(bucket.silentCount / bucket.runCount) * 100}%`, background: "#8b8d94" }} />
                     </span>
                     <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 5, minWidth: 0 }}>
@@ -765,146 +995,94 @@ export function ListView(props: Props) {
       </div>
 
       {/* session cards */}
-      <div style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 11 }}>
-        {m.cards.map((card) => (
-          <div
-            key={card.key}
-            className="rec-card"
-            role="button"
-            tabIndex={0}
-            onClick={() => onOpen(card.key)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onOpen(card.key);
-              }
-            }}
-            aria-label={`Open run: ${card.title} — ${card.kindLabel}, ${card.dateStr} ${card.timeStr}`}
-            style={
-              {
-                cursor: "pointer",
-                position: "relative",
-                background: "linear-gradient(180deg,rgba(255,255,255,.04),rgba(255,255,255,.014))",
-                border: "1px solid rgba(255,255,255,.08)",
-                borderLeft: `3px solid ${card.accent}`,
-                borderRadius: 15,
-                padding: isMobile ? "16px 16px" : "17px 20px",
-                transition: "transform .16s,border-color .16s,background .16s,box-shadow .16s",
-                "--glow": card.glow,
-              } as Style
-            }
-          >
-            <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-              <div style={{ minWidth: 58, fontFamily: FONT_MONO }}>
-                <div style={{ fontSize: 19, fontWeight: 600, color: TEXT, lineHeight: 1 }}>{card.timeStr}</div>
-                <div style={{ fontSize: 11, color: DIM, marginTop: 4 }}>
-                  {card.dow} {card.dateStr}
-                </div>
-              </div>
-              <div style={{ flex: "1 1 220px", minWidth: isMobile ? 0 : 220 }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 7 }}>
-                  <span
-                    style={{
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      letterSpacing: ".1em",
-                      textTransform: "uppercase",
-                      padding: "3px 8px",
-                      borderRadius: 5,
-                      background: card.kindBg,
-                      color: card.accent,
-                      border: `1px solid ${card.kindBorder}`,
-                    }}
-                  >
-                    {card.kindLabel}
-                  </span>
-                </div>
-                <div style={{ fontSize: 15.5, color: "#E4E2DB", lineHeight: 1.4, fontWeight: 500, maxWidth: "60ch", overflowWrap: "anywhere", wordBreak: "break-word", textWrap: "pretty" } as Style}>
-                  {card.title}
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 2,
-                    height: 9,
-                    marginTop: 13,
-                    borderRadius: 4,
-                    overflow: "hidden",
-                    maxWidth: 380,
-                    padding: 1,
-                    background: "rgba(0,0,0,.25)",
-                    boxShadow: "inset 0 0 0 1px rgba(255,255,255,.04)",
-                  }}
-                >
-                  {card.segs.map((seg, si) => (
-                    <span key={si} style={{ flex: seg.flex, background: seg.color, borderRadius: 1.5, minWidth: 2 }} />
-                  ))}
-                </div>
-              </div>
-              <div style={{ minWidth: isMobile ? 0 : 158, flex: isMobile ? "1 1 100%" : "0 0 auto", display: "flex", flexDirection: "column", alignItems: isMobile ? "flex-start" : "flex-end", gap: 12 }}>
-                {card.showOutcome && (
-                  <span
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      fontFamily: FONT_MONO,
-                      fontSize: 10,
-                      letterSpacing: ".1em",
-                      textTransform: "uppercase",
-                      padding: "5px 11px",
-                      borderRadius: 7,
-                      background: card.outcomeBg,
-                      color: card.outcomeColor,
-                      border: `1px solid ${card.outcomeBorder}`,
-                    }}
-                  >
-                    {card.running && (
-                      <span
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: "50%",
-                          background: card.outcomeColor,
-                          boxShadow: `0 0 7px ${card.outcomeColor}`,
-                          animation: "rec-blink 1.4s ease-in-out infinite",
-                        }}
-                      />
-                    )}
-                    {card.outcomeLabel}
-                  </span>
-                )}
-                <div style={{ display: "flex", gap: 14, alignItems: "center", fontFamily: FONT_MONO, fontSize: 12.5 }}>
-                  <span title="duration" role="img" aria-label={`Duration ${card.durStr}`} style={{ display: "flex", alignItems: "center", gap: 5, color: "#8b8d94" }}>
-                    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-                      <circle cx="12" cy="12" r="9" />
-                      <path d="M12 7.5v5l3.2 1.8" />
-                    </svg>
-                    {card.durStr}
-                  </span>
-                  <span title="tool calls" role="img" aria-label={`${card.tools} tool calls`} style={{ display: "flex", alignItems: "center", gap: 5, color: TEAL }}>
-                    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M8.5 6L3.5 12l5 6M15.5 6l5 6-5 6" />
-                    </svg>
-                    {card.tools}
-                  </span>
-                  <span title="reasoning" role="img" aria-label={`${card.think} reasoning blocks`} style={{ display: "flex", alignItems: "center", gap: 5, color: VIOLET }}>
-                    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                      <path d="M12 3l1.7 5.6L19 10l-5.3 1.4L12 17l-1.7-5.6L5 10l5.3-1.4z" />
-                    </svg>
-                    {card.think}
-                  </span>
-                </div>
-                <span style={{ fontFamily: FONT_MONO, fontSize: 16, fontWeight: 600, color: AMBER, letterSpacing: "-.01em" }}>{card.costStr}</span>
-              </div>
+      <div style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 18 }}>
+        {m.groups.map((group) => (
+          <section key={group.key} aria-label={group.label} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 11,
+                fontFamily: FONT_MONO,
+                fontSize: 10,
+                letterSpacing: ".18em",
+                textTransform: "uppercase",
+                color: DIM,
+              }}
+            >
+              <span style={{ flex: 1, height: 1, background: "rgba(255,255,255,.08)" }} />
+              <span style={{ whiteSpace: "nowrap" }}>{group.label}</span>
+              <span style={{ flex: 1, height: 1, background: "rgba(255,255,255,.08)" }} />
             </div>
-          </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {group.lanes.map((lane) => (
+                <div key={lane.key} style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "minmax(112px, 168px) minmax(0, 1fr)", gap: isMobile ? 7 : 12, alignItems: "start" }}>
+                  <div
+                    title={lane.label}
+                    style={{
+                      position: isMobile ? "static" : "sticky",
+                      top: 76,
+                      minWidth: 0,
+                      fontFamily: FONT_MONO,
+                      fontSize: 10,
+                      lineHeight: 1.4,
+                      color: "#8b8d94",
+                      border: "1px solid rgba(255,255,255,.07)",
+                      borderRadius: 8,
+                      padding: isMobile ? "6px 8px" : "8px 9px",
+                      background: "rgba(255,255,255,.025)",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {lane.label}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {lane.items.map((item) =>
+                      item.type === "tick"
+                        ? renderProviderTick(item.tick)
+                        : renderCard(m.cardsByKey[sessionStoreKey(item.session)]),
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
         ))}
       </div>
 
+      {historyError !== undefined && (
+        <div role="alert" style={{ marginTop: 16, border: "1px solid rgba(224,104,91,.28)", borderRadius: 10, padding: "12px 13px", background: "rgba(224,104,91,.07)", color: "#E0988F", fontFamily: FONT_MONO, fontSize: 12, overflowWrap: "anywhere" }}>
+          {historyError}
+        </div>
+      )}
+
+      {(canLoadOlder || loadingOlder) && (
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 22 }}>
+          <button
+            className="rec-btn"
+            type="button"
+            disabled={loadingOlder}
+            onClick={onLoadOlder}
+            style={{
+              cursor: loadingOlder ? "wait" : "pointer",
+              minHeight: 44,
+              borderRadius: 9,
+              border: "1px solid rgba(255,255,255,.14)",
+              background: loadingOlder ? "rgba(255,255,255,.03)" : "rgba(255,255,255,.055)",
+              color: loadingOlder ? DIM : "#C9CBD1",
+              fontFamily: FONT_MONO,
+              fontSize: 12,
+              padding: "10px 14px",
+            }}
+          >
+            {loadingOlder ? "Loading older" : "Load older"}
+          </button>
+        </div>
+      )}
+
       {m.cards.length === 0 && (
         <div style={{ textAlign: "center", color: DIM, padding: 50, fontFamily: FONT_MONO, fontSize: 13 }}>
-          {m.emptyMessage}
+          {canLoadOlder ? "No loaded sessions match this filter." : m.emptyMessage}
         </div>
       )}
 

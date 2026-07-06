@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { boundaryStepLabel, boundaryStepMeta, timelineEmptyMessage } from "./DetailView";
+import { boundaryStepLabel, boundaryStepMeta, runtimeStepLabel, runtimeStepMeta, timelineEmptyMessage } from "./DetailView";
 
 describe("timelineEmptyMessage", () => {
   test("shows a live waiting state for running runs with no timeline items", () => {
@@ -34,5 +34,37 @@ describe("boundary timeline helpers", () => {
       providerSessionId: "provider-1",
       reason: "daily partition changed",
     })).toBe("previous chat:old | base chat:base | current chat:new | provider provider-1");
+  });
+});
+
+describe("runtime timeline helpers", () => {
+  test("formats runtime warnings as compact timeline chips", () => {
+    const step = {
+      k: "runtime",
+      ts: "2026-07-06T10:00:00.000Z",
+      type: "runtime_warning",
+      severity: "warning",
+      kind: "context",
+      message: "context compaction imminent",
+    } as const;
+
+    expect(runtimeStepLabel(step)).toBe("context");
+    expect(runtimeStepMeta(step)).toBe("context compaction imminent");
+  });
+
+  test("summarizes provider status metadata without raw payloads", () => {
+    const step = {
+      k: "runtime",
+      ts: "2026-07-06T10:00:00.000Z",
+      type: "provider_status",
+      kind: "failover_started",
+      from: "gpt-5.5",
+      to: "kimi",
+      attemptIndex: 2,
+      durationMs: 1500,
+    } as const;
+
+    expect(runtimeStepLabel(step)).toBe("failover started");
+    expect(runtimeStepMeta(step)).toBe("from gpt-5.5 | to kimi | attempt 2 | 1.5s");
   });
 });
