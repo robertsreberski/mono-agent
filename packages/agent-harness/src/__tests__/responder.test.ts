@@ -98,6 +98,20 @@ describe("createAgentResponder", () => {
     expect(appended).toEqual(["Hel", "lo", "!"]);
   });
 
+  it("returns response text without trimming trailing formatting", async () => {
+    const harness: AgentHarness = {
+      run: async (request: AgentHarnessRequest) => ({
+        ...okResponse(request.conversationId),
+        text: "ok\n\n",
+      }),
+    };
+    const responder = createAgentResponder({ harness });
+
+    const response = await responder.respond(baseRequest(), noopStream());
+
+    expect(response.text).toBe("ok\n\n");
+  });
+
   it("cancel(conversationId) delegates to the harness", async () => {
     const cancelled: string[] = [];
     const harness: AgentHarness = {
@@ -304,6 +318,35 @@ describe("createAgentResponder", () => {
     await responder.respond(baseRequest("cron:scan"), noopStream());
 
     expect(submitted).toBe("cron:scan");
+  });
+
+  it("does not serialize distinct non-rollover conversations that naturally end with daily bucket syntax", async () => {
+    let releaseFirst!: () => void;
+    const firstRelease = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const started: string[] = [];
+    const harness: AgentHarness = {
+      submit: async (request: AgentHarnessRequest) => {
+        started.push(request.conversationId);
+        if (started.length === 1) {
+          await firstRelease;
+        }
+        return okResponse(request.conversationId);
+      },
+      run: async (request: AgentHarnessRequest) => okResponse(request.conversationId),
+    };
+    const responder = createAgentResponder({ harness });
+
+    const first = responder.respond(baseRequest("thread#2026-06-19"), noopStream());
+    await Promise.resolve();
+    const second = responder.respond(baseRequest("thread#2026-06-20"), noopStream());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(started).toEqual(["thread#2026-06-19", "thread#2026-06-20"]);
+    releaseFirst();
+    await Promise.all([first, second]);
   });
 });
 

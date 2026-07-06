@@ -71,7 +71,7 @@ export function createAgentResponder(options: {
     async respond(request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> {
       return await serializeByKey(
         responseTailsByBaseConversation,
-        stripDailyBucket(request.conversationId),
+        responseSerializationKey(request.conversationId, options.rollover),
         async () => respondOnce(request, stream),
       );
     },
@@ -127,7 +127,7 @@ export function createAgentResponder(options: {
     }
 
     return {
-      ...(response.text === undefined ? {} : { text: `${notice ?? ""}${response.text}`.trimEnd() }),
+      ...(response.text === undefined ? {} : { text: notice === undefined ? response.text : `${notice}${response.text}` }),
       metadata: { ...response.metadata },
     };
   }
@@ -484,6 +484,10 @@ const DAILY_BUCKET_SUFFIX_RE = /#\d{4}-\d{2}-\d{2}$/u;
 
 function stripDailyBucket(conversationId: string): string {
   return conversationId.replace(DAILY_BUCKET_SUFFIX_RE, "");
+}
+
+function responseSerializationKey(conversationId: string, rollover: SessionRollover | undefined): string {
+  return rollover === "daily" ? stripDailyBucket(conversationId) : conversationId;
 }
 
 function rolloverBoundaryForRequest(input: {
