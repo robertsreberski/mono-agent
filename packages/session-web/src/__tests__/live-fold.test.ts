@@ -811,8 +811,79 @@ describe("SessionAggregator live fold", () => {
     await expect(aggregator.getSession(SOURCE_ID, "run-old")).resolves.toMatchObject({ id: "run-old", finalText: "old answer" });
 
     expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-old"]);
-    expect(frames).toContainEqual({ t: "session_removed", sourceId: SOURCE_ID, runId: "run-new" });
+    // run-new is evicted from the working set but NOT removed from browsers: it is
+    // still on disk. Opening run-old's detail never broadcasts a removal or the
+    // full detail upsert.
+    expect(frames.some((frame) => frame.t === "session_removed")).toBe(false);
     expect(frames.some((frame) => frame.t === "session_upsert" && frame.session.id === "run-old")).toBe(false);
+  });
+
+  it("keeps an over-cap evicted completed run visible to browsers (no session_removed)", async () => {
+    const bus: RunEventBus = createLiveEventBus();
+    sse = await startTinySseServer(bus);
+
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    await mkdir(artifactDir, { recursive: true });
+    // A completed run that already lives on disk and in the initial snapshot.
+    await seedRun({
+      artifactDir,
+      runId: "run-old",
+      conversationId: "cron:old",
+      userInput: "Old",
+      text: "old answer",
+      source: "cron",
+      at: Date.parse(STARTED_AT) - 60_000,
+    });
+    await registerSource({
+      registryDir,
+      sourceId: SOURCE_ID,
+      label: "Live Agent",
+      artifactDir,
+      liveBaseUrl: sse.baseUrl,
+    });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      // Cap of 1: the moment a new run arrives, the older completed run is evicted
+      // from the in-memory working set — but it still exists on disk, so browsers
+      // that have it visible (initial snapshot or paged-in) must NOT lose it.
+      maxRunsPerInstance: 1,
+      reconcileIntervalMs: 60_000,
+      liveFoldDebounceMs: 10,
+      instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
+    });
+
+    const frames: BrowserStreamFrame[] = [];
+    aggregator.subscribe((frame) => frames.push(frame));
+    await aggregator.start();
+    expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-old"]);
+
+    // A NEW live run arrives, pushing the instance over its cap and evicting run-old
+    // from memory.
+    bus.publish(runStarted());
+    bus.publish(assistantEvent());
+    await waitFor(() =>
+      frames.find(
+        (frame): frame is Extract<BrowserStreamFrame, { t: "session_upsert" }> =>
+          frame.t === "session_upsert" && frame.session.id === RUN_ID,
+      ),
+    );
+    await waitFor(() =>
+      aggregator?.getSessions("all").map((session) => session.id).includes(RUN_ID) === true ? true : undefined,
+    );
+
+    // The working set is bounded (run-old evicted from memory) ...
+    expect(aggregator.getSessions("all").map((session) => session.id)).toEqual([RUN_ID]);
+    // ... but no session_removed leaked to browsers: the evicted run is disk-backed
+    // history, not a genuine removal.
+    expect(frames.some((frame) => frame.t === "session_removed")).toBe(false);
+    // ... and it is still reachable on demand (disk paging is the history source).
+    await expect(aggregator.getSession(SOURCE_ID, "run-old")).resolves.toMatchObject({
+      id: "run-old",
+      finalText: "old answer",
+    });
   });
 
   it("emits an instances frame when registry metadata changes without endpoint changes", async () => {

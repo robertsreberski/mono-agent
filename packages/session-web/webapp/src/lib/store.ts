@@ -252,7 +252,7 @@ export function markHistorySessionsLoaded(
   return next;
 }
 
-function applyHistoryOps(
+export function applyHistoryOps(
   states: Readonly<Record<string, HistoryPageState>>,
   ops: readonly SessionStoreOp[],
 ): Record<string, HistoryPageState> {

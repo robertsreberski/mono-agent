@@ -4,6 +4,7 @@ import type { Session, WebInstance } from "./types";
 import { ApiError } from "./api";
 import { FIXTURE_SESSIONS } from "./fixture";
 import {
+  applyHistoryOps,
   applySessionOps,
   historyStateFor,
   markHistorySessionsLoaded,
@@ -330,6 +331,76 @@ describe("history pagination state", () => {
     const states = seedHistoryPageStates(webInstances, [], { offset: 0, total: 0, hasMore: false });
 
     expect(historyStateFor(states, "agent-b", "fixture").hasMore).toBe(false);
+  });
+
+  test("repeated all-instances loadOlder walks past 200 to the oldest run", () => {
+    const PAGE = 200;
+    const TOTAL = 500;
+    const pageOf = (start: number, count: number): Session[] =>
+      Array.from({ length: count }, (_, i) => session("agent-a", `run-${start + i}`, { id: `run-${start + i}` }));
+
+    // Initial snapshot: newest 200 of 500.
+    let states = seedHistoryPageStates(webInstances, pageOf(0, PAGE), { offset: 0, total: TOTAL, hasMore: true });
+    expect(historyStateFor(states, "all", "live")).toMatchObject({ offset: 200, hasMore: true, total: 500 });
+
+    // Load older #1 → rows 200..399.
+    states = markHistorySessionsLoaded(states, pageOf(PAGE, PAGE), "all", { offset: PAGE, total: TOTAL, hasMore: true });
+    expect(historyStateFor(states, "all", "live")).toMatchObject({ offset: 400, hasMore: true, total: 500 });
+
+    // Load older #2 → rows 400..499, reaching the oldest; hasMore flips false.
+    states = markHistorySessionsLoaded(states, pageOf(2 * PAGE, TOTAL - 2 * PAGE), "all", {
+      offset: 2 * PAGE,
+      total: TOTAL,
+      hasMore: false,
+    });
+    const final = historyStateFor(states, "all", "live");
+    expect(final).toMatchObject({ offset: 500, hasMore: false, total: 500 });
+  });
+
+  test("keeps paging offset consistent when a genuine removal arrives mid-history", () => {
+    const PAGE = 200;
+    const TOTAL = 500;
+    const pageOf = (start: number, count: number): Session[] =>
+      Array.from({ length: count }, (_, i) => session("agent-a", `run-${start + i}`, { id: `run-${start + i}` }));
+
+    // Page in 400 of 500 (still more to load).
+    let states = seedHistoryPageStates(webInstances, pageOf(0, PAGE), { offset: 0, total: TOTAL, hasMore: true });
+    states = markHistorySessionsLoaded(states, pageOf(PAGE, PAGE), "all", { offset: PAGE, total: TOTAL, hasMore: true });
+    expect(historyStateFor(states, "all", "live")).toMatchObject({ offset: 400, hasMore: true, total: 500 });
+
+    // A genuine session_removed (e.g. memory-run suppression / instance removal) for a
+    // loaded run must decrement the loaded count without wedging paging or over/under-shooting.
+    states = applyHistoryOps(states, [{ type: "remove", sourceId: "agent-a", runId: "run-10" }]);
+    const afterRemove = historyStateFor(states, "all", "live");
+    expect(afterRemove).toMatchObject({ offset: 399, hasMore: true, total: 500 });
+
+    // Paging still advances toward the oldest after the removal.
+    states = markHistorySessionsLoaded(states, pageOf(2 * PAGE, TOTAL - 2 * PAGE), "all", {
+      offset: 2 * PAGE,
+      total: TOTAL,
+      hasMore: false,
+    });
+    expect(historyStateFor(states, "all", "live")).toMatchObject({ hasMore: false, total: 500 });
+  });
+
+  test("repeated per-instance loadOlder walks to that instance's oldest run", () => {
+    // Seed both instances from a mixed all-page that still has more history.
+    const firstPage = [
+      session("agent-a", "A-newest", { id: "a-0" }),
+      session("agent-b", "B-newest", { id: "b-0" }),
+    ];
+    let states = seedHistoryPageStates(webInstances, firstPage, { offset: 0, total: 250, hasMore: true });
+    // Per-instance filter is reachable straight away (inherits the all-page hasMore).
+    expect(historyStateFor(states, "agent-a", "live").hasMore).toBe(true);
+
+    // First per-instance page learns agent-a's own disk total (3 runs).
+    states = markHistorySessionsLoaded(
+      states,
+      [session("agent-a", "A1", { id: "a-1" }), session("agent-a", "A2", { id: "a-2" })],
+      "agent-a",
+      { offset: 1, total: 3, hasMore: true },
+    );
+    expect(historyStateFor(states, "agent-a", "live")).toMatchObject({ offset: 3, hasMore: false, total: 3 });
   });
 });
 

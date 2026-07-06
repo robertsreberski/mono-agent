@@ -595,8 +595,16 @@ export class SessionAggregator {
   /**
    * Bound `state.sessions` to the per-instance cap, evicting the oldest *completed*
    * sessions by `startTs`. A still-running session is never evicted (its live fold
-   * is in flight); each drop emits a `session_removed` so browser subscribers stay
-   * in sync with the server-side map.
+   * is in flight).
+   *
+   * Eviction is deliberately SILENT — it emits no `session_removed`. This map is a
+   * bounded live-fold working set, not the history source: an evicted run still
+   * exists on disk and stays reachable via disk paging (`getSessionSummariesPage`)
+   * and the detail endpoint. Broadcasting a removal here would delete rows from
+   * browsers that legitimately hold more than the cap (the initial snapshot's tail
+   * or runs paged in from disk), conflating "evicted from memory" with "gone".
+   * `session_removed` is reserved for genuine removal/invalidation (instance gone,
+   * artifact dir moved, memory-run suppression).
    */
   private evictSessionOverflow(state: InstanceState, protectedId?: string): void {
     const cap = state.maxRunsPerInstance;
@@ -605,8 +613,8 @@ export class SessionAggregator {
       let oldestMs = Number.POSITIVE_INFINITY;
       for (const [id, session] of state.sessions) {
         // Never evict a still-running run, nor the run just written by the caller
-        // (evicting-then-upserting the same id would emit removed→upsert and
-        // diverge the browser from the server map).
+        // (evicting the id the caller is about to upsert would drop it from memory
+        // entirely while an upsert for it is in flight).
         if (session.status === "running" || id === protectedId) {
           continue;
         }
@@ -626,7 +634,6 @@ export class SessionAggregator {
       state.artifactFinished.delete(oldestId);
       state.liveFinished.delete(oldestId);
       state.suppressedMemoryLiveRuns.delete(oldestId);
-      this.emit({ t: "session_removed", sourceId: state.discovered.instance.sourceId, runId: oldestId });
     }
   }
 

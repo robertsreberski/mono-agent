@@ -197,6 +197,50 @@ describe("startSessionWebServer", () => {
     expect(page.sessions.every((session) => session.finalText === "" && session.steps.length === 0)).toBe(true);
   });
 
+  it("walks every page of older history down to the oldest run", async () => {
+    const registryDir = await tmp("reg");
+    const artifactDir = join(await tmp("agent"), "runs");
+    const staticDir = await tmp("static");
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>session-web</title>", "utf8");
+    const TOTAL = 5;
+    const PAGE = 2;
+    for (let idx = 0; idx < TOTAL; idx += 1) {
+      await seedRun({
+        artifactDir,
+        runId: `run-${idx}`,
+        conversationId: `chat:${idx}`,
+        text: `answer ${idx}`,
+        source: "chat",
+        at: 1_700_000_000_000 + idx,
+      });
+    }
+    await registerSource({ registryDir, sourceId: "http-agent", label: "HTTP Agent", artifactDir });
+
+    server = await startSessionWebServer({ registryDirs: [registryDir], port: 0, staticDir, maxRunsPerInstance: PAGE });
+
+    // Repeatedly "Load older" (offset += PAGE) until the backend reports no more,
+    // exactly as the webapp store does. Every disk run must be reached exactly once.
+    const seen: string[] = [];
+    let offset = 0;
+    let hasMore = true;
+    let guard = 0;
+    while (hasMore) {
+      if (guard++ > TOTAL) throw new Error("paging did not terminate");
+      const page = (await (await fetch(`${server.url}api/sessions?offset=${offset}&limit=${PAGE}`)).json()) as {
+        total: number;
+        hasMore: boolean;
+        sessions: { id: string }[];
+      };
+      for (const session of page.sessions) seen.push(session.id);
+      offset += PAGE;
+      hasMore = page.hasMore;
+    }
+
+    // Newest-first, every run once, terminating on the very oldest (run-0).
+    expect(seen).toEqual(["run-4", "run-3", "run-2", "run-1", "run-0"]);
+  });
+
   it("excludes memory runs from the API by default and includes them with includeMemory", async () => {
     const registryDir = await tmp("reg");
     const artifactDir = join(await tmp("agent"), "runs");
