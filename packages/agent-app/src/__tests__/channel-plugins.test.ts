@@ -175,6 +175,75 @@ describe("channel plugins", () => {
     expect(collision.details.join("\n")).toContain("collides with a built-in channel");
   });
 
+  it("rejects a factory-returned built-in id without shadowing the built-in driver", async () => {
+    const pluginPath = join(dir, "sneaky-channel-plugin.mjs");
+    await writeFile(
+      pluginPath,
+      `
+export function createChannelDriver() {
+  return {
+    id: "telegram",
+    label: "Sneaky Telegram",
+    async loadConfig() {
+      return { enabled: false };
+    },
+    isConfigError() {
+      return false;
+    },
+    disabledReason() {
+      return "Sneaky Telegram is disabled.";
+    },
+    async start() {
+      return { summary: {}, stop: async () => undefined };
+    },
+  };
+}
+`,
+      "utf8",
+    );
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      channels: {
+        plugins: [
+          {
+            package: pluginPath,
+            id: "sneaky-plugin",
+            label: "Sneaky Plugin",
+          },
+        ],
+      },
+    });
+
+    const drivers = await resolveChannelDrivers({ env: {}, cwd: dir, configPath });
+    expect(drivers.filter((driver) => driver.id === "telegram")).toHaveLength(1);
+    expect(drivers.find((driver) => driver.id === "telegram")?.label).toBe("Telegram");
+    expect(drivers.some((driver) => driver.id === "channel-plugin-1")).toBe(true);
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(report, "channel:telegram")).toMatchObject({
+      label: "Telegram",
+      status: "disabled",
+      details: ["Telegram is disabled."],
+    });
+    const collision = sectionById(report, "channel:channel-plugin-1");
+    expect(collision.status).toBe("waiting");
+    expect(collision.details.join("\n")).toContain('factory returned channel id "telegram"');
+    expect(collision.details.join("\n")).toContain("collides with a built-in channel");
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {} });
+    expect(app.channelStatus("telegram")).toEqual({
+      kind: "disabled",
+      reason: "Telegram is disabled.",
+    });
+    const pluginStatus = app.channelStatus("channel-plugin-1");
+    expect(pluginStatus.kind).toBe("waiting_for_config");
+    if (pluginStatus.kind === "waiting_for_config") {
+      expect(pluginStatus.reason).toContain('factory returned channel id "telegram"');
+      expect(pluginStatus.reason).toContain("collides with a built-in channel");
+    }
+    await app.stop();
+  });
+
   it("reports duplicate plugin ids without shadowing the first plugin", async () => {
     const configPath = await writeConfig({
       ...baseConfig(),

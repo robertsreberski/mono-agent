@@ -82,10 +82,20 @@ export async function resolveConfiguredChannelPlugins(
   options: ResolveConfiguredChannelPluginsOptions = {},
 ): Promise<readonly ChannelDriver[]> {
   const entries = await readConfiguredChannelPluginEntries(input.configPath);
-  const checkedEntries = rejectChannelPluginIdCollisions(entries, options.reservedIds ?? []);
+  const reservedIds = options.reservedIds ?? [];
+  const reserved = new Set(reservedIds);
+  const checkedEntries = rejectChannelPluginIdCollisions(entries, reserved);
+  const acceptedIds = new Set(reserved);
   const drivers: ChannelDriver[] = [];
-  for (const entry of checkedEntries) {
-    drivers.push(await resolveChannelPlugin(entry));
+  for (const [index, entry] of checkedEntries.entries()) {
+    const driver = await resolveChannelPlugin(entry);
+    const collisionTarget = returnedChannelPluginIdCollisionTarget(driver.id, acceptedIds, reserved);
+    if (collisionTarget !== undefined) {
+      drivers.push(createReturnedIdCollisionDriver(entry, index, driver.id, collisionTarget, acceptedIds));
+      continue;
+    }
+    acceptedIds.add(driver.id);
+    drivers.push(driver);
   }
   return drivers;
 }
@@ -266,6 +276,39 @@ function rejectChannelPluginIdCollisions(
       message: `channels.plugins[${index}] resolves to channel id "${id}", which collides with ${collisionTarget}. Choose a unique plugin id.`,
     };
   });
+}
+
+function returnedChannelPluginIdCollisionTarget(
+  id: string,
+  acceptedIds: ReadonlySet<string>,
+  reservedIds: ReadonlySet<string>,
+): string | undefined {
+  if (!acceptedIds.has(id)) {
+    return undefined;
+  }
+  return reservedIds.has(id) ? "a built-in channel" : "an earlier channel plugin";
+}
+
+function createReturnedIdCollisionDriver(
+  entry: ParsedChannelPluginEntry,
+  index: number,
+  returnedId: string,
+  collisionTarget: string,
+  seen: Set<string>,
+): ChannelDriver {
+  const sectionId = uniqueInvalidPluginId(index, seen);
+  const label = `${pluginEntryLabel(entry)} plugin`;
+  const packageName = pluginEntryPackageName(entry);
+  return createUnavailablePluginDriver(
+    sectionId,
+    label,
+    `channels.plugins[${index}] factory returned channel id "${returnedId}", which collides with ${collisionTarget}. Choose a unique plugin id.`,
+    {
+      ...(packageName === undefined ? {} : { packageName }),
+      pluginId: pluginEntryId(entry),
+      code: "invalid_plugin_config",
+    },
+  );
 }
 
 function uniqueInvalidPluginId(index: number, seen: Set<string>): string {
