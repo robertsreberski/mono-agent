@@ -1,11 +1,13 @@
+import { MEMORY_STATUSES, MEMORY_TYPES } from "./types.js";
+
 /** Ordered DDL applied once at open. `${dim}` is substituted with the configured dimension. */
 export function migrations(dim: number): readonly string[] {
   return [
     `CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
       seq INTEGER NOT NULL UNIQUE,
-      type TEXT NOT NULL CHECK(type IN ('task','event','note')),
-      status TEXT NOT NULL CHECK(status IN ('open','done','scheduled','migrated','dropped','invalidated')),
+      type TEXT NOT NULL CHECK(type IN (${sqlStringList(MEMORY_TYPES)})),
+      status TEXT NOT NULL CHECK(status IN (${sqlStringList(MEMORY_STATUSES)})),
       text TEXT NOT NULL,
       salience REAL NOT NULL DEFAULT 0.5,
       is_insight INTEGER NOT NULL DEFAULT 0,
@@ -53,4 +55,8 @@ export function migrations(dim: number): readonly string[] {
       PRIMARY KEY(src, dst, relation)
     )`,
   ];
+}
+
+function sqlStringList(values: readonly string[]): string {
+  return values.map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
 }

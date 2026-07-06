@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -514,21 +514,21 @@ async function collectStoreSize(root: string): Promise<{
       return;
     }
     for (const entry of entries) {
-      const path = join(dir, entry.name);
+      const filePath = join(dir, entry.name);
       if (entry.isDirectory()) {
-        await walk(path);
+        await walk(filePath);
         continue;
       }
       if (!entry.isFile()) {
         continue;
       }
-      const s = await stat(path).catch(() => undefined);
+      const s = await stat(filePath).catch(() => undefined);
       if (s === undefined) {
         continue;
       }
       fileCount += 1;
       rootBytes += s.size;
-      if ((entry.name.endsWith(".md") && DATE_RE.test(basename(entry.name, ".md"))) || path.includes(`${join(root, "daily")}/`)) {
+      if ((entry.name.endsWith(".md") && DATE_RE.test(basename(entry.name, ".md"))) || isUnderDirectory(join(root, "daily"), filePath)) {
         dailyBytes += s.size;
       }
       if (entry.name === "memory.db" || entry.name.startsWith("memory.db-")) {
@@ -538,6 +538,11 @@ async function collectStoreSize(root: string): Promise<{
   }
   await walk(root);
   return { rootBytes, dailyBytes, databaseBytes, fileCount };
+}
+
+function isUnderDirectory(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 function emptySize(): { readonly rootBytes: 0; readonly dailyBytes: 0; readonly databaseBytes: 0; readonly fileCount: 0 } {
