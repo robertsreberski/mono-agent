@@ -74,7 +74,7 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
       channels: ["channel:webhook"],
       memory: "memory:journal",
     },
-    replacesRecipes: ["local-ollama-private", "local-lmstudio-private"],
+    replacesRecipes: ["local-ollama-private"],
   },
   {
     id: "code-sandbox",

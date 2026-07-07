@@ -25,7 +25,7 @@ export interface BaseConfigContext {
  * empty tool policy, local artifacts, and the trace registry. Returned WITHOUT
  * `$schema` (the composer adds it once at the end). Mirrors `init.ts`'s
  * `configTemplate` exactly for the fields it owns, so a composed default config
- * is byte-equal to today's scaffold EXCEPT `tools.allowedTools` (the composer
+ * is field-equivalent to today's scaffold EXCEPT `tools.allowedTools` (the composer
  * fills that from the wizard's tools selection). Modules add the
  * memory / channel / sandbox / observability blocks.
  */
