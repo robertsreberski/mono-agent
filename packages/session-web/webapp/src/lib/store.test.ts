@@ -458,8 +458,53 @@ describe("live-fold session cap", () => {
     expect(sessions).toHaveLength(300);
   });
 
+  test("never evicts a protected (user-paged-in) run, even past the cap", () => {
+    const sorted = [
+      session("agent-a", "new1", { id: "new1", startTs: at(9) }),
+      session("agent-a", "new2", { id: "new2", startTs: at(8) }),
+      session("agent-a", "paged-old", { id: "paged-old", startTs: at(1) }),
+    ];
+    const protectedKeys = new Set([sessionStoreKey(sorted[2]!)]);
+    expect(capSessions(sorted, 1, protectedKeys).map((item) => item.id)).toEqual(["new1", "paged-old"]);
+  });
+
   test("MAX_LIVE_SESSIONS comfortably exceeds a history page so paging still fits", () => {
     expect(MAX_LIVE_SESSIONS).toBeGreaterThanOrEqual(200);
+  });
+
+  test("a live flush after paging past the cap does not evict the paged-in runs (reachable to run #1)", () => {
+    const cap = 5;
+    const paged = new Set<string>();
+    // Snapshot: 5 newest live runs (within the cap).
+    let sessions = applySessionOps(
+      [],
+      Array.from({ length: 5 }, (_, i) => ({
+        type: "upsert" as const,
+        session: session("agent-a", `live-${i}`, { id: `live-${i}`, startTs: at(100 - i) }),
+      })),
+      cap,
+      paged,
+    );
+    expect(sessions).toHaveLength(5);
+
+    // User pages in 4 OLDER runs via loadOlder — this fold is UNCAPPED, and the keys
+    // are recorded as paged (what `orchestrateLoadOlder`'s onPageLoaded does).
+    const older = Array.from({ length: 4 }, (_, i) => session("agent-a", `old-${i}`, { id: `old-${i}`, startTs: at(50 - i) }));
+    sessions = applySessionOps(sessions, older.map((s) => ({ type: "upsert" as const, session: s })));
+    for (const s of older) paged.add(sessionStoreKey(s));
+    expect(sessions).toHaveLength(9);
+
+    // A live frame arrives → the flush re-applies the cap WITH the paged keys protected.
+    const newLive = session("agent-a", "live-new", { id: "live-new", startTs: at(101) });
+    sessions = applySessionOps(sessions, [{ type: "upsert", session: newLive }], cap, paged);
+
+    // Every paged-in OLD run survives (still reachable) ...
+    for (const s of older) {
+      expect(sessions.some((item) => item.id === s.id)).toBe(true);
+    }
+    // ... while the oldest NON-paged live run beyond the cap is evicted (bound holds).
+    expect(sessions.some((item) => item.id === "live-4")).toBe(false);
+    expect(sessions).toHaveLength(cap + older.length); // newest cap live + 4 protected
   });
 });
 
@@ -527,6 +572,30 @@ describe("loadOlder fetch orchestration", () => {
     expect(calls).toEqual([{ instance: "all", offset: 200, limit: 200 }]);
     expect(sessions).toHaveLength(400);
     expect(historyStateFor(states, "all", "live")).toMatchObject({ offset: 400, hasMore: true, total: 500 });
+  });
+
+  test("reports every paged-in run via onPageLoaded so the store can protect it from the cap", async () => {
+    let sessions = pageOf(0, PAGE);
+    let states = seedHistoryPageStates(webInstances, sessions, { offset: 0, total: 500, hasMore: true });
+    const paged: string[] = [];
+
+    await orchestrateLoadOlder({
+      getStatus: () => "live",
+      getSessions: () => sessions,
+      getStates: () => states,
+      setSessions: (updater) => {
+        sessions = updater(sessions);
+      },
+      setHistoryStates: (updater) => {
+        states = updater(states);
+      },
+      fetchPage: async () => ({ sessions: pageOf(PAGE, 3), offset: PAGE, limit: PAGE, total: 500, hasMore: true }),
+      onPageLoaded: (loaded) => {
+        for (const s of loaded) paged.push(s.id);
+      },
+    });
+
+    expect(paged).toEqual(["run-200", "run-201", "run-202"]);
   });
 
   test("records the error and clears loading when the fetch fails", async () => {

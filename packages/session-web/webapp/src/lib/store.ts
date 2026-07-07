@@ -54,23 +54,30 @@ const HISTORY_PAGE_SIZE = 200;
 // Live-fold working-set cap for the browser store. Completed-run cap-evictions on
 // the backend are silent (no `session_removed`), so without a browser-side bound a
 // long-lived tab would accrete one row per new run for the tab's whole lifetime
-// (days → unbounded memory + DOM). This caps the LIVE SSE fold only; explicit
-// `loadOlder` paging is exempt (`applySessionOps` without a cap) so history stays
-// reachable to run #1. Cap-evicted rows self-heal on reload — paging offsets live
-// in `historyStates.loadedKeys`, which the cap never touches, so eviction from the
-// display array never re-fetches or double-counts. Mirrors the backend's policy
-// (evict oldest COMPLETED, never a running run); see #162/#166.
+// (days → unbounded memory + DOM). This caps the LIVE SSE fold only, and it never
+// evicts a run the user explicitly paged in via `loadOlder` (those keys are passed
+// as `protectedKeys`) — so "Load older" stays reachable to run #1 even across live
+// frames, while automatic live accretion beyond the newest `cap` non-paged runs is
+// still bounded. The cap only ever touches the display array; paging offsets live
+// in `historyStates.loadedKeys`, which it never mutates. Retention is therefore
+// newest-`cap` live + user-paged (user-bounded) + running (transient). Mirrors the
+// backend's policy (evict oldest COMPLETED, never a running run); see #162/#166.
 export const MAX_LIVE_SESSIONS = 1_000;
 
 const byNewest = (a: Session, b: Session) => +new Date(b.startTs) - +new Date(a.startTs);
 
 /**
  * Trim `sessions` (already sorted newest-first) to at most `cap`, dropping the
- * OLDEST *completed* runs. A `running` run is never dropped (its live fold is in
- * flight), so the result may exceed `cap` when more than `cap` runs are running.
- * Order is preserved (the result is a subsequence of the sorted input).
+ * OLDEST *completed* runs. A run is never dropped when it is `running` (its live
+ * fold is in flight) or when its key is in `protectedKeys` (the user paged it in,
+ * so it must stay reachable). The result may therefore exceed `cap`. Order is
+ * preserved (the result is a subsequence of the sorted input).
  */
-export function capSessions(sessions: readonly Session[], cap: number): Session[] {
+export function capSessions(
+  sessions: readonly Session[],
+  cap: number,
+  protectedKeys?: ReadonlySet<string>,
+): Session[] {
   if (cap <= 0 || sessions.length <= cap) {
     return sessions as Session[];
   }
@@ -80,7 +87,7 @@ export function capSessions(sessions: readonly Session[], cap: number): Session[
     if (budget > 0) {
       kept.push(session);
       budget -= 1;
-    } else if (session.status === "running") {
+    } else if (session.status === "running" || protectedKeys?.has(sessionStoreKey(session))) {
       kept.push(session);
     }
   }
@@ -108,7 +115,12 @@ export function sessionStoreKey(session: Session): string {
   return sessionStoreKeyParts(session.sourceId ?? session.instance, session.id);
 }
 
-export function applySessionOps(prev: readonly Session[], ops: readonly SessionStoreOp[], cap?: number): Session[] {
+export function applySessionOps(
+  prev: readonly Session[],
+  ops: readonly SessionStoreOp[],
+  cap?: number,
+  protectedKeys?: ReadonlySet<string>,
+): Session[] {
   const map = new Map(prev.map((s) => [sessionStoreKey(s), s] as const));
   for (const op of ops) {
     if (op.type === "remove") {
@@ -120,8 +132,10 @@ export function applySessionOps(prev: readonly Session[], ops: readonly SessionS
   }
   const sorted = [...map.values()].sort(byNewest);
   // `cap` is passed only on the live SSE fold to bound long-lived-tab growth;
-  // `loadOlder` omits it so paged-in history is never truncated back out.
-  return cap === undefined ? sorted : capSessions(sorted, cap);
+  // `loadOlder` omits it so paged-in history is never truncated back out, and the
+  // live path passes the paged keys as `protectedKeys` so a later frame can't evict
+  // them either.
+  return cap === undefined ? sorted : capSessions(sorted, cap, protectedKeys);
 }
 
 function mergeSessionUpsert(existing: Session | undefined, incoming: Session): Session {
@@ -386,6 +400,9 @@ export interface LoadOlderDeps {
   readonly setSessions: (updater: (prev: Session[]) => Session[]) => void;
   readonly setHistoryStates: (updater: (prev: Record<string, HistoryPageState>) => Record<string, HistoryPageState>) => void;
   readonly fetchPage: (instance: string, options: FetchSessionsOptions) => Promise<SessionPage>;
+  /** Notified with each freshly paged-in page so the store can protect those runs
+   * from the live-fold cap (they were explicitly requested — must stay reachable). */
+  readonly onPageLoaded?: (sessions: readonly Session[]) => void;
 }
 
 /**
@@ -409,6 +426,7 @@ export async function orchestrateLoadOlder(deps: LoadOlderDeps): Promise<void> {
 
   try {
     const page = await deps.fetchPage(key, { limit: HISTORY_PAGE_SIZE, offset: current.offset });
+    deps.onPageLoaded?.(page.sessions);
     deps.setSessions((prev) =>
       applySessionOps(prev, page.sessions.map((session): SessionStoreOp => ({ type: "upsert", session }))),
     );
@@ -446,6 +464,11 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   // Runs we've already fired a detail fetch for (attempted), so a legitimately
   // zero-step run isn't re-fetched on every open.
   const loadedDetail = useRef<Set<string>>(new Set());
+  // Keys the user explicitly paged in via `loadOlder`. The live-fold cap must never
+  // evict these (they'd otherwise vanish on the next SSE frame and become
+  // unreachable, since paging offsets don't rewind) — so they stay reachable to
+  // run #1 while live. Genuine removals prune the set below.
+  const pagedKeys = useRef<Set<string>>(new Set());
 
   // Batch SSE folds: the connect snapshot is N separate `session_upsert` frames
   // (one per run, ~477 today) and each EventSource onmessage is its own task, so
@@ -462,8 +485,14 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
     if (ops.size === 0) return;
     pendingOps.current = new Map();
     const appliedOps = [...ops.values()];
+    // Genuine removals drop the run entirely — stop protecting it from the cap.
+    for (const op of appliedOps) {
+      if (op.type === "remove") {
+        pagedKeys.current.delete(sessionStoreKeyParts(op.sourceId, op.runId));
+      }
+    }
     setSessions((prev) => {
-      return applySessionOps(prev, appliedOps, MAX_LIVE_SESSIONS);
+      return applySessionOps(prev, appliedOps, MAX_LIVE_SESSIONS, pagedKeys.current);
     });
     setHistoryStates((prev) => applyHistoryOps(prev, appliedOps));
   }, []);
@@ -613,6 +642,11 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
       setSessions,
       setHistoryStates,
       fetchPage: fetchSessionPage,
+      onPageLoaded: (loaded) => {
+        for (const session of loaded) {
+          pagedKeys.current.add(sessionStoreKey(session));
+        }
+      },
     });
   }, []);
 
