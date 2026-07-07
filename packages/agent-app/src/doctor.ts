@@ -218,9 +218,12 @@ interface SdkAuthScheme {
  * - claude (`claude:*`, sdk + cli): the Claude Code process authenticates from
  *   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` in
  *   the env, OR from a `claude /login` subscription session stored outside the
- *   environment (macOS Keychain / `~/.claude`). Its own error string is
- *   verbatim: "Claude Code authentication failed. Run `claude /login` or
- *   configure ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN."
+ *   environment (macOS Keychain / `~/.claude`), OR from a Bedrock/Vertex
+ *   configuration (`CLAUDE_CODE_USE_BEDROCK`/`CLAUDE_CODE_USE_VERTEX` + cloud
+ *   credentials) — none of which the env-key check can see, hence the hedge in
+ *   the warning. Its own error string is verbatim: "Claude Code authentication
+ *   failed. Run `claude /login` or configure ANTHROPIC_API_KEY,
+ *   ANTHROPIC_AUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN."
  * - codex (`codex:*`, cli): the Codex app-server authenticates from
  *   `OPENAI_API_KEY` in the env, OR from a `codex login` ChatGPT session stored
  *   in `~/.codex/auth.json` — also outside the environment.
@@ -229,7 +232,8 @@ const SDK_AUTH_SCHEMES: Record<string, SdkAuthScheme> = {
   claude: {
     envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
     loginCommand: "claude /login",
-    loginDetail: "a `claude /login` subscription session (stored outside the environment)",
+    loginDetail:
+      "a `claude /login` subscription session or a Bedrock/Vertex configuration (CLAUDE_CODE_USE_BEDROCK/VERTEX)",
     failureHint: 'the first turn fails with an opaque "Claude Code process exited with code 1" that names nothing',
   },
   codex: {
@@ -347,9 +351,17 @@ async function appendPiCredentialDetails(
   const authPath = config.providers?.piAuthPath;
   const authProviders = authPath === undefined ? undefined : await readPiAuthProviders(authPath);
   const modelsJsonProviders = authPath === undefined ? new Set<string>() : await readPiCustomProviders(authPath);
-  // A `pi:<id>:...` model whose `<id>` matches a configured `providers.local`
-  // entry is a keyless local/custom provider — no OAuth, no auth-store entry.
-  const localProviders = new Set((config.providers?.local ?? []).map((provider) => provider.id));
+  // A `pi:<id>:...` model whose `<id>` matches an ENABLED `providers.local` entry
+  // is a keyless local/custom provider — no OAuth, no auth-store entry. A DISABLED
+  // entry is tracked separately: the runtime throws `provider disabled: <id>` on the
+  // first turn (pi-models.js), so validate must name that instead of reporting a
+  // clean OK or the misleading "no Pi credentials" advice.
+  const enabledLocalProviders = new Set(
+    (config.providers?.local ?? []).filter((provider) => provider.enabled !== false).map((provider) => provider.id),
+  );
+  const disabledLocalProviders = new Set(
+    (config.providers?.local ?? []).filter((provider) => provider.enabled === false).map((provider) => provider.id),
+  );
   const now = Date.now();
   let status: ValidationStatus = "ok";
   if (authPath !== undefined) {
@@ -359,8 +371,15 @@ async function appendPiCredentialDetails(
   for (const { label, ref } of piRefs) {
     const provider = ref.provider as string;
     const refStr = referenceOf(ref);
-    if (localProviders.has(provider)) {
+    if (enabledLocalProviders.has(provider)) {
       details.push(`${label} ${refStr}: provider \`${provider}\` configured via config providers.local (keyless local provider).`);
+      continue;
+    }
+    if (disabledLocalProviders.has(provider)) {
+      status = "waiting";
+      details.push(
+        `[WARN] ${label} ${refStr}: provider \`${provider}\` is configured in providers.local but disabled (\`enabled: false\`); the runtime will throw \`provider disabled: ${provider}\` on the first turn. Set \`enabled: true\` on that providers.local entry.`,
+      );
       continue;
     }
     if (modelsJsonProviders.has(provider)) {
