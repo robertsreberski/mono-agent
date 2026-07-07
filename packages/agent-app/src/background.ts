@@ -12,6 +12,7 @@ import {
   resolveAppTraceRegistryDir,
   resolveAppTraceStaleAfterMs,
 } from "./app-config.js";
+import { formatChannelFactValue } from "./channel-fact-format.js";
 import {
   bootout,
   bootstrap,
@@ -706,16 +707,20 @@ function formatChannels(source: TraceSourceListItem): string[] {
   });
 }
 
-function describeChannel(value: unknown): { kind: string; text: string } {
+export function describeChannel(value: unknown): { kind: string; text: string } {
   if (value === null || typeof value !== "object") {
-    return { kind: "unknown", text: String(value) };
+    return { kind: "unknown", text: formatChannelFactValue(value) };
   }
   const record = value as Record<string, unknown>;
   const kind = typeof record.kind === "string" ? record.kind : "unknown";
   if (kind === "running") {
+    // Route every fact through the shared recursive formatter so a nested object
+    // (e.g. the webhook `invokeUrls` map) never renders as `[object Object]` —
+    // the E4 bug that persisted on this backgrounded-start summary path after the
+    // `status`-line render was fixed.
     const facts = Object.entries(record)
       .filter(([key]) => key !== "kind")
-      .map(([key, fact]) => `${key}=${String(fact)}`)
+      .map(([key, fact]) => `${key}=${formatChannelFactValue(fact)}`)
       .join(" ");
     return { kind, text: facts.length === 0 ? "running" : `running (${facts})` };
   }
