@@ -126,6 +126,8 @@ interface ParsedCliArgs {
   readonly open?: boolean;
   /** web: `--allow-non-loopback` permits a non-loopback bind. */
   readonly allowNonLoopback?: boolean;
+  /** web: `--max-runs` caps the per-instance in-memory working set (default 200). */
+  readonly maxRunsPerInstance?: number;
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
@@ -172,6 +174,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let port: number | undefined;
   let open: boolean | undefined;
   let allowNonLoopback: boolean | undefined;
+  let maxRunsPerInstance: number | undefined;
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
@@ -259,6 +262,15 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--allow-non-loopback":
         allowNonLoopback = true;
         break;
+      case "--max-runs": {
+        const raw = requireValue(rest, ++i, flag);
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          throw new Error("--max-runs must be a positive integer.");
+        }
+        maxRunsPerInstance = parsed;
+        break;
+      }
       case "--model":
         model = requireValue(rest, ++i, flag);
         break;
@@ -339,8 +351,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent audit-runs`.");
   }
 
-  if ((host !== undefined || port !== undefined || open !== undefined || allowNonLoopback !== undefined) && cmd !== "web") {
-    throw new Error("--host, --port, --no-open, and --allow-non-loopback are only supported for `mono-agent web`.");
+  if (
+    (host !== undefined || port !== undefined || open !== undefined || allowNonLoopback !== undefined || maxRunsPerInstance !== undefined) &&
+    cmd !== "web"
+  ) {
+    throw new Error("--host, --port, --no-open, --allow-non-loopback, and --max-runs are only supported for `mono-agent web`.");
   }
   if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill" && cmd !== "web") {
     throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, `mono-agent backfill`, and `mono-agent web`.");
@@ -382,6 +397,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(port === undefined ? {} : { port }),
     ...(open === undefined ? {} : { open }),
     ...(allowNonLoopback === undefined ? {} : { allowNonLoopback }),
+    ...(maxRunsPerInstance === undefined ? {} : { maxRunsPerInstance }),
   };
 }
 
@@ -510,13 +526,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--include-memory]",
+    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--include-memory] [--max-runs <n>]",
     lines: [
       "Serve the read-only Session Recorder web PWA from any directory: a live",
       "flight-recorder over every agent's runs (prompt, reasoning, tools, cost).",
       "Discovers running agents via the trace-source registry — the same",
       "mechanism as `tui` — and streams new/updated runs in real time.",
-      "--include-memory also shows memory-maintenance runs.",
+      "--include-memory also shows memory-maintenance runs. --max-runs (default",
+      "200) bounds the in-memory working set; the UI still pages the full",
+      "on-disk history via \"Load older\".",
     ],
   },
   {
@@ -662,6 +680,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.open === undefined ? {} : { open: args.open }),
         ...(args.allowNonLoopback === undefined ? {} : { allowNonLoopback: args.allowNonLoopback }),
         includeMemory: args.includeMemory,
+        ...(args.maxRunsPerInstance === undefined ? {} : { maxRunsPerInstance: args.maxRunsPerInstance }),
       });
     }
     case "install-skill":

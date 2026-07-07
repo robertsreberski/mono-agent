@@ -66,6 +66,10 @@ export interface SeedRunInput {
   readonly artifactKind?: RunArtifactKind;
   readonly providerSessionId?: string;
   readonly isolated?: boolean;
+  /** Compiled system prompt persisted on the summary (drives `Session.sysPrompt`). */
+  readonly systemPrompt?: string;
+  /** A raw `turn_context` event body (minus `type`/`timestamp`) recorded before the turn. */
+  readonly turnContext?: Record<string, unknown>;
   /** Fixed clock (ms) — controls `startedAt`, so multiple runs sort deterministically. */
   readonly at: number;
 }
@@ -82,6 +86,13 @@ export async function seedRun(input: SeedRunInput): Promise<RunSummary> {
     ...(input.source === undefined ? {} : { source: input.source }),
     ...(input.artifactKind === undefined ? {} : { artifactKind: input.artifactKind }),
   });
+  if (input.turnContext !== undefined) {
+    recorder.onEvent({
+      type: "turn_context",
+      timestamp: new Date(input.at).toISOString(),
+      ...input.turnContext,
+    });
+  }
   recorder.onEvent({
     type: "assistant",
     timestamp: new Date(input.at).toISOString(),
@@ -92,6 +103,7 @@ export async function seedRun(input: SeedRunInput): Promise<RunSummary> {
     model: "pi:ollama:qwen",
     ...(input.providerSessionId === undefined ? {} : { providerSessionId: input.providerSessionId }),
     ...(input.isolated === undefined ? {} : { isolated: input.isolated }),
+    ...(input.systemPrompt === undefined ? {} : { systemPrompt: input.systemPrompt }),
   });
 }
 

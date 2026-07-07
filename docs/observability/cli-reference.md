@@ -25,7 +25,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--follow` / `-f`, `--lines <n>` |
-| `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--include-memory`, `--config <path>` |
+| `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--include-memory`, `--max-runs <n>`, `--config <path>` |
 | `install-skill` | Copy the bundled `mono-agent-composer` skill into the agent skill folders. | `--target claude\|codex\|both`, `--force` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
@@ -306,6 +306,7 @@ mono-agent web
 mono-agent web --port 4599 --no-open
 mono-agent web --host 0.0.0.0 --allow-non-loopback
 mono-agent web --include-memory
+mono-agent web --max-runs 500
 ```
 
 | Flag | Effect |
@@ -315,6 +316,7 @@ mono-agent web --include-memory
 | `--no-open` | Do not launch the browser after the backend starts. |
 | `--allow-non-loopback` | Permit a non-loopback bind. The command generates a bearer token and prints/opens a tokenized URL; `/api/*` and `/api/stream` require it. |
 | `--include-memory` | Include memory-maintenance runs from both the `memory/` artifact namespace and legacy mixed directories. Defaults to agent runs only. |
+| `--max-runs <n>` | Cap the per-instance in-memory working set and the initial browser snapshot (positive integer, default `200`). Disk paging via "Load older" still reaches the full on-disk history, so this only bounds memory — not history reachability. |
 | `--config <path>` | Resolve a custom `traceability.registryDir` from this config, in addition to the global registry. |
 
 Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback mode prints both the exact reverse-proxy target and a `tailscale serve` hint for HTTPS/PWA installation. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the tokenized URL, so prefer Tailscale or another trusted network boundary.
@@ -324,6 +326,19 @@ The web API returns recent sessions first and supports paged older history with
 uses those pages behind its "Load older" action, projects stale `running`
 summaries as `stalled`, shows failure/error/failover details when present, and
 formats single-instance run lists in the instance's discovered timezone.
+Cap-eviction of completed runs from the in-memory working set is silent, so
+every recorded run stays reachable through "Load older" regardless of the
+`--max-runs` bound.
+
+Each run's detail view carries a **Context (this turn)** section that surfaces
+the context every provider call was driven with: recalled long-term memory (with
+its source), the replayed prior conversation messages (role-badged), and the
+full compiled system prompt behind a collapsible raw view. When the provider
+session already held the transcript — a warm in-process session or a durable
+cross-restart resume (also turn 1 of a brand-new conversation under a derived
+durable session id) — it reads *context carried by the provider session*. Runs
+recorded before this feature fall back to the raw compiled prompt only; runs with
+neither show no section.
 
 ## `install-skill`
 

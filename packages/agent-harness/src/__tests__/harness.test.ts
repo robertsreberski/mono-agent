@@ -150,9 +150,9 @@ describe("AgentHarness", () => {
     expect(response.failure).toBeUndefined();
     expect(response.metadata.summary).toMatchObject({
       status: "succeeded",
-      // The memory_recalled diagnostic, the assistant event, and the
-      // synthetic run_config + provider_bridge_latency observability events.
-      eventCount: 4,
+      // The memory_recalled diagnostic, the assistant event, and the synthetic
+      // run_config + turn_context + provider_bridge_latency observability events.
+      eventCount: 5,
       cost: { totalUsd: 0.01 },
       capabilitiesUsed: ["tools:read"],
     });

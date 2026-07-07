@@ -595,8 +595,16 @@ export class SessionAggregator {
   /**
    * Bound `state.sessions` to the per-instance cap, evicting the oldest *completed*
    * sessions by `startTs`. A still-running session is never evicted (its live fold
-   * is in flight); each drop emits a `session_removed` so browser subscribers stay
-   * in sync with the server-side map.
+   * is in flight).
+   *
+   * Eviction is deliberately SILENT — it emits no `session_removed`. This map is a
+   * bounded live-fold working set, not the history source: an evicted run still
+   * exists on disk and stays reachable via disk paging (`getSessionSummariesPage`)
+   * and the detail endpoint. Broadcasting a removal here would delete rows from
+   * browsers that legitimately hold more than the cap (the initial snapshot's tail
+   * or runs paged in from disk), conflating "evicted from memory" with "gone".
+   * `session_removed` is reserved for genuine removal/invalidation (instance gone,
+   * artifact dir moved, memory-run suppression).
    */
   private evictSessionOverflow(state: InstanceState, protectedId?: string): void {
     const cap = state.maxRunsPerInstance;
@@ -605,8 +613,8 @@ export class SessionAggregator {
       let oldestMs = Number.POSITIVE_INFINITY;
       for (const [id, session] of state.sessions) {
         // Never evict a still-running run, nor the run just written by the caller
-        // (evicting-then-upserting the same id would emit removed→upsert and
-        // diverge the browser from the server map).
+        // (evicting the id the caller is about to upsert would drop it from memory
+        // entirely while an upsert for it is in flight).
         if (session.status === "running" || id === protectedId) {
           continue;
         }
@@ -626,7 +634,6 @@ export class SessionAggregator {
       state.artifactFinished.delete(oldestId);
       state.liveFinished.delete(oldestId);
       state.suppressedMemoryLiveRuns.delete(oldestId);
-      this.emit({ t: "session_removed", sourceId: state.discovered.instance.sourceId, runId: oldestId });
     }
   }
 
@@ -1272,7 +1279,12 @@ function mergeSessionPreservingVisibleDetail(
     existing.steps.length > 0 &&
     (incoming.steps.length < existing.steps.length || incoming.totals.steps < existing.totals.steps);
   const preserveFinalText = existing.finalText.trim().length > 0 && incoming.finalText.trim().length === 0;
-  if (!preserveTimeline && !preserveFinalText) {
+  // A stripped list/summary upsert carries no ctx/sysPrompt (they live only on the
+  // lazy detail read). When the loaded detail already holds them, keep them rather
+  // than let `...incoming` erase them.
+  const preserveCtx = existing.ctx !== undefined && incoming.ctx === undefined;
+  const preserveSysPrompt = existing.sysPrompt !== undefined && incoming.sysPrompt === undefined;
+  if (!preserveTimeline && !preserveFinalText && !preserveCtx && !preserveSysPrompt) {
     return incoming;
   }
 
@@ -1298,6 +1310,13 @@ function mergeSessionPreservingVisibleDetail(
           ...(existing.finalTr === undefined ? {} : { finalTr: existing.finalTr }),
         }
       : {}),
+    ...(preserveCtx ? { ctx: existing.ctx } : {}),
+    ...(preserveSysPrompt
+      ? {
+          sysPrompt: existing.sysPrompt,
+          ...(existing.sysPromptTr === undefined ? {} : { sysPromptTr: existing.sysPromptTr }),
+        }
+      : {}),
   };
 }
 
@@ -1306,6 +1325,10 @@ function toBrowserListSession(session: SourceStampedSession): SourceStampedSessi
     instrTr: _instrTr,
     recalled: _recalled,
     finalTr: _finalTr,
+    // Per-turn context + compiled system prompt are detail-only; keep list rows light.
+    ctx: _ctx,
+    sysPrompt: _sysPrompt,
+    sysPromptTr: _sysPromptTr,
     ...withoutDetailText
   } = session;
   return {

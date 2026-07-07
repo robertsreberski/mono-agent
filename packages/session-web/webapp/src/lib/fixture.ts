@@ -689,4 +689,109 @@ export const FIXTURE_SESSIONS: Session[] = [
       },
     ],
   },
+
+  // 7 — CHAT with full per-turn context: prior history + recalled memory + compiled prompt.
+  {
+    id: "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+    conversationId: "chat:context-demo",
+    cwd: "/Users/example/personal-agent",
+    instance: "personal-agent",
+    sourceId: "personal-agent",
+    startTs: "2026-07-04T13:20:05.000Z",
+    durMs: 18400,
+    kind: "chat",
+    trigger: "chat",
+    source: "chat",
+    title: "Where did we land on the PWA rollout?",
+    outcome: "notified",
+    model: "claude-opus-4-8",
+    provider: "anthropic",
+    api: "anthropic-messages",
+    effort: "medium",
+    instr: "Where did we land on the PWA rollout?",
+    instrTr: false,
+    hasRecall: true,
+    recalled: "## Memory (recalled)\n\n- The session-web PWA ships behind `tailscale serve`.",
+    recalledTr: false,
+    ctx: {
+      histCount: 3,
+      hist: [
+        { role: "user", text: "Can you get the session-web PWA live today?", ts: "2026-07-04T12:50:00.000Z" },
+        {
+          role: "assistant",
+          text: "Yes — I deployed it behind `tailscale serve` on the loopback web app.",
+          ts: "2026-07-04T12:52:10.000Z",
+        },
+        { role: "user", text: "Great. Remind me where we landed when I ask later." },
+      ],
+      mem: {
+        text:
+          "- The session-web PWA ships behind `tailscale serve` at https://mickey-home.tail8a9beb.ts.net/.\n" +
+          "- 7 agents were restarted onto the `live` channel.",
+        src: "bujo",
+      },
+    },
+    sysPrompt:
+      "You are Robert's personal agent. Answer concisely and cite the recalled memory when relevant.\n" +
+      "[skills, tools, and soul omitted for brevity]",
+    finalText:
+      "We shipped it — the PWA is live behind `tailscale serve` at the mickey-home tailnet URL, and 7 agents are on the `live` channel.",
+    finalTr: false,
+    status: "done",
+    totals: { asst: 1, tcalls: 0, think: 1, tokIn: 6100, tokOut: 420, tokCache: 120000, cost: 0.052, steps: 2 },
+    toolCounts: {},
+    steps: [
+      { k: "prompt", ts: "2026-07-04T13:20:05.200Z", text: "Where did we land on the PWA rollout?" },
+      {
+        k: "assistant",
+        ts: "2026-07-04T13:20:12.400Z",
+        think: [{ t: "The recalled memory already carries the rollout state; I can answer directly.", tr: false }],
+        calls: [],
+        text: "We shipped it — the PWA is live behind `tailscale serve`, and 7 agents are on the `live` channel.",
+        u: { i: 6100, o: 420, c: 120000, cost: 0.052 },
+      },
+    ],
+  },
+
+  // 8 — OLD recording (pre-turn_context): only the compiled system prompt survives.
+  {
+    id: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+    conversationId: "cron:legacy-scan",
+    cwd: "/Users/example/personal-agent",
+    instance: "personal-agent",
+    sourceId: "personal-agent",
+    startTs: "2026-07-03T07:10:00.000Z",
+    durMs: 60200,
+    kind: "focus-scan",
+    trigger: "cron",
+    source: "cron",
+    title: "Legacy focus scan (no turn context)",
+    outcome: "silent",
+    model: "gpt-5.5",
+    provider: "openai-codex",
+    api: "openai-codex-responses",
+    effort: "low",
+    instr: "Run the hourly focus scan.",
+    instrTr: false,
+    hasRecall: false,
+    sysPrompt:
+      "You are Robert's personal agent running the hourly focus scan.\n" +
+      "[compiled prompt persisted before the turn_context event existed]",
+    finalText: "NOTHING_TO_REPORT",
+    finalTr: false,
+    status: "done",
+    totals: { asst: 1, tcalls: 0, think: 0, tokIn: 5200, tokOut: 180, tokCache: 90000, cost: 0.031, steps: 2 },
+    toolCounts: {},
+    steps: [
+      { k: "prompt", ts: "2026-07-03T07:10:00.300Z", text: "Run the hourly focus scan." },
+      {
+        k: "assistant",
+        ts: "2026-07-03T07:10:40.000Z",
+        think: [],
+        calls: [],
+        text: "NOTHING_TO_REPORT",
+        u: { i: 5200, o: 180, c: 90000, cost: 0.031 },
+      },
+    ],
+  },
 ];
