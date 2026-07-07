@@ -44,12 +44,41 @@ describe("check-getting-started-version-pins", () => {
           text: [
             'version=<published-version>',
             'npm i -g "@mono-agent/agent-app@$version" "@mono-agent/tui@$version"',
+            'npm i -g "mono-agent@$version"',
             "npm i -g @mono-agent/agent-app@latest",
+            "npx mono-agent init",
           ].join("\n"),
         },
       ],
     });
     expect(result.pins).toEqual([]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it("flags a drifted unscoped `mono-agent@X.Y.Z` alias pin", async () => {
+    const result = await checkGettingStartedVersionPins({
+      agentAppVersion: "0.5.0",
+      docRecords: [
+        { path: "docs/getting-started/install.md", text: "npm i -g mono-agent@0.4.1" },
+      ],
+    });
+    expect(result.pins).toHaveLength(1);
+    expect(result.pins[0].pin).toBe("mono-agent@0.4.1");
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toContain("mono-agent@0.4.1");
+    expect(result.issues[0]).toContain("0.5.0");
+  });
+
+  it("does not double-count the `mono-agent` inside a scoped `@mono-agent/<pkg>` pin", async () => {
+    const result = await checkGettingStartedVersionPins({
+      agentAppVersion: "0.5.0",
+      docRecords: [
+        { path: "docs/getting-started/install.md", text: "npm i -g @mono-agent/agent-app@0.5.0" },
+      ],
+    });
+    // Exactly one pin (the scoped name), not an extra spurious `mono-agent@0.5.0`.
+    expect(result.pins).toHaveLength(1);
+    expect(result.pins[0].pin).toBe("@mono-agent/agent-app@0.5.0");
     expect(result.issues).toEqual([]);
   });
 });

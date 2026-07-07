@@ -11,15 +11,23 @@ import { fileURLToPath } from "node:url";
  * version pin in the getting-started docs disagrees with it — so a pin is either
  * current or the docs go versionless (the preferred, un-rottable form). A shell
  * placeholder like `@mono-agent/agent-app@$version` is NOT a pin and is ignored.
+ *
+ * Covers BOTH the scoped `@mono-agent/<pkg>@X.Y.Z` pins and the unscoped bare
+ * alias `mono-agent@X.Y.Z` (the alias releases in the same lockstep, so a pinned
+ * `npm i -g mono-agent@X.Y.Z` in these docs must track the same version).
  */
 
 const GETTING_STARTED_DIR = join("docs", "getting-started");
 const AGENT_APP_PACKAGE_JSON = join("packages", "agent-app", "package.json");
 
-// `@mono-agent/<name>@<semver>` — a literal, concrete version pin. The version
-// must start with a digit, so `$version` / `<published-version>` placeholders and
-// dist-tags (`@latest`) never match.
-const VERSION_PIN_PATTERN = /@mono-agent\/[a-z0-9-]+@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gu;
+// A literal, concrete version pin for either the scoped `@mono-agent/<name>` or
+// the unscoped bare `mono-agent` alias. The leading negative lookbehind stops the
+// unscoped branch from matching the `mono-agent` inside a scoped `@mono-agent/...`
+// name (that inner `mono-agent` is preceded by `@`). The version must start with a
+// digit, so `$version` / `<published-version>` placeholders and dist-tags
+// (`@latest`) never match.
+const VERSION_PIN_PATTERN =
+  /(?<![\w@/-])(?:@mono-agent\/[a-z0-9-]+|mono-agent)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gu;
 
 /**
  * @param {{ repoRoot?: string, docRecords?: { path: string, text: string }[], agentAppVersion?: string }} [options]

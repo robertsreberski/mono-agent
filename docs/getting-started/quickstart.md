@@ -10,7 +10,7 @@ This page walks the happy path: scaffold a config-first agent with `mono-agent i
 
 ## Prerequisites
 
-You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you point at before you ask for a model response. The `mono-agent` bin ships inside `@mono-agent/agent-app` — install it globally with `npm i -g @mono-agent/agent-app`, or run any command without installing via `npm exec --package @mono-agent/agent-app -- mono-agent ...` (there is no standalone `mono-agent` package, so `npx mono-agent` would fail). The default model is `claude:claude-sonnet-4-6`, which reads `ANTHROPIC_API_KEY` from the environment when a request reaches the provider. See [Install](/getting-started/install/) for the full setup and [Environment Variables](/config/env-vars/) for the keys each backend expects.
+You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you point at before you ask for a model response. The quickest path is the bare alias — `npx mono-agent ...` with no install, or `npm i -g mono-agent`. The CLI itself ships inside `@mono-agent/agent-app` (the alias just delegates to it), so `npm i -g @mono-agent/agent-app` or `npm exec --package @mono-agent/agent-app -- mono-agent ...` are equivalent. The default model is `claude:claude-sonnet-4-6`, which reads `ANTHROPIC_API_KEY` from the environment when a request reaches the provider. See [Install](/getting-started/install/) for the full setup and [Environment Variables](/config/env-vars/) for the keys each backend expects.
 
 If you are testing unreleased source from a clone, replace `mono-agent` in the commands below with the built CLI entry:
 
