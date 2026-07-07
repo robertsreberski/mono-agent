@@ -22,6 +22,10 @@ pnpm run sync                # re-mirror ../docs -> src/content/docs without bui
 
 `scripts/check-links.mjs` validates the built `dist/` (the real rendered output, so it is independent of the Markdown processor) and fails the build on a broken internal link.
 
+## CI
+
+The repo's `ci.yml` has a dedicated parallel **`website`** job (separate from `verify`) that runs `pnpm install --frozen-lockfile && pnpm run build` here on every pull request and every push to `main`. That is the same `sync-content` → `astro build` → `check-links` pipeline as above, so a broken internal doc link (or any Astro build failure) turns the **`website`** check red. This repo does not use GitHub required-status-check enforcement, so nothing blocks a merge automatically — a red **`website`** check must be treated as a merge blocker by convention (do not merge over it). That is what keeps the docs site from rotting silently.
+
 ## Version pins — do not bump blindly
 
 `package.json` pins **`astro@^5.18`** and **`@astrojs/starlight@^0.37`**. This is deliberate:
