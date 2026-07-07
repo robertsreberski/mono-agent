@@ -158,8 +158,9 @@ const CHANNEL_OWNED_SEND_TOOLS: Record<string, readonly string[]> = {
  * - Direction A: an adapter send tool is allowed but its channel is DISABLED — the
  *   tool will never be exposed; append a note and downgrade tools to `waiting`
  *   (unless it is already `error`). This is a genuine misconfiguration.
- * - Direction B: a channel is ENABLED but no send tool is allowed — replies still
- *   work, so this is a HINT only (status unchanged).
+ * - Direction B: a channel is ENABLED and not errored but no send tool is allowed —
+ *   replies still work, so this is a HINT only (status unchanged). Skipped for a
+ *   channel in `error` status, where "replies still work" would be misleading.
  *
  * Reads the sections built earlier (no channel re-loading). Guards for a missing
  * tools section (coreConfig failed to load), in which case there is nothing to annotate.
@@ -193,8 +194,10 @@ function applyToolChannelCrossChecks(
           status = "waiting";
         }
       }
-    } else if (allowedForCh.length === 0) {
-      // Direction B: channel enabled but no send tool allowed — a non-fatal hint.
+    } else if ((section.status === "ok" || section.status === "waiting") && allowedForCh.length === 0) {
+      // Direction B: channel enabled AND not errored, but no send tool allowed — a
+      // non-fatal hint. An errored channel has a structural problem, so appending
+      // "replies still work…" onto it would be misleading; skip it there.
       extraDetails.push(
         `${channel} is enabled without ${sendTools.join("/")} in allowedTools — replies still work, ` +
           `but the agent cannot send proactively${channel === "telegram" ? " or ask blocking questions" : ""}.`,
@@ -762,10 +765,19 @@ async function toolsSection(config: MonoAgentConfig, input: MonoAgentAppConfigIn
         continue;
       }
       if (name === "memory_recall") {
-        // memory_recall is auto-provisioned from memory.recallTool.enabled — listing
-        // it here is a real misconfiguration (it is not a gated allowedTools entry).
-        status = "waiting";
-        details.push("memory_recall is auto-provisioned by memory.recallTool.enabled and does not belong in allowedTools.");
+        // memory_recall is auto-provisioned from memory.recallTool.enabled and is NOT
+        // allowlist-gated. Listing it is harmless redundancy WHEN recall is on, but a
+        // real misconfiguration when it is off (the user expects a recall they won't get).
+        if (config.memory?.recallTool?.enabled === true) {
+          details.push(
+            "memory_recall in allowedTools has no effect — recall is auto-provisioned by memory.recallTool.enabled (already on). You can remove this entry.",
+          );
+        } else {
+          status = "waiting";
+          details.push(
+            "memory_recall is in allowedTools but memory.recallTool.enabled is off — recall will not work. Enable memory.recallTool (or remove this entry).",
+          );
+        }
         continue;
       }
       if (!isKnownToolName(name)) {

@@ -136,7 +136,7 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "tools",
-          "status": "waiting",
+          "status": "ok",
         },
         {
           "id": "sandbox",

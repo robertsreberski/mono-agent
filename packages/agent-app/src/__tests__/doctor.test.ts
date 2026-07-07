@@ -1653,14 +1653,31 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
-  it("flags memory_recall in allowedTools as a misconfiguration (waiting)", async () => {
+  it("notes memory_recall as a harmless no-op (status ok) when recall is enabled", async () => {
+    // recallTool enabled → memory_recall is auto-provisioned; listing it is redundant
+    // but harmless, so it is an INFO note that does not downgrade the tools status.
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["memory_recall", "Read"] },
+      { memory: { mode: "lite", path: dir, recallTool: { enabled: true } } },
+    );
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).toMatch(/has no effect|already on/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("flags memory_recall in allowedTools as waiting when recall is not enabled", async () => {
+    // No recallTool.enabled → recall will not work despite the allowlist entry.
     const configPath = await writeToolsConfig({ allowedTools: ["memory_recall"] });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
 
     const tools = sectionById(report, "tools");
     expect(tools.status).toBe("waiting");
-    expect(tools.details.join("\n")).toMatch(/auto-provisioned/u);
+    expect(tools.details.join("\n")).toMatch(/recall will not work|recallTool/u);
     expect(report.ok).toBe(true);
   });
 
