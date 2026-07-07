@@ -12,22 +12,26 @@ import { fileURLToPath } from "node:url";
  * current or the docs go versionless (the preferred, un-rottable form). A shell
  * placeholder like `@mono-agent/agent-app@$version` is NOT a pin and is ignored.
  *
- * Covers BOTH the scoped `@mono-agent/<pkg>@X.Y.Z` pins and the unscoped bare
- * alias `mono-agent@X.Y.Z` (the alias releases in the same lockstep, so a pinned
- * `npm i -g mono-agent@X.Y.Z` in these docs must track the same version).
+ * Covers the scoped `@mono-agent/<pkg>@X.Y.Z` pins, the unscoped
+ * `create-mono-agent@X.Y.Z` installer, and (still) the bare `mono-agent@X.Y.Z`
+ * form — all release in the same lockstep, so any pinned `npm i -g …@X.Y.Z` in
+ * these docs must track the same version. (The bare `mono-agent` name is no longer
+ * published, but the pattern is kept so an accidental stale pin can't slip in.)
  */
 
 const GETTING_STARTED_DIR = join("docs", "getting-started");
 const AGENT_APP_PACKAGE_JSON = join("packages", "agent-app", "package.json");
 
-// A literal, concrete version pin for either the scoped `@mono-agent/<name>` or
-// the unscoped bare `mono-agent` alias. The leading negative lookbehind stops the
-// unscoped branch from matching the `mono-agent` inside a scoped `@mono-agent/...`
-// name (that inner `mono-agent` is preceded by `@`). The version must start with a
-// digit, so `$version` / `<published-version>` placeholders and dist-tags
+// A literal, concrete version pin for the scoped `@mono-agent/<name>`, the
+// unscoped `create-mono-agent` installer, or the bare `mono-agent` name. The
+// leading negative lookbehind stops a shorter alternative from matching inside a
+// longer name (e.g. the `mono-agent` inside `@mono-agent/…` — preceded by `@` — or
+// inside `create-mono-agent` — preceded by `-`); the longer `create-mono-agent`
+// alternative is listed before `mono-agent` so it wins. The version must start
+// with a digit, so `$version` / `<published-version>` placeholders and dist-tags
 // (`@latest`) never match.
 const VERSION_PIN_PATTERN =
-  /(?<![\w@/-])(?:@mono-agent\/[a-z0-9-]+|mono-agent)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gu;
+  /(?<![\w@/-])(?:@mono-agent\/[a-z0-9-]+|create-mono-agent|mono-agent)@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/gu;
 
 /**
  * @param {{ repoRoot?: string, docRecords?: { path: string, text: string }[], agentAppVersion?: string }} [options]

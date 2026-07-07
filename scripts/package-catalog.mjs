@@ -14,9 +14,11 @@ export const PACKAGE_CATEGORIES = [
 // Within that set, `tier` splits them three ways:
 //   - `tier: "plugin"` — optional plugin-tier extras (loaded via `channels.plugins[]`
 //     or as request-scoped runtime extensions, living under `extras/`);
-//   - `tier: "alias"` — the unscoped `mono-agent` npm alias whose bin delegates to
-//     `@mono-agent/agent-app`; carries no responsibility of its own and is exempt
-//     from the `@mono-agent/` scope rule in the arch and release checks;
+//   - `tier: "alias"` — the unscoped `create-mono-agent` npm-init installer whose
+//     `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/agent-app`;
+//     carries no responsibility of its own and is exempt from the `@mono-agent/`
+//     scope rule in the arch and release checks (the bare `mono-agent` npm name is
+//     unavailable — npm blocks it as too similar to an unrelated `monoagent`);
 //   - no `tier` — the core app-closure packages.
 // All three counts are guarded by scripts/release/__tests__/package-count-drift.test.mjs.
 export const packageCatalog = [
@@ -113,10 +115,10 @@ export const packageCatalog = [
     publishable: true,
   },
   {
-    dir: "mono-agent",
-    name: "mono-agent",
+    dir: "create-mono-agent",
+    name: "create-mono-agent",
     category: "app",
-    responsibility: "Unscoped npm alias so `npx mono-agent`/`npm i -g mono-agent` work; a delegating bin that forwards every command to @mono-agent/agent-app's CLI.",
+    responsibility: "Unscoped npm-init installer (`npm create mono-agent`) shipping `create-mono-agent` and `mono-agent` bins that forward every command to @mono-agent/agent-app's CLI.",
     allowedDependencyCategories: ["app"],
     publishable: true,
     tier: "alias",

@@ -8,21 +8,23 @@ Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.a
 
 ## Quickstart: An Agent Folder From One Config File
 
-Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a validated agent folder with the `mono-agent` CLI. Use Node.js 20 or newer. Scaffold with no install using the bare alias:
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a validated agent folder with the `mono-agent` CLI. Use Node.js 20 or newer. Scaffold with no install:
 
 ```bash
-npx mono-agent init
+npm create mono-agent@latest init      # npm-init convention → resolves create-mono-agent
+# equivalently:
+npx create-mono-agent init
 ```
 
-Or install the CLI globally — either the bare alias or the scoped host directly:
+Or install the CLI globally — the installer (which puts the natural `mono-agent` command on your `PATH`) or the scoped host directly:
 
 ```bash
-npm i -g mono-agent                 # bare alias; delegates to @mono-agent/agent-app
+npm i -g create-mono-agent          # gives you the `mono-agent` command
 # or, equivalently:
 npm i -g @mono-agent/agent-app      # the scoped host that owns the CLI
 ```
 
-The `mono-agent` package is a thin alias whose bin forwards every command to `@mono-agent/agent-app`; behaviour is identical either way.
+`create-mono-agent` is a thin installer whose `create-mono-agent` and `mono-agent` bins forward every command to `@mono-agent/agent-app`; behaviour is identical either way. (The bare `mono-agent` npm name isn't ours — npm blocks it as too similar to an unrelated `monoagent` package — so the installer follows the `create-*` convention instead.)
 
 The easiest path on a terminal is the guided setup — it presents the recipe catalog, prompts for the model and channel add-ons, scaffolds, validates, and prints a secrets checklist:
 
@@ -104,7 +106,7 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
 
-Current catalog count: 17 core publishable packages plus 3 plugin-tier extras plus 1 unscoped alias (`mono-agent`, delegates to `@mono-agent/agent-app`).
+Current catalog count: 17 core publishable packages plus 3 plugin-tier extras plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer that ships `create-mono-agent`/`mono-agent` bins delegating to `@mono-agent/agent-app`).
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
@@ -115,7 +117,7 @@ Current catalog count: 17 core publishable packages plus 3 plugin-tier extras pl
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
 | `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. Built-in channel sections cover Telegram, Slack, webhook, OpenAI API, cron, TUI stream, and live relay; A2A and WhatsApp are config-loaded channel plugins. Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
 | `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
-| `app` | `@mono-agent/agent-app`, `mono-agent` (unscoped `alias` tier) | `app` | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. `mono-agent` is the bare npm alias whose bin delegates to it so `npx mono-agent` works. |
+| `app` | `@mono-agent/agent-app`, `create-mono-agent` (unscoped `alias` tier) | `app` | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. `create-mono-agent` is the unscoped `npm create mono-agent` installer whose `create-mono-agent`/`mono-agent` bins delegate to it (the bare `mono-agent` npm name is blocked as too similar to an unrelated `monoagent`). |
 | `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
 
 ## Dependency Direction
