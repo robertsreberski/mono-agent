@@ -11,10 +11,14 @@ export const PACKAGE_CATEGORIES = [
 ];
 
 // `publishable: true` packages release in lockstep on the npm-release tag path.
-// Within that set, `tier: "plugin"` marks the optional plugin-tier extras (loaded
-// via `channels.plugins[]` or as request-scoped runtime extensions, living under
-// `extras/`); packages without `tier` are the core app-closure tier. The two
-// counts are guarded by scripts/release/__tests__/package-count-drift.test.mjs.
+// Within that set, `tier` splits them three ways:
+//   - `tier: "plugin"` — optional plugin-tier extras (loaded via `channels.plugins[]`
+//     or as request-scoped runtime extensions, living under `extras/`);
+//   - `tier: "alias"` — the unscoped `mono-agent` npm alias whose bin delegates to
+//     `@mono-agent/agent-app`; carries no responsibility of its own and is exempt
+//     from the `@mono-agent/` scope rule in the arch and release checks;
+//   - no `tier` — the core app-closure packages.
+// All three counts are guarded by scripts/release/__tests__/package-count-drift.test.mjs.
 export const packageCatalog = [
   {
     dir: "a2a-adapter",
@@ -107,6 +111,15 @@ export const packageCatalog = [
     responsibility: "Provides a MemoryStore over an external Supermemory instance (local OSS binary or hosted cloud) via its REST API: server-side extraction, hybrid recall, and best-effort writes.",
     allowedDependencyCategories: ["core", "context"],
     publishable: true,
+  },
+  {
+    dir: "mono-agent",
+    name: "mono-agent",
+    category: "app",
+    responsibility: "Unscoped npm alias so `npx mono-agent`/`npm i -g mono-agent` work; a delegating bin that forwards every command to @mono-agent/agent-app's CLI.",
+    allowedDependencyCategories: ["app"],
+    publishable: true,
+    tier: "alias",
   },
   {
     dir: "observability",
