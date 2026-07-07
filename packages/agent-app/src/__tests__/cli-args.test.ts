@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadCliEnvFile, parseCliArgs, renderHelp } from "../cli.js";
+import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp } from "../cli.js";
 
 const tempDirs: string[] = [];
 
@@ -206,6 +206,12 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
   });
 
+  it("parses --version, -v, and the bare `version` command", () => {
+    expect(parseCliArgs(["--version"]).command).toBe("version");
+    expect(parseCliArgs(["-v"]).command).toBe("version");
+    expect(parseCliArgs(["version"]).command).toBe("version");
+  });
+
   it("parses web command flags", () => {
     const result = parseCliArgs([
       "web",
@@ -273,5 +279,31 @@ describe("loadCliEnvFile", () => {
       delete process.env.MONO_AGENT_TEST_ENV_FILE_FRESH;
       delete process.env.MONO_AGENT_TEST_ENV_FILE_PRESET;
     }
+  });
+});
+
+describe("monoAgentVersion", () => {
+  it("reports this package's semver version", () => {
+    expect(monoAgentVersion()).toMatch(/^\d+\.\d+\.\d+/u);
+  });
+});
+
+describe("describeChannelStatus", () => {
+  it("expands an object summary value instead of printing [object Object]", () => {
+    const rendered = describeChannelStatus({
+      kind: "running",
+      summary: {
+        invokeUrl: "http://127.0.0.1:9999/webhook/invoke",
+        port: 9999,
+        invokeUrls: { default: "http://127.0.0.1:9999/webhook/invoke" },
+      },
+    });
+    expect(rendered).not.toContain("[object Object]");
+    expect(rendered).toContain("invokeUrls={default: http://127.0.0.1:9999/webhook/invoke}");
+    expect(rendered).toContain("port=9999");
+  });
+
+  it("renders a non-running channel as kind: reason", () => {
+    expect(describeChannelStatus({ kind: "disabled", reason: "not enabled" })).toBe("disabled: not enabled");
   });
 });
