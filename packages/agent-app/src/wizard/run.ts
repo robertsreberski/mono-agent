@@ -98,15 +98,17 @@ async function collectCustom(ctx: { cwd: string }): Promise<WizardAnswers> {
     }),
   );
   draft.model = model === "__other__"
-    ? guard(await p.text({ message: "Model reference", placeholder: "pi:ollama:llama3.1:8b" }))
+    ? guard(
+        await p.text({
+          message: "Model reference",
+          placeholder: "pi:ollama:llama3.1:8b",
+          validate: (v) =>
+            (v ?? "").trim().length === 0
+              ? "Enter a provider:model reference (e.g. pi:ollama:llama3.1:8b)"
+              : undefined,
+        }),
+      )
     : model;
-
-  if (LOCAL_PROVIDER_MODEL.test(draft.model)) {
-    p.note(
-      "A matching local provider block is added automatically.\nThe first turn may be slow while the model loads.",
-      "Local model",
-    );
-  }
 
   // Optional fallback chain.
   if (guard(await p.confirm({ message: "Add fallback models?", initialValue: false }))) {
@@ -231,6 +233,8 @@ async function promptTools(draft: DraftAnswers): Promise<void> {
   const optionOrder = new Map(options.map((option, index) => [option.value, index]));
   const recommended = recommendedToolSelection(toWizardAnswers(draft));
 
+  p.note("Memory recall and MCP-server tools are not gated by this list.");
+
   for (;;) {
     const tools = guard(
       await p.multiselect({
@@ -240,7 +244,6 @@ async function promptTools(draft: DraftAnswers): Promise<void> {
         required: false,
       }),
     );
-    p.note("Memory recall and MCP-server tools are not gated by this list.");
 
     if (tools.length === 0) {
       const proceed = guard(
@@ -268,6 +271,13 @@ async function promptTools(draft: DraftAnswers): Promise<void> {
  * they are excluded from the user-facing capabilities line. A "no" cancels.
  */
 async function confirmSummary(draft: DraftAnswers, ctx: { cwd: string }): Promise<void> {
+  if (LOCAL_PROVIDER_MODEL.test(draft.model)) {
+    p.note(
+      "A matching local provider block is added automatically.\nThe first turn may be slow while the model loads.",
+      "Local model",
+    );
+  }
+
   const answers = toWizardAnswers(draft);
   const plan = composeWizardPlan(answers, {
     dirBasename: basename(ctx.cwd),
