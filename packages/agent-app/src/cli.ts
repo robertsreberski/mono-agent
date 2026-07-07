@@ -41,6 +41,7 @@ import {
 } from "./background.js";
 import type { BackgroundDeps, InstanceTarget } from "./background.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
+import { formatChannelFactValue } from "./channel-fact-format.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelStatus } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
@@ -1486,26 +1487,6 @@ export function describeChannelStatus(status: ChannelStatus): string {
     return facts.length === 0 ? "running" : `running (${facts})`;
   }
   return `${status.kind}: ${status.reason}`;
-}
-
-/**
- * Render a channel-status summary value for the human-readable status line.
- * Objects and arrays are expanded to `key: value` pairs instead of the useless
- * `[object Object]` that a bare `String()` produced (E4: the webhook summary's
- * `invokeUrls` map printed `invokeUrls=[object Object]`).
- */
-function formatChannelFactValue(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return String(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(formatChannelFactValue).join(", ")}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (entries.length === 0) {
-    return "{}";
-  }
-  return `{${entries.map(([key, inner]) => `${key}: ${formatChannelFactValue(inner)}`).join(", ")}}`;
 }
 
 /**

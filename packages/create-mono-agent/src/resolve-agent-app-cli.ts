@@ -24,7 +24,7 @@ export function resolveAgentAppCliEntry(from: string | URL = import.meta.url): s
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `the mono-agent alias could not find @mono-agent/agent-app (its CLI host) — reinstall the package (\`npm i -g mono-agent\`). (${reason})`,
+      `the create-mono-agent installer could not find @mono-agent/agent-app (its CLI host) — reinstall it (\`npm i -g create-mono-agent\`). (${reason})`,
     );
   }
   const manifest = require("@mono-agent/agent-app/package.json") as AgentAppManifest;
