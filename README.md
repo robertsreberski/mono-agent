@@ -90,13 +90,13 @@ To use it as a selected mono-agent skill instead, point `context.skillsRoot` at 
 
 ## Package Architecture
 
-Package categories are catalog metadata, documentation, and architecture-guard inputs. Publishable packages live under `packages/<package-name>` and unpublished optional extras live under `extras/<package-name>`. Both use `@mono-agent/<package-name>` names, but extras are cataloged with `publishable: false` and are loaded only through explicit composition or `channels.plugins[]`.
+Package categories are catalog metadata, documentation, and architecture-guard inputs. Core packages live under `packages/<package-name>` and optional **plugin-tier** extras live under `extras/<package-name>`. Both use `@mono-agent/<package-name>` names and both are `publishable: true` (released together on the npm lockstep tag); the extras are marked `tier: "plugin"` and are loaded only through explicit composition or `channels.plugins[]`.
 
 See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
 
-Current catalog count: 17 publishable packages plus 3 unpublished extras.
+Current catalog count: 17 core publishable packages plus 3 plugin-tier extras.
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
@@ -137,7 +137,7 @@ demos/final-agent (not a workspace package)
 Rules for future packages:
 
 - New publishable packages live under `packages/<package-name>` and publish as `@mono-agent/<package-name>`.
-- Unpublished optional add-ons may live under `extras/<package-name>` when explicitly cataloged with `publishable: false`.
+- Optional plugin-tier add-ons may live under `extras/<package-name>` when cataloged with `publishable: true` and `tier: "plugin"` (published in the lockstep but outside the core app closure).
 - Add every workspace package to `scripts/package-catalog.mjs` with category, responsibility, and allowed dependency categories.
 - Communication packages use `*-adapter` naming and must not depend on other adapters, the harness, or operator surfaces.
 - Core config stays adapter-neutral; adapter credentials and allowlists live with the adapter package.

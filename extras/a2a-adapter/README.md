@@ -10,7 +10,9 @@ Communication adapter.
 
 Expose a agent responder as an A2A provider and call remote A2A agents through direct Agent Card discovery.
 
-This is a private extras package, not part of the publishable app closure. `@mono-agent/agent-app` loads its provider channel only when a host declares it under `channels.plugins[]`.
+This is a **plugin-tier** package: it publishes to npm in the mono-agent lockstep at the same version as the core packages, but it is not part of the core `@mono-agent/agent-app` dependency closure. `@mono-agent/agent-app` loads its provider channel only when a host declares it under `channels.plugins[]`.
+
+**Upgrading from 0.4.0 (npm skew):** the standalone `0.4.0` build predates the `channels.plugins[]` seam — it has no `createChannelDriver` export, so `agent-app` refuses it with `Channel plugin @mono-agent/a2a-adapter must export createChannelDriver(options) returning a ChannelDriver`, and it drags the retired `@mono-agent/settings` package into your install tree. Upgrade to the current lockstep version (matching your `@mono-agent/agent-app`) to fix both.
 
 ## Install / Usage
 
