@@ -193,6 +193,50 @@ describe("readInstanceSession", () => {
     expect(await readInstanceSession(discovered, "run-does-not-exist")).toBeUndefined();
   });
 
+  it("strips per-turn context from list rows but surfaces it on the detail read", async () => {
+    const agentDir = await tmp("agent");
+    const artifactDir = join(agentDir, "runs");
+    await seedRun({
+      artifactDir,
+      runId: "run-ctx",
+      conversationId: "chat:ctx",
+      userInput: "Carry the turn context",
+      text: "Context answer.",
+      source: "chat",
+      systemPrompt: "You are the compiled system prompt for this run.",
+      turnContext: {
+        historyCount: 2,
+        historyOmitted: false,
+        history: [
+          { role: "user", content: "earlier question", timestamp: "2026-07-04T00:00:00.000Z" },
+          { role: "assistant", content: "earlier answer" },
+        ],
+        memory: { content: "recalled memory block", source: "bujo" },
+      },
+      at: 9_500_000,
+    });
+    const discovered = await discoverOne(artifactDir);
+
+    // List rows stay light: no ctx / sysPrompt / sysPromptTr leaks into snapshots.
+    const [row] = await listInstanceSessions(discovered, { maxRuns: 50 });
+    expect(row?.id).toBe("run-ctx");
+    expect(row?.ctx).toBeUndefined();
+    expect(row?.sysPrompt).toBeUndefined();
+    expect(row?.sysPromptTr).toBeUndefined();
+
+    // The lazy detail read surfaces both the compiled prompt and the folded context.
+    const detail = await readInstanceSession(discovered, "run-ctx");
+    expect(detail?.sysPrompt).toBe("You are the compiled system prompt for this run.");
+    expect(detail?.ctx).toEqual({
+      histCount: 2,
+      hist: [
+        { role: "user", text: "earlier question", ts: "2026-07-04T00:00:00.000Z" },
+        { role: "assistant", text: "earlier answer" },
+      ],
+      mem: { text: "recalled memory block", src: "bujo" },
+    });
+  });
+
   it("maps persisted session identity fields into summary and detail sessions", async () => {
     const agentDir = await tmp("agent");
     const artifactDir = join(agentDir, "runs");

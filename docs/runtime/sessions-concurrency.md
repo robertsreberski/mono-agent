@@ -15,7 +15,7 @@ Mono-agent uses "session" for four related but different boundaries:
 | `runtime.session` config block | Agent config / env | Whether turns try to reuse a warm provider session and how long idle warmth lasts | Changing config, setting `mode: "per-message"`, or disabling resume support |
 | Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, cancelled successful turn, harness disposal, or process restart when only in-memory |
 | Durable Pi transcript | Pi-native JSONL store under `providers.piNative.piSessionsRoot` | Cross-restart resume for Pi-native provider sessions | `mono-agent restart --force`, deleting the store, changing the durable session id source, or leaving `piSessionsRoot` unset |
-| Web run-Session | `mono-agent web` / `@mono-agent/session-web` | Browser-visible run artifact: one recorded run with prompt, events, status, totals, and final text | Artifact retention/removal, source disappearance, or the web aggregator's per-instance run cap; provider rollover does not rewrite old run records |
+| Web run-Session | `mono-agent web` / `@mono-agent/session-web` | Browser-visible run artifact: one recorded run with prompt, events, status, totals, and final text | Artifact retention/removal or source disappearance; the aggregator's in-memory working-set cap (`--max-runs`, default 200) only evicts completed runs from memory — they stay reachable via disk paging ("Load older") — and provider rollover does not rewrite old run records |
 
 Boundary rules:
 

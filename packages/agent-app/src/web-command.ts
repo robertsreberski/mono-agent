@@ -23,6 +23,12 @@ export interface RunWebOptions {
   readonly allowNonLoopback?: boolean;
   /** --include-memory: show memory-maintenance runs in the web operator surface. */
   readonly includeMemory?: boolean;
+  /**
+   * --max-runs: per-instance cap on the in-memory live-fold working set (and the
+   * initial snapshot size). Disk paging remains the full history source, so this
+   * only bounds memory; it does not limit how far "Load older" can reach.
+   */
+  readonly maxRunsPerInstance?: number;
 }
 
 /** Test seams: server boot, browser open, and the shutdown wait are injectable. */
@@ -67,6 +73,7 @@ export async function runWeb(options: RunWebOptions, deps: RunWebDeps = {}): Pro
       ...(options.allowNonLoopback === undefined ? {} : { allowNonLoopback: options.allowNonLoopback }),
       ...(authToken === undefined ? {} : { authToken }),
       ...(options.includeMemory === undefined ? {} : { includeMemory: options.includeMemory }),
+      ...(options.maxRunsPerInstance === undefined ? {} : { maxRunsPerInstance: options.maxRunsPerInstance }),
     });
   } catch (error) {
     stderr.write(`mono-agent web failed to start: ${error instanceof Error ? error.message : String(error)}\n`);

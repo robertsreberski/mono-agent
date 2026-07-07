@@ -96,6 +96,9 @@ export function eventLabel(record: Record<string, unknown>, category: RecordedRu
   if (category === "error") {
     return type ?? stringField(record, "failureKind") ?? "Error";
   }
+  if (type === "turn_context") {
+    return "Turn context";
+  }
   return type ?? "Runtime event";
 }
 

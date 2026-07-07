@@ -271,6 +271,8 @@ export interface RecordedRunListItem {
   readonly sourceDetail?: string;
   /** The user's prompt for this run, persisted so backfill/replay can show it as input. */
   readonly userInput?: string;
+  /** System instructions for this run (redacted + capped), surfaced so replay can show what the model was instructed with. */
+  readonly systemPrompt?: string;
   /** Summary artifact filename under the artifact dir, when the list item came from disk. */
   readonly summaryFileName?: string;
   /** Summary artifact mtime in milliseconds, when the list item came from disk. */

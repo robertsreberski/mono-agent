@@ -226,6 +226,13 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["web", "--port", "notaport"])).toThrow(/--port/u);
   });
 
+  it("parses the web --max-runs cap and rejects bad or misplaced uses", () => {
+    expect(parseCliArgs(["web", "--max-runs", "500"]).maxRunsPerInstance).toBe(500);
+    expect(() => parseCliArgs(["web", "--max-runs", "0"])).toThrow(/--max-runs/u);
+    expect(() => parseCliArgs(["web", "--max-runs", "nope"])).toThrow(/--max-runs/u);
+    expect(() => parseCliArgs(["start", "--max-runs", "500"])).toThrow(/only supported for/u);
+  });
+
   it("includes setup in the help screen", () => {
     expect(renderHelp()).toContain("mono-agent setup");
     expect(renderHelp()).toContain("mono-agent web");

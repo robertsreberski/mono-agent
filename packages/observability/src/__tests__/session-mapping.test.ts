@@ -485,5 +485,136 @@ describe("mapRunToSession", () => {
   });
 });
 
+function baseSummary(overrides: Partial<RunSummary> = {}): RunSummary {
+  return {
+    runId: "run-ctx",
+    conversationId: "chat:ctx",
+    status: "succeeded",
+    durationMs: 0,
+    eventCount: 0,
+    artifactPaths: [],
+    ...overrides,
+  };
+}
+
+describe("mapRunToSession turn_context + systemPrompt", () => {
+  it("maps the LAST turn_context event (last-wins across the resume-replay double-fire)", () => {
+    const events: RuntimeEventLike[] = [
+      // First fire: warm-resume attempt, history omitted.
+      { type: "turn_context", historyCount: 0, historyOmitted: true, timestamp: "2026-07-06T10:00:00.000Z" },
+      // Second fire (retry): the history the model was actually driven with.
+      {
+        type: "turn_context",
+        historyCount: 2,
+        historyOmitted: false,
+        history: [
+          { role: "user", content: "q1", timestamp: "2026-06-01T00:00:00Z" },
+          { role: "assistant", content: "a1", truncated: true },
+        ],
+        memory: { content: "recalled", source: "bujo" },
+        timestamp: "2026-07-06T10:00:01.000Z",
+      },
+    ];
+
+    const session = mapRunToSession(baseSummary({ eventCount: 2 }), events, OPTS);
+
+    expect(session.ctx).toEqual({
+      histCount: 2,
+      hist: [
+        { role: "user", text: "q1", ts: "2026-06-01T00:00:00Z" },
+        { role: "assistant", text: "a1", tr: true },
+      ],
+      mem: { text: "recalled", src: "bujo" },
+    });
+    // historyOmitted:false on the winning event -> histOmitted key absent.
+    expect(session.ctx?.histOmitted).toBeUndefined();
+    // turn_context has no message.content -> it never becomes a timeline step.
+    expect(session.steps).toEqual([]);
+  });
+
+  it("carries histOmitted only when the winning event omitted history", () => {
+    const events: RuntimeEventLike[] = [
+      { type: "turn_context", historyCount: 0, historyOmitted: true, timestamp: "2026-07-06T10:00:00.000Z" },
+    ];
+    const session = mapRunToSession(baseSummary({ eventCount: 1 }), events, OPTS);
+    expect(session.ctx).toEqual({ histCount: 0, histOmitted: true });
+  });
+
+  it("never throws on a malformed turn_context payload and drops bad entries", () => {
+    const events: RuntimeEventLike[] = [
+      {
+        type: "turn_context",
+        historyCount: "not-a-number",
+        historyOmitted: "yes",
+        history: [
+          "string-entry", // non-record -> dropped
+          { role: "user" }, // missing content -> dropped
+          { role: 42, content: "x" }, // non-string role -> dropped
+          { role: "assistant", content: "kept", name: 7, timestamp: null }, // non-string name/ts omitted
+        ],
+        memory: { content: 123 }, // non-string content -> mem dropped
+        timestamp: "2026-07-06T10:00:00.000Z",
+      },
+    ];
+
+    let session!: ReturnType<typeof mapRunToSession>;
+    expect(() => {
+      session = mapRunToSession(baseSummary({ eventCount: 1 }), events, OPTS);
+    }).not.toThrow();
+
+    // Only the one well-formed entry survives; historyCount was unparseable so it
+    // falls back to the surviving-entry count; "yes" !== true so histOmitted absent.
+    expect(session.ctx).toEqual({ histCount: 1, hist: [{ role: "assistant", text: "kept" }] });
+    expect(session.ctx?.mem).toBeUndefined();
+  });
+
+  it("maps and clamps systemPrompt at the dedicated 32k cap with sysPromptTr", () => {
+    const longPrompt = "s".repeat(32_100);
+    const session = mapRunToSession(baseSummary({ systemPrompt: longPrompt }), [], OPTS);
+    expect(session.sysPrompt).toHaveLength(32_000);
+    expect(session.sysPromptTr).toBe(true);
+  });
+
+  it("does not clamp a 25k systemPrompt (proves the 32k cap, not the 20k text cap)", () => {
+    const prompt = "s".repeat(25_000);
+    const session = mapRunToSession(baseSummary({ systemPrompt: prompt }), [], OPTS);
+    expect(session.sysPrompt).toHaveLength(25_000);
+    expect(session.sysPromptTr).toBeUndefined();
+  });
+
+  it("emits recalledTr when the recalled-memory tail is clamped", () => {
+    const userInput = `Summarize logs.\n\n[Recalled long-term memory${"x".repeat(25_000)}`;
+    const session = mapRunToSession(baseSummary({ userInput }), [], OPTS);
+    expect(session.hasRecall).toBe(true);
+    expect(session.recalled).toHaveLength(20_000);
+    expect(session.recalledTr).toBe(true);
+  });
+
+  it("omits ctx/sysPrompt when neither a turn_context event nor a systemPrompt is present", () => {
+    const session = mapRunToSession(baseSummary(), [], OPTS);
+    expect(session.ctx).toBeUndefined();
+    expect(session.sysPrompt).toBeUndefined();
+    expect(session.sysPromptTr).toBeUndefined();
+  });
+
+  it("does not emit a timeline step for a turn_context event but still maps ctx", () => {
+    const events: RuntimeEventLike[] = [
+      {
+        type: "turn_context",
+        historyCount: 1,
+        historyOmitted: false,
+        history: [{ role: "user", content: "q" }],
+        timestamp: "2026-07-06T10:00:00.000Z",
+      },
+      { type: "assistant", message: { content: [{ type: "text", text: "answer" }] } },
+    ];
+    const session = mapRunToSession(baseSummary({ eventCount: 2 }), events, OPTS);
+    // Only the assistant step is a timeline step; the turn_context event is not.
+    expect(session.steps).toHaveLength(1);
+    expect(session.steps[0]!.k).toBe("assistant");
+    expect(session.ctx).toEqual({ histCount: 1, hist: [{ role: "user", text: "q" }] });
+  });
+});
+
 /** Mirrors the digest cap in session-mapping (first line, ~120 chars). */
 const DIGEST_CAP = 121; // 120 chars + the ellipsis glyph

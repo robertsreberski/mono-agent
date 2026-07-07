@@ -37,6 +37,25 @@ export interface FailoverAttempt {
   requestId?: string;
 }
 
+/** One prior conversation message the turn was driven with. Mirrors observability's `SessionCtxMsg`. */
+export interface CtxMsg {
+  role: string;
+  text: string;
+  name?: string;
+  ts?: string;
+  /** Set when `text` was capped for display. */
+  tr?: boolean;
+}
+
+/** The context a single turn was driven with (history + recalled memory). Mirrors observability's `SessionTurnContext`. */
+export interface TurnContext {
+  histCount: number;
+  /** Present only when true: the provider session carried the transcript (warm in-process session, or durable cross-restart resume with no locally loaded history). */
+  histOmitted?: boolean;
+  hist?: CtxMsg[];
+  mem?: { text: string; src?: string; tr?: boolean };
+}
+
 export type SessionStep =
   | { k: "prompt"; ts: string; text: string; tr?: boolean; chars?: number }
   | {
@@ -121,6 +140,12 @@ export interface Session {
   recalled?: string;
   recalledTr?: boolean;
   hasRecall: boolean;
+  /** The context this turn was driven with (history + recalled memory), when recorded. */
+  ctx?: TurnContext;
+  /** The compiled system prompt the run was driven with (redacted + capped). */
+  sysPrompt?: string;
+  /** Set when `sysPrompt` was capped for display. */
+  sysPromptTr?: boolean;
   finalText: string;
   finalTr?: boolean;
   status: string;

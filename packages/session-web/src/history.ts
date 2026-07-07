@@ -147,9 +147,11 @@ function toRuntimeEvent(payload: unknown): RuntimeEventLike {
 
 /**
  * Widen a {@link RecordedRunListItem} (what the reader returns) to the
- * {@link RunSummary} `mapRunToSession` expects. The two differ only in fields the
- * mapper never reads (`artifactPaths`, `systemPrompt`); supplying an empty
- * `artifactPaths` satisfies the type without inventing data.
+ * {@link RunSummary} `mapRunToSession` expects. The list item already carries
+ * `systemPrompt` (the mapper reads it into `Session.sysPrompt`); it lacks only
+ * `artifactPaths`, so supplying an empty array satisfies the type without
+ * inventing data. On the light list path `mapListItemToSession` strips the
+ * resulting `sysPrompt` back off — it belongs to the lazy detail read.
  */
 function runSummaryFromListItem(item: RecordedRunListItem): RunSummary {
   return { ...item, artifactPaths: [] };
@@ -196,11 +198,16 @@ export function projectStaleRunningSession(
 
 function stripSessionDetailText(
   session: Session,
-): Omit<Session, "instrTr" | "recalled" | "finalTr"> {
+): Omit<Session, "instrTr" | "recalled" | "finalTr" | "ctx" | "sysPrompt" | "sysPromptTr"> {
   const {
     instrTr: _instrTr,
     recalled: _recalled,
     finalTr: _finalTr,
+    // Per-turn context (history + memory) and the compiled system prompt stay on
+    // the lazy detail read only — list rows stay light and step-less.
+    ctx: _ctx,
+    sysPrompt: _sysPrompt,
+    sysPromptTr: _sysPromptTr,
     ...base
   } = session;
   return base;
