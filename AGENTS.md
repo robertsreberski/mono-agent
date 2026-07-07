@@ -8,7 +8,7 @@ This repository is a config-first agent framework built from npm packages under 
 
 - Treat this repository as a pnpm workspace monorepo.
 - Publishable packages live under `packages/<package-name>/`.
-- Optional unpublished extras live under `extras/<package-name>/` when cataloged with `publishable: false`; the current extras are `@mono-agent/a2a-adapter`, `@mono-agent/agent-orchestrator`, and `@mono-agent/whatsapp-adapter`.
+- Optional plugin-tier extras live under `extras/<package-name>/` when cataloged with `publishable: true` and `tier: "plugin"` (published in the npm lockstep but outside the core `@mono-agent/agent-app` closure, loaded via `channels.plugins[]` or as a request-scoped runtime extension); the current extras are `@mono-agent/a2a-adapter`, `@mono-agent/agent-orchestrator`, and `@mono-agent/whatsapp-adapter`.
 - Published package names should use the `@mono-agent/<package-name>` scope.
 - Package categories live in `scripts/package-catalog.mjs` and README docs; keep the physical workspace layout flat unless a task explicitly asks for a mechanical migration.
 - Root instructions apply to every package unless a package-local `AGENTS.md` narrows them.

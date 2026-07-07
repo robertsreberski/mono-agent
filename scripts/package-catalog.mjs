@@ -10,6 +10,11 @@ export const PACKAGE_CATEGORIES = [
   "app",
 ];
 
+// `publishable: true` packages release in lockstep on the npm-release tag path.
+// Within that set, `tier: "plugin"` marks the optional plugin-tier extras (loaded
+// via `channels.plugins[]` or as request-scoped runtime extensions, living under
+// `extras/`); packages without `tier` are the core app-closure tier. The two
+// counts are guarded by scripts/release/__tests__/package-count-drift.test.mjs.
 export const packageCatalog = [
   {
     dir: "a2a-adapter",
@@ -18,7 +23,8 @@ export const packageCatalog = [
     category: "communication",
     responsibility: "Exposes agent responders over A2A and consumes remote A2A agents through direct discovery.",
     allowedDependencyCategories: ["core"],
-    publishable: false,
+    publishable: true,
+    tier: "plugin",
   },
   {
     dir: "agent-app",
@@ -59,7 +65,8 @@ export const packageCatalog = [
     category: "execution",
     responsibility: "Exposes named collaborator responders to an orchestrator runtime through a bounded MCP tool.",
     allowedDependencyCategories: ["core"],
-    publishable: false,
+    publishable: true,
+    tier: "plugin",
   },
   {
     dir: "agent-runtime",
@@ -172,7 +179,8 @@ export const packageCatalog = [
     category: "communication",
     responsibility: "Adapts WhatsApp messages to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
-    publishable: false,
+    publishable: true,
+    tier: "plugin",
   },
   {
     dir: "webhook-adapter",

@@ -12,55 +12,55 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@mono-agent/a2a-adapter':
-        specifier: workspace:0.4.0
+        specifier: workspace:0.5.0
         version: link:extras/a2a-adapter
       '@mono-agent/agent-app':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/agent-app
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/agent-contracts
       '@mono-agent/agent-harness':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/agent-harness
       '@mono-agent/agent-orchestrator':
-        specifier: workspace:0.4.0
+        specifier: workspace:0.5.0
         version: link:extras/agent-orchestrator
       '@mono-agent/config':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/config
       '@mono-agent/cron-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/cron-adapter
       '@mono-agent/memory':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/memory
       '@mono-agent/observability':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/observability
       '@mono-agent/openai-api-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/openai-api-adapter
       '@mono-agent/operator-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/operator-adapter
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/runtime-adapter
       '@mono-agent/slack-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/slack-adapter
       '@mono-agent/telegram-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/telegram-adapter
       '@mono-agent/tui':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/tui
       '@mono-agent/webhook-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:packages/webhook-adapter
       '@mono-agent/whatsapp-adapter':
-        specifier: workspace:0.4.0
+        specifier: workspace:0.5.0
         version: link:extras/whatsapp-adapter
       '@types/node':
         specifier: ^22.15.18
@@ -81,7 +81,7 @@ importers:
         specifier: 1.0.0-alpha.0
         version: 1.0.0-alpha.0(express@5.2.1)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../../packages/agent-contracts
       express:
         specifier: ^5.1.0
@@ -97,7 +97,7 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../../packages/agent-contracts
       zod:
         specifier: ^4.4.3
@@ -106,7 +106,7 @@ importers:
   extras/whatsapp-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../../packages/agent-contracts
       '@whiskeysockets/baileys':
         specifier: ^7.0.0-rc11
@@ -118,49 +118,49 @@ importers:
         specifier: ^1.29.0
         version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       '@mono-agent/agent-harness':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-harness
       '@mono-agent/config':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../config
       '@mono-agent/cron-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../cron-adapter
       '@mono-agent/memory':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../memory
       '@mono-agent/memory-supermemory':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../memory-supermemory
       '@mono-agent/observability':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../observability
       '@mono-agent/openai-api-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../openai-api-adapter
       '@mono-agent/operator-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../operator-adapter
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../runtime-adapter
       '@mono-agent/session-web':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../session-web
       '@mono-agent/slack-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../slack-adapter
       '@mono-agent/telegram-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../telegram-adapter
       '@mono-agent/tui':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../tui
       '@mono-agent/webhook-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../webhook-adapter
       zod:
         specifier: ^4.4.3
@@ -171,13 +171,13 @@ importers:
   packages/agent-harness:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       '@mono-agent/observability':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../observability
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../runtime-adapter
 
   packages/agent-runtime:
@@ -204,16 +204,16 @@ importers:
   packages/config:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       '@mono-agent/runtime-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../runtime-adapter
 
   packages/cron-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       cron-parser:
         specifier: ^5.5.0
@@ -222,7 +222,7 @@ importers:
   packages/memory:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       better-sqlite3:
         specifier: ^11.8.1
@@ -238,13 +238,13 @@ importers:
   packages/memory-supermemory:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
 
   packages/observability:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       '@opentelemetry/otlp-transformer':
         specifier: 0.219.0
@@ -256,7 +256,7 @@ importers:
   packages/openai-api-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       express:
         specifier: ^5.1.0
@@ -269,7 +269,7 @@ importers:
   packages/operator-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       express:
         specifier: ^5.1.0
@@ -282,19 +282,19 @@ importers:
   packages/runtime-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       '@mono-agent/agent-runtime':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-runtime
 
   packages/session-web:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       '@mono-agent/observability':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../observability
       express:
         specifier: ^5.1.0
@@ -307,7 +307,7 @@ importers:
   packages/slack-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       ws:
         specifier: ^8.20.1
@@ -323,7 +323,7 @@ importers:
         specifier: ^2.0.3
         version: 2.0.3(grammy@1.44.0)
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       grammy:
         specifier: ^1.44.0
@@ -338,23 +338,23 @@ importers:
         specifier: ^0.79.1
         version: 0.79.10
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       '@mono-agent/config':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../config
       '@mono-agent/observability':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../observability
     devDependencies:
       '@mono-agent/operator-adapter':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../operator-adapter
 
   packages/webhook-adapter:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.4.1
+        specifier: workspace:0.5.0
         version: link:../agent-contracts
       express:
         specifier: ^5.1.0
