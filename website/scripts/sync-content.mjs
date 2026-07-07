@@ -34,4 +34,16 @@ cpSync(SRC, DEST, {
   },
 });
 
+// Fail closed: an empty (or content-less) docs/ tree would otherwise mirror
+// nothing, astro would build a near-empty site, and the whole pipeline would
+// ship green — silently rotting the exact way this gate exists to prevent.
+if (count === 0) {
+  console.error(
+    `sync-content: FAILED — mirrored 0 markdown file(s) from docs/ (${SRC}). ` +
+      `Refusing to build a near-empty docs site (it would ship green and rot silently). ` +
+      `Confirm ../docs exists and contains .md/.mdx files outside ${[...EXCLUDE_TOP].join(', ')}.`,
+  );
+  process.exit(1);
+}
+
 console.log(`sync-content: mirrored ${count} markdown file(s) docs/ -> src/content/docs/`);
