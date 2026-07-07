@@ -11,3 +11,17 @@ export { findPreset, PRESET_CATALOG, presetAnswers, presetIds, RECIPE_TO_PRESET 
 
 export type { AnswersFromCliArgs, WithChannel } from "./from-flags.js";
 export { answersFromCli, isWithChannel, WITH_CHANNELS } from "./from-flags.js";
+
+export type { WizardSelectOption } from "./prompts.js";
+export {
+  channelSelectOptions,
+  guard,
+  memorySelectOptions,
+  modelSelectOptions,
+  presetSelectOptions,
+  toolMultiselectOptions,
+  WizardCancelled,
+} from "./prompts.js";
+
+export type { WizardOutcome } from "./run.js";
+export { runInitWizard } from "./run.js";

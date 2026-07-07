@@ -60,6 +60,7 @@ import { answersFromCli, isWithChannel } from "./wizard/from-flags.js";
 import type { WithChannel } from "./wizard/from-flags.js";
 import { findPreset, PRESET_CATALOG, presetAnswers, presetIds, RECIPE_TO_PRESET } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
+import { runInitWizard } from "./wizard/run.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -776,8 +777,35 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 }
 
 async function runInit(args: ParsedCliArgs): Promise<number> {
-  // The interactive wizard (Task 6) will branch here on a TTY with no flags.
-  // For now `init` always writes the silent default/preset scaffold.
+  // On an interactive TTY with no overriding flags, walk the step-by-step wizard;
+  // any flag (or a piped/non-TTY invocation) takes the silent default/preset path.
+  const wantsWizard = process.stdin.isTTY === true && process.stdout.isTTY === true
+    && args.yes !== true && args.preset === undefined && args.recipe === undefined
+    && args.model === undefined && args.fallbackModels === undefined
+    && args.memory === undefined && args.withChannels === undefined && args.dryRun !== true;
+  if (wantsWizard) {
+    // Existing-config pre-check — don't walk the wizard into a guaranteed no-op.
+    if (await pathExists(resolve(process.cwd(), "mono-agent.config.json"))) {
+      process.stdout.write(ui.hint("Found an existing mono-agent.config.json — `mono-agent init` never overwrites. Run `mono-agent validate`, or start in an empty folder.\n"));
+      return 0;
+    }
+    const outcome = await runInitWizard({ cwd: process.cwd() });
+    if (outcome.status === "cancelled") {
+      return 1;
+    }
+    const result = await initMonoAgentFolder({ dir: process.cwd(), answers: outcome.answers });
+    printInitResult(result);
+    const report = await validateMonoAgentFolder({ env: process.env, cwd: process.cwd(), configPath: result.configPath });
+    process.stdout.write("\n" + ui.heading("Validation"));
+    for (const section of report.sections) {
+      process.stdout.write(formatSection(section));
+    }
+    process.stdout.write(renderPlanCompleteness(result.plan.validateExpectations, "Selected capabilities", report));
+    printSecretsChecklist(result.plan.secrets);
+    printNextSteps(result.configPath);
+    return report.ok ? 0 : 1;
+  }
+
   const presetId = resolveInitPresetId(args);
   if (presetId === "unknown") {
     return 1;
@@ -861,9 +889,12 @@ function printInitResult(result: InitMonoAgentFolderResult): void {
   if (result.knowledgeFiles.length > 0) {
     process.stdout.write(`\nIdentity references existing knowledge: ${ui.style.cyan(result.knowledgeFiles.join(", "))}\n`);
   }
-  if (result.plan.selectedModules.length > 0) {
+  // Internal `provider:*` modules are auto-added for local models; they are an
+  // implementation detail, not a user-facing capability, so exclude them here.
+  const capabilities = result.plan.selectedModules.filter((module) => module.kind !== "provider");
+  if (capabilities.length > 0) {
     process.stdout.write("\n" + ui.heading("Capabilities"));
-    for (const module of result.plan.selectedModules) {
+    for (const module of capabilities) {
       process.stdout.write(`  ${ui.style.cyan(module.title)} ${ui.style.dim(`(risk: ${riskColor(module.riskLevel)})`)}\n`);
     }
   }
