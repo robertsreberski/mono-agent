@@ -241,6 +241,12 @@ importers:
         specifier: workspace:0.5.0
         version: link:../agent-contracts
 
+  packages/mono-agent:
+    dependencies:
+      '@mono-agent/agent-app':
+        specifier: workspace:0.5.0
+        version: link:../agent-app
+
   packages/observability:
     dependencies:
       '@mono-agent/agent-contracts':

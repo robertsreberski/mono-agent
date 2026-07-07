@@ -8,7 +8,7 @@ sidebar:
 
 This page covers how to install the `mono-agent` CLI (which includes the `mono-agent tui` operator console), the runtime prerequisites you need, and how to run an unreleased build straight from a clone of the repo.
 
-The shipped command line lives in `@mono-agent/agent-app` (the config-first host that reads one `mono-agent.config.json`), and the terminal chat console lives in `@mono-agent/tui`. Both publish under the `@mono-agent/*` scope on npm.
+The shipped command line lives in `@mono-agent/agent-app` (the config-first host that reads one `mono-agent.config.json`), and the terminal chat console lives in `@mono-agent/tui`. Both publish under the `@mono-agent/*` scope on npm. For convenience there is also a bare, unscoped **`mono-agent`** package: a thin alias whose bin delegates to `@mono-agent/agent-app`, so `npx mono-agent` and `npm i -g mono-agent` just work.
 
 ## Prerequisites
 
@@ -23,27 +23,34 @@ You do **not** need pnpm to use the published packages — `npm i -g` and `npm e
 
 ## Install the CLI
 
-Install `@mono-agent/agent-app` globally to get the `mono-agent` command on your `PATH`:
+Install the bare `mono-agent` alias globally to get the `mono-agent` command on your `PATH`:
+
+```bash
+npm i -g mono-agent
+```
+
+`mono-agent` is a thin alias whose bin forwards every command to `@mono-agent/agent-app` (installed alongside it); behaviour is identical. Prefer the scoped host directly? It also puts `mono-agent` on your `PATH` and additionally installs the `mono-agent-memory-recall` helper bin used by the memory recall tool:
 
 ```bash
 npm i -g @mono-agent/agent-app
 ```
 
-This also installs the `mono-agent-memory-recall` helper bin used by the memory recall tool. Prefer not to install globally? Run any command through `npm exec` instead:
+Not installing globally? Run any command through `npm exec` with either name:
 
 ```bash
+npm exec --package mono-agent -- mono-agent --help
 npm exec --package @mono-agent/agent-app -- mono-agent --help
 ```
 
 ## Scaffold without installing
 
-If you only want to create an agent folder, run `init` through a package runner instead of installing the CLI globally:
+If you only want to create an agent folder, run `init` with `npx` (the bare alias) — no global install needed:
 
 ```bash
-npm exec --package @mono-agent/agent-app -- mono-agent init
+npx mono-agent init
 ```
 
-This downloads and runs the published CLI for that one scaffold command. It does not require a global install or the source-build workspace setup.
+This downloads and runs the published CLI for that one scaffold command. It does not require a global install or the source-build workspace setup. The scoped equivalent is `npm exec --package @mono-agent/agent-app -- mono-agent init`.
 
 ## The TUI console
 
@@ -108,11 +115,11 @@ Then continue with the [Quickstart](/getting-started/quickstart/) to start the a
 Update global installs with npm:
 
 ```bash
-npm update -g @mono-agent/agent-app
+npm update -g mono-agent            # (or @mono-agent/agent-app)
 npm update -g @mono-agent/tui
 ```
 
-Published `@mono-agent/*` packages release in lockstep at one version. Keep `@mono-agent/agent-app`, `@mono-agent/tui`, and any other pinned `@mono-agent/*` package references on the same version.
+The bare `mono-agent` alias, `@mono-agent/agent-app`, `@mono-agent/tui`, and every other `@mono-agent/*` package release in lockstep at one version — keep any pinned references (scoped or the bare alias) on the same version.
 
 For reproducible installs or one-shot scaffolds, pin the version explicitly to a published release — use the same version across every `@mono-agent/*` package (pick one from [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases)):
 

@@ -73,7 +73,9 @@ for (const catalogEntry of packageCatalog) {
   if (packageName !== catalogEntry.name) {
     errors.push(`${packagePath}/package.json has unexpected name ${packageName}.`);
   }
-  if (!packageName.startsWith(packageScope)) {
+  // The `alias` tier is intentionally unscoped (the bare `mono-agent` npm name);
+  // every other package must use the @mono-agent/ scope.
+  if (catalogEntry.tier !== "alias" && !packageName.startsWith(packageScope)) {
     errors.push(`${packagePath}/package.json name must use the ${packageScope} scope.`);
   }
   const deps = {

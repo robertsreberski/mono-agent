@@ -1,0 +1,26 @@
+{
+  "name": "mono-agent",
+  "version": "0.5.0",
+  "description": "Bare npm alias so `npx mono-agent` and `npm i -g mono-agent` work: a thin bin that delegates to the @mono-agent/agent-app CLI.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": false,
+  "bin": {
+    "mono-agent": "./dist/bin/mono-agent.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@mono-agent/agent-app": "workspace:0.5.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

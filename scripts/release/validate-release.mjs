@@ -45,7 +45,9 @@ export function validateRelease({
   }
 
   for (const pkg of publishable) {
-    if (!pkg.name?.startsWith("@mono-agent/")) {
+    // The `alias` tier is the intentionally unscoped `mono-agent` npm name; every
+    // other publishable package must use the @mono-agent scope.
+    if (pkg.catalogEntry.tier !== "alias" && !pkg.name?.startsWith("@mono-agent/")) {
       issues.push(`${pkg.name || rel(pkg.manifestPath)} must use the @mono-agent scope`);
     }
     if (pkg.private) {
