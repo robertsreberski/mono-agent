@@ -544,6 +544,10 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
         setStatus("loading");
         setError(undefined);
         setHistoryStates({});
+        // Reset the paged-in protection set with the rest of the paging state: a
+        // fresh snapshot has no user-paged history yet, so old keys must not linger
+        // across reload+page cycles.
+        pagedKeys.current = new Set();
         const [ins, page] = await Promise.all([fetchInstances(), fetchSessionPage("all", { limit: HISTORY_PAGE_SIZE })]);
         if (disposed) return;
         setInstances(ins);
