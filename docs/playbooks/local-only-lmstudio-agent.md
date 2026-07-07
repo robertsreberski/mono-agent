@@ -59,7 +59,7 @@ Every key below is verified against [the config blueprint](/config/blueprint/). 
 ## Steps
 
 1. Open LM Studio, load a model, and start the local server from the Developer tab (default port `1234`).
-2. Scaffold the agent: `mono-agent init --recipe local-lmstudio-private` (or `mono-agent init --model pi:lmstudio:<your-model-id>`).
+2. Scaffold the agent: `mono-agent init --model pi:lmstudio:<your-model-id> --memory lite` — a `pi:lmstudio:*` model auto-adds the LM Studio provider block. (There is no LM Studio preset; the `local-private` preset is Ollama-based.)
 3. If your loaded model's id differs from `qwen3.6-32b`, update `runtime.model` to match exactly what LM Studio reports for the loaded model.
 4. Run `mono-agent validate` to confirm LM Studio's local server is reachable.
 5. Run `mono-agent start` — keep the [webhook channel](/channels/webhook/) as the zero-credential smoke channel.

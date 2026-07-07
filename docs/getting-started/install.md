@@ -87,9 +87,8 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 
 | Command | Purpose |
 | --- | --- |
-| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. |
-| `setup` | Guided, terminal-native recipe setup (recipe chooser, non-secret prompts, auto-validate, and a secrets checklist) when attached to a TTY; falls back to flag-driven `init` in non-TTY contexts. |
-| `recipes` | List executable setup recipes (`list`) or show a recipe's generated config, `.env.example`, and checklist (`show <id>`). |
+| `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; walks you through model, channels, memory, tools, sandbox, observability); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
+| `presets` | List the built-in setup presets (`list`) or show a preset's generated config, `.env.example`, and checklist (`show <id>`). Replaces `recipes` (still an alias). |
 | `validate` | Validate `mono-agent.config.json` and live checks that can be tested safely before starting. |
 | `start` | Start the host for every configured channel (backgrounds on macOS; use `--foreground`/`-f` elsewhere). |
 | `restart` / `stop` / `status` / `logs` | Manage the backgrounded instance (macOS). |
@@ -99,19 +98,19 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 
 ## Next: scaffold your first agent
 
-Once the binaries are verified, scaffold and validate a clean project folder:
+Once the binaries are verified, scaffold a clean project folder:
 
 ```bash
 mkdir my-agent
 cd my-agent
 mono-agent init
-mono-agent validate
 ```
 
-On a TTY, prefer `mono-agent setup` as the guided alternative: it lets you pick a recipe, answer non-secret prompts (model, fallbacks, channel add-ons), then auto-validates and prints a secrets checklist. It falls back to flag-driven `init` when stdin is not a TTY.
+On a terminal with no flags, `mono-agent init` is a **step-by-step wizard**: start from a [preset](/reference/recipes/) or go fully custom, then answer model, channels, memory, **tools** (a multiselect pre-checked with a safe default and your channels' send tools — so you don't end up with a tool-less agent), sandbox, and observability, before it scaffolds and immediately runs `validate`. Pass `--yes` or any flag (or run in a non-TTY) to write the scaffold non-interactively instead:
 
 ```bash
-mono-agent setup
+mono-agent init --preset telegram-assistant --yes   # scaffold from a preset
+mono-agent presets list                             # browse the built-in presets first
 ```
 
 Then continue with the [Quickstart](/getting-started/quickstart/) to start the agent and send a webhook request. For the full key reference, see [Config Blueprint](/config/blueprint/) and [Environment Variables](/config/env-vars/).

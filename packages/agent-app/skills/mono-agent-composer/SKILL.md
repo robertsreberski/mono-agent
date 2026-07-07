@@ -59,23 +59,23 @@ Everything below runs in the user's agent folder, not the workspace.
 
 ## Composition Flow
 
-1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test. Then run `mono-agent recipes list` (and `mono-agent recipes show <id>`) for an executable blueprint matching the user's intent; `references/playbooks.md` is the prose companion. If a recipe fits, use it as the starting shape.
-2. **Scaffold.** In the user's folder, prefer the recipe path when one fits:
+1. **Discover.** Read `references/discovery-questions.md` and resolve: runtime model + backup models, channels, identity/knowledge, skills, tools/MCP, memory strategy, sandbox, observability, and the acceptance smoke test. Then run `mono-agent presets list` (and `mono-agent presets show <id>`) for a saved answer-set matching the user's intent; `references/playbooks.md` is the prose companion. If a preset fits, use it as the starting shape. The six presets are `starter`, `telegram-assistant`, `telegram-supermemory`, `slack-bot`, `local-private`, and `code-sandbox`; shapes with no preset (an OpenAI-API gateway, cron digest, A2A provider, Phoenix-observed, or a full multi-channel build) are hand-assembled from the capability modules and playbooks.
+2. **Scaffold.** In the user's folder, prefer the preset path when one fits — scaffold non-interactively with `--yes` (the composer is not the interactive `init` wizard):
 
    ```bash
-   mono-agent init --recipe <id> [--with slack,cron] [--dry-run]   # blueprint + .env.example + checklist
+   mono-agent init --preset <id> --yes [--with slack,cron] [--dry-run]   # preset + .env.example + checklist
    mono-agent init --model <ref> [--fallback-models <csv>] [--memory lite|journal|bujo]   # bare scaffold
    ```
 
-   Either writes a `mono-agent.config.json`, an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories (recipes also emit a `.env.example` and any extra files). `--dry-run` previews without writing. It never overwrites existing files.
+   Either writes a `mono-agent.config.json` (with `tools.allowedTools` pre-filled from the selected capabilities' recommended tools), an `IDENTITY.md` that references any knowledge files already present, and `.mono-agent/` working directories (presets also emit a `.env.example` and any extra files). `--dry-run` previews without writing. It never overwrites existing files.
 3. **Configure.** Edit `mono-agent.config.json` to match the discovery answers. Read `references/config-blueprint.md` for the full annotated config shape: every channel section, skills, MCP, memory, sandbox, and fallback models. Run `mono-agent config` to see the resolved configuration field-by-field with each value tagged `env` / `json` / `default` — the fastest way to confirm a value came from where you intended.
 4. **Validate.**
 
    ```bash
-   mono-agent validate [--recipe <id>] [--consumer <path>]
+   mono-agent validate [--preset <id>] [--consumer <path>]
    ```
 
-   Fix every `[error]` section. `[waiting]` channels are fine — they are simply not configured yet. With `--recipe`, the report also flags any capability the recipe promised that is not yet live. Re-run until the report says the config is ready.
+   Fix every `[error]` section. `[waiting]` channels are fine — they are simply not configured yet. Watch the **Tools & MCP** section: an empty `tools.allowedTools` reports `waiting` (the no-tools trap), and an unknown tool name is flagged with a "did you mean" hint. With `--preset`, the report also flags any capability the preset promised that is not yet live. Re-run until the report says the config is ready.
 5. **Start and smoke.**
 
    ```bash
@@ -93,7 +93,7 @@ Config-first covers one responder served over any combination of the seven chann
 - `references/discovery-questions.md` — the question sequence and which config keys each answer fills.
 - `references/config-blueprint.md` — annotated `mono-agent.config.json` covering every section, plus the folder layout and programmatic escape hatch.
 - `references/feature-coverage.md` — every framework feature mapped to config / CLI / code / dev-tooling coverage; the answer to "can the config do X?".
-- `references/playbooks.md` — end-to-end recipes (persona → config block → `init`/`validate`/`start`/smoke). Check for a matching recipe before hand-assembling a config.
+- `references/playbooks.md` — end-to-end recipes (persona → config block → `init`/`validate`/`start`/smoke). Check for a matching preset or playbook before hand-assembling a config.
 - `references/package-map.md` — which package owns what, for programmatic composition and troubleshooting.
 - `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
 

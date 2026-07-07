@@ -26,18 +26,17 @@ npm i -g @mono-agent/agent-app      # the scoped host that owns the CLI
 
 `create-mono-agent` is a thin installer whose `create-mono-agent` and `mono-agent` bins forward every command to `@mono-agent/agent-app`; behaviour is identical either way. (The bare `mono-agent` npm name isn't ours — npm blocks it as too similar to an unrelated `monoagent` package — so the installer follows the `create-*` convention instead.)
 
-The easiest path on a terminal is the guided setup — it presents the recipe catalog, prompts for the model and channel add-ons, scaffolds, validates, and prints a secrets checklist:
-
-```bash
-# in the agent folder
-mono-agent setup
-```
-
-Or drive it with flags (`setup` falls back to this form when stdin is not a TTY):
+The easiest path on a terminal is the interactive wizard — `mono-agent init` with no flags walks you through a preset (or custom) build: model, channels, memory, and, importantly, the **tools** your agent may call (pre-checked with a safe default plus your channels' send tools, so it isn't left tool-less), then it scaffolds, validates, and prints a secrets checklist:
 
 ```bash
 mkdir my-agent
 cd my-agent
+mono-agent init                   # step-by-step wizard on a TTY (`mono-agent setup` is an alias)
+```
+
+Or drive it with flags (`init` writes the scaffold non-interactively when given any flag, or when stdin is not a TTY):
+
+```bash
 mono-agent init --model claude:claude-sonnet-4-6 --fallback-models pi:ollama:gemma4:31b
 mono-agent validate               # per-section report; `mono-agent doctor` is an alias
 ```
@@ -69,19 +68,19 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
 
 `init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), an `IDENTITY.md` that references the folder's existing knowledge, and `.mono-agent/` working dirs — never overwriting existing files. The config file declares everything: runtime model plus ordered backup models (`runtime.fallbackModels`, served by the native failover router), built-in channels (`telegram`, `slack`, `webhook`, `openaiApi`, `cron`, `tui`, `live`), external channel plugins under `channels.plugins[]` (`@mono-agent/a2a-adapter`, `@mono-agent/whatsapp-adapter`, or your own `ChannelDriver` package), skills, MCP servers, memory strategy, sandbox policy, and observability. `validate` reports every section before anything starts; `start` runs traceability and every configured channel, each with independent `running` / `waiting_for_config` / `disabled` / `failed` status. For unreleased or source-build testing, use the source build flow in [`docs/getting-started/install.md`](./docs/getting-started/install.md); pnpm 10 is only required for that path.
 
-### Recipes: executable example configs
+### Presets & the setup wizard
 
-Thirteen recipes cover the common shapes — personal Telegram assistant with tiered memory, Slack team bot, OpenAI-compatible gateway, cron digest, A2A provider, fully local model setups, sandboxed code agent, safe/full blueprints, and more. Each generates a working config with secrets externalized to `.env.example`, and most mirror a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
+`mono-agent init` composes an agent from **capability modules** (channels, memory tiers, sandbox, observability) and walks you through the tool allowlist so the agent can actually do something. **Presets** are saved answer-sets for six common shapes — `starter` (webhook smoke agent), `telegram-assistant` (BuJo memory), `telegram-supermemory`, `slack-bot`, `local-private` (Ollama), and `code-sandbox`. Each preset prints its generated config with secrets externalized to `.env.example`, and mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
 
 ```bash
-mono-agent recipes list
-mono-agent recipes show personal-telegram-bujo
-mono-agent init --recipe personal-telegram-bujo
+mono-agent presets list
+mono-agent presets show telegram-assistant
+mono-agent init --preset telegram-assistant --yes
 ```
 
-Recipes that ship `sandbox.mode: "native"` require `srt` on `PATH`; run `mono-agent validate --recipe <id>` and read the `Sandbox` section before starting. Safe recipes such as `sandboxed-code-agent` and `full-safe` use `fallback: "fail-closed"` so missing `srt` produces `sandbox_unavailable` instead of host execution. `full-local-power` is intentionally high risk: it opts into `unsafe-host-process`, so if `srt` is missing, roots/denyWrite are inert and commands run unsandboxed.
+The `code-sandbox` preset ships `sandbox.mode: "native"`, which requires `srt` on `PATH`; run `mono-agent validate --preset code-sandbox` and read the `Sandbox` section before starting. It uses `fallback: "fail-closed"`, so a missing `srt` produces `sandbox_unavailable` instead of host execution.
 
-See [`docs/reference/recipes.md`](./docs/reference/recipes.md) for the full catalog at a glance.
+The old `mono-agent recipes …` / `--recipe <id>` surface still works as a deprecated alias — retired recipes map to the preset that replaced them. See [`docs/reference/recipes.md`](./docs/reference/recipes.md) for the presets, the capability modules, the tools/no-tools guardrail, and the full deprecation map.
 
 ## Skill-Based Composition Guide
 

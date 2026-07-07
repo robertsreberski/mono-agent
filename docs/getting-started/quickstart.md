@@ -29,8 +29,10 @@ mono-agent init --model claude:claude-sonnet-4-6
 ```
 
 :::tip
-Prefer a guided first run? On a TTY, `mono-agent setup` is the interactive alternative to `init`: pick a recipe, answer non-secret prompts (model, fallback models, channel add-ons), then it auto-validates and prints a secrets checklist. It scaffolds through the same path as `init` and falls back to flag-driven `init` when stdin is not a TTY. See the [`setup` section of the CLI reference](/observability/cli-reference/#setup) for details, and the [Recipe catalog](/reference/recipes/) for what each recipe sets up.
+Prefer a guided first run? On a terminal, run `mono-agent init` **with no flags** to launch the step-by-step wizard: start from a [preset](/reference/recipes/) or go custom, then it walks you through model, channels, memory, and — importantly — the **tools** your agent may call (pre-checked with a safe default plus your channels' send tools, so the agent isn't left tool-less), before scaffolding and auto-validating. See the [`init` section of the CLI reference](/observability/cli-reference/#init) for the flags that skip the wizard, and [Presets & capability modules](/reference/recipes/) for what each preset sets up.
 :::
+
+Passing a flag like `--model` (as below) skips the wizard and writes the scaffold non-interactively — the composer still pre-selects a safe read-only tool set (`Read`, `Glob`, `Grep`) plus any channel/sandbox tools your selection implies.
 
 Optional flags:
 
@@ -57,7 +59,7 @@ mono-agent init \
 - **`IDENTITY.md`** — role, boundaries, and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. Edit this to describe what your agent is for. See [Identity and Soul](/context/identity-and-soul/).
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.
 
-The generated config (with `--fallback-models` and `--memory bujo`) looks like this:
+The generated config (with `--fallback-models` and `--memory bujo`) looks like this — note that `tools.allowedTools` is pre-filled with the safe read-only default, and the `bujo` tier scaffolds its embeddings, capture LLM, and recall tool:
 
 ```json
 {
@@ -70,13 +72,8 @@ The generated config (with `--fallback-models` and `--memory bujo`) looks like t
     "identityPath": "./IDENTITY.md",
     "selectedSkills": []
   },
-  "memory": {
-    "mode": "bujo",
-    "path": "./.mono-agent/memory",
-    "writeMode": "append-host-summary"
-  },
   "tools": {
-    "allowedTools": [],
+    "allowedTools": ["Read", "Glob", "Grep"],
     "disallowedTools": []
   },
   "artifacts": {
@@ -88,11 +85,19 @@ The generated config (with `--fallback-models` and `--memory bujo`) looks like t
   },
   "webhook": {
     "enabled": true
+  },
+  "memory": {
+    "mode": "bujo",
+    "path": "./.mono-agent/memory",
+    "writeMode": "capture",
+    "embeddings": { "provider": "ollama", "model": "nomic-embed-text" },
+    "llm": { "provider": "agent-host", "model": "claude:claude-sonnet-4-6" },
+    "recallTool": { "enabled": true }
   }
 }
 ```
 
-Every field has a `MONO_AGENT_*` env override (env > JSON > defaults) — for example `MONO_AGENT_MODEL`, `MONO_AGENT_FALLBACK_MODELS`. See [Configuration](/config/) for the annotated blueprint.
+Every field has a `MONO_AGENT_*` env override (env > JSON > defaults) — for example `MONO_AGENT_MODEL`, `MONO_AGENT_FALLBACK_MODELS`. See [Configuration](/config/) for the annotated blueprint. The scaffolder also adds an `artifacts.retention` block and a `$schema` reference, omitted here for brevity.
 
 ## 2. Validate (`cli`)
 

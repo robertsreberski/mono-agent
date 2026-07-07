@@ -62,7 +62,7 @@ Keep `fallback` at `fail-closed`. Setting `fallback: "unsafe-host-process"` plus
 2. Run `command -v srt && srt --version`; install/fix `srt` before treating the sandbox as available.
 3. Set `tools.allowedTools` to `Read`/`Write`/`Edit`/`Glob`/`Grep`/`Bash`; configure `sandbox.mode` native + `network.mode` localhost + the deny-write defaults.
 4. Keep `fallback` at `fail-closed` (do NOT set `unsafe-host-process`).
-5. `mono-agent validate --recipe sandboxed-code-agent`; the `Sandbox` section should be `ok`. If it is `waiting` with `sandbox_unavailable`, `start` will not silently relax the policy — sandboxed commands will fail closed until `srt` is available.
+5. `mono-agent validate --preset code-sandbox`; the `Sandbox` section should be `ok`. If it is `waiting` with `sandbox_unavailable`, `start` will not silently relax the policy — sandboxed commands will fail closed until `srt` is available.
 6. `mono-agent start`, then `mono-agent status`; confirm the sandbox line reports `effective: native`, the `srt` engine present, and `fallback active: no`.
 7. Ask the agent to inspect the repo and run a Bash command; confirm external network calls are blocked while loopback still works, and confirm it cannot write `.env`.
 8. Note: provider CLI bridges run their own tool loops and are not yet `srt`-wrapped (pair with provider sandboxing).

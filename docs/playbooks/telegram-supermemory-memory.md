@@ -85,7 +85,7 @@ If you omit `supermemory.container`, it defaults to the agent's trace `sourceId`
 ## Validate and run
 
 ```bash
-mono-agent validate --recipe personal-telegram-supermemory
+mono-agent validate --preset telegram-supermemory
 mono-agent start
 ```
 

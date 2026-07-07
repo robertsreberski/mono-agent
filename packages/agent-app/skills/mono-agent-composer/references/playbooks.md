@@ -231,7 +231,7 @@ const ext = createCollaboratorToolRuntimeExtension({
   }
 }
 ```
-**Steps:** run `supermemory-server`, save its `sm_...` key in `.env`, `mono-agent init --recipe personal-telegram-supermemory`, add Telegram token/chat id, `validate`, `start`.
+**Steps:** run `supermemory-server`, save its `sm_...` key in `.env`, `mono-agent init --preset telegram-supermemory --yes`, add Telegram token/chat id, `validate`, `start`.
 **Smoke:** send a fact, wait for ingestion, then ask a paraphrased question; confirm the run shows `memory_recall` returning Supermemory hits.
 
 ## 14. Fully local LM Studio agent
@@ -247,7 +247,7 @@ const ext = createCollaboratorToolRuntimeExtension({
   "webhook": { "enabled": true }
 }
 ```
-**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --recipe local-lmstudio-private` → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
+**Steps:** start LM Studio's local server with the chosen model loaded → `mono-agent init --model pi:lmstudio:qwen3.6-32b --memory lite` (the `pi:lmstudio:*` model auto-adds the LM Studio provider block; there is no LM Studio preset — `local-private` is Ollama-based) → adjust `runtime.model` if the displayed model id differs → `validate` → `start`.
 **Smoke:** `curl` the webhook invoke URL and confirm the response comes from the local LM Studio model.
 
 ## 15. Interactive agent with long jobs and large media

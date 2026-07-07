@@ -144,9 +144,10 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 
 | Feature id | Coverage | Config key(s) | Env var(s) | Prose page | Playbook(s) |
 | --- | --- | --- | --- | --- | --- |
-| `app.cli-init` | cli | `mono-agent init [--model] [--fallback-models] [--memory]` | — | [Quickstart](/getting-started/quickstart/) | — |
-| `app.cli-setup` | cli | `mono-agent setup [--recipe <id>] [--with <csv>] [--dry-run] [--model] [--fallback-models] [--memory lite\|journal\|bujo]` | — | [CLI reference](/observability/cli-reference/#setup) | — |
-| `app.cli-recipes` | cli | `mono-agent recipes list \| show <id>` | — | [CLI reference](/observability/cli-reference/#recipes) | — |
+| `app.cli-init` | cli | `mono-agent init [--preset <id>] [--with <csv>] [--yes] [--dry-run] [--model] [--fallback-models] [--memory lite\|journal\|bujo]` | — | [Quickstart](/getting-started/quickstart/) | — |
+| `app.cli-setup` | cli | `mono-agent init` (interactive wizard on a TTY with no flags; `mono-agent setup` is an alias) | — | [CLI reference](/observability/cli-reference/#init) | — |
+| `app.cli-presets` | cli | `mono-agent presets list \| show <id>` (`recipes` alias) | — | [Presets & modules](/reference/recipes/) | — |
+| `app.cli-no-tools-guardrail` | cli | part of `mono-agent validate` / `doctor`; the tools step of `mono-agent init` | — | [Presets & modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) | — |
 | `app.cli-validate` | cli | `mono-agent validate [--consumer] [--config] [--env-file]` | — | [Blueprint](/config/blueprint/) | — |
 | `app.provider-credentials-check` | cli | part of `mono-agent validate`; resolves Pi models against `providers.piAuthPath` + `models.json` | `MONO_AGENT_PI_AUTH_PATH` | [CLI reference](/observability/cli-reference/#provider-credentials) | — |
 | `app.cli-start` | cli | `mono-agent start [--config] [--env-file] [--foreground\|-f]` | — | [Install](/getting-started/install/) | — |

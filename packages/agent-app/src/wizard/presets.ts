@@ -11,7 +11,10 @@ export interface WizardPreset {
   readonly title: string;
   readonly description: string;
   readonly riskLevel: "low" | "medium" | "high";
-  /** The `docs/playbooks/<file>` this preset mirrors, parity-checked in Task 4. */
+  /**
+   * The `docs/playbooks/<file>` this preset mirrors. Parity-checked by
+   * `src/__tests__/presets-docs-parity.test.ts`, which asserts the file exists.
+   */
   readonly playbook?: string;
   readonly answers: Partial<WizardAnswers>;
   /** The recipe ids this preset supersedes, for the Task 4 cutover audit. */

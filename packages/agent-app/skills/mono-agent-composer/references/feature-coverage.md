@@ -78,10 +78,12 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Phoenix trace viewer (OTLP exporter; local JSONL artifacts are the fallback) | config | `observability.exporters` (phoenix entry) |
 | Operator console (live chat with thinking/tool/telemetry insight, run replay, config view) | cli | `mono-agent tui [--agent <label>]`; agents serve the `tui` stream endpoint by default (`tui.enabled`, loopback) |
 | Session Recorder web PWA (read-only run browser) | cli | `mono-agent web [--host] [--port] [--no-open] [--allow-non-loopback] [--include-memory]`; consumes the default-on `live` relay and local artifacts; memory runs are opt-in |
-| Executable config blueprints (generate config + `.env.example` + checklist) | cli | `mono-agent recipes list\|show <id>`, `mono-agent init --recipe <id>` |
+| Setup presets (saved answer-sets: generate config + `.env.example` + checklist) | cli | `mono-agent presets list\|show <id>`, `mono-agent init --preset <id> --yes` (`recipes`/`--recipe` deprecated aliases) |
+| Interactive setup wizard (preset/custom; walks model→channels→memory→tools→sandbox→observability) | cli | `mono-agent init` (no flags, on a TTY; `setup` alias) |
+| No-tools guardrail (empty `allowedTools` → `waiting`; unknown-tool "did you mean"; send-tool/channel cross-checks) | cli | part of `mono-agent validate`/`doctor`; the wizard's tools step |
 | Resolved config view (every field tagged env/json/default) | cli | `mono-agent config` |
-| Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate [--consumer <path>]\|config\|recipes\|start\|install-skill` |
-| Recipe capability check (selected recipe live?) | cli | `mono-agent validate --recipe <id>` |
+| Scaffold / validate / start / install-skill | cli | `mono-agent init\|validate [--consumer <path>]\|config\|presets\|start\|install-skill` |
+| Preset capability check (selected preset live?) | cli | `mono-agent validate --preset <id>` |
 | `.env` auto-loading | cli | automatic; `--env-file <path>` |
 | Explicit failure objects (no fake success) | auto | harness |
 | Per-request runtime options, custom memory/history stores | code | `createConfiguredAgentResponder` options |
