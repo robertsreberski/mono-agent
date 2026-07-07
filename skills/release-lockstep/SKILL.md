@@ -11,16 +11,20 @@ every internal dep (including root devDependencies) to be `workspace:<version>`.
 Publishing happens in CI on tag push (`.github/workflows/npm-release.yml`) —
 local `npm publish` is NOT the normal path.
 
-**Lockstep set (2026-07):** the closure is the **17 publishable `packages/*`**
-(the agent-app dependency closure). The three `extras/*` packages (a2a-adapter,
-agent-orchestrator, whatsapp-adapter) are `private: true` and are NEVER version-
-bumped or published. `scripts/package-catalog.mjs` (`publishable: true`) is the
-source of truth, and `release:test`'s package-count-drift check reflects 17.
+**Lockstep set (2026-07, updated #165):** all **20 `publishable: true` packages**
+in `scripts/package-catalog.mjs` release together. 17 are the core app closure
+under `packages/*`; the three plugin-tier extras under `extras/*` (a2a-adapter,
+agent-orchestrator, whatsapp-adapter, marked `tier: "plugin"`) rejoined the
+lockstep in #165 and are version-bumped and published alongside core.
+`scripts/package-catalog.mjs` (`publishable: true`) is the source of truth, and
+`release:test`'s package-count-drift check guards both the core (17) and
+plugin-tier (3) counts.
 
 ## 1. Bump
 
-Mechanically set the new version in every `packages/*/package.json`, root
-`package.json` devDependencies (`workspace:<new>`), and demo/consumer manifests.
+Mechanically set the new version in every catalog-publishable `packages/*` and
+`extras/*` package.json, root `package.json` devDependencies (`workspace:<new>`),
+and demo/consumer manifests.
 Then refresh the lockfile:
 
 ```bash

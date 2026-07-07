@@ -1,8 +1,8 @@
 # Package Layers
 
-`scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. Publishable packages live under `packages/<package-name>`; unpublished optional extras live under `extras/<package-name>` with `publishable: false`. Extras keep `@mono-agent/<package-name>` package names but are not part of the published core package set. The diagram shows logical layers, not filesystem nesting.
+`scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. Core packages live under `packages/<package-name>`; optional **plugin-tier** extras live under `extras/<package-name>` (marked `tier: "plugin"`). Both tiers are `publishable: true` and release together on the npm lockstep tag, but the plugin-tier extras are not part of the core `@mono-agent/agent-app` dependency closure — `agent-app` loads them only when a host declares them under `channels.plugins[]` (`a2a-adapter`, `whatsapp-adapter`) or as a request-scoped runtime extension (`agent-orchestrator`). The diagram shows logical layers, not filesystem nesting.
 
-Current catalog count: 17 publishable packages plus 3 unpublished extras.
+Current catalog count: 17 core publishable packages plus 3 plugin-tier extras (also publishable, released in the same lockstep).
 
 ```mermaid
 flowchart TB

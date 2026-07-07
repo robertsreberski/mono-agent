@@ -34,6 +34,10 @@ The external-channel seam is only a loading mechanism. The app reads `channels.p
 }
 ```
 
+:::note[Installing the bundled plugin-tier packages]
+`@mono-agent/whatsapp-adapter` and `@mono-agent/a2a-adapter` are **plugin-tier** packages: they publish to npm in the **same lockstep** as the core packages, so install the version that matches your `@mono-agent/agent-app`. Releases from before the extras rejoined the lockstep (npm `0.4.0`) predate this seam — they export no `createChannelDriver`, so `agent-app` reports `Channel plugin @mono-agent/whatsapp-adapter must export createChannelDriver(options) returning a ChannelDriver` and cannot load them (degradation is graceful — the rest of the host still runs), and they pull a now-retired internal settings dependency into your install tree. Upgrading the plugin to the current lockstep version fixes both. Each plugin's package README names the exact retired dependency.
+:::
+
 A package can expose a factory like this:
 
 ```ts
