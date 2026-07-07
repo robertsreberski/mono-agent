@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { createInterface } from "node:readline/promises";
 import { stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, resolve } from "node:path";
@@ -47,17 +46,20 @@ import type { ChannelStatus } from "./channels.js";
 import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor.js";
-import { initMonoAgentFolder, isWithChannel } from "./init.js";
-import type { WithChannel } from "./init.js";
+import { initMonoAgentFolder } from "./init.js";
+import type { InitMonoAgentFolderResult } from "./init.js";
 import { installComposerSkill } from "./install-skill.js";
 import type { InstallSkillTarget } from "./install-skill.js";
 import { runMetrics } from "./metrics.js";
-import { findRecipe, RECIPE_CATALOG, recipeIds, resolveRecipeInputs } from "./recipes/index.js";
-import type { AgentRecipe } from "./recipes/index.js";
+import type { ModuleValidateExpectation } from "./modules/index.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeSessions } from "./sessions.js";
-import { collectSetupOptions } from "./setup.js";
-import type { SecretChecklistItem } from "./setup.js";
+import { composeWizardPlan } from "./wizard/answers.js";
+import type { SecretChecklistItem } from "./wizard/answers.js";
+import { answersFromCli, isWithChannel } from "./wizard/from-flags.js";
+import type { WithChannel } from "./wizard/from-flags.js";
+import { findPreset, PRESET_CATALOG, presetAnswers, presetIds, RECIPE_TO_PRESET } from "./wizard/presets.js";
+import type { WizardPreset } from "./wizard/presets.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -66,12 +68,13 @@ const DEFAULT_LOG_LINES = 200;
 // busy-waiting; larger values silently overflow to a 1ms delay.
 const KEEP_ALIVE_INTERVAL_MS = 2_147_483_647;
 const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as const;
-const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory"] as const;
+const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory"] as const;
 
-// `doctor` never reaches routing: parseCliArgs normalizes it to `validate`.
-// `help`/`version` are synthetic commands (not in KNOWN_COMMANDS) produced by
-// the `--help`/`-h` and `--version`/`-v` flags before command validation.
-type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor"> | "help" | "version";
+// `doctor`/`setup`/`recipes` never reach routing: parseCliArgs normalizes them to
+// `validate`/`init`/`presets`. `help`/`version` are synthetic commands (not in
+// KNOWN_COMMANDS) produced by the `--help`/`-h` and `--version`/`-v` flags before
+// command validation.
+type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor" | "setup" | "recipes"> | "help" | "version";
 
 interface ParsedCliArgs {
   readonly command: CliCommand;
@@ -79,11 +82,15 @@ interface ParsedCliArgs {
   readonly model?: string;
   readonly fallbackModels?: readonly string[];
   readonly memory?: "lite" | "journal" | "bujo";
-  /** init/validate: build/check against this recipe id. */
+  /** init/validate: build/check against this preset id. */
+  readonly preset?: string;
+  /** init/validate: deprecated alias — maps to the preset that replaced the recipe. */
   readonly recipe?: string;
-  /** init: additional channels to enable on top of the recipe/default config. */
+  /** init: additional channels to enable on top of the preset/default config. */
   readonly withChannels?: readonly string[];
-  /** Non-flag arguments (e.g. `recipes show <id>`). */
+  /** init: skip the interactive wizard and write the default/preset scaffold. */
+  readonly yes?: boolean;
+  /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
   readonly target?: InstallSkillTarget;
@@ -145,17 +152,28 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
   }
-  // `doctor` is an alias of `validate`; normalize here so every downstream
-  // validate path (env-file resolution, --consumer, routing) applies unchanged.
-  const cmd = (command === "doctor" ? "validate" : command) as CliCommand;
+  // `doctor`/`setup`/`recipes` are aliases; normalize here so every downstream
+  // path (routing, env-file resolution, --consumer) applies unchanged. `doctor`
+  // → `validate`, `setup` → `init`, `recipes` → `presets`.
+  const cmd = (
+    command === "doctor"
+      ? "validate"
+      : command === "setup"
+        ? "init"
+        : command === "recipes"
+          ? "presets"
+          : command
+  ) as CliCommand;
   const isLogs = cmd === "logs";
 
   let configPath: string | undefined;
   let model: string | undefined;
   let fallbackModels: readonly string[] | undefined;
   let memory: "lite" | "journal" | "bujo" | undefined;
+  let preset: string | undefined;
   let recipe: string | undefined;
   let withChannels: readonly string[] | undefined;
+  let yes = false;
   const positionals: string[] = [];
   let envFile: string | undefined;
   let target: InstallSkillTarget | undefined;
@@ -295,8 +313,14 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         memory = raw;
         break;
       }
+      case "--preset":
+        preset = requireValue(rest, ++i, flag);
+        break;
       case "--recipe":
         recipe = requireValue(rest, ++i, flag);
+        break;
+      case "--yes":
+        yes = true;
         break;
       case "--with":
         withChannels = requireValue(rest, ++i, flag)
@@ -377,8 +401,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(model === undefined ? {} : { model }),
     ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(memory === undefined ? {} : { memory }),
+    ...(preset === undefined ? {} : { preset }),
     ...(recipe === undefined ? {} : { recipe }),
     ...(withChannels === undefined ? {} : { withChannels }),
+    ...(yes ? { yes } : {}),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(target === undefined ? {} : { target }),
@@ -454,36 +480,32 @@ interface HelpEntry {
 
 const HELP_COMMANDS: readonly HelpEntry[] = [
   {
-    signature: "mono-agent init [--recipe <id>] [--with <csv>] [--dry-run]\n" +
+    signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--dry-run]\n" +
       "                [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]",
     lines: [
-      "Scaffold mono-agent.config.json, IDENTITY.md, and .mono-agent/ in the",
-      "current folder. With --recipe, build from a blueprint (+ .env.example);",
-      "--with adds channels, --dry-run previews. Existing files are never overwritten.",
+      "Scaffold a mono-agent in the current folder. On a TTY with no flags, launches",
+      "the step-by-step wizard; with --yes or any flag, writes the default/preset",
+      "scaffold non-interactively. --preset seeds a blueprint, --with adds channels,",
+      "--dry-run previews. Existing files are never overwritten.",
     ],
   },
   {
-    signature: "mono-agent setup [--recipe <id>] [--with <csv>] [--dry-run]\n" +
-      "                 [--model <ref>] [--fallback-models <csv>] [--memory lite|journal|bujo]",
-    lines: [
-      "Guided setup when attached to a TTY: choose a recipe, answer non-secret",
-      "inputs, select channel add-ons, scaffold, validate, and print the secrets",
-      "checklist. In non-TTY contexts it falls back to init-style flags.",
-    ],
+    signature: "mono-agent setup",
+    lines: ["Alias of `init`."],
   },
   {
-    signature: "mono-agent recipes list | show <id>",
+    signature: "mono-agent presets list | show <id>",
     lines: [
-      "List the executable config blueprints, or show one's generated config,",
+      "List the built-in setup presets, or show one's generated config,",
       ".env.example, and follow-up checklist.",
     ],
   },
   {
-    signature: "mono-agent validate [--recipe <id>] [--consumer <path>] [--config <path>] [--env-file <path>]",
+    signature: "mono-agent validate [--preset <id>] [--consumer <path>] [--config <path>] [--env-file <path>]",
     lines: [
       "Load every config section and report what would run, wait, or fail.",
       "--consumer validates another agent folder read-only, including its .env.",
-      "With --recipe, also report whether the recipe's capabilities are live.",
+      "With --preset, also report whether the preset's capabilities are live.",
       "`mono-agent doctor` is an alias for this command.",
     ],
   },
@@ -668,14 +690,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 0;
     case "init":
       return await runInit(args);
-    case "setup":
-      return await runSetup(args);
     case "validate":
       return await runValidate(args);
     case "config":
       return await runConfig(args);
-    case "recipes":
-      return runRecipes(args);
+    case "presets":
+      return runPresets(args);
     case "start":
       return await runStart(args);
     case "restart":
@@ -756,8 +776,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 }
 
 async function runInit(args: ParsedCliArgs): Promise<number> {
-  const recipe = resolveRecipeArg(args);
-  if (recipe === "unknown") {
+  // The interactive wizard (Task 6) will branch here on a TTY with no flags.
+  // For now `init` always writes the silent default/preset scaffold.
+  const presetId = resolveInitPresetId(args);
+  if (presetId === "unknown") {
     return 1;
   }
 
@@ -766,94 +788,50 @@ async function runInit(args: ParsedCliArgs): Promise<number> {
     return 1;
   }
 
-  const result = await initMonoAgentFolder({
-    dir: process.cwd(),
+  const answers = answersFromCli({
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
     ...(args.memory === undefined ? {} : { memory: args.memory }),
-    ...(recipe === undefined ? {} : { recipe }),
     ...(withChannels === undefined ? {} : { withChannels }),
-    dryRun: args.dryRun,
+    ...(presetId === undefined ? {} : { presetId }),
   });
 
-  printInitResult(result, recipe);
+  const result = await initMonoAgentFolder({ dir: process.cwd(), answers, dryRun: args.dryRun });
 
-  printNextSteps(result.configPath, recipe);
+  printInitResult(result);
+  printSecretsChecklist(result.plan.secrets);
+  printNextSteps(result.configPath);
   return 0;
 }
 
-async function runSetup(args: ParsedCliArgs): Promise<number> {
-  if (process.stdin.isTTY !== true) {
-    return await runInit(args);
-  }
-
-  const recipeArg = resolveRecipeArg(args);
-  if (recipeArg === "unknown") {
-    return 1;
-  }
-  const withChannelsArg = resolveWithChannels(args);
-  if (withChannelsArg === "invalid") {
-    return 1;
-  }
-
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  let collected;
-  try {
-    collected = await collectSetupOptions({
-      prompt: { question: (prompt) => rl.question(prompt) },
-      ...(recipeArg === undefined ? {} : { recipe: recipeArg }),
-      ...(args.model === undefined ? {} : { model: args.model }),
-      ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
-      ...(withChannelsArg === undefined ? {} : { withChannels: withChannelsArg }),
-    });
-  } finally {
-    rl.close();
-  }
-
-  const result = await initMonoAgentFolder({
-    dir: process.cwd(),
-    ...(collected.fallbackModels.length === 0 ? {} : { fallbackModels: collected.fallbackModels }),
-    ...(args.memory === undefined ? {} : { memory: args.memory }),
-    recipe: collected.recipe,
-    recipeInputs: collected.recipeInputs,
-    withChannels: collected.withChannels,
-    dryRun: args.dryRun,
-  });
-
-  printInitResult(result, collected.recipe);
-
-  if (!result.dryRun) {
-    const report = await validateMonoAgentFolder({
-      env: process.env,
-      cwd: process.cwd(),
-      configPath: result.configPath,
-    });
-    process.stdout.write("\n" + ui.heading("Validation"));
-    for (const section of report.sections) {
-      process.stdout.write(formatSection(section));
+/**
+ * Resolve the preset id for `init`: `--preset` wins, `--recipe` is a deprecated
+ * alias mapped to the preset that replaced it. Returns the preset id to compose
+ * from, `undefined` for the default scaffold, or `"unknown"` after emitting the
+ * error/hint (an unknown preset, or a retired recipe with no replacement).
+ */
+function resolveInitPresetId(args: ParsedCliArgs): string | undefined | "unknown" {
+  if (args.preset !== undefined) {
+    const preset = findPreset(args.preset);
+    if (preset === undefined) {
+      process.stderr.write(ui.errorLine(`Unknown preset \`${args.preset}\`.`));
+      process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
+      return "unknown";
     }
-    process.stdout.write(renderRecipeCompleteness(collected.recipe, report));
-    printSecretsChecklist(collected.secrets);
-    printNextSteps(result.configPath, collected.recipe);
-    return report.ok ? 0 : 1;
+    return preset.id;
   }
-
-  printSecretsChecklist(collected.secrets);
-  printNextSteps(result.configPath, collected.recipe);
-  return 0;
-}
-
-function resolveRecipeArg(args: ParsedCliArgs): AgentRecipe | undefined | "unknown" {
-  if (args.recipe === undefined) {
-    return undefined;
+  if (args.recipe !== undefined) {
+    const preset = RECIPE_TO_PRESET.get(args.recipe);
+    if (preset === undefined) {
+      process.stderr.write(ui.errorLine(`Recipe \`${args.recipe}\` was retired; the wizard composes capabilities directly.`));
+      process.stderr.write(ui.hint(`Use \`mono-agent init --preset <id>\` (${presetIds().join(", ")}), or \`mono-agent init\` for the step-by-step wizard.`));
+      process.stderr.write(ui.hint("See the mono-agent-composer skill and docs/playbooks for capability recipes."));
+      return "unknown";
+    }
+    process.stderr.write(ui.hint(`--recipe is deprecated; using preset ${preset.id}. See \`mono-agent presets list\`.`));
+    return preset.id;
   }
-  const recipe = findRecipe(args.recipe);
-  if (recipe === undefined) {
-    process.stderr.write(ui.errorLine(`Unknown recipe \`${args.recipe}\`.`));
-    process.stderr.write(ui.hint("Run `mono-agent recipes list` to see available recipes."));
-    return "unknown";
-  }
-  return recipe;
+  return undefined;
 }
 
 function resolveWithChannels(args: ParsedCliArgs): readonly WithChannel[] | undefined | "invalid" {
@@ -869,10 +847,7 @@ function resolveWithChannels(args: ParsedCliArgs): readonly WithChannel[] | unde
   return args.withChannels.filter(isWithChannel);
 }
 
-function printInitResult(
-  result: Awaited<ReturnType<typeof initMonoAgentFolder>>,
-  recipe: AgentRecipe | undefined,
-): void {
+function printInitResult(result: InitMonoAgentFolderResult): void {
   if (result.dryRun) {
     process.stdout.write(ui.style.dim("Dry run — nothing was written.\n"));
   }
@@ -886,34 +861,35 @@ function printInitResult(
   if (result.knowledgeFiles.length > 0) {
     process.stdout.write(`\nIdentity references existing knowledge: ${ui.style.cyan(result.knowledgeFiles.join(", "))}\n`);
   }
-  if (recipe !== undefined) {
-    process.stdout.write(`\n${ui.style.bold("Recipe:")} ${ui.style.cyan(recipe.id)} ${ui.style.dim(`(risk: ${recipe.riskLevel})`)}\n`);
-    if (recipe.envExample !== undefined) {
-      process.stdout.write(ui.style.dim("Fill the secret placeholders in .env.example, then copy it to .env.\n"));
+  if (result.plan.selectedModules.length > 0) {
+    process.stdout.write("\n" + ui.heading("Capabilities"));
+    for (const module of result.plan.selectedModules) {
+      process.stdout.write(`  ${ui.style.cyan(module.title)} ${ui.style.dim(`(risk: ${riskColor(module.riskLevel)})`)}\n`);
     }
+  }
+  if (result.plan.envExample !== undefined) {
+    process.stdout.write("\n" + ui.style.dim("Fill the secret placeholders in .env.example, then copy it to .env.\n"));
   }
 }
 
 function printSecretsChecklist(secrets: readonly SecretChecklistItem[]): void {
   process.stdout.write("\n" + ui.heading("Secrets checklist"));
   if (secrets.length === 0) {
-    process.stdout.write(ui.style.dim("No secret recipe inputs were prompted. Review .env.example if the recipe created one.\n"));
+    process.stdout.write(ui.style.dim("No secrets required by the selected capabilities.\n"));
     return;
   }
-  process.stdout.write(ui.style.dim("Copy .env.example to .env, then fill these variables. Secret values were not prompted or written to JSON.\n"));
+  process.stdout.write(ui.style.dim("Copy .env.example to .env, then fill these variables. Secret values are never written to JSON.\n"));
   for (const secret of secrets) {
-    const key = secret.envVar ?? secret.id;
-    process.stdout.write(`  ${ui.style.bold(key)} ${ui.style.dim(`- ${secret.label}: ${secret.description}`)}\n`);
+    process.stdout.write(`  ${ui.style.bold(secret.envVar)} ${ui.style.dim(`- ${secret.label}: ${secret.description}`)}\n`);
   }
 }
 
-function printNextSteps(configPath: string, recipe: AgentRecipe | undefined): void {
-  const validateCmd = recipe === undefined ? "mono-agent validate" : `mono-agent validate --recipe ${recipe.id}`;
+function printNextSteps(configPath: string): void {
   process.stdout.write(
     "\n" +
       ui.heading("Next steps") +
       `  ${ui.style.bold("1.")} Edit ${configPath} ${ui.style.dim("(model, channels, skills, memory, sandbox)")}\n` +
-      `  ${ui.style.bold("2.")} ${validateCmd}\n` +
+      `  ${ui.style.bold("2.")} mono-agent validate\n` +
       `  ${ui.style.bold("3.")} mono-agent start\n`,
   );
 }
@@ -948,14 +924,16 @@ async function runValidate(args: ParsedCliArgs): Promise<number> {
     process.stdout.write(formatSection(section));
   }
 
-  if (args.recipe !== undefined) {
-    const recipe = findRecipe(args.recipe);
-    if (recipe === undefined) {
-      process.stderr.write(ui.errorLine(`Unknown recipe \`${args.recipe}\`.`));
-      process.stderr.write(ui.hint("Run `mono-agent recipes list` to see available recipes."));
-      return 1;
-    }
-    process.stdout.write(renderRecipeCompleteness(recipe, report));
+  const preset = resolveValidatePreset(args);
+  if (preset === "unknown") {
+    return 1;
+  }
+  if (preset !== undefined) {
+    const plan = composeWizardPlan(presetAnswers(preset), {
+      dirBasename: basename(context.cwd),
+      skillsRootExists: false,
+    });
+    process.stdout.write(renderPlanCompleteness(plan.validateExpectations, `Preset: ${preset.id}`, report));
   }
 
   process.stdout.write(
@@ -970,15 +948,47 @@ async function runValidate(args: ParsedCliArgs): Promise<number> {
 }
 
 /**
- * Capability-aware recipe check: for each capability the recipe promises, report
- * whether the matching doctor section has reached the expected status. `waiting`
- * stays non-fatal (it never changes the validate exit code) but is surfaced as
- * "selected recipe incomplete" so the operator knows what is left to wire up.
+ * Resolve the preset to check `validate` against: `--preset` wins, `--recipe` is a
+ * deprecated alias. Returns the preset, `undefined` (no capability check), or
+ * `"unknown"` after emitting the error/hint.
  */
-function renderRecipeCompleteness(recipe: AgentRecipe, report: ValidationReport): string {
-  let out = "\n" + ui.heading(`Recipe: ${recipe.id}`);
+function resolveValidatePreset(args: ParsedCliArgs): WizardPreset | undefined | "unknown" {
+  if (args.preset !== undefined) {
+    const preset = findPreset(args.preset);
+    if (preset === undefined) {
+      process.stderr.write(ui.errorLine(`Unknown preset \`${args.preset}\`.`));
+      process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
+      return "unknown";
+    }
+    return preset;
+  }
+  if (args.recipe !== undefined) {
+    const preset = RECIPE_TO_PRESET.get(args.recipe);
+    if (preset === undefined) {
+      process.stderr.write(ui.errorLine(`Recipe \`${args.recipe}\` was retired; validate against a preset instead.`));
+      process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
+      return "unknown";
+    }
+    process.stderr.write(ui.hint(`--recipe is deprecated; using preset ${preset.id}. See \`mono-agent presets list\`.`));
+    return preset;
+  }
+  return undefined;
+}
+
+/**
+ * Capability-aware completeness check: for each capability a preset (or module
+ * set) promises, report whether the matching doctor section reached the expected
+ * status. `waiting` stays non-fatal (it never changes the validate exit code) but
+ * is surfaced as "incomplete" so the operator knows what is left to wire up.
+ */
+function renderPlanCompleteness(
+  expectations: readonly ModuleValidateExpectation[],
+  label: string,
+  report: ValidationReport,
+): string {
+  let out = "\n" + ui.heading(label);
   let incomplete = 0;
-  for (const expectation of recipe.validateExpectations) {
+  for (const expectation of expectations) {
     const section = report.sections.find((entry) => entry.id === expectation.sectionId);
     const status: ValidationStatus | "missing" = section?.status ?? "missing";
     const met = status === expectation.mustBe;
@@ -992,12 +1002,12 @@ function renderRecipeCompleteness(recipe: AgentRecipe, report: ValidationReport)
     }
   }
   out += incomplete === 0
-    ? `${ui.style.green(`✓ Recipe ${recipe.id} is fully configured.`)}\n`
-    : ui.style.yellow(`⚠ Selected recipe incomplete: ${incomplete} capability(ies) not yet live.\n`);
+    ? `${ui.style.green(`✓ ${label} is fully configured.`)}\n`
+    : ui.style.yellow(`⚠ ${label} incomplete: ${incomplete} capability(ies) not yet live.\n`);
   return out;
 }
 
-function riskColor(risk: AgentRecipe["riskLevel"]): string {
+function riskColor(risk: WizardPreset["riskLevel"]): string {
   if (risk === "high") {
     return ui.style.red(risk);
   }
@@ -1007,47 +1017,47 @@ function riskColor(risk: AgentRecipe["riskLevel"]): string {
   return ui.style.green(risk);
 }
 
-/** `mono-agent recipes list` — one line per recipe. */
-export function renderRecipeList(): string {
-  let out = ui.banner("mono-agent", "recipes") + "\n";
-  for (const recipe of RECIPE_CATALOG) {
-    out += `${ui.style.bold(ui.style.cyan(recipe.id))} ${ui.style.dim(`[${riskColor(recipe.riskLevel)}]`)}\n`;
-    out += `    ${recipe.title}\n`;
-    out += `    ${ui.style.dim(recipe.tags.join(", "))}\n`;
+/** `mono-agent presets list` — one block per preset. */
+export function renderPresetList(): string {
+  let out = ui.banner("mono-agent", "presets") + "\n";
+  for (const preset of PRESET_CATALOG) {
+    out += `${ui.style.bold(ui.style.cyan(preset.id))} ${ui.style.dim(`[${riskColor(preset.riskLevel)}]`)}\n`;
+    out += `    ${preset.title}\n`;
+    out += `    ${ui.style.dim(preset.description)}\n`;
   }
-  out += "\n" + ui.style.dim("Scaffold one with: mono-agent init --recipe <id> [--dry-run] [--with slack,cron]\n");
+  out += "\n" + ui.style.dim("Scaffold one with: mono-agent init --preset <id>\n");
+  out += ui.style.dim("Build interactively with: mono-agent init\n");
   return out;
 }
 
-/** `mono-agent recipes show <id>` — description, generated JSON, env example, checklist. */
-export function renderRecipeShow(recipe: AgentRecipe): string {
-  const inputs = resolveRecipeInputs(recipe);
-  let out = ui.banner("mono-agent", `recipe: ${recipe.id}`) + "\n";
-  out += `${ui.style.bold(recipe.title)} ${ui.style.dim(`(risk: ${riskColor(recipe.riskLevel)})`)}\n`;
-  out += `${recipe.description}\n`;
-  if (recipe.playbook !== undefined) {
-    out += ui.style.dim(`Playbook: docs/playbooks/${recipe.playbook}\n`);
+/** `mono-agent presets show <id>` — description, composed JSON, env example, checklist. */
+export function renderPresetShow(preset: WizardPreset): string {
+  const plan = composeWizardPlan(presetAnswers(preset), { dirBasename: "your-agent", skillsRootExists: false });
+  let out = ui.banner("mono-agent", `preset: ${preset.id}`) + "\n";
+  out += `${ui.style.bold(preset.title)} ${ui.style.dim(`(risk: ${riskColor(preset.riskLevel)})`)}\n`;
+  out += `${preset.description}\n`;
+  if (preset.playbook !== undefined) {
+    out += ui.style.dim(`Playbook: docs/playbooks/${preset.playbook}\n`);
   }
   out += "\n" + ui.heading("Generated mono-agent.config.json");
-  out += JSON.stringify(recipe.config(inputs), null, 2) + "\n";
+  out += JSON.stringify(plan.configJson, null, 2) + "\n";
 
-  const envExample = recipe.envExample?.(inputs);
+  const envExample = plan.envExample;
   if (envExample !== undefined && envExample.trim().length > 0) {
     out += "\n" + ui.heading(".env.example");
     out += envExample.endsWith("\n") ? envExample : envExample + "\n";
   }
 
-  const files = recipe.files?.(inputs) ?? [];
-  if (files.length > 0) {
+  if (plan.files.length > 0) {
     out += "\n" + ui.heading("Scaffolded files");
-    for (const file of files) {
+    for (const file of plan.files) {
       out += `  ${ui.style.cyan(file.path)}\n`;
     }
   }
 
-  if (recipe.validateExpectations.length > 0) {
+  if (plan.validateExpectations.length > 0) {
     out += "\n" + ui.heading("Follow-up checklist");
-    for (const expectation of recipe.validateExpectations) {
+    for (const expectation of plan.validateExpectations) {
       const note = expectation.note === undefined ? "" : ` — ${expectation.note}`;
       out += `  ${ui.style.gray("•")} ${expectation.sectionId} ${ui.style.dim(`must be ${expectation.mustBe}`)}${ui.style.dim(note)}\n`;
     }
@@ -1055,29 +1065,29 @@ export function renderRecipeShow(recipe: AgentRecipe): string {
   return out;
 }
 
-/** Dispatch `mono-agent recipes list|show <id>`. */
-function runRecipes(args: ParsedCliArgs): number {
+/** Dispatch `mono-agent presets list|show <id>`. */
+function runPresets(args: ParsedCliArgs): number {
   const [sub, id] = args.positionals;
   if (sub === undefined || sub === "list") {
-    process.stdout.write(renderRecipeList());
+    process.stdout.write(renderPresetList());
     return 0;
   }
   if (sub === "show") {
     if (id === undefined) {
-      process.stderr.write(ui.errorLine("Usage: mono-agent recipes show <id>."));
-      process.stderr.write(ui.hint(`Available: ${recipeIds().join(", ")}.`));
+      process.stderr.write(ui.errorLine("Usage: mono-agent presets show <id>."));
+      process.stderr.write(ui.hint(`Available: ${presetIds().join(", ")}.`));
       return 2;
     }
-    const recipe = findRecipe(id);
-    if (recipe === undefined) {
-      process.stderr.write(ui.errorLine(`Unknown recipe \`${id}\`.`));
-      process.stderr.write(ui.hint("Run `mono-agent recipes list` to see available recipes."));
+    const preset = findPreset(id);
+    if (preset === undefined) {
+      process.stderr.write(ui.errorLine(`Unknown preset \`${id}\`.`));
+      process.stderr.write(ui.hint(`Available: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
       return 1;
     }
-    process.stdout.write(renderRecipeShow(recipe));
+    process.stdout.write(renderPresetShow(preset));
     return 0;
   }
-  process.stderr.write(ui.errorLine(`Unknown recipes subcommand \`${sub}\`. Expected list or show.`));
+  process.stderr.write(ui.errorLine(`Unknown presets subcommand \`${sub}\`. Expected list or show.`));
   return 2;
 }
 

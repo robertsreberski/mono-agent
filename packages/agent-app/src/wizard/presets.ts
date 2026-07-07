@@ -98,3 +98,15 @@ export function presetIds(): readonly string[] {
 export function presetAnswers(preset: WizardPreset): WizardAnswers {
   return defaultAnswers(preset.answers);
 }
+
+/**
+ * Former recipe id → the preset that now supersedes it, built from each preset's
+ * `replacesRecipes`. Powers the deprecated `--recipe <id>` alias on `init`/`validate`:
+ * a mapped id resolves to its preset (with a deprecation notice); an unmapped id is
+ * treated as a retired recipe.
+ */
+export const RECIPE_TO_PRESET: ReadonlyMap<string, WizardPreset> = new Map(
+  PRESET_CATALOG.flatMap((preset) =>
+    (preset.replacesRecipes ?? []).map((recipeId) => [recipeId, preset] as const),
+  ),
+);
