@@ -6,15 +6,18 @@ import { packageCatalog } from "../../package-catalog.mjs";
 
 const publishablePackages = packageCatalog.filter((entry) => entry.publishable === true);
 const pluginTierCount = publishablePackages.filter((entry) => entry.tier === "plugin").length;
-const coreTierCount = publishablePackages.length - pluginTierCount;
+const aliasTierCount = publishablePackages.filter((entry) => entry.tier === "alias").length;
+const coreTierCount = publishablePackages.length - pluginTierCount - aliasTierCount;
 
 const expectedCounts = {
   core: coreTierCount,
   plugin: pluginTierCount,
+  alias: aliasTierCount,
 };
 
-// Both tier counts are guarded so prose that splits "N core + M plugin-tier
-// extras" cannot silently drift from the catalog when the tiers change.
+// All three tier counts are guarded so prose that splits "N core + M plugin-tier
+// extras + K unscoped alias" cannot silently drift from the catalog when the
+// tiers change.
 const guardedPackageCountReferences = [
   {
     filePath: "website/README.md",
@@ -29,6 +32,12 @@ const guardedPackageCountReferences = [
     tier: "plugin",
   },
   {
+    filePath: "website/README.md",
+    description: "the isolated app architecture note (unscoped alias count)",
+    pattern: /plus (?<count>\d+) unscoped alias/u,
+    tier: "alias",
+  },
+  {
     filePath: "PACKAGES.md",
     description: "the catalog count prose (core count)",
     pattern: /(?<count>\d+) core publishable packages/u,
@@ -41,6 +50,12 @@ const guardedPackageCountReferences = [
     tier: "plugin",
   },
   {
+    filePath: "PACKAGES.md",
+    description: "the catalog count prose (unscoped alias count)",
+    pattern: /plus (?<count>\d+) unscoped alias/u,
+    tier: "alias",
+  },
+  {
     filePath: "README.md",
     description: "the package architecture catalog count (core count)",
     pattern: /(?<count>\d+) core publishable packages/u,
@@ -51,6 +66,12 @@ const guardedPackageCountReferences = [
     description: "the package architecture catalog count (plugin-tier count)",
     pattern: /plus (?<count>\d+) plugin-tier extras/u,
     tier: "plugin",
+  },
+  {
+    filePath: "README.md",
+    description: "the package architecture catalog count (unscoped alias count)",
+    pattern: /plus (?<count>\d+) unscoped alias/u,
+    tier: "alias",
   },
 ];
 
