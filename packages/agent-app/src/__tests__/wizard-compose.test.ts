@@ -6,11 +6,12 @@ import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
-import { CAPABILITY_MODULES } from "../modules/index.js";
+import { CAPABILITY_MODULES, findModule } from "../modules/index.js";
 import {
   composeWizardPlan,
   type ComposeContext,
   defaultAnswers,
+  moduleOverrides,
   type WizardAnswers,
 } from "../wizard/answers.js";
 import { PRESET_CATALOG, presetAnswers } from "../wizard/presets.js";
@@ -90,6 +91,23 @@ describe("wizard composer — schema + no secret leak", () => {
     });
     const plan = composeWizardPlan(answers, CTX);
     expect(JSON.stringify(plan.configJson)).not.toContain("FAKELEAK");
+  });
+
+  it("moduleOverrides strips a secret input surgically, preserving non-secret siblings", () => {
+    const telegramModule = findModule("channel:telegram");
+    expect(telegramModule, "channel:telegram module must exist").toBeDefined();
+    const answers = defaultAnswers({
+      channels: ["channel:telegram"],
+      moduleInputs: {
+        "channel:telegram": { telegramToken: "xoxb-FAKELEAK", allowedChatIds: "111,222" },
+      },
+    });
+    const result = moduleOverrides(telegramModule!, answers);
+    // The secret input is deleted — its value can never reach a fragment or the JSON.
+    expect(result).not.toHaveProperty("telegramToken");
+    expect(JSON.stringify(result)).not.toContain("FAKELEAK");
+    // The strip is surgical, not wholesale: the non-secret sibling survives.
+    expect(result.allowedChatIds).toBe("111,222");
   });
 
   it("never inlines a secret-shaped value in any preset config", () => {

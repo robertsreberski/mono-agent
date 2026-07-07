@@ -154,7 +154,7 @@ export function defaultAnswers(overrides?: Partial<WizardAnswers>): WizardAnswer
 }
 
 /** Overrides for one module: the shared model plus its non-secret input values. */
-function moduleOverrides(module: CapabilityModule, answers: WizardAnswers): Record<string, string | undefined> {
+export function moduleOverrides(module: CapabilityModule, answers: WizardAnswers): Record<string, string | undefined> {
   const overrides: Record<string, string | undefined> = {
     model: answers.model,
     ...(answers.moduleInputs[module.id] ?? {}),
