@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline/promises";
 import { stat } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { basename, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -67,7 +68,9 @@ const BACKGROUND_COMMANDS = ["start", "restart", "stop", "status", "logs"] as co
 const KNOWN_COMMANDS = ["init", "setup", "validate", "doctor", "config", "recipes", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory"] as const;
 
 // `doctor` never reaches routing: parseCliArgs normalizes it to `validate`.
-type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor"> | "help";
+// `help`/`version` are synthetic commands (not in KNOWN_COMMANDS) produced by
+// the `--help`/`-h` and `--version`/`-v` flags before command validation.
+type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor"> | "help" | "version";
 
 interface ParsedCliArgs {
   readonly command: CliCommand;
@@ -134,6 +137,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
     return { command: "help", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
+  }
+  if (command === "version" || command === "--version" || command === "-v") {
+    return { command: "version", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
   }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${KNOWN_COMMANDS.join(", ")}.`);
@@ -619,6 +625,22 @@ export function renderHelp(): string {
   return out;
 }
 
+/**
+ * The published CLI version, read from this package's own package.json at
+ * runtime. `../package.json` resolves the same from both `src/cli.ts` (tests) and
+ * the built `dist/cli.js` (one level below the package root in both layouts), and
+ * npm always ships package.json in the tarball. Best-effort: a read failure yields
+ * "unknown" rather than crashing `--version`.
+ */
+export function monoAgentVersion(): string {
+  try {
+    const pkg = createRequire(import.meta.url)("../package.json") as { version?: unknown };
+    return typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function runCli(argv: readonly string[]): Promise<number> {
   let args: ParsedCliArgs;
   try {
@@ -639,6 +661,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   switch (args.command) {
     case "help":
       process.stdout.write(renderHelp());
+      return 0;
+    case "version":
+      process.stdout.write(`mono-agent ${monoAgentVersion()}\n`);
       return 0;
     case "init":
       return await runInit(args);
@@ -1453,14 +1478,34 @@ function describeSandboxStatus(status: SandboxStatus): string {
   return parts.join("; ");
 }
 
-function describeChannelStatus(status: ChannelStatus): string {
+export function describeChannelStatus(status: ChannelStatus): string {
   if (status.kind === "running") {
     const facts = Object.entries(status.summary)
-      .map(([key, value]) => `${key}=${String(value)}`)
+      .map(([key, value]) => `${key}=${formatChannelFactValue(value)}`)
       .join(" ");
     return facts.length === 0 ? "running" : `running (${facts})`;
   }
   return `${status.kind}: ${status.reason}`;
+}
+
+/**
+ * Render a channel-status summary value for the human-readable status line.
+ * Objects and arrays are expanded to `key: value` pairs instead of the useless
+ * `[object Object]` that a bare `String()` produced (E4: the webhook summary's
+ * `invokeUrls` map printed `invokeUrls=[object Object]`).
+ */
+function formatChannelFactValue(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(formatChannelFactValue).join(", ")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) {
+    return "{}";
+  }
+  return `{${entries.map(([key, inner]) => `${key}: ${formatChannelFactValue(inner)}`).join(", ")}}`;
 }
 
 /**

@@ -112,13 +112,14 @@ npm update -g @mono-agent/agent-app
 npm update -g @mono-agent/tui
 ```
 
-Published `@mono-agent/*` packages release in lockstep at one version. Keep `@mono-agent/agent-app`, `@mono-agent/tui`, and any other pinned `@mono-agent/*` package references on the same version; the current package metadata in this repo is `0.4.0`.
+Published `@mono-agent/*` packages release in lockstep at one version. Keep `@mono-agent/agent-app`, `@mono-agent/tui`, and any other pinned `@mono-agent/*` package references on the same version.
 
-For reproducible installs or one-shot scaffolds, pin the version explicitly:
+For reproducible installs or one-shot scaffolds, pin the version explicitly to a published release — use the same version across every `@mono-agent/*` package (pick one from [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases)):
 
 ```bash
-npm i -g @mono-agent/agent-app@0.4.0 @mono-agent/tui@0.4.0
-npm exec --package @mono-agent/agent-app@0.4.0 -- mono-agent init
+version=<published-version>
+npm i -g "@mono-agent/agent-app@$version" "@mono-agent/tui@$version"
+npm exec --package "@mono-agent/agent-app@$version" -- mono-agent init
 ```
 
 Review published version notes in [GitHub Releases](https://github.com/robertsreberski/mono-agent/releases).
