@@ -84,6 +84,36 @@ tokens first:
 mono-agent status 2>&1 | sed -E 's/[0-9]{6,}:[A-Za-z0-9_-]{20,}/<BOT_TOKEN>/g'
 ```
 
+## Daily green check
+
+`scripts/fleet-green-check.mjs` is the read-only daily tracker for the v1 7-day
+window (#168 → #119). It discovers the launchd instances, checks each one's
+service (running pid or last exit 0), deployed-`validate`, and last-24h run
+health, then prints a markdown table + `VERDICT: GREEN|RED`. Run it from any
+checkout of this repo — it reads the deployed sha and `cli.js` from the plists,
+not from the tree it runs in:
+
+```bash
+node scripts/fleet-green-check.mjs --dry-run                    # print only
+node scripts/fleet-green-check.mjs                              # also posts to #119
+node scripts/fleet-green-check.mjs --expect-sha <sha>           # window mode: fail on drift
+node scripts/fleet-green-check.mjs --labels com.mono-agent.bogus  # simulate RED (never break a live instance)
+```
+
+Its only write is the `gh issue comment 119`; it never restarts or reconfigures
+an instance. No comment on a given day = not a green day (the counter resets).
+Runs-24h tolerates only a transient `provider_unavailable` failover (#136's
+healthy-failover evidence); every other failure kind, an unclassified failure,
+or a tolerated kind that dominates the window (all runs failed, or >50% over
+>=5 runs) drives RED. `--strict-runs` fails on any failed run; `--min-runs <n>`
+fails a too-quiet instance; zero runs shows a non-RED `idle?` warning. A
+prefix-matching `.plist` that fails conversion is a RED row, never a silent drop.
+
+Dates and the 24h window are **UTC-anchored** (the verdict date is `toISOString`
+UTC). The 7-day counter is audited from these dates, so run the check at a
+consistent local time each day to avoid a UTC day-boundary splitting one run
+across two dated comments (or two runs landing on one date).
+
 ## Gotchas
 
 - **Zombie service after config rename:** the label keys off the abs config path;
