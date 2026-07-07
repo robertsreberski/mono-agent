@@ -1,0 +1,178 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { loadMonoAgentConfigWithSources } from "@mono-agent/config";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
+import { CAPABILITY_MODULES } from "../modules/index.js";
+import {
+  composeWizardPlan,
+  type ComposeContext,
+  defaultAnswers,
+  type WizardAnswers,
+} from "../wizard/answers.js";
+import { PRESET_CATALOG, presetAnswers } from "../wizard/presets.js";
+
+const CTX: ComposeContext = { dirBasename: "smoke", skillsRootExists: false };
+const SECRET_PATTERN = /xoxb-|xapp-|sk-[A-Za-z0-9]/u;
+
+let dir: string;
+
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), "mono-agent-wizard-"));
+});
+
+afterEach(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+/** Write a composed config to a temp file and load it with the real zero-env loader. */
+async function loadComposed(answers: WizardAnswers, ctx: ComposeContext = CTX) {
+  const plan = composeWizardPlan(answers, ctx);
+  const configPath = join(dir, "mono-agent.config.json");
+  await writeFile(configPath, JSON.stringify(plan.configJson, null, 2), "utf8");
+  return loadMonoAgentConfigWithSources({ env: {}, cwd: dir, jsonPath: configPath });
+}
+
+/** Answers that enable exactly one module, for the per-module round-trip guard. */
+function answersForModule(id: string): WizardAnswers {
+  const [kind] = id.split(":");
+  switch (kind) {
+    case "channel":
+      return defaultAnswers({ channels: [id] });
+    case "memory":
+      return defaultAnswers({ memory: id });
+    case "sandbox":
+      return defaultAnswers({ sandbox: true });
+    case "observability":
+      return defaultAnswers({ observability: true });
+    case "provider":
+      return defaultAnswers({ model: id === "provider:ollama" ? "pi:ollama:llama3.1:8b" : "pi:lmstudio:qwen2.5:7b" });
+    default:
+      throw new Error(`unhandled module kind for ${id}`);
+  }
+}
+
+describe("wizard composer — loader round-trip (the load-bearing parity guard)", () => {
+  for (const preset of PRESET_CATALOG) {
+    it(`preset ${preset.id} composes a config that loads with zero env`, async () => {
+      const config = await loadComposed(presetAnswers(preset));
+      expect(config.runtime.model, preset.id).toBeDefined();
+    });
+  }
+
+  for (const module of CAPABILITY_MODULES) {
+    it(`module ${module.id} composes a config that loads with zero env`, async () => {
+      const config = await loadComposed(answersForModule(module.id));
+      expect(config.runtime.model, module.id).toBeDefined();
+    });
+  }
+});
+
+describe("wizard composer — schema + no secret leak", () => {
+  it("stamps the shared schema url on every preset config", () => {
+    for (const preset of PRESET_CATALOG) {
+      const plan = composeWizardPlan(presetAnswers(preset), CTX);
+      expect(plan.configJson.$schema, preset.id).toBe(MONO_AGENT_CONFIG_SCHEMA_URL);
+    }
+  });
+
+  it("strips secret inputs so a fake token never reaches the JSON", () => {
+    const answers = defaultAnswers({
+      channels: ["channel:telegram"],
+      memory: "memory:supermemory",
+      moduleInputs: {
+        "channel:telegram": { telegramToken: "xoxb-FAKELEAK" },
+        "memory:supermemory": { supermemoryApiKey: "sk-FAKELEAK" },
+      },
+    });
+    const plan = composeWizardPlan(answers, CTX);
+    expect(JSON.stringify(plan.configJson)).not.toContain("FAKELEAK");
+  });
+
+  it("never inlines a secret-shaped value in any preset config", () => {
+    for (const preset of PRESET_CATALOG) {
+      const plan = composeWizardPlan(presetAnswers(preset), CTX);
+      expect(JSON.stringify(plan.configJson), preset.id).not.toMatch(SECRET_PATTERN);
+    }
+  });
+});
+
+describe("wizard composer — env-example + secret checklist coverage", () => {
+  for (const preset of PRESET_CATALOG) {
+    it(`preset ${preset.id} declares every selected module's secret env var`, () => {
+      const plan = composeWizardPlan(presetAnswers(preset), CTX);
+      for (const module of plan.selectedModules) {
+        for (const input of module.inputs) {
+          if (input.secret !== true || input.envVar === undefined) {
+            continue;
+          }
+          expect(plan.secrets.some((s) => s.envVar === input.envVar), `${preset.id} secrets`).toBe(true);
+          expect(plan.envExample ?? "", `${preset.id} envExample`).toContain(input.envVar);
+        }
+      }
+    });
+  }
+});
+
+describe("wizard composer — tool selection", () => {
+  it("defaults allowedTools to the read-only safe set", () => {
+    expect(defaultAnswers().allowedTools).toEqual(["Read", "Glob", "Grep"]);
+  });
+
+  it("preserves an explicit zero-tools override and warns chat-only", () => {
+    const plan = composeWizardPlan(defaultAnswers({ allowedTools: [] }), CTX);
+    expect(plan.configJson.tools?.allowedTools).toEqual([]);
+    expect(plan.warnings.some((w) => w.includes("chat-only"))).toBe(true);
+  });
+});
+
+describe("wizard composer — per-preset invariants", () => {
+  it("code-sandbox: full code tool set + native fail-closed sandbox", () => {
+    const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "code-sandbox")!), CTX);
+    expect(plan.configJson.tools?.allowedTools).toEqual(["Read", "Write", "Edit", "Glob", "Grep", "Bash"]);
+    expect(plan.configJson.sandbox).toMatchObject({ mode: "native", fallback: "fail-closed" });
+  });
+
+  it("telegram-assistant: telegram send tools + bujo memory on the composer model", () => {
+    const plan = composeWizardPlan(presetAnswers(PRESET_CATALOG.find((p) => p.id === "telegram-assistant")!), CTX);
+    expect(plan.configJson.tools?.allowedTools).toContain("telegram_send_message");
+    expect(plan.configJson.tools?.allowedTools).toContain("telegram_ask");
+    expect(plan.configJson.memory?.mode).toBe("bujo");
+    expect(plan.configJson.memory?.llm?.model).toBe("claude:claude-sonnet-4-6");
+  });
+
+  it("local-private: ollama provider block, embeddings endpoint, provider module selected", () => {
+    const preset = PRESET_CATALOG.find((p) => p.id === "local-private")!;
+    const plan = composeWizardPlan(presetAnswers(preset), CTX);
+    expect(plan.configJson.providers?.local?.[0]?.type).toBe("ollama");
+    expect(plan.configJson.memory?.embeddings?.endpoint).toBe("http://localhost:11434");
+    expect(plan.selectedModules.map((m) => m.id)).toContain("provider:ollama");
+  });
+
+  it("auto-derives the ollama provider block from a pi:ollama model", () => {
+    const plan = composeWizardPlan(defaultAnswers({ model: "pi:ollama:llama3.1:8b" }), CTX);
+    expect(plan.configJson.providers?.local).toBeDefined();
+  });
+});
+
+describe("wizard composer — default parity with today's scaffold", () => {
+  it("matches the init.ts default template except tools.allowedTools", () => {
+    const plan = composeWizardPlan(defaultAnswers(), { dirBasename: "acme", skillsRootExists: false });
+    const config = plan.configJson;
+
+    expect(config.runtime?.model).toBe("claude:claude-sonnet-4-6");
+    expect(config.runtime?.workspace).toBe(".");
+    expect(config.context?.identityPath).toBe("./IDENTITY.md");
+    expect(config.context?.selectedSkills).toEqual([]);
+    expect(config.context).not.toHaveProperty("skillsRoot");
+    expect((config as Record<string, { enabled?: boolean }>).webhook?.enabled).toBe(true);
+    expect(config.artifacts?.retention?.maxCount).toBe(50000);
+    expect(config.traceability?.sourceLabel).toBe("Mono Agent (acme)");
+    expect(config).not.toHaveProperty("memory");
+    // The one intentional difference from today's scaffold:
+    expect(config.tools?.allowedTools).toEqual(["Read", "Glob", "Grep"]);
+  });
+});
