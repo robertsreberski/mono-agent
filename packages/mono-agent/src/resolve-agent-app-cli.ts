@@ -18,7 +18,15 @@ interface AgentAppManifest {
  */
 export function resolveAgentAppCliEntry(from: string | URL = import.meta.url): string {
   const require = createRequire(from);
-  const manifestPath = require.resolve("@mono-agent/agent-app/package.json");
+  let manifestPath: string;
+  try {
+    manifestPath = require.resolve("@mono-agent/agent-app/package.json");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `the mono-agent alias could not find @mono-agent/agent-app (its CLI host) — reinstall the package (\`npm i -g mono-agent\`). (${reason})`,
+    );
+  }
   const manifest = require("@mono-agent/agent-app/package.json") as AgentAppManifest;
   const bin = manifest.bin;
   const relative = typeof bin === "string" ? bin : bin?.["mono-agent"];

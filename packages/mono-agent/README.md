@@ -25,7 +25,7 @@ mono-agent validate
 mono-agent --version
 ```
 
-Every command, flag, and exit code is exactly what `@mono-agent/agent-app` provides — this package adds nothing but the name. Prefer pinning the scoped host directly (`npm i -g @mono-agent/agent-app`) if you don't need the bare alias.
+Every command, flag, and exit code is exactly what `@mono-agent/agent-app` provides — including interactive shutdown: Ctrl-C on `mono-agent start --foreground` runs the same graceful teardown and yields the same exit status as calling agent-app's bin directly (the alias forwards signals without double-signalling the child; see the bin's `delegateSignals`). This package adds nothing but the name. Prefer pinning the scoped host directly (`npm i -g @mono-agent/agent-app`) if you don't need the bare alias.
 
 > Note: the monorepo's root workspace project is also named `mono-agent` (private, unpublished). Inside this repo, select this package by path — `pnpm --filter "./packages/mono-agent" ...` — so the filter is unambiguous. Repo-wide `pnpm -r` scripts and the dir-based release lane are unaffected.
 
