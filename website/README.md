@@ -24,7 +24,7 @@ pnpm run sync                # re-mirror ../docs -> src/content/docs without bui
 
 ## CI
 
-The repo's `ci.yml` has a dedicated parallel **`website`** job (separate from `verify`) that runs `pnpm install --frozen-lockfile && pnpm run build` here on every PR and `main` push. That is the same `sync-content` → `astro build` → `check-links` pipeline as above, so a broken internal doc link (or any Astro build failure) blocks the merge — the docs site cannot rot silently.
+The repo's `ci.yml` has a dedicated parallel **`website`** job (separate from `verify`) that runs `pnpm install --frozen-lockfile && pnpm run build` here on every pull request and every push to `main`. That is the same `sync-content` → `astro build` → `check-links` pipeline as above, so a broken internal doc link (or any Astro build failure) turns the **`website`** check red. This repo does not use GitHub required-status-check enforcement, so nothing blocks a merge automatically — a red **`website`** check must be treated as a merge blocker by convention (do not merge over it). That is what keeps the docs site from rotting silently.
 
 ## Version pins — do not bump blindly
 
