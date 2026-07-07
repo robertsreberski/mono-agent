@@ -1466,4 +1466,115 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(creds.status).toBe("waiting");
     expect(creds.details.join("\n")).toMatch(/Memory LLM pi:openai-codex:gpt-5\.5: OAuth token for `openai-codex` expired/u);
   });
+
+  // E1 (headline): a `claude:*` model with no discoverable env credential must WARN
+  // at validate time so the fresh user isn't blindsided by the opaque first-turn crash.
+  it("warns (waiting) when a claude:* model has no ANTHROPIC_API_KEY in the resolved env", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toMatch(/\[WARN\] Primary claude:claude-sonnet-4-6: no SDK credential in the resolved env/u);
+    expect(text).toMatch(/ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN/u);
+    // The warning stays honest: a `claude /login` session can't be checked here.
+    expect(text).toMatch(/claude \/login/u);
+    // waiting is non-fatal — validate still passes, but the trap is now visible.
+    expect(report.ok).toBe(true);
+  });
+
+  it("does not warn when a claude:* model has ANTHROPIC_API_KEY set", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { ANTHROPIC_API_KEY: "sk-ant-test" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    const text = creds.details.join("\n");
+    expect(text).not.toMatch(/WARN/u);
+    expect(text).toMatch(/Primary claude:claude-sonnet-4-6: SDK credential present in the resolved env \(ANTHROPIC_API_KEY\)/u);
+  });
+
+  it("accepts CLAUDE_CODE_OAUTH_TOKEN as a claude:* env credential", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { CLAUDE_CODE_OAUTH_TOKEN: "tok" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    expect(creds.details.join("\n")).toMatch(/SDK credential present in the resolved env \(CLAUDE_CODE_OAUTH_TOKEN\)/u);
+  });
+
+  it("warns (waiting) when a codex:* model has no OPENAI_API_KEY, naming the codex login path", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "codex:gpt-5.5" },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("waiting");
+    const text = creds.details.join("\n");
+    expect(text).toMatch(/\[WARN\] Primary codex:gpt-5\.5: no SDK credential in the resolved env \(checked OPENAI_API_KEY\)/u);
+    expect(text).toMatch(/codex login/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("does not warn when a codex:* model has OPENAI_API_KEY set", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "codex:gpt-5.5" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { OPENAI_API_KEY: "sk-test" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    expect(creds.details.join("\n")).not.toMatch(/WARN/u);
+  });
+
+  // E2: a fully-valid `providers.local` ollama provider is keyless — with an empty
+  // pi store it must NOT get the "no Pi credentials found" warning (the wrong advice).
+  it("does not warn for a pi:ollama model configured via providers.local with an empty pi store", async () => {
+    const configPath = await writeCredConfig({
+      runtime: { model: "pi:ollama:gemma4:31b" },
+      providers: {
+        local: [
+          { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
+        ],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const creds = sectionById(report, "credentials");
+    expect(creds.status).toBe("ok");
+    const text = creds.details.join("\n");
+    expect(text).not.toMatch(/WARN/u);
+    expect(text).not.toMatch(/no Pi credentials found/u);
+    expect(text).toMatch(/Primary pi:ollama:gemma4:31b: provider `ollama` configured via config providers\.local \(keyless local provider\)/u);
+    expect(report.ok).toBe(true);
+  });
 });

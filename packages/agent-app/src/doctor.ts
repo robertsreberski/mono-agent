@@ -117,7 +117,7 @@ export async function validateMonoAgentFolder(
       sections.push({ id: "secret-placement", label: "Config warnings", status: "waiting", details: configWarnings });
     }
     sections.push(runtimeSection(coreConfig));
-    sections.push(await credentialsSection(coreConfig));
+    sections.push(await credentialsSection(coreConfig, options.env));
     sections.push(await contextSection(coreConfig));
     sections.push(await memorySection(coreConfig, liveness, allowFilesystemWrites));
     sections.push(await toolsSection(coreConfig, options));
@@ -196,20 +196,89 @@ async function readPiCustomProviders(authPath: string): Promise<Set<string>> {
 }
 
 /**
+ * Static env-credential contract for an SDK-authenticated backend (claude/codex).
+ * `envKeys` are the environment variables the backend accepts, in preference
+ * order; `loginDetail` names the interactive OAuth path that lives OUTSIDE the
+ * environment (Claude subscription / ChatGPT sign-in) and therefore CANNOT be
+ * verified by a static env check; `failureHint` is what a fresh user actually
+ * sees when neither is present (the opaque E1 failure).
+ */
+interface SdkAuthScheme {
+  readonly envKeys: readonly string[];
+  readonly loginCommand: string;
+  readonly loginDetail: string;
+  readonly failureHint: string;
+}
+
+/**
+ * What each SDK-authenticated backend truthfully reads for credentials. Only the
+ * env vars are statically checkable; the login paths are recorded so the warning
+ * can stay honest (a logged-in user is fine and we must not claim otherwise).
+ *
+ * - claude (`claude:*`, sdk + cli): the Claude Code process authenticates from
+ *   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `CLAUDE_CODE_OAUTH_TOKEN` in
+ *   the env, OR from a `claude /login` subscription session stored outside the
+ *   environment (macOS Keychain / `~/.claude`). Its own error string is
+ *   verbatim: "Claude Code authentication failed. Run `claude /login` or
+ *   configure ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN."
+ * - codex (`codex:*`, cli): the Codex app-server authenticates from
+ *   `OPENAI_API_KEY` in the env, OR from a `codex login` ChatGPT session stored
+ *   in `~/.codex/auth.json` — also outside the environment.
+ */
+const SDK_AUTH_SCHEMES: Record<string, SdkAuthScheme> = {
+  claude: {
+    envKeys: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
+    loginCommand: "claude /login",
+    loginDetail: "a `claude /login` subscription session (stored outside the environment)",
+    failureHint: 'the first turn fails with an opaque "Claude Code process exited with code 1" that names nothing',
+  },
+  codex: {
+    envKeys: ["OPENAI_API_KEY"],
+    loginCommand: "codex login",
+    loginDetail: "a `codex login` ChatGPT session (`~/.codex/auth.json`, outside the environment)",
+    failureHint: "the first turn fails to authenticate",
+  },
+};
+
+/** First env key whose value is present and non-blank, or undefined when none are set. */
+function firstPresentEnvKey(env: Record<string, string | undefined>, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = env[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return key;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Checks that every referenced model (primary, fallbacks, and the agent-host memory LLM)
  * has discoverable credentials, so a keyless or expired-OAuth provider is caught at
  * `validate` time instead of degrading crons/memory silently at runtime (the failure mode
- * that broke memory capture for ~10 days: the auth store's OAuth token had quietly expired).
+ * that broke memory capture for ~10 days: the auth store's OAuth token had quietly expired,
+ * and the E1 fresh-instance case where `claude:*` with no `ANTHROPIC_API_KEY` "validates"
+ * clean but the first turn dies with an opaque "process exited with code 1").
  *
  * The check is intentionally STATIC and read-only — a validator must not mutate the auth
- * store or hit the network. For each Pi provider it inspects the auth store (`piAuthPath`)
- * and the sibling `models.json`: a custom/local provider needs no OAuth; an OAuth provider
- * absent from the store, or whose access token has expired, is flagged `waiting` with a
- * re-auth hint. SDK-authenticated models (claude/codex) are validated by their own SDK and
- * are noted but not key-checked here. `waiting` (never `error`) keeps the verdict non-fatal,
- * mirroring the Ollama/Phoenix probes — the goal is visibility, not blocking start.
+ * store or hit the network.
+ *
+ * - Pi providers: inspect the auth store (`piAuthPath`), the sibling `models.json`, AND the
+ *   config's own `providers.local` custom providers. A custom/local provider needs no OAuth;
+ *   an OAuth provider absent from the store, or whose access token has expired, is flagged
+ *   `waiting` with a re-auth hint.
+ * - SDK-authenticated providers (`claude:*` / `codex:*`): inspect only the RESOLVED ENV
+ *   (process env + loaded `.env`) for the backend's accepted keys. When none is present we
+ *   flag `waiting` — but the warning explicitly acknowledges the interactive login path
+ *   (`claude /login` / `codex login`), which lives outside the environment and CANNOT be
+ *   verified statically, so a logged-in user is not falsely told they are broken.
+ *
+ * `waiting` (never `error`) keeps the verdict non-fatal, mirroring the Ollama/Phoenix
+ * probes — the goal is visibility, not blocking start.
  */
-async function credentialsSection(config: MonoAgentConfig): Promise<ValidationSection> {
+async function credentialsSection(
+  config: MonoAgentConfig,
+  env: Record<string, string | undefined>,
+): Promise<ValidationSection> {
   const refs: { label: string; ref: RuntimeModelReference }[] = [
     { label: "Primary", ref: config.runtime.model },
     ...(config.runtime.fallbackModels ?? []).map((ref) => ({ label: "Fallback", ref })),
@@ -223,20 +292,65 @@ async function credentialsSection(config: MonoAgentConfig): Promise<ValidationSe
   }
 
   const piRefs = refs.filter((r) => r.ref.sdk === "pi" && typeof r.ref.provider === "string");
-  if (piRefs.length === 0) {
+  const sdkRefs = refs.filter((r) => r.ref.sdk in SDK_AUTH_SCHEMES);
+  if (piRefs.length === 0 && sdkRefs.length === 0) {
     return {
       id: "credentials",
       label: "Provider credentials",
       status: "disabled",
-      details: ["No Pi provider-key models referenced (SDK-authenticated models are checked by their SDK)."],
+      details: ["No provider-authenticated models referenced."],
     };
   }
 
+  const details: string[] = [];
+  let status: ValidationStatus = "ok";
+
+  if (piRefs.length > 0) {
+    const piStatus = await appendPiCredentialDetails(config, piRefs, details);
+    if (piStatus === "waiting") {
+      status = "waiting";
+    }
+  }
+
+  for (const { label, ref } of sdkRefs) {
+    const refStr = referenceOf(ref);
+    const scheme = SDK_AUTH_SCHEMES[ref.sdk];
+    if (scheme === undefined) {
+      continue;
+    }
+    const present = firstPresentEnvKey(env, scheme.envKeys);
+    if (present !== undefined) {
+      details.push(`${label} ${refStr}: SDK credential present in the resolved env (${present}).`);
+      continue;
+    }
+    status = "waiting";
+    details.push(
+      `[WARN] ${label} ${refStr}: no SDK credential in the resolved env (checked ${scheme.envKeys.join(", ")}). ` +
+        `If you authenticated via ${scheme.loginDetail} this is fine and can't be verified here; ` +
+        `otherwise ${scheme.failureHint} — set ${scheme.envKeys[0]} or run \`${scheme.loginCommand}\`.`,
+    );
+  }
+
+  return { id: "credentials", label: "Provider credentials", status, details };
+}
+
+/**
+ * Appends one detail line per Pi provider reference and returns "waiting" if any
+ * was flagged (missing/expired), else "ok". Recognizes providers configured via
+ * the auth store's `models.json` AND the config's `providers.local` custom set.
+ */
+async function appendPiCredentialDetails(
+  config: MonoAgentConfig,
+  piRefs: readonly { label: string; ref: RuntimeModelReference }[],
+  details: string[],
+): Promise<ValidationStatus> {
   const authPath = config.providers?.piAuthPath;
   const authProviders = authPath === undefined ? undefined : await readPiAuthProviders(authPath);
-  const customProviders = authPath === undefined ? new Set<string>() : await readPiCustomProviders(authPath);
+  const modelsJsonProviders = authPath === undefined ? new Set<string>() : await readPiCustomProviders(authPath);
+  // A `pi:<id>:...` model whose `<id>` matches a configured `providers.local`
+  // entry is a keyless local/custom provider — no OAuth, no auth-store entry.
+  const localProviders = new Set((config.providers?.local ?? []).map((provider) => provider.id));
   const now = Date.now();
-  const details: string[] = [];
   let status: ValidationStatus = "ok";
   if (authPath !== undefined) {
     details.push(`Pi auth store: ${authPath}`);
@@ -245,7 +359,11 @@ async function credentialsSection(config: MonoAgentConfig): Promise<ValidationSe
   for (const { label, ref } of piRefs) {
     const provider = ref.provider as string;
     const refStr = referenceOf(ref);
-    if (customProviders.has(provider)) {
+    if (localProviders.has(provider)) {
+      details.push(`${label} ${refStr}: provider \`${provider}\` configured via config providers.local (keyless local provider).`);
+      continue;
+    }
+    if (modelsJsonProviders.has(provider)) {
       details.push(`${label} ${refStr}: provider \`${provider}\` configured via pi models.json.`);
       continue;
     }
@@ -274,7 +392,7 @@ async function credentialsSection(config: MonoAgentConfig): Promise<ValidationSe
     );
   }
 
-  return { id: "credentials", label: "Provider credentials", status, details };
+  return status;
 }
 
 async function contextSection(config: MonoAgentConfig): Promise<ValidationSection> {
