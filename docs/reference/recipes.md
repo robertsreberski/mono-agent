@@ -68,7 +68,7 @@ proactive messages. Add names to tools.allowedTools (e.g. Read, Glob, Grep), or 
 `mono-agent init` in an empty folder to pick tools interactively.
 ```
 
-`validate`/`doctor` also flag an **unknown tool name** with a "did you mean" hint (e.g. `read` → `Read`; pi silently drops unknown names), and cross-check adapter **send tools against channels** — a `telegram_send_message` in the allowlist with Telegram disabled (or a channel enabled with no matching send tool) downgrades the tools section to `waiting` with a note.
+`validate`/`doctor` also flag an **unknown tool name** with a "did you mean" hint (e.g. `read` → `Read`; pi silently drops unknown names), and cross-check adapter **send tools against channels** — a `telegram_send_message` in the allowlist with Telegram disabled downgrades the tools section to `waiting` with a note; the reverse — a channel enabled with no matching send tool — is a non-fatal hint (the section stays `ok`: replies still work, but the agent can't send proactively).
 
 ## Sandbox
 
