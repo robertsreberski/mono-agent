@@ -31,7 +31,8 @@ import {
   resolveAppObservabilityExporters,
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { adapterSendToolNames, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
+import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
+import { isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
@@ -131,10 +132,80 @@ export async function validateMonoAgentFolder(
     sections.push(await channelSection(driver, options));
   }
 
+  // Cross-check the built `channel:*` statuses against the tool policy and annotate
+  // the tools section (send-tool-allowed-but-channel-disabled, or channel-enabled-
+  // but-no-send-tool). Only meaningful once coreConfig — and thus the tools section
+  // and the tool policy — loaded.
+  if (coreConfig !== undefined) {
+    applyToolChannelCrossChecks(sections, coreConfig.tools.allowedTools, coreConfig.tools.disallowedTools);
+  }
+
   return {
     sections,
     ok: sections.every((section) => section.status !== "error"),
   };
+}
+
+/** Adapter send tools each channel owns; an allowed entry needs BOTH the tool AND the enabled channel. */
+const CHANNEL_OWNED_SEND_TOOLS: Record<string, readonly string[]> = {
+  slack: ["slack_send_message"],
+  telegram: ["telegram_send_message", "telegram_ask", "telegram_send_document", "telegram_send_photo"],
+};
+
+/**
+ * Reconciles the already-built `channel:*` section statuses with the tool policy
+ * and mutates the `tools` section in place:
+ * - Direction A: an adapter send tool is allowed but its channel is DISABLED — the
+ *   tool will never be exposed; append a note and downgrade tools to `waiting`
+ *   (unless it is already `error`). This is a genuine misconfiguration.
+ * - Direction B: a channel is ENABLED but no send tool is allowed — replies still
+ *   work, so this is a HINT only (status unchanged).
+ *
+ * Reads the sections built earlier (no channel re-loading). Guards for a missing
+ * tools section (coreConfig failed to load), in which case there is nothing to annotate.
+ */
+function applyToolChannelCrossChecks(
+  sections: ValidationSection[],
+  allowedTools: readonly string[],
+  disallowedTools: readonly string[],
+): void {
+  const toolsIndex = sections.findIndex((section) => section.id === "tools");
+  if (toolsIndex < 0) {
+    return;
+  }
+  const current = sections[toolsIndex]!;
+  const extraDetails: string[] = [];
+  let status: ValidationStatus = current.status;
+
+  for (const [channel, sendTools] of Object.entries(CHANNEL_OWNED_SEND_TOOLS)) {
+    const section = sections.find((candidate) => candidate.id === `channel:${channel}`);
+    if (section === undefined) {
+      continue; // Driver not present — nothing to cross-check.
+    }
+    const allowedForCh = sendTools.filter((tool) => isAdapterSendToolAllowed(tool, { allowedTools, disallowedTools }));
+    if (section.status === "disabled") {
+      // Direction A: send tool allowed but channel off — the tool will not be exposed.
+      if (allowedForCh.length > 0) {
+        extraDetails.push(
+          `${allowedForCh.join(", ")} in allowedTools, but the ${channel} channel is disabled — the tool will not be exposed.`,
+        );
+        if (status !== "error") {
+          status = "waiting";
+        }
+      }
+    } else if (allowedForCh.length === 0) {
+      // Direction B: channel enabled but no send tool allowed — a non-fatal hint.
+      extraDetails.push(
+        `${channel} is enabled without ${sendTools.join("/")} in allowedTools — replies still work, ` +
+          `but the agent cannot send proactively${channel === "telegram" ? " or ask blocking questions" : ""}.`,
+      );
+    }
+  }
+
+  if (extraDetails.length === 0 && status === current.status) {
+    return;
+  }
+  sections[toolsIndex] = { ...current, status, details: [...current.details, ...extraDetails] };
 }
 
 function runtimeSection(config: MonoAgentConfig): ValidationSection {
@@ -668,11 +739,46 @@ async function toolsSection(config: MonoAgentConfig, input: MonoAgentAppConfigIn
   const details: string[] = [];
   let status: ValidationStatus = "ok";
 
-  details.push(
-    config.tools.allowedTools.length === 0
-      ? "No tools allowed (fail-closed default)."
-      : `Allowed tools: ${config.tools.allowedTools.join(", ")}.`,
-  );
+  const allowedTools = config.tools.allowedTools;
+  if (allowedTools.length === 0) {
+    // An agent with no tools can chat but can do nothing else — the user's core
+    // "no-tools trap". `waiting` (never `error`) surfaces it without failing a
+    // deliberately chat-only agent (`report.ok` only checks for `error`).
+    status = "waiting";
+    details.push(
+      "No tools allowed — the agent can chat but cannot read files, run commands, or send proactive messages. " +
+        "Add names to tools.allowedTools (e.g. Read, Glob, Grep), or re-run `mono-agent init` in an empty folder to pick tools interactively.",
+    );
+  } else {
+    details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
+    let mcpNoteAdded = false;
+    for (const name of allowedTools) {
+      if (isMcpToolName(name)) {
+        // MCP tool names are owned by their servers; we cannot verify them offline.
+        if (!mcpNoteAdded) {
+          details.push("MCP tool names are provided by their servers and cannot be validated offline.");
+          mcpNoteAdded = true;
+        }
+        continue;
+      }
+      if (name === "memory_recall") {
+        // memory_recall is auto-provisioned from memory.recallTool.enabled — listing
+        // it here is a real misconfiguration (it is not a gated allowedTools entry).
+        status = "waiting";
+        details.push("memory_recall is auto-provisioned by memory.recallTool.enabled and does not belong in allowedTools.");
+        continue;
+      }
+      if (!isKnownToolName(name)) {
+        status = "waiting";
+        const suggestion = suggestToolName(name);
+        details.push(
+          `Unknown tool name "${name}"` +
+            (suggestion !== undefined ? ` — did you mean ${suggestion}?` : "") +
+            " (pi silently drops unknown names).",
+        );
+      }
+    }
+  }
   if (config.tools.disallowedTools.length > 0) {
     details.push(`Disallowed tools: ${config.tools.disallowedTools.join(", ")}.`);
   }

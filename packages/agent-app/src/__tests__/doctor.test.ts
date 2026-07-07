@@ -1605,3 +1605,108 @@ describe("validateMonoAgentFolder — provider credentials section", () => {
     expect(text).not.toMatch(/keyless local provider/u);
   });
 });
+
+describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", () => {
+  async function writeToolsConfig(
+    tools: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ): Promise<string> {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    return writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools,
+      ...extra,
+    });
+  }
+
+  it("flags an empty allowlist as waiting (the no-tools trap), never failing the report", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: [] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toMatch(/cannot read files/u);
+    // A deliberately chat-only agent is legitimate: waiting never fails validate.
+    expect(report.ok).toBe(true);
+  });
+
+  it("passes a valid safe-tool allowlist (status ok)", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["Read", "Glob", "Grep"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(report.ok).toBe(true);
+  });
+
+  it("flags an unknown tool name with a did-you-mean suggestion (waiting)", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["read"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toMatch(/Unknown tool name "read".*did you mean Read/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("flags memory_recall in allowedTools as a misconfiguration (waiting)", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["memory_recall"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toMatch(/auto-provisioned/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("skips MCP tool names (unvalidatable offline) but keeps ok when a real tool is present", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["mcp__foo__bar", "Read"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).toMatch(/cannot be validated offline/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("Direction A: warns when a send tool is allowed but its channel is disabled", async () => {
+    // `Read` keeps the allowlist non-empty and known, so the ONLY reason for
+    // waiting is the cross-check (not the empty-allowlist or unknown-name checks).
+    const configPath = await writeToolsConfig({ allowedTools: ["telegram_send_message", "Read"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(sectionById(report, "channel:telegram").status).toBe("disabled");
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toMatch(/telegram channel is disabled/u);
+    expect(report.ok).toBe(true);
+  });
+
+  it("Direction B: hints (status unchanged) when a channel is enabled without a send tool allowed", async () => {
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["Read", "Glob", "Grep"] },
+      { telegram: { enabled: true, allowAllChats: true } },
+    );
+
+    const report = await validateMonoAgentFolder({
+      env: { MONO_AGENT_TELEGRAM_BOT_TOKEN: "123:env-bot-token" },
+      cwd: dir,
+      configPath,
+      liveness: false,
+    });
+
+    expect(sectionById(report, "channel:telegram").status).not.toBe("disabled");
+    const tools = sectionById(report, "tools");
+    // A hint must NOT downgrade the status — replies still work.
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).toMatch(/telegram is enabled without/u);
+    expect(report.ok).toBe(true);
+  });
+});
