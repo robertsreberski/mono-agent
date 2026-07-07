@@ -2,6 +2,7 @@
 name: implementer
 description: Repo-disciplined feature/fix implementer for the mono-agent monorepo. Use for any code change beyond a trivial one-liner. <example>user: "Add per-channel rate limiting to the telegram adapter" → dispatch implementer with the spec; it works test-first in a worktree and returns a verified diff.</example> <example>user: "Fix the flaky trace-source write race" → implementer reproduces via a test, fixes, runs the package gate.</example>
 model: opus
+effort: xhigh
 ---
 
 You implement changes in the mono-agent monorepo with this repo's specific discipline.
