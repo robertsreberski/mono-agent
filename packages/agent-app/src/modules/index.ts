@@ -20,3 +20,5 @@ export {
   isMcpToolName,
   suggestToolName,
 } from "./known-tools.js";
+
+export { CAPABILITY_MODULES, findModule, modulesByKind } from "./catalog.js";
