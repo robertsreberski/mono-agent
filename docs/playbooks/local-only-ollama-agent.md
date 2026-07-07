@@ -26,12 +26,12 @@ An agent that runs entirely on a local Ollama provider via the Pi SDK runtime, w
 
 ## Configuration
 
-Every key below is verified against [the config blueprint](/config/blueprint/). The `providers.local[]` entry registers Ollama; `runtime.model` references it as `pi:ollama:gemma4:31b`. Journal memory needs an `embeddings` block, and `sandbox.network.mode: "localhost"` keeps all runtime command traffic on-box.
+Every key below is verified against [the config blueprint](/config/blueprint/). The `providers.local[]` entry registers Ollama; `runtime.model` references it as `pi:ollama:llama3.1:8b`. Journal memory needs an `embeddings` block, and `sandbox.network.mode: "localhost"` keeps all runtime command traffic on-box.
 
 ```json
 {
   "runtime": {
-    "model": "pi:ollama:gemma4:31b"
+    "model": "pi:ollama:llama3.1:8b"
   },
   "providers": {
     "local": [
@@ -42,7 +42,7 @@ Every key below is verified against [the config blueprint](/config/blueprint/). 
         "enabled": true,
         "models": [
           {
-            "name": "gemma4:31b",
+            "name": "llama3.1:8b",
             "capabilities": { "context_window": 32768 }
           }
         ]
@@ -70,14 +70,18 @@ Every key below is verified against [the config blueprint](/config/blueprint/). 
 Use the exact `nomic-embed-text:v1.5` tag — the bare `nomic-embed-text` name resolves to a different revision and will not match the stored 768-dim vectors.
 :::
 
+:::caution
+**Model size drives first-turn latency.** A light 8B model (the `local-ollama-private` recipe default) keeps the first turn in seconds-to-minutes on typical hardware. A large model — e.g. a 30B/Q4 loaded at its full 128k–256k context window — makes Ollama allocate a huge KV cache; measured first turns ran 274s to 570s+ before responding. Pi drives Ollama over the OpenAI-compatible endpoint, which has no `num_ctx` knob, so the reliable lever is **model choice**, not a context cap. Size your machine before pointing `--model` at anything heavier.
+:::
+
 :::note
 The journal tier is config-only and needs no `memory.llm`; recall is embeddings + FTS with no model call. Promote to `mode: "bujo"` later if you want LLM capture and the scheduled `bujo`-tier consolidation path, which requires a `memory.llm` block for effective tier selection. See [Capture and recall](/memory/capture-and-recall/).
 :::
 
 ## Steps
 
-1. Pull both models locally: `ollama pull gemma4:31b && ollama pull nomic-embed-text:v1.5`
-2. Scaffold the agent: `mono-agent init --model pi:ollama:gemma4:31b --memory journal`
+1. Pull both models locally: `ollama pull llama3.1:8b && ollama pull nomic-embed-text:v1.5`
+2. Scaffold the agent: `mono-agent init --model pi:ollama:llama3.1:8b --memory journal`
 3. Add the `providers.local[]` entry for Ollama and the `memory.embeddings` block, then set `sandbox.network.mode` to `localhost`.
 4. Run `mono-agent validate` to confirm Ollama is reachable and both models are pulled.
 5. Run `mono-agent start` — keep the [webhook channel](/channels/webhook/) as the zero-credential smoke channel.

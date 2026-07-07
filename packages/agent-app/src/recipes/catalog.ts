@@ -299,16 +299,33 @@ const a2aProvider: AgentRecipe = {
   ],
 };
 
-/** `local-ollama-private` — fully local agent (ollama provider + local memory). */
+/**
+ * `local-ollama-private` — fully local agent (ollama provider + local memory).
+ *
+ * Defaults to a light 8B model (`llama3.1:8b`) on purpose: a fresh user runs the
+ * recipe and expects the first turn in seconds-to-minutes (goal #164 premise). A
+ * large local model is the opposite experience — a 30B/Q4 loaded at its full
+ * (often 128k–256k) context window makes Ollama allocate a huge KV cache, and on
+ * typical hardware the FIRST turn measured 274s to 570s+ (client-timeout). Pi
+ * talks to Ollama over the OpenAI-compatible endpoint, which has no `num_ctx`
+ * knob, so the honest lever is model choice, not a context cap. Users who have
+ * sized their hardware override with `--model` (the tradeoff is called out on the
+ * model input and in the playbook).
+ */
 const localOllamaPrivate: AgentRecipe = {
   id: "local-ollama-private",
   title: "Local Ollama private agent",
-  description: "Runs entirely on a local Ollama provider with local journal memory and embeddings — no remote calls.",
+  description: "Runs entirely on a local Ollama provider with local journal memory and embeddings — no remote calls. Defaults to a light 8B model so the first turn stays fast on typical hardware.",
   tags: ["local", "ollama", "private", "memory"],
   riskLevel: "low",
   playbook: "local-only-ollama-agent.md",
   inputs: [
-    { ...MODEL_INPUT, default: "pi:ollama:gemma4:31b" },
+    {
+      ...MODEL_INPUT,
+      default: "pi:ollama:llama3.1:8b",
+      description:
+        "Local Ollama model, e.g. pi:ollama:llama3.1:8b. Heavier models (30B+, or a large context window) can push the FIRST turn to many minutes on typical hardware — size your machine before choosing one.",
+    },
   ],
   config: (input) => withSections(input, {
     providers: {
