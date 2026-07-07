@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Session, WebInstance } from "./types";
-import { ApiError, fetchInstances, fetchSessionDetail, fetchSessionPage, openStream } from "./api";
+import { ApiError, fetchInstances, fetchSessionDetail, fetchSessionPage, openStream, type FetchSessionsOptions, type SessionPage } from "./api";
 import { FIXTURE_INSTANCES, FIXTURE_SESSIONS } from "./fixture";
 
 export type ConnStatus = "loading" | "live" | "reconnecting" | "fixture" | "error";
@@ -51,7 +51,41 @@ const RecorderContext = createContext<RecorderStore | null>(null);
 
 const HISTORY_PAGE_SIZE = 200;
 
+// Live-fold working-set cap for the browser store. Completed-run cap-evictions on
+// the backend are silent (no `session_removed`), so without a browser-side bound a
+// long-lived tab would accrete one row per new run for the tab's whole lifetime
+// (days → unbounded memory + DOM). This caps the LIVE SSE fold only; explicit
+// `loadOlder` paging is exempt (`applySessionOps` without a cap) so history stays
+// reachable to run #1. Cap-evicted rows self-heal on reload — paging offsets live
+// in `historyStates.loadedKeys`, which the cap never touches, so eviction from the
+// display array never re-fetches or double-counts. Mirrors the backend's policy
+// (evict oldest COMPLETED, never a running run); see #162/#166.
+export const MAX_LIVE_SESSIONS = 1_000;
+
 const byNewest = (a: Session, b: Session) => +new Date(b.startTs) - +new Date(a.startTs);
+
+/**
+ * Trim `sessions` (already sorted newest-first) to at most `cap`, dropping the
+ * OLDEST *completed* runs. A `running` run is never dropped (its live fold is in
+ * flight), so the result may exceed `cap` when more than `cap` runs are running.
+ * Order is preserved (the result is a subsequence of the sorted input).
+ */
+export function capSessions(sessions: readonly Session[], cap: number): Session[] {
+  if (cap <= 0 || sessions.length <= cap) {
+    return sessions as Session[];
+  }
+  const kept: Session[] = [];
+  let budget = cap;
+  for (const session of sessions) {
+    if (budget > 0) {
+      kept.push(session);
+      budget -= 1;
+    } else if (session.status === "running") {
+      kept.push(session);
+    }
+  }
+  return kept;
+}
 
 interface HistoryPageState {
   readonly offset: number;
@@ -74,7 +108,7 @@ export function sessionStoreKey(session: Session): string {
   return sessionStoreKeyParts(session.sourceId ?? session.instance, session.id);
 }
 
-export function applySessionOps(prev: readonly Session[], ops: readonly SessionStoreOp[]): Session[] {
+export function applySessionOps(prev: readonly Session[], ops: readonly SessionStoreOp[], cap?: number): Session[] {
   const map = new Map(prev.map((s) => [sessionStoreKey(s), s] as const));
   for (const op of ops) {
     if (op.type === "remove") {
@@ -84,7 +118,10 @@ export function applySessionOps(prev: readonly Session[], ops: readonly SessionS
       map.set(key, mergeSessionUpsert(map.get(key), op.session));
     }
   }
-  return [...map.values()].sort(byNewest);
+  const sorted = [...map.values()].sort(byNewest);
+  // `cap` is passed only on the live SSE fold to bound long-lived-tab growth;
+  // `loadOlder` omits it so paged-in history is never truncated back out.
+  return cap === undefined ? sorted : capSessions(sorted, cap);
 }
 
 function mergeSessionUpsert(existing: Session | undefined, incoming: Session): Session {
@@ -339,6 +376,55 @@ export function historyStateFor(
   return { offset: loadedSessionCount(sessions, key), hasMore: all?.hasMore ?? true, loading: false };
 }
 
+/** Injected dependencies for {@link orchestrateLoadOlder} — the store wires these
+ * to its refs/setters and the real `fetchSessionPage`; tests inject fakes. */
+export interface LoadOlderDeps {
+  readonly instance?: string;
+  readonly getStatus: () => ConnStatus;
+  readonly getSessions: () => readonly Session[];
+  readonly getStates: () => Readonly<Record<string, HistoryPageState>>;
+  readonly setSessions: (updater: (prev: Session[]) => Session[]) => void;
+  readonly setHistoryStates: (updater: (prev: Record<string, HistoryPageState>) => Record<string, HistoryPageState>) => void;
+  readonly fetchPage: (instance: string, options: FetchSessionsOptions) => Promise<SessionPage>;
+}
+
+/**
+ * The `loadOlder` fetch-orchestration seam: guard → mark-loading → fetch the next
+ * page at the current offset → fold sessions + advance paging state, or record the
+ * error and clear loading. Extracted from the React callback so the whole pipeline
+ * (guards, transport, reducers, error path) is testable above the reducer level
+ * without a browser. Returns once state has settled.
+ */
+export async function orchestrateLoadOlder(deps: LoadOlderDeps): Promise<void> {
+  const status = deps.getStatus();
+  if (status !== "live" && status !== "reconnecting") return;
+  const key = historyKey(deps.instance);
+  const current = historyStateFor(deps.getStates(), key, status, deps.getSessions());
+  if (current.loading || !current.hasMore) return;
+
+  deps.setHistoryStates((prev) => ({
+    ...prev,
+    [key]: { ...historyStateFor(prev, key, deps.getStatus(), deps.getSessions()), loading: true, error: undefined },
+  }));
+
+  try {
+    const page = await deps.fetchPage(key, { limit: HISTORY_PAGE_SIZE, offset: current.offset });
+    deps.setSessions((prev) =>
+      applySessionOps(prev, page.sessions.map((session): SessionStoreOp => ({ type: "upsert", session }))),
+    );
+    deps.setHistoryStates((prev) => markHistorySessionsLoaded(prev, page.sessions, key, page));
+  } catch (error_) {
+    deps.setHistoryStates((prev) => ({
+      ...prev,
+      [key]: {
+        ...historyStateFor(prev, key, deps.getStatus(), deps.getSessions()),
+        loading: false,
+        error: error_ instanceof Error ? error_.message : String(error_),
+      },
+    }));
+  }
+}
+
 export function RecorderProvider({ children }: { children: ReactNode }): ReactElement {
   const [instances, setInstances] = useState<WebInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -377,7 +463,7 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
     pendingOps.current = new Map();
     const appliedOps = [...ops.values()];
     setSessions((prev) => {
-      return applySessionOps(prev, appliedOps);
+      return applySessionOps(prev, appliedOps, MAX_LIVE_SESSIONS);
     });
     setHistoryStates((prev) => applyHistoryOps(prev, appliedOps));
   }, []);
@@ -519,35 +605,15 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   );
 
   const loadOlder = useCallback((instance?: string) => {
-    if (statusRef.current !== "live" && statusRef.current !== "reconnecting") return;
-    const key = historyKey(instance);
-    const current = historyStateFor(historyStatesRef.current, key, statusRef.current, sessionsRef.current);
-    if (current.loading || !current.hasMore) return;
-
-    setHistoryStates((prev) => ({
-      ...prev,
-      [key]: { ...historyStateFor(prev, key, statusRef.current, sessionsRef.current), loading: true, error: undefined },
-    }));
-
-    fetchSessionPage(key, { limit: HISTORY_PAGE_SIZE, offset: current.offset })
-      .then((page) => {
-        setSessions((prev) =>
-          applySessionOps(prev, page.sessions.map((session): SessionStoreOp => ({ type: "upsert", session }))),
-        );
-        setHistoryStates((prev) => {
-          return markHistorySessionsLoaded(prev, page.sessions, key, page);
-        });
-      })
-      .catch((error_) => {
-        setHistoryStates((prev) => ({
-          ...prev,
-          [key]: {
-            ...historyStateFor(prev, key, statusRef.current, sessionsRef.current),
-            loading: false,
-            error: error_ instanceof Error ? error_.message : String(error_),
-          },
-        }));
-      });
+    void orchestrateLoadOlder({
+      instance,
+      getStatus: () => statusRef.current,
+      getSessions: () => sessionsRef.current,
+      getStates: () => historyStatesRef.current,
+      setSessions,
+      setHistoryStates,
+      fetchPage: fetchSessionPage,
+    });
   }, []);
 
   const ensureDetail = useCallback((key: string) => loadDetail(key, false), [loadDetail]);

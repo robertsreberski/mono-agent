@@ -6,8 +6,11 @@ import { FIXTURE_SESSIONS } from "./fixture";
 import {
   applyHistoryOps,
   applySessionOps,
+  capSessions,
   historyStateFor,
   markHistorySessionsLoaded,
+  MAX_LIVE_SESSIONS,
+  orchestrateLoadOlder,
   seedHistoryPageStates,
   sessionStoreKey,
   shouldUseFixtureFallback,
@@ -401,6 +404,191 @@ describe("history pagination state", () => {
       { offset: 1, total: 3, hasMore: true },
     );
     expect(historyStateFor(states, "agent-a", "live")).toMatchObject({ offset: 3, hasMore: false, total: 3 });
+  });
+});
+
+describe("live-fold session cap", () => {
+  const at = (n: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, n)).toISOString();
+
+  test("caps to the newest completed runs, dropping the oldest, when over the cap", () => {
+    // Newest-first (matches applySessionOps output): r0 is newest.
+    const sorted = Array.from({ length: 6 }, (_, i) => session("agent-a", `r${i}`, { id: `r${i}`, startTs: at(6 - i) }));
+    expect(capSessions(sorted, 4).map((item) => item.id)).toEqual(["r0", "r1", "r2", "r3"]);
+  });
+
+  test("never evicts a running run, even past the cap", () => {
+    const sorted = [
+      session("agent-a", "new1", { id: "new1", startTs: at(5), status: "succeeded" }),
+      session("agent-a", "new2", { id: "new2", startTs: at(4), status: "succeeded" }),
+      session("agent-a", "running-old", { id: "run", startTs: at(1), status: "running" }),
+    ];
+    expect(capSessions(sorted, 1).map((item) => item.id)).toEqual(["new1", "run"]);
+  });
+
+  test("returns the input untouched when at or under the cap", () => {
+    const sorted = [session("agent-a", "a", { id: "a", startTs: at(2) }), session("agent-a", "b", { id: "b", startTs: at(1) })];
+    expect(capSessions(sorted, 5)).toBe(sorted);
+    expect(capSessions(sorted, 2)).toBe(sorted);
+  });
+
+  test("applySessionOps bounds the store at the cap across N live broadcasts", () => {
+    const cap = 50;
+    let sessions: Session[] = [];
+    for (let i = 0; i < 500; i += 1) {
+      sessions = applySessionOps(
+        sessions,
+        [{ type: "upsert", session: session("agent-a", `run-${i}`, { id: `run-${i}`, startTs: at(i) }) }],
+        cap,
+      );
+      expect(sessions.length).toBeLessThanOrEqual(cap);
+    }
+    expect(sessions).toHaveLength(cap);
+    // The newest broadcasts survive; the oldest were evicted.
+    expect(sessions[0]?.id).toBe("run-499");
+    expect(sessions.some((item) => item.id === "run-0")).toBe(false);
+  });
+
+  test("without a cap (the loadOlder path) the store is unbounded", () => {
+    let sessions: Session[] = [];
+    for (let i = 0; i < 300; i += 1) {
+      sessions = applySessionOps(sessions, [
+        { type: "upsert", session: session("agent-a", `r${i}`, { id: `r${i}`, startTs: at(i) }) },
+      ]);
+    }
+    expect(sessions).toHaveLength(300);
+  });
+
+  test("MAX_LIVE_SESSIONS comfortably exceeds a history page so paging still fits", () => {
+    expect(MAX_LIVE_SESSIONS).toBeGreaterThanOrEqual(200);
+  });
+});
+
+describe("loadOlder fetch orchestration", () => {
+  const PAGE = 200;
+  const pageOf = (start: number, count: number): Session[] =>
+    Array.from({ length: count }, (_, i) => session("agent-a", `run-${start + i}`, { id: `run-${start + i}` }));
+
+  test("does not fetch when the backend is not live", async () => {
+    let fetched = 0;
+    await orchestrateLoadOlder({
+      getStatus: () => "fixture",
+      getSessions: () => [],
+      getStates: () => ({}),
+      setSessions: () => {},
+      setHistoryStates: () => {},
+      fetchPage: async () => {
+        fetched += 1;
+        return { sessions: [], offset: 0, limit: PAGE, hasMore: false };
+      },
+    });
+    expect(fetched).toBe(0);
+  });
+
+  test("does not fetch when there is no older history", async () => {
+    let fetched = 0;
+    let states = seedHistoryPageStates(webInstances, pageOf(0, 2), { offset: 0, total: 2, hasMore: false });
+    await orchestrateLoadOlder({
+      getStatus: () => "live",
+      getSessions: () => pageOf(0, 2),
+      getStates: () => states,
+      setSessions: () => {},
+      setHistoryStates: (updater) => {
+        states = updater(states);
+      },
+      fetchPage: async () => {
+        fetched += 1;
+        return { sessions: [], offset: 0, limit: PAGE, hasMore: false };
+      },
+    });
+    expect(fetched).toBe(0);
+  });
+
+  test("fetches the next page at the current offset, folds it, and advances paging state", async () => {
+    let sessions = pageOf(0, PAGE);
+    let states = seedHistoryPageStates(webInstances, sessions, { offset: 0, total: 500, hasMore: true });
+    const calls: Array<{ instance: string; offset?: number; limit?: number }> = [];
+
+    await orchestrateLoadOlder({
+      getStatus: () => "live",
+      getSessions: () => sessions,
+      getStates: () => states,
+      setSessions: (updater) => {
+        sessions = updater(sessions);
+      },
+      setHistoryStates: (updater) => {
+        states = updater(states);
+      },
+      fetchPage: async (instance, options) => {
+        calls.push({ instance, offset: options.offset, limit: options.limit });
+        return { sessions: pageOf(PAGE, PAGE), offset: PAGE, limit: PAGE, total: 500, hasMore: true };
+      },
+    });
+
+    expect(calls).toEqual([{ instance: "all", offset: 200, limit: 200 }]);
+    expect(sessions).toHaveLength(400);
+    expect(historyStateFor(states, "all", "live")).toMatchObject({ offset: 400, hasMore: true, total: 500 });
+  });
+
+  test("records the error and clears loading when the fetch fails", async () => {
+    let sessions = pageOf(0, PAGE);
+    let states = seedHistoryPageStates(webInstances, sessions, { offset: 0, total: 500, hasMore: true });
+
+    await orchestrateLoadOlder({
+      getStatus: () => "live",
+      getSessions: () => sessions,
+      getStates: () => states,
+      setSessions: (updater) => {
+        sessions = updater(sessions);
+      },
+      setHistoryStates: (updater) => {
+        states = updater(states);
+      },
+      fetchPage: async () => {
+        throw new Error("network down");
+      },
+    });
+
+    const settled = historyStateFor(states, "all", "live");
+    expect(settled.loading).toBe(false);
+    expect(settled.error).toBe("network down");
+    // A failed page must not advance the offset or drop the loaded rows.
+    expect(settled.offset).toBe(200);
+    expect(sessions).toHaveLength(PAGE);
+  });
+
+  test("walks sequential pages to the oldest without re-fetching loaded rows", async () => {
+    let sessions = pageOf(0, PAGE);
+    let states = seedHistoryPageStates(webInstances, sessions, { offset: 0, total: 500, hasMore: true });
+    const pages = [
+      { sessions: pageOf(PAGE, PAGE), offset: PAGE, limit: PAGE, total: 500, hasMore: true },
+      { sessions: pageOf(2 * PAGE, 100), offset: 2 * PAGE, limit: PAGE, total: 500, hasMore: false },
+    ];
+    let pageIndex = 0;
+    const offsets: number[] = [];
+    const deps = {
+      getStatus: () => "live" as const,
+      getSessions: () => sessions,
+      getStates: () => states,
+      setSessions: (updater: (prev: Session[]) => Session[]) => {
+        sessions = updater(sessions);
+      },
+      setHistoryStates: (updater: (prev: typeof states) => typeof states) => {
+        states = updater(states);
+      },
+      fetchPage: async (_instance: string, options: { offset?: number }) => {
+        offsets.push(options.offset ?? 0);
+        return pages[pageIndex++]!;
+      },
+    };
+
+    await orchestrateLoadOlder(deps);
+    await orchestrateLoadOlder(deps);
+    await orchestrateLoadOlder(deps); // guarded: hasMore is now false, so no third fetch.
+
+    expect(offsets).toEqual([200, 400]);
+    expect(sessions).toHaveLength(500);
+    expect(new Set(sessions.map((item) => item.id)).size).toBe(500);
+    expect(historyStateFor(states, "all", "live")).toMatchObject({ offset: 500, hasMore: false, total: 500 });
   });
 });
 
