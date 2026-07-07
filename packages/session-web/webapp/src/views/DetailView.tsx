@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { sessionStoreKey, useRecorder } from "../lib/store";
-import type { SessionStep, TurnContext } from "../lib/types";
+import type { Session, SessionStep, TurnContext } from "../lib/types";
 import { Markdown } from "../lib/markdown";
 import {
   timeStr,
@@ -117,6 +117,17 @@ export function ctxSummaryLine(ctx: TurnContext | undefined, hasSysPrompt: boole
     parts.push(ctx.mem.src !== undefined && ctx.mem.src.length > 0 ? `memory recalled (${ctx.mem.src})` : "memory recalled");
   }
   return parts.join(" · ");
+}
+
+/**
+ * Whether the Trigger block should render its own recalled-memory fallback. New
+ * runs carry the recall in BOTH `recalled` (Trigger) and `ctx.mem` (the richer
+ * "Context (this turn)" section, which also shows the source) — the same text. The
+ * Context section owns it, so the Trigger block only renders recall for OLD,
+ * ctx-less recordings; otherwise it would render the same memory twice. See #166.
+ */
+export function showTriggerRecall(session: Pick<Session, "hasRecall" | "ctx">): boolean {
+  return session.hasRecall && session.ctx?.mem === undefined;
 }
 
 export function boundaryStepLabel(kind: string): string {
@@ -620,7 +631,7 @@ export function DetailView({ id, onBack }: Props) {
           <div style={{ ...secLabel(BLUE), marginBottom: 9 }}>▼ Trigger</div>
           <div style={{ background: "rgba(111,168,220,.06)", border: "1px solid rgba(111,168,220,.2)", borderRadius: 13, padding: "16px 18px" }}>
             <Markdown src={s.instr + (s.instrTr ? "\n…" : "")} style={{ fontSize: 14, lineHeight: 1.55, color: "#D4D8DE", fontFamily: FONT_UI }} />
-            {s.hasRecall && (
+            {showTriggerRecall(s) && (
               <div style={{ marginTop: 12, borderTop: "1px solid rgba(255,255,255,.08)", paddingTop: 11 }}>
                 <button
                   className="link-btn"

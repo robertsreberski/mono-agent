@@ -15,7 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Session, WebInstance } from "./types";
-import { ApiError, fetchInstances, fetchSessionDetail, fetchSessionPage, openStream } from "./api";
+import { ApiError, fetchInstances, fetchSessionDetail, fetchSessionPage, openStream, type FetchSessionsOptions, type SessionPage } from "./api";
 import { FIXTURE_INSTANCES, FIXTURE_SESSIONS } from "./fixture";
 
 export type ConnStatus = "loading" | "live" | "reconnecting" | "fixture" | "error";
@@ -51,7 +51,48 @@ const RecorderContext = createContext<RecorderStore | null>(null);
 
 const HISTORY_PAGE_SIZE = 200;
 
+// Live-fold working-set cap for the browser store. Completed-run cap-evictions on
+// the backend are silent (no `session_removed`), so without a browser-side bound a
+// long-lived tab would accrete one row per new run for the tab's whole lifetime
+// (days → unbounded memory + DOM). This caps the LIVE SSE fold only, and it never
+// evicts a run the user explicitly paged in via `loadOlder` (those keys are passed
+// as `protectedKeys`) — so "Load older" stays reachable to run #1 even across live
+// frames, while automatic live accretion beyond the newest `cap` non-paged runs is
+// still bounded. The cap only ever touches the display array; paging offsets live
+// in `historyStates.loadedKeys`, which it never mutates. Retention is therefore
+// newest-`cap` live + user-paged (user-bounded) + running (transient). Mirrors the
+// backend's policy (evict oldest COMPLETED, never a running run); see #162/#166.
+export const MAX_LIVE_SESSIONS = 1_000;
+
 const byNewest = (a: Session, b: Session) => +new Date(b.startTs) - +new Date(a.startTs);
+
+/**
+ * Trim `sessions` (already sorted newest-first) to at most `cap`, dropping the
+ * OLDEST *completed* runs. A run is never dropped when it is `running` (its live
+ * fold is in flight) or when its key is in `protectedKeys` (the user paged it in,
+ * so it must stay reachable). The result may therefore exceed `cap`. Order is
+ * preserved (the result is a subsequence of the sorted input).
+ */
+export function capSessions(
+  sessions: readonly Session[],
+  cap: number,
+  protectedKeys?: ReadonlySet<string>,
+): Session[] {
+  if (cap <= 0 || sessions.length <= cap) {
+    return sessions as Session[];
+  }
+  const kept: Session[] = [];
+  let budget = cap;
+  for (const session of sessions) {
+    if (budget > 0) {
+      kept.push(session);
+      budget -= 1;
+    } else if (session.status === "running" || protectedKeys?.has(sessionStoreKey(session))) {
+      kept.push(session);
+    }
+  }
+  return kept;
+}
 
 interface HistoryPageState {
   readonly offset: number;
@@ -74,7 +115,12 @@ export function sessionStoreKey(session: Session): string {
   return sessionStoreKeyParts(session.sourceId ?? session.instance, session.id);
 }
 
-export function applySessionOps(prev: readonly Session[], ops: readonly SessionStoreOp[]): Session[] {
+export function applySessionOps(
+  prev: readonly Session[],
+  ops: readonly SessionStoreOp[],
+  cap?: number,
+  protectedKeys?: ReadonlySet<string>,
+): Session[] {
   const map = new Map(prev.map((s) => [sessionStoreKey(s), s] as const));
   for (const op of ops) {
     if (op.type === "remove") {
@@ -84,7 +130,12 @@ export function applySessionOps(prev: readonly Session[], ops: readonly SessionS
       map.set(key, mergeSessionUpsert(map.get(key), op.session));
     }
   }
-  return [...map.values()].sort(byNewest);
+  const sorted = [...map.values()].sort(byNewest);
+  // `cap` is passed only on the live SSE fold to bound long-lived-tab growth;
+  // `loadOlder` omits it so paged-in history is never truncated back out, and the
+  // live path passes the paged keys as `protectedKeys` so a later frame can't evict
+  // them either.
+  return cap === undefined ? sorted : capSessions(sorted, cap, protectedKeys);
 }
 
 function mergeSessionUpsert(existing: Session | undefined, incoming: Session): Session {
@@ -339,6 +390,59 @@ export function historyStateFor(
   return { offset: loadedSessionCount(sessions, key), hasMore: all?.hasMore ?? true, loading: false };
 }
 
+/** Injected dependencies for {@link orchestrateLoadOlder} — the store wires these
+ * to its refs/setters and the real `fetchSessionPage`; tests inject fakes. */
+export interface LoadOlderDeps {
+  readonly instance?: string;
+  readonly getStatus: () => ConnStatus;
+  readonly getSessions: () => readonly Session[];
+  readonly getStates: () => Readonly<Record<string, HistoryPageState>>;
+  readonly setSessions: (updater: (prev: Session[]) => Session[]) => void;
+  readonly setHistoryStates: (updater: (prev: Record<string, HistoryPageState>) => Record<string, HistoryPageState>) => void;
+  readonly fetchPage: (instance: string, options: FetchSessionsOptions) => Promise<SessionPage>;
+  /** Notified with each freshly paged-in page so the store can protect those runs
+   * from the live-fold cap (they were explicitly requested — must stay reachable). */
+  readonly onPageLoaded?: (sessions: readonly Session[]) => void;
+}
+
+/**
+ * The `loadOlder` fetch-orchestration seam: guard → mark-loading → fetch the next
+ * page at the current offset → fold sessions + advance paging state, or record the
+ * error and clear loading. Extracted from the React callback so the whole pipeline
+ * (guards, transport, reducers, error path) is testable above the reducer level
+ * without a browser. Returns once state has settled.
+ */
+export async function orchestrateLoadOlder(deps: LoadOlderDeps): Promise<void> {
+  const status = deps.getStatus();
+  if (status !== "live" && status !== "reconnecting") return;
+  const key = historyKey(deps.instance);
+  const current = historyStateFor(deps.getStates(), key, status, deps.getSessions());
+  if (current.loading || !current.hasMore) return;
+
+  deps.setHistoryStates((prev) => ({
+    ...prev,
+    [key]: { ...historyStateFor(prev, key, deps.getStatus(), deps.getSessions()), loading: true, error: undefined },
+  }));
+
+  try {
+    const page = await deps.fetchPage(key, { limit: HISTORY_PAGE_SIZE, offset: current.offset });
+    deps.onPageLoaded?.(page.sessions);
+    deps.setSessions((prev) =>
+      applySessionOps(prev, page.sessions.map((session): SessionStoreOp => ({ type: "upsert", session }))),
+    );
+    deps.setHistoryStates((prev) => markHistorySessionsLoaded(prev, page.sessions, key, page));
+  } catch (error_) {
+    deps.setHistoryStates((prev) => ({
+      ...prev,
+      [key]: {
+        ...historyStateFor(prev, key, deps.getStatus(), deps.getSessions()),
+        loading: false,
+        error: error_ instanceof Error ? error_.message : String(error_),
+      },
+    }));
+  }
+}
+
 export function RecorderProvider({ children }: { children: ReactNode }): ReactElement {
   const [instances, setInstances] = useState<WebInstance[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -360,6 +464,11 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   // Runs we've already fired a detail fetch for (attempted), so a legitimately
   // zero-step run isn't re-fetched on every open.
   const loadedDetail = useRef<Set<string>>(new Set());
+  // Keys the user explicitly paged in via `loadOlder`. The live-fold cap must never
+  // evict these (they'd otherwise vanish on the next SSE frame and become
+  // unreachable, since paging offsets don't rewind) — so they stay reachable to
+  // run #1 while live. Genuine removals prune the set below.
+  const pagedKeys = useRef<Set<string>>(new Set());
 
   // Batch SSE folds: the connect snapshot is N separate `session_upsert` frames
   // (one per run, ~477 today) and each EventSource onmessage is its own task, so
@@ -376,8 +485,14 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
     if (ops.size === 0) return;
     pendingOps.current = new Map();
     const appliedOps = [...ops.values()];
+    // Genuine removals drop the run entirely — stop protecting it from the cap.
+    for (const op of appliedOps) {
+      if (op.type === "remove") {
+        pagedKeys.current.delete(sessionStoreKeyParts(op.sourceId, op.runId));
+      }
+    }
     setSessions((prev) => {
-      return applySessionOps(prev, appliedOps);
+      return applySessionOps(prev, appliedOps, MAX_LIVE_SESSIONS, pagedKeys.current);
     });
     setHistoryStates((prev) => applyHistoryOps(prev, appliedOps));
   }, []);
@@ -429,6 +544,10 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
         setStatus("loading");
         setError(undefined);
         setHistoryStates({});
+        // Reset the paged-in protection set with the rest of the paging state: a
+        // fresh snapshot has no user-paged history yet, so old keys must not linger
+        // across reload+page cycles.
+        pagedKeys.current = new Set();
         const [ins, page] = await Promise.all([fetchInstances(), fetchSessionPage("all", { limit: HISTORY_PAGE_SIZE })]);
         if (disposed) return;
         setInstances(ins);
@@ -519,35 +638,20 @@ export function RecorderProvider({ children }: { children: ReactNode }): ReactEl
   );
 
   const loadOlder = useCallback((instance?: string) => {
-    if (statusRef.current !== "live" && statusRef.current !== "reconnecting") return;
-    const key = historyKey(instance);
-    const current = historyStateFor(historyStatesRef.current, key, statusRef.current, sessionsRef.current);
-    if (current.loading || !current.hasMore) return;
-
-    setHistoryStates((prev) => ({
-      ...prev,
-      [key]: { ...historyStateFor(prev, key, statusRef.current, sessionsRef.current), loading: true, error: undefined },
-    }));
-
-    fetchSessionPage(key, { limit: HISTORY_PAGE_SIZE, offset: current.offset })
-      .then((page) => {
-        setSessions((prev) =>
-          applySessionOps(prev, page.sessions.map((session): SessionStoreOp => ({ type: "upsert", session }))),
-        );
-        setHistoryStates((prev) => {
-          return markHistorySessionsLoaded(prev, page.sessions, key, page);
-        });
-      })
-      .catch((error_) => {
-        setHistoryStates((prev) => ({
-          ...prev,
-          [key]: {
-            ...historyStateFor(prev, key, statusRef.current, sessionsRef.current),
-            loading: false,
-            error: error_ instanceof Error ? error_.message : String(error_),
-          },
-        }));
-      });
+    void orchestrateLoadOlder({
+      instance,
+      getStatus: () => statusRef.current,
+      getSessions: () => sessionsRef.current,
+      getStates: () => historyStatesRef.current,
+      setSessions,
+      setHistoryStates,
+      fetchPage: fetchSessionPage,
+      onPageLoaded: (loaded) => {
+        for (const session of loaded) {
+          pagedKeys.current.add(sessionStoreKey(session));
+        }
+      },
+    });
   }, []);
 
   const ensureDetail = useCallback((key: string) => loadDetail(key, false), [loadDetail]);

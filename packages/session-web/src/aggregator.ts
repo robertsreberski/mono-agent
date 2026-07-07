@@ -605,6 +605,18 @@ export class SessionAggregator {
    * or runs paged in from disk), conflating "evicted from memory" with "gone".
    * `session_removed` is reserved for genuine removal/invalidation (instance gone,
    * artifact dir moved, memory-run suppression).
+   *
+   * KEEP DECISION (#166, follow-up from #162): because the genuine-removal paths
+   * ({@link removeInstance}, the artifact-dir-move reseed, memory-run suppression)
+   * iterate only `state.sessions`, a run that was already cap-evicted receives NO
+   * `session_removed` if it is later genuinely deleted — a browser still showing it
+   * (from its snapshot/paged history) self-heals on RELOAD, when the fresh
+   * disk-backed snapshot no longer contains it. Closing this window "live" would
+   * mean either retaining evicted ids unbounded (defeating the cap) or a disk probe
+   * per removal (perf) — both architecture changes this ticket forbids. The staleness
+   * is bounded (only completed runs beyond the cap, only until reload) and read-only,
+   * so we accept it rather than fix it. Pinned by live-fold.test.ts
+   * ("a genuine removal after eviction is not broadcast for the evicted run").
    */
   private evictSessionOverflow(state: InstanceState, protectedId?: string): void {
     const cap = state.maxRunsPerInstance;

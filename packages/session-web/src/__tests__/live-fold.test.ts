@@ -886,6 +886,75 @@ describe("SessionAggregator live fold", () => {
     });
   });
 
+  it("a genuine removal after eviction is not broadcast for the evicted run (self-heals on reload)", async () => {
+    // KEEP DECISION #166: genuine-removal paths iterate only the in-memory working
+    // set, so a run already cap-evicted gets no session_removed when later genuinely
+    // gone. A browser still showing it self-heals on reload (the fresh snapshot omits
+    // it). This pins that documented behavior.
+    const registryDir = await tmp("reg");
+    const oldArtifactDir = join(await tmp("old-agent"), "runs");
+    const newArtifactDir = join(await tmp("new-agent"), "runs");
+    await seedRun({
+      artifactDir: oldArtifactDir,
+      runId: "run-a",
+      conversationId: "cron:a",
+      userInput: "A",
+      text: "a answer",
+      source: "cron",
+      at: 1_700_000_000_000,
+    });
+    await seedRun({
+      artifactDir: oldArtifactDir,
+      runId: "run-b",
+      conversationId: "cron:b",
+      userInput: "B",
+      text: "b answer",
+      source: "cron",
+      at: 1_700_000_100_000,
+    });
+    await seedRun({
+      artifactDir: newArtifactDir,
+      runId: "run-c",
+      conversationId: "cron:c",
+      userInput: "C",
+      text: "c answer",
+      source: "cron",
+      at: 1_700_000_200_000,
+    });
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir: oldArtifactDir });
+
+    aggregator = new SessionAggregator({
+      registryDirs: [registryDir],
+      // Cap of 1: the snapshot holds only the newest completed run (run-b).
+      maxRunsPerInstance: 1,
+      reconcileIntervalMs: 60_000,
+      instancesDebounceMs: 5,
+      clock: () => LIVE_TEST_NOW,
+    });
+    const frames: BrowserStreamFrame[] = [];
+    aggregator.subscribe((frame) => frames.push(frame));
+    await aggregator.start();
+    expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-b"]);
+
+    // Page run-a in on demand → it enters the working set and silently evicts run-b.
+    await expect(aggregator.getSession(SOURCE_ID, "run-a")).resolves.toMatchObject({ id: "run-a" });
+    expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-a"]);
+    // Eviction of run-b was silent.
+    expect(frames.some((frame) => frame.t === "session_removed" && frame.runId === "run-b")).toBe(false);
+
+    // A genuine removal fires (the source's artifact dir moves): the reseed removes
+    // every run STILL in the working set — that is run-a, not the evicted run-b.
+    await registerSource({ registryDir, sourceId: SOURCE_ID, label: "Live Agent", artifactDir: newArtifactDir });
+    await (aggregator as unknown as { reconcile(): Promise<void> }).reconcile();
+
+    expect(aggregator.getSessions("all").map((session) => session.id)).toEqual(["run-c"]);
+    // run-a (in memory) got a genuine removal broadcast ...
+    expect(frames).toContainEqual({ t: "session_removed", sourceId: SOURCE_ID, runId: "run-a" });
+    // ... but run-b (already cap-evicted) never got one, ever — browsers holding it
+    // only drop it on reload, when the fresh snapshot (run-c) no longer carries it.
+    expect(frames.some((frame) => frame.t === "session_removed" && frame.runId === "run-b")).toBe(false);
+  });
+
   it("emits an instances frame when registry metadata changes without endpoint changes", async () => {
     const registryDir = await tmp("reg");
     const agentDir = await tmp("agent");

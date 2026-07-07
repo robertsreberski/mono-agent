@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { boundaryStepLabel, boundaryStepMeta, ctxSummaryLine, runtimeStepLabel, runtimeStepMeta, timelineEmptyMessage } from "./DetailView";
+import { boundaryStepLabel, boundaryStepMeta, ctxSummaryLine, runtimeStepLabel, runtimeStepMeta, showTriggerRecall, timelineEmptyMessage } from "./DetailView";
 
 describe("timelineEmptyMessage", () => {
   test("shows a live waiting state for running runs with no timeline items", () => {
@@ -61,6 +61,24 @@ describe("ctxSummaryLine", () => {
   test("falls back to a compiled-prompt-only line when there is no structured ctx", () => {
     expect(ctxSummaryLine(undefined, true)).toBe("compiled system prompt only");
     expect(ctxSummaryLine(undefined, false)).toBe("");
+  });
+});
+
+describe("showTriggerRecall (recalled-memory de-duplication)", () => {
+  test("hides the Trigger recall block when the Context section owns ctx.mem", () => {
+    // A new run carries the same recall in both places — render it once (Context section).
+    expect(showTriggerRecall({ hasRecall: true, ctx: { histCount: 0, mem: { text: "m", src: "bujo" } } })).toBe(false);
+  });
+
+  test("shows the Trigger recall block for old recordings that have no ctx.mem", () => {
+    expect(showTriggerRecall({ hasRecall: true, ctx: undefined })).toBe(true);
+    // ctx present but with no recalled memory → the Trigger block is still the only home for `recalled`.
+    expect(showTriggerRecall({ hasRecall: true, ctx: { histCount: 2, hist: [] } })).toBe(true);
+  });
+
+  test("shows nothing when the run recalled no memory at all", () => {
+    expect(showTriggerRecall({ hasRecall: false, ctx: undefined })).toBe(false);
+    expect(showTriggerRecall({ hasRecall: false, ctx: { histCount: 0, mem: { text: "m" } } })).toBe(false);
   });
 });
 

@@ -1454,17 +1454,22 @@ function composeUserMessageWithMemory(userMessage: string, memory: ContextBlockI
   return `${userMessage}\n\n[Recalled long-term memory — background context for this turn, not the user's words:]\n${text}`;
 }
 
-// Per-entry display caps for the turn_context event. These are CHARACTER caps,
-// while the downstream recorder redaction cap (redactJsonValue truncates strings
-// at its maxStringBytes, default 4096) is a BYTE cap. For single-byte content the
-// char caps bite first, so the clamp — not the redactor — decides where content
-// is cut and the `truncated` flag stays meaningful. But multibyte content can
-// still be byte-truncated downstream: e.g. 2000 chars of 3-byte CJK is ~6000
-// bytes (> 4096), so the redactor may re-truncate a history message even after
-// this clamp. Memory's 4000-char cap likewise exceeds 4096 bytes past ~1365
-// multibyte chars.
+// Per-entry display caps for the turn_context event. Content is clamped by BOTH a
+// CHARACTER cap (below) and a BYTE cap so THIS clamp — not the downstream recorder
+// redactor — decides every cut. The recorder truncates string values by UTF-8 byte
+// length (redactJsonValue → truncateString at DEFAULT_MAX_STRING_BYTES, 4096); by
+// clamping to that same byte budget here, `truncated` stays accurate and the
+// redactor never re-truncates heavy multibyte content (2000 chars of 3-byte CJK is
+// ~6000 bytes > 4096, and 2000 4-byte emoji is ~8000 bytes). For single-byte
+// content the char cap still bites first, so those clamps are unchanged.
 const TURN_CONTEXT_MESSAGE_MAX_CHARS = 2_000;
 const TURN_CONTEXT_MEMORY_MAX_CHARS = 4_000;
+// Mirrors @mono-agent/observability's DEFAULT_MAX_STRING_BYTES (the recorder's
+// per-value UTF-8 truncation cap). Kept as a local constant rather than importing
+// it, to avoid widening that package's public API for a single number.
+const TURN_CONTEXT_MAX_BYTES = 4_096;
+const TURN_CONTEXT_ENCODER = new TextEncoder();
+const TURN_CONTEXT_DECODER = new TextDecoder();
 
 /**
  * Builds the synthetic `turn_context` event: what context THIS turn was driven
@@ -1531,8 +1536,20 @@ function turnContextMemory(
   };
 }
 
-function clampTurnContextText(value: string, max: number): { readonly text: string; readonly truncated: boolean } {
-  return value.length <= max ? { text: value, truncated: false } : { text: value.slice(0, max), truncated: true };
+function clampTurnContextText(value: string, maxChars: number): { readonly text: string; readonly truncated: boolean } {
+  const byChars = value.length > maxChars ? value.slice(0, maxChars) : value;
+  const truncatedByChars = byChars.length < value.length;
+  const bytes = TURN_CONTEXT_ENCODER.encode(byChars);
+  if (bytes.length <= TURN_CONTEXT_MAX_BYTES) {
+    return { text: byChars, truncated: truncatedByChars };
+  }
+  // Walk back from the byte cap to a UTF-8 code-point boundary (past any
+  // 0b10xxxxxx continuation byte) so a multi-byte char is never split.
+  let end = TURN_CONTEXT_MAX_BYTES;
+  while (end > 0 && (bytes[end]! & 0b1100_0000) === 0b1000_0000) {
+    end -= 1;
+  }
+  return { text: TURN_CONTEXT_DECODER.decode(bytes.subarray(0, end)), truncated: true };
 }
 
 const MIME_EXTENSIONS: Record<string, string> = {

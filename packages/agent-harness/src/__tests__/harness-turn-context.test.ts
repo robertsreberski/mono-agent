@@ -258,6 +258,52 @@ describe("AgentHarness turn_context synthetic event", () => {
     expect(mem.truncated).toBe(true);
   });
 
+  it("byte-clamps a multibyte (CJK) history message under the redaction byte cap without splitting a code point", async () => {
+    const identityPath = await identityFixture();
+    // 2000 chars would clamp cleanly, but each 字 is 3 UTF-8 bytes → ~6000 bytes,
+    // over the 4096-byte recorder cap. The clamp must cut on a UTF-8 boundary.
+    const cjk = "字".repeat(3_000);
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    await historyStore.append("conv-cjk", [{ role: "assistant", content: cjk, timestamp: "2026-06-01T00:00:00Z" }]);
+    const fake = createFakeRuntime();
+    const recorder = new SpyRecorder();
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, recorderFactory: () => recorder });
+
+    await harness.run(request("conv-cjk", "hi"));
+
+    const entry = turnContextEvents(recorder.events)[0]!.history![0]!;
+    expect(entry.truncated).toBe(true);
+    expect(Buffer.byteLength(entry.content, "utf8")).toBeLessThanOrEqual(4_096);
+    // No replacement char (would signal a split multi-byte code point) and only whole 字.
+    expect(entry.content).not.toContain("�");
+    expect(entry.content).toMatch(/^字+$/u);
+    expect(entry.content.length).toBeLessThan(2_000);
+  });
+
+  it("byte-clamps a multibyte (emoji) recalled-memory block without splitting a surrogate pair", async () => {
+    const identityPath = await identityFixture();
+    // Each 🧠 is 2 UTF-16 units and 4 UTF-8 bytes → 2000 emoji ≈ 8000 bytes.
+    const emoji = "🧠".repeat(3_000);
+    const fake = createFakeRuntime();
+    const recorder = new SpyRecorder();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory: memoryStore({ kind: "markdown", content: emoji, source: "bujo", truncated: false }),
+      recorderFactory: () => recorder,
+    });
+
+    await harness.run(request("conv-emoji", "hi"));
+
+    const mem = turnContextEvents(recorder.events)[0]!.memory!;
+    expect(mem.truncated).toBe(true);
+    expect(Buffer.byteLength(mem.content, "utf8")).toBeLessThanOrEqual(4_096);
+    expect(mem.content).not.toContain("�");
+    // Only whole 🧠 clusters survived (no lone surrogate at the cut).
+    expect(mem.content).toMatch(/^(?:🧠)+$/u);
+  });
+
   it("omits the memory key when no memory is configured", async () => {
     const identityPath = await identityFixture();
     const fake = createFakeRuntime();
